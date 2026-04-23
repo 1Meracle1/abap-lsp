@@ -4,14 +4,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use abap_dependency_store::DependencyProfile;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde::Deserialize;
 
 pub const DEPENDENCY_MODE_REMOTE_ON_DEMAND: &str = "remote-on-demand";
-pub const DEPENDENCY_MODE_LOCAL_FIRST: &str = "local-first";
-pub const UNKNOWN_SYMBOL_MODE_REMOTE: &str = "remote";
-pub const UNKNOWN_SYMBOL_MODE_LOG: &str = "log";
 pub const WORKSPACE_PERFORMANCE_MODE_AUTO: &str = "auto";
 pub const WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST: &str = "editor-first";
 pub const WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE: &str = "full-workspace";
@@ -34,6 +32,8 @@ pub struct WorkspaceManifest {
     #[serde(default)]
     pub connection: String,
     #[serde(default)]
+    pub dependency_store: Option<DependencyProfile>,
+    #[serde(default)]
     pub resolution: ManifestResolution,
     #[serde(default)]
     pub performance: ManifestPerformance,
@@ -47,8 +47,6 @@ pub struct ManifestResolution {
     pub dependency_mode: String,
     #[serde(default = "default_cache_dir")]
     pub cache_dir: String,
-    #[serde(default = "default_unknown_symbol_mode")]
-    pub unknown_symbol_mode: String,
     #[serde(default = "default_remote_requests_per_second")]
     pub remote_requests_per_second: usize,
     #[serde(default, rename = "remote_request_parallelism")]
@@ -60,7 +58,6 @@ impl Default for ManifestResolution {
         Self {
             dependency_mode: default_dependency_mode(),
             cache_dir: default_cache_dir(),
-            unknown_symbol_mode: default_unknown_symbol_mode(),
             remote_requests_per_second: default_remote_requests_per_second(),
             legacy_remote_request_parallelism: None,
         }
@@ -188,14 +185,6 @@ impl From<ManifestUnitMemberInline> for ManifestUnitMember {
             ManifestUnitMemberInline::Entry(member) => member,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct DependencyCacheManifest {
-    #[serde(default)]
-    pub source_file: String,
-    #[serde(default, rename = "unit")]
-    pub units: Vec<ManifestUnit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -370,18 +359,8 @@ pub fn load_effective_manifest_from_workspace_result(
 ) -> Result<Option<WorkspaceManifest>, String> {
     let manifest = load_manifest_from_workspace_result(root_path)?;
     Ok(manifest.map(|manifest| {
-        let mut effective = manifest_with_discovered_units(&manifest, root_path);
-        let cache_dir = manifest_cache_dir(Some(&effective)).to_string();
-        let mut loaded_units = effective.units.clone();
-        collect_dependency_cache_units(
-            &effective,
-            root_path,
-            root_uri,
-            &cache_dir,
-            overlays,
-            &mut loaded_units,
-        );
-        effective.units = loaded_units;
+        let effective = manifest_with_discovered_units(&manifest, root_path);
+        let _ = (root_uri, overlays);
         effective
     }))
 }
@@ -523,6 +502,7 @@ pub fn manifest_supports_remote_resolution(manifest: Option<&WorkspaceManifest>)
     };
     normalize_dependency_mode(&manifest.resolution.dependency_mode)
         == DEPENDENCY_MODE_REMOTE_ON_DEMAND
+        && manifest.dependency_store.is_some()
 }
 
 pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
@@ -533,17 +513,8 @@ pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
 }
 
 pub fn normalize_dependency_mode(value: &str) -> &'static str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        DEPENDENCY_MODE_LOCAL_FIRST => DEPENDENCY_MODE_LOCAL_FIRST,
-        _ => DEPENDENCY_MODE_REMOTE_ON_DEMAND,
-    }
-}
-
-pub fn normalize_unknown_symbol_mode(value: &str) -> &'static str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        UNKNOWN_SYMBOL_MODE_LOG => UNKNOWN_SYMBOL_MODE_LOG,
-        _ => UNKNOWN_SYMBOL_MODE_REMOTE,
-    }
+    let _ = value;
+    DEPENDENCY_MODE_REMOTE_ON_DEMAND
 }
 
 pub fn normalize_workspace_performance_mode(value: &str) -> &'static str {
@@ -1885,10 +1856,25 @@ fn collect_manifest_documents(
     progress: &mut WorkspaceLoadProgress<'_>,
     loaded_units: &mut Vec<ManifestUnit>,
 ) {
+    let dependency_files = manifest
+        .units
+        .iter()
+        .filter(|unit| !manifest_unit_uses_legacy_cache_paths(unit, cache_dir))
+        .filter(|unit| manifest_unit_is_dependency(unit, cache_dir))
+        .flat_map(manifest_unit_files)
+        .collect::<HashSet<_>>();
     let selected_dependency_sources =
         collect_selected_dependency_sources(manifest, root_path, root_uri, cache_dir, overlays);
     for unit in &manifest.units {
-        if !should_load_manifest_unit(unit, cache_dir, &selected_dependency_sources) {
+        if manifest_unit_uses_legacy_cache_paths(unit, cache_dir) {
+            continue;
+        }
+        if !should_load_manifest_unit(
+            unit,
+            cache_dir,
+            &dependency_files,
+            &selected_dependency_sources,
+        ) {
             continue;
         }
         let mut unit_files = HashSet::new();
@@ -1929,17 +1915,7 @@ fn collect_manifest_documents(
             progress,
         );
     }
-    collect_dependency_cache_documents(
-        manifest,
-        root_path,
-        root_uri,
-        cache_dir,
-        overlays,
-        seen,
-        documents,
-        progress,
-        loaded_units,
-    );
+    let _ = loaded_units;
 }
 
 fn collect_manifest_document(
@@ -1996,12 +1972,11 @@ fn manifest_unit_root_is_dependency(unit: &ManifestUnit, cache_dir: &str) -> boo
         return manifest_member_role(member, cache_dir) == "dependency";
     }
     if unit.members.is_empty() {
-        return manifest_path_is_dependency_cache(&root_file, cache_dir);
+        return false;
     }
     unit.members
         .iter()
         .all(|member| manifest_member_role(member, cache_dir) == "dependency")
-        || manifest_path_is_dependency_cache(&root_file, cache_dir)
 }
 
 fn manifest_member_object_name(
@@ -2024,22 +1999,19 @@ fn manifest_member_object_name(
 
 fn manifest_unit_is_dependency(unit: &ManifestUnit, cache_dir: &str) -> bool {
     manifest_unit_root_is_dependency(unit, cache_dir)
-        || unit.members.iter().any(|member| {
-            manifest_member_role(member, cache_dir) == "dependency"
-                || manifest_path_is_dependency_cache(&member.file, cache_dir)
-        })
+        || unit
+            .members
+            .iter()
+            .any(|member| manifest_member_role(member, cache_dir) == "dependency")
 }
 
 fn manifest_member_role<'a>(member: &'a ManifestUnitMember, cache_dir: &'a str) -> &'a str {
+    let _ = cache_dir;
     let role = member.role.trim();
     if !role.is_empty() {
         return role;
     }
-    if manifest_path_is_dependency_cache(&member.file, cache_dir) {
-        "dependency"
-    } else {
-        "root"
-    }
+    "root"
 }
 
 fn manifest_member_explicit_object_name<'a>(member: &'a ManifestUnitMember) -> Option<&'a str> {
@@ -2081,15 +2053,6 @@ fn dependency_cache_root_prefix(cache_dir: &str) -> String {
     }
 }
 
-fn dependency_cache_manifest_root_prefix(cache_dir: &str) -> String {
-    let cache_dir = normalize_manifest_path(cache_dir);
-    if cache_dir.is_empty() {
-        "dependency-manifests/".to_string()
-    } else {
-        format!("{cache_dir}/dependency-manifests/")
-    }
-}
-
 fn package_cache_root_prefix(cache_dir: &str) -> String {
     let cache_dir = normalize_manifest_path(cache_dir);
     if cache_dir.is_empty() {
@@ -2105,217 +2068,12 @@ fn manifest_path_is_dependency_cache(file: &str, cache_dir: &str) -> bool {
         || normalized.starts_with(&package_cache_root_prefix(cache_dir))
 }
 
-fn is_dependency_cache_uri(root_path: &Path, root_uri: &str, cache_dir: &str, uri: &str) -> bool {
-    if !uri_starts_with_workspace(uri, root_uri) {
-        return false;
-    }
-    let Some(path) = file_uri_to_path(uri) else {
-        return false;
-    };
-    let relative = workspace_relative_path(root_path, &path);
-    manifest_path_is_dependency_cache(&relative, cache_dir)
-}
-
-fn collect_dependency_cache_documents(
-    manifest: &WorkspaceManifest,
-    root_path: &Path,
-    root_uri: &str,
-    cache_dir: &str,
-    overlays: &HashMap<String, OpenDocumentOverlay>,
-    seen: &mut HashSet<String>,
-    documents: &mut Vec<WorkspaceDocument>,
-    progress: &mut WorkspaceLoadProgress<'_>,
-    loaded_units: &mut Vec<ManifestUnit>,
-) {
-    let mut pending_sources: Vec<_> =
-        initial_dependency_cache_sources(manifest, root_path, root_uri, cache_dir, overlays)
-            .into_iter()
-            .collect();
-    let mut visited_sources = HashSet::new();
-    let mut loaded_unit_keys = loaded_units
-        .iter()
-        .map(manifest_unit_identity_key)
-        .collect::<HashSet<_>>();
-
-    while let Some(source_file) = pending_sources.pop() {
-        let source_file = normalize_manifest_path(&source_file);
-        if source_file.is_empty() || !visited_sources.insert(source_file.clone()) {
-            continue;
-        }
-        let units = load_dependency_cache_manifest_units(root_path, cache_dir, &source_file);
-        for unit in units {
-            let unit_files = manifest_unit_files(&unit);
-            let unit_key = manifest_unit_identity_key(&unit);
-            if loaded_unit_keys.insert(unit_key) {
-                loaded_units.push(unit.clone());
-            }
-            let mut seen_files = HashSet::new();
-            for member in &unit.members {
-                let relative = normalize_manifest_path(&member.file);
-                if relative.is_empty() || !seen_files.insert(relative.clone()) {
-                    continue;
-                }
-                collect_manifest_document(
-                    &unit,
-                    manifest_member_object_name(&unit, Some(member)),
-                    true,
-                    &relative,
-                    root_path,
-                    root_uri,
-                    overlays,
-                    seen,
-                    documents,
-                    progress,
-                );
-            }
-
-            let relative = normalize_manifest_path(&unit.root_file);
-            if !relative.is_empty() && seen_files.insert(relative.clone()) {
-                collect_manifest_document(
-                    &unit,
-                    manifest_member_object_name(&unit, None),
-                    true,
-                    &relative,
-                    root_path,
-                    root_uri,
-                    overlays,
-                    seen,
-                    documents,
-                    progress,
-                );
-            }
-
-            pending_sources.extend(unit_files);
-        }
-    }
-}
-
-fn collect_dependency_cache_units(
-    manifest: &WorkspaceManifest,
-    root_path: &Path,
-    root_uri: &str,
-    cache_dir: &str,
-    overlays: &HashMap<String, OpenDocumentOverlay>,
-    loaded_units: &mut Vec<ManifestUnit>,
-) {
-    let mut pending_sources: Vec<_> =
-        initial_dependency_cache_sources(manifest, root_path, root_uri, cache_dir, overlays)
-            .into_iter()
-            .collect();
-    let mut visited_sources = HashSet::new();
-    let mut loaded_unit_keys = loaded_units
-        .iter()
-        .map(manifest_unit_identity_key)
-        .collect::<HashSet<_>>();
-
-    while let Some(source_file) = pending_sources.pop() {
-        let source_file = normalize_manifest_path(&source_file);
-        if source_file.is_empty() || !visited_sources.insert(source_file.clone()) {
-            continue;
-        }
-        let units = load_dependency_cache_manifest_units(root_path, cache_dir, &source_file);
-        for unit in units {
-            pending_sources.extend(manifest_unit_files(&unit));
-            let unit_key = manifest_unit_identity_key(&unit);
-            if loaded_unit_keys.insert(unit_key) {
-                loaded_units.push(unit);
-            }
-        }
-    }
-}
-
-fn initial_dependency_cache_sources(
-    manifest: &WorkspaceManifest,
-    root_path: &Path,
-    root_uri: &str,
-    cache_dir: &str,
-    overlays: &HashMap<String, OpenDocumentOverlay>,
-) -> HashSet<String> {
-    let mut sources = HashSet::new();
-    for unit in manifest
-        .units
-        .iter()
-        .filter(|unit| !manifest_unit_is_dependency(unit, cache_dir))
-    {
-        sources.extend(manifest_unit_files(unit));
-    }
-    for uri in overlays.keys() {
-        if is_dependency_cache_uri(root_path, root_uri, cache_dir, uri) {
-            let Some(path) = file_uri_to_path(uri) else {
-                continue;
-            };
-            sources.insert(workspace_relative_path(root_path, &path));
-        }
-    }
-    sources
-}
-
-fn load_dependency_cache_manifest_units(
-    root_path: &Path,
-    cache_dir: &str,
-    source_file: &str,
-) -> Vec<ManifestUnit> {
-    let manifest_path = dependency_cache_manifest_path(root_path, cache_dir, source_file);
-    let text = match fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
-        Err(_) => return Vec::new(),
-    };
-    let mut manifest: DependencyCacheManifest = match toml::from_str(&text) {
-        Ok(manifest) => manifest,
-        Err(_) => return Vec::new(),
-    };
-    normalize_manifest_units(&mut manifest.units);
-    manifest.units
-}
-
-fn dependency_cache_manifest_path(root_path: &Path, cache_dir: &str, source_file: &str) -> PathBuf {
-    root_path.join(dependency_cache_manifest_relative_path(
-        cache_dir,
-        source_file,
-    ))
-}
-
-fn dependency_cache_manifest_relative_path(cache_dir: &str, source_file: &str) -> String {
-    let prefix = dependency_cache_manifest_root_prefix(cache_dir);
-    format!(
-        "{prefix}{}.toml",
-        encode_manifest_cache_file_component(source_file)
-    )
-}
-
-fn encode_manifest_cache_file_component(value: &str) -> String {
-    let mut out = String::new();
-    for ch in normalize_manifest_path(value).chars() {
-        append_manifest_cache_component_char(&mut out, ch);
-    }
-    out
-}
-
-fn append_manifest_cache_component_char(out: &mut String, ch: char) {
-    if ch.is_ascii_alphanumeric()
-        || matches!(ch, '-' | '_' | '.' | '!' | '~' | '*' | '\'' | '(' | ')')
-    {
-        out.push(ch);
-        return;
-    }
-    let mut buf = [0; 4];
-    for byte in ch.encode_utf8(&mut buf).as_bytes() {
-        out.push('%');
-        out.push(hex_digit(byte >> 4));
-        out.push(hex_digit(byte & 0x0f));
-    }
-}
-
-fn manifest_unit_identity_key(unit: &ManifestUnit) -> String {
-    let root_file = normalize_manifest_path(&unit.root_file);
-    if !root_file.is_empty() {
-        return root_file;
-    }
-    let name = unit.name.trim();
-    if !name.is_empty() {
-        return name.to_ascii_lowercase();
-    }
-    format!("{:?}", unit.members)
+fn manifest_unit_uses_legacy_cache_paths(unit: &ManifestUnit, cache_dir: &str) -> bool {
+    manifest_path_is_dependency_cache(&unit.root_file, cache_dir)
+        || unit
+            .members
+            .iter()
+            .any(|member| manifest_path_is_dependency_cache(&member.file, cache_dir))
 }
 
 fn collect_selected_dependency_sources(
@@ -2371,6 +2129,7 @@ fn collect_selected_dependency_sources(
 fn should_load_manifest_unit(
     unit: &ManifestUnit,
     cache_dir: &str,
+    dependency_files: &HashSet<String>,
     selected_dependency_sources: &HashSet<String>,
 ) -> bool {
     if !manifest_unit_is_dependency(unit, cache_dir) {
@@ -2383,8 +2142,7 @@ fn should_load_manifest_unit(
         .iter()
         .map(|dependency| normalize_manifest_path(&dependency.file))
         .any(|file| {
-            !manifest_path_is_dependency_cache(&file, cache_dir)
-                || selected_dependency_sources.contains(&file)
+            !dependency_files.contains(&file) || selected_dependency_sources.contains(&file)
         })
 }
 
@@ -2397,8 +2155,12 @@ pub fn manifest_declares_uri(
     if !uri_starts_with_workspace(uri, root_uri) {
         return false;
     }
+    let cache_dir = manifest_cache_dir(Some(manifest));
 
     manifest.units.iter().any(|unit| {
+        if manifest_unit_uses_legacy_cache_paths(unit, cache_dir) {
+            return false;
+        }
         let root_file = normalize_manifest_path(&unit.root_file);
         (!root_file.is_empty() && path_to_file_uri(&root_path.join(&root_file)) == uri)
             || unit.members.iter().any(|member| {
@@ -2420,6 +2182,9 @@ pub fn manifest_document_metadata(
     let cache_dir = manifest_cache_dir(Some(manifest));
 
     manifest.units.iter().find_map(|unit| {
+        if manifest_unit_uses_legacy_cache_paths(unit, cache_dir) {
+            return None;
+        }
         for member in &unit.members {
             let member_file = normalize_manifest_path(&member.file);
             if !member_file.is_empty() && path_to_file_uri(&root_path.join(&member_file)) == uri {
@@ -2515,10 +2280,25 @@ fn collect_manifest_document_uris(
     overlays: &HashMap<String, OpenDocumentOverlay>,
     seen: &mut HashSet<String>,
 ) {
+    let dependency_files = manifest
+        .units
+        .iter()
+        .filter(|unit| !manifest_unit_uses_legacy_cache_paths(unit, cache_dir))
+        .filter(|unit| manifest_unit_is_dependency(unit, cache_dir))
+        .flat_map(manifest_unit_files)
+        .collect::<HashSet<_>>();
     let selected_dependency_sources =
         collect_selected_dependency_sources(manifest, root_path, root_uri, cache_dir, overlays);
     for unit in &manifest.units {
-        if !should_load_manifest_unit(unit, cache_dir, &selected_dependency_sources) {
+        if manifest_unit_uses_legacy_cache_paths(unit, cache_dir) {
+            continue;
+        }
+        if !should_load_manifest_unit(
+            unit,
+            cache_dir,
+            &dependency_files,
+            &selected_dependency_sources,
+        ) {
             continue;
         }
         let mut unit_files = HashSet::new();
@@ -2541,45 +2321,6 @@ fn collect_manifest_document_uris(
             seen.insert(uri);
         }
     }
-    collect_dependency_cache_document_uris(
-        manifest, root_path, root_uri, cache_dir, overlays, seen,
-    );
-}
-
-fn collect_dependency_cache_document_uris(
-    manifest: &WorkspaceManifest,
-    root_path: &Path,
-    root_uri: &str,
-    cache_dir: &str,
-    overlays: &HashMap<String, OpenDocumentOverlay>,
-    seen: &mut HashSet<String>,
-) {
-    let mut pending_sources: Vec<_> =
-        initial_dependency_cache_sources(manifest, root_path, root_uri, cache_dir, overlays)
-            .into_iter()
-            .collect();
-    let mut visited_sources = HashSet::new();
-    while let Some(source_file) = pending_sources.pop() {
-        let source_file = normalize_manifest_path(&source_file);
-        if source_file.is_empty() || !visited_sources.insert(source_file.clone()) {
-            continue;
-        }
-        for unit in load_dependency_cache_manifest_units(root_path, cache_dir, &source_file) {
-            let unit_files = manifest_unit_files(&unit);
-            let unit_open = unit_files
-                .iter()
-                .any(|file| overlays.contains_key(&path_to_file_uri(&root_path.join(file))));
-            for file in &unit_files {
-                let uri = path_to_file_uri(&root_path.join(file));
-                if uri_starts_with_workspace(&uri, root_uri) {
-                    seen.insert(uri);
-                }
-            }
-            if unit_open {
-                pending_sources.extend(unit_files);
-            }
-        }
-    }
 }
 
 fn normalize_manifest_path(value: &str) -> String {
@@ -2593,8 +2334,6 @@ fn normalize_manifest_path(value: &str) -> String {
 fn normalize_manifest(manifest: &mut WorkspaceManifest) {
     manifest.resolution.dependency_mode =
         normalize_dependency_mode(&manifest.resolution.dependency_mode).to_string();
-    manifest.resolution.unknown_symbol_mode =
-        normalize_unknown_symbol_mode(&manifest.resolution.unknown_symbol_mode).to_string();
     manifest.performance.mode =
         normalize_workspace_performance_mode(&manifest.performance.mode).to_string();
     if manifest.resolution.cache_dir.trim().is_empty() {
@@ -2606,7 +2345,33 @@ fn normalize_manifest(manifest: &mut WorkspaceManifest) {
         .resolution
         .legacy_remote_request_parallelism
         .map(|value| value.max(1));
+    normalize_manifest_dependency_store(&mut manifest.dependency_store);
     normalize_manifest_units(&mut manifest.units);
+}
+
+fn normalize_manifest_dependency_store(profile: &mut Option<DependencyProfile>) {
+    let Some(current) = profile.as_mut() else {
+        return;
+    };
+
+    current.product_version = current.product_version.trim().to_string();
+    current.default_package_version = current.default_package_version.trim().to_string();
+    current.packages = current
+        .packages
+        .iter()
+        .filter_map(|(package_name, version)| {
+            let package_name = package_name.trim();
+            let version = version.trim();
+            if package_name.is_empty() || version.is_empty() {
+                return None;
+            }
+            Some((package_name.to_string(), version.to_string()))
+        })
+        .collect();
+
+    if current.product_version.is_empty() || current.default_package_version.is_empty() {
+        *profile = None;
+    }
 }
 
 fn normalize_manifest_units(units: &mut [ManifestUnit]) {
@@ -2691,10 +2456,6 @@ fn default_dependency_mode() -> String {
 
 fn default_cache_dir() -> String {
     ".abapls/cache".to_string()
-}
-
-fn default_unknown_symbol_mode() -> String {
-    UNKNOWN_SYMBOL_MODE_REMOTE.to_string()
 }
 
 fn default_workspace_performance_mode() -> String {
@@ -3239,14 +3000,13 @@ fn normalize_ddic_builtin_type(value: &str) -> Cow<'_, str> {
 mod tests {
     use std::collections::HashMap;
     use std::fs;
-    use std::sync::Arc;
 
     use super::{
         DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalDependencySourceMode, LocalExportResolver,
-        OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_REMOTE, WORKSPACE_PERFORMANCE_MODE_AUTO,
-        WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
-        ddic_xml_to_abap_source, is_remote_lookup_candidate,
-        is_remote_lookup_candidate_after_local_resolution, is_remote_lookup_name,
+        WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
+        WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source,
+        is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
+        is_remote_lookup_name, load_effective_manifest_from_workspace_result,
         load_manifest_from_workspace, load_workspace_documents, local_export_config_for_source,
         manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
         path_to_file_uri, resolve_local_export_dependency_document,
@@ -3256,16 +3016,37 @@ mod tests {
     #[test]
     fn parses_manifest_defaults() {
         let manifest: WorkspaceManifest = toml::from_str("version = 1\n").expect("manifest");
-        assert_eq!(
-            manifest.resolution.unknown_symbol_mode,
-            UNKNOWN_SYMBOL_MODE_REMOTE
-        );
+        assert_eq!(manifest.dependency_store, None);
         assert_eq!(
             manifest.resolution.remote_requests_per_second,
             DEFAULT_REMOTE_REQUESTS_PER_SECOND
         );
         assert_eq!(manifest.resolution.remote_request_parallelism(), None);
         assert_eq!(manifest.performance.mode, WORKSPACE_PERFORMANCE_MODE_AUTO);
+    }
+
+    #[test]
+    fn parses_dependency_store_profile_from_manifest() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "SAP NETWEAVER"
+default_package_version = "7.50"
+
+[dependency_store.packages]
+SABAPDEMOS = "7.57"
+"#,
+        )
+        .expect("manifest");
+        let profile = manifest.dependency_store.expect("dependency store profile");
+        assert_eq!(profile.product_version, "SAP NETWEAVER");
+        assert_eq!(profile.default_package_version, "7.50");
+        assert_eq!(
+            profile.packages.get("SABAPDEMOS").map(String::as_str),
+            Some("7.57")
+        );
     }
 
     #[test]
@@ -3819,14 +3600,17 @@ mode = "full-workspace"
     }
 
     #[test]
-    fn manifest_supports_log_mode_for_candidate_reporting() {
+    fn manifest_supports_remote_resolution_only_with_dependency_store_profile() {
         let manifest: WorkspaceManifest = toml::from_str(
             r#"
 version = 1
 
+[dependency_store]
+product_version = "S4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "log"
 "#,
         )
         .expect("manifest");
@@ -3941,8 +3725,8 @@ members = [
     }
 
     #[test]
-    fn manifest_loads_only_direct_dependency_layer_until_dependency_is_opened() {
-        let root = std::env::temp_dir().join("abap-lsp-manifest-dependency-layers");
+    fn manifest_does_not_infer_dependency_layers_from_legacy_cache_paths() {
+        let root = std::env::temp_dir().join("abap-lsp-ignore-legacy-cache-path-dependencies");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("src dir");
         fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
@@ -4003,46 +3787,18 @@ dependency_of = [
                 .any(|uri| uri.ends_with("/src/ZMAIN.abap"))
         );
         assert!(
-            loaded_uris.iter().any(
-                |uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap")
-            )
-        );
-        assert!(
-            !loaded_uris
+            loaded_uris
                 .iter()
-                .any(|uri| uri
-                    .ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"))
-        );
-
-        let dependency_uri =
-            format!("{root_uri}/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap");
-        let mut overlays = HashMap::new();
-        overlays.insert(
-            dependency_uri,
-            OpenDocumentOverlay {
-                version: 1,
-                text: Arc::from("CLASS zcl_first DEFINITION. ENDCLASS."),
-            },
-        );
-        let opened = load_workspace_documents(&root_uri, &overlays);
-        let opened_uris: Vec<_> = opened
-            .documents
-            .iter()
-            .map(|document| document.uri.as_ref())
-            .collect();
-        assert!(
-            opened_uris
-                .iter()
-                .any(|uri| uri
-                    .ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"))
+                .all(|uri| !uri.contains("/.abapls/cache/packages/")),
+            "{loaded_uris:?}"
         );
 
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn cache_side_dependency_manifests_extend_workspace_without_polluting_project_manifest() {
-        let root = std::env::temp_dir().join("abap-lsp-cache-side-dependency-manifests");
+    fn legacy_cache_side_dependency_manifests_are_ignored() {
+        let root = std::env::temp_dir().join("abap-lsp-ignore-legacy-cache-side-manifests");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("src dir");
         fs::create_dir_all(root.join(".abapls/cache/dependency-manifests"))
@@ -4116,7 +3872,7 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
                 .manifest
                 .as_ref()
                 .map(|manifest| manifest.units.len()),
-            Some(3)
+            Some(1)
         );
         assert!(
             loaded_uris
@@ -4124,45 +3880,95 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
                 .any(|uri| uri.ends_with("/src/ZMAIN.abap"))
         );
         assert!(
-            loaded_uris.iter().any(
-                |uri| uri.ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap")
-            )
-        );
-        assert!(
             loaded_uris
                 .iter()
-                .any(|uri| uri
-                    .ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"))
+                .all(|uri| !uri.contains("/.abapls/cache/packages/")),
+            "{loaded_uris:?}"
         );
 
-        let dependency_uri =
-            format!("{root_uri}/.abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap");
-        let mut overlays = HashMap::new();
-        overlays.insert(
-            dependency_uri,
-            OpenDocumentOverlay {
-                version: 1,
-                text: Arc::from("CLASS zcl_first DEFINITION. ENDCLASS."),
-            },
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dependency_store_profile_in_manifest_skips_workspace_dependency_cache_loading() {
+        let root = std::env::temp_dir().join("abap-lsp-central-dependency-store-startup");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("src dir");
+        fs::create_dir_all(root.join(".abapls/cache/dependency-manifests"))
+            .expect("dependency manifest dir");
+        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+            .expect("package dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(root.join("src/ZMAIN.abap"), "REPORT zmain.").expect("main");
+        fs::write(
+            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
+            "CLASS zcl_first DEFINITION. ENDCLASS.",
+        )
+        .expect("dependency");
+        fs::write(
+            root.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
+            r#"
+source_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZCL_FIRST"
+kind = "global-class"
+package_name = "ZPKG"
+root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+"#,
+        )
+        .expect("dependency manifest");
+
+        let root_uri = path_to_file_uri(&root);
+        let effective =
+            load_effective_manifest_from_workspace_result(&root, &root_uri, &HashMap::new())
+                .expect("effective manifest")
+                .expect("manifest");
+        assert_eq!(effective.units.len(), 1);
+        assert_eq!(effective.units[0].name, "ZMAIN");
+
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        assert_eq!(
+            loaded
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.units.len()),
+            Some(1)
         );
-        let opened = load_workspace_documents(&root_uri, &overlays);
-        let opened_uris: Vec<_> = opened
+        let loaded_uris: Vec<_> = loaded
             .documents
             .iter()
             .map(|document| document.uri.as_ref())
             .collect();
-        assert_eq!(
-            opened
-                .manifest
-                .as_ref()
-                .map(|manifest| manifest.units.len()),
-            Some(3)
+        assert!(
+            loaded_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZMAIN.abap")),
+            "{loaded_uris:?}"
         );
         assert!(
-            opened_uris
+            loaded_uris
                 .iter()
-                .any(|uri| uri
-                    .ends_with("/.abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"))
+                .all(|uri| !uri.contains("/.abapls/cache/packages/")),
+            "{loaded_uris:?}"
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -4222,7 +4028,6 @@ version = 1
 [resolution]
 dependency_mode = "local-first"
 cache_dir = ".abapls/cache"
-unknown_symbol_mode = "log"
 "#,
         )
         .expect("manifest");
@@ -4310,7 +4115,6 @@ version = 1
 [resolution]
 dependency_mode = "local-first"
 cache_dir = ".abapls/cache"
-unknown_symbol_mode = "log"
 "#,
         )
         .expect("manifest");
@@ -4357,7 +4161,6 @@ version = 1
 [resolution]
 dependency_mode = "local-first"
 cache_dir = ".abapls/cache"
-unknown_symbol_mode = "log"
 "#,
         )
         .expect("manifest");

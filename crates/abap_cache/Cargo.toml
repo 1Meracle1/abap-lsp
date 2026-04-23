@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+abap_dependency_store = { path = "../abap_dependency_store" }
 abap_ast = { path = "../abap_ast" }
 abap_lexer = { path = "../abap_lexer" }
 abap_parser = { path = "../abap_parser" }

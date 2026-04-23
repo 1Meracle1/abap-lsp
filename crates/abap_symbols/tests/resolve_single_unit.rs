@@ -4522,7 +4522,8 @@ ENDLOOP.
 }
 
 #[test]
-fn loop_inline_named_string_table_target_stays_assignment_compatible_with_like_line_of_field_symbol() {
+fn loop_inline_named_string_table_target_stays_assignment_compatible_with_like_line_of_field_symbol()
+ {
     let src = r#"
 TYPES: tt_dm_obj_arc TYPE STANDARD TABLE OF string.
 DATA lt_dm_obj_arc TYPE tt_dm_obj_arc.

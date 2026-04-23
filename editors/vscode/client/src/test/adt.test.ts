@@ -1,5 +1,4 @@
 import * as assert from "assert";
-import * as vscode from "vscode";
 
 import {
 	buildFunctionModuleDependencySource,
@@ -23,7 +22,7 @@ import {
 	SESSION_BOOTSTRAP_ACCEPT,
 	type AdtObjectRef,
 } from "../adt";
-import { inferManifestUnitSpec, targetDependencyWorkspaceFilePath } from "../manifest";
+import { inferManifestUnitSpec } from "../manifest";
 
 suite("ADT dependency helpers", () => {
 	test("Recognizes DDIC dependency objects", () => {
@@ -41,11 +40,6 @@ suite("ADT dependency helpers", () => {
 	});
 
 	test("Builds DDIC dependency paths with xml extension", () => {
-		const workspaceFolder = {
-			uri: vscode.Uri.file("c:\\demo"),
-			name: "demo",
-			index: 0,
-		} as vscode.WorkspaceFolder;
 		const objectRef: AdtObjectRef = {
 			uri: "/sap/bc/adt/ddic/structures/zstruct",
 			type: "TABL/DS",
@@ -54,10 +48,7 @@ suite("ADT dependency helpers", () => {
 			description: "Demo structure",
 		};
 
-		const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
-		const unit = inferManifestUnitSpec(objectRef, ".abapls/cache/dependencies/ddic-structure/ZSTRUCT.xml");
-
-		assert.ok(filePath.endsWith("ZSTRUCT.xml"));
+		const unit = inferManifestUnitSpec(objectRef, "central/ZSTRUCT.xml");
 		assert.strictEqual(unit.kind, "ddic-structure");
 	});
 
@@ -95,7 +86,7 @@ suite("ADT dependency helpers", () => {
 		assert.strictEqual(objectRef?.type, "CLAS/OC");
 		assert.strictEqual(objectRef?.name, "ZATTP_CL_RS_RULE_PROC");
 		assert.strictEqual(
-			inferManifestUnitSpec(objectRef!, ".abapls/cache/packages/_unknown/global-class/ZATTP_CL_RS_RULE_PROC.abap").kind,
+			inferManifestUnitSpec(objectRef!, "central/ZATTP_CL_RS_RULE_PROC.abap").kind,
 			"global-class",
 		);
 	});
@@ -153,22 +144,15 @@ suite("ADT dependency helpers", () => {
 	});
 
 	test("Builds message class dependency paths with xml extension", () => {
-		const workspaceFolder = {
-			uri: vscode.Uri.file("c:\\demo"),
-			name: "demo",
-			index: 0,
-		} as vscode.WorkspaceFolder;
 		const objectRef = buildMessageClassObjectRef("/sttp/int_msg");
 
-		const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
 		const unit = inferManifestUnitSpec(
 			objectRef,
-			".abapls/cache/dependencies/message-class/%2FSTTP%2FINT_MSG.xml",
+			"central/%2FSTTP%2FINT_MSG.xml",
 		);
 
 		assert.strictEqual(isMessageClassDependencyObject(objectRef), true);
 		assert.strictEqual(isSupportedDependencyObject(objectRef, "message-class"), true);
-		assert.ok(filePath.endsWith("%2FSTTP%2FINT_MSG.xml"));
 		assert.strictEqual(unit.kind, "message-class");
 	});
 

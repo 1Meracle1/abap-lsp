@@ -24,7 +24,6 @@ use abap_symbols::{
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
         analyze_unit_local_state_for_project_build, incremental_project_update,
-        validate_single_unit,
     },
 };
 use parking_lot::RwLock;
@@ -55,22 +54,21 @@ pub use effective_source::{
     EffectiveSourceUnit, build_effective_source, build_effective_source_with_limits,
 };
 pub use workspace::{
-    DEFAULT_REMOTE_REQUESTS_PER_SECOND, DEPENDENCY_MODE_LOCAL_FIRST,
-    DEPENDENCY_MODE_REMOTE_ON_DEMAND, EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD,
-    EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD, EDITOR_FIRST_UNIT_COUNT_THRESHOLD,
-    LocalDependencySourceMode, LocalExportConfig, LocalExportResolver, ManifestPerformance,
-    ManifestResolution, ManifestUnit, ManifestUnitDependencyOf, ManifestUnitMember,
-    OpenDocumentOverlay, UNKNOWN_SYMBOL_MODE_LOG, UNKNOWN_SYMBOL_MODE_REMOTE,
+    DEFAULT_REMOTE_REQUESTS_PER_SECOND, DEPENDENCY_MODE_REMOTE_ON_DEMAND,
+    EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD, EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD,
+    EDITOR_FIRST_UNIT_COUNT_THRESHOLD, LocalDependencySourceMode, LocalExportConfig,
+    LocalExportResolver, ManifestPerformance, ManifestResolution, ManifestUnit,
+    ManifestUnitDependencyOf, ManifestUnitMember, OpenDocumentOverlay,
     WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
     WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE, WorkspaceDocument, WorkspaceLoadResult,
     WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source, file_uri_to_path,
     is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
     is_remote_lookup_name, load_effective_manifest_from_workspace_result,
     load_manifest_from_workspace, load_manifest_from_workspace_result, load_workspace_documents,
-    load_workspace_documents_with_progress, local_export_config_for_source, manifest_cache_dir,
-    manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
-    normalize_dependency_mode, normalize_unknown_symbol_mode, normalize_workspace_performance_mode,
-    path_to_file_uri, resolve_local_export_dependency_document,
+    load_workspace_documents_with_progress, local_export_config_for_source, manifest_declares_uri,
+    manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
+    normalize_workspace_performance_mode, path_to_file_uri,
+    resolve_local_export_dependency_document,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace, workspace_relative_path,
 };
@@ -9476,97 +9474,6 @@ fn local_analysis_with_object_name(
     local
 }
 
-fn preview_unit_id_for_input(
-    input: &DocumentInput,
-    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
-    analysis: Option<&CachedWorkspaceAnalysis>,
-) -> UnitId {
-    if let Some(snapshot) = existing.get(input.uri.as_ref()) {
-        return snapshot.symbols.unit_id;
-    }
-    if let Some(unit_id) = analysis
-        .and_then(|analysis| analysis.locals.get(input.uri.as_ref()))
-        .map(|local| local.unit.unit_id)
-    {
-        return unit_id;
-    }
-    UnitId(existing.len() as u32)
-}
-
-fn build_preview_parse_and_local(
-    input: &DocumentInput,
-    existing: &HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
-    analysis: Option<&CachedWorkspaceAnalysis>,
-) -> (Arc<ParseResult>, LocalAnalysis, usize, usize) {
-    let analysis_text = analysis_text_for_input(input);
-    let previous_snapshot = existing.get(input.uri.as_ref());
-    let previous_local = analysis.and_then(|analysis| analysis.locals.get(input.uri.as_ref()));
-
-    let parsed = Arc::new(parse(analysis_text.as_ref()));
-    let parse = if let Some(snapshot) = previous_snapshot {
-        if snapshot.parse.as_ref().tokens == parsed.as_ref().tokens
-            && snapshot.parse.as_ref().errors == parsed.as_ref().errors
-        {
-            Arc::clone(&snapshot.parse)
-        } else {
-            parsed
-        }
-    } else {
-        parsed
-    };
-    let parse_count = 1;
-
-    let reused_local = previous_snapshot
-        .is_some_and(|snapshot| snapshot_matches_input(snapshot, input))
-        && previous_local.is_some();
-    let local = if let Some(previous) = previous_local.filter(|_| reused_local) {
-        previous.clone()
-    } else {
-        analyze_unit_local_state(
-            preview_unit_id_for_input(input, existing, analysis),
-            Arc::clone(&input.uri),
-            analysis_text.as_ref(),
-            parse.as_ref(),
-        )
-    };
-    let local_phase_count = usize::from(!reused_local);
-    let local = local_analysis_with_object_name(local, input.object_name.as_ref());
-    (parse, local, parse_count, local_phase_count)
-}
-
-fn preview_snapshot_from_local(
-    input: &DocumentInput,
-    parse: Arc<ParseResult>,
-    local: LocalAnalysis,
-    project: Arc<ProjectAnalysis>,
-    routine_analysis: Arc<ProjectRoutineAnalysis>,
-    static_analysis: Option<Arc<ProjectStaticAnalysisSummary>>,
-    callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
-    call_graph: Arc<ProjectCallGraph>,
-) -> Arc<AnalysisSnapshot> {
-    let project_texts = Arc::new(HashMap::from([(
-        Arc::clone(&input.uri),
-        Arc::clone(&input.text),
-    )]));
-    Arc::new(AnalysisSnapshot {
-        scope_index: Arc::new(local.scope_index),
-        uri: Arc::clone(&input.uri),
-        version: input.version,
-        text: Arc::clone(&input.text),
-        line_index: Arc::new(LineIndex::new(input.text.as_ref())),
-        project_texts,
-        is_dependency: input.is_dependency,
-        object_name: input.object_name.clone(),
-        parse,
-        symbols: Arc::new(local.unit),
-        project,
-        routine_analysis,
-        static_analysis,
-        callable_summaries,
-        call_graph,
-    })
-}
-
 fn dependency_class_block_for_keywords(keywords: &[String]) -> Option<DependencyBlock> {
     if keywords.first().map(String::as_str) != Some("class") {
         return None;
@@ -9710,7 +9617,7 @@ impl DocumentStore {
             None,
             &changed_uris,
             force_full,
-            SnapshotBuildPlan::FULL,
+            build_plan,
         );
         drop(analysis);
         drop(existing);
@@ -9794,7 +9701,7 @@ impl DocumentStore {
             progress,
             &changed_uris,
             force_full,
-            SnapshotBuildPlan::FULL,
+            build_plan,
         );
         drop(analysis);
         drop(existing);
@@ -9822,74 +9729,32 @@ impl DocumentStore {
             });
             return snapshot;
         }
-        let (parse, local, parse_count, local_phase_count) =
-            build_preview_parse_and_local(&input, &existing, analysis.as_ref());
-        let committed_snapshot = analysis
+        let build_plan = analysis
             .as_ref()
-            .and_then(|_| existing.values().next().cloned());
-        let (
-            project,
-            routine_analysis,
-            static_analysis,
-            callable_summaries,
-            call_graph,
-            committed_context_only,
-            fell_back_to_single_document,
-        ) = if let Some(snapshot) = committed_snapshot {
-            (
-                Arc::clone(&snapshot.project),
-                Arc::clone(&snapshot.routine_analysis),
-                // Reusing committed project context keeps previews cheap, but the compact
-                // summary would be stale for the edited unit, so omit it fail-soft.
-                None,
-                Arc::clone(&snapshot.callable_summaries),
-                Arc::clone(&snapshot.call_graph),
-                true,
-                false,
-            )
-        } else {
-            let project = Arc::new(validate_single_unit(local.unit.clone()));
-            let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
-            let static_analysis = Arc::new(build_project_static_analysis_summary(
-                project.as_ref(),
-                routine_analysis.as_ref(),
-            ));
-            let call_graph = Arc::new(call_graph::build_project_call_graph(
-                project.as_ref(),
-                std::slice::from_ref(&local.scope_index),
-            ));
-            let callable_summaries =
-                Arc::new(callable_summary::build_project_callable_summary_analysis(
-                    project.as_ref(),
-                    routine_analysis.as_ref(),
-                    call_graph.as_ref(),
-                ));
-            (
-                project,
-                routine_analysis,
-                Some(static_analysis),
-                callable_summaries,
-                call_graph,
-                false,
-                true,
-            )
-        };
-        let snapshot = preview_snapshot_from_local(
-            &input,
-            parse,
-            local,
-            project,
-            routine_analysis,
-            static_analysis,
-            callable_summaries,
-            call_graph,
+            .map(|analysis| analysis.build_plan)
+            .unwrap_or(SnapshotBuildPlan::FULL);
+        let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
+        let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
+        let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
+        let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
+            &inputs,
+            Some(&existing),
+            analysis.as_ref(),
+            None,
+            &changed_uris,
+            force_full,
+            build_plan,
         );
+        let snapshot = rebuilt
+            .get(input.uri.as_ref())
+            .cloned()
+            .expect("preview snapshot should exist");
         *self.preview_metrics.write() = Some(PreviewMetrics {
-            parse_count,
-            local_phase_count,
+            parse_count: rebuilt_analysis.metrics.parse_count,
+            local_phase_count: rebuilt_analysis.metrics.local_phase_count,
             build_micros: started.elapsed().as_micros(),
-            committed_context_only,
-            fell_back_to_single_document,
+            committed_context_only: false,
+            fell_back_to_single_document: false,
         });
         snapshot
     }
@@ -12873,7 +12738,7 @@ START-OF-SELECTION.
             .expect("preview metrics");
         assert_eq!(preview_metrics.parse_count, 1);
         assert_eq!(preview_metrics.local_phase_count, 1);
-        assert!(preview_metrics.committed_context_only);
+        assert!(!preview_metrics.committed_context_only);
         assert!(!preview_metrics.fell_back_to_single_document);
         assert_eq!(preview.version, 2);
         assert!(preview.text.contains("rv_value = 2."));
@@ -12952,7 +12817,7 @@ START-OF-SELECTION.
             .expect("preview metrics");
         assert_eq!(preview_metrics.parse_count, 1);
         assert_eq!(preview_metrics.local_phase_count, 1);
-        assert!(preview_metrics.committed_context_only);
+        assert!(!preview_metrics.committed_context_only);
         assert!(!preview_metrics.fell_back_to_single_document);
         assert!(
             preview
@@ -12969,7 +12834,7 @@ START-OF-SELECTION.
     }
 
     #[test]
-    fn preview_committed_context_omits_static_analysis_summary() {
+    fn preview_rebuilds_static_analysis_summary() {
         let store = DocumentStore::default();
         let committed = "\
 CLASS zcl_demo DEFINITION.
@@ -13011,8 +12876,8 @@ ENDCLASS.",
             .last_preview_metrics_snapshot()
             .expect("preview metrics");
 
-        assert!(preview_metrics.committed_context_only);
-        assert!(preview.static_analysis().is_none());
+        assert!(!preview_metrics.committed_context_only);
+        assert!(preview.static_analysis().is_some());
     }
 
     #[test]

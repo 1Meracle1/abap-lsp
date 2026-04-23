@@ -4,25 +4,34 @@ pub(crate) mod sem_tokens;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use abap_cache::{
     CallableCompletionKind, DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
-    SnapshotBuildPlan, UNKNOWN_SYMBOL_MODE_REMOTE, WorkspaceDocument, WorkspaceManifest,
-    analysis_text_for_document, ddic_xml_to_abap_source, file_uri_to_path,
-    function_module_completion_items_from_source, is_remote_lookup_candidate,
-    is_remote_lookup_candidate_after_local_resolution,
+    SnapshotBuildPlan, WorkspaceDocument, WorkspaceManifest, analysis_text_for_document,
+    ddic_xml_to_abap_source, file_uri_to_path, function_module_completion_items_from_source,
+    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
     load_effective_manifest_from_workspace_result, load_workspace_documents_with_progress,
-    local_export_config_for_source, manifest_cache_dir, manifest_document_metadata,
+    local_export_config_for_source, manifest_document_metadata,
     manifest_supports_remote_resolution, path_to_file_uri,
     resolve_local_export_dependency_document,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
 };
+use abap_dependency_store::{
+    CandidateCacheStatus, DependencyProfile, DependencyStore, DependencyStoreReader,
+    StoredArtifactInput, StoredArtifactRecord, StoredSymbolInput,
+};
 use abap_parser::parse;
-use abap_symbols::{DiagnosticKind, ReferenceKind, SqlResolution, UnitId, analyze_unit};
+use abap_symbols::{
+    DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, SqlResolution, UnitId,
+    analyze_unit,
+};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CompletionItem,
     CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity, Documentation,
@@ -50,8 +59,11 @@ pub const REMOTE_DEPENDENCIES_UPDATED: &str = "abapls/remoteDependenciesUpdated"
 pub const WORKSPACE_MANIFEST_UPDATED: &str = "abapls/workspaceManifestUpdated";
 pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
+pub const STORE_REMOTE_DEPENDENCY_ARTIFACTS: &str = "abapls/storeRemoteDependencyArtifacts";
+pub const READ_DEPENDENCY_DOCUMENT: &str = "abapls/readDependencyDocument";
 const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
+const DEPENDENCY_DOCUMENT_SCHEME: &str = "abapls-cache";
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
@@ -60,6 +72,7 @@ pub struct ServerState {
     pub workspace_roots_desc: Vec<String>,
     pub document_workspace_index: HashMap<String, String>,
     pub client_capabilities: ClientCapabilitiesState,
+    pub dependency_store_path_override: Option<PathBuf>,
     pub shutdown_requested: bool,
 }
 
@@ -73,6 +86,8 @@ pub struct WorkspaceState {
     pub root_uri: String,
     pub cache: DocumentStore,
     pub preview_snapshots: HashMap<String, Arc<AnalysisSnapshot>>,
+    pub dependency_parent_uris: HashMap<String, HashSet<String>>,
+    pub dependency_batch_candidates: HashMap<String, CachedDependencyBatchCandidates>,
     pub local_export_resolver: Arc<Mutex<LocalExportResolver>>,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_uri: String,
@@ -82,6 +97,8 @@ pub struct WorkspaceState {
     pub remote_lookup_failures: HashSet<String>,
     pub remote_resolution_in_flight: bool,
     pub performance_mode: WorkspacePerformanceMode,
+    pub dependency_profile: Option<DependencyProfile>,
+    pub dependency_store_path_override: Option<PathBuf>,
 }
 
 impl Default for ServerState {
@@ -92,15 +109,41 @@ impl Default for ServerState {
             workspace_roots_desc: Vec::new(),
             document_workspace_index: HashMap::new(),
             client_capabilities: ClientCapabilitiesState::default(),
+            dependency_store_path_override: default_dependency_store_path_override(),
             shutdown_requested: false,
         }
     }
+}
+
+#[cfg(test)]
+fn default_dependency_store_path_override() -> Option<PathBuf> {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "abap_lsp_test_dependency_store_{}_{}.sqlite3",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    Some(path)
+}
+
+#[cfg(not(test))]
+fn default_dependency_store_path_override() -> Option<PathBuf> {
+    None
 }
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub name: &'static str,
     pub version: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedDependencyBatchCandidates {
+    pub text_len: usize,
+    pub text_hash: u64,
+    pub object_name: Option<Arc<str>>,
+    pub candidates: Vec<RemoteDependencyCandidate>,
 }
 
 impl Default for ServerConfig {
@@ -118,6 +161,8 @@ impl WorkspaceState {
             root_uri: root_uri.into(),
             cache: DocumentStore::default(),
             preview_snapshots: HashMap::new(),
+            dependency_parent_uris: HashMap::new(),
+            dependency_batch_candidates: HashMap::new(),
             local_export_resolver: Arc::new(Mutex::new(LocalExportResolver::default())),
             manifest: None,
             manifest_uri: String::new(),
@@ -127,12 +172,70 @@ impl WorkspaceState {
             remote_lookup_failures: HashSet::new(),
             remote_resolution_in_flight: false,
             performance_mode: WorkspacePerformanceMode::FullWorkspace,
+            dependency_profile: None,
+            dependency_store_path_override: None,
         }
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyCacheInitializationOptions {
+    #[serde(rename = "dependencyCachePath", default)]
+    pub dependency_cache_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyArtifactPayload {
+    #[serde(rename = "packageName", default)]
+    pub package_name: String,
+    #[serde(rename = "objectKind", default)]
+    pub object_kind: String,
+    #[serde(rename = "objectName", default)]
+    pub object_name: String,
+    #[serde(rename = "objectUri", default)]
+    pub object_uri: String,
+    #[serde(rename = "objectType", default)]
+    pub object_type: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(rename = "fileExtension", default)]
+    pub file_extension: String,
+    #[serde(rename = "sourceText", default)]
+    pub source_text: String,
+    #[serde(rename = "fetchedAt", default)]
+    pub fetched_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreRemoteDependencyArtifactsParams {
+    #[serde(rename = "workspaceUri")]
+    pub workspace_uri: String,
+    #[serde(rename = "connectionKey", default)]
+    pub connection_key: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<DependencyArtifactPayload>,
+    #[serde(default)]
+    pub negative: Vec<RemoteDependencyCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadDependencyDocumentParams {
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadDependencyDocumentResult {
+    #[serde(rename = "sourceText")]
+    pub source_text: String,
+}
+
 fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        workspace.dependency_profile = None;
+        workspace.performance_mode = WorkspacePerformanceMode::FullWorkspace;
+        workspace.manifest_uri.clear();
+        workspace.manifest = None;
+        workspace.manifest_error = None;
         return;
     };
     let manifest_uri = path_to_file_uri(&root_path.join("abapls.toml"));
@@ -148,6 +251,9 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
         Ok(manifest) => {
             workspace.performance_mode =
                 resolve_workspace_performance_mode(manifest.as_ref(), manifest_len_bytes);
+            workspace.dependency_profile = manifest
+                .as_ref()
+                .and_then(|manifest| manifest.dependency_store.clone());
             workspace.manifest_uri = manifest
                 .as_ref()
                 .map(|_| manifest_uri.clone())
@@ -156,6 +262,7 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
             workspace.manifest_error = None;
         }
         Err(error) => {
+            workspace.dependency_profile = None;
             workspace.performance_mode = WorkspacePerformanceMode::FullWorkspace;
             workspace.manifest_uri = manifest_uri;
             workspace.manifest = None;
@@ -167,8 +274,10 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
 impl ServerState {
     pub fn register_workspace_folder(&mut self, root_uri: impl Into<String>) {
         let root_uri = normalize_lsp_uri(&root_uri.into());
+        let dependency_store_path_override = self.dependency_store_path_override.clone();
         self.workspaces.entry(root_uri.clone()).or_insert_with(|| {
             let mut workspace = WorkspaceState::new(root_uri.clone());
+            workspace.dependency_store_path_override = dependency_store_path_override;
             prime_workspace_manifest_state(&mut workspace);
             workspace
         });
@@ -242,13 +351,13 @@ impl ServerState {
     fn workspace_key_for_uri(&self, uri: &str) -> Option<&str> {
         if let Some(workspace_uri) = self.document_workspace_index.get(uri)
             && self.workspaces.contains_key(workspace_uri)
-            && uri_starts_with_workspace(uri, workspace_uri)
+            && uri_belongs_to_workspace(uri, workspace_uri)
         {
             return Some(workspace_uri.as_str());
         }
 
         for workspace_uri in &self.workspace_roots_desc {
-            if uri_starts_with_workspace(uri, workspace_uri)
+            if uri_belongs_to_workspace(uri, workspace_uri)
                 && self.workspaces.contains_key(workspace_uri)
             {
                 return Some(workspace_uri.as_str());
@@ -257,7 +366,7 @@ impl ServerState {
 
         self.workspaces
             .values()
-            .filter(|workspace| uri_starts_with_workspace(uri, &workspace.root_uri))
+            .filter(|workspace| uri_belongs_to_workspace(uri, &workspace.root_uri))
             .max_by_key(|workspace| workspace.root_uri.len())
             .map(|workspace| workspace.root_uri.as_str())
     }
@@ -277,8 +386,6 @@ pub struct RemoteDependencyResolveParams {
     pub source_uri: String,
     #[serde(rename = "sourceUris", default)]
     pub source_uris: Vec<String>,
-    #[serde(rename = "unknownSymbolMode", default)]
-    pub unknown_symbol_mode: Option<String>,
     #[serde(rename = "remoteRequestParallelism", default)]
     pub remote_request_parallelism: Option<usize>,
     #[serde(rename = "remoteRequestsPerSecond", default)]
@@ -364,6 +471,301 @@ pub fn normalize_lsp_uri(raw: &str) -> String {
         return out;
     }
     raw.to_owned()
+}
+
+fn uri_belongs_to_workspace(uri: &str, workspace_uri: &str) -> bool {
+    if uri_starts_with_workspace(uri, workspace_uri) {
+        return true;
+    }
+    dependency_document_workspace_uri(uri).is_some_and(|document_workspace_uri| {
+        document_workspace_uri == normalize_lsp_uri(workspace_uri)
+    })
+}
+
+fn is_dependency_document_uri(uri: &str) -> bool {
+    uri.to_ascii_lowercase()
+        .starts_with(&format!("{DEPENDENCY_DOCUMENT_SCHEME}:"))
+}
+
+fn dependency_document_uri(workspace_uri: &str, artifact_id: i64, object_name: &str) -> String {
+    format!(
+        "{DEPENDENCY_DOCUMENT_SCHEME}:///{name}.abap?workspace={workspace}&artifact={artifact_id}",
+        name = encode_uri_component(object_name),
+        workspace = encode_uri_component(&normalize_lsp_uri(workspace_uri)),
+    )
+}
+
+fn dependency_document_workspace_uri(uri: &str) -> Option<String> {
+    dependency_document_query_param(uri, "workspace")
+        .map(|workspace_uri| normalize_lsp_uri(&workspace_uri))
+}
+
+fn dependency_document_artifact_id(uri: &str) -> Option<i64> {
+    dependency_document_query_param(uri, "artifact")?
+        .parse::<i64>()
+        .ok()
+}
+
+fn dependency_document_query_param(uri: &str, key: &str) -> Option<String> {
+    let query = uri.split_once('?')?.1;
+    dependency_document_query_param_from_pairs(query, key).or_else(|| {
+        decode_uri_component(query)
+            .and_then(|decoded| dependency_document_query_param_from_pairs(&decoded, key))
+    })
+}
+
+fn dependency_document_query_param_from_pairs(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        let (candidate_key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if candidate_key == key {
+            return decode_uri_component(value).or_else(|| Some(value.to_string()));
+        }
+    }
+    None
+}
+
+fn encode_uri_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(hex_digit(byte >> 4));
+            out.push(hex_digit(byte & 0x0f));
+        }
+    }
+    out
+}
+
+fn decode_uri_component(value: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'%' if idx + 2 < bytes.len() => {
+                let high = from_hex_digit(bytes[idx + 1])?;
+                let low = from_hex_digit(bytes[idx + 2])?;
+                out.push((high << 4) | low);
+                idx += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                idx += 1;
+            }
+            byte => {
+                out.push(byte);
+                idx += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn from_hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn workspace_dependency_store(workspace: &WorkspaceState) -> Option<DependencyStore> {
+    DependencyStore::from_override_path(workspace.dependency_store_path_override.as_deref()).ok()
+}
+
+fn workspace_dependency_profile(workspace: &WorkspaceState) -> Option<DependencyProfile> {
+    workspace.dependency_profile.clone()
+}
+
+fn workspace_supports_dependency_store_resolution(workspace: &WorkspaceState) -> bool {
+    manifest_supports_remote_resolution(workspace.manifest.as_ref())
+        && workspace.dependency_profile.is_some()
+        && workspace_dependency_store(workspace).is_some()
+}
+
+fn workspace_dependency_connection_key(workspace: &WorkspaceState) -> String {
+    workspace
+        .manifest
+        .as_ref()
+        .map(|manifest| manifest.connection.trim().to_ascii_lowercase())
+        .filter(|connection| !connection.is_empty())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn dependency_artifact_for_uri(
+    workspace: &WorkspaceState,
+    uri: &str,
+) -> Option<StoredArtifactRecord> {
+    let artifact_id = dependency_document_artifact_id(uri)?;
+    let store = workspace_dependency_store(workspace)?;
+    store.read_artifact_source(artifact_id).ok().flatten()
+}
+
+fn dependency_document_input_from_record(
+    workspace_uri: &str,
+    version: i32,
+    record: &StoredArtifactRecord,
+    is_dependency: bool,
+) -> DocumentInput {
+    DocumentInput {
+        uri: Arc::from(dependency_document_uri(
+            workspace_uri,
+            record.artifact_id,
+            record.object_name.as_str(),
+        )),
+        version,
+        text: Arc::from(record.source_text.as_str()),
+        is_dependency,
+        object_name: Some(Arc::from(record.object_name.as_str())),
+    }
+}
+
+fn dependency_document_input_from_payload(
+    workspace_uri: &str,
+    artifact_id: i64,
+    record: &StoredArtifactInput,
+) -> DocumentInput {
+    DocumentInput {
+        uri: Arc::from(dependency_document_uri(
+            workspace_uri,
+            artifact_id,
+            record.object_name.as_str(),
+        )),
+        version: 0,
+        text: Arc::from(record.source_text.as_str()),
+        is_dependency: true,
+        object_name: Some(Arc::from(record.object_name.as_str())),
+    }
+}
+
+fn workspace_dependency_document_input(
+    workspace: &WorkspaceState,
+    record: &StoredArtifactRecord,
+) -> DocumentInput {
+    let uri = dependency_document_uri(
+        &workspace.root_uri,
+        record.artifact_id,
+        record.object_name.as_str(),
+    );
+    if let Some(overlay) = workspace.open_documents.get(&uri) {
+        return DocumentInput {
+            uri: Arc::from(uri),
+            version: overlay.version,
+            text: Arc::clone(&overlay.text),
+            is_dependency: false,
+            object_name: Some(Arc::from(record.object_name.as_str())),
+        };
+    }
+    dependency_document_input_from_record(&workspace.root_uri, 0, record, true)
+}
+
+fn dependency_workspace_for_uri<'a>(
+    state: &'a ServerState,
+    uri: &str,
+) -> Option<&'a WorkspaceState> {
+    dependency_document_workspace_uri(uri)
+        .and_then(|workspace_uri| state.workspaces.get(&workspace_uri))
+        .or_else(|| state.workspace_for_uri(uri))
+}
+
+fn dependency_document_input(
+    workspace: &WorkspaceState,
+    uri: &str,
+    version: i32,
+    text: &str,
+) -> Option<DocumentInput> {
+    let artifact = dependency_artifact_for_uri(workspace, uri)?;
+    Some(DocumentInput {
+        uri: Arc::from(uri),
+        version,
+        text: if workspace.open_documents.contains_key(uri) {
+            Arc::from(text)
+        } else {
+            Arc::from(artifact.source_text)
+        },
+        is_dependency: !workspace.open_documents.contains_key(uri),
+        object_name: Some(Arc::from(artifact.object_name)),
+    })
+}
+
+fn record_dependency_parent_uri(
+    workspace: &mut WorkspaceState,
+    dependency_uri: &str,
+    parent_uri: &str,
+) {
+    let dependency_uri = normalize_lsp_uri(dependency_uri);
+    let parent_uri = normalize_lsp_uri(parent_uri);
+    if dependency_uri == parent_uri {
+        return;
+    }
+    workspace
+        .dependency_parent_uris
+        .entry(dependency_uri)
+        .or_default()
+        .insert(parent_uri);
+}
+
+fn record_fetched_dependency_parent_uris(
+    workspace: &mut WorkspaceState,
+    fetched_names: &[String],
+    source_uris: &[String],
+) {
+    if fetched_names.is_empty() || source_uris.is_empty() {
+        return;
+    }
+    let normalized_sources = source_uris
+        .iter()
+        .map(|uri| normalize_lsp_uri(uri))
+        .collect::<Vec<_>>();
+    let fetched_names = fetched_names
+        .iter()
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect::<HashSet<_>>();
+    if fetched_names.is_empty() {
+        return;
+    }
+
+    let dependency_uris = workspace
+        .cache
+        .uris()
+        .into_iter()
+        .filter_map(|uri| {
+            if !is_dependency_document_uri(uri.as_ref()) {
+                return None;
+            }
+            let snapshot = workspace.cache.get(uri.as_ref())?;
+            let object_name = snapshot.object_name.as_ref()?;
+            fetched_names
+                .contains(&object_name.trim().to_ascii_lowercase())
+                .then(|| uri.to_string())
+        })
+        .collect::<Vec<_>>();
+
+    for dependency_uri in dependency_uris {
+        for source_uri in &normalized_sources {
+            record_dependency_parent_uri(workspace, &dependency_uri, source_uri);
+        }
+    }
+}
+
+fn dependency_document_snapshot_from_record(
+    uri: &str,
+    record: &StoredArtifactRecord,
+) -> Arc<AnalysisSnapshot> {
+    DocumentStore::default().publish_input_with_build_plan(
+        DocumentInput {
+            uri: Arc::from(uri),
+            version: 0,
+            text: Arc::from(record.source_text.as_str()),
+            is_dependency: true,
+            object_name: Some(Arc::from(record.object_name.as_str())),
+        },
+        SnapshotBuildPlan::EDITOR_WORKSPACE,
+    )
 }
 
 fn cache_for_uri<'a>(state: &'a ServerState, uri: &str) -> &'a DocumentStore {
@@ -785,12 +1187,8 @@ fn remote_dependency_source_context_uris(
     source_uri: &str,
 ) -> Vec<String> {
     let source_uri = normalize_lsp_uri(source_uri);
-    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
-        return vec![source_uri];
-    };
-    let Some(manifest) = workspace.manifest.as_ref() else {
-        return vec![source_uri];
-    };
+    let root_path = file_uri_to_path(&workspace.root_uri);
+    let manifest = workspace.manifest.as_ref();
 
     let mut out = Vec::new();
     let mut seen = HashSet::new();
@@ -800,11 +1198,16 @@ fn remote_dependency_source_context_uris(
             continue;
         }
         out.push(current_uri.clone());
-        queue.extend(remote_dependency_manifest_parent_uris(
-            manifest,
-            &root_path,
-            &current_uri,
-        ));
+        if let (Some(manifest), Some(root_path)) = (manifest, root_path.as_deref()) {
+            queue.extend(remote_dependency_manifest_parent_uris(
+                manifest,
+                root_path,
+                &current_uri,
+            ));
+        }
+        if let Some(parents) = workspace.dependency_parent_uris.get(&current_uri) {
+            queue.extend(parents.iter().cloned());
+        }
     }
     out
 }
@@ -890,8 +1293,98 @@ fn refresh_workspace_inputs_with_progress(
         .collect()
 }
 
+fn open_dependency_document_inputs(workspace: &WorkspaceState) -> Vec<DocumentInput> {
+    workspace
+        .open_documents
+        .iter()
+        .filter_map(|(uri, overlay)| {
+            is_dependency_document_uri(uri).then(|| {
+                dependency_document_input(workspace, uri, overlay.version, overlay.text.as_ref())
+            })
+        })
+        .flatten()
+        .collect()
+}
+
 fn workspace_committed_build_plan(_workspace: &WorkspaceState) -> SnapshotBuildPlan {
     SnapshotBuildPlan::EDITOR_WORKSPACE
+}
+
+fn hydrate_workspace_dependency_documents(
+    workspace: &mut WorkspaceState,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    if !workspace_supports_dependency_store_resolution(workspace) {
+        return HashMap::new();
+    }
+    let Some(profile) = workspace_dependency_profile(workspace) else {
+        return HashMap::new();
+    };
+    let Some(store) = workspace_dependency_store(workspace) else {
+        return HashMap::new();
+    };
+    let Some(reader) = store.reader().ok() else {
+        return HashMap::new();
+    };
+
+    let build_plan = workspace_committed_build_plan(workspace);
+    let mut queried_candidates = HashSet::<String>::new();
+    let mut hydrated = HashMap::new();
+
+    loop {
+        let mut inputs = Vec::<DocumentInput>::new();
+        let mut input_uris = HashSet::<String>::new();
+
+        let cache_uris = workspace.cache.uris();
+        for uri in cache_uris {
+            let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+                continue;
+            };
+            let snapshot = Arc::clone(&snapshot);
+            if snapshot.is_dependency && !workspace.open_documents.contains_key(uri.as_ref()) {
+                continue;
+            }
+
+            for candidate in collect_remote_dependency_candidates_for_batch(
+                workspace,
+                snapshot.as_ref(),
+                uri.as_ref(),
+            ) {
+                let candidate_key = remote_candidate_key(&candidate);
+                if !queried_candidates.insert(candidate_key) {
+                    continue;
+                }
+                let Some(record) = reader
+                    .find_artifact_for_candidate(
+                        &profile,
+                        candidate.name.as_str(),
+                        candidate.kind.as_str(),
+                    )
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+                let input = workspace_dependency_document_input(workspace, &record);
+                record_dependency_parent_uri(workspace, input.uri.as_ref(), uri.as_ref());
+                if workspace.cache.get(input.uri.as_ref()).is_some()
+                    || !input_uris.insert(input.uri.to_string())
+                {
+                    continue;
+                }
+                inputs.push(input);
+            }
+        }
+
+        if inputs.is_empty() {
+            break;
+        }
+
+        hydrated = workspace
+            .cache
+            .publish_inputs_with_build_plan(inputs, build_plan);
+    }
+
+    hydrated
 }
 
 fn rebuild_workspace_cache_with_progress(
@@ -909,12 +1402,18 @@ fn rebuild_workspace_cache_with_progress(
     );
     workspace.performance_mode =
         resolve_workspace_performance_mode(loaded.manifest.as_ref(), loaded.manifest_len_bytes);
+    workspace.dependency_profile = loaded
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest.dependency_store.clone());
     workspace.manifest = loaded.manifest.clone();
     workspace.manifest_uri = loaded.manifest_uri.to_string();
     workspace.manifest_error = loaded.manifest_error.clone();
+    workspace.dependency_parent_uris.clear();
+    workspace.dependency_batch_candidates.clear();
     let documents = loaded.documents;
     let build_plan = workspace_committed_build_plan(workspace);
-    if let Some(progress) = progress {
+    let mut snapshots = if let Some(progress) = progress {
         let stage_count = documents.len();
         let analysis_progress = |processed: usize, _total: usize| {
             progress(
@@ -937,36 +1436,30 @@ fn rebuild_workspace_cache_with_progress(
             build_plan,
             None,
         )
+    };
+    let open_dependency_inputs = open_dependency_document_inputs(workspace);
+    if !open_dependency_inputs.is_empty() {
+        snapshots.extend(
+            workspace
+                .cache
+                .publish_inputs_with_build_plan(open_dependency_inputs, build_plan),
+        );
     }
+    let hydrated = hydrate_workspace_dependency_documents(workspace);
+    if !hydrated.is_empty() {
+        snapshots.extend(hydrated);
+    }
+    snapshots
 }
 
 fn uri_is_manifest_dependency(workspace: &WorkspaceState, uri: &str) -> bool {
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
         return false;
     };
-    if workspace.manifest.as_ref().is_some_and(|manifest| {
+    workspace.manifest.as_ref().is_some_and(|manifest| {
         manifest_document_metadata(&root_path, &workspace.root_uri, manifest, uri)
             .is_some_and(|(is_dependency, _)| is_dependency)
-    }) {
-        return true;
-    }
-
-    let relative = file_uri_to_path(uri)
-        .map(|path| abap_cache::workspace_relative_path(&root_path, &path))
-        .unwrap_or_default();
-    let cache_dir = manifest_cache_dir(workspace.manifest.as_ref());
-    let normalized_cache_dir = cache_dir.trim().trim_matches('/').replace('\\', "/");
-    let package_prefix = if normalized_cache_dir.is_empty() {
-        "packages/".to_string()
-    } else {
-        format!("{normalized_cache_dir}/packages/")
-    };
-    let dependency_prefix = if normalized_cache_dir.is_empty() {
-        "dependencies/".to_string()
-    } else {
-        format!("{normalized_cache_dir}/dependencies/")
-    };
-    relative.starts_with(&package_prefix) || relative.starts_with(&dependency_prefix)
+    })
 }
 
 pub fn stage_workspace_preview_snapshot(
@@ -1019,6 +1512,10 @@ fn incremental_workspace_document_input(
     version: i32,
     text: &str,
 ) -> Option<DocumentInput> {
+    if is_dependency_document_uri(uri) {
+        return dependency_document_input(workspace, uri, version, text);
+    }
+
     if !uri.ends_with(".abap") {
         return None;
     }
@@ -1074,28 +1571,26 @@ pub fn workspace_manifest_diagnostics_params(
         return None;
     }
 
-    let diagnostics = workspace
-        .manifest_error
-        .as_ref()
-        .map(|message| {
-            vec![Diagnostic {
-                range: Range {
-                    start: Position::new(0, 0),
-                    end: Position::new(0, 1),
-                },
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: None,
-                code_description: None,
-                source: Some("abap-lsp".to_string()),
-                message: format!(
-                    "{message}. Manifest loading failed; workspace dependency resolution is disabled until abapls.toml is fixed."
-                ),
-                related_information: None,
-                tags: None,
-                data: None,
-            }]
-        })
-        .unwrap_or_default();
+    let diagnostics = if let Some(message) = workspace.manifest_error.as_ref() {
+        vec![Diagnostic {
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 1),
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: Some("abap-lsp".to_string()),
+            message: format!(
+                "{message}. Manifest loading failed; workspace dependency resolution is disabled until abapls.toml is fixed."
+            ),
+            related_information: None,
+            tags: None,
+            data: None,
+        }]
+    } else {
+        Vec::new()
+    };
 
     Some(PublishDiagnosticsParams {
         uri: Uri::from_str(&workspace.manifest_uri).ok()?,
@@ -1146,6 +1641,7 @@ pub fn publish_open_document_mut_with_progress(
             .get(&uri)
             .filter(|snapshot| snapshot.text.as_ref() == params.text_document.text.as_str())
         {
+            let uses_local_exports = document_uses_local_exports(workspace, &uri);
             workspace.open_documents.insert(
                 uri.clone(),
                 OpenDocumentOverlay {
@@ -1163,15 +1659,10 @@ pub fn publish_open_document_mut_with_progress(
                         .expect("opened manifest dependency should exist after rebuild"),
                     true,
                 ))
-            } else if document_uses_local_exports(workspace, &uri) {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                Some((
-                    workspace_uri,
-                    snapshots.get(uri.as_str()).cloned().expect(
-                        "opened workspace document should exist after local export rebuild",
-                    ),
-                    true,
-                ))
+            } else if uses_local_exports {
+                let snapshot = snapshot_with_version(&current, params.text_document.version);
+                workspace.cache.insert_snapshot(Arc::clone(&snapshot));
+                Some((workspace_uri, snapshot, false))
             } else if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
@@ -1297,6 +1788,7 @@ pub fn publish_changed_document_mut_with_progress(
             .get(&uri)
             .filter(|snapshot| snapshot.text.as_ref() == change.text.as_str())
         {
+            let uses_local_exports = document_uses_local_exports(workspace, &uri);
             workspace.open_documents.insert(
                 uri.clone(),
                 OpenDocumentOverlay {
@@ -1304,9 +1796,10 @@ pub fn publish_changed_document_mut_with_progress(
                     text: Arc::from(change.text.as_str()),
                 },
             );
-            if document_uses_local_exports(workspace, &uri) {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
+            if uses_local_exports {
+                let snapshot = snapshot_with_version(&current, params.text_document.version);
+                workspace.cache.insert_snapshot(Arc::clone(&snapshot));
+                Some((workspace_uri, Some(snapshot), false))
             } else if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
@@ -1431,6 +1924,11 @@ pub fn handle_dependency_cache_cleared_with_progress(
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
+        if let Some(store) = workspace_dependency_store(workspace) {
+            if let Some(profile) = workspace_dependency_profile(workspace) {
+                let _ = store.clear_profile_scope(&profile);
+            }
+        }
         workspace.remote_resolution_seen.clear();
         workspace.remote_lookup_failures.clear();
         workspace.remote_resolution_in_flight = false;
@@ -1445,6 +1943,241 @@ pub fn handle_remote_dependencies_updated(
     handle_remote_dependencies_updated_with_progress(state, params, None)
 }
 
+fn canonicalize_dependency_artifact_source(artifact: &DependencyArtifactPayload) -> String {
+    let kind = artifact.object_kind.trim().to_ascii_lowercase();
+    let file_extension = artifact.file_extension.trim().to_ascii_lowercase();
+    if file_extension == "xml" || kind == "message-class" || kind.starts_with("ddic-") {
+        ddic_xml_to_abap_source(
+            artifact.object_name.as_str(),
+            artifact.object_kind.as_str(),
+            artifact.source_text.as_str(),
+        )
+        .unwrap_or_else(|| artifact.source_text.clone())
+    } else {
+        artifact.source_text.clone()
+    }
+}
+
+fn stored_symbol_priority(kind: abap_symbols::SymbolKind) -> i64 {
+    match kind {
+        abap_symbols::SymbolKind::Class
+        | abap_symbols::SymbolKind::Interface
+        | abap_symbols::SymbolKind::Report
+        | abap_symbols::SymbolKind::Include
+        | abap_symbols::SymbolKind::Form
+        | abap_symbols::SymbolKind::TypeDef => 100,
+        abap_symbols::SymbolKind::Method
+        | abap_symbols::SymbolKind::Event
+        | abap_symbols::SymbolKind::Module => 90,
+        _ => 50,
+    }
+}
+
+fn should_index_dependency_symbol(
+    unit: &abap_symbols::UnitAnalysis,
+    symbol: &abap_symbols::SymbolData,
+) -> bool {
+    if symbol.scope != unit.root_scope {
+        return false;
+    }
+    matches!(
+        symbol.kind,
+        abap_symbols::SymbolKind::Class
+            | abap_symbols::SymbolKind::Interface
+            | abap_symbols::SymbolKind::TypeDef
+            | abap_symbols::SymbolKind::Include
+            | abap_symbols::SymbolKind::Form
+            | abap_symbols::SymbolKind::Module
+            | abap_symbols::SymbolKind::Report
+            | abap_symbols::SymbolKind::Variable
+            | abap_symbols::SymbolKind::Constant
+            | abap_symbols::SymbolKind::Event
+    )
+}
+
+fn extract_stored_dependency_symbols(object_uri: &str, text: &str) -> Vec<StoredSymbolInput> {
+    let parsed = parse(text);
+    let unit = analyze_unit(Arc::<str>::from(object_uri), text, &parsed);
+    let mut out = Vec::<StoredSymbolInput>::new();
+    let mut seen = HashSet::<(String, usize, usize)>::new();
+
+    for symbol in &unit.symbols {
+        if !should_index_dependency_symbol(&unit, symbol) {
+            continue;
+        }
+        let symbol_name = symbol.name.trim().to_ascii_lowercase();
+        if symbol_name.is_empty() {
+            continue;
+        }
+        let key = (
+            symbol_name.clone(),
+            symbol.decl_range.start,
+            symbol.decl_range.end,
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(StoredSymbolInput {
+            symbol_name,
+            symbol_kind: format!("{:?}", symbol.kind).to_ascii_lowercase(),
+            range_start: symbol.decl_range.start,
+            range_end: symbol.decl_range.end,
+            priority: stored_symbol_priority(symbol.kind),
+        });
+    }
+
+    for member in &unit.class_members {
+        if member.visibility == abap_symbols::Visibility::Private {
+            continue;
+        }
+        let symbol_name = member.name.trim().to_ascii_lowercase();
+        if symbol_name.is_empty() {
+            continue;
+        }
+        let key = (
+            symbol_name.clone(),
+            member.decl_range.start,
+            member.decl_range.end,
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(StoredSymbolInput {
+            symbol_name,
+            symbol_kind: "class-member".to_string(),
+            range_start: member.decl_range.start,
+            range_end: member.decl_range.end,
+            priority: 80,
+        });
+    }
+
+    for function_module in &unit.function_modules {
+        let symbol = unit.symbol(function_module.symbol);
+        let symbol_name = symbol.name.trim().to_ascii_lowercase();
+        if symbol_name.is_empty() {
+            continue;
+        }
+        let key = (
+            symbol_name.clone(),
+            symbol.decl_range.start,
+            symbol.decl_range.end,
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(StoredSymbolInput {
+            symbol_name,
+            symbol_kind: "function-module".to_string(),
+            range_start: symbol.decl_range.start,
+            range_end: symbol.decl_range.end,
+            priority: 100,
+        });
+    }
+
+    out
+}
+
+pub fn store_remote_dependency_artifacts(
+    state: &mut ServerState,
+    params: &StoreRemoteDependencyArtifactsParams,
+) -> Result<(), String> {
+    let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
+    let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
+        return Err(format!("unknown workspace: {}", params.workspace_uri));
+    };
+    let Some(profile) = workspace_dependency_profile(workspace) else {
+        return Err(
+            "dependency store profile is missing; configure [dependency_store] in abapls.toml"
+                .to_string(),
+        );
+    };
+    let Some(store) = workspace_dependency_store(workspace) else {
+        return Err("dependency store is unavailable".to_string());
+    };
+
+    let artifacts = params
+        .artifacts
+        .iter()
+        .map(|artifact| {
+            let source_text = canonicalize_dependency_artifact_source(artifact);
+            StoredArtifactInput {
+                package_name: artifact.package_name.clone(),
+                object_kind: artifact.object_kind.clone(),
+                object_name: artifact.object_name.clone(),
+                object_uri: artifact.object_uri.clone(),
+                object_type: artifact.object_type.clone(),
+                description: artifact.description.clone(),
+                file_extension: "abap".to_string(),
+                source_text: source_text.clone(),
+                fetched_at: artifact.fetched_at.clone(),
+                symbols: extract_stored_dependency_symbols(
+                    artifact.object_uri.as_str(),
+                    source_text.as_str(),
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    let artifact_ids = store
+        .put_artifacts(&profile, &artifacts)
+        .map_err(|error| error.to_string())?;
+
+    let connection_key = params
+        .connection_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| workspace_dependency_connection_key(workspace));
+    for candidate in &params.negative {
+        store
+            .record_negative_lookup(
+                &profile,
+                &connection_key,
+                candidate.name.as_str(),
+                candidate.kind.as_str(),
+                "remote-fetch-failed",
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    if !artifacts.is_empty() {
+        let inputs = artifact_ids
+            .into_iter()
+            .zip(artifacts.iter())
+            .map(|(artifact_id, artifact)| {
+                dependency_document_input_from_payload(&workspace.root_uri, artifact_id, artifact)
+            })
+            .collect::<Vec<_>>();
+        workspace
+            .cache
+            .publish_inputs_with_build_plan(inputs, workspace_committed_build_plan(workspace));
+        let _ = hydrate_workspace_dependency_documents(workspace);
+    }
+
+    let _ = workspace;
+    state.index_workspace_members(&workspace_uri);
+    Ok(())
+}
+
+pub fn read_dependency_document(
+    state: &ServerState,
+    params: &ReadDependencyDocumentParams,
+) -> Result<Option<ReadDependencyDocumentResult>, String> {
+    let uri = normalize_lsp_uri(&params.uri);
+    let Some(workspace) = dependency_workspace_for_uri(state, &uri) else {
+        return Err(format!(
+            "dependency document does not map to an active workspace: {uri}"
+        ));
+    };
+    let record = dependency_artifact_for_uri(workspace, &uri);
+    let Some(record) = record else {
+        return Err(format!("dependency artifact is missing for uri: {uri}"));
+    };
+    Ok(Some(ReadDependencyDocumentResult {
+        source_text: record.source_text,
+    }))
+}
+
 pub fn handle_remote_dependencies_updated_with_progress(
     state: &mut ServerState,
     params: &RemoteDependenciesUpdatedParams,
@@ -1456,6 +2189,12 @@ pub fn handle_remote_dependencies_updated_with_progress(
         workspace.remote_resolution_seen.clear();
         if !params.fetched.is_empty() {
             prime_workspace_manifest_state(workspace);
+            let source_uris = if params.source_uris.is_empty() {
+                vec![normalize_lsp_uri(&params.source_uri)]
+            } else {
+                params.source_uris.clone()
+            };
+            record_fetched_dependency_parent_uris(workspace, &params.fetched, &source_uris);
         }
         for name in &params.fetched {
             workspace
@@ -1487,12 +2226,12 @@ pub fn collect_remote_dependency_candidates(
 }
 
 fn collect_remote_dependency_candidates_for_request(
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     snapshot: &AnalysisSnapshot,
     source_uri: &str,
 ) -> Vec<RemoteDependencyCandidate> {
     if snapshot.is_dependency && workspace.open_documents.contains_key(source_uri) {
-        return collect_remote_dependency_candidates_for_workspace_batch(snapshot);
+        return cached_dependency_batch_candidates(workspace, snapshot);
     }
     if !snapshot.is_dependency && document_uses_local_exports(workspace, source_uri) {
         return collect_remote_dependency_candidates_for_local_export_chain(workspace, source_uri);
@@ -1501,14 +2240,14 @@ fn collect_remote_dependency_candidates_for_request(
 }
 
 fn collect_remote_dependency_candidates_for_batch(
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     snapshot: &AnalysisSnapshot,
     source_uri: &str,
 ) -> Vec<RemoteDependencyCandidate> {
     if snapshot.is_dependency {
         // Background dependency batches need the full dependency text so transitive
         // implementation refs are discovered even when the dependency file stays closed.
-        return collect_remote_dependency_candidates_for_workspace_batch(snapshot);
+        return cached_dependency_batch_candidates(workspace, snapshot);
     }
     if document_uses_local_exports(workspace, source_uri) {
         return collect_remote_dependency_candidates_for_local_export_chain(workspace, source_uri);
@@ -1820,6 +2559,39 @@ fn collect_remote_dependency_candidates_for_workspace_batch(
     collect_remote_dependency_candidates(full_snapshot.as_ref())
 }
 
+fn dependency_batch_candidate_fingerprint(text: &str) -> (usize, u64) {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    (text.len(), hasher.finish())
+}
+
+fn cached_dependency_batch_candidates(
+    workspace: &mut WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+) -> Vec<RemoteDependencyCandidate> {
+    let uri = snapshot.uri.to_string();
+    let (text_len, text_hash) = dependency_batch_candidate_fingerprint(snapshot.text.as_ref());
+    if let Some(cached) = workspace.dependency_batch_candidates.get(uri.as_str())
+        && cached.text_len == text_len
+        && cached.text_hash == text_hash
+        && cached.object_name == snapshot.object_name
+    {
+        return cached.candidates.clone();
+    }
+
+    let candidates = collect_remote_dependency_candidates_for_workspace_batch(snapshot);
+    workspace.dependency_batch_candidates.insert(
+        uri,
+        CachedDependencyBatchCandidates {
+            text_len,
+            text_hash,
+            object_name: snapshot.object_name.clone(),
+            candidates: candidates.clone(),
+        },
+    );
+    candidates
+}
+
 fn remote_dependency_batch_phase(
     workspace: &WorkspaceState,
     uri: &str,
@@ -1880,163 +2652,41 @@ fn remote_candidate_kind_priority(kind: &str) -> usize {
 }
 
 struct RemoteDependencyCacheContext {
-    dependencies_root: Option<PathBuf>,
-    manifest_declared_uris: HashSet<String>,
-    manifest_candidate_paths: HashMap<String, Vec<PathBuf>>,
+    dependency_reader: Option<DependencyStoreReader>,
+    dependency_profile: Option<DependencyProfile>,
+    connection_key: String,
 }
 
 impl RemoteDependencyCacheContext {
     fn new(workspace: &WorkspaceState) -> Self {
-        let root_path = file_uri_to_path(&workspace.root_uri);
-        let dependencies_root = root_path.as_ref().map(|root_path| {
-            root_path
-                .join(manifest_cache_dir(workspace.manifest.as_ref()))
-                .join("dependencies")
-        });
-        let (manifest_declared_uris, manifest_candidate_paths) = root_path
-            .as_ref()
-            .zip(workspace.manifest.as_ref())
-            .map(|(root_path, manifest)| {
-                let mut uris = HashSet::new();
-                let mut candidate_paths = HashMap::new();
-                for unit in &manifest.units {
-                    let mut unit_paths = Vec::new();
-                    if !unit.root_file.trim().is_empty() {
-                        let path =
-                            root_path.join(normalize_manifest_relative_path(&unit.root_file));
-                        uris.insert(path_to_file_uri(&path));
-                        unit_paths.push(path);
-                    }
-                    for member in &unit.members {
-                        if !member.file.trim().is_empty() {
-                            let path =
-                                root_path.join(normalize_manifest_relative_path(&member.file));
-                            uris.insert(path_to_file_uri(&path));
-                            unit_paths.push(path);
-                        }
-                    }
-                    if !unit_paths.is_empty() {
-                        if !unit.name.trim().is_empty() {
-                            candidate_paths
-                                .entry(unit.name.trim().to_ascii_lowercase())
-                                .or_insert_with(Vec::new)
-                                .extend(unit_paths.iter().cloned());
-                        }
-                        for member in &unit.members {
-                            if !member.object_name.trim().is_empty() {
-                                candidate_paths
-                                    .entry(member.object_name.trim().to_ascii_lowercase())
-                                    .or_insert_with(Vec::new)
-                                    .extend(unit_paths.iter().cloned());
-                            }
-                        }
-                    }
-                }
-                for paths in candidate_paths.values_mut() {
-                    paths.sort();
-                    paths.dedup();
-                }
-                (uris, candidate_paths)
-            })
-            .unwrap_or_default();
         Self {
-            dependencies_root,
-            manifest_declared_uris,
-            manifest_candidate_paths,
+            dependency_reader: workspace_dependency_store(workspace)
+                .and_then(|store| store.reader().ok()),
+            dependency_profile: workspace_dependency_profile(workspace),
+            connection_key: workspace_dependency_connection_key(workspace),
         }
     }
-}
-
-fn normalize_manifest_relative_path(value: &str) -> String {
-    value
-        .trim()
-        .replace('\\', "/")
-        .trim_start_matches("./")
-        .to_string()
-}
-
-fn cached_remote_dependency_paths(
-    cache_context: &RemoteDependencyCacheContext,
-    candidate: &RemoteDependencyCandidate,
-) -> Vec<PathBuf> {
-    let Some(dependencies_root) = cache_context.dependencies_root.as_ref() else {
-        return Vec::new();
-    };
-    let encoded_name = encode_dependency_cache_name(candidate.name.as_str());
-
-    match candidate.kind.trim().to_ascii_lowercase().as_str() {
-        "include" => vec![
-            dependencies_root
-                .join("include")
-                .join(format!("{encoded_name}.abap")),
-        ],
-        "message-class" => {
-            vec![
-                dependencies_root
-                    .join("message-class")
-                    .join(format!("{encoded_name}.xml")),
-            ]
-        }
-        "function" => vec![
-            dependencies_root
-                .join("function-group")
-                .join(format!("{encoded_name}.abap")),
-        ],
-        "symbol" | "static" | "type" => vec![
-            dependencies_root
-                .join("global-class")
-                .join(format!("{encoded_name}.abap")),
-            dependencies_root
-                .join("global-interface")
-                .join(format!("{encoded_name}.abap")),
-            dependencies_root
-                .join("ddic-data-element")
-                .join(format!("{encoded_name}.xml")),
-            dependencies_root
-                .join("ddic-structure")
-                .join(format!("{encoded_name}.xml")),
-            dependencies_root
-                .join("ddic-table")
-                .join(format!("{encoded_name}.xml")),
-            dependencies_root
-                .join("ddic-table-type")
-                .join(format!("{encoded_name}.xml")),
-            dependencies_root
-                .join("ddic-view")
-                .join(format!("{encoded_name}.xml")),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn manifest_cached_remote_dependency_paths(
-    cache_context: &RemoteDependencyCacheContext,
-    candidate: &RemoteDependencyCandidate,
-) -> Vec<PathBuf> {
-    cache_context
-        .manifest_candidate_paths
-        .get(&candidate.name.trim().to_ascii_lowercase())
-        .cloned()
-        .unwrap_or_default()
 }
 
 fn has_cached_remote_dependency_candidate(
     cache_context: &RemoteDependencyCacheContext,
     candidate: &RemoteDependencyCandidate,
 ) -> bool {
-    let manifest_paths = manifest_cached_remote_dependency_paths(cache_context, candidate);
-    if !manifest_paths.is_empty() {
-        return manifest_paths.into_iter().any(|path| path.exists());
-    }
-
-    cached_remote_dependency_paths(cache_context, candidate)
-        .into_iter()
-        .any(|path| {
-            path.exists()
-                && cache_context
-                    .manifest_declared_uris
-                    .contains(&path_to_file_uri(&path))
+    cache_context
+        .dependency_reader
+        .as_ref()
+        .zip(cache_context.dependency_profile.as_ref())
+        .and_then(|(reader, profile)| {
+            reader
+                .find_cached_candidate(
+                    profile,
+                    &cache_context.connection_key,
+                    candidate.name.as_str(),
+                    candidate.kind.as_str(),
+                )
+                .ok()
         })
+        .is_some_and(|status| matches!(status, CandidateCacheStatus::Artifact))
 }
 
 struct RemoteDependencyMemo {
@@ -2062,7 +2712,7 @@ impl RemoteDependencyMemo {
 
     fn candidates_for_request(
         &mut self,
-        workspace: &WorkspaceState,
+        workspace: &mut WorkspaceState,
         snapshot: &AnalysisSnapshot,
         source_uri: &str,
     ) -> Vec<RemoteDependencyCandidate> {
@@ -2076,7 +2726,7 @@ impl RemoteDependencyMemo {
 
     fn candidates_for_batch(
         &mut self,
-        workspace: &WorkspaceState,
+        workspace: &mut WorkspaceState,
         snapshot: &AnalysisSnapshot,
         source_uri: &str,
     ) -> Vec<RemoteDependencyCandidate> {
@@ -2121,48 +2771,38 @@ impl RemoteDependencyMemo {
 
     fn has_persisted_negative_candidate(
         &mut self,
-        workspace: &WorkspaceState,
+        cache_context: &RemoteDependencyCacheContext,
         candidate: &RemoteDependencyCandidate,
     ) -> bool {
         let key = remote_candidate_key(candidate);
         if let Some(negative) = self.negative_candidate_presence.get(&key) {
             return *negative;
         }
-        let negative = has_persisted_negative_remote_dependency_candidate(workspace, candidate);
+        let negative = has_persisted_negative_remote_dependency_candidate(cache_context, candidate);
         self.negative_candidate_presence.insert(key, negative);
         negative
     }
 }
 
-fn persisted_negative_remote_dependency_marker_path(
-    workspace: &WorkspaceState,
-    candidate: &RemoteDependencyCandidate,
-) -> Option<PathBuf> {
-    let root_path = file_uri_to_path(&workspace.root_uri)?;
-    let encoded_name = encode_dependency_cache_name(&candidate.name);
-    if encoded_name.is_empty() {
-        return None;
-    }
-    let kind = candidate.kind.trim().to_ascii_lowercase();
-    let kind = if kind.is_empty() { "unknown" } else { &kind };
-    // The VS Code client currently persists negative markers under the default cache root
-    // independent of manifest cache_dir, so the server mirrors that location here.
-    Some(
-        root_path
-            .join(".abapls")
-            .join("cache")
-            .join("negative-dependencies")
-            .join(kind)
-            .join(format!("{encoded_name}.json")),
-    )
-}
-
 fn has_persisted_negative_remote_dependency_candidate(
-    workspace: &WorkspaceState,
+    cache_context: &RemoteDependencyCacheContext,
     candidate: &RemoteDependencyCandidate,
 ) -> bool {
-    persisted_negative_remote_dependency_marker_path(workspace, candidate)
-        .is_some_and(|path| path.exists())
+    cache_context
+        .dependency_reader
+        .as_ref()
+        .zip(cache_context.dependency_profile.as_ref())
+        .and_then(|(reader, profile)| {
+            reader
+                .find_cached_candidate(
+                    profile,
+                    &cache_context.connection_key,
+                    candidate.name.as_str(),
+                    candidate.kind.as_str(),
+                )
+                .ok()
+        })
+        .is_some_and(|status| matches!(status, CandidateCacheStatus::Negative))
 }
 
 fn build_remote_dependency_request_for_snapshot(
@@ -2172,80 +2812,55 @@ fn build_remote_dependency_request_for_snapshot(
     memo: &mut RemoteDependencyMemo,
     cache_context: &RemoteDependencyCacheContext,
 ) -> Option<RemoteDependencyResolveParams> {
-    if snapshot.parse.errors.is_empty() {
-        let mut candidates = Vec::new();
-        let source_uses_local_exports = memo.source_uses_local_exports(workspace, source_uri);
-        for candidate in memo.candidates_for_request(workspace, snapshot, source_uri) {
-            if memo.has_cached_candidate(cache_context, &candidate) {
-                continue;
-            }
-            if !source_uses_local_exports
-                && memo.has_persisted_negative_candidate(workspace, &candidate)
-            {
-                continue;
-            }
-            let key = remote_candidate_key(&candidate);
-            if workspace.remote_lookup_failures.contains(&key) {
-                continue;
-            }
-            if workspace.remote_resolution_seen.insert(key) {
-                candidates.push(candidate);
-            }
+    let mut candidates = Vec::new();
+    let source_uses_local_exports = memo.source_uses_local_exports(workspace, source_uri);
+    for candidate in memo.candidates_for_request(workspace, snapshot, source_uri) {
+        if memo.has_cached_candidate(cache_context, &candidate) {
+            continue;
         }
-        if !candidates.is_empty() {
-            let context_uris = memo.source_context_uris(workspace, source_uri);
-            let mut source_uris = Vec::new();
-            let mut source_uri_seen = HashSet::new();
-            let mut source_candidates = HashMap::new();
-            extend_remote_dependency_source_candidates(
-                &mut source_candidates,
-                &mut source_uris,
-                &mut source_uri_seen,
-                &context_uris,
-                &candidates,
-            );
-            return Some(RemoteDependencyResolveParams {
-                workspace_uri: workspace.root_uri.clone(),
-                source_uri: source_uri.to_owned(),
-                source_uris,
-                unknown_symbol_mode: workspace
-                    .manifest
-                    .as_ref()
-                    .map(|manifest| manifest.resolution.unknown_symbol_mode.clone())
-                    .or(Some(UNKNOWN_SYMBOL_MODE_REMOTE.to_string())),
-                remote_request_parallelism: workspace
-                    .manifest
-                    .as_ref()
-                    .and_then(|manifest| manifest.resolution.remote_request_parallelism()),
-                remote_requests_per_second: workspace
-                    .manifest
-                    .as_ref()
-                    .map(|manifest| manifest.resolution.remote_requests_per_second),
-                source_candidates,
-                candidates,
-            });
-        }
-    }
-    None
-}
-
-fn encode_dependency_cache_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for byte in name.trim().to_ascii_uppercase().bytes() {
-        if byte.is_ascii_alphanumeric()
-            || matches!(
-                byte,
-                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-            )
+        if !source_uses_local_exports
+            && memo.has_persisted_negative_candidate(cache_context, &candidate)
         {
-            out.push(byte as char);
-        } else {
-            out.push('%');
-            out.push(hex_digit(byte >> 4));
-            out.push(hex_digit(byte & 0x0f));
+            continue;
+        }
+        let key = remote_candidate_key(&candidate);
+        if workspace.remote_lookup_failures.contains(&key) {
+            continue;
+        }
+        if workspace.remote_resolution_seen.insert(key) {
+            candidates.push(candidate);
         }
     }
-    out
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let context_uris = memo.source_context_uris(workspace, source_uri);
+    let mut source_uris = Vec::new();
+    let mut source_uri_seen = HashSet::new();
+    let mut source_candidates = HashMap::new();
+    extend_remote_dependency_source_candidates(
+        &mut source_candidates,
+        &mut source_uris,
+        &mut source_uri_seen,
+        &context_uris,
+        &candidates,
+    );
+    Some(RemoteDependencyResolveParams {
+        workspace_uri: workspace.root_uri.clone(),
+        source_uri: source_uri.to_owned(),
+        source_uris,
+        remote_request_parallelism: workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.resolution.remote_request_parallelism()),
+        remote_requests_per_second: workspace
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.resolution.remote_requests_per_second),
+        source_candidates,
+        candidates,
+    })
 }
 
 fn hex_digit(value: u8) -> char {
@@ -2262,10 +2877,11 @@ pub fn build_remote_dependency_request(
 ) -> Option<RemoteDependencyResolveParams> {
     let source_uri = normalize_lsp_uri(source_uri);
     let workspace = state.workspace_for_uri_mut(&source_uri)?;
-    if !manifest_supports_remote_resolution(workspace.manifest.as_ref()) {
+    if !workspace_supports_dependency_store_resolution(workspace) {
         return None;
     }
     let snapshot = workspace.cache.get(&source_uri)?;
+    let snapshot = Arc::clone(&snapshot);
     let cache_context = RemoteDependencyCacheContext::new(workspace);
     let mut memo = RemoteDependencyMemo::new();
     build_remote_dependency_request_for_snapshot(
@@ -2290,9 +2906,9 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
     source_uri_filter: Option<&HashSet<Arc<str>>>,
 ) -> Option<RemoteDependencyResolveParams> {
     let workspace_uri = normalize_lsp_uri(workspace_uri);
-    let workspace = state.workspaces.get(&workspace_uri)?;
+    let workspace = state.workspaces.get_mut(&workspace_uri)?;
     if workspace.remote_resolution_in_flight
-        || !manifest_supports_remote_resolution(workspace.manifest.as_ref())
+        || !workspace_supports_dependency_store_resolution(workspace)
     {
         return None;
     }
@@ -2323,11 +2939,6 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
     let mut selected_phase = None;
     let mut memo = RemoteDependencyMemo::new();
     let cache_context = RemoteDependencyCacheContext::new(workspace);
-    let unknown_symbol_mode = workspace
-        .manifest
-        .as_ref()
-        .map(|manifest| manifest.resolution.unknown_symbol_mode.clone())
-        .or(Some(UNKNOWN_SYMBOL_MODE_REMOTE.to_string()));
     let remote_request_parallelism = workspace
         .manifest
         .as_ref()
@@ -2345,9 +2956,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
-        if !snapshot.parse.errors.is_empty() {
-            continue;
-        }
+        let snapshot = Arc::clone(&snapshot);
 
         let mut added_for_uri = false;
         let mut uri_candidates = Vec::new();
@@ -2358,7 +2967,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
                 continue;
             }
             if !source_uses_local_exports
-                && memo.has_persisted_negative_candidate(workspace, &candidate)
+                && memo.has_persisted_negative_candidate(&cache_context, &candidate)
             {
                 continue;
             }
@@ -2397,7 +3006,6 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         return None;
     }
 
-    let workspace = state.workspaces.get_mut(&workspace_uri)?;
     for candidate in &candidates {
         workspace
             .remote_resolution_seen
@@ -2409,7 +3017,6 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         workspace_uri: workspace.root_uri.clone(),
         source_uri: source_uris.first().cloned().unwrap_or_default(),
         source_uris,
-        unknown_symbol_mode,
         remote_request_parallelism,
         remote_requests_per_second,
         source_candidates,
@@ -2433,7 +3040,7 @@ pub fn build_remote_dependency_requests_for_workspace(
     let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
         return Vec::new();
     };
-    if !manifest_supports_remote_resolution(workspace.manifest.as_ref()) {
+    if !workspace_supports_dependency_store_resolution(workspace) {
         return Vec::new();
     }
 
@@ -2444,6 +3051,7 @@ pub fn build_remote_dependency_requests_for_workspace(
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
+        let snapshot = Arc::clone(&snapshot);
         if let Some(request) = build_remote_dependency_request_for_snapshot(
             workspace,
             uri.as_ref(),
@@ -2622,7 +3230,7 @@ pub fn build_lsp_diagnostics_for_workspace(
 
         if severity == DiagnosticSeverity::ERROR
             && diagnostic.message.starts_with("unknown type '")
-            && manifest_supports_remote_resolution(workspace.manifest.as_ref())
+            && workspace_supports_dependency_store_resolution(workspace)
         {
             let Some(start) = diagnostic.message.find('\'') else {
                 continue;
@@ -2693,8 +3301,274 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     if let Some(sql_ref) = snapshot.hovered_sql_name_ref_at(offset) {
         return resolved_symbol_hover(&snapshot, sql_ref);
     }
-    let symbol = snapshot.hovered_resolved_symbol_at(offset)?;
-    resolved_symbol_hover(&snapshot, symbol)
+    if let Some(symbol) = snapshot.hovered_resolved_symbol_at(offset) {
+        return resolved_symbol_hover(&snapshot, symbol);
+    }
+    hover_from_dependency_store_method_call(state, &uri, snapshot.as_ref(), offset)
+}
+
+fn hover_from_dependency_store_method_call(
+    state: &ServerState,
+    source_uri: &str,
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<Hover> {
+    let (target_snapshot, target_range) =
+        dependency_method_target_at_offset(state, source_uri, snapshot, offset)?;
+    let hover_offset = target_range.start.saturating_add(1);
+    let symbol = target_snapshot.hovered_resolved_symbol_at(hover_offset)?;
+    resolved_symbol_hover(&target_snapshot, symbol)
+}
+
+fn remote_dependency_candidate_at_offset(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<RemoteDependencyCandidate> {
+    for edge in snapshot
+        .symbols
+        .include_edges
+        .iter()
+        .filter(|edge| edge.target.is_none())
+    {
+        if edge.range.start <= offset
+            && offset <= edge.range.end
+            && is_remote_lookup_candidate(edge.name.as_ref(), "include")
+        {
+            return Some(RemoteDependencyCandidate {
+                name: edge.name.to_string(),
+                kind: "include".to_string(),
+            });
+        }
+    }
+
+    if let Some(reference) = snapshot
+        .symbols
+        .semantic()
+        .refs()
+        .reference_at_offset(offset)
+        && reference.resolution.is_none()
+    {
+        let kind = match reference.kind {
+            ReferenceKind::Include => None,
+            ReferenceKind::StaticTarget => Some("static"),
+            ReferenceKind::TypeRef => Some("type"),
+            ReferenceKind::MessageClass => Some("message-class"),
+            ReferenceKind::RoutineCall
+                if reference.namespace == abap_symbols::Namespace::Routine =>
+            {
+                Some("function")
+            }
+            ReferenceKind::Identifier | ReferenceKind::RoutineCall => Some("symbol"),
+        }?;
+        let is_remote_candidate = match reference.kind {
+            ReferenceKind::StaticTarget | ReferenceKind::TypeRef => {
+                is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
+            }
+            ReferenceKind::RoutineCall
+                if reference.namespace == abap_symbols::Namespace::Routine =>
+            {
+                is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
+            }
+            _ => is_remote_lookup_candidate(reference.name.as_ref(), kind),
+        };
+        if is_remote_candidate {
+            return Some(RemoteDependencyCandidate {
+                name: reference.name.to_string(),
+                kind: kind.to_string(),
+            });
+        }
+    }
+
+    if let Some(sql_source) = snapshot.symbols.sql_sources.iter().find(|sql_source| {
+        sql_source.resolution == SqlResolution::External
+            && sql_source.range.start <= offset
+            && offset <= sql_source.range.end
+    }) && is_remote_lookup_candidate(sql_source.name.as_ref(), "type")
+    {
+        return Some(RemoteDependencyCandidate {
+            name: sql_source.name.to_string(),
+            kind: "type".to_string(),
+        });
+    }
+
+    for call_site in &snapshot.symbols.call_sites {
+        let candidate = match &call_site.target {
+            abap_symbols::NamedArgumentTarget::Function { function_name } => {
+                if !call_site_target_name_matches(snapshot, call_site, function_name, offset)
+                    || !is_remote_lookup_candidate_after_local_resolution(
+                        function_name.as_ref(),
+                        "function",
+                    )
+                {
+                    continue;
+                }
+                Some(RemoteDependencyCandidate {
+                    name: function_name.to_string(),
+                    kind: "function".to_string(),
+                })
+            }
+            abap_symbols::NamedArgumentTarget::Report { report_name } => {
+                if !call_site_target_name_matches(snapshot, call_site, report_name, offset)
+                    || !is_remote_lookup_candidate_after_local_resolution(
+                        report_name.as_ref(),
+                        "report",
+                    )
+                {
+                    continue;
+                }
+                Some(RemoteDependencyCandidate {
+                    name: report_name.to_string(),
+                    kind: "report".to_string(),
+                })
+            }
+            _ => None,
+        };
+        if let Some(candidate) = candidate {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn call_site_target_name_matches(
+    snapshot: &AnalysisSnapshot,
+    call_site: &abap_symbols::CallSiteData,
+    target_name: &Arc<str>,
+    offset: usize,
+) -> bool {
+    call_site_target_name_range(snapshot.text.as_ref(), call_site, target_name)
+        .is_some_and(|range| range.start <= offset && offset <= range.end)
+}
+
+fn call_site_target_name_range(
+    text: &str,
+    call_site: &abap_symbols::CallSiteData,
+    target_name: &Arc<str>,
+) -> Option<std::ops::Range<usize>> {
+    let call_text = text.get(call_site.range.clone())?;
+    let args_start = call_text.find('(')?;
+    let target_text = &call_text[..args_start];
+    let target_name = target_name.as_ref().to_ascii_lowercase();
+    let rel_start = target_text.to_ascii_lowercase().rfind(&target_name)?;
+    let start = call_site.range.start + rel_start;
+    let end = start + target_name.len();
+    Some(start..end)
+}
+
+fn definition_from_dependency_store(
+    state: &ServerState,
+    source_uri: &str,
+    candidate: &RemoteDependencyCandidate,
+) -> Option<GotoDefinitionResponse> {
+    let workspace = state.workspace_for_uri(source_uri)?;
+    let profile = workspace_dependency_profile(workspace)?;
+    let store = workspace_dependency_store(workspace)?;
+    let lookup = store
+        .lookup_symbol(&profile, candidate.name.as_str(), candidate.kind.as_str())
+        .ok()
+        .flatten()?;
+    let target_uri = dependency_document_uri(
+        &workspace.root_uri,
+        lookup.artifact_id,
+        lookup.object_name.as_str(),
+    );
+    let target_snapshot = match snapshot_for_uri(state, &target_uri) {
+        Some(snapshot) => snapshot,
+        None => {
+            let record = store
+                .read_artifact_source(lookup.artifact_id)
+                .ok()
+                .flatten()?;
+            dependency_document_snapshot_from_record(&target_uri, &record)
+        }
+    };
+    let uri: Uri = target_uri.parse().ok()?;
+    let range = byte_range_to_lsp_range_snapshot(
+        target_snapshot.as_ref(),
+        lookup.range_start..lookup.range_end,
+    )?;
+    Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+}
+
+fn definition_from_dependency_store_method_call(
+    state: &ServerState,
+    source_uri: &str,
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<GotoDefinitionResponse> {
+    let (target_snapshot, target_range) =
+        dependency_method_target_at_offset(state, source_uri, snapshot, offset)?;
+    let uri: Uri = target_snapshot.uri.as_ref().parse().ok()?;
+    let range = byte_range_to_lsp_range_snapshot(target_snapshot.as_ref(), target_range)?;
+    Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+}
+
+fn dependency_method_target_at_offset(
+    state: &ServerState,
+    source_uri: &str,
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<(Arc<AnalysisSnapshot>, std::ops::Range<usize>)> {
+    let workspace = state.workspace_for_uri(source_uri)?;
+    let profile = workspace_dependency_profile(workspace)?;
+    let store = workspace_dependency_store(workspace)?;
+
+    for call_site in &snapshot.symbols.call_sites {
+        let (base_name, method_name) = match &call_site.target {
+            NamedArgumentTarget::Method {
+                base_namespace,
+                base_name,
+                method_name,
+            } if *base_namespace == Namespace::Type => (base_name, method_name),
+            _ => continue,
+        };
+        let Some(range) =
+            call_site_target_name_range(snapshot.text.as_ref(), call_site, method_name)
+        else {
+            continue;
+        };
+        if !(range.start <= offset && offset < range.end) {
+            continue;
+        }
+        if !is_remote_lookup_candidate_after_local_resolution(base_name.as_ref(), "type") {
+            continue;
+        }
+
+        let owner_lookup = store
+            .lookup_symbol(&profile, base_name.as_ref(), "type")
+            .ok()
+            .flatten()?;
+        let target_uri = dependency_document_uri(
+            &workspace.root_uri,
+            owner_lookup.artifact_id,
+            owner_lookup.object_name.as_str(),
+        );
+        let target_snapshot = match snapshot_for_uri(state, &target_uri) {
+            Some(snapshot) => snapshot,
+            None => {
+                let record = store
+                    .read_artifact_source(owner_lookup.artifact_id)
+                    .ok()
+                    .flatten()?;
+                dependency_document_snapshot_from_record(&target_uri, &record)
+            }
+        };
+        let member_range = target_snapshot
+            .symbols
+            .class_members
+            .iter()
+            .find(|member| {
+                member
+                    .name
+                    .as_ref()
+                    .eq_ignore_ascii_case(method_name.as_ref())
+            })
+            .map(|member| member.decl_range.clone())?;
+        return Some((target_snapshot, member_range));
+    }
+
+    None
 }
 
 pub fn definition(
@@ -2711,7 +3585,15 @@ pub fn definition(
     let snapshot = snapshot_for_uri(state, &uri)?;
     let offset =
         position_to_offset_snapshot(&snapshot, params.text_document_position_params.position)?;
-    let target = snapshot.definition_at(offset)?;
+    let Some(target) = snapshot.definition_at(offset) else {
+        if let Some(definition) =
+            definition_from_dependency_store_method_call(state, &uri, snapshot.as_ref(), offset)
+        {
+            return Some(definition);
+        }
+        let candidate = remote_dependency_candidate_at_offset(snapshot.as_ref(), offset)?;
+        return definition_from_dependency_store(state, &uri, &candidate);
+    };
     let target_snapshot = if target.uri.as_ref() == snapshot.uri.as_ref() {
         Arc::clone(&snapshot)
     } else {
@@ -3464,7 +4346,7 @@ mod tests {
     use abap_cache::{DocumentStore, WorkspaceDocument, path_to_file_uri};
     use abap_symbols::DiagnosticKind;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3482,19 +4364,22 @@ mod tests {
 
     use super::{
         CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED,
-        DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, GotoDefinitionParams, HoverParams,
-        InlayHintParams, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams,
-        RenameParams, ServerState, WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams,
-        build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
-        build_remote_dependency_batch_for_workspace, build_remote_dependency_request,
-        build_remote_dependency_requests_for_workspace, code_actions,
-        collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
-        completion, definition, handle_dependency_cache_cleared,
+        DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, DependencyArtifactPayload,
+        GotoDefinitionParams, HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED,
+        RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams, ReferenceParams,
+        RemoteDependencyCandidate, RenameParams, ServerState, StoreRemoteDependencyArtifactsParams,
+        WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_lsp_diagnostics,
+        build_lsp_diagnostics_for_workspace, build_remote_dependency_batch_for_workspace,
+        build_remote_dependency_request, build_remote_dependency_requests_for_workspace,
+        code_actions, collect_local_export_dependency_candidates,
+        collect_remote_dependency_candidates, completion, definition, dependency_document_uri,
+        extract_stored_dependency_symbols, handle_dependency_cache_cleared,
         handle_remote_dependencies_updated, hover, initialize_result, inlay_hints,
         normalize_lsp_uri, offset_to_position, prepare_rename, publish_changed_document,
-        publish_changed_document_mut, publish_open_document, publish_open_document_mut, references,
-        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
-        stage_workspace_preview_snapshot,
+        publish_changed_document_mut, publish_open_document, publish_open_document_mut,
+        read_dependency_document, references, refresh_workspace, rename, semantic_tokens,
+        snapshot_for_uri, stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
+        workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -3505,6 +4390,55 @@ mod tests {
             .as_nanos();
         path.push(format!("abap_lsp_{name}_{unique}"));
         path
+    }
+
+    fn configure_test_dependency_store(state: &mut ServerState, workspace_path: &Path) {
+        state.dependency_store_path_override = Some(
+            workspace_path
+                .join(".abapls-central")
+                .join("dependency-cache.sqlite3"),
+        );
+    }
+
+    fn dependency_uri_for_object_name(
+        state: &ServerState,
+        workspace_uri: &str,
+        object_name: &str,
+    ) -> String {
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(workspace_uri))
+            .expect("workspace");
+        let normalized_name = object_name.trim().to_ascii_lowercase();
+        workspace
+            .cache
+            .uris()
+            .into_iter()
+            .find_map(|uri| {
+                workspace
+                    .cache
+                    .get(uri.as_ref())
+                    .filter(|snapshot| {
+                        snapshot
+                            .object_name
+                            .as_deref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&normalized_name))
+                    })
+                    .map(|_| uri.to_string())
+            })
+            .expect("dependency uri")
+    }
+
+    fn dependency_text_for_uri(state: &ServerState, uri: &str) -> String {
+        read_dependency_document(
+            state,
+            &ReadDependencyDocumentParams {
+                uri: uri.to_string(),
+            },
+        )
+        .expect("read dependency document")
+        .expect("dependency document")
+        .source_text
     }
 
     fn semantic_token_type_at(
@@ -4060,7 +4994,32 @@ ENDCLASS.";
         let source_uri = format!("{workspace_uri}/main.abap");
         let mut state = ServerState::default();
         state.register_workspace_folder(workspace_uri.clone());
-        refresh_workspace(&mut state, &workspace_uri);
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                fetched: vec!["ZCL_HELPER".to_string()],
+                failed: Vec::new(),
+            },
+        );
+        let _ = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+REPORT zreport_main.
+DATA lo_helper TYPE REF TO zcl_helper.
+lo_helper->
+"
+                    .to_string(),
+                },
+            },
+        );
 
         assert!(stage_workspace_preview_snapshot(
             &mut state,
@@ -4201,25 +5160,18 @@ SELECT rep_evtid,
      {
         let workspace_path = temp_workspace_path("workspace_bare_delete_where_ddic");
         fs::create_dir_all(workspace_path.join("src")).expect("src dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-structure"))
-            .expect("structure deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table"))
-            .expect("table deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table-type"))
-            .expect("table type deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependency-manifests"))
-            .expect("dependency manifest dir");
-
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 connection = "default"
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-cache_dir = ".abapls/cache"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZCL_MAIN"
@@ -4256,13 +5208,6 @@ ENDCLASS.\n";
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path
-                .join(".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml"),
-            include_xml,
-        )
-        .expect("include xml");
-
         let row_xml = r#"
 <abapsource:elementInfo adtcore:name="/sttp/dm_obj_itm"
     xmlns:abapsource="http://www.sap.com/adt/abapsource"
@@ -4274,12 +5219,6 @@ ENDCLASS.\n";
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path.join(".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml"),
-            row_xml,
-        )
-        .expect("row xml");
-
         let table_type_xml = r#"
 <abapsource:elementInfo adtcore:name="/sttp/t_dm_obj_itm"
     xmlns:abapsource="http://www.sap.com/adt/abapsource"
@@ -4291,40 +5230,74 @@ ENDCLASS.\n";
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path
-                .join(".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml"),
-            table_type_xml,
-        )
-        .expect("table type xml");
-        fs::write(
-            workspace_path.join(".abapls/cache/dependency-manifests/src%2FZCL_MAIN.abap.toml"),
-            r#"
-source_file = "src/ZCL_MAIN.abap"
-
-[[unit]]
-name = "/STTP/S_DM_OBJ_ITM"
-kind = "ddic-structure"
-root_file = ".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml"
-
-[[unit]]
-name = "/STTP/DM_OBJ_ITM"
-kind = "ddic-table"
-root_file = ".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml"
-
-[[unit]]
-name = "/STTP/T_DM_OBJ_ITM"
-kind = "ddic-table-type"
-root_file = ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml"
-"#,
-        )
-        .expect("dependency manifest");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
         let source_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("default".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "/STTP/S_DM_OBJ_ITM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/%2FSTTP%2FS_DM_OBJ_ITM"
+                            .to_string(),
+                        object_type: "TABL/DS".to_string(),
+                        description: "Structure".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: include_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-table".to_string(),
+                        object_name: "/STTP/DM_OBJ_ITM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tables/%2FSTTP%2FDM_OBJ_ITM".to_string(),
+                        object_type: "TABL/DT".to_string(),
+                        description: "Table".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: row_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "/STTP/T_DM_OBJ_ITM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/%2FSTTP%2FT_DM_OBJ_ITM"
+                            .to_string(),
+                        object_type: "TABL/TT".to_string(),
+                        description: "Table type".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: table_type_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store ddic artifacts");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                fetched: vec![
+                    "/STTP/S_DM_OBJ_ITM".to_string(),
+                    "/STTP/DM_OBJ_ITM".to_string(),
+                    "/STTP/T_DM_OBJ_ITM".to_string(),
+                ],
+                failed: Vec::new(),
+            },
+        );
 
         let snapshot =
             snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri)).expect("workspace snapshot");
@@ -4379,7 +5352,7 @@ root_file = ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.x
             panic!("expected scalar location");
         };
         assert!(
-            location.uri.as_str().contains("S_DM_OBJ_ITM.xml"),
+            location.uri.as_str().starts_with("abapls-cache:"),
             "unexpected definition uri: {:?}",
             location.uri
         );
@@ -4390,27 +5363,18 @@ root_file = ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.x
      {
         let workspace_path = temp_workspace_path("workspace_bare_where_inferred_ddic_field");
         fs::create_dir_all(workspace_path.join("src")).expect("src dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-data-element"))
-            .expect("data element deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-structure"))
-            .expect("structure deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table"))
-            .expect("table deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependencies/ddic-table-type"))
-            .expect("table type deps dir");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependency-manifests"))
-            .expect("dependency manifest dir");
-
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 connection = "default"
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-cache_dir = ".abapls/cache"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZCL_MAIN"
@@ -4441,12 +5405,6 @@ ENDCLASS.\n";
     xmlns:adtcore="http://www.sap.com/adt/core">
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path.join(".abapls/cache/dependencies/ddic-data-element/%2FSTTP%2FE_UOM.xml"),
-            data_element_xml,
-        )
-        .expect("data element xml");
-
         let include_xml = r#"
 <abapsource:elementInfo adtcore:name="/sttp/s_dm_obj_itm"
     xmlns:abapsource="http://www.sap.com/adt/abapsource"
@@ -4459,13 +5417,6 @@ ENDCLASS.\n";
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path
-                .join(".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml"),
-            include_xml,
-        )
-        .expect("include xml");
-
         let row_xml = r#"
 <abapsource:elementInfo adtcore:name="/sttp/dm_obj_itm"
     xmlns:abapsource="http://www.sap.com/adt/abapsource"
@@ -4477,12 +5428,6 @@ ENDCLASS.\n";
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path.join(".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml"),
-            row_xml,
-        )
-        .expect("row xml");
-
         let table_type_xml = r#"
 <abapsource:elementInfo adtcore:name="/sttp/t_dm_obj_itm"
     xmlns:abapsource="http://www.sap.com/adt/abapsource"
@@ -4494,45 +5439,86 @@ ENDCLASS.\n";
   </abapsource:elementInfo>
 </abapsource:elementInfo>
 "#;
-        fs::write(
-            workspace_path
-                .join(".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml"),
-            table_type_xml,
-        )
-        .expect("table type xml");
-        fs::write(
-            workspace_path.join(".abapls/cache/dependency-manifests/src%2FZCL_MAIN.abap.toml"),
-            r#"
-source_file = "src/ZCL_MAIN.abap"
-
-[[unit]]
-name = "/STTP/E_UOM"
-kind = "ddic-data-element"
-root_file = ".abapls/cache/dependencies/ddic-data-element/%2FSTTP%2FE_UOM.xml"
-
-[[unit]]
-name = "/STTP/S_DM_OBJ_ITM"
-kind = "ddic-structure"
-root_file = ".abapls/cache/dependencies/ddic-structure/%2FSTTP%2FS_DM_OBJ_ITM.xml"
-
-[[unit]]
-name = "/STTP/DM_OBJ_ITM"
-kind = "ddic-table"
-root_file = ".abapls/cache/dependencies/ddic-table/%2FSTTP%2FDM_OBJ_ITM.xml"
-
-[[unit]]
-name = "/STTP/T_DM_OBJ_ITM"
-kind = "ddic-table-type"
-root_file = ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.xml"
-"#,
-        )
-        .expect("dependency manifest");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
         let source_uri = format!("{workspace_uri}/src/ZCL_MAIN.abap");
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("default".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-data-element".to_string(),
+                        object_name: "/STTP/E_UOM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/dataelements/%2FSTTP%2FE_UOM".to_string(),
+                        object_type: "DTEL".to_string(),
+                        description: "Data element".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: data_element_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "/STTP/S_DM_OBJ_ITM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/%2FSTTP%2FS_DM_OBJ_ITM"
+                            .to_string(),
+                        object_type: "TABL/DS".to_string(),
+                        description: "Structure".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: include_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-table".to_string(),
+                        object_name: "/STTP/DM_OBJ_ITM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tables/%2FSTTP%2FDM_OBJ_ITM".to_string(),
+                        object_type: "TABL/DT".to_string(),
+                        description: "Table".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: row_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "STTP".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "/STTP/T_DM_OBJ_ITM".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/%2FSTTP%2FT_DM_OBJ_ITM"
+                            .to_string(),
+                        object_type: "TABL/TT".to_string(),
+                        description: "Table type".to_string(),
+                        file_extension: "xml".to_string(),
+                        source_text: table_type_xml.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store ddic artifacts");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                fetched: vec![
+                    "/STTP/E_UOM".to_string(),
+                    "/STTP/S_DM_OBJ_ITM".to_string(),
+                    "/STTP/DM_OBJ_ITM".to_string(),
+                    "/STTP/T_DM_OBJ_ITM".to_string(),
+                ],
+                failed: Vec::new(),
+            },
+        );
 
         let snapshot =
             snapshot_for_uri(&state, &normalize_lsp_uri(&source_uri)).expect("workspace snapshot");
@@ -4580,7 +5566,7 @@ root_file = ".abapls/cache/dependencies/ddic-table-type/%2FSTTP%2FT_DM_OBJ_ITM.x
             panic!("expected scalar location");
         };
         assert!(
-            location.uri.as_str().contains("E_UOM.xml"),
+            location.uri.as_str().starts_with("abapls-cache:"),
             "unexpected definition uri: {:?}",
             location.uri
         );
@@ -5344,7 +6330,11 @@ version = 1
 
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/reports/ZMAIN/ZMAIN.abap"
 "#,
         )
         .expect("manifest");
@@ -5368,6 +6358,68 @@ unknown_symbol_mode = "remote"
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .is_none()
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_resolution_requires_dependency_store_profile() {
+        let workspace_path = temp_workspace_path("missing_dependency_store_profile");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_remote TYPE REF TO zcl_remote_demo.".to_string(),
+                },
+            },
+        );
+
+        assert!(build_remote_dependency_request(&mut state, &source_uri).is_none());
+
+        let manifest_diagnostics = workspace_manifest_diagnostics_params(&state, &workspace_uri)
+            .expect("manifest diagnostics");
+        assert!(manifest_diagnostics.diagnostics.is_empty());
+
+        let error = store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_REMOTE_DEMO".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_remote_demo".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_remote_demo DEFINITION. ENDCLASS.".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect_err("missing dependency store profile should reject artifact writes");
+        assert!(error.contains("[dependency_store]"));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -5475,17 +6527,21 @@ unknown_symbol_mode = "remote"
     }
 
     #[test]
-    fn log_mode_still_builds_remote_dependency_requests() {
-        let workspace_path = temp_workspace_path("log_mode_candidates");
+    fn remote_dependency_request_still_builds_candidates_without_legacy_unknown_symbol_flag() {
+        let workspace_path =
+            temp_workspace_path("remote_candidates_without_legacy_unknown_symbol_flag");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "log"
 "#,
         )
         .expect("manifest");
@@ -5508,7 +6564,6 @@ unknown_symbol_mode = "log"
         let request =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
                 .expect("remote request");
-        assert_eq!(request.unknown_symbol_mode.as_deref(), Some("log"));
         assert!(
             request
                 .candidates
@@ -5528,9 +6583,12 @@ unknown_symbol_mode = "log"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 remote_request_parallelism = 6
 remote_requests_per_second = 12
 "#,
@@ -5575,9 +6633,12 @@ remote_requests_per_second = 12
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -5645,9 +6706,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -5730,9 +6794,12 @@ ENDCLASS.
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -5930,9 +6997,12 @@ START-OF-SELECTION.
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -6181,9 +7251,12 @@ ENDFUNCTION.",
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -6259,9 +7332,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -6318,9 +7394,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -6400,9 +7479,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -6476,9 +7558,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -6573,26 +7658,119 @@ root_file = "src/ZCL_MAIN.abap"
     }
 
     #[test]
-    fn opening_cached_dependency_file_keeps_dependency_surface_analysis() {
-        let workspace_path = temp_workspace_path("workspace_open_dependency_surface_analysis");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+    fn opening_unchanged_workspace_file_reuses_local_export_snapshot() {
+        let workspace_path = temp_workspace_path("workspace_local_export_open_unchanged");
+        let export_root = temp_workspace_path("workspace_local_export_open_unchanged_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("packages/ZFIC/ddic-data-element"))
+            .expect("export dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
-[[unit]]
-name = "ZCL_DEP"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
 "#,
         )
         .expect("manifest");
+        let source_text = "DATA lv_status TYPE zzf_status_code.\n";
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.\nINCLUDE zrep_top.\n",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            source_text,
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("packages/ZFIC/ddic-data-element/ZZF_STATUS_CODE.xml"),
+            r#"<?xml version="1.0" encoding="utf-8"?><dataElement />"#,
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let target_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_TOP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        let before = snapshot_for_uri(&state, &target_uri).expect("snapshot before open");
+
+        fs::remove_file(export_root.join("packages/ZFIC/ddic-data-element/ZZF_STATUS_CODE.xml"))
+            .expect("remove export");
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&target_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 2,
+                    text: source_text.to_string(),
+                },
+            },
+        );
+
+        assert!(Arc::ptr_eq(&before.project, &opened.project));
+        assert!(Arc::ptr_eq(&before.symbols, &opened.symbols));
+        assert!(
+            !opened
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("zzf_status_code")),
+            "{:#?}",
+            opened.symbols.diagnostics
+        );
+        assert!(
+            build_remote_dependency_request(&mut state, &target_uri).is_none(),
+            "unchanged open should reuse the local export-backed snapshot"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn opening_cached_dependency_file_keeps_dependency_surface_analysis() {
+        let workspace_path = temp_workspace_path("workspace_open_dependency_surface_analysis");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/ZMAIN.abap"),
+            "DATA lo_dep TYPE REF TO zcl_dep.\n",
+        )
+        .expect("source");
         let dependency_text = "\
 CLASS zcl_dep DEFINITION PUBLIC.
   PUBLIC SECTION.
@@ -6605,27 +7783,46 @@ CLASS zcl_dep IMPLEMENTATION.
     lv_value = lv_value + 1.
   ENDMETHOD.
 ENDCLASS.";
-        fs::write(dependency_dir.join("ZCL_DEP.abap"), dependency_text).expect("dependency file");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let dependency_uri =
-            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: dependency_text.to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
 
         let use_offset = dependency_text
             .match_indices("lv_value")
             .nth(2)
             .map(|(offset, _)| offset + 1)
             .expect("usage offset");
-        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
 
-        let before =
-            snapshot_for_uri(&state, &normalized_dependency_uri).expect("dependency snapshot");
+        let before = snapshot_for_uri(&state, &dependency_uri).expect("dependency snapshot");
         assert!(before.is_dependency);
         assert!(before.definition_at(use_offset).is_none());
 
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
         let opened = publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
@@ -6642,8 +7839,8 @@ ENDCLASS.";
         assert!(opened.definition_at(use_offset).is_some());
 
         refresh_workspace(&mut state, &workspace_uri);
-        let refreshed = snapshot_for_uri(&state, &normalized_dependency_uri)
-            .expect("dependency snapshot after refresh");
+        let refreshed =
+            snapshot_for_uri(&state, &dependency_uri).expect("dependency snapshot after refresh");
         assert!(!refreshed.is_dependency);
         assert!(refreshed.definition_at(use_offset).is_some());
 
@@ -6654,23 +7851,18 @@ ENDCLASS.";
     fn opening_cached_dependency_include_resolves_at_group_headers_without_def_assign_warnings() {
         let workspace_path = temp_workspace_path("workspace_open_dependency_at_group_headers");
         let src_dir = workspace_path.join("src");
-        let include_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("packages")
-            .join("_unknown")
-            .join("include");
-        let dependency_manifest_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependency-manifests");
         fs::create_dir_all(&src_dir).expect("src dir");
-        fs::create_dir_all(&include_dir).expect("include dir");
-        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
 
 [[unit]]
 name = "ZMAIN"
@@ -6687,32 +7879,11 @@ INCLUDE ztop.
 INCLUDE zf02.",
         )
         .expect("main source");
-        fs::write(
-            dependency_manifest_dir.join("src%2FZMAIN.abap.toml"),
-            r#"
-source_file = "src/ZMAIN.abap"
-
-[[unit]]
-name = "ZTOP"
-kind = "include"
-root_file = ".abapls/cache/packages/_unknown/include/ZTOP.abap"
-
-[[unit]]
-name = "ZF02"
-kind = "include"
-root_file = ".abapls/cache/packages/_unknown/include/ZF02.abap"
-"#,
-        )
-        .expect("dependency manifest");
-        fs::write(
-            include_dir.join("ZTOP.abap"),
-            "\
+        let top_text = "\
 TYPES: BEGIN OF typ_output_data,
          src_plant TYPE i,
        END OF typ_output_data.
-DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.",
-        )
-        .expect("top include");
+DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.";
         let dependency_text = "\
 FORM create_sto.
   FIELD-SYMBOLS <lfs_final_data> TYPE typ_output_data.
@@ -6725,20 +7896,63 @@ FORM create_sto.
     ENDAT.
   ENDLOOP.
 ENDFORM.";
-        fs::write(include_dir.join("ZF02.abap"), dependency_text).expect("f02 include");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let dependency_uri =
-            format!("{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF02.abap");
-        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let source_uri = format!("{workspace_uri}/src/ZMAIN.abap");
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
-        let before =
-            snapshot_for_uri(&state, &normalized_dependency_uri).expect("dependency snapshot");
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "include".to_string(),
+                        object_name: "ZTOP".to_string(),
+                        object_uri: "/sap/bc/adt/programs/includes/ztop".to_string(),
+                        object_type: "PROG/I".to_string(),
+                        description: "Top include".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: top_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "include".to_string(),
+                        object_name: "ZF02".to_string(),
+                        object_uri: "/sap/bc/adt/programs/includes/zf02".to_string(),
+                        object_type: "PROG/I".to_string(),
+                        description: "Form include".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: dependency_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store include artifacts");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri],
+                fetched: vec!["ZTOP".to_string(), "ZF02".to_string()],
+                failed: Vec::new(),
+            },
+        );
+
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZF02");
+        let before = snapshot_for_uri(&state, &dependency_uri).expect("dependency snapshot");
         assert!(before.is_dependency);
 
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
         let opened = publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
@@ -6771,23 +7985,18 @@ ENDFORM.";
     fn opening_cached_dependency_include_does_not_flag_legacy_table_body_assignment_target() {
         let workspace_path = temp_workspace_path("workspace_open_dependency_legacy_table_body");
         let src_dir = workspace_path.join("src");
-        let include_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("packages")
-            .join("_unknown")
-            .join("include");
-        let dependency_manifest_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependency-manifests");
         fs::create_dir_all(&src_dir).expect("src dir");
-        fs::create_dir_all(&include_dir).expect("include dir");
-        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
 
 [[unit]]
 name = "ZMAIN"
@@ -6804,33 +8013,12 @@ INCLUDE ztop.
 INCLUDE zf02.",
         )
         .expect("main source");
-        fs::write(
-            dependency_manifest_dir.join("src%2FZMAIN.abap.toml"),
-            r#"
-source_file = "src/ZMAIN.abap"
-
-[[unit]]
-name = "ZTOP"
-kind = "include"
-root_file = ".abapls/cache/packages/_unknown/include/ZTOP.abap"
-
-[[unit]]
-name = "ZF02"
-kind = "include"
-root_file = ".abapls/cache/packages/_unknown/include/ZF02.abap"
-"#,
-        )
-        .expect("dependency manifest");
-        fs::write(
-            include_dir.join("ZTOP.abap"),
-            "\
+        let top_text = "\
 TYPES: BEGIN OF typ_output_row,
          src_plant TYPE i,
          dest_plant TYPE i,
        END OF typ_output_row.
-TYPES typ_t_output_data TYPE STANDARD TABLE OF typ_output_row WITH DEFAULT KEY.",
-        )
-        .expect("top include");
+TYPES typ_t_output_data TYPE STANDARD TABLE OF typ_output_row WITH DEFAULT KEY.";
         let dependency_text = "\
 FORM f_sto_data USING ct_final_data TYPE typ_t_output_data.
   DATA lt_temp TYPE typ_t_output_data.
@@ -6841,20 +8029,63 @@ FORM f_sto_data USING ct_final_data TYPE typ_t_output_data.
     DELETE ADJACENT DUPLICATES FROM lt_temp COMPARING src_plant dest_plant.
   ENDIF.
 ENDFORM.";
-        fs::write(include_dir.join("ZF02.abap"), dependency_text).expect("f02 include");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let dependency_uri =
-            format!("{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF02.abap");
-        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
+        let source_uri = format!("{workspace_uri}/src/ZMAIN.abap");
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
-        let before =
-            snapshot_for_uri(&state, &normalized_dependency_uri).expect("dependency snapshot");
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "include".to_string(),
+                        object_name: "ZTOP".to_string(),
+                        object_uri: "/sap/bc/adt/programs/includes/ztop".to_string(),
+                        object_type: "PROG/I".to_string(),
+                        description: "Top include".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: top_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "include".to_string(),
+                        object_name: "ZF02".to_string(),
+                        object_uri: "/sap/bc/adt/programs/includes/zf02".to_string(),
+                        object_type: "PROG/I".to_string(),
+                        description: "Form include".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: dependency_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store include artifacts");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri],
+                fetched: vec!["ZTOP".to_string(), "ZF02".to_string()],
+                failed: Vec::new(),
+            },
+        );
+
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZF02");
+        let before = snapshot_for_uri(&state, &dependency_uri).expect("dependency snapshot");
         assert!(before.is_dependency);
 
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
         let opened = publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
@@ -6888,23 +8119,18 @@ ENDFORM.";
     fn completion_for_opened_include_field_symbol_does_not_leak_adjacent_structure_fields() {
         let workspace_path = temp_workspace_path("workspace_include_selector_completion");
         let src_dir = workspace_path.join("src");
-        let include_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("packages")
-            .join("_unknown")
-            .join("include");
-        let dependency_manifest_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependency-manifests");
         fs::create_dir_all(&src_dir).expect("src dir");
-        fs::create_dir_all(&include_dir).expect("include dir");
-        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
 
 [[unit]]
 name = "ZMAIN"
@@ -6921,26 +8147,7 @@ INCLUDE ztop.
 INCLUDE zf01.",
         )
         .expect("main source");
-        fs::write(
-            dependency_manifest_dir.join("src%2FZMAIN.abap.toml"),
-            r#"
-source_file = "src/ZMAIN.abap"
-
-[[unit]]
-name = "ZTOP"
-kind = "include"
-root_file = ".abapls/cache/packages/_unknown/include/ZTOP.abap"
-
-[[unit]]
-name = "ZF01"
-kind = "include"
-root_file = ".abapls/cache/packages/_unknown/include/ZF01.abap"
-"#,
-        )
-        .expect("dependency manifest");
-        fs::write(
-            include_dir.join("ZTOP.abap"),
-            "\
+        let top_text = "\
 TYPES: BEGIN OF typ_output_data,
          message_attp TYPE string,
          vbeln TYPE string,
@@ -6949,9 +8156,7 @@ TYPES: BEGIN OF typ_output_data,
          lgnum TYPE string,
          lgtyp TYPE string,
        END OF typ_header.
-DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.",
-        )
-        .expect("top include");
+DATA t_final_data TYPE STANDARD TABLE OF typ_output_data WITH DEFAULT KEY.";
         let f01_text = "\
 FORM update_message_final_tab.
   FIELD-SYMBOLS <lfs_final_data> TYPE typ_output_data.
@@ -6959,14 +8164,59 @@ FORM update_message_final_tab.
     <lfs_final_data>-
   ENDLOOP.
 ENDFORM.";
-        fs::write(include_dir.join("ZF01.abap"), f01_text).expect("f01 include");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let f01_uri = format!("{workspace_uri}/.abapls/cache/packages/_unknown/include/ZF01.abap");
-        let normalized_f01_uri = normalize_lsp_uri(&f01_uri);
+        let source_uri = format!("{workspace_uri}/src/ZMAIN.abap");
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "include".to_string(),
+                        object_name: "ZTOP".to_string(),
+                        object_uri: "/sap/bc/adt/programs/includes/ztop".to_string(),
+                        object_type: "PROG/I".to_string(),
+                        description: "Top include".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: top_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "include".to_string(),
+                        object_name: "ZF01".to_string(),
+                        object_uri: "/sap/bc/adt/programs/includes/zf01".to_string(),
+                        object_type: "PROG/I".to_string(),
+                        description: "Form include".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: f01_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store include artifacts");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri],
+                fetched: vec!["ZTOP".to_string(), "ZF01".to_string()],
+                failed: Vec::new(),
+            },
+        );
+
+        let f01_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZF01");
 
         publish_open_document_mut(
             &mut state,
@@ -6980,7 +8230,7 @@ ENDFORM.";
             },
         );
 
-        let snapshot = snapshot_for_uri(&state, &normalized_f01_uri).expect("workspace snapshot");
+        let snapshot = snapshot_for_uri(&state, &f01_uri).expect("workspace snapshot");
         let offset =
             snapshot.text.find("<lfs_final_data>-").expect("selector") + "<lfs_final_data>-".len();
         let completion = snapshot.completion_at(offset).expect("completion");
@@ -7023,7 +8273,6 @@ version = 1
 [resolution]
 dependency_mode = "local-first"
 cache_dir = ".abapls/cache"
-unknown_symbol_mode = "log"
 "#,
         )
         .expect("manifest");
@@ -7365,9 +8614,12 @@ root_file = "src/ZCL_HELPER.abap"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZMAIN"
@@ -7376,49 +8628,54 @@ root_file = "src/ZMAIN.abap"
 "#,
         )
         .expect("manifest");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependency-manifests"))
-            .expect("dependency manifest dir");
         let workspace_uri = path_to_file_uri(&workspace_path);
-
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            dependency_dir.join("ZCL_REMOTE_DEMO.abap"),
-            "CLASS zcl_remote_demo DEFINITION.\nENDCLASS.\nCLASS zcl_remote_demo IMPLEMENTATION.\nENDCLASS.\n",
-        )
-        .expect("dependency file");
         fs::write(
             workspace_path.join("src/ZMAIN.abap"),
             "DATA lo_demo TYPE REF TO zcl_remote_demo.\nlo_demo = zcl_remote_demo=>create( ).",
         )
         .expect("source");
-        fs::write(
-            workspace_path.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
-            r#"
-source_file = "src/ZMAIN.abap"
-
-[[unit]]
-name = "ZCL_REMOTE_DEMO"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
-"#,
-        )
-        .expect("dependency manifest");
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "SABAPDEMOS".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_REMOTE_DEMO".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_remote_demo".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zcl_remote_demo DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS create RETURNING VALUE(ro_demo) TYPE REF TO zcl_remote_demo.
+ENDCLASS.
+
+CLASS zcl_remote_demo IMPLEMENTATION.
+  METHOD create.
+  ENDMETHOD.
+ENDCLASS.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
 
         assert!(
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/src/ZMAIN.abap"))
                 .is_none()
         );
-
-        fs::remove_dir_all(workspace_path.join(".abapls").join("cache")).expect("clear cache dir");
 
         let snapshots = handle_dependency_cache_cleared(
             &mut state,
@@ -7454,9 +8711,12 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZMAIN"
@@ -7465,47 +8725,43 @@ root_file = "src/ZMAIN.abap"
 "#,
         )
         .expect("manifest");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependency-manifests"))
-            .expect("dependency manifest dir");
         let workspace_uri = path_to_file_uri(&workspace_path);
-
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            dependency_dir.join("ZCL_REMOTE_DEMO.abap"),
-            "CLASS zcl_remote_demo DEFINITION.\n",
-        )
-        .expect("dependency file");
         fs::write(
             workspace_path.join("src/ZMAIN.abap"),
             "DATA lo_demo TYPE REF TO zcl_remote_demo.\nlo_demo = zcl_remote_demo=>create( ).",
         )
         .expect("source");
-        fs::write(
-            workspace_path.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
-            r#"
-source_file = "src/ZMAIN.abap"
-
-[[unit]]
-name = "ZCL_REMOTE_DEMO"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
-"#,
-        )
-        .expect("dependency manifest");
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "SABAPDEMOS".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_REMOTE_DEMO".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_remote_demo".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_remote_demo DEFINITION.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
 
         assert!(
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/src/ZMAIN.abap"))
                 .is_none(),
-            "existing cache file should suppress remote request notification"
+            "stored dependency artifact should suppress remote request notification"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -7521,9 +8777,12 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZMAIN"
@@ -7532,42 +8791,38 @@ root_file = "src/ZMAIN.abap"
 "#,
         )
         .expect("manifest");
-        fs::create_dir_all(workspace_path.join(".abapls/cache/dependency-manifests"))
-            .expect("dependency manifest dir");
         let workspace_uri = path_to_file_uri(&workspace_path);
-
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            dependency_dir.join("ZCL_REMOTE_DEMO.abap"),
-            "CLASS zcl_remote_demo DEFINITION.\n",
-        )
-        .expect("dependency file");
         fs::write(
             workspace_path.join("src/ZMAIN.abap"),
             "zcl_remote_demo = 1.",
         )
         .expect("source");
-        fs::write(
-            workspace_path.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
-            r#"
-source_file = "src/ZMAIN.abap"
-
-[[unit]]
-name = "ZCL_REMOTE_DEMO"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
-"#,
-        )
-        .expect("dependency manifest");
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "SABAPDEMOS".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_REMOTE_DEMO".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_remote_demo".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_remote_demo DEFINITION.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
 
         let store = DocumentStore::default();
         let candidates = collect_remote_dependency_candidates(
@@ -7585,7 +8840,7 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
         assert!(
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/src/ZMAIN.abap"))
                 .is_none(),
-            "existing cache file should suppress symbol-based remote request notification"
+            "stored dependency artifact should suppress symbol-based remote request notification"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -7600,9 +8855,12 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_REMOTE_DEMO.abap"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -7663,9 +8921,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -7708,9 +8969,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -7766,9 +9030,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -7812,9 +9079,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -7851,27 +9121,26 @@ unknown_symbol_mode = "remote"
     #[test]
     fn workspace_remote_dependency_batch_is_single_wave_and_blocks_while_in_flight() {
         let workspace_path = temp_workspace_path("workspace_remote_batch");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
+        let _ = fs::remove_dir_all(&workspace_path);
         fs::create_dir_all(&workspace_path).expect("workspace dir");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
         let workspace_uri = path_to_file_uri(&workspace_path);
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         publish_open_document_mut(
             &mut state,
@@ -7908,27 +9177,28 @@ unknown_symbol_mode = "remote"
             "second batch should be suppressed while first wave is in flight"
         );
 
-        fs::write(
-            workspace_path.join("abapls.toml"),
-            r#"
-version = 1
-
-[resolution]
-dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_FIRST"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
-"#,
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_FIRST".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text:
+                        "CLASS zcl_first DEFINITION.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\nENDCLASS.\n"
+                            .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
         )
-        .expect("updated manifest");
-        fs::write(
-            dependency_dir.join("ZCL_FIRST.abap"),
-            "CLASS zcl_first DEFINITION.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\nENDCLASS.\n",
-        )
-        .expect("dependency");
+        .expect("store dependency artifact");
 
         let _ = handle_remote_dependencies_updated(
             &mut state,
@@ -7960,9 +9230,12 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -8011,9 +9284,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZMAIN"
@@ -8089,9 +9365,12 @@ object_name = "ZCL_DEP"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZMAIN"
@@ -8131,51 +9410,24 @@ object_name = "ZMAIN"
     fn dependency_batches_retain_local_export_context_from_ancestor_sources() {
         let workspace_path = temp_workspace_path("workspace_remote_dependency_context");
         let source_dir = workspace_path.join("src");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        let negative_path = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("negative-dependencies")
-            .join("type")
-            .join("BAL_S_MSG.json");
+        let _ = fs::remove_dir_all(&workspace_path);
         fs::create_dir_all(&source_dir).expect("source dir");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::create_dir_all(negative_path.parent().expect("negative dir")).expect("negative dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZMAIN"
 kind = "report"
 root_file = "src/ZMAIN.abap"
-
-[[unit.member]]
-role = "root"
-file = "src/ZMAIN.abap"
-object_name = "ZMAIN"
-
-[[unit]]
-name = "ZCL_DEP"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-dependency_of = [
-  "src/ZMAIN.abap"
-]
-
-[[unit.member]]
-role = "dependency"
-file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-object_name = "ZCL_DEP"
 "#,
         )
         .expect("manifest");
@@ -8189,26 +9441,48 @@ object_name = "ZCL_DEP"
             "[local_export]\nroots = [\"D:/dev/abap/d65\"]\n\n[dependencies]\nsource = \"local-first\"\n",
         )
         .expect("sidecar");
-        fs::write(
-            dependency_dir.join("ZCL_DEP.abap"),
-            "CLASS zcl_dep DEFINITION.\n  PUBLIC SECTION.\n    DATA ms_bal TYPE bal_s_msg.\nENDCLASS.\nCLASS zcl_dep IMPLEMENTATION.\nENDCLASS.\n",
-        )
-        .expect("dependency");
-        fs::write(
-            &negative_path,
-            r#"{"name":"bal_s_msg","kind":"type","reason":"stale-test-marker"}"#,
-        )
-        .expect("negative marker");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
         let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZMAIN.abap"));
-        let dependency_uri = normalize_lsp_uri(&format!(
-            "{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-        ));
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_dep DEFINITION.\n  PUBLIC SECTION.\n    DATA ms_bal TYPE bal_s_msg.\nENDCLASS.\nCLASS zcl_dep IMPLEMENTATION.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: vec![RemoteDependencyCandidate {
+                    name: "bal_s_msg".to_string(),
+                    kind: "type".to_string(),
+                }],
+            },
+        )
+        .expect("store dependency artifact");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                fetched: vec!["ZCL_DEP".to_string()],
+                failed: Vec::new(),
+            },
+        );
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
 
         let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
             .expect("dependency batch");
@@ -8234,9 +9508,12 @@ object_name = "ZCL_DEP"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -8304,9 +9581,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -8372,29 +9652,19 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
         let workspace_uri = path_to_file_uri(&workspace_path);
 
-        let negative_path = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("negative-dependencies")
-            .join("type")
-            .join("BOOLEAN.json");
-        fs::create_dir_all(negative_path.parent().expect("negative marker dir"))
-            .expect("negative marker dir");
-        fs::write(
-            &negative_path,
-            r#"{"name":"boolean","kind":"type","reason":"exact-match-domain-only"}"#,
-        )
-        .expect("negative marker");
-
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         publish_open_document_mut(
             &mut state,
@@ -8408,9 +9678,23 @@ unknown_symbol_mode = "remote"
             },
         );
 
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: None,
+                artifacts: Vec::new(),
+                negative: vec![RemoteDependencyCandidate {
+                    name: "boolean".to_string(),
+                    kind: "type".to_string(),
+                }],
+            },
+        )
+        .expect("store negative lookup");
+
         assert!(
             build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
-            "persisted negative markers should suppress repeated remote batches when no local export roots are configured"
+            "persisted negative lookups should suppress repeated remote batches when no local export roots are configured"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -8419,26 +9703,26 @@ unknown_symbol_mode = "remote"
     #[test]
     fn refreshed_dependency_files_can_trigger_follow_up_remote_requests() {
         let workspace_path = temp_workspace_path("dependency_of_dependency");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
+        let _ = fs::remove_dir_all(&workspace_path);
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
         let workspace_uri = path_to_file_uri(&workspace_path);
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         publish_open_document_mut(
             &mut state,
@@ -8463,28 +9747,26 @@ unknown_symbol_mode = "remote"
                 .any(|candidate| candidate.name == "zcl_first")
         );
 
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            workspace_path.join("abapls.toml"),
-            r#"
-version = 1
-
-[resolution]
-dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_FIRST"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
-"#,
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_FIRST".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_second.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n  ENDMETHOD.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
         )
-        .expect("updated manifest");
-        fs::write(
-            dependency_dir.join("ZCL_FIRST.abap"),
-            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_second.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n  ENDMETHOD.\nENDCLASS.\n",
-        )
-        .expect("dependency file");
+        .expect("store dependency artifact");
 
         let _ = handle_remote_dependencies_updated(
             &mut state,
@@ -8497,9 +9779,10 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
             },
         );
 
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_FIRST");
         let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
         assert!(follow_up.iter().any(|request| {
-            request.source_uri.ends_with("ZCL_FIRST.abap")
+            request.source_uri == dependency_uri
                 && request
                     .candidates
                     .iter()
@@ -8513,26 +9796,18 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
     fn remote_dependency_updates_refresh_new_sidecar_without_full_workspace_fanout() {
         let workspace_path = temp_workspace_path("dependency_sidecar_targeted_refresh");
         let source_dir = workspace_path.join("src");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        let dependency_manifest_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependency-manifests");
         fs::create_dir_all(&source_dir).expect("source dir");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::create_dir_all(&dependency_manifest_dir).expect("dependency manifest dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZREPORT_MAIN"
@@ -8570,17 +9845,26 @@ object_name = "ZREPORT_OTHER"
         let workspace_uri = path_to_file_uri(&workspace_path);
         let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREPORT_MAIN.abap"));
         let unrelated_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREPORT_OTHER.abap"));
-        let dependency_uri = normalize_lsp_uri(&format!(
-            "{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-        ));
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
-        fs::write(
-            dependency_dir.join("ZCL_DEP.abap"),
-            "\
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
 CLASS zcl_dep DEFINITION.
   PUBLIC SECTION.
     CLASS-METHODS create RETURNING VALUE(ro_dep) TYPE REF TO object.
@@ -8588,26 +9872,15 @@ ENDCLASS.
 CLASS zcl_dep IMPLEMENTATION.
   METHOD create.
   ENDMETHOD.
-ENDCLASS.",
+ENDCLASS."
+                        .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
         )
-        .expect("dependency file");
-        fs::write(
-            dependency_manifest_dir.join("src%2FZREPORT_MAIN.abap.toml"),
-            r#"
-source_file = "src/ZREPORT_MAIN.abap"
-
-[[unit]]
-name = "ZCL_DEP"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-
-[[unit.member]]
-role = "dependency"
-file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
-object_name = "ZCL_DEP"
-"#,
-        )
-        .expect("dependency manifest");
+        .expect("store dependency artifact");
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
 
         let refreshed = handle_remote_dependencies_updated(
             &mut state,
@@ -8638,44 +9911,32 @@ object_name = "ZCL_DEP"
             "{refreshed_uris:?}"
         );
 
-        let workspace = state
-            .workspaces
-            .get(&normalize_lsp_uri(&workspace_uri))
-            .expect("workspace");
-        assert!(
-            workspace
-                .manifest
-                .as_ref()
-                .is_some_and(|manifest| manifest.units.iter().any(|unit| unit.name == "ZCL_DEP")),
-            "expected refreshed manifest to include new dependency unit"
-        );
-
         let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]
     fn workspace_dependency_refresh_batches_closed_dependency_transitive_references() {
         let workspace_path = temp_workspace_path("dependency_impl_batch_refresh");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
+        let _ = fs::remove_dir_all(&workspace_path);
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
         let workspace_uri = path_to_file_uri(&workspace_path);
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         publish_open_document_mut(
             &mut state,
@@ -8700,28 +9961,26 @@ unknown_symbol_mode = "remote"
                 .any(|candidate| candidate.name == "zcl_first")
         );
 
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            workspace_path.join("abapls.toml"),
-            r#"
-version = 1
-
-[resolution]
-dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_FIRST"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
-"#,
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_FIRST".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    SELECT SINGLE * FROM /aif/t_finf INTO @DATA(ls_finf).\n  ENDMETHOD.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
         )
-        .expect("updated manifest");
-        fs::write(
-            dependency_dir.join("ZCL_FIRST.abap"),
-            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    SELECT SINGLE * FROM /aif/t_finf INTO @DATA(ls_finf).\n  ENDMETHOD.\nENDCLASS.\n",
-        )
-        .expect("dependency file");
+        .expect("store dependency artifact");
 
         let _ = handle_remote_dependencies_updated(
             &mut state,
@@ -8736,12 +9995,8 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
 
         let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
             .expect("follow-up batch");
-        assert!(
-            batch
-                .source_uri
-                .ends_with("/.abapls/cache/dependencies/global-class/ZCL_FIRST.abap"),
-            "{batch:#?}"
-        );
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_FIRST");
+        assert!(batch.source_uri == dependency_uri, "{batch:#?}");
         assert!(
             batch
                 .candidates
@@ -8754,28 +10009,231 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
     }
 
     #[test]
-    fn dependency_private_implementation_references_do_not_trigger_follow_up_remote_requests() {
-        let workspace_path = temp_workspace_path("dependency_private_impl");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
+    fn dependency_batch_cache_reuses_closed_dependency_candidate_projection() {
+        let workspace_path = temp_workspace_path("dependency_batch_candidate_cache");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
         let workspace_uri = path_to_file_uri(&workspace_path);
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( )."
+                        .to_string(),
+                },
+            },
+        );
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_FIRST".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    DATA lo_dep TYPE REF TO zcl_second.\n  ENDMETHOD.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+        let _ = handle_remote_dependencies_updated(
+            &mut state,
+            &super::RemoteDependenciesUpdatedParams {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: format!("{workspace_uri}/main.abap"),
+                source_uris: Vec::new(),
+                fetched: vec!["ZCL_FIRST".to_string()],
+                failed: Vec::new(),
+            },
+        );
+
+        let first = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("first follow-up batch");
+        assert!(
+            first
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_second"),
+            "{first:#?}"
+        );
+
+        let workspace = state
+            .workspaces
+            .get_mut(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        workspace.remote_resolution_in_flight = false;
+        workspace.remote_resolution_seen.clear();
+
+        let second = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+            .expect("second follow-up batch");
+        assert!(
+            second
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_second"),
+            "{second:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_batch_cache_refreshes_when_dependency_source_changes() {
+        let workspace_path = temp_workspace_path("dependency_batch_candidate_cache_refresh");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&format!("{workspace_uri}/main.abap")).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "DATA lo_demo TYPE REF TO zcl_first.\nlo_demo = zcl_first=>create( )."
+                        .to_string(),
+                },
+            },
+        );
+
+        for (dependency_text, expected, unexpected) in [
+            (
+                "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    DATA lo_dep TYPE REF TO zcl_second.\n  ENDMETHOD.\nENDCLASS.\n",
+                "zcl_second",
+                "zcl_third",
+            ),
+            (
+                "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    DATA lo_dep TYPE REF TO zcl_third.\n  ENDMETHOD.\nENDCLASS.\n",
+                "zcl_third",
+                "zcl_second",
+            ),
+        ] {
+            store_remote_dependency_artifacts(
+                &mut state,
+                &StoreRemoteDependencyArtifactsParams {
+                    workspace_uri: workspace_uri.clone(),
+                    connection_key: Some("https://example.sap.local".to_string()),
+                    artifacts: vec![DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "global-class".to_string(),
+                        object_name: "ZCL_FIRST".to_string(),
+                        object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                        object_type: "CLAS/OC".to_string(),
+                        description: "Remote class".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: dependency_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    }],
+                    negative: Vec::new(),
+                },
+            )
+            .expect("store dependency artifact");
+            let _ = handle_remote_dependencies_updated(
+                &mut state,
+                &super::RemoteDependenciesUpdatedParams {
+                    workspace_uri: workspace_uri.clone(),
+                    source_uri: format!("{workspace_uri}/main.abap"),
+                    source_uris: Vec::new(),
+                    fetched: vec!["ZCL_FIRST".to_string()],
+                    failed: Vec::new(),
+                },
+            );
+
+            let workspace = state
+                .workspaces
+                .get_mut(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            workspace.remote_resolution_in_flight = false;
+            workspace.remote_resolution_seen.clear();
+
+            let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
+                .expect("follow-up batch");
+            assert!(
+                batch
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.name == expected),
+                "{batch:#?}"
+            );
+            assert!(
+                batch
+                    .candidates
+                    .iter()
+                    .all(|candidate| candidate.name != unexpected),
+                "{batch:#?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_private_implementation_references_do_not_trigger_follow_up_remote_requests() {
+        let workspace_path = temp_workspace_path("dependency_private_impl");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         publish_open_document_mut(
             &mut state,
@@ -8800,43 +10258,33 @@ unknown_symbol_mode = "remote"
                 .any(|candidate| candidate.name == "zcl_first")
         );
 
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            workspace_path.join("abapls.toml"),
-            r#"
-version = 1
-
-[resolution]
-dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_FIRST"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
-"#,
-        )
-        .expect("updated manifest");
-        fs::write(
-            dependency_dir.join("ZCL_FIRST.abap"),
-            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\n  PRIVATE SECTION.\n    CLASS-METHODS hidden.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    hidden( ).\n  ENDMETHOD.\n  METHOD hidden.\n    DATA lo_hidden TYPE REF TO zcl_second.\n  ENDMETHOD.\nENDCLASS.\n",
-        )
-        .expect("dependency file");
-
-        let _ = handle_remote_dependencies_updated(
+        store_remote_dependency_artifacts(
             &mut state,
-            &super::RemoteDependenciesUpdatedParams {
+            &StoreRemoteDependencyArtifactsParams {
                 workspace_uri: workspace_uri.clone(),
-                source_uri: format!("{workspace_uri}/main.abap"),
-                source_uris: Vec::new(),
-                fetched: vec!["ZCL_FIRST".to_string()],
-                failed: Vec::new(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_FIRST".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_first.\n  PRIVATE SECTION.\n    CLASS-METHODS hidden.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD create.\n    hidden( ).\n  ENDMETHOD.\n  METHOD hidden.\n    DATA lo_hidden TYPE REF TO zcl_second.\n  ENDMETHOD.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
             },
-        );
+        )
+        .expect("store dependency artifact");
 
         let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
         assert!(!follow_up.iter().any(|request| {
-            request.source_uri.ends_with("ZCL_FIRST.abap")
+            request
+                .source_uri
+                .to_ascii_lowercase()
+                .starts_with("abapls-cache:")
                 && request
                     .candidates
                     .iter()
@@ -8849,26 +10297,26 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
     #[test]
     fn dependency_method_include_triggers_follow_up_remote_request() {
         let workspace_path = temp_workspace_path("dependency_method_include");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
+        let _ = fs::remove_dir_all(&workspace_path);
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
         let workspace_uri = path_to_file_uri(&workspace_path);
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         publish_open_document_mut(
             &mut state,
@@ -8892,28 +10340,26 @@ unknown_symbol_mode = "remote"
                 .any(|candidate| candidate.name == "zcl_first")
         );
 
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
-        fs::write(
-            workspace_path.join("abapls.toml"),
-            r#"
-version = 1
-
-[resolution]
-dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_FIRST"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
-"#,
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_FIRST".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD run.\n    INCLUDE zinc_method.\n  ENDMETHOD.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
         )
-        .expect("updated manifest");
-        fs::write(
-            dependency_dir.join("ZCL_FIRST.abap"),
-            "CLASS zcl_first DEFINITION.\n  PUBLIC SECTION.\n    METHODS run.\nENDCLASS.\nCLASS zcl_first IMPLEMENTATION.\n  METHOD run.\n    INCLUDE zinc_method.\n  ENDMETHOD.\nENDCLASS.\n",
-        )
-        .expect("dependency file");
+        .expect("store dependency artifact");
 
         let _ = handle_remote_dependencies_updated(
             &mut state,
@@ -8926,8 +10372,7 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
             },
         );
 
-        let dependency_uri =
-            normalize_lsp_uri(&path_to_file_uri(&dependency_dir.join("ZCL_FIRST.abap")));
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_FIRST");
         let dependency_snapshot = state
             .workspace_for_uri(&dependency_uri)
             .and_then(|workspace| workspace.cache.get(&dependency_uri))
@@ -8944,10 +10389,7 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
         let follow_up = build_remote_dependency_requests_for_workspace(&mut state, &workspace_uri);
         assert!(
             follow_up.iter().any(|request| {
-                request
-                    .source_uri
-                    .to_ascii_lowercase()
-                    .ends_with("zcl_first.abap")
+                request.source_uri == dependency_uri
                     && request.candidates.iter().any(|candidate| {
                         candidate.kind == "include" && candidate.name == "zinc_method"
                     })
@@ -8968,9 +10410,12 @@ root_file = ".abapls/cache/dependencies/global-class/ZCL_FIRST.abap"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -9030,9 +10475,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "/AIF/FILE_PROCESS_DATA"
@@ -9139,9 +10587,12 @@ ENDFUNCTION.";
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -9188,9 +10639,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -9263,9 +10717,12 @@ unknown_symbol_mode = "remote"
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -9340,22 +10797,20 @@ unknown_symbol_mode = "remote"
     #[test]
     fn qualified_interface_method_scope_resolves_with_manifest_dependency() {
         let workspace_path = temp_workspace_path("qualified_interface_method_scope");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-interface");
         let source_dir = workspace_path.join("src");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        let _ = fs::remove_dir_all(&workspace_path);
         fs::create_dir_all(&source_dir).expect("source dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 
 [[unit]]
 name = "ZATTP_CL_RULE_PROC"
@@ -9364,17 +10819,10 @@ root_file = "src/ZATTP_CL_RULE_PROC.abap"
 members = [
   { file = "src/zcl_demo.abap", object_name = "zcl_demo" }
 ]
-
-[[unit]]
-name = "/STTP/IF_BADI_RULE_PROCESSING"
-kind = "global-interface"
-root_file = ".abapls/cache/dependencies/global-interface/%2FSTTP%2FIF_BADI_RULE_PROCESSING.abap"
 "#,
         )
         .expect("manifest");
-        fs::write(
-            dependency_dir.join("%2FSTTP%2FIF_BADI_RULE_PROCESSING.abap"),
-            r#"interface /STTP/IF_BADI_RULE_PROCESSING
+        let dependency_source = r#"interface /STTP/IF_BADI_RULE_PROCESSING
   public .
 
   interfaces IF_BADI_INTERFACE .
@@ -9386,9 +10834,7 @@ root_file = ".abapls/cache/dependencies/global-interface/%2FSTTP%2FIF_BADI_RULE_
     changing
       !CO_MESSAGES type ref to /STTP/CL_MESSAGES optional .
 endinterface.
-"#,
-        )
-        .expect("dependency file");
+"#;
         fs::write(
             source_dir.join("zcl_demo.abap"),
             r#"class zcl_demo definition
@@ -9455,7 +10901,29 @@ ENDCLASS.
         let source_uri = format!("{workspace_uri}/src/zcl_demo.abap");
 
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-interface".to_string(),
+                    object_name: "/STTP/IF_BADI_RULE_PROCESSING".to_string(),
+                    object_uri: "/sap/bc/adt/oo/interfaces/%2FSTTP%2FIF_BADI_RULE_PROCESSING"
+                        .to_string(),
+                    object_type: "INTF/OI".to_string(),
+                    description: "Remote interface".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: dependency_source.to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
         let snapshot = publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
@@ -9536,25 +11004,18 @@ ls_outer-inner-a = 1."
     #[test]
     fn opened_dependency_file_runs_full_analysis_when_opened_directly() {
         let workspace_path = temp_workspace_path("opened_dependency_remote_candidates");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_DEP"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
 "#,
         )
         .expect("manifest");
@@ -9569,21 +11030,41 @@ CLASS zcl_dep IMPLEMENTATION.
     zcl_missing=>run( ).
   ENDMETHOD.
 ENDCLASS.";
-        fs::write(dependency_dir.join("ZCL_DEP.abap"), dependency_text).expect("dependency file");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let dependency_uri =
-            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
-        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: dependency_text.to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
+
         assert!(
-            build_remote_dependency_request(&mut state, &normalized_dependency_uri).is_none(),
+            build_remote_dependency_request(&mut state, &dependency_uri).is_none(),
             "closed dependency should stay on public-surface candidates only"
         );
 
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
         let opened = publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
@@ -9597,9 +11078,9 @@ ENDCLASS.";
         );
 
         assert!(!opened.is_dependency);
-        let request = build_remote_dependency_request(&mut state, &normalized_dependency_uri)
+        let request = build_remote_dependency_request(&mut state, &dependency_uri)
             .expect("opened dependency request");
-        assert_eq!(request.source_uri, normalized_dependency_uri);
+        assert_eq!(request.source_uri, dependency_uri);
         assert!(
             request
                 .candidates
@@ -9614,25 +11095,18 @@ ENDCLASS.";
     #[test]
     fn closed_dependency_batches_collect_full_transitive_candidates() {
         let workspace_path = temp_workspace_path("closed_dependency_batch_remote_candidates");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
-
-[[unit]]
-name = "ZCL_DEP"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
 "#,
         )
         .expect("manifest");
@@ -9649,24 +11123,43 @@ CLASS zcl_dep IMPLEMENTATION.
     lv_dbcnt = 1.
   ENDMETHOD.
 ENDCLASS.";
-        fs::write(dependency_dir.join("ZCL_DEP.abap"), dependency_text).expect("dependency file");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let dependency_uri =
-            format!("{workspace_uri}/.abapls/cache/dependencies/global-class/ZCL_DEP.abap");
-        let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: dependency_text.to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
+
         assert!(
-            build_remote_dependency_request(&mut state, &normalized_dependency_uri).is_none(),
+            build_remote_dependency_request(&mut state, &dependency_uri).is_none(),
             "closed direct request should stay on public-surface candidates only"
         );
 
         let batch = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
             .expect("workspace batch");
-        assert_eq!(batch.source_uri, normalized_dependency_uri, "{batch:#?}");
+        assert_eq!(batch.source_uri, dependency_uri, "{batch:#?}");
         assert!(
             batch
                 .candidates
@@ -13026,9 +14519,12 @@ START-OF-SELECTION.
             r#"
 version = 1
 
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-unknown_symbol_mode = "remote"
 "#,
         )
         .expect("manifest");
@@ -13360,45 +14856,24 @@ lo_demo->run( iv_value = 1 iv_ )"
     #[test]
     fn workspace_preview_completion_keeps_dependency_backed_context() {
         let workspace_path = temp_workspace_path("preview_dependency_completion");
-        let dependency_dir = workspace_path
-            .join(".abapls")
-            .join("cache")
-            .join("dependencies")
-            .join("global-class");
-        fs::create_dir_all(&dependency_dir).expect("dependency dir");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/reports/ZMAIN")).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
             r#"
 version = 1
 
-[[unit]]
-name = "ZCL_HELPER"
-kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_HELPER.abap"
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
 
-[[unit]]
-name = "ZREPORT_MAIN"
-kind = "report"
-root_file = "main.abap"
+[resolution]
+dependency_mode = "remote-on-demand"
 "#,
         )
         .expect("manifest");
         fs::write(
-            dependency_dir.join("ZCL_HELPER.abap"),
-            "\
-CLASS zcl_helper DEFINITION.
-  PUBLIC SECTION.
-    METHODS run.
-ENDCLASS.
-
-CLASS zcl_helper IMPLEMENTATION.
-  METHOD run.
-  ENDMETHOD.
-ENDCLASS.",
-        )
-        .expect("dependency file");
-        fs::write(
-            workspace_path.join("main.abap"),
+            workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
             "\
 REPORT zreport_main.
 DATA lo_helper TYPE REF TO zcl_helper.
@@ -13407,10 +14882,77 @@ lo_helper->",
         .expect("main");
 
         let workspace_uri = path_to_file_uri(&workspace_path);
-        let source_uri = format!("{workspace_uri}/main.abap");
+        let source_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZMAIN/ZMAIN.abap"));
         let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_HELPER".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_helper".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Helper class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zcl_helper DEFINITION PUBLIC.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_helper IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS."
+                        .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+        refresh_workspace(&mut state, &workspace_uri);
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_HELPER");
+        assert!(
+            snapshot_for_uri(&state, &dependency_uri).is_some(),
+            "expected hydrated dependency snapshot after refresh"
+        );
+        let committed = snapshot_for_uri(&state, &source_uri).expect("committed source snapshot");
+        assert!(
+            committed
+                .completion_at(
+                    committed
+                        .text
+                        .find("lo_helper->")
+                        .map(|offset| offset + "lo_helper->".len())
+                        .expect("selector offset"),
+                )
+                .map(|completion| {
+                    completion
+                        .items
+                        .into_iter()
+                        .map(|item| match item {
+                            abap_cache::CompletionItem::Selector(item) => item.name.to_string(),
+                            abap_cache::CompletionItem::NamedArgument(item) => {
+                                item.name.to_string()
+                            }
+                            abap_cache::CompletionItem::Template(item) => item.name.to_string(),
+                            abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .iter()
+                .any(|item| item == "run"),
+            "expected committed dependency-backed completion"
+        );
 
         assert!(stage_workspace_preview_snapshot(
             &mut state,
@@ -13419,7 +14961,8 @@ lo_helper->",
             "\
 REPORT zreport_main.
 DATA lo_helper TYPE REF TO zcl_helper.
-lo_helper->r"
+lo_helper->r
+"
         ));
 
         let completion = completion(
@@ -14560,5 +16103,417 @@ START-OF-SELECTION.
             panic!("expected array completion");
         };
         assert!(items.iter().any(|item| item.label == "run"));
+    }
+
+    #[test]
+    fn dependency_symbol_index_extracts_only_addressable_symbols() {
+        let symbols = extract_stored_dependency_symbols(
+            "/sap/bc/adt/oo/classes/zcl_dep",
+            "\
+CLASS zcl_dep DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CONSTANTS gc_public TYPE i VALUE 1.
+    CLASS-METHODS run IMPORTING iv_input TYPE i.
+  PRIVATE SECTION.
+    DATA mv_private TYPE i.
+    METHODS hidden IMPORTING iv_hidden TYPE i.
+ENDCLASS.
+
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lv_local TYPE i.
+  ENDMETHOD.
+
+  METHOD hidden.
+  ENDMETHOD.
+ENDCLASS.
+",
+        );
+        let names = symbols
+            .iter()
+            .map(|symbol| (symbol.symbol_name.as_str(), symbol.symbol_kind.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&("zcl_dep", "class")));
+        assert!(names.contains(&("gc_public", "class-member")));
+        assert!(names.contains(&("run", "class-member")));
+        assert!(!names.iter().any(|(name, _)| *name == "iv_input"));
+        assert!(!names.iter().any(|(name, _)| *name == "lv_local"));
+        assert!(!names.iter().any(|(name, _)| *name == "hidden"));
+        assert!(!names.iter().any(|(_, kind)| kind.starts_with("builtin")));
+    }
+
+    #[test]
+    fn centralized_dependency_store_definition_returns_virtual_dependency_uri() {
+        let workspace_path = temp_workspace_path("centralized_dependency_definition");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/reports/ZMAIN")).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let source = "REPORT zmain.\nDATA lo_demo TYPE REF TO cl_demo_remote.\n";
+        fs::write(workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"), source).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&path_to_file_uri(
+            &workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
+        ));
+        let mut state = ServerState::default();
+        state.dependency_store_path_override = Some(
+            workspace_path
+                .join(".abapls-central")
+                .join("dependency-cache.sqlite3"),
+        );
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "SABAPDEMOS".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "CL_DEMO_REMOTE".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/cl_demo_remote".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS cl_demo_remote DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS cl_demo_remote IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        assert!(
+            build_remote_dependency_request(&mut state, &source_uri).is_none(),
+            "stored dependency artifact should suppress a follow-up remote request"
+        );
+
+        let type_offset = source.find("cl_demo_remote").expect("type ref");
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position: offset_to_position(source, type_offset + 1).expect("position"),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(
+            location.uri.scheme().map(|scheme| scheme.as_str()),
+            Some("abapls-cache")
+        );
+
+        let dependency_text = read_dependency_document(
+            &state,
+            &ReadDependencyDocumentParams {
+                uri: location.uri.to_string(),
+            },
+        )
+        .expect("read dependency document")
+        .expect("dependency document");
+        assert!(
+            dependency_text
+                .source_text
+                .to_ascii_lowercase()
+                .contains("class cl_demo_remote definition"),
+            "{}",
+            dependency_text.source_text
+        );
+
+        let encoded_query_uri = location
+            .uri
+            .to_string()
+            .replace("?workspace=", "?workspace%3D")
+            .replace("&artifact=", "%26artifact%3D");
+        let encoded_dependency_text = read_dependency_document(
+            &state,
+            &ReadDependencyDocumentParams {
+                uri: encoded_query_uri,
+            },
+        )
+        .expect("read encoded dependency document")
+        .expect("encoded dependency document");
+        assert!(
+            encoded_dependency_text
+                .source_text
+                .to_ascii_lowercase()
+                .contains("class cl_demo_remote definition"),
+            "{}",
+            encoded_dependency_text.source_text
+        );
+
+        let dependency_snapshot = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: location.uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text.source_text,
+                },
+            },
+        );
+        assert!(!dependency_snapshot.is_dependency);
+        assert_eq!(
+            dependency_snapshot.object_name.as_deref(),
+            Some("cl_demo_remote")
+        );
+        assert!(snapshot_for_uri(&state, location.uri.as_str()).is_some());
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn centralized_dependency_store_resolves_static_method_hover_and_definition() {
+        let workspace_path = temp_workspace_path("centralized_dependency_static_method");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/reports/ZMAIN")).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let source = "\
+REPORT zmain.
+START-OF-SELECTION.
+  zattp_cl_ar_dm_object=>main_processing_pre_step( ).
+";
+        fs::write(workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"), source).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&path_to_file_uri(
+            &workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
+        ));
+        let mut state = ServerState::default();
+        state.dependency_store_path_override = Some(
+            workspace_path
+                .join(".abapls-central")
+                .join("dependency-cache.sqlite3"),
+        );
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZATTP_CL_AR_DM_OBJECT".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zattp_cl_ar_dm_object".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zattp_cl_ar_dm_object DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS main_processing_pre_step.
+ENDCLASS.
+
+CLASS zattp_cl_ar_dm_object IMPLEMENTATION.
+  METHOD main_processing_pre_step.
+  ENDMETHOD.
+ENDCLASS.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        let method_offset = source.find("main_processing_pre_step").expect("method ref");
+        let position = offset_to_position(source, method_offset + 1).expect("position");
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(
+            location.uri.scheme().map(|scheme| scheme.as_str()),
+            Some("abapls-cache")
+        );
+
+        let hover_result = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        );
+        assert!(
+            hover_result.is_some(),
+            "expected hover for remote static method"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opened_central_dependency_document_builds_transitive_remote_requests() {
+        let workspace_path = temp_workspace_path("opened_central_dependency_follow_up");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/reports/ZMAIN")).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
+            "REPORT zmain.\nDATA lo_demo TYPE REF TO zcl_dep.\n",
+        )
+        .expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        state.dependency_store_path_override = Some(
+            workspace_path
+                .join(".abapls-central")
+                .join("dependency-cache.sqlite3"),
+        );
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zcl_dep DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    zcl_missing=>run( ).
+  ENDMETHOD.
+ENDCLASS.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        let dependency_uri = dependency_document_uri(&workspace_uri, 1, "zcl_dep");
+        let dependency_text = read_dependency_document(
+            &state,
+            &ReadDependencyDocumentParams {
+                uri: dependency_uri.clone(),
+            },
+        )
+        .expect("read dependency document")
+        .expect("dependency document");
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text.source_text,
+                },
+            },
+        );
+
+        assert!(!opened.is_dependency);
+        let request = build_remote_dependency_request(&mut state, &dependency_uri)
+            .expect("opened dependency request");
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == "zcl_missing"),
+            "request={request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 }

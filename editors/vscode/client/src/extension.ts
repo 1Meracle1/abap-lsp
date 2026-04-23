@@ -36,24 +36,16 @@ import {
 	selectDependencyObjects,
 } from "./adt";
 import {
-	dependencyModeLocalFirst,
-	ensureDependencyCacheUnits,
+	dependencyModeRemoteOnDemand,
 	ensureWorkspaceManifest,
+	inferManifestUnitSpec,
 	manifestFileName,
 	targetEditableWorkspaceFilePath,
 	targetLocalWorkspaceFilePath,
-	targetDependencyWorkspaceFilePath,
-	unknownSymbolModeLog,
-	unknownSymbolLogPath,
-	unknownSymbolModeRemote,
 	workspaceManifestPath,
 } from "./manifest";
 import {
-	hasCachedRemoteDependencyCandidate,
 	dedupeRemoteDependencyCandidates,
-	hasNegativeRemoteDependencyCandidate,
-	markNegativeRemoteDependencyCandidate,
-	negativeRemoteDependencyMarkerPath,
 	RemoteDependencyCandidate,
 	RemoteDependencyFetchPolicy,
 	RemoteDependencyScheduler,
@@ -82,7 +74,6 @@ interface RemoteDependencyResolveParams {
 	sourceUri: string;
 	sourceUris?: string[];
 	sourceCandidates?: Record<string, RemoteDependencyCandidate[]>;
-	unknownSymbolMode?: string;
 	remoteRequestParallelism?: number;
 	remoteRequestsPerSecond?: number;
 	candidates: RemoteDependencyCandidate[];
@@ -103,17 +94,40 @@ interface RemoteDependencyResolutionResult {
 }
 
 interface RemoteDependencyBatchContext {
-	dependencyCacheUnits: Array<{
-		objectRef: AdtObjectRef;
-		filePath: string;
-		sourceFiles: string[];
-	}>;
-	sourceFilesByKey: Map<string, string[]>;
+	centralArtifacts: DependencyArtifactPayload[];
+	negativeCandidates: RemoteDependencyCandidate[];
 	sourceUnitSidecarPathsByKey: Map<string, Promise<string[]>>;
 	localDependencyRootsByKey: Map<string, Promise<string[]>>;
 	dependencySourceModeByKey: Map<string, Promise<UnitDependencySourceMode>>;
 	localRootsBySidecarPath: Map<string, Promise<string[]>>;
 	dependencySourceModeBySidecarPath: Map<string, Promise<UnitDependencySourceMode | undefined>>;
+}
+
+interface DependencyCacheInitializationOptions {
+	dependencyCachePath?: string;
+}
+
+interface DependencyArtifactPayload {
+	packageName: string;
+	objectKind: string;
+	objectName: string;
+	objectUri: string;
+	objectType: string;
+	description: string;
+	fileExtension: "abap" | "xml";
+	sourceText: string;
+	fetchedAt: string;
+}
+
+interface StoreRemoteDependencyArtifactsParams {
+	workspaceUri: string;
+	connectionKey?: string;
+	artifacts: DependencyArtifactPayload[];
+	negative: RemoteDependencyCandidate[];
+}
+
+interface ReadDependencyDocumentResult {
+	sourceText: string;
 }
 
 interface RemoteDependencyWaveTelemetry {
@@ -131,14 +145,6 @@ interface RemoteDependencyWaveTelemetry {
 	requestKinds: Map<string, number>;
 	progressTimer?: NodeJS.Timeout;
 }
-
-interface CachedRemoteObjectMetadata extends AdtObjectRef {
-	fileExtension?: "abap" | "xml";
-	size?: number;
-	fetchedAt?: string;
-}
-
-type CachedRemoteObjectMetadataFile = CachedRemoteObjectMetadata | CachedRemoteObjectMetadata[];
 
 interface WorkspaceManifestUpdatedParams {
 	workspaceUri: string;
@@ -189,21 +195,27 @@ export function activate(context: vscode.ExtensionContext) {
 	const clientDocumentSelector = [
 		{ scheme: "file", language: "abap" },
 		{ scheme: "untitled", language: "abap" },
+		{ scheme: "abapls-cache", language: "abap" },
 	];
 	const foldingDocumentSelector: vscode.DocumentFilter[] = [
 		{ scheme: "file", language: "abap" },
 		{ scheme: "untitled", language: "abap" },
+		{ scheme: "abapls-cache", language: "abap" },
 	];
 
 	// Options to control the language client
 	const clientOptions: LanguageClientOptions = {
 		// Register the server for plain text documents
 		documentSelector: clientDocumentSelector,
+		initializationOptions: {
+			get dependencyCachePath(): string | undefined {
+				return configuredDependencyCachePath();
+			},
+		} satisfies DependencyCacheInitializationOptions,
 		synchronize: {
 			fileEvents: [
 				vscode.workspace.createFileSystemWatcher("**/.clientrc"),
 				vscode.workspace.createFileSystemWatcher("**/abapls.toml"),
-				vscode.workspace.createFileSystemWatcher("**/.abapls/cache/**/*.abap"),
 			],
 		},
 	};
@@ -214,6 +226,30 @@ export function activate(context: vscode.ExtensionContext) {
 		"ABAP Language Server",
 		serverOptions,
 		clientOptions,
+	);
+
+	context.subscriptions.push(
+		vscode.workspace.registerTextDocumentContentProvider("abapls-cache", {
+			async provideTextDocumentContent(uri) {
+				if (!client.isRunning()) {
+					return `* ABAP LSP dependency document is unavailable because the language server is not running.\n* ${uri.toString()}`;
+				}
+				try {
+					const result = await client.sendRequest<ReadDependencyDocumentResult | null>(
+						"abapls/readDependencyDocument",
+						{ uri: uri.toString(true) },
+					);
+					if (result !== null) {
+						return result.sourceText;
+					}
+				} catch (error) {
+					client.outputChannel.appendLine(
+						`[dependency-doc] ${uri.toString()}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+				return `* ABAP LSP could not load this cached dependency document.\n* ${uri.toString()}`;
+			},
+		}),
 	);
 
 	context.subscriptions.push(
@@ -228,6 +264,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	registerCommands(context);
 	registerClientNotifications(context);
+	registerConfigurationListeners(context);
 
 	// Start the client. This will also launch the server
 	void startLanguageClient();
@@ -314,6 +351,30 @@ function describeServerConnection(): string {
 			? `${configured}.exe`
 			: configured;
 	return `stdio:${serverPath}`;
+}
+
+function configuredDependencyCachePath(): string | undefined {
+	const configured = vscode.workspace
+		.getConfiguration("abap-ls")
+		.get<string>("dependencyCache.path")
+		?.trim();
+	return configured || undefined;
+}
+
+function registerConfigurationListeners(context: vscode.ExtensionContext): void {
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((event) => {
+			if (!event.affectsConfiguration("abap-ls.dependencyCache.path")) {
+				return;
+			}
+			void runClientLifecycle(async () => {
+				cancelAllAdtFetches();
+				clearProgressUi();
+				await stopLanguageClient();
+				await startLanguageClient();
+			});
+		}),
+	);
 }
 
 function logSemanticTokenEditorContext(
@@ -495,14 +556,11 @@ function registerCommands(context: vscode.ExtensionContext): void {
 				return;
 			}
 
-			const cacheDir = path.join(workspaceFolder.uri.fsPath, ".abapls", "cache");
-			await fs.promises.rm(cacheDir, { recursive: true, force: true });
-			await fs.promises.mkdir(cacheDir, { recursive: true });
 			clearRemoteDependencyCaches(workspaceFolder);
 			await client.sendNotification("abapls/dependencyCacheCleared", {
 				workspaceUri: workspaceFolder.uri.toString(),
 			} satisfies WorkspaceManifestUpdatedParams);
-			vscode.window.showInformationMessage("ABAP LSP dependency cache cleared.");
+			vscode.window.showInformationMessage("ABAP LSP dependency store cleared.");
 		}),
 	);
 
@@ -829,9 +887,7 @@ async function resolveRemoteDependencies(
 	}
 
 	const candidates = dedupeRemoteDependencyCandidates(params.candidates);
-	const fetchCandidates: RemoteDependencyCandidate[] = [];
-	const logCandidates: RemoteDependencyCandidate[] = [];
-	const unknownSymbolMode = normalizeUnknownSymbolMode(params.unknownSymbolMode);
+	const fetchCandidates = [...candidates];
 	const candidateSourceUris = candidateSourceUriMap(params, sourceUris);
 	const batchContext = createRemoteDependencyBatchContext();
 	const fetchPolicy: RemoteDependencyFetchPolicy = {
@@ -839,13 +895,6 @@ async function resolveRemoteDependencies(
 		remoteRequestsPerSecond: params.remoteRequestsPerSecond,
 	};
 	const resolvedFetchPolicy = resolveRemoteDependencyFetchPolicy(fetchPolicy);
-	for (const candidate of candidates) {
-		if (shouldLogUnknownSymbolCandidate(candidate, unknownSymbolMode)) {
-			logCandidates.push(candidate);
-			continue;
-		}
-		fetchCandidates.push(candidate);
-	}
 	const telemetry = createRemoteDependencyWaveTelemetry(
 		workspaceFolder,
 		fetchCandidates.length,
@@ -888,12 +937,6 @@ async function resolveRemoteDependencies(
 	const fetched: string[] = [];
 	const failed: RemoteDependencyCandidate[] = [];
 	try {
-		if (logCandidates.length > 0) {
-			for (const sourceUri of sourceUris) {
-				await appendUnknownSymbolLog(workspaceFolder, sourceUri, logCandidates);
-			}
-		}
-
 		if (fetchCandidates.length > 0) {
 			const total = fetchCandidates.length;
 			try {
@@ -1137,7 +1180,7 @@ async function maybePromptToCreateWorkspaceManifest(
 	try {
 		const createAction = `Create ${manifestFileName}`;
 		const action = await vscode.window.showInformationMessage(
-			`Create a local-first ${manifestFileName} in "${workspaceFolder.name}"?`,
+			`Create ${manifestFileName} in "${workspaceFolder.name}"?`,
 			createAction,
 			"Not now",
 		);
@@ -1163,8 +1206,7 @@ async function createWorkspaceManifest(
 	const manifestPath = workspaceManifestPath(workspaceFolder);
 	const alreadyExists = await fileExists(manifestPath);
 	const manifestUri = await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeLocalFirst,
-		unknownSymbolMode: unknownSymbolModeLog,
+		dependencyMode: dependencyModeRemoteOnDemand,
 	});
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
 	dismissedWorkspaceConfigPrompts.add(workspaceFolder.uri.toString());
@@ -1176,8 +1218,8 @@ async function createWorkspaceManifest(
 
 	void vscode.window.showInformationMessage(
 		alreadyExists
-			? `${manifestFileName} already exists. Use dependency_mode = "remote-on-demand" and unknown_symbol_mode = "remote" to enable ADT dependency fetches later.`
-			: `Created local-first ${manifestFileName}. Set dependency_mode = "remote-on-demand" and unknown_symbol_mode = "remote" to enable ADT dependency fetches later, or keep unknown_symbol_mode = "log" to capture candidates in ${unknownSymbolLogPath}.`,
+			? `${manifestFileName} already exists. Configure [dependency_store] to enable centralized ADT dependency fetches.`
+			: `Created ${manifestFileName}. Configure [dependency_store] to enable centralized ADT dependency fetches.`,
 	);
 }
 
@@ -1191,8 +1233,7 @@ async function createLinkedProject(
 	}
 
 	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeLocalFirst,
-		unknownSymbolMode: unknownSymbolModeLog,
+		dependencyMode: dependencyModeRemoteOnDemand,
 	});
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
 	dismissedWorkspaceConfigPrompts.add(workspaceFolder.uri.toString());
@@ -1237,7 +1278,6 @@ async function addEditableAdtObjectToWorkspace(
 	}
 
 	const filePath = targetEditableWorkspaceFilePath(workspaceFolder, objectRef);
-	const cachedPath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
 	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 
 	let source: string;
@@ -1245,10 +1285,6 @@ async function addEditableAdtObjectToWorkspace(
 	if (await fileExists(filePath)) {
 		source = await fs.promises.readFile(filePath, "utf8");
 		fileExisted = true;
-	} else if (await fileExists(cachedPath)) {
-		await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-		await fs.promises.rename(cachedPath, filePath);
-		source = await fs.promises.readFile(filePath, "utf8");
 	} else {
 		const connection = await getSapConnectionConfig(context, workspaceFolder);
 		if (!connection) {
@@ -1258,12 +1294,10 @@ async function addEditableAdtObjectToWorkspace(
 		const adtClient = createAdtClient(connection);
 		source = await adtClient.fetchObjectSource(objectRef.uri);
 		await fs.promises.writeFile(filePath, source, "utf8");
-		await adtClient.cacheRemoteObject(workspaceFolder, objectRef, source);
 	}
 
 	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeLocalFirst,
-		unknownSymbolMode: unknownSymbolModeLog,
+		dependencyMode: dependencyModeRemoteOnDemand,
 	});
 	// Server only loads abapls.toml at workspace init or on this notification;
 	// without it, remote-on-demand resolution stays disabled until restart.
@@ -1308,13 +1342,11 @@ async function addEditableFunctionGroupToWorkspace(
 		await fs.promises.mkdir(path.dirname(member.filePath), { recursive: true });
 		const source = await adtClient.fetchObjectSource(member.objectRef.uri);
 		await fs.promises.writeFile(member.filePath, source, "utf8");
-		await adtClient.cacheRemoteObject(workspaceFolder, member.objectRef, source);
 		createdFiles.push(member.filePath);
 	}
 
 	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeLocalFirst,
-		unknownSymbolMode: unknownSymbolModeLog,
+		dependencyMode: dependencyModeRemoteOnDemand,
 	});
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
 
@@ -1418,6 +1450,48 @@ function lastAdtUriSegment(uri: string): string {
 	return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
 }
 
+function dependencyArtifactPayload(
+	objectRef: AdtObjectRef,
+	artifact: { body: string; fileExtension: "abap" | "xml" },
+): DependencyArtifactPayload {
+	const manifestUnit = inferManifestUnitSpec(
+		objectRef,
+		artifact.fileExtension === "xml" ? "dependency.xml" : "dependency.abap",
+	);
+	return {
+		packageName: objectRef.packageName ?? "",
+		objectKind: manifestUnit.kind,
+		objectName: objectRef.name,
+		objectUri: objectRef.uri,
+		objectType: objectRef.type,
+		description: objectRef.description ?? "",
+		fileExtension: artifact.fileExtension,
+		sourceText: artifact.body,
+		fetchedAt: new Date().toISOString(),
+	};
+}
+
+function workspaceConnectionCacheKey(workspaceFolder: vscode.WorkspaceFolder): string {
+	const baseUrl = vscode.workspace
+		.getConfiguration("abap-ls", workspaceFolder.uri)
+		.get<string>("sap.baseUrl", "")
+		.trim()
+		.toLowerCase();
+	return baseUrl || "default";
+}
+
+async function recordNegativeRemoteDependencyCandidate(
+	workspaceFolder: vscode.WorkspaceFolder,
+	batchContext: RemoteDependencyBatchContext,
+	candidate: RemoteDependencyCandidate,
+	reason: string,
+): Promise<void> {
+	void workspaceFolder;
+	void reason;
+	negativeRemoteDependencyCache.add(remoteDependencyCacheKey(workspaceFolder, candidate));
+	batchContext.negativeCandidates.push(candidate);
+}
+
 async function persistFetchedDependencyArtifact(
 	workspaceFolder: vscode.WorkspaceFolder,
 	batchContext: RemoteDependencyBatchContext,
@@ -1425,16 +1499,9 @@ async function persistFetchedDependencyArtifact(
 	artifact: { body: string; fileExtension: "abap" | "xml" },
 	sourceUris: readonly string[],
 ): Promise<void> {
-	const filePath = targetDependencyWorkspaceFilePath(workspaceFolder, objectRef);
-	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-	await fs.promises.writeFile(filePath, artifact.body, "utf8");
-	await writeCachedRemoteObjectMetadata(workspaceFolder, objectRef, artifact.body, artifact.fileExtension);
-	queueDependencyCacheUnit(
-		batchContext,
-		objectRef,
-		filePath,
-		manifestDependencySourceFilesCached(batchContext, workspaceFolder, sourceUris),
-	);
+	void workspaceFolder;
+	void sourceUris;
+	batchContext.centralArtifacts.push(dependencyArtifactPayload(objectRef, artifact));
 }
 
 async function resolveRemoteDependencyCandidate(
@@ -1446,28 +1513,12 @@ async function resolveRemoteDependencyCandidate(
 	telemetry: RemoteDependencyWaveTelemetry,
 ): Promise<RemoteDependencyResolutionResult> {
 	const cacheKey = remoteDependencyCacheKey(workspaceFolder, candidate);
-	if (await hasCachedRemoteDependencyCandidate(workspaceFolder.uri.fsPath, candidate)) {
-		await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-		queueCachedRemoteDependencyMetadata(
-			batchContext,
-			workspaceFolder,
-			await readCachedRemoteObjectMetadata(workspaceFolder, candidate.name),
-			sourceUris,
-		);
-		return { candidate, fetchedName: candidate.name };
-	}
 
 	const existing = pendingRemoteDependencyFetches.get(cacheKey);
 	if (existing) {
 		const result = await existing;
 		if (result.fetchedName) {
 			await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-			queueCachedRemoteDependencyMetadata(
-				batchContext,
-				workspaceFolder,
-				await readCachedRemoteObjectMetadata(workspaceFolder, result.fetchedName),
-				sourceUris,
-			);
 		}
 		return result;
 	}
@@ -1513,8 +1564,7 @@ async function resolveRemoteDependencyCandidate(
 				}
 			}
 
-			const hasNegativeCandidate = negativeRemoteDependencyCache.has(cacheKey)
-				|| await hasNegativeRemoteDependencyCandidate(workspaceFolder.uri.fsPath, candidate);
+			const hasNegativeCandidate = negativeRemoteDependencyCache.has(cacheKey);
 			if (hasNegativeCandidate) {
 				negativeRemoteDependencyCache.add(cacheKey);
 				const localResult = dependencySourceMode === "adt-first"
@@ -1544,9 +1594,9 @@ async function resolveRemoteDependencyCandidate(
 					return { candidate, fetchedName: candidate.name };
 				}
 				if (!shouldSearchAfterDirectFetchFailure(candidate)) {
-					negativeRemoteDependencyCache.add(cacheKey);
-					await markNegativeRemoteDependencyCandidate(
-						workspaceFolder.uri.fsPath,
+					await recordNegativeRemoteDependencyCandidate(
+						workspaceFolder,
+						batchContext,
 						candidate,
 						"fetch-failed",
 					);
@@ -1563,9 +1613,9 @@ async function resolveRemoteDependencyCandidate(
 
 			const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
 			if (hasOnlyUnsupportedExactDomainMatches(candidate.name, objects)) {
-				negativeRemoteDependencyCache.add(cacheKey);
-				await markNegativeRemoteDependencyCandidate(
-					workspaceFolder.uri.fsPath,
+				await recordNegativeRemoteDependencyCandidate(
+					workspaceFolder,
+					batchContext,
 					candidate,
 					"exact-match-domain-only",
 				);
@@ -1576,9 +1626,9 @@ async function resolveRemoteDependencyCandidate(
 			}
 			const objectRefs = selectDependencyObjects(candidate.name, objects, candidate.kind);
 			if (objectRefs.length === 0) {
-				negativeRemoteDependencyCache.add(cacheKey);
-				await markNegativeRemoteDependencyCandidate(
-					workspaceFolder.uri.fsPath,
+				await recordNegativeRemoteDependencyCandidate(
+					workspaceFolder,
+					batchContext,
 					candidate,
 					"no-supported-match",
 				);
@@ -1598,9 +1648,9 @@ async function resolveRemoteDependencyCandidate(
 				localDependencyRoots,
 			);
 			if (!fetchedAny) {
-				negativeRemoteDependencyCache.add(cacheKey);
-				await markNegativeRemoteDependencyCandidate(
-					workspaceFolder.uri.fsPath,
+				await recordNegativeRemoteDependencyCandidate(
+					workspaceFolder,
+					batchContext,
 					candidate,
 					"fetch-failed",
 				);
@@ -1612,7 +1662,12 @@ async function resolveRemoteDependencyCandidate(
 			if (error instanceof AdtRequestCancelledError) {
 				return { candidate };
 			}
-			negativeRemoteDependencyCache.add(cacheKey);
+			await recordNegativeRemoteDependencyCandidate(
+				workspaceFolder,
+				batchContext,
+				candidate,
+				"fetch-failed",
+			);
 			console.warn(`ABAP LSP remote dependency lookup failed for ${candidate.name}:`, error);
 			return { candidate, failed: true };
 		} finally {
@@ -2045,8 +2100,7 @@ async function createLocalWorkspaceObject(
 	objectName: string,
 ): Promise<void> {
 	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeLocalFirst,
-		unknownSymbolMode: unknownSymbolModeLog,
+		dependencyMode: dependencyModeRemoteOnDemand,
 	});
 
 	const filePath = targetLocalWorkspaceFilePath(workspaceFolder, template.kind, objectName);
@@ -2161,41 +2215,10 @@ function candidateSourceUriMap(
 	);
 }
 
-function manifestDependencySourceFiles(
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): string[] {
-	const deduped = new Set<string>();
-	const sourceFiles: string[] = [];
-
-	for (const sourceUri of sourceUris) {
-		try {
-			const uri = vscode.Uri.parse(sourceUri);
-			if (uri.scheme !== "file") {
-				continue;
-			}
-			const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath);
-			if (!relativePath || relativePath.startsWith("..")) {
-				continue;
-			}
-			const normalized = relativePath.replace(/\\/g, "/");
-			if (deduped.has(normalized)) {
-				continue;
-			}
-			deduped.add(normalized);
-			sourceFiles.push(normalized);
-		} catch {
-			// Ignore malformed source URIs; the dependency can still be cached locally.
-		}
-	}
-
-	return sourceFiles;
-}
-
 function createRemoteDependencyBatchContext(): RemoteDependencyBatchContext {
 	return {
-		dependencyCacheUnits: [],
-		sourceFilesByKey: new Map(),
+		centralArtifacts: [],
+		negativeCandidates: [],
 		sourceUnitSidecarPathsByKey: new Map(),
 		localDependencyRootsByKey: new Map(),
 		dependencySourceModeByKey: new Map(),
@@ -2208,123 +2231,32 @@ function remoteDependencySourceKey(sourceUris: readonly string[]): string {
 	return sourceUris.map((uri) => uri.trim()).filter((uri) => uri.length > 0).join("\n");
 }
 
-function manifestDependencySourceFilesCached(
-	batchContext: RemoteDependencyBatchContext,
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): string[] {
-	const key = remoteDependencySourceKey(sourceUris);
-	let cached = batchContext.sourceFilesByKey.get(key);
-	if (!cached) {
-		cached = manifestDependencySourceFiles(workspaceFolder, sourceUris);
-		batchContext.sourceFilesByKey.set(key, cached);
-	}
-	return cached;
-}
-
-function queueDependencyCacheUnit(
-	batchContext: RemoteDependencyBatchContext,
-	objectRef: AdtObjectRef,
-	filePath: string,
-	sourceFiles: string[],
-): void {
-	batchContext.dependencyCacheUnits.push({
-		objectRef,
-		filePath,
-		sourceFiles,
-	});
-}
-
-function queueCachedRemoteDependencyMetadata(
-	batchContext: RemoteDependencyBatchContext,
-	workspaceFolder: vscode.WorkspaceFolder,
-	entries: readonly CachedRemoteObjectMetadata[],
-	sourceUris: readonly string[],
-): void {
-	const sourceFiles = manifestDependencySourceFilesCached(batchContext, workspaceFolder, sourceUris);
-	for (const entry of entries) {
-		queueDependencyCacheUnit(
-			batchContext,
-			entry,
-			targetDependencyWorkspaceFilePath(workspaceFolder, entry),
-			sourceFiles,
-		);
-	}
-}
-
 async function flushPendingDependencyCacheUnits(
 	workspaceFolder: vscode.WorkspaceFolder,
 	batchContext: RemoteDependencyBatchContext,
 ): Promise<void> {
-	if (batchContext.dependencyCacheUnits.length === 0) {
+	if (
+		batchContext.centralArtifacts.length === 0 &&
+		batchContext.negativeCandidates.length === 0
+	) {
 		return;
 	}
-
-	await ensureDependencyCacheUnits(workspaceFolder, batchContext.dependencyCacheUnits);
-	batchContext.dependencyCacheUnits = [];
-}
-
-async function readCachedRemoteObjectMetadata(
-	workspaceFolder: vscode.WorkspaceFolder,
-	objectName: string,
-): Promise<CachedRemoteObjectMetadata[]> {
-	const metadataPath = path.join(
-		workspaceFolder.uri.fsPath,
-		".abapls",
-		"cache",
-		"objects",
-		`${encodeURIComponent(objectName)}.json`,
-	);
-	try {
-		const parsed = JSON.parse(await fs.promises.readFile(metadataPath, "utf8")) as CachedRemoteObjectMetadataFile;
-		return Array.isArray(parsed) ? parsed : [parsed];
-	} catch {
-		return [];
-	}
-}
-
-async function writeCachedRemoteObjectMetadata(
-	workspaceFolder: vscode.WorkspaceFolder,
-	objectRef: AdtObjectRef,
-	source: string,
-	fileExtension: "abap" | "xml",
-): Promise<void> {
-	const objectsDir = path.join(workspaceFolder.uri.fsPath, ".abapls", "cache", "objects");
-	await fs.promises.mkdir(objectsDir, { recursive: true });
-
-	const metadataPath = path.join(objectsDir, `${encodeURIComponent(objectRef.name)}.json`);
-	const existing = await readCachedRemoteObjectMetadata(workspaceFolder, objectRef.name);
-	const nextEntry: CachedRemoteObjectMetadata = {
-		...objectRef,
-		fileExtension,
-		size: source.length,
-		fetchedAt: new Date().toISOString(),
-	};
-	const updated = existing.filter((entry) =>
-		entry.uri.toLowerCase() !== objectRef.uri.toLowerCase() ||
-		entry.type.toUpperCase() !== objectRef.type.toUpperCase(),
-	);
-	updated.push(nextEntry);
-	await fs.promises.writeFile(
-		metadataPath,
-		JSON.stringify(updated, null, 2),
-		"utf8",
-	);
+	await client.sendRequest("abapls/storeRemoteDependencyArtifacts", {
+		workspaceUri: workspaceFolder.uri.toString(),
+		connectionKey: workspaceConnectionCacheKey(workspaceFolder),
+		artifacts: batchContext.centralArtifacts,
+		negative: dedupeRemoteDependencyCandidates(batchContext.negativeCandidates),
+	} satisfies StoreRemoteDependencyArtifactsParams);
+	batchContext.centralArtifacts = [];
+	batchContext.negativeCandidates = [];
 }
 
 async function clearNegativeRemoteDependencyCandidate(
 	workspaceFolder: vscode.WorkspaceFolder,
 	candidate: RemoteDependencyCandidate,
 ): Promise<void> {
+	void workspaceFolder;
 	negativeRemoteDependencyCache.delete(remoteDependencyCacheKey(workspaceFolder, candidate));
-	try {
-		await fs.promises.rm(
-			negativeRemoteDependencyMarkerPath(workspaceFolder.uri.fsPath, candidate),
-			{ force: true },
-		);
-	} catch {
-		// Ignore marker cleanup failures; successful dependency resolution already won.
-	}
 }
 
 async function findLocalDependencyExport(
@@ -2726,39 +2658,6 @@ function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): v
 		}
 	}
 	remoteDependencySchedulers.delete(workspaceFolder.uri.toString());
-}
-
-function normalizeUnknownSymbolMode(value: string | undefined): string {
-	return value?.trim().toLowerCase() === unknownSymbolModeLog
-		? unknownSymbolModeLog
-		: unknownSymbolModeRemote;
-}
-
-function shouldLogUnknownSymbolCandidate(
-	candidate: RemoteDependencyCandidate,
-	unknownSymbolMode: string,
-): boolean {
-	return unknownSymbolMode === unknownSymbolModeLog && candidate.kind !== "include";
-}
-
-async function appendUnknownSymbolLog(
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUri: string,
-	candidates: RemoteDependencyCandidate[],
-): Promise<void> {
-	const dedupedCandidates = dedupeRemoteDependencyCandidates(candidates);
-	if (dedupedCandidates.length === 0) {
-		return;
-	}
-
-	const logPath = path.join(workspaceFolder.uri.fsPath, unknownSymbolLogPath);
-	const timestamp = new Date().toISOString();
-	const lines = dedupedCandidates.map((candidate) =>
-		`${timestamp}\t${sourceUri}\t${candidate.kind}\t${candidate.name}\n`,
-	);
-
-	await fs.promises.mkdir(path.dirname(logPath), { recursive: true });
-	await fs.promises.appendFile(logPath, lines.join(""), "utf8");
 }
 
 function remoteDependencySchedulerForWorkspace(

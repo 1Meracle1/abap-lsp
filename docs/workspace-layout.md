@@ -7,7 +7,7 @@ The current direction is:
 - keep the root `abapls.toml` small and human-editable
 - discover normal project units from `src/` by convention
 - use optional sidecar files only where conventions need help
-- keep external dependency state under `.abapls/cache`
+- keep remote dependency state in a centralized SQLite store outside the workspace
 
 ## Root Manifest
 
@@ -19,14 +19,17 @@ Typical shape:
 version = 1
 connection = "default"
 
+[dependency_store]
+product_version = "SAP NETWEAVER"
+default_package_version = "7.50"
+
 [resolution]
 dependency_mode = "remote-on-demand"
-cache_dir = ".abapls/cache"
-unknown_symbol_mode = "remote"
 remote_requests_per_second = 24
 ```
 
 The root manifest does not need explicit `[[unit]]` entries for normal `src` content.
+The optional `[dependency_store]` section enables centralized remote dependency resolution and versions cached ABAP/DDIC artifacts by SAP product/package version.
 
 ## `src/` Discovery
 
@@ -170,17 +173,24 @@ Behavior:
 - `local-only`: only use local exported SAP roots for dependencies from this unit
 - `adt-first`: prefer ADT, but fall back to local exported SAP roots if ADT fetch fails
 
-## External Dependency Cache
+## Central Dependency Store
 
-External dependency state lives under `.abapls/cache`.
+Remote dependency state lives in a centralized SQLite store owned by Rust.
 
 Current responsibilities:
 
-- cached fetched dependency source files
-- cache-side dependency manifests that describe dependency layers per source file
-- negative lookup markers and object metadata
+- cached fetched ABAP and DDIC artifacts
+- versioned symbol lookup for `go-to-definition`, hover, completion, and diagnostics
+- negative lookup tracking scoped by SAP connection and dependency profile
+- read-only `abapls-cache:` virtual documents opened by the editor
 
-This cache is implementation-oriented. It is not intended to be edited manually.
+Default location:
+
+- Windows: `%LOCALAPPDATA%/abap-ls/dependency-cache.sqlite3`
+- macOS: `~/Library/Caches/abap-ls/dependency-cache.sqlite3`
+- Linux: `${XDG_CACHE_HOME:-~/.cache}/abap-ls/dependency-cache.sqlite3`
+
+The location can be overridden with the editor-local VS Code setting `abap-ls.dependencyCache.path`.
 
 ## Design Intention
 
@@ -189,6 +199,6 @@ The intended split is:
 - root `abapls.toml`: workspace settings
 - `src/`: primary source of truth for local project units
 - `abapls-unit.toml`: exceptional ownership and sourcing hints
-- `.abapls/cache`: external dependency state
+- central dependency store: remote ABAP/DDIC state shared across workspaces with matching dependency profiles
 
-This keeps the user-facing project structure simple while still allowing layered dependency loading and optional offline/exported SAP source usage.
+This keeps the user-facing project structure simple while still allowing layered dependency loading and optional offline/exported SAP source usage without materializing transient dependencies in the workspace.

@@ -39,7 +39,7 @@
       },
       {
         "command": "abap-ls.createWorkspaceManifest",
-        "title": "ABAP LSP: Create Local-First Workspace Manifest"
+        "title": "ABAP LSP: Create Workspace Manifest"
       },
       {
         "command": "abap-ls.refreshDependencyCache",
@@ -96,6 +96,12 @@
           "type": "string",
           "default": "127.0.0.1:9472",
           "description": "host:port when serverTransport is \"tcp\" (or when __ABAP_LSP_CONNECT is set). Start the server with e.g. abap_lsp_server --listen 127.0.0.1:9472 or ABAP_LSP_LISTEN=127.0.0.1:9472."
+        },
+        "abap-ls.dependencyCache.path": {
+          "scope": "machine-overridable",
+          "type": "string",
+          "default": "",
+          "description": "Override the centralized ABAP dependency cache database path. Leave empty to use the operating system cache directory."
         },
         "abap-ls.sap.baseUrl": {
           "scope": "resource",
