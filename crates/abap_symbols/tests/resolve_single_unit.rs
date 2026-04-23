@@ -4549,7 +4549,7 @@ ENDLOOP.
 }
 
 #[test]
-fn reports_incompatible_assignment_for_field_symbol_bound_to_string_line_and_xstring_source() {
+fn allows_assignment_for_field_symbol_bound_to_string_line_and_xstring_source() {
     let src = r#"
 TYPES: tt_dm_obj_arc TYPE STANDARD TABLE OF string.
 DATA lt_dm_obj_arc TYPE tt_dm_obj_arc.
@@ -4567,7 +4567,7 @@ APPEND INITIAL LINE TO lt_dm_obj_arc ASSIGNING <ls_obj_data>.
     );
 
     assert!(
-        unit.diagnostics.iter().any(|diag| {
+        !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::IncompatibleAssignmentType
                 && diag.message.contains("LINE OF lt_dm_obj_arc")
                 && diag.message.contains("xstring")
@@ -13435,6 +13435,69 @@ START-OF-SELECTION.
         .filter(|diag| diag.kind == DiagnosticKind::IncompatibleAssignmentType)
         .collect();
     assert_eq!(diags.len(), 2, "{diags:#?}");
+}
+
+#[test]
+fn allows_assignment_conversions_between_byte_like_and_other_elementary_scalars() {
+    let src = r#"
+DATA lv_value TYPE i.
+DATA lv_byte TYPE x LENGTH 1.
+DATA lv_bytes TYPE xstring.
+DATA lv_text TYPE string.
+
+START-OF-SELECTION.
+  lv_value = lv_byte.
+  lv_byte = lv_value.
+  lv_value = lv_bytes.
+  lv_text = lv_bytes.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///compatible_byte_like_assignments.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::IncompatibleAssignmentType),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_incompatible_assignment_between_date_and_time_scalars() {
+    let src = r#"
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+
+START-OF-SELECTION.
+  lv_date = lv_time.
+  lv_time = lv_date.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///incompatible_date_time_assignments.abap",
+        src,
+        &parsed,
+    );
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleAssignmentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().any(|diag| {
+        diag.message
+            .contains("assignment target 'd' is incompatible with source 't'")
+    }));
+    assert!(diags.iter().any(|diag| {
+        diag.message
+            .contains("assignment target 't' is incompatible with source 'd'")
+    }));
 }
 
 #[test]

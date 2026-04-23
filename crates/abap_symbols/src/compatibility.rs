@@ -21,8 +21,9 @@ enum ClassifiedType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScalarCompatibilityKind {
     Generic,
-    ByteLike,
-    Other,
+    Date,
+    Time,
+    Elementary,
 }
 
 pub fn parameter_is_required(section: MethodParameterSection, is_optional: bool) -> bool {
@@ -162,7 +163,7 @@ fn classify_normalized_type_fact(
         return Some(if fact.structure.is_some() {
             ClassifiedType::Structure
         } else {
-            ClassifiedType::Scalar(ScalarCompatibilityKind::Other)
+            ClassifiedType::Scalar(ScalarCompatibilityKind::Elementary)
         });
     };
     if declared_type.is_ref {
@@ -194,7 +195,7 @@ fn classify_normalized_type_fact(
     if fact.structure.is_some() {
         return Some(ClassifiedType::Structure);
     }
-    Some(ClassifiedType::Scalar(ScalarCompatibilityKind::Other))
+    Some(ClassifiedType::Scalar(ScalarCompatibilityKind::Elementary))
 }
 
 fn scalar_kinds_compatible(
@@ -204,18 +205,21 @@ fn scalar_kinds_compatible(
     match (expected, actual) {
         (ScalarCompatibilityKind::Generic, _)
         | (_, ScalarCompatibilityKind::Generic)
-        | (ScalarCompatibilityKind::Other, ScalarCompatibilityKind::Other)
-        | (ScalarCompatibilityKind::ByteLike, ScalarCompatibilityKind::ByteLike) => Some(true),
-        (ScalarCompatibilityKind::ByteLike, ScalarCompatibilityKind::Other)
-        | (ScalarCompatibilityKind::Other, ScalarCompatibilityKind::ByteLike) => Some(false),
+        | (ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Date)
+        | (ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Time)
+        | (ScalarCompatibilityKind::Elementary, _)
+        | (_, ScalarCompatibilityKind::Elementary) => Some(true),
+        (ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Time)
+        | (ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date) => Some(false),
     }
 }
 
 fn scalar_compatibility_kind(name: &str) -> ScalarCompatibilityKind {
     match name {
         "any" | "data" => ScalarCompatibilityKind::Generic,
-        "x" | "xstring" => ScalarCompatibilityKind::ByteLike,
-        _ => ScalarCompatibilityKind::Other,
+        "d" => ScalarCompatibilityKind::Date,
+        "t" => ScalarCompatibilityKind::Time,
+        _ => ScalarCompatibilityKind::Elementary,
     }
 }
 
@@ -439,27 +443,35 @@ mod tests {
     }
 
     #[test]
-    fn marks_byte_like_scalars_as_hard_incompatible_with_other_scalar_kinds() {
+    fn allows_elementary_scalar_conversions_except_between_date_and_time() {
         assert_eq!(
             scalar_kinds_compatible(
-                ScalarCompatibilityKind::ByteLike,
-                ScalarCompatibilityKind::Other,
-            ),
-            Some(false)
-        );
-        assert_eq!(
-            scalar_kinds_compatible(
-                ScalarCompatibilityKind::Other,
-                ScalarCompatibilityKind::ByteLike,
-            ),
-            Some(false)
-        );
-        assert_eq!(
-            scalar_kinds_compatible(
-                ScalarCompatibilityKind::ByteLike,
-                ScalarCompatibilityKind::ByteLike,
+                ScalarCompatibilityKind::Elementary,
+                ScalarCompatibilityKind::Elementary,
             ),
             Some(true)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::Date,
+                ScalarCompatibilityKind::Elementary,
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::Time,
+                ScalarCompatibilityKind::Elementary,
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Time),
+            Some(false)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date),
+            Some(false)
         );
     }
 }
