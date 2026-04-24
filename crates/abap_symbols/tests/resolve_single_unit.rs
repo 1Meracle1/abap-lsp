@@ -4687,6 +4687,70 @@ ENDLOOP.
 }
 
 #[test]
+fn project_infers_loop_inline_target_line_type_from_cross_unit_table_type() {
+    let main_src = r#"
+TYPES: BEGIN OF ty_selopt,
+         low TYPE string,
+       END OF ty_selopt.
+
+DATA lt_bizstep_ex TYPE zattp_t_param_value.
+DATA ls_bizstep_p TYPE ty_selopt.
+
+LOOP AT lt_bizstep_ex INTO DATA(ls_bizstep_ex).
+  ls_bizstep_p-low = ls_bizstep_ex.
+ENDLOOP.
+"#;
+    let table_src =
+        "TYPES zattp_t_param_value TYPE STANDARD TABLE OF zattp_param_value WITH EMPTY KEY.";
+    let element_src = "TYPES zattp_param_value TYPE string.";
+    let main_parse = parse(main_src);
+    let table_parse = parse(table_src);
+    let element_parse = parse(element_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///zattp_t_param_value.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+        ProjectInput {
+            uri: "file:///zattp_param_value.abap",
+            source: element_src,
+            parse: &element_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    let ls_bizstep_ex = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "ls_bizstep_ex"
+        })
+        .expect("loop inline target");
+    let declared_type = ls_bizstep_ex
+        .declared_type
+        .as_ref()
+        .expect("loop target declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "zattp_param_value");
+    assert!(declared_type.field_path.is_empty());
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("ls_bizstep_ex")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn loop_inline_named_string_table_target_stays_assignment_compatible_with_like_line_of_field_symbol()
  {
     let src = r#"

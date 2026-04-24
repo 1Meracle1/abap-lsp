@@ -11608,6 +11608,131 @@ ENDCLASS."
     }
 
     #[test]
+    fn opened_dependency_file_uses_cached_table_line_type_for_loop_inline_target() {
+        let workspace_path = temp_workspace_path("opened_dependency_loop_inline_table_line");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "global-class".to_string(),
+                        object_name: "ZATTP_CL_AR_DM_OBJECT".to_string(),
+                        object_uri: "/sap/bc/adt/oo/classes/zattp_cl_ar_dm_object".to_string(),
+                        object_type: "CLAS/OC".to_string(),
+                        description: "Remote class".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+CLASS zattp_cl_ar_dm_object DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zattp_cl_ar_dm_object IMPLEMENTATION.
+  METHOD run.
+    TYPES: BEGIN OF ty_selopt,
+             low TYPE string,
+           END OF ty_selopt.
+    DATA lt_bizstep_ex TYPE zattp_t_param_value.
+    DATA ls_bizstep_p TYPE ty_selopt.
+
+    LOOP AT lt_bizstep_ex INTO DATA(ls_bizstep_ex).
+      ls_bizstep_p-low = ls_bizstep_ex.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS."
+                            .to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "ZATTP_T_PARAM_VALUE".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/zattp_t_param_value".to_string(),
+                        object_type: "TTYP/DA".to_string(),
+                        description: "Parameter values".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: "TYPES zattp_t_param_value TYPE STANDARD TABLE OF zattp_param_value WITH EMPTY KEY.".to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "ddic-data-element".to_string(),
+                        object_name: "ZATTP_PARAM_VALUE".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/dataelements/zattp_param_value".to_string(),
+                        object_type: "DTEL/DE".to_string(),
+                        description: "Parameter value".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: "TYPES zattp_param_value TYPE string.".to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        let dependency_uri =
+            dependency_uri_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text,
+                },
+            },
+        );
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace
+            .cache
+            .get(&dependency_uri)
+            .expect("opened dependency snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(
+            diagnostics.iter().all(|diagnostic| {
+                !(diagnostic
+                    .message
+                    .contains("assignment target 'string' is incompatible with source")
+                    && diagnostic.message.contains("zattp_t_param_value"))
+            }),
+            "{diagnostics:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn closed_dependency_batches_collect_full_transitive_candidates() {
         let workspace_path = temp_workspace_path("closed_dependency_batch_remote_candidates");
         fs::create_dir_all(&workspace_path).expect("workspace dir");

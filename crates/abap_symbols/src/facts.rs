@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
     ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
-    MethodParameterSection, NamedArgumentTarget, Resolution, TypeFactData, UnitAnalysis,
-    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    MethodParameterSection, NamedArgumentTarget, Resolution, RoutineControlRegionData,
+    RoutineLoopKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
+    ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::resolver::{ScopeIndex, build_scope_index};
@@ -15,8 +16,15 @@ use crate::scope::{Namespace, ScopeKind};
 struct InferredUnitFacts {
     expression_facts: Vec<ExpressionFactData>,
     value_flow_edges: Vec<ValueFlowEdgeData>,
-    symbol_type_facts: Vec<(SymbolId, TypeFactData)>,
+    symbol_type_facts: Vec<SymbolTypeFactUpdate>,
     assignment_type_facts: Vec<(usize, TypeFactData, TypeFactData)>,
+}
+
+#[derive(Debug, Clone)]
+struct SymbolTypeFactUpdate {
+    symbol_id: SymbolId,
+    type_fact: TypeFactData,
+    overwrite_existing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -29,12 +37,22 @@ struct CallParameterInfo {
 }
 
 pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
+    let rerun = apply_inferred_unit_facts(units, infer_all_unit_facts(units));
+    if rerun {
+        apply_inferred_unit_facts(units, infer_all_unit_facts(units));
+    }
+}
+
+fn infer_all_unit_facts(units: &[UnitAnalysis]) -> Vec<InferredUnitFacts> {
     let scope_indexes: Vec<_> = units.iter().map(build_scope_index).collect();
     let builder = FactBuilder::new(units, scope_indexes);
-    let inferred: Vec<_> = (0..units.len())
+    (0..units.len())
         .map(|unit_idx| builder.infer_unit(unit_idx))
-        .collect();
+        .collect()
+}
 
+fn apply_inferred_unit_facts(units: &mut [UnitAnalysis], inferred: Vec<InferredUnitFacts>) -> bool {
+    let mut rerun = false;
     for (unit, facts) in units.iter_mut().zip(inferred) {
         unit.expression_facts = facts.expression_facts;
         let mut value_flow_edges = facts.value_flow_edges;
@@ -51,11 +69,21 @@ pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
                 .cloned(),
         );
         unit.value_flow_edges = value_flow_edges;
-        for (symbol_id, type_fact) in facts.symbol_type_facts {
-            let symbol = &mut unit.symbols[symbol_id.as_usize()];
-            if symbol.declared_type.is_none() {
-                symbol.structure = symbol.structure.or(type_fact.structure);
-                symbol.declared_type = type_fact.declared_type;
+        for update in facts.symbol_type_facts {
+            let symbol = &mut unit.symbols[update.symbol_id.as_usize()];
+            if update.overwrite_existing {
+                rerun |= symbol.structure != update.type_fact.structure
+                    || symbol.declared_type != update.type_fact.declared_type
+                    || symbol.type_clause_display != update.type_fact.type_clause_display;
+                symbol.structure = update.type_fact.structure;
+                symbol.declared_type = update.type_fact.declared_type;
+                symbol.type_clause_display = update.type_fact.type_clause_display;
+            } else if symbol.declared_type.is_none() {
+                let structure = symbol.structure.or(update.type_fact.structure);
+                rerun |= symbol.structure != structure
+                    || symbol.declared_type != update.type_fact.declared_type;
+                symbol.structure = structure;
+                symbol.declared_type = update.type_fact.declared_type;
             }
         }
         for (assignment_idx, lhs, rhs) in facts.assignment_type_facts {
@@ -65,6 +93,7 @@ pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
             }
         }
     }
+    rerun
 }
 
 struct FactBuilder<'a> {
@@ -190,14 +219,12 @@ impl<'a> FactBuilder<'a> {
                 .extend(self.call_argument_flow_edges(unit_idx, call_site));
         }
 
+        out.symbol_type_facts
+            .extend(self.loop_inline_target_type_facts(unit_idx));
+
         for assignment in &unit.assignment_sites {
             let lhs_type = self.assignment_target_type_fact(unit_idx, assignment);
-            let rhs_type = self.enrich_existing_type_fact(
-                unit_idx,
-                assignment.scope,
-                unit_idx,
-                &assignment.rhs,
-            );
+            let rhs_type = self.assignment_source_type_fact(unit_idx, assignment);
             out.assignment_type_facts.push((
                 out.assignment_type_facts.len(),
                 lhs_type.clone(),
@@ -213,10 +240,8 @@ impl<'a> FactBuilder<'a> {
                 },
                 target_type: lhs_type,
             });
-            if let Some((symbol_id, type_fact)) =
-                self.infer_inline_assignment_symbol_type(unit_idx, assignment)
-            {
-                out.symbol_type_facts.push((symbol_id, type_fact));
+            if let Some(update) = self.infer_inline_assignment_symbol_type(unit_idx, assignment) {
+                out.symbol_type_facts.push(update);
             }
         }
 
@@ -229,7 +254,7 @@ impl<'a> FactBuilder<'a> {
         &self,
         unit_idx: usize,
         assignment: &crate::AssignmentSiteData,
-    ) -> Option<(SymbolId, TypeFactData)> {
+    ) -> Option<SymbolTypeFactUpdate> {
         if !assignment.rhs_is_top_level_sum {
             return None;
         }
@@ -275,7 +300,136 @@ impl<'a> FactBuilder<'a> {
             }
         }
 
-        inferred_fact.map(|fact| (symbol.id, fact))
+        inferred_fact.map(|fact| SymbolTypeFactUpdate {
+            symbol_id: symbol.id,
+            type_fact: fact,
+            overwrite_existing: false,
+        })
+    }
+
+    fn loop_inline_target_type_facts(&self, unit_idx: usize) -> Vec<SymbolTypeFactUpdate> {
+        let unit = &self.units[unit_idx];
+        let mut updates = Vec::new();
+        for region in &unit.routine_control_regions {
+            let RoutineControlRegionData::Loop(region) = region else {
+                continue;
+            };
+            if region.kind != RoutineLoopKind::Loop {
+                continue;
+            }
+            let (Some(source_access), Some(target_access)) =
+                (region.source_access.as_ref(), region.target_access.as_ref())
+            else {
+                continue;
+            };
+            let Some(symbol_id) = self.inline_symbol_for_target_access(unit_idx, target_access)
+            else {
+                continue;
+            };
+            if unit
+                .symbol(symbol_id)
+                .type_clause_display
+                .as_deref()
+                .is_some_and(is_line_of_type_display)
+            {
+                continue;
+            }
+            let source_fact = self.type_fact_for_access(unit_idx, source_access);
+            let Some(line_fact) = source_fact.table_line.as_deref() else {
+                continue;
+            };
+            if !line_fact.is_known() {
+                continue;
+            }
+            updates.push(SymbolTypeFactUpdate {
+                symbol_id,
+                type_fact: line_fact.clone(),
+                overwrite_existing: true,
+            });
+        }
+        updates
+    }
+
+    fn inline_symbol_for_target_access(
+        &self,
+        unit_idx: usize,
+        access: &FieldAccess,
+    ) -> Option<SymbolId> {
+        if access.base_namespace != Namespace::Value || !access.field_path.is_empty() {
+            return None;
+        }
+        let symbol_id = lookup_scope_chain(
+            &self.units[unit_idx],
+            &self.scope_indexes[unit_idx],
+            access.scope,
+            Namespace::Value,
+            &access.base_name,
+        )?;
+        let symbol = self.units[unit_idx].symbol(symbol_id);
+        (symbol.decl_range == access.base_range
+            && matches!(
+                symbol.kind,
+                crate::SymbolKind::Variable | crate::SymbolKind::FieldSymbol
+            ))
+        .then_some(symbol_id)
+    }
+
+    fn assignment_source_type_fact(
+        &self,
+        unit_idx: usize,
+        assignment: &crate::AssignmentSiteData,
+    ) -> TypeFactData {
+        if is_append_assignment(&self.units[unit_idx], &assignment.range) {
+            return self.enrich_existing_type_fact(
+                unit_idx,
+                assignment.scope,
+                unit_idx,
+                &assignment.rhs,
+            );
+        }
+        self.assignment_rhs_access_type_fact(unit_idx, assignment)
+            .unwrap_or_else(|| {
+                self.enrich_existing_type_fact(
+                    unit_idx,
+                    assignment.scope,
+                    unit_idx,
+                    &assignment.rhs,
+                )
+            })
+    }
+
+    fn assignment_rhs_access_type_fact(
+        &self,
+        unit_idx: usize,
+        assignment: &crate::AssignmentSiteData,
+    ) -> Option<TypeFactData> {
+        let unit = &self.units[unit_idx];
+        let exact_accesses = unit
+            .field_accesses
+            .iter()
+            .filter(|access| !access.in_type_position && access.scope == assignment.scope)
+            .filter(|access| field_access_range(access) == assignment.rhs_range)
+            .collect::<Vec<_>>();
+        if exact_accesses.len() == 1 {
+            return Some(self.type_fact_for_access(unit_idx, exact_accesses[0]));
+        }
+
+        let exact_refs = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.scope == assignment.scope
+                    && reference.range == assignment.rhs_range
+            })
+            .collect::<Vec<_>>();
+        if exact_refs.len() != 1 {
+            return None;
+        }
+        let Some(Resolution::Symbol(handle)) = exact_refs[0].resolution else {
+            return None;
+        };
+        Some(self.symbol_type_fact_for_site(unit_idx, assignment.scope, handle))
     }
 
     fn selector_expression_facts(
@@ -1184,6 +1338,15 @@ fn lookup_scope_chain(
             .and_then(|scope| scope.parent);
     }
     None
+}
+
+fn field_access_range(access: &FieldAccess) -> std::ops::Range<usize> {
+    access.base_range.start
+        ..access
+            .field_path
+            .last()
+            .map(|segment| segment.range.end)
+            .unwrap_or(access.base_range.end)
 }
 
 fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
