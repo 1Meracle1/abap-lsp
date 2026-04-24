@@ -934,6 +934,43 @@ ENDMETHOD.
 }
 
 #[test]
+fn if_is_not_bound_does_not_report_bound_as_unknown_symbol() {
+    let src = r#"
+METHOD run.
+  DATA lo_http_client TYPE REF TO object.
+
+  IF lo_http_client IS NOT BOUND.
+    RETURN.
+  ENDIF.
+ENDMETHOD.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///if_is_not_bound_condition.abap", src, &parsed);
+
+    assert!(
+        parsed.errors.is_empty(),
+        "unexpected parse errors: {:?}",
+        parsed.errors
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'bound'")
+        }),
+        "unexpected unresolved BOUND diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'lo_http_client'")
+        }),
+        "unexpected unresolved lo_http_client diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_table_line_pseudo_field_in_loop_where_for_scalar_line_type() {
     let src = r#"
 DATA lt TYPE STANDARD TABLE OF string WITH EMPTY KEY.
@@ -11273,6 +11310,38 @@ ENDIF.";
         "unexpected diagnostics: {:?}",
         unit.diagnostics
     );
+}
+
+#[test]
+fn infers_inline_http_client_factory_target_type() {
+    let src = "\
+START-OF-SELECTION.
+  cl_http_client=>create_by_destination(
+    EXPORTING
+      destination = 'NONE'
+    IMPORTING
+      client = DATA(lo_http_client)
+  ).
+  IF lo_http_client IS BOUND.
+  ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_http_client_type.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lo_http_client"
+        })
+        .expect("inline lo_http_client symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for lo_http_client");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "if_http_client");
+    assert!(declared_type.field_path.is_empty());
 }
 
 #[test]

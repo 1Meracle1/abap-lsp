@@ -356,6 +356,11 @@ impl<'a> Collector<'a> {
                 self.negate_value_state_check_kind(ValueStateCheckKind::IsInitial, is_negated),
             );
         }
+        if third.text.eq_ignore_ascii_case("bound") {
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsNotInitial, is_negated),
+            );
+        }
         if third.text.eq_ignore_ascii_case("not")
             && tokens
                 .get(idx + 3)
@@ -363,6 +368,15 @@ impl<'a> Collector<'a> {
         {
             return Some(
                 self.negate_value_state_check_kind(ValueStateCheckKind::IsNotInitial, is_negated),
+            );
+        }
+        if third.text.eq_ignore_ascii_case("not")
+            && tokens
+                .get(idx + 3)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("bound"))
+        {
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsInitial, is_negated),
             );
         }
         None
@@ -415,6 +429,11 @@ impl<'a> Collector<'a> {
                 self.negate_value_state_check_kind(ValueStateCheckKind::IsInitial, is_negated),
             );
         }
+        if third.text.eq_ignore_ascii_case("bound") {
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsNotInitial, is_negated),
+            );
+        }
         if third.text.eq_ignore_ascii_case("not")
             && tokens
                 .get(idx + 2)
@@ -422,6 +441,15 @@ impl<'a> Collector<'a> {
         {
             return Some(
                 self.negate_value_state_check_kind(ValueStateCheckKind::IsNotInitial, is_negated),
+            );
+        }
+        if third.text.eq_ignore_ascii_case("not")
+            && tokens
+                .get(idx + 2)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("bound"))
+        {
+            return Some(
+                self.negate_value_state_check_kind(ValueStateCheckKind::IsInitial, is_negated),
             );
         }
         None
@@ -725,46 +753,78 @@ impl<'a> Collector<'a> {
         target: &NamedArgumentTarget,
         argument_name: &Arc<str>,
     ) -> Option<FieldTypeRefData> {
-        match target {
-            NamedArgumentTarget::Constructor { type_name } => {
-                let class_symbol =
-                    self.lookup_symbol_in_scope_chain(scope, Namespace::Type, type_name.as_ref())?;
-                let signature = self.class_method_signature(class_symbol, "constructor", scope)?;
-                signature
-                    .parameters
-                    .iter()
-                    .find(|param| param.name == *argument_name)
-                    .and_then(|param| param.declared_type.clone())
-            }
+        let local_type = match target {
+            NamedArgumentTarget::Constructor { type_name } => self
+                .lookup_symbol_in_scope_chain(scope, Namespace::Type, type_name.as_ref())
+                .and_then(|class_symbol| {
+                    self.class_method_signature(class_symbol, "constructor", scope)
+                })
+                .and_then(|signature| {
+                    signature
+                        .parameters
+                        .iter()
+                        .find(|param| param.name == *argument_name)
+                        .and_then(|param| param.declared_type.clone())
+                }),
             NamedArgumentTarget::Function { .. } => None,
             NamedArgumentTarget::Report { .. } => None,
             NamedArgumentTarget::Routine { .. } => None,
-            NamedArgumentTarget::ImplicitMethod { method_name } => {
-                let class_symbol = self.enclosing_class_owner(scope)?;
-                let signature =
-                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)?;
-                signature
-                    .parameters
-                    .iter()
-                    .find(|param| param.name == *argument_name)
-                    .and_then(|param| param.declared_type.clone())
-            }
+            NamedArgumentTarget::ImplicitMethod { method_name } => self
+                .enclosing_class_owner(scope)
+                .and_then(|class_symbol| {
+                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)
+                })
+                .and_then(|signature| {
+                    signature
+                        .parameters
+                        .iter()
+                        .find(|param| param.name == *argument_name)
+                        .and_then(|param| param.declared_type.clone())
+                }),
             NamedArgumentTarget::Method {
                 base_namespace,
                 base_name,
                 method_name,
-            } => {
-                let class_symbol =
-                    self.resolve_method_target_class_symbol(scope, *base_namespace, base_name)?;
-                let signature =
-                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)?;
-                signature
-                    .parameters
-                    .iter()
-                    .find(|param| param.name == *argument_name)
-                    .and_then(|param| param.declared_type.clone())
-            }
+            } => self
+                .resolve_method_target_class_symbol(scope, *base_namespace, base_name)
+                .and_then(|class_symbol| {
+                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)
+                })
+                .and_then(|signature| {
+                    signature
+                        .parameters
+                        .iter()
+                        .find(|param| param.name == *argument_name)
+                        .and_then(|param| param.declared_type.clone())
+                }),
+        };
+        local_type.or_else(|| Self::well_known_named_argument_declared_type(target, argument_name))
+    }
+
+    fn well_known_named_argument_declared_type(
+        target: &NamedArgumentTarget,
+        argument_name: &Arc<str>,
+    ) -> Option<FieldTypeRefData> {
+        let NamedArgumentTarget::Method {
+            base_namespace: Namespace::Type,
+            base_name,
+            method_name,
+        } = target
+        else {
+            return None;
+        };
+        if base_name.eq_ignore_ascii_case("cl_http_client")
+            && method_name.eq_ignore_ascii_case("create_by_destination")
+            && argument_name.eq_ignore_ascii_case("client")
+        {
+            return Some(FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: true,
+                base_name: Arc::from("if_http_client"),
+                field_path: Vec::new(),
+            });
         }
+        None
     }
 
     pub(super) fn declare_inline_named_argument_target_infos(
@@ -914,6 +974,7 @@ impl<'a> Collector<'a> {
             || token.text.eq_ignore_ascii_case("or")
             || token.text.eq_ignore_ascii_case("is")
             || token.text.eq_ignore_ascii_case("initial")
+            || token.text.eq_ignore_ascii_case("bound")
             || token.text.eq_ignore_ascii_case("in")
             || token.text.eq_ignore_ascii_case("not")
             || token.text.eq_ignore_ascii_case("let")

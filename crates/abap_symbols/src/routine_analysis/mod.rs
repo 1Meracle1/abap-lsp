@@ -3418,10 +3418,10 @@ fn resolve_is_not_initial_scope_refinements(
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
     for check in &unit.value_state_checks {
-        if check.kind != ValueStateCheckKind::IsNotInitial {
+        let Some(refinement_scope) = non_initial_refinement_scope_for_check(unit, check) else {
             continue;
-        }
-        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+        };
+        let Some(scope_bits) = out.get_mut(refinement_scope.as_usize()) else {
             continue;
         };
         for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
@@ -3456,13 +3456,13 @@ fn resolve_is_not_initial_field_scope_refinements(
 ) -> Vec<Vec<u64>> {
     let mut out = vec![vec![0u64; values.len()]; unit.scopes.len()];
     for check in &unit.value_state_checks {
-        if check.kind != ValueStateCheckKind::IsNotInitial {
+        let Some(refinement_scope) = non_initial_refinement_scope_for_check(unit, check) else {
             continue;
-        }
+        };
         let Some(field_name) = check.field_name.as_ref() else {
             continue;
         };
-        let Some(scope_masks) = out.get_mut(check.scope.as_usize()) else {
+        let Some(scope_masks) = out.get_mut(refinement_scope.as_usize()) else {
             continue;
         };
         for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
@@ -3493,6 +3493,30 @@ fn resolve_is_not_initial_field_scope_refinements(
         }
     }
     out
+}
+
+fn non_initial_refinement_scope_for_check(
+    unit: &UnitAnalysis,
+    check: &crate::ValueStateCheckData,
+) -> Option<ScopeId> {
+    match check.kind {
+        ValueStateCheckKind::IsNotInitial => Some(check.scope),
+        ValueStateCheckKind::IsInitial => explicit_else_scope_for_then_scope(unit, check.scope),
+        ValueStateCheckKind::EqualsZero
+        | ValueStateCheckKind::NotEqualsZero
+        | ValueStateCheckKind::ConditionProbe => None,
+    }
+}
+
+fn explicit_else_scope_for_then_scope(unit: &UnitAnalysis, then_scope: ScopeId) -> Option<ScopeId> {
+    unit.routine_control_regions.iter().find_map(|region| {
+        let RoutineControlRegionData::If(if_region) = region else {
+            return None;
+        };
+        (if_region.then_scope == then_scope)
+            .then_some(if_region.else_scope)
+            .flatten()
+    })
 }
 
 fn resolve_sy_subrc_success_bound_scope_refinements(

@@ -11914,6 +11914,78 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_allows_reference_reads_after_bound_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lo_http_client TYPE REF TO object.
+    IF lo_http_client IS BOUND.
+      DATA lo_copy TYPE REF TO object.
+      lo_copy = lo_http_client.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_ref_bound_guard.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lo_http_client")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
+    fn routine_analysis_allows_reference_reads_in_not_bound_else_branch() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lo_http_client TYPE REF TO object.
+    IF lo_http_client IS NOT BOUND.
+      RETURN.
+    ELSE.
+      DATA lo_copy TYPE REF TO object.
+      lo_copy = lo_http_client.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_ref_not_bound_else.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        let relevant: Vec<_> = use_before
+            .iter()
+            .filter(|slice| **slice == "lo_http_client")
+            .cloned()
+            .collect();
+
+        assert!(relevant.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_skips_clear_initial_checks_and_lines_builtin_for_tables() {
         let store = DocumentStore::default();
         let src = "\
