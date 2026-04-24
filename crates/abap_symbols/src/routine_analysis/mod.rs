@@ -1891,14 +1891,21 @@ fn build_routine_dataflow(
             }
             RoutineInstructionSite::Delete { .. } => {}
             RoutineInstructionSite::ReadTable { index } => {
-                if let Some(site) = unit.routine_sites.get(index as usize)
-                    && let Some(target_range) = site.target_range.as_ref()
-                    && let Some(write_value) =
-                        direct_write_value_id_for_clear(&reference_uses, target_range, &values)
-                {
-                    transfer.writes.push(write_value);
-                    transfer.assigned_writes.push(write_value);
-                    transfer.non_initial_kills.push(write_value);
+                if let Some(site) = unit.routine_sites.get(index as usize) {
+                    transfer.reads.extend(read_occurrences_in_range(
+                        &reference_uses,
+                        &site.range,
+                        &safe_read_refs,
+                        false,
+                    ));
+                    if let Some(target_range) = site.target_range.as_ref()
+                        && let Some(write_value) =
+                            direct_write_value_id_for_clear(&reference_uses, target_range, &values)
+                    {
+                        transfer.writes.push(write_value);
+                        transfer.assigned_writes.push(write_value);
+                        transfer.non_initial_kills.push(write_value);
+                    }
                 }
             }
             RoutineInstructionSite::Find { index } => {

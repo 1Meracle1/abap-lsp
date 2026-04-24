@@ -1561,7 +1561,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        self.record_unknown_effect(node, scope);
         self.record_system_field_updates(
             scope,
             node,

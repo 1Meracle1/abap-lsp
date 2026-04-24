@@ -1885,11 +1885,15 @@ impl<'a> TraceBuilder<'a> {
         });
 
         let mut read_keys = Vec::<String>::new();
-        for site in &unit.routine_sites {
-            if !same_routine_scope(self.snapshot, unit, site.scope, routine) {
+        let mut seen_read_table_ranges = HashSet::<(usize, usize)>::new();
+        for update in &unit.system_field_updates {
+            if update.statement != abap_symbols::SystemFieldStatementKind::ReadTable
+                || !same_routine_scope(self.snapshot, unit, update.scope, routine)
+                || !seen_read_table_ranges.insert((update.range.start, update.range.end))
+            {
                 continue;
             }
-            let statement = snippet_without_comments(Some(source_text), &site.range);
+            let statement = snippet_without_comments(Some(source_text), &update.range);
             let statement_lower = statement.to_ascii_lowercase();
             if !statement_lower.starts_with("read table ")
                 || !statement_lower.contains(&formal_name_lower)
@@ -2854,12 +2858,13 @@ fn field_symbol_bound_to_table_parameter(
 ) -> bool {
     let scope_range = &routine.descriptor.scope_range;
     let field_symbol_name_lower = field_symbol_name.to_ascii_lowercase();
-    unit.routine_sites.iter().any(|site| {
-        site.range.start >= scope_range.start
-            && site.range.end <= scope_range.end
-            && site.range.end <= before_offset
+    unit.system_field_updates.iter().any(|update| {
+        update.statement == abap_symbols::SystemFieldStatementKind::ReadTable
+            && update.range.start >= scope_range.start
+            && update.range.end <= scope_range.end
+            && update.range.end <= before_offset
             && {
-                let statement = snippet_without_comments(Some(source_text), &site.range);
+                let statement = snippet_without_comments(Some(source_text), &update.range);
                 let statement_lower = statement.to_ascii_lowercase();
                 statement_lower.starts_with("read table ")
                     && statement_lower.contains(table_parameter_name_lower)

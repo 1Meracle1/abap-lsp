@@ -793,6 +793,41 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn open_sql_inline_table_target_is_safe_after_is_not_initial_guard_for_read_table() {
+        let src = "\
+FORM run.\n\
+  SELECT param_name, param_value\n\
+    FROM zparams\n\
+    INTO TABLE @DATA(lt_parameters).\n\
+  IF lt_parameters IS NOT INITIAL.\n\
+    READ TABLE lt_parameters ASSIGNING FIELD-SYMBOL(<fs_buffer_time>)\n\
+      WITH KEY param_name = 'TOKEN'.\n\
+  ENDIF.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///open_sql_inline_table_guarded_read_table.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !src[diagnostic.range.clone()].contains("lt_parameters")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn open_sql_into_target_is_safe_after_not_is_initial_guard() {
         let src = "\
 FORM run.\n\
