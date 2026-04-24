@@ -19,14 +19,15 @@ use abap_lsp::{
     WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
     build_remote_dependency_batch_for_workspace,
     build_remote_dependency_batch_for_workspace_filtered, build_remote_dependency_request,
-    code_actions, completion, definition, handle_dependency_cache_cleared_with_progress,
+    build_remote_dependency_request_retrying_negatives, code_actions, completion, definition,
+    handle_dependency_cache_cleared_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     prepare_rename, prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
     publish_diagnostics_params, publish_open_document_mut_with_progress, read_dependency_document,
     references, refresh_workspace_with_progress, rename, semantic_tokens,
     stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
-    workspace_manifest_diagnostics_params,
+    workspace_manifest_diagnostics_params, workspace_uri_is_dependency_source,
 };
 use serde_json::{Value, json};
 use tracing::{debug, warn};
@@ -1139,7 +1140,7 @@ fn workspace_remote_dependency_follow_up_source_uris(
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
-        if !snapshot.is_dependency {
+        if !workspace_uri_is_dependency_source(workspace, uri.as_ref()) {
             continue;
         }
         if snapshot.object_name.as_ref().is_some_and(|object_name| {
@@ -1323,6 +1324,49 @@ fn build_dirty_remote_dependency_batch(
     }
 }
 
+fn queue_open_dependency_request(state: &mut ServerState, source_uri: &str) {
+    let source_uri = abap_lsp::normalize_lsp_uri(source_uri);
+    let Some(workspace) = state.workspace_for_uri_mut(&source_uri) else {
+        return;
+    };
+    workspace
+        .pending_open_dependency_requests
+        .insert(source_uri);
+}
+
+fn take_pending_open_dependency_request(workspace: &mut WorkspaceState) -> Option<String> {
+    let mut pending: Vec<_> = workspace
+        .pending_open_dependency_requests
+        .iter()
+        .cloned()
+        .collect();
+    pending.sort();
+    let source_uri = pending.into_iter().next()?;
+    workspace
+        .pending_open_dependency_requests
+        .remove(&source_uri);
+    Some(source_uri)
+}
+
+fn build_pending_open_dependency_request(
+    state: &mut ServerState,
+    workspace_uri: Option<&str>,
+) -> Option<abap_lsp::RemoteDependencyResolveParams> {
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri?);
+    let source_uri = {
+        let workspace = state.workspaces.get_mut(&workspace_uri)?;
+        if workspace.remote_resolution_in_flight {
+            return None;
+        }
+        take_pending_open_dependency_request(workspace)?
+    };
+    let request = build_remote_dependency_request_retrying_negatives(state, &source_uri)?;
+    if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
+        workspace.remote_resolution_in_flight = true;
+    }
+    Some(request)
+}
+
 struct HandledMessage {
     response: Option<Response>,
     notifications: Vec<(String, Value)>,
@@ -1377,7 +1421,20 @@ fn handle_did_open_notifications(
     if let Some(workspace_uri) = workspace_uri.as_deref() {
         push_workspace_manifest_diagnostics_notification(state, &workspace_uri, &mut notifications);
     }
-    if let Some(request) = if unchanged_workspace_open && snapshot.is_dependency {
+    let opened_dependency_source = workspace_uri.as_deref().is_some_and(|workspace_uri| {
+        state
+            .workspaces
+            .get(&abap_lsp::normalize_lsp_uri(workspace_uri))
+            .is_some_and(|workspace| {
+                workspace_uri_is_dependency_source(workspace, snapshot.uri.as_ref())
+            })
+    });
+    if opened_dependency_source {
+        queue_open_dependency_request(state, snapshot.uri.as_ref());
+    }
+    if let Some(request) = if opened_dependency_source {
+        build_pending_open_dependency_request(state, workspace_uri.as_deref())
+    } else if unchanged_workspace_open && snapshot.is_dependency {
         build_remote_dependency_request(state, snapshot.uri.as_ref())
     } else {
         build_dirty_remote_dependency_batch(
@@ -1599,27 +1656,33 @@ fn handle_remote_dependencies_updated_notifications(
             push_publish_diagnostics_notification(state, snapshot, &mut notifications)?;
         }
     }
-    let follow_up_filter = workspace_remote_dependency_follow_up_filter(state, params);
-    let request = if let Some(source_filter) = follow_up_filter.as_ref() {
-        let dirty_uri_count = state
-            .workspaces
-            .get(&normalized_workspace_uri)
-            .map(|workspace| workspace.cache.last_dirty_uris().len())
-            .unwrap_or(0);
-        debug!(
-            workspace_uri = %params.workspace_uri,
-            source_uri_count = source_uris.len(),
-            dirty_uri_count,
-            filtered_source_uri_count = source_filter.len(),
-            "building scoped post-remote dependency batch"
-        );
-        build_remote_dependency_batch_for_workspace_filtered(
-            state,
-            &params.workspace_uri,
-            Some(&source_filter),
-        )
+    let request = if let Some(request) =
+        build_pending_open_dependency_request(state, Some(&params.workspace_uri))
+    {
+        Some(request)
     } else {
-        build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
+        let follow_up_filter = workspace_remote_dependency_follow_up_filter(state, params);
+        if let Some(source_filter) = follow_up_filter.as_ref() {
+            let dirty_uri_count = state
+                .workspaces
+                .get(&normalized_workspace_uri)
+                .map(|workspace| workspace.cache.last_dirty_uris().len())
+                .unwrap_or(0);
+            debug!(
+                workspace_uri = %params.workspace_uri,
+                source_uri_count = source_uris.len(),
+                dirty_uri_count,
+                filtered_source_uri_count = source_filter.len(),
+                "building scoped post-remote dependency batch"
+            );
+            build_remote_dependency_batch_for_workspace_filtered(
+                state,
+                &params.workspace_uri,
+                Some(&source_filter),
+            )
+        } else {
+            build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
+        }
     };
     if let Some(request) = request {
         notifications.push((
@@ -4996,6 +5059,148 @@ object_name = "ZREPORT_TWO"
     }
 
     #[test]
+    fn full_workspace_direct_open_dependency_retries_negative_candidates() {
+        let workspace_path = temp_workspace_path("full_workspace_open_dependency_retry_negatives");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+
+        let dependency_text = "\
+CLASS zattp_cl_ar_dm_object DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zattp_cl_ar_dm_object IMPLEMENTATION.
+  METHOD run.
+    DATA lt_params TYPE zattp_t_param_value.
+    DATA lt_ranges TYPE rsds_frange_t.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let workspace_uri = file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        store_dependency_artifacts(
+            &mut state,
+            &workspace_uri,
+            vec![DependencyArtifactPayload {
+                package_name: "ZPKG".to_string(),
+                object_kind: "global-class".to_string(),
+                object_name: "ZATTP_CL_AR_DM_OBJECT".to_string(),
+                object_uri: "/sap/bc/adt/oo/classes/zattp_cl_ar_dm_object".to_string(),
+                object_type: "CLAS/OC".to_string(),
+                description: "Remote class".to_string(),
+                file_extension: "abap".to_string(),
+                source_text: dependency_text.to_string(),
+                fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            }],
+        );
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: Vec::new(),
+                negative: vec![
+                    abap_lsp::RemoteDependencyCandidate {
+                        name: "zattp_t_param_value".to_string(),
+                        kind: "type".to_string(),
+                    },
+                    abap_lsp::RemoteDependencyCandidate {
+                        name: "rsds_frange_t".to_string(),
+                        kind: "type".to_string(),
+                    },
+                ],
+            },
+        )
+        .expect("store negative lookups");
+        let workspace = state
+            .workspaces
+            .get_mut(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        workspace
+            .remote_lookup_failures
+            .insert("type:zattp_t_param_value".to_string());
+        workspace
+            .remote_lookup_failures
+            .insert("type:rsds_frange_t".to_string());
+
+        let dependency_uri =
+            dependency_uri_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+        let dependency_text =
+            dependency_text_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen dependency");
+
+        let request = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("forced dependency request");
+        assert_eq!(
+            request
+                .get("retryNegativeCandidates")
+                .and_then(Value::as_bool),
+            Some(true),
+            "{request:#?}"
+        );
+        let candidates = request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("candidates");
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("zattp_t_param_value")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("rsds_frange_t")
+        }));
+        assert!(
+            state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .is_some_and(|workspace| workspace.remote_resolution_in_flight),
+            "forced direct-open request should mark a dependency wave in flight"
+        );
+    }
+
+    #[test]
     fn full_workspace_remote_dependency_updates_do_not_rescan_unrelated_sources() {
         let workspace_path = temp_workspace_path("full_workspace_dependency_follow_up_scope");
         let source_dir = workspace_path.join("src");
@@ -5164,6 +5369,380 @@ ENDCLASS."
         assert!(!candidates.iter().any(|candidate| {
             candidate.get("name").and_then(Value::as_str) == Some("zcl_noise")
         }));
+    }
+
+    #[test]
+    fn full_workspace_opened_dependency_during_in_flight_wave_gets_follow_up_request() {
+        let workspace_path = temp_workspace_path("full_workspace_open_dependency_in_flight");
+        let source_dir = workspace_path.join("src");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let source_text =
+            "REPORT zattp_ar_dm_obj_pre.\nDATA lo_dep TYPE REF TO zattp_cl_ar_dm_object.\n";
+        fs::write(source_dir.join("ZATTP_AR_DM_OBJ_PRE.abap"), source_text).expect("source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/ZATTP_AR_DM_OBJ_PRE.abap"));
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+
+        let opened_source = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": source_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen source");
+        let initial_request = opened_source
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("initial remote dependency request");
+        let initial_candidates = initial_request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("initial candidates");
+        assert!(initial_candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("zattp_cl_ar_dm_object")
+        }));
+
+        store_dependency_artifacts(
+            &mut state,
+            &workspace_uri,
+            vec![
+                DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZATTP_CL_AR_DM_OBJECT".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zattp_cl_ar_dm_object".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Fetched dependency".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zattp_cl_ar_dm_object DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zattp_cl_ar_dm_object IMPLEMENTATION.
+  METHOD run.
+    DATA lt_params TYPE zattp_t_param_value.
+    DATA lt_ranges TYPE rsds_frange_t.
+  ENDMETHOD.
+ENDCLASS."
+                        .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                },
+                DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_UNRELATED".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_unrelated".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Unrelated dependency".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zcl_unrelated DEFINITION.
+  PUBLIC SECTION.
+    DATA lo_noise TYPE REF TO zcl_noise.
+ENDCLASS.
+CLASS zcl_unrelated IMPLEMENTATION.
+ENDCLASS."
+                        .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                },
+            ],
+        );
+        let dependency_uri =
+            dependency_uri_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+        let dependency_text =
+            dependency_text_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+        let unrelated_dependency_uri =
+            dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_UNRELATED");
+
+        let opened_dependency = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen dependency");
+        assert!(
+            opened_dependency
+                .notifications
+                .iter()
+                .all(|(method, _)| method != RESOLVE_REMOTE_DEPENDENCIES),
+            "dependency open should stay queued behind the in-flight wave: {:#?}",
+            opened_dependency.notifications
+        );
+
+        let refreshed = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": source_uri,
+                    "sourceUris": [source_uri],
+                    "fetched": ["zattp_cl_ar_dm_object"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+
+        let follow_up_request = refreshed
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("follow-up remote dependency request");
+        assert_eq!(
+            follow_up_request
+                .get("retryNegativeCandidates")
+                .and_then(Value::as_bool),
+            Some(true),
+            "{follow_up_request:#?}"
+        );
+        let source_uris = follow_up_request
+            .get("sourceUris")
+            .and_then(Value::as_array)
+            .expect("source uris");
+        assert!(
+            source_uris
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|uri| uri == dependency_uri),
+            "unexpected source uris: {source_uris:?}"
+        );
+        assert!(
+            source_uris
+                .iter()
+                .filter_map(Value::as_str)
+                .all(|uri| uri != unrelated_dependency_uri),
+            "unexpected source uris: {source_uris:?}"
+        );
+        let follow_up_candidates = follow_up_request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("follow-up candidates");
+        assert!(follow_up_candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("zattp_t_param_value")
+        }));
+        assert!(follow_up_candidates.iter().any(|candidate| {
+            candidate.get("kind").and_then(Value::as_str) == Some("type")
+                && candidate.get("name").and_then(Value::as_str) == Some("rsds_frange_t")
+        }));
+        assert!(!follow_up_candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("zcl_noise")
+        }));
+    }
+
+    #[test]
+    fn full_workspace_opened_dependency_failed_follow_up_candidates_do_not_repeat() {
+        let workspace_path = temp_workspace_path("full_workspace_open_dependency_no_retry_loop");
+        let source_dir = workspace_path.join("src");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let source_text =
+            "REPORT zattp_ar_dm_obj_pre.\nDATA lo_dep TYPE REF TO zattp_cl_ar_dm_object.\n";
+        fs::write(source_dir.join("ZATTP_AR_DM_OBJ_PRE.abap"), source_text).expect("source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/ZATTP_AR_DM_OBJ_PRE.abap"));
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+
+        let _ = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": source_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen source");
+
+        store_dependency_artifacts(
+            &mut state,
+            &workspace_uri,
+            vec![DependencyArtifactPayload {
+                package_name: "ZPKG".to_string(),
+                object_kind: "global-class".to_string(),
+                object_name: "ZATTP_CL_AR_DM_OBJECT".to_string(),
+                object_uri: "/sap/bc/adt/oo/classes/zattp_cl_ar_dm_object".to_string(),
+                object_type: "CLAS/OC".to_string(),
+                description: "Fetched dependency".to_string(),
+                file_extension: "abap".to_string(),
+                source_text: "\
+CLASS zattp_cl_ar_dm_object DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zattp_cl_ar_dm_object IMPLEMENTATION.
+  METHOD run.
+    DATA lt_params TYPE zattp_t_param_value.
+    DATA lt_ranges TYPE rsds_frange_t.
+  ENDMETHOD.
+ENDCLASS."
+                    .to_string(),
+                fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            }],
+        );
+        let dependency_uri =
+            dependency_uri_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+        let dependency_text =
+            dependency_text_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+
+        let _ = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen dependency");
+
+        let refreshed = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": source_uri,
+                    "sourceUris": [source_uri],
+                    "fetched": ["zattp_cl_ar_dm_object"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+        let follow_up_request = refreshed
+            .notifications
+            .iter()
+            .find(|(method, _)| method == RESOLVE_REMOTE_DEPENDENCIES)
+            .map(|(_, payload)| payload)
+            .expect("follow-up remote dependency request");
+        let follow_up_candidates = follow_up_request
+            .get("candidates")
+            .and_then(Value::as_array)
+            .expect("follow-up candidates");
+        assert!(follow_up_candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("zattp_t_param_value")
+        }));
+        assert!(follow_up_candidates.iter().any(|candidate| {
+            candidate.get("name").and_then(Value::as_str) == Some("rsds_frange_t")
+        }));
+
+        let failed_update = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": dependency_uri,
+                    "sourceUris": [dependency_uri],
+                    "fetched": [],
+                    "failed": [
+                        { "name": "zattp_t_param_value", "kind": "type" },
+                        { "name": "rsds_frange_t", "kind": "type" }
+                    ]
+                }
+            }),
+        )
+        .expect("failed dependency update");
+        assert!(
+            failed_update
+                .notifications
+                .iter()
+                .all(|(method, _)| method != RESOLVE_REMOTE_DEPENDENCIES),
+            "failed candidates should not be re-requested immediately: {:#?}",
+            failed_update.notifications
+        );
     }
 
     #[test]

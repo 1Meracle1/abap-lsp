@@ -5,6 +5,7 @@ import {
 	computeAbapFoldingRanges,
 	parseUnitSidecarDependencySourceMode,
 	parseUnitSidecarLocalRoots,
+	shouldRetryNegativeRemoteDependencyCandidates,
 	validateLocalWorkspaceObjectNameForKind,
 } from "../extension";
 
@@ -78,6 +79,12 @@ suite("Extension local object validation", () => {
 		].join("\n");
 
 		assert.strictEqual(parseUnitSidecarDependencySourceMode(text), "local-first");
+	});
+
+	test("Retries negative dependency candidates only when explicitly requested", () => {
+		assert.strictEqual(shouldRetryNegativeRemoteDependencyCandidates(undefined), false);
+		assert.strictEqual(shouldRetryNegativeRemoteDependencyCandidates(false), false);
+		assert.strictEqual(shouldRetryNegativeRemoteDependencyCandidates(true), true);
 	});
 
 	test("Folds IF branch only until ELSE", () => {

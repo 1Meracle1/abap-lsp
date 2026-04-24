@@ -74,6 +74,7 @@ interface RemoteDependencyResolveParams {
 	sourceUri: string;
 	sourceUris?: string[];
 	sourceCandidates?: Record<string, RemoteDependencyCandidate[]>;
+	retryNegativeCandidates?: boolean;
 	remoteRequestParallelism?: number;
 	remoteRequestsPerSecond?: number;
 	candidates: RemoteDependencyCandidate[];
@@ -889,6 +890,9 @@ async function resolveRemoteDependencies(
 	const candidates = dedupeRemoteDependencyCandidates(params.candidates);
 	const fetchCandidates = [...candidates];
 	const candidateSourceUris = candidateSourceUriMap(params, sourceUris);
+	const retryNegativeCandidates = shouldRetryNegativeRemoteDependencyCandidates(
+		params.retryNegativeCandidates,
+	);
 	const batchContext = createRemoteDependencyBatchContext();
 	const fetchPolicy: RemoteDependencyFetchPolicy = {
 		remoteRequestParallelism: params.remoteRequestParallelism,
@@ -959,6 +963,7 @@ async function resolveRemoteDependencies(
 											candidateSourceUris.get(remoteDependencyCandidateKey(candidate)) ?? sourceUris,
 											batchContext,
 											telemetry,
+											retryNegativeCandidates,
 										);
 									} finally {
 										completed += 1;
@@ -1480,6 +1485,12 @@ function workspaceConnectionCacheKey(workspaceFolder: vscode.WorkspaceFolder): s
 	return baseUrl || "default";
 }
 
+export function shouldRetryNegativeRemoteDependencyCandidates(
+	retryNegativeCandidates: boolean | undefined,
+): boolean {
+	return retryNegativeCandidates === true;
+}
+
 async function recordNegativeRemoteDependencyCandidate(
 	workspaceFolder: vscode.WorkspaceFolder,
 	batchContext: RemoteDependencyBatchContext,
@@ -1511,8 +1522,12 @@ async function resolveRemoteDependencyCandidate(
 	sourceUris: readonly string[],
 	batchContext: RemoteDependencyBatchContext,
 	telemetry: RemoteDependencyWaveTelemetry,
+	retryNegativeCandidates: boolean,
 ): Promise<RemoteDependencyResolutionResult> {
 	const cacheKey = remoteDependencyCacheKey(workspaceFolder, candidate);
+	if (retryNegativeCandidates) {
+		negativeRemoteDependencyCache.delete(cacheKey);
+	}
 
 	const existing = pendingRemoteDependencyFetches.get(cacheKey);
 	if (existing) {
@@ -1564,7 +1579,8 @@ async function resolveRemoteDependencyCandidate(
 				}
 			}
 
-			const hasNegativeCandidate = negativeRemoteDependencyCache.has(cacheKey);
+			const hasNegativeCandidate = !retryNegativeCandidates
+				&& negativeRemoteDependencyCache.has(cacheKey);
 			if (hasNegativeCandidate) {
 				negativeRemoteDependencyCache.add(cacheKey);
 				const localResult = dependencySourceMode === "adt-first"
