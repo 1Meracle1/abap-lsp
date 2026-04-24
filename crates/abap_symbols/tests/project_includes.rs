@@ -376,6 +376,109 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_class_attributes_from_definition_include_inside_implementation_include_methods() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zcls.
+"#;
+    let top_src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA: lv_jobname  TYPE string,
+          lv_jobcount TYPE string.
+    METHODS get_data.
+ENDCLASS.
+"#;
+    let cls_src = r#"
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_data.
+    lv_jobname = 'demo'.
+    IF lv_jobcount IS INITIAL.
+      lv_jobcount = lv_jobname.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let cls_parse = parse(cls_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zcls.abap",
+            source: cls_src,
+            parse: &cls_parse,
+        },
+    ]);
+
+    let top = project.unit_by_uri("ztop.abap").expect("top include");
+    let cls = project.unit_by_uri("zcls.abap").expect("class include");
+    let top_class = top
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lcl_demo")
+        .expect("top class definition");
+    let jobname_symbol = top
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.name.as_ref() == "lv_jobname"
+                && top.scope(symbol.scope).owner == Some(top_class.id)
+        })
+        .expect("lv_jobname symbol");
+    let jobcount_symbol = top
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.name.as_ref() == "lv_jobcount"
+                && top.scope(symbol.scope).owner == Some(top_class.id)
+        })
+        .expect("lv_jobcount symbol");
+
+    for (name, expected_symbol) in [
+        ("lv_jobname", jobname_symbol.id),
+        ("lv_jobcount", jobcount_symbol.id),
+    ] {
+        let refs: Vec<_> = cls
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Value && reference.name.as_ref() == name
+            })
+            .collect();
+        assert!(!refs.is_empty(), "expected references for {name}");
+        assert!(
+            refs.iter().all(|reference| {
+                matches!(
+                    reference.resolution,
+                    Some(Resolution::Symbol(handle))
+                        if handle.unit == top.unit_id && handle.symbol == expected_symbol
+                )
+            }),
+            "expected {name} references to resolve to top include member, got {refs:?}"
+        );
+        assert!(
+            !cls.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for {name}: {:?}",
+            cls.diagnostics
+        );
+    }
+}
+
+#[test]
 fn classic_open_sql_where_globals_from_top_include_are_not_collected_as_sql_columns() {
     let root_src = r#"
 REPORT zmain.

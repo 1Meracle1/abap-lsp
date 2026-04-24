@@ -12,7 +12,7 @@ use crate::def_map::{
 use crate::facts::infer_semantic_facts;
 use crate::ids::{ReferenceId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::{
-    ScopeIndex, build_scope_index, resolve_project_cross_unit,
+    ScopeIndex, build_scope_index, include_predecessor_units_for_units, resolve_project_cross_unit,
     resolve_project_cross_unit_for_units, resolve_unit_with_index,
 };
 use crate::scope::{Namespace, ScopeKind};
@@ -312,66 +312,6 @@ fn enclosing_class_owner_in_unit(
         current = scope.parent;
     }
     None
-}
-
-fn include_predecessor_units_for_units(units: &[UnitAnalysis]) -> Vec<Vec<UnitId>> {
-    let mut predecessors = vec![Vec::new(); units.len()];
-    for unit in units {
-        let mut stack = HashSet::new();
-        record_include_predecessors(
-            units,
-            unit.unit_id,
-            Vec::new(),
-            &mut predecessors,
-            &mut stack,
-        );
-    }
-    for unit_predecessors in &mut predecessors {
-        let mut seen = HashSet::new();
-        unit_predecessors.retain(|unit_id| seen.insert(*unit_id));
-    }
-    predecessors
-}
-
-fn record_include_predecessors(
-    units: &[UnitAnalysis],
-    unit_id: UnitId,
-    inherited_prior: Vec<UnitId>,
-    predecessors: &mut [Vec<UnitId>],
-    stack: &mut HashSet<UnitId>,
-) -> Vec<UnitId> {
-    if units.get(unit_id.as_usize()).is_none() || !stack.insert(unit_id) {
-        return Vec::new();
-    }
-
-    let mut expansion = vec![unit_id];
-    let mut prior = inherited_prior;
-    push_unique_unit(&mut prior, unit_id);
-    let targets: Vec<_> = units[unit_id.as_usize()]
-        .include_edges
-        .iter()
-        .filter_map(|edge| edge.target)
-        .collect();
-    for target in targets {
-        if let Some(target_predecessors) = predecessors.get_mut(target.as_usize()) {
-            target_predecessors.extend(prior.iter().copied());
-        }
-        let nested_expansion =
-            record_include_predecessors(units, target, prior.clone(), predecessors, stack);
-        for expanded_unit in nested_expansion {
-            push_unique_unit(&mut prior, expanded_unit);
-            push_unique_unit(&mut expansion, expanded_unit);
-        }
-    }
-
-    stack.remove(&unit_id);
-    expansion
-}
-
-fn push_unique_unit(units: &mut Vec<UnitId>, unit_id: UnitId) {
-    if !units.contains(&unit_id) {
-        units.push(unit_id);
-    }
 }
 
 fn namespace_sort_key(namespace: Namespace) -> u8 {

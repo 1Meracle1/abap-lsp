@@ -16258,6 +16258,72 @@ ENDCLASS.";
     }
 
     #[test]
+    fn definition_at_returns_class_attribute_declaration_from_definition_include() {
+        let store = DocumentStore::default();
+        let main_src = "\
+REPORT zmain.
+INCLUDE: ztop,
+         zcls.";
+        let top_src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    DATA: lv_jobname  TYPE string,
+          lv_jobcount TYPE string.
+    METHODS get_data.
+ENDCLASS.";
+        let cls_src = "\
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_data.
+    lv_jobname = 'demo'.
+    IF lv_jobcount IS INITIAL.
+      lv_jobcount = lv_jobname.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///zmain.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///ztop.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zcls.abap"),
+                version: 1,
+                text: Arc::from(cls_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let cls = snapshots.get("file:///zcls.abap").expect("class snapshot");
+        let jobname_use = cls_src.find("lv_jobname =").expect("lv_jobname use");
+        let jobcount_use = cls_src.find("lv_jobcount IS").expect("lv_jobcount use");
+
+        let jobname_target = cls
+            .definition_at(jobname_use + 1)
+            .expect("lv_jobname definition");
+        assert_target_slice(&jobname_target, "file:///ztop.abap", top_src, "lv_jobname");
+
+        let jobcount_target = cls
+            .definition_at(jobcount_use + 1)
+            .expect("lv_jobcount definition");
+        assert_target_slice(
+            &jobcount_target,
+            "file:///ztop.abap",
+            top_src,
+            "lv_jobcount",
+        );
+    }
+
+    #[test]
     fn definition_at_returns_structure_field_declaration() {
         let store = DocumentStore::default();
         let src = "\

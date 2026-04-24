@@ -375,6 +375,7 @@ fn resolve_project_cross_unit_with_filter(
         .map(|(_, name)| Arc::clone(name))
         .collect();
     let visible_units = include_visible_units_for_units(units);
+    let predecessor_units = include_predecessor_units_for_units(units);
 
     for unit_idx in 0..units.len() {
         if dirty_units.is_some_and(|dirty| !dirty.contains(&units[unit_idx].unit_id)) {
@@ -447,6 +448,23 @@ fn resolve_project_cross_unit_with_filter(
                         &per_unit_root_index,
                         &visible_units,
                         &root_index,
+                    ) {
+                        resolved = Some(Resolution::Symbol(symbol));
+                        break;
+                    }
+                }
+            }
+            if resolved.is_none() {
+                for namespace in namespaces {
+                    if let Some(symbol) = resolve_class_member_symbol_in_visible_definition(
+                        units,
+                        unit_idx,
+                        reference_scope,
+                        namespace,
+                        &reference_name,
+                        &per_unit_root_index,
+                        &predecessor_units,
+                        &visible_units,
                     ) {
                         resolved = Some(Resolution::Symbol(symbol));
                         break;
@@ -602,6 +620,57 @@ fn resolve_project_cross_unit_with_filter(
     }
 }
 
+fn resolve_class_member_symbol_in_visible_definition(
+    units: &[UnitAnalysis],
+    unit_idx: usize,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    predecessor_units: &[Vec<UnitId>],
+    visible_units: &[Vec<UnitId>],
+) -> Option<SymbolHandle> {
+    let current_unit = units.get(unit_idx)?;
+    let current_class = enclosing_class_owner(current_unit, scope)?;
+    let class_name = Arc::clone(&current_unit.symbol(current_class).name);
+
+    let mut candidate_units = Vec::new();
+    candidate_units.push(current_unit.unit_id);
+    if let Some(predecessors) = predecessor_units.get(unit_idx) {
+        candidate_units.extend(predecessors.iter().rev().copied());
+    }
+    if let Some(visible) = visible_units.get(unit_idx) {
+        candidate_units.extend(visible.iter().copied());
+    }
+
+    let mut seen = HashSet::new();
+    for candidate_unit in candidate_units {
+        if !seen.insert(candidate_unit) {
+            continue;
+        }
+        let candidate_idx = candidate_unit.as_usize();
+        let Some(class_symbol) = per_unit_root_index
+            .get(candidate_idx)
+            .and_then(|index| index.get(&(Namespace::Type, Arc::clone(&class_name))))
+            .copied()
+        else {
+            continue;
+        };
+        let candidate = &units[candidate_idx];
+        if candidate.class_definition(class_symbol).is_none() {
+            continue;
+        }
+        if let Some(symbol) = class_scope_symbol(candidate, class_symbol, namespace, name) {
+            return Some(SymbolHandle {
+                unit: candidate.unit_id,
+                symbol,
+            });
+        }
+    }
+
+    None
+}
+
 fn root_symbol_is_visible_across_units_by_default(symbol: &SymbolData) -> bool {
     match symbol.kind {
         SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeDef => {
@@ -658,6 +727,66 @@ fn collect_include_expansion(
         collect_include_expansion(units, target, stack, expansion);
     }
     stack.remove(&unit_id);
+}
+
+pub(crate) fn include_predecessor_units_for_units(units: &[UnitAnalysis]) -> Vec<Vec<UnitId>> {
+    let mut predecessors = vec![Vec::new(); units.len()];
+    for unit in units {
+        let mut stack = HashSet::new();
+        record_include_predecessors(
+            units,
+            unit.unit_id,
+            Vec::new(),
+            &mut predecessors,
+            &mut stack,
+        );
+    }
+    for unit_predecessors in &mut predecessors {
+        let mut seen = HashSet::new();
+        unit_predecessors.retain(|unit_id| seen.insert(*unit_id));
+    }
+    predecessors
+}
+
+fn record_include_predecessors(
+    units: &[UnitAnalysis],
+    unit_id: UnitId,
+    inherited_prior: Vec<UnitId>,
+    predecessors: &mut [Vec<UnitId>],
+    stack: &mut HashSet<UnitId>,
+) -> Vec<UnitId> {
+    if units.get(unit_id.as_usize()).is_none() || !stack.insert(unit_id) {
+        return Vec::new();
+    }
+
+    let mut expansion = vec![unit_id];
+    let mut prior = inherited_prior;
+    push_unique_unit(&mut prior, unit_id);
+    let targets: Vec<_> = units[unit_id.as_usize()]
+        .include_edges
+        .iter()
+        .filter_map(|edge| edge.target)
+        .collect();
+    for target in targets {
+        if let Some(target_predecessors) = predecessors.get_mut(target.as_usize()) {
+            target_predecessors.extend(prior.iter().copied());
+        }
+        let nested_expansion =
+            record_include_predecessors(units, target, prior.clone(), predecessors, stack);
+        for expanded_unit in nested_expansion {
+            push_unique_unit(&mut prior, expanded_unit);
+            push_unique_unit(&mut expansion, expanded_unit);
+        }
+    }
+
+    stack.remove(&unit_id);
+    expansion
+}
+
+fn push_unique_unit(units: &mut Vec<UnitId>, unit_id: UnitId) {
+    if !units.contains(&unit_id) {
+        units.push(unit_id);
+    }
 }
 
 fn resolve_root_symbol_in_visible_units(
