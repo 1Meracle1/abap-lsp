@@ -1,8 +1,8 @@
 use abap_parser::parse;
 
 use abap_symbols::{
-    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, SqlNameRefKind,
-    analyze_project,
+    ClassMemberKind, DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution,
+    SqlNameRefKind, analyze_project,
 };
 
 #[test]
@@ -202,6 +202,114 @@ ENDCLASS.
                 && diag.message.contains("not a method")
         }),
         "expected UnknownField for CALL METHOD on attribute across include units, got {:?}",
+        root.diagnostics
+    );
+}
+
+#[test]
+fn links_local_class_definition_and_implementation_across_ordered_report_includes() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zcls.
+START-OF-SELECTION.
+  CREATE OBJECT gr_demo.
+  CALL METHOD gr_demo->get_data.
+"#;
+    let top_src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS check_existing.
+    METHODS get_data.
+ENDCLASS.
+"#;
+    let cls_src = r#"
+DATA gr_demo TYPE REF TO lcl_demo.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD check_existing.
+  ENDMETHOD.
+
+  METHOD get_data.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let cls_parse = parse(cls_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zcls.abap",
+            source: cls_src,
+            parse: &cls_parse,
+        },
+    ]);
+
+    let top = project.unit_by_uri("ztop.abap").expect("top include");
+    let cls = project.unit_by_uri("zcls.abap").expect("class include");
+    let top_class = top
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lcl_demo")
+        .expect("top class definition");
+    assert!(
+        top.class_definition(top_class.id).is_some(),
+        "top class should be recorded as a definition"
+    );
+
+    let get_data = top
+        .class_members_for(top_class.id)
+        .find(|member| member.kind == ClassMemberKind::Method && member.name.as_ref() == "get_data")
+        .expect("get_data declaration");
+    let implementation = get_data
+        .implementation
+        .as_ref()
+        .expect("cross-include implementation link");
+    assert_eq!(implementation.unit, cls.unit_id);
+    assert!(
+        cls_src[implementation.range.clone()]
+            .to_ascii_lowercase()
+            .contains("get_data")
+    );
+
+    let implementation_symbol = cls
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Method
+                && symbol.name.as_ref() == get_data.name.as_ref()
+        })
+        .expect("implementation method symbol");
+    let (definition_unit, definition_member) = project
+        .class_member_definition_for_method_symbol(cls.unit_id, implementation_symbol.id)
+        .expect("implementation should resolve to declaration");
+    assert_eq!(definition_unit, top.unit_id);
+    assert_eq!(definition_member.name, get_data.name);
+
+    assert!(
+        top.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::MissingMethodImplementation),
+        "ordered sibling include implementation should satisfy method declarations: {:?}",
+        top.diagnostics
+    );
+    let root = project.unit_by_uri("zmain.abap").expect("root unit");
+    assert!(
+        root.diagnostics.iter().all(|diag| {
+            !(diag.kind == DiagnosticKind::UnknownField && diag.message.contains("get_data"))
+        }),
+        "root call should resolve class members through ordered includes: {:?}",
         root.diagnostics
     );
 }

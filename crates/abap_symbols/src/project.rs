@@ -5,8 +5,9 @@ use abap_parser::ParseResult;
 
 use crate::collector::collect_unit;
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, PerformCallData, ReferenceData, ReferenceKind, Resolution,
-    SqlNameRefKind, SqlProjectionKind, StructureData, StructureFieldData, SymbolKind, UnitAnalysis,
+    ClassMemberImplementationData, Diagnostic, DiagnosticKind, PerformCallData, ReferenceData,
+    ReferenceKind, Resolution, SqlNameRefKind, SqlProjectionKind, StructureData,
+    StructureFieldData, SymbolKind, UnitAnalysis,
 };
 use crate::facts::infer_semantic_facts;
 use crate::ids::{ReferenceId, SymbolHandle, SymbolId, UnitId};
@@ -14,7 +15,7 @@ use crate::resolver::{
     ScopeIndex, build_scope_index, resolve_project_cross_unit,
     resolve_project_cross_unit_for_units, resolve_unit_with_index,
 };
-use crate::scope::Namespace;
+use crate::scope::{Namespace, ScopeKind};
 use crate::validate::{
     validate_project_with_scope_indexes, validate_project_with_scope_indexes_for_units,
 };
@@ -151,6 +152,101 @@ impl ProjectAnalysis {
             })
     }
 
+    pub fn visible_type_owner_handle(
+        &self,
+        from_unit: UnitId,
+        name: &Arc<str>,
+    ) -> Option<SymbolHandle> {
+        if let Some(current) = self.units.get(from_unit.as_usize())
+            && let Some(symbol) = root_type_owner_symbol(current, name, true)
+        {
+            return Some(SymbolHandle {
+                unit: from_unit,
+                symbol,
+            });
+        }
+        let predecessors = include_predecessor_units_for_units(&self.units);
+        self.visible_type_owner_handle_with_predecessors(from_unit, name, &predecessors)
+    }
+
+    pub(crate) fn visible_type_owner_handle_with_predecessors(
+        &self,
+        from_unit: UnitId,
+        name: &Arc<str>,
+        predecessors: &[Vec<UnitId>],
+    ) -> Option<SymbolHandle> {
+        self.visible_type_owner_handle_inner(from_unit, name, true, predecessors)
+            .or_else(|| self.visible_type_owner_handle_inner(from_unit, name, false, predecessors))
+    }
+
+    fn visible_type_owner_handle_inner(
+        &self,
+        from_unit: UnitId,
+        name: &Arc<str>,
+        require_definition: bool,
+        predecessors: &[Vec<UnitId>],
+    ) -> Option<SymbolHandle> {
+        let current = self.units.get(from_unit.as_usize())?;
+        if let Some(symbol) = root_type_owner_symbol(current, name, require_definition) {
+            return Some(SymbolHandle {
+                unit: from_unit,
+                symbol,
+            });
+        }
+
+        for unit_id in predecessors
+            .get(from_unit.as_usize())
+            .into_iter()
+            .flatten()
+            .rev()
+            .copied()
+        {
+            let unit = &self.units[unit_id.as_usize()];
+            if let Some(symbol) = root_type_owner_symbol(unit, name, require_definition) {
+                return Some(SymbolHandle {
+                    unit: unit_id,
+                    symbol,
+                });
+            }
+        }
+
+        self.units.iter().find_map(|unit| {
+            root_type_owner_symbol(unit, name, require_definition).map(|symbol| SymbolHandle {
+                unit: unit.unit_id,
+                symbol,
+            })
+        })
+    }
+
+    pub fn class_member_definition_for_method_symbol(
+        &self,
+        implementation_unit: UnitId,
+        method_symbol: SymbolId,
+    ) -> Option<(UnitId, &crate::ClassMemberData)> {
+        let unit = self.units.get(implementation_unit.as_usize())?;
+        let method = unit.symbol(method_symbol);
+        if method.kind != SymbolKind::Method {
+            return None;
+        }
+        let class_symbol = enclosing_class_owner_in_unit(unit, method.scope)?;
+        let class_name = Arc::clone(&unit.symbol(class_symbol).name);
+        let definition = self.visible_type_owner_handle(implementation_unit, &class_name)?;
+        let definition_unit = &self.units[definition.unit.as_usize()];
+        let member = definition_unit.class_member(definition.symbol, method.name.as_ref())?;
+        Some((definition.unit, member))
+    }
+
+    pub fn include_predecessor_units(&self, unit_id: UnitId) -> Vec<UnitId> {
+        include_predecessor_units_for_units(&self.units)
+            .get(unit_id.as_usize())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn include_predecessor_units_by_unit(&self) -> Vec<Vec<UnitId>> {
+        include_predecessor_units_for_units(&self.units)
+    }
+
     fn find_root_form_in_unit_or_includes(
         &self,
         start_unit: UnitId,
@@ -179,6 +275,102 @@ impl ProjectAnalysis {
             queue.extend(unit.include_edges.iter().filter_map(|edge| edge.target));
         }
         None
+    }
+}
+
+fn root_type_owner_symbol(
+    unit: &UnitAnalysis,
+    name: &Arc<str>,
+    require_definition: bool,
+) -> Option<SymbolId> {
+    unit.symbols.iter().find_map(|symbol| {
+        if symbol.scope != unit.root_scope || symbol.name != *name {
+            return None;
+        }
+        match symbol.kind {
+            SymbolKind::Interface => Some(symbol.id),
+            SymbolKind::Class
+                if !require_definition || unit.class_definition(symbol.id).is_some() =>
+            {
+                Some(symbol.id)
+            }
+            _ => None,
+        }
+    })
+}
+
+fn enclosing_class_owner_in_unit(
+    unit: &UnitAnalysis,
+    scope: crate::ids::ScopeId,
+) -> Option<SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope = unit.scope(scope_id);
+        if scope.kind == ScopeKind::Class {
+            return scope.owner;
+        }
+        current = scope.parent;
+    }
+    None
+}
+
+fn include_predecessor_units_for_units(units: &[UnitAnalysis]) -> Vec<Vec<UnitId>> {
+    let mut predecessors = vec![Vec::new(); units.len()];
+    for unit in units {
+        let mut stack = HashSet::new();
+        record_include_predecessors(
+            units,
+            unit.unit_id,
+            Vec::new(),
+            &mut predecessors,
+            &mut stack,
+        );
+    }
+    for unit_predecessors in &mut predecessors {
+        let mut seen = HashSet::new();
+        unit_predecessors.retain(|unit_id| seen.insert(*unit_id));
+    }
+    predecessors
+}
+
+fn record_include_predecessors(
+    units: &[UnitAnalysis],
+    unit_id: UnitId,
+    inherited_prior: Vec<UnitId>,
+    predecessors: &mut [Vec<UnitId>],
+    stack: &mut HashSet<UnitId>,
+) -> Vec<UnitId> {
+    if units.get(unit_id.as_usize()).is_none() || !stack.insert(unit_id) {
+        return Vec::new();
+    }
+
+    let mut expansion = vec![unit_id];
+    let mut prior = inherited_prior;
+    push_unique_unit(&mut prior, unit_id);
+    let targets: Vec<_> = units[unit_id.as_usize()]
+        .include_edges
+        .iter()
+        .filter_map(|edge| edge.target)
+        .collect();
+    for target in targets {
+        if let Some(target_predecessors) = predecessors.get_mut(target.as_usize()) {
+            target_predecessors.extend(prior.iter().copied());
+        }
+        let nested_expansion =
+            record_include_predecessors(units, target, prior.clone(), predecessors, stack);
+        for expanded_unit in nested_expansion {
+            push_unique_unit(&mut prior, expanded_unit);
+            push_unique_unit(&mut expansion, expanded_unit);
+        }
+    }
+
+    stack.remove(&unit_id);
+    expansion
+}
+
+fn push_unique_unit(units: &mut Vec<UnitId>, unit_id: UnitId) {
+    if !units.contains(&unit_id) {
+        units.push(unit_id);
     }
 }
 
@@ -509,6 +701,75 @@ pub(crate) fn resolve_include_edges_for_units(
     }
 }
 
+pub(crate) fn link_class_member_implementations(units: &mut [UnitAnalysis]) {
+    for unit in units.iter_mut() {
+        let unit_id = unit.unit_id;
+        for member in &mut unit.class_members {
+            member.implementation =
+                member
+                    .implementation_range
+                    .clone()
+                    .map(|range| ClassMemberImplementationData {
+                        unit: unit_id,
+                        range,
+                    });
+        }
+    }
+
+    let predecessors = include_predecessor_units_for_units(units);
+    let method_implementations: Vec<_> = units
+        .iter()
+        .flat_map(|unit| {
+            unit.symbols
+                .iter()
+                .filter(|symbol| symbol.kind == SymbolKind::Method)
+                .filter_map(|symbol| {
+                    let class_symbol = enclosing_class_owner_in_unit(unit, symbol.scope)?;
+                    Some((
+                        unit.unit_id,
+                        Arc::clone(&unit.symbol(class_symbol).name),
+                        Arc::clone(&symbol.name),
+                        symbol.decl_range.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    for (implementation_unit, class_name, method_name, implementation_range) in
+        method_implementations
+    {
+        let Some(prior_units) = predecessors.get(implementation_unit.as_usize()) else {
+            continue;
+        };
+        for definition_unit in prior_units.iter().rev().copied() {
+            let Some(class_symbol) =
+                root_type_owner_symbol(&units[definition_unit.as_usize()], &class_name, true)
+            else {
+                continue;
+            };
+            let Some(member) = units[definition_unit.as_usize()]
+                .class_members
+                .iter_mut()
+                .find(|member| {
+                    member.class_symbol == class_symbol
+                        && member.kind == crate::ClassMemberKind::Method
+                        && member.name == method_name
+                })
+            else {
+                continue;
+            };
+            if member.implementation.is_none() {
+                member.implementation = Some(ClassMemberImplementationData {
+                    unit: implementation_unit,
+                    range: implementation_range,
+                });
+            }
+            break;
+        }
+    }
+}
+
 pub(crate) fn collect_project_diagnostics(project: &mut ProjectAnalysis) {
     project.diagnostics.clear();
     for unit in &project.units {
@@ -748,6 +1009,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
     let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit_for_units(&mut units, &dirty_set.unit_ids);
+    link_class_member_implementations(&mut units);
     reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();
@@ -814,6 +1076,7 @@ fn analyze_project_from_local_units_profiled(
     metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
     let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit(&mut units);
+    link_class_member_implementations(&mut units);
     reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();

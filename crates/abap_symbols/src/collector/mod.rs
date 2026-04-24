@@ -126,6 +126,7 @@ pub struct Collector<'a> {
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     loop_at_field_contexts: Vec<LoopAtFieldContext>,
     class_members: Vec<ClassMemberData>,
+    class_definition_symbols: std::collections::HashSet<SymbolId>,
     abstract_classes: std::collections::HashSet<SymbolId>,
     implemented_interfaces: Vec<ImplementedInterfaceData>,
     member_aliases: Vec<MemberAliasData>,
@@ -186,6 +187,7 @@ impl<'a> Collector<'a> {
             loop_where_field_contexts: Vec::new(),
             loop_at_field_contexts: Vec::new(),
             class_members: Vec::new(),
+            class_definition_symbols: std::collections::HashSet::new(),
             abstract_classes: std::collections::HashSet::new(),
             implemented_interfaces: Vec::new(),
             member_aliases: Vec::new(),
@@ -235,11 +237,11 @@ impl<'a> Collector<'a> {
             })
             .collect();
         let mut class_definitions: Vec<_> = self
-            .abstract_classes
+            .class_definition_symbols
             .into_iter()
             .map(|class_symbol| ClassDefinitionData {
                 class_symbol,
-                is_abstract: true,
+                is_abstract: self.abstract_classes.contains(&class_symbol),
             })
             .collect();
         class_definitions.sort_by_key(|definition| definition.class_symbol.as_usize());
@@ -315,6 +317,7 @@ impl<'a> Collector<'a> {
             target_member.name = alias.alias_name.clone();
             target_member.decl_range = alias.range.clone();
             target_member.implementation_range = None;
+            target_member.implementation = None;
 
             if target_member.kind == crate::ClassMemberKind::Method
                 && let Some(signature) = self.class_method_signature_target(

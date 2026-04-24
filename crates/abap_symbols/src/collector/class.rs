@@ -432,6 +432,9 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 superclass_range,
             );
         }
+        if !is_implementation {
+            self.collector.class_definition_symbols.insert(owner);
+        }
         if !is_implementation && is_abstract {
             self.collector.abstract_classes.insert(owner);
         }
@@ -563,6 +566,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             is_static,
             decl_range: name_tok.range(),
             implementation_range: None,
+            implementation: None,
             signature: Arc::<str>::from(entry.signature_text(self.collector.source)),
             parameters: Vec::new(),
             structure: None,
@@ -634,6 +638,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             is_static,
             decl_range,
             implementation_range: None,
+            implementation: None,
             signature,
             parameters: Vec::new(),
             structure: None,
@@ -682,7 +687,11 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         }) else {
             return;
         };
-        member.implementation_range = Some(range);
+        member.implementation_range = Some(range.clone());
+        member.implementation = Some(crate::ClassMemberImplementationData {
+            unit: self.collector.unit_id,
+            range,
+        });
     }
 
     pub(super) fn declare_implicit_me_symbol(

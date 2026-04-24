@@ -502,6 +502,12 @@ pub struct FunctionModuleData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMemberImplementationData {
+    pub unit: UnitId,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassMemberData {
     pub class_symbol: SymbolId,
     pub name: Arc<str>,
@@ -510,6 +516,7 @@ pub struct ClassMemberData {
     pub is_static: bool,
     pub decl_range: TextRange,
     pub implementation_range: Option<TextRange>,
+    pub implementation: Option<ClassMemberImplementationData>,
     pub signature: Arc<str>,
     pub parameters: Vec<ClassMemberParameterData>,
     /// Shape for grouped `CONSTANTS` / `CLASS-DATA` `BEGIN OF ... END OF` when the member is a structure.

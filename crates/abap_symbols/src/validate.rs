@@ -25,6 +25,7 @@ struct ValidationLookup<'a> {
     scope_indexes: &'a [ScopeIndex],
     per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    include_predecessors: Vec<Vec<UnitId>>,
 }
 
 #[derive(Clone, Copy)]
@@ -67,6 +68,7 @@ fn build_validation_lookup<'a>(
         scope_indexes,
         per_unit_root_index,
         root_index,
+        include_predecessors: project.include_predecessor_units_by_unit(),
     }
 }
 
@@ -460,7 +462,7 @@ fn validate_missing_method_implementations(unit: &crate::UnitAnalysis) -> Vec<Di
     unit.class_members
         .iter()
         .filter(|member| member.kind == ClassMemberKind::Method)
-        .filter(|member| member.implementation_range.is_none())
+        .filter(|member| member.implementation.is_none())
         .filter(|member| unit.symbol(member.class_symbol).kind == SymbolKind::Class)
         .filter(|member| {
             !unit.member_aliases.iter().any(|alias| {
@@ -1520,6 +1522,13 @@ fn resolve_type_owner_symbol(
     preferred_unit: &crate::UnitAnalysis,
     name: &Arc<str>,
 ) -> Option<SymbolHandle> {
+    if let Some(handle) = project.visible_type_owner_handle_with_predecessors(
+        preferred_unit.unit_id,
+        name,
+        &lookup.include_predecessors,
+    ) {
+        return Some(handle);
+    }
     root_symbol_handle_matching(
         project,
         lookup,

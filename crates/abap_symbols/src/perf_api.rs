@@ -10,7 +10,7 @@ use crate::project::{
     IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis, ProjectUpdateMetrics,
     analyze_project_incremental_from_locals, analyze_unit_locally_for_project,
     analyze_unit_locally_phased, collect_project_diagnostics, exported_signature_for_unit,
-    resolve_include_edges_for_units,
+    link_class_member_implementations, resolve_include_edges_for_units,
 };
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
 use crate::validate::{
@@ -289,6 +289,7 @@ pub fn preview_project_update(
 
     resolve_include_edges_for_units(&mut units, &provided_name_to_unit, &dirty_unit_ids);
     crate::resolver::resolve_project_cross_unit_for_units(&mut units, &dirty_unit_ids);
+    link_class_member_implementations(&mut units);
     for unit_id in &dirty_unit_ids {
         units[unit_id.as_usize()].rebuild_semantic_index();
     }

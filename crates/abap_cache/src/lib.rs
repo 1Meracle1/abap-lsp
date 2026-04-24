@@ -1116,7 +1116,7 @@ impl AnalysisSnapshot {
             .decls()
             .class_member_at_offset(offset)?;
         if member.kind != ClassMemberKind::Method
-            || member.implementation_range.is_some()
+            || member.implementation.is_some()
             || self.symbols.symbol(member.class_symbol).kind != SymbolKind::Class
             || self.symbols.member_aliases.iter().any(|alias| {
                 alias.owner_symbol == member.class_symbol && alias.alias_name == member.name
@@ -1479,17 +1479,26 @@ impl AnalysisSnapshot {
             .class_member_at_offset(offset)
         {
             return Some(definition_target_for_class_member_name_at(
+                self.project.as_ref(),
                 self.symbols.as_ref(),
                 member,
                 offset,
             ));
         }
 
-        self.symbols
-            .semantic()
-            .decls()
-            .symbol_at_offset(offset)
-            .map(|symbol| definition_target_for_symbol(self.symbols.as_ref(), symbol))
+        if let Some(symbol) = self.symbols.semantic().decls().symbol_at_offset(offset) {
+            if symbol.kind == SymbolKind::Method
+                && let Some((definition_unit, member)) = self
+                    .project
+                    .class_member_definition_for_method_symbol(self.symbols.unit_id, symbol.id)
+            {
+                let unit = &self.project.units[definition_unit.as_usize()];
+                return Some(definition_target_for_class_member(unit, member));
+            }
+            return Some(definition_target_for_symbol(self.symbols.as_ref(), symbol));
+        }
+
+        None
     }
 
     fn definition_target_for_include_reference(
@@ -1547,6 +1556,17 @@ impl AnalysisSnapshot {
         }
 
         if let Some(symbol) = self.symbols.semantic().decls().symbol_at_offset(offset) {
+            if symbol.kind == SymbolKind::Method
+                && let Some((definition_unit, member)) = self
+                    .project
+                    .class_member_definition_for_method_symbol(self.symbols.unit_id, symbol.id)
+            {
+                return Some(ReferenceSearchTarget::ClassMember {
+                    unit: definition_unit,
+                    class_symbol: member.class_symbol,
+                    name: Arc::clone(&member.name),
+                });
+            }
             return Some(ReferenceSearchTarget::Symbol(abap_symbols::SymbolHandle {
                 unit: self.symbols.unit_id,
                 symbol: symbol.id,
@@ -1587,6 +1607,20 @@ impl AnalysisSnapshot {
         }
 
         if let Some(symbol) = self.symbols.semantic().decls().symbol_at_offset(offset) {
+            if symbol.kind == SymbolKind::Method
+                && let Some((definition_unit, member)) = self
+                    .project
+                    .class_member_definition_for_method_symbol(self.symbols.unit_id, symbol.id)
+            {
+                return Some((
+                    ReferenceSearchTarget::ClassMember {
+                        unit: definition_unit,
+                        class_symbol: member.class_symbol,
+                        name: Arc::clone(&member.name),
+                    },
+                    rename_method_symbol_range(self.text.as_ref(), symbol)?,
+                ));
+            }
             let handle = abap_symbols::SymbolHandle {
                 unit: self.symbols.unit_id,
                 symbol: symbol.id,
@@ -1843,24 +1877,26 @@ impl AnalysisSnapshot {
                 class_symbol,
                 name,
             } => {
-                if *unit != self.symbols.unit_id {
-                    return Vec::new();
-                }
-                let Some(member) = self
-                    .symbols
+                let target_unit = &self.project.units[unit.as_usize()];
+                let Some(member) = target_unit
                     .semantic()
                     .decls()
                     .class_member(*class_symbol, name.as_ref())
                 else {
                     return Vec::new();
                 };
-                let mut out = vec![ReferenceTarget {
-                    uri: Arc::clone(&self.uri),
-                    range: member.decl_range.clone(),
-                }];
-                if let Some(range) =
-                    rename_implementation_range_for_class_member(self.text.as_ref(), member)
-                {
+                let mut out = Vec::new();
+                if *unit == self.symbols.unit_id {
+                    out.push(ReferenceTarget {
+                        uri: Arc::clone(&self.uri),
+                        range: member.decl_range.clone(),
+                    });
+                }
+                if let Some(range) = implementation_range_for_unit_text(
+                    self.text.as_ref(),
+                    member,
+                    self.symbols.unit_id,
+                ) {
                     out.push(ReferenceTarget {
                         uri: Arc::clone(&self.uri),
                         range,
@@ -4117,11 +4153,35 @@ fn rename_range_for_class_member(
     (range.start <= offset && offset < range.end).then_some(range)
 }
 
+fn implementation_range_for_unit_text(
+    text: &str,
+    member: &ClassMemberData,
+    unit_id: UnitId,
+) -> Option<Range<usize>> {
+    let implementation = member.implementation.as_ref()?;
+    if implementation.unit != unit_id {
+        return None;
+    }
+    rename_method_name_range(text, implementation.range.clone(), member.name.as_ref())
+}
+
 fn rename_implementation_range_for_class_member(
     text: &str,
     member: &ClassMemberData,
 ) -> Option<Range<usize>> {
     let range = member.implementation_range.clone()?;
+    rename_method_name_range(text, range, member.name.as_ref())
+}
+
+fn rename_method_symbol_range(text: &str, symbol: &SymbolData) -> Option<Range<usize>> {
+    rename_method_name_range(text, symbol.decl_range.clone(), symbol.name.as_ref())
+}
+
+fn rename_method_name_range(
+    text: &str,
+    range: Range<usize>,
+    method_name: &str,
+) -> Option<Range<usize>> {
     let Some(implementation_text) = text.get(range.clone()) else {
         return Some(range);
     };
@@ -4131,20 +4191,29 @@ fn rename_implementation_range_for_class_member(
     let member_start = range.start + separator + '~'.len_utf8();
     let member_range = member_start..range.end;
     text.get(member_range.clone())
-        .filter(|slice| slice.eq_ignore_ascii_case(member.name.as_ref()))
+        .filter(|slice| {
+            slice.eq_ignore_ascii_case(method_name.rsplit('~').next().unwrap_or(method_name))
+        })
         .map(|_| member_range)
 }
 
 fn definition_target_for_class_member_name_at(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     member: &ClassMemberData,
     offset: usize,
 ) -> DefinitionTarget {
     let target_range = match class_member_name_range_at_offset(member, offset) {
-        Some(range) if *range == member.decl_range => member
-            .implementation_range
-            .clone()
-            .unwrap_or_else(|| member.decl_range.clone()),
+        Some(range) if *range == member.decl_range => {
+            if let Some(implementation) = &member.implementation {
+                let implementation_unit = &project.units[implementation.unit.as_usize()];
+                return definition_target_for_range(
+                    implementation_unit,
+                    implementation.range.clone(),
+                );
+            }
+            member.decl_range.clone()
+        }
         Some(_) => member.decl_range.clone(),
         None => member.decl_range.clone(),
     };
@@ -4693,6 +4762,17 @@ fn resolve_project_class_symbol<'a>(
     preferred_unit: &'a UnitAnalysis,
     name: &Arc<str>,
 ) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    if let Some(handle) = snapshot
+        .project
+        .visible_type_owner_handle(preferred_unit.unit_id, name)
+        && snapshot.project.units[handle.unit.as_usize()]
+            .symbol(handle.symbol)
+            .kind
+            == SymbolKind::Class
+    {
+        let unit = &snapshot.project.units[handle.unit.as_usize()];
+        return Some((unit, handle.symbol));
+    }
     preferred_unit
         .symbols
         .iter()
@@ -6273,6 +6353,17 @@ fn resolve_symbol_from_context_with_scope_index<'a>(
         if let Some(symbol_id) =
             lookup_scope_chain(current_unit, &scope_index, scope, namespace, name)
         {
+            if namespace == Namespace::Type
+                && current_unit.symbol(symbol_id).kind == SymbolKind::Class
+                && current_unit.class_definition(symbol_id).is_none()
+                && let Some(handle) = snapshot
+                    .project
+                    .visible_type_owner_handle(current_unit.unit_id, name)
+                && handle.unit != current_unit.unit_id
+            {
+                let unit = &snapshot.project.units[handle.unit.as_usize()];
+                return Some((unit, handle.symbol));
+            }
             return Some((current_unit, symbol_id));
         }
     }
@@ -16105,6 +16196,64 @@ ENDCLASS.";
             .definition_at(implementation_offset + 1)
             .expect("declaration target");
         assert_target_slice(&declaration_target, "file:///demo.abap", src, "exec");
+        assert_eq!(declaration_target.range.start, declaration_offset);
+    }
+
+    #[test]
+    fn definition_at_links_class_method_declaration_and_implementation_across_report_includes() {
+        let store = DocumentStore::default();
+        let main_src = "\
+REPORT zmain.
+INCLUDE: ztop,
+         zcls.";
+        let top_src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS exec.
+ENDCLASS.";
+        let cls_src = "\
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD exec.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///zmain.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///ztop.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zcls.abap"),
+                version: 1,
+                text: Arc::from(cls_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let top = snapshots.get("file:///ztop.abap").expect("top snapshot");
+        let cls = snapshots.get("file:///zcls.abap").expect("class snapshot");
+        let declaration_offset = top_src.find("exec").expect("method declaration");
+        let implementation_offset = cls_src.rfind("exec").expect("method implementation");
+
+        let implementation_target = top
+            .definition_at(declaration_offset + 1)
+            .expect("implementation target");
+        assert_target_slice(&implementation_target, "file:///zcls.abap", cls_src, "exec");
+        assert_eq!(implementation_target.range.start, implementation_offset);
+
+        let declaration_target = cls
+            .definition_at(implementation_offset + 1)
+            .expect("declaration target");
+        assert_target_slice(&declaration_target, "file:///ztop.abap", top_src, "exec");
         assert_eq!(declaration_target.range.start, declaration_offset);
     }
 
