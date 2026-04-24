@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -662,6 +662,9 @@ fn flush_analysis_completions(
         if completion.generation
             != current_workspace_generation(generations, &completion.workspace_uri)
         {
+            // A later open/change may supersede workspace state while this completion still
+            // carries the diagnostic refresh for unchanged documents.
+            forward_current_stale_diagnostics(state, writer, &completion)?;
             continue;
         }
 
@@ -690,6 +693,70 @@ fn flush_analysis_completions(
         }
     }
     Ok(())
+}
+
+fn send_analysis_completion(
+    completion_tx: &Sender<AnalysisCompletion>,
+    completion: AnalysisCompletion,
+) -> Result<(), mpsc::SendError<AnalysisCompletion>> {
+    // Stale completions can still carry diagnostics for unchanged open documents.
+    completion_tx.send(completion)
+}
+
+fn forward_current_stale_diagnostics(
+    state: &ServerState,
+    writer: &mut impl Write,
+    completion: &AnalysisCompletion,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (method, params) in &completion.notifications {
+        if method != "textDocument/publishDiagnostics" {
+            continue;
+        }
+        if stale_diagnostic_payload_matches_current_document(
+            state,
+            &completion.workspace_uri,
+            params,
+        ) {
+            send_notification(writer, method, params.clone())?;
+        }
+    }
+    Ok(())
+}
+
+fn stale_diagnostic_payload_matches_current_document(
+    state: &ServerState,
+    workspace_uri: &str,
+    params: &Value,
+) -> bool {
+    let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(version) = params.get("version").and_then(Value::as_i64) else {
+        return false;
+    };
+    let uri = abap_lsp::normalize_lsp_uri(uri);
+    let workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let Some(workspace) = state
+        .workspaces
+        .get(&workspace_uri)
+        .or_else(|| state.workspace_for_uri(&uri))
+    else {
+        return false;
+    };
+
+    if let Some(overlay) = workspace.open_documents.get(&uri) {
+        return i64::from(overlay.version) == version;
+    }
+    if let Some(snapshot) = workspace.preview_snapshots.get(&uri) {
+        return i64::from(snapshot.version) == version;
+    }
+    if let Some(snapshot) = workspace.cache.get(&uri) {
+        return i64::from(snapshot.version) == version;
+    }
+    state
+        .cache
+        .get(&uri)
+        .is_some_and(|snapshot| i64::from(snapshot.version) == version)
 }
 
 fn flush_analysis_progress(
@@ -816,12 +883,8 @@ fn serve(
                     })) {
                         Ok(completion) => match completion {
                             Ok(completion) => {
-                                if completion.generation
-                                    == current_workspace_generation(
-                                        &worker_generations,
-                                        &completion.workspace_uri,
-                                    )
-                                    && worker_completion_tx.send(completion).is_err()
+                                if send_analysis_completion(&worker_completion_tx, completion)
+                                    .is_err()
                                 {
                                     break;
                                 }
@@ -1015,6 +1078,18 @@ fn push_publish_diagnostics_notification(
         "textDocument/publishDiagnostics".to_owned(),
         serde_json::to_value(publish_diagnostics_params(state, snapshot))?,
     ));
+    Ok(())
+}
+
+fn push_publish_diagnostics_notification_once(
+    state: &ServerState,
+    snapshot: &abap_lsp::AnalysisSnapshot,
+    published_uris: &mut HashSet<String>,
+    notifications: &mut Vec<(String, Value)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if published_uris.insert(snapshot.uri.to_string()) {
+        push_publish_diagnostics_notification(state, snapshot, notifications)?;
+    }
     Ok(())
 }
 
@@ -1613,6 +1688,63 @@ fn handle_dependency_cache_cleared_notifications(
     Ok(notifications)
 }
 
+fn push_remote_dependency_update_diagnostics(
+    state: &ServerState,
+    workspace_uri: &str,
+    source_uris: &HashSet<String>,
+    refreshed_snapshots: &[Arc<abap_lsp::AnalysisSnapshot>],
+    notifications: &mut Vec<(String, Value)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(workspace_uri);
+    let mut published_uris = HashSet::new();
+    for snapshot in refreshed_snapshots {
+        if source_uris.contains(snapshot.uri.as_ref())
+            && (!workspace_uses_editor_first_mode(state, workspace_uri)
+                || state
+                    .workspaces
+                    .get(&normalized_workspace_uri)
+                    .is_some_and(|workspace| {
+                        workspace.open_documents.contains_key(snapshot.uri.as_ref())
+                    }))
+        {
+            push_publish_diagnostics_notification_once(
+                state,
+                snapshot,
+                &mut published_uris,
+                notifications,
+            )?;
+        }
+    }
+
+    let dirty_uris = workspace_dirty_uris(state, &normalized_workspace_uri);
+    if dirty_uris.is_empty() {
+        return Ok(());
+    }
+
+    let diagnostic_uris = if workspace_uses_editor_first_mode(state, workspace_uri) {
+        editor_first_diagnostic_uris(state, &normalized_workspace_uri, None, &dirty_uris)
+    } else {
+        let mut uris: Vec<_> = dirty_uris.into_iter().collect();
+        uris.sort();
+        uris
+    };
+
+    let Some(workspace) = state.workspaces.get(&normalized_workspace_uri) else {
+        return Ok(());
+    };
+    for uri in diagnostic_uris {
+        if let Some(snapshot) = workspace.cache.get(uri.as_ref()) {
+            push_publish_diagnostics_notification_once(
+                state,
+                snapshot.as_ref(),
+                &mut published_uris,
+                notifications,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn handle_remote_dependencies_updated_notifications(
     state: &mut ServerState,
     params: &abap_lsp::RemoteDependenciesUpdatedParams,
@@ -1643,19 +1775,13 @@ fn handle_remote_dependencies_updated_notifications(
     let mut notifications = progress_notifications
         .into_inner()
         .expect("progress notification collection should not be poisoned");
-    for snapshot in snapshots.iter() {
-        if source_uris.contains(snapshot.uri.as_ref())
-            && (!workspace_uses_editor_first_mode(state, &params.workspace_uri)
-                || state
-                    .workspaces
-                    .get(&normalized_workspace_uri)
-                    .is_some_and(|workspace| {
-                        workspace.open_documents.contains_key(snapshot.uri.as_ref())
-                    }))
-        {
-            push_publish_diagnostics_notification(state, snapshot, &mut notifications)?;
-        }
-    }
+    push_remote_dependency_update_diagnostics(
+        state,
+        &params.workspace_uri,
+        &source_uris,
+        &snapshots,
+        &mut notifications,
+    )?;
     let request = if let Some(request) =
         build_pending_open_dependency_request(state, Some(&params.workspace_uri))
     {
@@ -2323,10 +2449,11 @@ mod tests {
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use super::{
-        AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE, EDITOR_FIRST_DIAGNOSTIC_LIMIT,
-        PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
-        finish_background_task, flush_due_debounced_tasks, handle_did_change_notifications,
-        handle_message, run_analysis_task, take_pending_background_task,
+        AnalysisCompletion, AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE,
+        EDITOR_FIRST_DIAGNOSTIC_LIMIT, PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED,
+        RESOLVE_REMOTE_DEPENDENCIES, finish_background_task, flush_analysis_completions,
+        flush_due_debounced_tasks, handle_did_change_notifications, handle_message,
+        run_analysis_task, send_analysis_completion, take_pending_background_task,
         try_schedule_background_analysis, workspace_analysis_status_finished,
         workspace_analysis_status_started,
     };
@@ -3247,6 +3374,74 @@ lo_helper->r";
             }
             _ => panic!("expected didChange task"),
         }
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn stale_background_completion_still_forwards_current_root_diagnostics() {
+        let workspace_path = temp_workspace_path("background_stale_diagnostics");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        let workspace_uri = file_uri(&workspace_path);
+        let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let normalized_source_uri = abap_lsp::normalize_lsp_uri(&source_uri);
+
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        state
+            .workspaces
+            .get_mut(&normalized_workspace_uri)
+            .expect("workspace")
+            .open_documents
+            .insert(
+                normalized_source_uri.clone(),
+                abap_lsp::OpenDocumentOverlay {
+                    version: 1,
+                    text: Arc::from("REPORT zmain."),
+                },
+            );
+
+        let generations = Arc::new(Mutex::new(HashMap::from([(
+            normalized_workspace_uri.clone(),
+            2,
+        )])));
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let workspace = state
+            .workspaces
+            .get(&normalized_workspace_uri)
+            .expect("workspace")
+            .clone();
+        send_analysis_completion(
+            &completion_tx,
+            AnalysisCompletion {
+                workspace_uri: normalized_workspace_uri.clone(),
+                generation: 1,
+                started: None,
+                workspace,
+                notifications: vec![(
+                    "textDocument/publishDiagnostics".to_string(),
+                    json!({
+                        "uri": source_uri,
+                        "version": 1,
+                        "diagnostics": []
+                    }),
+                )],
+            },
+        )
+        .expect("completion");
+        drop(completion_tx);
+
+        let mut writer = Vec::new();
+        flush_analysis_completions(&mut state, &mut writer, &completion_rx, &generations)
+            .expect("flush completions");
+
+        let output = String::from_utf8(writer).expect("utf8 output");
+        assert!(
+            output.contains("textDocument/publishDiagnostics"),
+            "stale completion should still clear diagnostics for unchanged open documents: {output}"
+        );
+        assert!(output.contains(&source_uri));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -5579,6 +5774,145 @@ ENDCLASS."
         assert!(!follow_up_candidates.iter().any(|candidate| {
             candidate.get("name").and_then(Value::as_str) == Some("zcl_noise")
         }));
+    }
+
+    #[test]
+    fn full_workspace_dependency_only_update_reemits_dirty_root_diagnostics() {
+        let workspace_path = temp_workspace_path("full_workspace_dependency_dirty_root_diags");
+        let source_dir = workspace_path.join("src");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "ZREPORT_MAIN"
+kind = "report"
+root_file = "src/ZREPORT_MAIN.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZREPORT_MAIN.abap"
+object_name = "ZREPORT_MAIN"
+"#,
+        )
+        .expect("manifest");
+        let source_text = "REPORT zreport_main.\nDATA lo_remote TYPE REF TO zcl_remote.\n";
+        fs::write(source_dir.join("ZREPORT_MAIN.abap"), source_text).expect("source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREPORT_MAIN.abap"));
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+
+        let opened = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": source_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen source");
+        let initial_source_diags = opened
+            .notifications
+            .iter()
+            .find(|(method, payload)| {
+                method == "textDocument/publishDiagnostics"
+                    && payload.get("uri").and_then(Value::as_str) == Some(source_uri.as_str())
+            })
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("initial source diagnostics");
+        assert!(
+            initial_source_diags.iter().any(|diag| {
+                diag.get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("zcl_remote"))
+            }),
+            "expected initial unresolved remote diagnostic: {initial_source_diags:#?}"
+        );
+
+        store_dependency_artifacts(
+            &mut state,
+            &workspace_uri,
+            vec![DependencyArtifactPayload {
+                package_name: "ZPKG".to_string(),
+                object_kind: "global-class".to_string(),
+                object_name: "ZCL_REMOTE".to_string(),
+                object_uri: "/sap/bc/adt/oo/classes/zcl_remote".to_string(),
+                object_type: "CLAS/OC".to_string(),
+                description: "Fetched dependency".to_string(),
+                file_extension: "abap".to_string(),
+                source_text: "\
+CLASS zcl_remote DEFINITION PUBLIC FINAL CREATE PUBLIC.
+ENDCLASS.
+CLASS zcl_remote IMPLEMENTATION.
+ENDCLASS."
+                    .to_string(),
+                fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            }],
+        );
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_REMOTE");
+
+        let refreshed = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": dependency_uri,
+                    "sourceUris": [dependency_uri],
+                    "fetched": ["zcl_remote"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+
+        let refreshed_source_diags = refreshed
+            .notifications
+            .iter()
+            .find(|(method, payload)| {
+                method == "textDocument/publishDiagnostics"
+                    && payload.get("uri").and_then(Value::as_str) == Some(source_uri.as_str())
+            })
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("refreshed source diagnostics");
+        assert!(
+            refreshed_source_diags.iter().all(|diag| {
+                !diag
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("zcl_remote"))
+            }),
+            "unexpected stale source diagnostics: {refreshed_source_diags:#?}"
+        );
     }
 
     #[test]
