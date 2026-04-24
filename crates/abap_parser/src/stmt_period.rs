@@ -136,6 +136,24 @@ pub(crate) fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bo
             || tok.lexeme(source).eq_ignore_ascii_case("ON"))
 }
 
+#[inline]
+fn token_matches_keyword(source: &str, tok: &Token, keyword: &str) -> bool {
+    tok.kind == TokenKind::Ident && tok.lexeme(source).eq_ignore_ascii_case(keyword)
+}
+
+#[inline]
+fn is_perform_if_found_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+    tokens
+        .get(start)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "perform"))
+        && tokens
+            .get(idx)
+            .is_some_and(|tok| token_matches_keyword(source, tok, "if"))
+        && tokens
+            .get(idx + 1)
+            .is_some_and(|tok| token_matches_keyword(source, tok, "found"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StmtPeriodScan {
     Found(usize),
@@ -181,6 +199,7 @@ pub(crate) fn scan_until_statement_period(
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
+                    && !is_perform_if_found_addition(source, tokens, start, i)
                     && !is_inline_decl_continuation(source, tokens, i)
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };

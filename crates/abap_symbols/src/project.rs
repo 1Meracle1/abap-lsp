@@ -5,8 +5,8 @@ use abap_parser::ParseResult;
 
 use crate::collector::collect_unit;
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, ReferenceData, ReferenceKind, Resolution, SqlNameRefKind,
-    SqlProjectionKind, StructureData, StructureFieldData, UnitAnalysis,
+    Diagnostic, DiagnosticKind, PerformCallData, ReferenceData, ReferenceKind, Resolution,
+    SqlNameRefKind, SqlProjectionKind, StructureData, StructureFieldData, SymbolKind, UnitAnalysis,
 };
 use crate::facts::infer_semantic_facts;
 use crate::ids::{ReferenceId, SymbolHandle, SymbolId, UnitId};
@@ -101,6 +101,84 @@ impl ProjectAnalysis {
         self.uri_to_unit
             .get(uri)
             .and_then(|unit_id| self.units.get(unit_id.as_usize()))
+    }
+
+    pub fn resolve_perform_call_target(
+        &self,
+        caller_unit: &UnitAnalysis,
+        perform_call: &PerformCallData,
+    ) -> Option<SymbolHandle> {
+        if perform_call.is_dynamic {
+            return None;
+        }
+
+        if let Some(program) = &perform_call.program {
+            if program.is_dynamic {
+                return None;
+            }
+            let target_unit = self.resolve_perform_program_unit(program.name.as_ref())?;
+            return self
+                .find_root_form_in_unit_or_includes(target_unit, &perform_call.routine_name);
+        }
+
+        caller_unit
+            .references
+            .iter()
+            .find(|reference| {
+                reference.kind == ReferenceKind::RoutineCall
+                    && reference.namespace == Namespace::Routine
+                    && reference.range == perform_call.routine_range
+                    && reference.name == perform_call.routine_name
+            })
+            .and_then(|reference| match reference.resolution {
+                Some(Resolution::Symbol(handle)) => Some(handle),
+                _ => None,
+            })
+    }
+
+    fn resolve_perform_program_unit(&self, program_name: &str) -> Option<UnitId> {
+        let lowered = program_name.to_ascii_lowercase();
+        self.provided_name_to_unit
+            .get(lowered.as_str())
+            .copied()
+            .or_else(|| {
+                self.units.iter().find_map(|unit| {
+                    unit.provided_names
+                        .iter()
+                        .any(|name| name.as_ref().eq_ignore_ascii_case(&lowered))
+                        .then_some(unit.unit_id)
+                })
+            })
+    }
+
+    fn find_root_form_in_unit_or_includes(
+        &self,
+        start_unit: UnitId,
+        routine_name: &Arc<str>,
+    ) -> Option<SymbolHandle> {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::from([start_unit]);
+        while let Some(unit_id) = queue.pop_front() {
+            if !visited.insert(unit_id) {
+                continue;
+            }
+            let unit = self.units.get(unit_id.as_usize())?;
+            if let Some(symbol) = unit.symbols.iter().find(|symbol| {
+                symbol.scope == unit.root_scope
+                    && symbol.kind == SymbolKind::Form
+                    && symbol
+                        .name
+                        .as_ref()
+                        .eq_ignore_ascii_case(routine_name.as_ref())
+            }) {
+                return Some(SymbolHandle {
+                    unit: unit_id,
+                    symbol: symbol.id,
+                });
+            }
+            queue.extend(unit.include_edges.iter().filter_map(|edge| edge.target));
+        }
+        None
     }
 }
 

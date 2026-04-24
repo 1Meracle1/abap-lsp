@@ -2211,6 +2211,18 @@ ENDCLASS.";
     }
 
     #[test]
+    fn parses_perform_in_program_if_found_with_structured_dynamic_operands() {
+        let parsed = crate::parse(
+            "PERFORM (lw_parameter-callback-userexitf)\n  IN PROGRAM (lw_parameter-callback-userexitp)\n  IF FOUND USING lv_object lw_parameter-t_par.",
+        );
+        let root = parsed.file.root();
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn classifies_commit_and_rollback_work_statements_specifically() {
         let parsed = crate::parse("COMMIT WORK. ROLLBACK WORK.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

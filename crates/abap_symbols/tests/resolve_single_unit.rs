@@ -434,6 +434,8 @@ PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
     let call = unit.perform_calls.first().expect("perform call");
     assert_eq!(call.routine_name.as_ref(), "process_data");
     assert!(!call.is_dynamic);
+    assert!(call.program.is_none());
+    assert!(!call.has_if_found);
     assert!(!call.section_order_invalid);
     assert_eq!(
         call.parameters,
@@ -472,7 +474,7 @@ ENDFORM.
 DATA: lv_form  TYPE string VALUE 'process_data',
       lv_prog  TYPE syrepid VALUE sy-repid,
       lv_count TYPE i.
-PERFORM (lv_form) IN PROGRAM (lv_prog) USING 'demo' CHANGING lv_count.
+PERFORM (lv_form) IN PROGRAM (lv_prog) IF FOUND USING 'demo' CHANGING lv_count.
 "#;
     let parsed = parse(src);
     let unit = analyze_unit("file:///perform_dynamic.abap", src, &parsed);
@@ -487,7 +489,11 @@ PERFORM (lv_form) IN PROGRAM (lv_prog) USING 'demo' CHANGING lv_count.
 
     let call = unit.perform_calls.first().expect("perform call");
     assert!(call.is_dynamic);
+    assert!(call.has_if_found);
     assert_eq!(call.routine_name.as_ref(), "lv_form");
+    let program = call.program.as_ref().expect("dynamic program target");
+    assert!(program.is_dynamic);
+    assert_eq!(program.name.as_ref(), "lv_prog");
     assert_eq!(
         call.parameters,
         vec![
@@ -514,6 +520,165 @@ PERFORM (lv_form) IN PROGRAM (lv_prog) USING 'demo' CHANGING lv_count.
         .expect("dynamic PERFORM program reference");
     assert_eq!(prog_ref.name.as_ref(), "lv_prog");
     assert!(matches!(prog_ref.resolution, Some(Resolution::Symbol(_))));
+}
+
+#[test]
+fn perform_in_program_collects_structured_dynamic_operands_and_if_found_parameters() {
+    let src = r#"
+TYPES: BEGIN OF ty_callback,
+         userexitf TYPE string,
+         userexitp TYPE string,
+       END OF ty_callback.
+TYPES: BEGIN OF ty_parameter,
+         callback TYPE ty_callback,
+         t_par TYPE string,
+       END OF ty_parameter.
+
+DATA lw_parameter TYPE ty_parameter.
+DATA lv_object TYPE string.
+
+PERFORM (lw_parameter-callback-userexitf)
+  IN PROGRAM (lw_parameter-callback-userexitp)
+  IF FOUND USING lv_object lw_parameter-t_par.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///perform_dynamic_structured.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| !diag.message.contains("unknown routine")),
+        "unexpected dynamic PERFORM diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    let call = unit.perform_calls.first().expect("perform call");
+    assert!(call.is_dynamic);
+    assert_eq!(
+        call.routine_name.as_ref(),
+        "lw_parameter-callback-userexitf"
+    );
+    assert!(call.has_if_found);
+    let program = call.program.as_ref().expect("dynamic program target");
+    assert!(program.is_dynamic);
+    assert_eq!(program.name.as_ref(), "lw_parameter-callback-userexitp");
+    assert_eq!(
+        call.parameters,
+        vec![
+            abap_symbols::PerformParameterSection::Using,
+            abap_symbols::PerformParameterSection::Using,
+        ]
+    );
+    assert_eq!(call.arguments.len(), 2);
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lw_parameter"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "lw_parameter"
+            && access
+                .field_path
+                .iter()
+                .any(|segment| segment.name.as_ref() == "userexitf")
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_namespace == Namespace::Value
+            && access.base_name.as_ref() == "lw_parameter"
+            && access
+                .field_path
+                .iter()
+                .any(|segment| segment.name.as_ref() == "userexitp")
+    }));
+}
+
+#[test]
+fn static_perform_in_program_resolves_against_target_program_not_local_form() {
+    let callee_src = r#"
+REPORT zcallee.
+FORM process_data USING pv_mode TYPE string.
+ENDFORM.
+"#;
+    let caller_src = r#"
+REPORT zcaller.
+FORM process_data CHANGING cv_count TYPE i.
+ENDFORM.
+
+DATA lv_mode TYPE string.
+PERFORM process_data IN PROGRAM zcallee IF FOUND USING lv_mode.
+"#;
+    let callee_parsed = parse(callee_src);
+    let caller_parsed = parse(caller_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///zcallee.abap",
+            source: callee_src,
+            parse: &callee_parsed,
+        },
+        ProjectInput {
+            uri: "file:///zcaller.abap",
+            source: caller_src,
+            parse: &caller_parsed,
+        },
+    ]);
+    let caller = project
+        .unit_by_uri("file:///zcaller.abap")
+        .expect("caller unit");
+    let callee = project
+        .unit_by_uri("file:///zcallee.abap")
+        .expect("callee unit");
+
+    assert!(
+        caller
+            .diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::InvalidPerformCall),
+        "unexpected PERFORM diagnostics: {:?}",
+        caller.diagnostics
+    );
+
+    let call = caller.perform_calls.first().expect("perform call");
+    assert!(!call.is_dynamic);
+    assert!(call.has_if_found);
+    let program = call.program.as_ref().expect("static program target");
+    assert!(!program.is_dynamic);
+    assert_eq!(program.name.as_ref(), "zcallee");
+    let handle = project
+        .resolve_perform_call_target(caller, call)
+        .expect("external perform target");
+    assert_eq!(handle.unit, callee.unit_id);
+    assert_eq!(callee.symbol(handle.symbol).name.as_ref(), "process_data");
+}
+
+#[test]
+fn static_form_with_dynamic_program_does_not_validate_against_local_form() {
+    let src = r#"
+FORM process_data CHANGING cv_count TYPE i.
+ENDFORM.
+
+DATA lv_prog TYPE syrepid.
+PERFORM process_data IN PROGRAM (lv_prog) USING 'demo'.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///perform_static_form_dynamic_program.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::InvalidPerformCall),
+        "unexpected PERFORM diagnostics: {:?}",
+        unit.diagnostics
+    );
+    let call = unit.perform_calls.first().expect("perform call");
+    assert!(!call.is_dynamic);
+    let program = call.program.as_ref().expect("dynamic program target");
+    assert!(program.is_dynamic);
+    assert_eq!(program.name.as_ref(), "lv_prog");
 }
 
 #[test]

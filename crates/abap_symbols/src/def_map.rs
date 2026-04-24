@@ -674,12 +674,21 @@ pub struct PerformArgumentData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerformProgramData {
+    pub name: Arc<str>,
+    pub range: TextRange,
+    pub is_dynamic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerformCallData {
     pub scope: ScopeId,
     pub range: TextRange,
     pub routine_name: Arc<str>,
     pub routine_range: TextRange,
     pub is_dynamic: bool,
+    pub program: Option<PerformProgramData>,
+    pub has_if_found: bool,
     pub parameters: Vec<PerformParameterSection>,
     pub arguments: Vec<PerformArgumentData>,
     pub section_order_invalid: bool,

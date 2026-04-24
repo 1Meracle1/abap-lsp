@@ -4,7 +4,7 @@ use std::sync::Arc;
 use abap_lexer::TextRange;
 use abap_symbols::{
     AssignmentSiteData, CallSiteData, NamedArgumentSection, NamedArgumentTarget, Namespace,
-    PerformCallData, ReferenceKind, Resolution, RoutineAnalysis, ScopeId, SqlNameRefKind,
+    PerformCallData, ProjectAnalysis, Resolution, RoutineAnalysis, ScopeId, SqlNameRefKind,
     SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlSourceData, SqlSourceKind,
     SqlTargetData, SqlTargetKind, SymbolHandle, SymbolKind, UnitAnalysis,
 };
@@ -1646,7 +1646,9 @@ impl<'a> TraceBuilder<'a> {
             {
                 continue;
             }
-            let Some(callee_owner) = perform_call_target(context.unit, perform_call) else {
+            let Some(callee_owner) =
+                perform_call_target(&self.snapshot.project, context.unit, perform_call)
+            else {
                 continue;
             };
             let Some(callee_summary) = self
@@ -2329,7 +2331,8 @@ impl<'a> TraceBuilder<'a> {
         for caller_unit in &self.snapshot.project.units {
             for perform_call in &caller_unit.perform_calls {
                 let resolves_to_owner =
-                    perform_call_target(caller_unit, perform_call) == Some(owner);
+                    perform_call_target(&self.snapshot.project, caller_unit, perform_call)
+                        == Some(owner);
                 let matches_name = perform_call
                     .routine_name
                     .as_ref()
@@ -3523,19 +3526,11 @@ fn classify_terminal_symbol(
 }
 
 fn perform_call_target(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     perform_call: &PerformCallData,
 ) -> Option<SymbolHandle> {
-    let reference = unit.references.iter().find(|reference| {
-        reference.kind == ReferenceKind::RoutineCall
-            && reference.namespace == Namespace::Routine
-            && reference.range == perform_call.routine_range
-            && reference.name.as_ref() == perform_call.routine_name.as_ref()
-    })?;
-    let Resolution::Symbol(handle) = reference.resolution? else {
-        return None;
-    };
-    Some(handle)
+    project.resolve_perform_call_target(unit, perform_call)
 }
 
 fn perform_parameter_index(

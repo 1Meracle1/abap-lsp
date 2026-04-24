@@ -2882,15 +2882,7 @@ fn resolve_perform_argument_parameter_symbol(
     perform_call: &crate::PerformCallData,
     argument: &crate::PerformArgumentData,
 ) -> Option<SymbolHandle> {
-    let reference = unit.references.iter().find(|reference| {
-        reference.kind == crate::ReferenceKind::RoutineCall
-            && reference.namespace == Namespace::Routine
-            && reference.range == perform_call.routine_range
-            && reference.name.as_ref() == perform_call.routine_name.as_ref()
-    })?;
-    let Resolution::Symbol(handle) = reference.resolution? else {
-        return None;
-    };
+    let handle = project.resolve_perform_call_target(unit, perform_call)?;
     let target_unit = project.units.get(handle.unit.as_usize())?;
     let form = target_unit.form_routine(handle.symbol)?;
     let parameter = form

@@ -463,6 +463,10 @@ pub struct PerformCallDossier {
     pub routine_name: String,
     pub routine_range: ByteRange,
     pub is_dynamic: bool,
+    pub program_name: Option<String>,
+    pub program_range: Option<ByteRange>,
+    pub program_is_dynamic: bool,
+    pub has_if_found: bool,
     pub parameters: Vec<&'static str>,
     pub arguments: Vec<PerformArgumentDossier>,
     pub section_order_invalid: bool,
@@ -1225,6 +1229,19 @@ fn perform_call_dossier(perform_call: &PerformCallData) -> PerformCallDossier {
         routine_name: perform_call.routine_name.to_string(),
         routine_range: byte_range(&perform_call.routine_range),
         is_dynamic: perform_call.is_dynamic,
+        program_name: perform_call
+            .program
+            .as_ref()
+            .map(|program| program.name.to_string()),
+        program_range: perform_call
+            .program
+            .as_ref()
+            .map(|program| byte_range(&program.range)),
+        program_is_dynamic: perform_call
+            .program
+            .as_ref()
+            .is_some_and(|program| program.is_dynamic),
+        has_if_found: perform_call.has_if_found,
         parameters: perform_call
             .parameters
             .iter()

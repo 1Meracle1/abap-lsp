@@ -1093,6 +1093,9 @@ impl AnalysisSnapshot {
         if let Some(target) = self.definition_target_for_call_target_at(offset) {
             return Some(target);
         }
+        if let Some(target) = self.definition_target_for_perform_target_at(offset) {
+            return Some(target);
+        }
         if let Some(target) = self.definition_target_for_named_argument_at(offset) {
             return Some(target);
         }
@@ -1504,6 +1507,20 @@ impl AnalysisSnapshot {
             uri: Arc::clone(&unit.uri),
             range: 0..0,
         })
+    }
+
+    fn definition_target_for_perform_target_at(&self, offset: usize) -> Option<DefinitionTarget> {
+        let perform_call = self.symbols.perform_calls.iter().find(|perform_call| {
+            perform_call.routine_range.start <= offset && offset < perform_call.routine_range.end
+        })?;
+        let handle = self
+            .project
+            .resolve_perform_call_target(self.symbols.as_ref(), perform_call)?;
+        let unit = &self.project.units[handle.unit.as_usize()];
+        Some(definition_target_for_symbol(
+            unit,
+            unit.symbol(handle.symbol),
+        ))
     }
 
     fn reference_search_target_for_resolved_symbol_at(
@@ -5394,13 +5411,11 @@ fn resolve_perform_argument_parameter(
     perform_call: &PerformCallData,
     argument: &PerformArgumentData,
 ) -> Option<FormParameterHoverInfo> {
-    let (unit, routine_symbol_id) = resolve_symbol_from_context(
-        snapshot,
-        perform_call.scope,
-        Namespace::Routine,
-        &perform_call.routine_name,
-        false,
-    )?;
+    let handle = snapshot
+        .project
+        .resolve_perform_call_target(snapshot.symbols.as_ref(), perform_call)?;
+    let unit = &snapshot.project.units[handle.unit.as_usize()];
+    let routine_symbol_id = handle.symbol;
     if unit.symbol(routine_symbol_id).kind != SymbolKind::Form {
         return None;
     }
@@ -5420,13 +5435,11 @@ fn resolve_perform_argument_symbol(
     perform_call: &PerformCallData,
     argument: &PerformArgumentData,
 ) -> Option<abap_symbols::SymbolHandle> {
-    let (unit, routine_symbol_id) = resolve_symbol_from_context(
-        snapshot,
-        perform_call.scope,
-        Namespace::Routine,
-        &perform_call.routine_name,
-        false,
-    )?;
+    let handle = snapshot
+        .project
+        .resolve_perform_call_target(snapshot.symbols.as_ref(), perform_call)?;
+    let unit = &snapshot.project.units[handle.unit.as_usize()];
+    let routine_symbol_id = handle.symbol;
     if unit.symbol(routine_symbol_id).kind != SymbolKind::Form {
         return None;
     }
@@ -5439,7 +5452,7 @@ fn resolve_perform_argument_symbol(
         .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
         .nth(argument.ordinal_in_section)?;
     Some(abap_symbols::SymbolHandle {
-        unit: unit.unit_id,
+        unit: handle.unit,
         symbol: parameter.symbol,
     })
 }
@@ -16262,6 +16275,56 @@ START-OF-SELECTION.
             target.range.start,
             src.find("lv_input").expect("variable declaration")
         );
+    }
+
+    #[test]
+    fn definition_and_inlay_hints_resolve_static_perform_in_program_target() {
+        let store = DocumentStore::default();
+        let callee_src = "\
+REPORT zcallee.
+FORM process_data USING pv_mode TYPE string.
+ENDFORM.
+";
+        let caller_src = "\
+REPORT zcaller.
+DATA lv_mode TYPE string.
+PERFORM process_data IN PROGRAM zcallee IF FOUND USING lv_mode.
+";
+        let snapshots = store.publish_inputs(vec![
+            DocumentInput {
+                uri: Arc::from("file:///zcallee.abap"),
+                version: 1,
+                text: Arc::from(callee_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zcaller.abap"),
+                version: 1,
+                text: Arc::from(caller_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///zcaller.abap")
+            .expect("caller snapshot");
+        let form_use = caller_src.rfind("process_data").expect("perform target");
+
+        let target = snapshot
+            .definition_at(form_use + 1)
+            .expect("perform target definition");
+        assert_target_slice(&target, "file:///zcallee.abap", callee_src, "process_data");
+        assert_eq!(
+            target.range.start,
+            callee_src.find("process_data").expect("callee form")
+        );
+
+        let hints = snapshot.perform_parameter_inlay_hints_in_range(0..caller_src.len());
+        assert!(hints.iter().any(|hint| {
+            hint.label.as_ref() == "pv_mode"
+                && hint.position == caller_src.rfind("lv_mode").expect("perform argument")
+        }));
     }
 
     #[test]

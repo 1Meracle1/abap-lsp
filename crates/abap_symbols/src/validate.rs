@@ -3487,15 +3487,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 continue;
             }
 
-            let Some(reference) = unit.references.iter().find(|reference| {
-                reference.kind == crate::ReferenceKind::RoutineCall
-                    && reference.namespace == Namespace::Routine
-                    && reference.range == perform_call.routine_range
-                    && reference.name.as_ref() == perform_call.routine_name.as_ref()
-            }) else {
-                continue;
-            };
-            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+            let Some(handle) = project.resolve_perform_call_target(unit, perform_call) else {
                 continue;
             };
             let Some(parameters) = form_signatures.get(&(handle.unit.0, handle.symbol.0)) else {

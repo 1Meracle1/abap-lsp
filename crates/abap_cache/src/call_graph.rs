@@ -4,8 +4,8 @@ use std::sync::Arc;
 use abap_lexer::TextRange;
 use abap_symbols::{
     CallSiteData, ClassMemberData, ClassMemberKind, NamedArgumentTarget, Namespace,
-    PerformCallData, ProjectAnalysis, ReferenceKind, Resolution, ScopeId, ScopeKind, SymbolData,
-    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId,
+    ProjectAnalysis, ReferenceKind, Resolution, ScopeId, ScopeKind, SymbolData, SymbolHandle,
+    SymbolId, SymbolKind, UnitAnalysis, UnitId,
 };
 use serde::Serialize;
 
@@ -210,7 +210,7 @@ pub(crate) fn build_project_call_graph(
             continue;
         };
         collect_call_site_edges(&mut graph, project, unit, scope_index, &callable_scopes);
-        collect_perform_edges(&mut graph, unit, &callable_scopes);
+        collect_perform_edges(&mut graph, project, unit, &callable_scopes);
         collect_reference_fallback_edges(&mut graph, project, unit, &callable_scopes);
     }
 
@@ -452,6 +452,7 @@ fn collect_call_site_edges(
 
 fn collect_perform_edges(
     graph: &mut ProjectCallGraph,
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     callable_scopes: &HashMap<(UnitId, ScopeId), Arc<str>>,
 ) {
@@ -460,7 +461,7 @@ fn collect_perform_edges(
         else {
             continue;
         };
-        let resolved = resolve_perform_target(unit, perform_call);
+        let resolved = project.resolve_perform_call_target(unit, perform_call);
         let (target, resolution_status, target_name) = match resolved {
             Some(handle) => (
                 graph
@@ -1037,24 +1038,6 @@ fn direct_superclass_handle(
     })
 }
 
-fn resolve_perform_target(
-    unit: &UnitAnalysis,
-    perform_call: &PerformCallData,
-) -> Option<SymbolHandle> {
-    unit.references
-        .iter()
-        .find(|reference| {
-            reference.kind == ReferenceKind::RoutineCall
-                && reference.namespace == Namespace::Routine
-                && reference.range == perform_call.routine_range
-                && reference.name == perform_call.routine_name
-        })
-        .and_then(|reference| match reference.resolution {
-            Some(Resolution::Symbol(handle)) => Some(handle),
-            _ => None,
-        })
-}
-
 fn lookup_scope_chain(
     unit: &UnitAnalysis,
     scope_index: &ScopeIndex,
@@ -1192,6 +1175,58 @@ ENDFORM.",
         let outbound = graph.outbound_calls(event.id.as_ref());
         assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].edge_kind, CallGraphEdgeKind::Perform);
+        assert_eq!(outbound[0].target.as_deref(), Some(form.id.as_ref()));
+    }
+
+    #[test]
+    fn resolves_static_perform_in_program_edges_to_target_program_form() {
+        let graph = graph_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///caller.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT zcaller.
+
+START-OF-SELECTION.
+  PERFORM do_work IN PROGRAM zcallee IF FOUND.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///callee.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT zcallee.
+FORM do_work.
+ENDFORM.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+            ],
+            "file:///caller.abap",
+        );
+
+        let event = graph.find_nodes("start-of-selection")[0];
+        let form = graph
+            .find_nodes("do_work")
+            .into_iter()
+            .find(|node| {
+                node.kind == CallGraphNodeKind::Form
+                    && node.unit_uri.as_ref() == "file:///callee.abap"
+            })
+            .expect("callee form node");
+        let outbound = graph.outbound_calls(event.id.as_ref());
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].edge_kind, CallGraphEdgeKind::Perform);
+        assert_eq!(
+            outbound[0].resolution_status,
+            CallGraphResolutionStatus::Resolved
+        );
         assert_eq!(outbound[0].target.as_deref(), Some(form.id.as_ref()));
     }
 

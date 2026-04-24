@@ -10,7 +10,8 @@ use abap_ast::ast::{
 use crate::def_map::{
     FormParameterData, FormParameterPassingKind, FormParameterSection, FunctionModuleData,
     FunctionModuleExceptionData, FunctionModuleParameterData, FunctionModuleParameterSection,
-    PerformArgumentData, PerformCallData, PerformParameterSection, ReferenceKind, SymbolKind,
+    PerformArgumentData, PerformCallData, PerformParameterSection, PerformProgramData,
+    ReferenceKind, SymbolKind,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -20,6 +21,16 @@ use super::{Collector, SyntaxTokenInfo};
 
 pub(super) struct FormsLowering<'ctx, 'a> {
     collector: &'ctx mut Collector<'a>,
+}
+
+#[derive(Debug, Clone)]
+struct PerformTargetInfo {
+    routine_name: Arc<str>,
+    routine_range: abap_lexer::TextRange,
+    is_dynamic: bool,
+    program: Option<PerformProgramData>,
+    has_if_found: bool,
+    arguments_start_idx: usize,
 }
 
 impl<'a> Collector<'a> {
@@ -56,6 +67,55 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                 .get(start + offset)
                 .is_some_and(|token| token.text.eq_ignore_ascii_case(keyword))
         })
+    }
+
+    fn token_is_perform_parameter_section(token: &SyntaxTokenInfo) -> bool {
+        token.text.eq_ignore_ascii_case("tables")
+            || token.text.eq_ignore_ascii_case("using")
+            || token.text.eq_ignore_ascii_case("changing")
+    }
+
+    fn consume_static_perform_program_operand(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+    ) -> Option<(PerformProgramData, usize)> {
+        let first = tokens.get(start)?;
+        if first.text.as_ref() == "."
+            || Self::token_is_perform_parameter_section(first)
+            || Self::tokens_match_keyword_sequence(tokens, start, &["if", "found"])
+        {
+            return None;
+        }
+        if !(self.collector.syntax_token_is_ident_like(first) || first.text.as_ref() == "/") {
+            return None;
+        }
+
+        let mut idx = start;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "."
+                || Self::token_is_perform_parameter_section(token)
+                || Self::tokens_match_keyword_sequence(tokens, idx, &["if", "found"])
+            {
+                break;
+            }
+            idx += 1;
+        }
+        if idx == start {
+            return None;
+        }
+
+        let range = Self::token_span(tokens, start, idx)?;
+        let name = self.lowered_source_range(&range)?;
+        Some((
+            PerformProgramData {
+                name,
+                range,
+                is_dynamic: false,
+            },
+            idx,
+        ))
     }
 
     fn function_table_parameter_type_display(
@@ -199,7 +259,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         &mut self,
         tokens: &[SyntaxTokenInfo],
         scope: ScopeId,
-    ) -> Option<(Arc<str>, abap_lexer::TextRange, bool, usize)> {
+    ) -> Option<PerformTargetInfo> {
         if tokens.len() < 2 || !tokens[0].text.eq_ignore_ascii_case("perform") {
             return None;
         }
@@ -233,6 +293,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             )
         };
 
+        let mut program = None;
+        let mut has_if_found = false;
         if Self::tokens_match_keyword_sequence(tokens, idx, &["in", "program"]) {
             idx += 2;
             if tokens
@@ -244,19 +306,41 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                     .find_matching_group_end_infos(tokens, idx, "(", ")")
                 {
                     self.collect_dynamic_perform_operand_refs(tokens, idx + 1, end_idx, scope);
+                    let program_range = Self::token_span(tokens, idx + 1, end_idx)
+                        .unwrap_or_else(|| tokens[idx].range.clone());
+                    let program_name = self
+                        .lowered_source_range(&program_range)
+                        .unwrap_or_else(|| Arc::<str>::from("<dynamic>"));
+                    program = Some(PerformProgramData {
+                        name: program_name,
+                        range: program_range,
+                        is_dynamic: true,
+                    });
                     idx = end_idx + 1;
                 } else {
                     idx += 1;
                 }
-            } else if !Self::tokens_match_keyword_sequence(tokens, idx, &["if", "found"]) {
-                let next_idx = self.consume_perform_argument_infos(tokens, idx);
-                if next_idx > idx {
-                    idx = next_idx;
-                }
+            } else if let Some((target_program, next_idx)) =
+                self.consume_static_perform_program_operand(tokens, idx)
+            {
+                program = Some(target_program);
+                idx = next_idx;
             }
         }
 
-        Some((routine_name, routine_range, is_dynamic, idx))
+        if Self::tokens_match_keyword_sequence(tokens, idx, &["if", "found"]) {
+            has_if_found = true;
+            idx += 2;
+        }
+
+        Some(PerformTargetInfo {
+            routine_name,
+            routine_range,
+            is_dynamic,
+            program,
+            has_if_found,
+            arguments_start_idx: idx,
+        })
     }
 
     pub(super) fn declare_form_parameters_from_header(
@@ -349,42 +433,29 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return;
         };
         let tokens = self.collector.significant_stmt_token_infos(node);
-        let Some((routine_name, routine_range, is_dynamic, arguments_start_idx)) =
-            self.collect_perform_target_info(&tokens, scope)
-        else {
+        let Some(target) = self.collect_perform_target_info(&tokens, scope) else {
             return;
         };
-        self.collect_perform_stmt_infos(
-            &tokens,
-            scope,
-            routine_name,
-            routine_range,
-            is_dynamic,
-            arguments_start_idx,
-            self.collector.file.range(node),
-        );
+        self.collect_perform_stmt_infos(&tokens, scope, target, self.collector.file.range(node));
     }
 
     fn collect_perform_stmt_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
         scope: ScopeId,
-        routine_name: Arc<str>,
-        routine_range: abap_lexer::TextRange,
-        is_dynamic: bool,
-        arguments_start_idx: usize,
+        target: PerformTargetInfo,
         stmt_range: abap_lexer::TextRange,
     ) {
         if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
             return;
         }
-        if !is_dynamic {
+        if !target.is_dynamic && target.program.is_none() {
             self.collector.add_reference(
                 scope,
-                Arc::clone(&routine_name),
+                Arc::clone(&target.routine_name),
                 Namespace::Routine,
                 ReferenceKind::RoutineCall,
-                routine_range.clone(),
+                target.routine_range.clone(),
             );
         }
 
@@ -393,35 +464,21 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                 self.collect_single_perform_stmt_infos(
                     &call_tokens,
                     scope,
-                    Arc::clone(&routine_name),
-                    routine_range.clone(),
-                    is_dynamic,
-                    arguments_start_idx,
+                    target.clone(),
                     call_range,
                 );
             }
             return;
         }
 
-        self.collect_single_perform_stmt_infos(
-            tokens,
-            scope,
-            routine_name,
-            routine_range,
-            is_dynamic,
-            arguments_start_idx,
-            stmt_range,
-        );
+        self.collect_single_perform_stmt_infos(tokens, scope, target, stmt_range);
     }
 
     fn collect_single_perform_stmt_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
         scope: ScopeId,
-        routine_name: Arc<str>,
-        routine_range: abap_lexer::TextRange,
-        is_dynamic: bool,
-        arguments_start_idx: usize,
+        target: PerformTargetInfo,
         stmt_range: abap_lexer::TextRange,
     ) {
         if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
@@ -436,7 +493,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         let mut tables_ordinal = 0usize;
         let mut using_ordinal = 0usize;
         let mut changing_ordinal = 0usize;
-        let mut idx = arguments_start_idx;
+        let mut idx = target.arguments_start_idx;
 
         while idx < tokens.len() {
             let token = &tokens[idx];
@@ -508,9 +565,11 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         self.collector.emit_perform_call(PerformCallData {
             scope,
             range: stmt_range,
-            routine_name,
-            routine_range,
-            is_dynamic,
+            routine_name: target.routine_name,
+            routine_range: target.routine_range,
+            is_dynamic: target.is_dynamic,
+            program: target.program,
+            has_if_found: target.has_if_found,
             parameters,
             arguments,
             section_order_invalid,
