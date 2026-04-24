@@ -6223,6 +6223,94 @@ ls_date-yyyy = '2026'.";
 }
 
 #[test]
+fn grouped_data_begin_of_with_like_fields_declares_structure_and_following_symbols() {
+    let src = "\
+DATA: BEGIN OF gs_user_creation,\n\
+        username  LIKE bapibname-bapibname,\n\
+        firstname TYPE bapiaddr3-firstname,\n\
+        lastname  TYPE bapiaddr3-lastname,\n\
+        e_mail    TYPE bapiaddr3-e_mail,\n\
+        ref_user  TYPE xubname,\n\
+        password  LIKE bapipwd,\n\
+        user_role TYPE string,\n\
+        gln       TYPE string,\n\
+      END OF gs_user_creation,\n\
+\n\
+      gt_user_creation LIKE TABLE OF gs_user_creation,\n\
+      gv_file_name     TYPE string.\n\
+gv_file_name = replace( val = gs_user_creation-username sub = '*' with = '%' occ = 0 ).";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///grouped_data_begin_of.abap", src, &parsed);
+
+    let gs_user_creation = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "gs_user_creation"
+        })
+        .expect("structured data symbol");
+    let structure = unit.structure(gs_user_creation.structure.expect("structure metadata"));
+    for field_name in [
+        "username",
+        "firstname",
+        "lastname",
+        "e_mail",
+        "ref_user",
+        "password",
+        "user_role",
+        "gln",
+    ] {
+        assert!(
+            structure
+                .fields
+                .iter()
+                .any(|field| field.name.as_ref() == field_name),
+            "expected `{field_name}` field, fields={:?}",
+            structure.fields
+        );
+    }
+
+    let gt_user_creation = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "gt_user_creation"
+        })
+        .expect("table variable symbol");
+    let declared_type = gt_user_creation
+        .declared_type
+        .as_ref()
+        .expect("LIKE TABLE OF declared type");
+    assert_eq!(declared_type.namespace, Namespace::Value);
+    assert_eq!(declared_type.base_name.as_ref(), "gs_user_creation");
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::RoutineCall
+            && reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "replace"
+            && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+    }));
+    assert!(!unit.references.iter().any(|reference| {
+        reference.name.as_ref() == "replace"
+            && matches!(reference.resolution, Some(Resolution::External))
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("gs_user_creation")
+                    || diag.message.contains("gt_user_creation")
+                    || diag.message.contains("gv_file_name")
+                    || diag.message.contains("replace"))
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_type_component_access_for_user_defined_structures() {
     let src = "\
 TYPES: BEGIN OF ty_pair,\n\

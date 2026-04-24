@@ -342,7 +342,7 @@ fn try_parse_structured_data_decl(
                 tokens,
                 i,
                 SyntaxKind::DataTypedClause,
-                false,
+                true,
                 has_colon,
             )
         })?;
@@ -1646,6 +1646,27 @@ mod tests {
     fn data_begin_end_of_clause() {
         let file = tree_ok("DATA: BEGIN OF ls_dat, yyyy(4), mm(2), dd(2), END OF ls_dat.");
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+    }
+
+    #[test]
+    fn grouped_data_begin_end_accepts_like_components_and_following_clauses() {
+        let src = "\
+DATA: BEGIN OF gs_user_creation,\n\
+        username  LIKE bapibname-bapibname,\n\
+        firstname TYPE bapiaddr3-firstname,\n\
+        password  LIKE bapipwd,\n\
+      END OF gs_user_creation,\n\
+\n\
+      gt_user_creation LIKE TABLE OF gs_user_creation,\n\
+      gv_file_name     TYPE string.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 3);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            3
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::Error), 0);
     }
 
     #[test]
