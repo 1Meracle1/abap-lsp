@@ -952,6 +952,12 @@ fn collect_local_export_dependency_closure_documents(
             .clone();
 
         for candidate in candidates {
+            if documents_by_uri
+                .values()
+                .any(|document| workspace_document_matches_local_candidate(document, &candidate))
+            {
+                continue;
+            }
             let Some(resolved_document) = resolve_local_export_dependency_document(
                 &config.roots,
                 &mut resolver,
@@ -977,6 +983,35 @@ fn collect_local_export_dependency_closure_documents(
     }
 
     additions
+}
+
+fn workspace_document_matches_local_candidate(
+    document: &WorkspaceDocument,
+    candidate: &RemoteDependencyCandidate,
+) -> bool {
+    if document.is_dependency {
+        return false;
+    }
+    let candidate_name = candidate.name.trim();
+    if candidate_name.is_empty() {
+        return false;
+    }
+
+    if document
+        .object_name
+        .as_ref()
+        .is_some_and(|object_name| object_name.eq_ignore_ascii_case(candidate_name))
+    {
+        return true;
+    }
+
+    file_uri_to_path(document.uri.as_ref())
+        .and_then(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+        })
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(candidate_name))
 }
 
 fn collect_local_export_dependency_candidates(
@@ -6838,6 +6873,87 @@ dependency_mode = "remote-on-demand"
         assert!(
             build_remote_dependency_request(&mut state, &target_uri).is_none(),
             "resolved local export should not trigger remote request"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn workspace_refresh_prefers_workspace_include_over_same_named_local_export() {
+        let workspace_path = temp_workspace_path("workspace_local_include_before_export");
+        let export_root = temp_workspace_path("workspace_local_include_before_export_root");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("includes")).expect("export includes dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            "REPORT zrep.\nINCLUDE zrep_top.\n",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP_TOP.abap"),
+            "DATA lv_workspace TYPE i.\n",
+        )
+        .expect("workspace include");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("includes/ZREP_TOP.abap"),
+            "DATA lv_export TYPE i.\n",
+        )
+        .expect("export include");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let report_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP.abap"));
+        let workspace_include_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP_TOP.abap"));
+        let export_include_uri = normalize_lsp_uri(&path_to_file_uri(
+            &export_root.join("includes/ZREP_TOP.abap"),
+        ));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &report_uri).expect("snapshot");
+        let target_uri = snapshot
+            .symbols
+            .include_edges
+            .iter()
+            .find(|edge| edge.name.as_ref() == "zrep_top")
+            .and_then(|edge| edge.target)
+            .and_then(|target| snapshot.project.units.get(target.as_usize()))
+            .map(|unit| unit.uri.as_ref().to_string())
+            .expect("include target");
+        assert_eq!(target_uri, workspace_include_uri);
+        assert!(
+            snapshot
+                .project
+                .units
+                .iter()
+                .all(|unit| unit.uri.as_ref() != export_include_uri),
+            "local export duplicate should not be loaded when the workspace include exists"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
