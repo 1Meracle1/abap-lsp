@@ -1790,7 +1790,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
 
         if let Some(into_clause_id) = into_clause_id {
-            let mut has_data_inline = false;
+            let mut target_range = None;
+            let mut lhs_target_access = None;
             for child in self.collector.file.children(into_clause_id) {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {}
@@ -1798,16 +1799,56 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         self.collector
                             .decl_lowering()
                             .walk_inline_decl(child, scope);
-                        has_data_inline = true;
+                        target_range = self
+                            .collector
+                            .file
+                            .children(child)
+                            .find(|&grandchild| {
+                                self.collector.file.kind(grandchild) == SyntaxKind::DataDeclName
+                            })
+                            .map(|grandchild| self.collector.file.range(grandchild))
+                            .or_else(|| Some(self.collector.file.range(child)));
                     }
-                    _ => self.collector.walk_node(child, scope),
+                    _ => {
+                        self.collector.walk_node(child, scope);
+                        if target_range.is_none() {
+                            target_range = Some(self.collector.file.range(child));
+                            lhs_target_access = self.collector.value_access_from_node(child, scope);
+                        }
+                    }
                 }
             }
-            if !has_data_inline {
+            if target_range.is_none() {
                 let sig = self.collector.significant_stmt_token_infos(into_clause_id);
                 if sig.len() > 1 {
                     self.collect_message_operand_refs_infos(&sig[1..], scope);
+                    let lhs_range = sig[1..]
+                        .iter()
+                        .map(|token| token.range.clone())
+                        .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end));
+                    target_range = lhs_range;
                 }
+            }
+            if let Some(lhs_range) = target_range {
+                let rhs_range = self.message_into_rhs_range(
+                    node,
+                    &[
+                        head_clause_id,
+                        with_clause_id,
+                        display_clause_id,
+                        raising_clause_id,
+                    ],
+                );
+                self.collector.emit_assignment_site(AssignmentSiteData {
+                    scope,
+                    range: self.collector.file.range(node),
+                    lhs_range,
+                    rhs_range,
+                    lhs_target_access,
+                    lhs: TypeFactData::default(),
+                    rhs: TypeFactData::default(),
+                    rhs_is_top_level_sum: false,
+                });
             }
         }
 
@@ -1869,6 +1910,22 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 _ => {}
             }
         }
+    }
+
+    fn message_into_rhs_range(
+        &self,
+        stmt: NodeId,
+        clause_ids: &[Option<NodeId>],
+    ) -> abap_lexer::TextRange {
+        clause_ids
+            .iter()
+            .flatten()
+            .map(|&clause| self.collector.file.range(clause))
+            .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end))
+            .unwrap_or_else(|| {
+                let range = self.collector.file.range(stmt);
+                range.start..range.start
+            })
     }
 
     fn collect_message_operand_node(&mut self, node: NodeId, scope: ScopeId) {

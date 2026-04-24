@@ -483,6 +483,39 @@ ENDCLASS.\n";
     }
 
     #[test]
+    fn message_into_target_is_definitely_assigned() {
+        let src = "\
+FORM get_data.\n\
+  CONSTANTS lc_rfc_dest TYPE string VALUE 'RFC'.\n\
+  MESSAGE e102(/sttp/rep_msg_ru) WITH lc_rfc_dest INTO DATA(lv_dummy_msg).\n\
+  MESSAGE lv_dummy_msg TYPE 'S'.\n\
+\n\
+  DATA lv_existing_msg TYPE string.\n\
+  MESSAGE 'existing' TYPE 'S' INTO lv_existing_msg.\n\
+  MESSAGE lv_existing_msg TYPE 'S'.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///message_into_assignment.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        for name in ["lv_dummy_msg", "lv_existing_msg"] {
+            assert!(
+                routine_analysis
+                    .diagnostics_for_unit(unit.unit_id)
+                    .iter()
+                    .all(|diagnostic| {
+                        diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                            || !diagnostic.message.contains(name)
+                    }),
+                "{:#?}",
+                routine_analysis.diagnostics_for_unit(unit.unit_id)
+            );
+        }
+    }
+
+    #[test]
     fn delete_where_row_field_from_project_table_type_does_not_trigger_definite_assignment_warning()
     {
         let main_src = r#"
