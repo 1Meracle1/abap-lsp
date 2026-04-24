@@ -199,7 +199,7 @@ impl DependencyStore {
 
     pub fn reader(&self) -> Result<DependencyStoreReader, DependencyStoreError> {
         Ok(DependencyStoreReader {
-            connection: self.open_connection()?,
+            connection: self.open_read_connection()?,
         })
     }
 
@@ -237,47 +237,12 @@ impl DependencyStore {
         candidate_name: &str,
         candidate_kind: &str,
     ) -> Result<CandidateCacheStatus, DependencyStoreError> {
-        let connection = self.open_connection()?;
-        let normalized_name = normalize_name(candidate_name);
-        let normalized_kind = normalize_name(candidate_kind);
-        if normalized_name.is_empty() || normalized_kind.is_empty() {
-            return Ok(CandidateCacheStatus::Missing);
-        }
-        let artifact_exists = candidate_artifact_exists(
-            &connection,
+        self.reader()?.find_cached_candidate(
             profile,
-            normalized_name.as_str(),
-            normalized_kind.as_str(),
-        )?;
-        if artifact_exists {
-            return Ok(CandidateCacheStatus::Artifact);
-        }
-        let negative_exists = connection
-            .query_row(
-                r#"
-SELECT 1
-FROM dependency_negative_lookups
-WHERE profile_key = ?1
-  AND connection_key = ?2
-  AND candidate_kind = ?3
-  AND candidate_name = ?4
-LIMIT 1
-"#,
-                params![
-                    profile.profile_key(),
-                    normalize_name(connection_key),
-                    normalized_kind,
-                    normalized_name
-                ],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        Ok(if negative_exists {
-            CandidateCacheStatus::Negative
-        } else {
-            CandidateCacheStatus::Missing
-        })
+            connection_key,
+            candidate_name,
+            candidate_kind,
+        )
     }
 
     pub fn lookup_symbol(
@@ -286,110 +251,15 @@ LIMIT 1
         symbol_name: &str,
         candidate_kind: &str,
     ) -> Result<Option<SymbolLookupResult>, DependencyStoreError> {
-        let connection = self.open_connection()?;
-        let allowed_kinds = candidate_artifact_kinds(candidate_kind);
-        let allowed_symbol_kinds = candidate_symbol_kinds(candidate_kind);
-        if allowed_kinds.is_empty() {
-            return Ok(None);
-        }
-        if allowed_symbol_kinds.is_empty() {
-            return Ok(None);
-        }
-
-        let normalized_symbol_name = normalize_name(symbol_name);
-        if normalized_symbol_name.is_empty() {
-            return Ok(None);
-        }
-
-        let mut sql = String::from(
-            r#"
-SELECT
-    artifact.id,
-    artifact.package_name,
-    artifact.package_version,
-    artifact.object_kind,
-    artifact.object_name,
-    artifact.file_extension,
-    symbol.range_start,
-    symbol.range_end
-FROM dependency_symbol_index AS symbol
-JOIN dependency_artifacts AS artifact
-    ON artifact.id = symbol.artifact_id
-WHERE artifact.product_version = ?
-  AND symbol.symbol_name = ?
-  AND symbol.symbol_kind IN ("#,
-        );
-        append_placeholders(&mut sql, allowed_symbol_kinds.len());
-        sql.push_str(") AND artifact.package_version IN (");
-        append_placeholders(&mut sql, profile.package_version_set().len());
-        sql.push_str(") AND artifact.object_kind IN (");
-        append_placeholders(&mut sql, allowed_kinds.len());
-        sql.push_str(") ORDER BY symbol.priority DESC, artifact.package_name ASC LIMIT 1");
-
-        let params = symbol_lookup_params(
-            profile,
-            &normalized_symbol_name,
-            &allowed_symbol_kinds,
-            &allowed_kinds,
-        );
-        let mut statement = connection.prepare(&sql)?;
-        let row = statement
-            .query_row(params_from_iter(params), |row| {
-                Ok(SymbolLookupResult {
-                    artifact_id: row.get(0)?,
-                    package_name: row.get(1)?,
-                    package_version: row.get(2)?,
-                    object_kind: row.get(3)?,
-                    object_name: row.get(4)?,
-                    file_extension: row.get(5)?,
-                    range_start: row.get::<_, i64>(6)? as usize,
-                    range_end: row.get::<_, i64>(7)? as usize,
-                })
-            })
-            .optional()?;
-        Ok(row)
+        self.reader()?
+            .lookup_symbol(profile, symbol_name, candidate_kind)
     }
 
     pub fn read_artifact_source(
         &self,
         artifact_id: i64,
     ) -> Result<Option<StoredArtifactRecord>, DependencyStoreError> {
-        let connection = self.open_connection()?;
-        let artifact = connection
-            .query_row(
-                r#"
-SELECT
-    id,
-    package_name,
-    package_version,
-    object_kind,
-    object_name,
-    object_uri,
-    object_type,
-    description,
-    file_extension,
-    source_text
-FROM dependency_artifacts
-WHERE id = ?1
-"#,
-                params![artifact_id],
-                |row| {
-                    Ok(StoredArtifactRecord {
-                        artifact_id: row.get(0)?,
-                        package_name: row.get(1)?,
-                        package_version: row.get(2)?,
-                        object_kind: row.get(3)?,
-                        object_name: row.get(4)?,
-                        object_uri: row.get(5)?,
-                        object_type: row.get(6)?,
-                        description: row.get(7)?,
-                        file_extension: row.get(8)?,
-                        source_text: row.get(9)?,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(artifact)
+        self.reader()?.read_artifact_source(artifact_id)
     }
 
     pub fn find_artifact_for_candidate(
@@ -398,74 +268,8 @@ WHERE id = ?1
         candidate_name: &str,
         candidate_kind: &str,
     ) -> Result<Option<StoredArtifactRecord>, DependencyStoreError> {
-        let connection = self.open_connection()?;
-        let allowed_kinds = candidate_artifact_kinds(candidate_kind);
-        if allowed_kinds.is_empty() {
-            return Ok(None);
-        }
-
-        let normalized_name = normalize_name(candidate_name);
-        if normalized_name.is_empty() {
-            return Ok(None);
-        }
-
-        let package_versions = profile.package_version_set();
-        let mut sql = String::from(
-            r#"
-SELECT
-    id,
-    package_name,
-    package_version,
-    object_kind,
-    object_name,
-    object_uri,
-    object_type,
-    description,
-    file_extension,
-    source_text
-FROM dependency_artifacts
-WHERE product_version = ?
-  AND object_name = ?
-  AND package_version IN ("#,
-        );
-        append_placeholders(&mut sql, package_versions.len());
-        sql.push_str(") AND object_kind IN (");
-        append_placeholders(&mut sql, allowed_kinds.len());
-        sql.push(')');
-
-        let mut params = Vec::with_capacity(2 + package_versions.len() + allowed_kinds.len());
-        params.push(Value::from(profile.normalized_product_version()));
-        params.push(Value::from(normalized_name));
-        params.extend(package_versions.into_iter().map(Value::from));
-        params.extend(allowed_kinds.iter().cloned().map(Value::from));
-
-        let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(params_from_iter(params))?;
-        let mut candidates = Vec::new();
-        while let Some(row) = rows.next()? {
-            candidates.push(StoredArtifactRecord {
-                artifact_id: row.get(0)?,
-                package_name: row.get(1)?,
-                package_version: row.get(2)?,
-                object_kind: row.get(3)?,
-                object_name: row.get(4)?,
-                object_uri: row.get(5)?,
-                object_type: row.get(6)?,
-                description: row.get(7)?,
-                file_extension: row.get(8)?,
-                source_text: row.get(9)?,
-            });
-        }
-        candidates.sort_by(|left, right| {
-            artifact_kind_rank(&allowed_kinds, left.object_kind.as_str())
-                .cmp(&artifact_kind_rank(
-                    &allowed_kinds,
-                    right.object_kind.as_str(),
-                ))
-                .then_with(|| left.package_name.cmp(&right.package_name))
-                .then_with(|| left.object_name.cmp(&right.object_name))
-        });
-        Ok(candidates.into_iter().next())
+        self.reader()?
+            .find_artifact_for_candidate(profile, candidate_name, candidate_kind)
     }
 
     pub fn record_negative_lookup(
@@ -554,6 +358,61 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
             params![SCHEMA_VERSION.to_string()],
         )?;
         Ok(connection)
+    }
+
+    fn open_read_connection(&self) -> Result<Connection, DependencyStoreError> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        let uri = sqlite_file_uri(&self.path, "mode=ro");
+        let connection = Connection::open_with_flags(&uri, flags)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        if validate_read_connection(&connection).is_ok() {
+            return Ok(connection);
+        }
+
+        let connection = {
+            let immutable_uri = sqlite_file_uri(&self.path, "mode=ro&immutable=1");
+            Connection::open_with_flags(&immutable_uri, flags)
+        }?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(connection)
+    }
+}
+
+fn validate_read_connection(connection: &Connection) -> rusqlite::Result<()> {
+    connection.query_row("SELECT name FROM sqlite_master LIMIT 1", [], |_| Ok(()))
+}
+
+fn sqlite_file_uri(path: &Path, query: &str) -> String {
+    let mut path = path.to_string_lossy().replace('\\', "/");
+    if path.as_bytes().get(1) == Some(&b':') {
+        path.insert(0, '/');
+    }
+    format!(
+        "file://{}?{}",
+        percent_encode_sqlite_uri_path(path.as_bytes()),
+        query
+    )
+}
+
+fn percent_encode_sqlite_uri_path(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(hex_digit(byte >> 4));
+            out.push(hex_digit(byte & 0x0f));
+        }
+    }
+    out
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + (value - 10)) as char,
+        _ => '0',
     }
 }
 
@@ -1088,6 +947,18 @@ mod tests {
                 priority: 100,
             }],
         }
+    }
+
+    #[test]
+    fn sqlite_file_uri_uses_read_only_uri_form() {
+        let uri = sqlite_file_uri(
+            Path::new(r"C:\Users\demo\AppData\Local\abap-ls\dependency cache.sqlite3"),
+            "mode=ro&immutable=1",
+        );
+        assert_eq!(
+            uri,
+            "file:///C:/Users/demo/AppData/Local/abap-ls/dependency%20cache.sqlite3?mode=ro&immutable=1"
+        );
     }
 
     #[test]

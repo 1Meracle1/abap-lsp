@@ -501,16 +501,37 @@ fn dependency_document_uri_with_kind(
     object_name: &str,
     object_kind: Option<&str>,
 ) -> String {
+    let display_name = dependency_document_display_name(object_name, artifact_id);
     let kind = object_kind
         .map(str::trim)
         .filter(|kind| !kind.is_empty())
         .map(|kind| format!("&kind={}", encode_uri_component(kind)))
         .unwrap_or_default();
     format!(
-        "{DEPENDENCY_DOCUMENT_SCHEME}:///{name}.abap?workspace={workspace}&artifact={artifact_id}{kind}",
-        name = encode_uri_component(object_name),
+        "{DEPENDENCY_DOCUMENT_SCHEME}:///{display_name}.abap?workspace={workspace}&artifact={artifact_id}&name={name}{kind}",
         workspace = encode_uri_component(&normalize_lsp_uri(workspace_uri)),
+        name = encode_uri_component(object_name),
     )
+}
+
+fn dependency_document_display_name(object_name: &str, artifact_id: i64) -> String {
+    let mut out = String::with_capacity(object_name.len());
+    let mut previous_was_separator = false;
+    for ch in object_name.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
+            out.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            out.push('_');
+            previous_was_separator = true;
+        }
+    }
+    let display = out.trim_matches('_');
+    if display.is_empty() {
+        format!("artifact-{artifact_id}")
+    } else {
+        display.to_string()
+    }
 }
 
 fn dependency_document_workspace_uri(uri: &str) -> Option<String> {
@@ -17322,6 +17343,126 @@ ENDCLASS.
         assert!(
             hover_result.is_some(),
             "expected hover for remote static method"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn centralized_dependency_store_resolves_namespaced_static_method_definition() {
+        let workspace_path = temp_workspace_path("centralized_dependency_namespaced_static_method");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/reports/ZMAIN")).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let source = "\
+REPORT zmain.
+START-OF-SELECTION.
+  /sttp/cl_rr_ru_utilities=>get_safedata_key( ).
+";
+        fs::write(workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"), source).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&path_to_file_uri(
+            &workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
+        ));
+        let mut state = ServerState::default();
+        state.dependency_store_path_override = Some(
+            workspace_path
+                .join(".abapls-central")
+                .join("dependency-cache.sqlite3"),
+        );
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "/STTP/RU".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "/STTP/CL_RR_RU_UTILITIES".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/%2fsttp%2fcl_rr_ru_utilities".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote namespaced class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS /sttp/cl_rr_ru_utilities DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS get_safedata_key
+      IMPORTING
+        !iv_urltype TYPE /sttp/e_urltype
+        !iv_type TYPE string
+        !iv_uname TYPE uname OPTIONAL
+      EXPORTING
+        !ev_key TYPE /sttp/e_save_content_key.
+ENDCLASS.
+
+CLASS /sttp/cl_rr_ru_utilities IMPLEMENTATION.
+  METHOD get_safedata_key.
+  ENDMETHOD.
+ENDCLASS.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let method_offset = source.find("get_safedata_key").expect("method ref");
+        let position = offset_to_position(source, method_offset + 1).expect("position");
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&source_uri).expect("uri"),
+                    },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(
+            location.uri.scheme().map(|scheme| scheme.as_str()),
+            Some("abapls-cache")
+        );
+        let uri_text = location.uri.to_string();
+        let path_text = uri_text.split('?').next().unwrap_or(uri_text.as_str());
+        assert!(
+            path_text.contains("sttp_cl_rr_ru_utilities.abap"),
+            "{uri_text}"
+        );
+        assert!(
+            !path_text.to_ascii_lowercase().contains("%2f"),
+            "cache URI path must not contain encoded slashes that VS Code treats as path separators: {uri_text}"
+        );
+        assert!(
+            read_dependency_document(&state, &ReadDependencyDocumentParams { uri: uri_text })
+                .expect("read dependency document")
+                .is_some()
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

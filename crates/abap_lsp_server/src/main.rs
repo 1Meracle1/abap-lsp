@@ -2478,6 +2478,24 @@ mod tests {
         format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
     }
 
+    fn lsp_position_for_offset(text: &str, offset: usize) -> Value {
+        let mut line = 0u32;
+        let mut line_start = 0usize;
+        for (idx, byte) in text.bytes().enumerate() {
+            if idx == offset {
+                break;
+            }
+            if byte == b'\n' {
+                line += 1;
+                line_start = idx + 1;
+            }
+        }
+        json!({
+            "line": line,
+            "character": offset.saturating_sub(line_start)
+        })
+    }
+
     fn configure_test_dependency_store(state: &mut ServerState, workspace_path: &Path) {
         state.dependency_store_path_override = Some(
             workspace_path
@@ -6722,6 +6740,160 @@ object_name = "ZCL_TWO"
         assert!(result.to_string().contains("file:///definition.abap"));
         assert!(result.to_string().contains("\"line\":3"));
         assert!(result.to_string().contains("\"character\":16"));
+    }
+
+    #[test]
+    fn server_message_definition_resolves_namespaced_cached_static_method_after_open() {
+        let workspace_path = temp_workspace_path("message_namespaced_cached_definition");
+        let source_dir = workspace_path.join("src/reports/ZMAIN");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let source = "\
+REPORT zmain.
+START-OF-SELECTION.
+  /sttp/cl_rr_ru_utilities=>get_safedata_key( ).
+";
+        let source_path = source_dir.join("ZMAIN.abap");
+        fs::write(&source_path, source).expect("source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = file_uri(&source_path);
+        let store_path = workspace_path
+            .join(".abapls-central")
+            .join("dependency-cache.sqlite3");
+        let position = lsp_position_for_offset(
+            source,
+            source.find("get_safedata_key").expect("method offset") + 1,
+        );
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "rootUri": workspace_uri.clone(),
+                    "workspaceFolders": [{ "uri": workspace_uri.clone(), "name": "workspace" }],
+                    "initializationOptions": {
+                        "dependencyCachePath": store_path.to_string_lossy()
+                    },
+                    "capabilities": {}
+                }
+            }),
+        )
+        .expect("initialize");
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "abapls/storeRemoteDependencyArtifacts",
+                "params": {
+                    "workspaceUri": workspace_uri.clone(),
+                    "connectionKey": "https://example.sap.local",
+                    "artifacts": [{
+                        "packageName": "/STTP/RU",
+                        "objectKind": "global-class",
+                        "objectName": "/STTP/CL_RR_RU_UTILITIES",
+                        "objectUri": "/sap/bc/adt/oo/classes/%2FSTTP%2FCL_RR_RU_UTILITIES",
+                        "objectType": "CLAS/OC",
+                        "description": "Remote namespaced class",
+                        "fileExtension": "abap",
+                        "sourceText": "CLASS /sttp/cl_rr_ru_utilities DEFINITION PUBLIC FINAL CREATE PUBLIC.\n  PUBLIC SECTION.\n    CLASS-METHODS get_safedata_key.\nENDCLASS.\n",
+                        "fetchedAt": "2026-04-23T00:00:00Z"
+                    }],
+                    "negative": []
+                }
+            }),
+        )
+        .expect("store dependency");
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }),
+        )
+        .expect("initialized");
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri.clone(),
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": source
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let definition_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": { "uri": source_uri },
+                    "position": position
+                }
+            }),
+        )
+        .expect("definition");
+        let definition = definition_msg
+            .response
+            .expect("definition response")
+            .result
+            .expect("definition result");
+        let uri = definition
+            .get("uri")
+            .and_then(Value::as_str)
+            .expect("definition uri");
+        assert!(
+            uri.starts_with("abapls-cache:///sttp_cl_rr_ru_utilities.abap?"),
+            "{uri}"
+        );
+        assert!(
+            !uri.split('?')
+                .next()
+                .unwrap_or(uri)
+                .to_ascii_lowercase()
+                .contains("%2f"),
+            "{uri}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]
