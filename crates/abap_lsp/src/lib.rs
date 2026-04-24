@@ -6994,6 +6994,131 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn workspace_refresh_resolves_flat_src_report_includes_without_opening_them() {
+        let workspace_path = temp_workspace_path("workspace_flat_src_report_includes");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/ZREP")).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/ZREP/ZREP.abap"),
+            "REPORT zrep.\nINCLUDE: zrep_top,\n         zrep_cls.\nSTART-OF-SELECTION.\n  CREATE OBJECT gr_demo.\n  CALL METHOD gr_demo->get_data.\n",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/ZREP/ZREP_TOP.abap"),
+            "CLASS lcl_demo DEFINITION.\n  PUBLIC SECTION.\n    METHODS get_data.\nENDCLASS.\n",
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/ZREP/ZREP_CLS.abap"),
+            "DATA gr_demo TYPE REF TO lcl_demo.\nCLASS lcl_demo IMPLEMENTATION.\n  METHOD get_data.\n  ENDMETHOD.\nENDCLASS.\n",
+        )
+        .expect("class include");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let report_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP/ZREP.abap"));
+        let top_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP/ZREP_TOP.abap"));
+        let cls_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP/ZREP_CLS.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            snapshot_for_uri(&state, &top_uri).is_some(),
+            "top include should be loaded by workspace refresh"
+        );
+        assert!(
+            snapshot_for_uri(&state, &cls_uri).is_some(),
+            "class include should be loaded by workspace refresh"
+        );
+        let snapshot = snapshot_for_uri(&state, &report_uri).expect("report snapshot");
+        let include_targets: Vec<_> = snapshot
+            .symbols
+            .include_edges
+            .iter()
+            .filter_map(|edge| edge.target)
+            .filter_map(|target| snapshot.project.units.get(target.as_usize()))
+            .map(|unit| unit.uri.as_ref())
+            .collect();
+
+        assert!(include_targets.contains(&top_uri.as_str()));
+        assert!(include_targets.contains(&cls_uri.as_str()));
+        assert!(
+            !snapshot.symbols.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedInclude
+                    || diag.message.contains("unknown symbol 'gr_demo'")
+                    || diag.message.contains("unknown field or method 'get_data'")
+            }),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn workspace_refresh_does_not_leak_unincluded_flat_src_siblings() {
+        let workspace_path = temp_workspace_path("workspace_flat_src_unincluded_siblings");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/ZREP")).expect("report dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/ZREP/ZREP.abap"),
+            "REPORT zrep.\nSTART-OF-SELECTION.\n  gr_demo = 1.\n",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/ZREP/ZREP_TOP.abap"),
+            "DATA gr_demo TYPE i.\n",
+        )
+        .expect("sibling");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let report_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP/ZREP.abap"));
+        let sibling_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP/ZREP_TOP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            snapshot_for_uri(&state, &sibling_uri).is_some(),
+            "sibling should still be loaded as its own project unit"
+        );
+        let snapshot = snapshot_for_uri(&state, &report_uri).expect("report snapshot");
+        assert!(
+            snapshot.symbols.references.iter().any(|reference| {
+                reference.name.as_ref() == "gr_demo" && reference.resolution.is_none()
+            }),
+            "{:#?}",
+            snapshot.symbols.references
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn workspace_refresh_resolves_transitive_local_export_dependencies() {
         let workspace_path = temp_workspace_path("workspace_local_export_transitive_refresh");
         let export_root = temp_workspace_path("workspace_local_export_transitive_refresh_export");

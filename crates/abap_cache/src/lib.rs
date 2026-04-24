@@ -17395,7 +17395,7 @@ ENDCLASS.";
     #[test]
     fn references_include_declaration_and_uses_for_variable_across_documents() {
         let store = DocumentStore::default();
-        let main_src = "DATA lv TYPE i.\nlv = 1.";
+        let main_src = "INCLUDE helper.\nDATA lv TYPE i.\nlv = 1.";
         let helper_src = "DATA lv_other TYPE i.\nlv = lv_other.";
         let main = store.publish("file:///main.abap", 1, main_src);
         store.publish("file:///helper.abap", 1, helper_src);
@@ -17600,8 +17600,8 @@ ENDCLASS.
     #[test]
     fn updating_one_document_keeps_cross_document_references_working() {
         let store = DocumentStore::default();
-        let main_v1 = "DATA lv TYPE i.\nlv = 1.";
-        let main_v2 = "DATA lv TYPE i.\nlv = 2.";
+        let main_v1 = "INCLUDE helper.\nDATA lv TYPE i.\nlv = 1.";
+        let main_v2 = "INCLUDE helper.\nDATA lv TYPE i.\nlv = 2.";
         let helper_src = "DATA lv_other TYPE i.\nlv = lv_other.";
         store.publish("file:///main.abap", 1, main_v1);
         store.publish("file:///helper.abap", 1, helper_src);

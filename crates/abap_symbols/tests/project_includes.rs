@@ -34,6 +34,67 @@ fn resolves_symbols_from_included_units() {
 }
 
 #[test]
+fn included_units_share_the_including_compilation_context() {
+    let root_src = "REPORT zmain. INCLUDE: ztop, zf01.";
+    let top_src = "DATA gv_shared TYPE i.";
+    let form_src = "FORM run. gv_shared = 1. ENDFORM.";
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let form_parse = parse(form_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: form_src,
+            parse: &form_parse,
+        },
+    ]);
+
+    let form = project.unit_by_uri("zf01.abap").expect("form include");
+    assert!(form.references.iter().any(|reference| {
+        reference.name.as_ref() == "gv_shared"
+            && matches!(reference.resolution, Some(Resolution::Symbol(handle)) if handle.unit == project.unit_by_uri("ztop.abap").expect("top include").unit_id)
+    }));
+}
+
+#[test]
+fn does_not_resolve_sibling_unit_symbols_without_include_edge() {
+    let root_src = "REPORT zmain. gr_demo = 1.";
+    let sibling_src = "DATA gr_demo TYPE i.";
+    let root_parse = parse(root_src);
+    let sibling_parse = parse(sibling_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "zmain_top.abap",
+            source: sibling_src,
+            parse: &sibling_parse,
+        },
+    ]);
+
+    let root = project.unit_by_uri("zmain.abap").expect("root unit");
+    assert!(root.include_edges.is_empty());
+    assert!(root.references.iter().any(|reference| {
+        reference.name.as_ref() == "gr_demo" && reference.resolution.is_none()
+    }));
+}
+
+#[test]
 fn reports_unresolved_include_targets() {
     let root_src = "INCLUDE zmissing. lv_inc = 1.";
     let root_parse = parse(root_src);

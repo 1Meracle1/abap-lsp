@@ -101,6 +101,20 @@ Discovery rule:
 - each file is a separate single-file unit
 - explicit ownership can be refined with a unit sidecar
 
+### Other `src/` Files
+
+Any `.abap` file under `src/` that is not already owned by a conventional unit above is loaded as a separate single-file unit by default.
+
+For example:
+
+```text
+src/ZMY_REPORT/ZMY_REPORT.abap
+src/ZMY_REPORT/ZMY_REPORT_TOP.abap
+src/ZMY_REPORT/ZMY_REPORT_CLS.abap
+```
+
+These files are discovered independently. If `ZMY_REPORT.abap` contains `INCLUDE zmy_report_top.`, the semantic project resolves that include and analyzes the included source in the including compilation context.
+
 ## Unit Sidecars
 
 Conventions are intentionally simple. When they are not enough, use an `abapls-unit.toml` sidecar.

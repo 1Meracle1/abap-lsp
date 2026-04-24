@@ -865,6 +865,7 @@ fn discover_conventional_src_units(root_path: &Path) -> Vec<ManifestUnit> {
         "src/function-groups",
         "function-group",
     ));
+    units.extend(discover_uncovered_src_file_units(root_path, &units));
     units.sort_by(|left, right| left.root_file.cmp(&right.root_file));
     units
 }
@@ -966,6 +967,98 @@ fn folder_unit(root_path: &Path, dir_path: &Path, kind: &str) -> Option<Manifest
     };
     apply_unit_sidecar_manifest(root_path, dir_path, &mut unit);
     Some(unit)
+}
+
+fn discover_uncovered_src_file_units(
+    root_path: &Path,
+    discovered_units: &[ManifestUnit],
+) -> Vec<ManifestUnit> {
+    let src_path = root_path.join("src");
+    if !src_path.is_dir() {
+        return Vec::new();
+    }
+
+    let mut covered = HashSet::new();
+    for unit in discovered_units {
+        let root_file = normalize_manifest_path(&unit.root_file);
+        if !root_file.is_empty() {
+            covered.insert(root_file);
+        }
+        for member in &unit.members {
+            let member_file = normalize_manifest_path(&member.file);
+            if !member_file.is_empty() {
+                covered.insert(member_file);
+            }
+        }
+    }
+
+    let mut file_paths = Vec::new();
+    collect_abap_file_paths(&src_path, &mut file_paths);
+    file_paths.sort();
+    file_paths
+        .into_iter()
+        .filter_map(|path| {
+            let relative = normalize_manifest_path(&workspace_relative_path(root_path, &path));
+            if relative.is_empty() || covered.contains(&relative) {
+                return None;
+            }
+            Some(single_file_unit(
+                root_path,
+                &path,
+                infer_single_file_unit_kind(&path),
+            ))
+        })
+        .collect()
+}
+
+fn infer_single_file_unit_kind(path: &Path) -> &'static str {
+    let Some(statement) = first_abap_statement_start(path) else {
+        return "include";
+    };
+    if starts_with_abap_keyword(&statement, "report")
+        || starts_with_abap_keyword(&statement, "program")
+    {
+        return "report";
+    }
+    if starts_with_abap_keyword(&statement, "function-pool") {
+        return "function-group";
+    }
+    if starts_with_abap_keyword(&statement, "class-pool")
+        || starts_with_abap_keyword(&statement, "class")
+    {
+        return "global-class";
+    }
+    if starts_with_abap_keyword(&statement, "interface-pool")
+        || starts_with_abap_keyword(&statement, "interface")
+    {
+        return "global-interface";
+    }
+    if starts_with_abap_keyword(&statement, "type-pool") {
+        return "type-pool";
+    }
+    "include"
+}
+
+fn first_abap_statement_start(path: &Path) -> Option<String> {
+    let Ok(text) = fs::read_to_string(path) else {
+        return None;
+    };
+    text.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('*') || trimmed.starts_with('"') {
+            return None;
+        }
+        Some(trimmed.to_ascii_lowercase())
+    })
+}
+
+fn starts_with_abap_keyword(text: &str, keyword: &str) -> bool {
+    let Some(rest) = text.strip_prefix(keyword) else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
 }
 
 fn collect_abap_file_paths(dir_path: &Path, output: &mut Vec<PathBuf>) {
@@ -4097,6 +4190,95 @@ cache_dir = ".abapls/cache"
             loaded_uris
                 .iter()
                 .any(|uri| uri.ends_with("/src/function-groups/ZFG/includes/LZFGTOP.abap"))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_only_manifest_loads_uncovered_src_files_as_separate_units() {
+        let root = std::env::temp_dir().join("abap-lsp-uncovered-src-file-discovery");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/ZREP")).expect("report dir");
+        fs::create_dir_all(root.join("src/ZCL_NOT_REPORT")).expect("class-like dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("src/ZREP/ZREP.abap"),
+            "* comment\nREPORT zrep.\nINCLUDE: zrep_top, zrep_cls.",
+        )
+        .expect("report");
+        fs::write(root.join("src/ZREP/ZREP_TOP.abap"), "DATA gv_demo TYPE i.")
+            .expect("top include");
+        fs::write(root.join("src/ZREP/ZREP_CLS.abap"), "FORM demo. ENDFORM.")
+            .expect("class include");
+        fs::write(
+            root.join("src/ZCL_NOT_REPORT/ZCL_NOT_REPORT.abap"),
+            "CLASS zcl_not_report DEFINITION. ENDCLASS.",
+        )
+        .expect("class-like source");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let manifest = loaded.manifest.as_ref().expect("effective manifest");
+        let report_unit = manifest
+            .units
+            .iter()
+            .find(|unit| unit.root_file == "src/ZREP/ZREP.abap")
+            .expect("report unit");
+        let top_unit = manifest
+            .units
+            .iter()
+            .find(|unit| unit.root_file == "src/ZREP/ZREP_TOP.abap")
+            .expect("top include unit");
+        let cls_unit = manifest
+            .units
+            .iter()
+            .find(|unit| unit.root_file == "src/ZREP/ZREP_CLS.abap")
+            .expect("class include unit");
+        let class_unit = manifest
+            .units
+            .iter()
+            .find(|unit| unit.root_file == "src/ZCL_NOT_REPORT/ZCL_NOT_REPORT.abap")
+            .expect("class-like source unit");
+        let loaded_uris: Vec<_> = loaded
+            .documents
+            .iter()
+            .map(|document| document.uri.as_ref())
+            .collect();
+
+        assert_eq!(report_unit.kind, "report");
+        assert!(report_unit.members.is_empty());
+        assert_eq!(top_unit.kind, "include");
+        assert_eq!(cls_unit.kind, "include");
+        assert_eq!(class_unit.kind, "global-class");
+        assert!(
+            loaded_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZREP/ZREP.abap"))
+        );
+        assert!(
+            loaded_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZREP/ZREP_TOP.abap"))
+        );
+        assert!(
+            loaded_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZREP/ZREP_CLS.abap"))
+        );
+        assert!(
+            loaded_uris
+                .iter()
+                .any(|uri| uri.ends_with("/src/ZCL_NOT_REPORT/ZCL_NOT_REPORT.abap"))
         );
 
         let _ = fs::remove_dir_all(&root);

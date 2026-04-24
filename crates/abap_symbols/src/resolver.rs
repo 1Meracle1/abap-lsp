@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     ClassMemberKind, FieldTypeRefData, ReferenceKind, Resolution, StructureData,
-    StructureFieldData, UnitAnalysis, Visibility,
+    StructureFieldData, SymbolData, SymbolKind, UnitAnalysis, Visibility,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeKind};
@@ -149,6 +149,7 @@ fn resolve_direct_superclass_handle_in_project(
     units: &[UnitAnalysis],
     current: SymbolHandle,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
 ) -> Option<SymbolHandle> {
     let unit = &units[current.unit.as_usize()];
@@ -161,6 +162,15 @@ fn resolve_direct_superclass_handle_in_project(
             unit: current.unit,
             symbol: symbol_id,
         });
+    }
+    if let Some(symbol) = resolve_root_symbol_in_visible_units(
+        current.unit.as_usize(),
+        Namespace::Type,
+        &inheritance.superclass_name,
+        per_unit_root_index,
+        visible_units,
+    ) {
+        return Some(symbol);
     }
     root_index
         .get(&(Namespace::Type, Arc::clone(&inheritance.superclass_name)))
@@ -204,6 +214,7 @@ fn resolve_inherited_symbol_in_project(
     namespace: Namespace,
     name: &Arc<str>,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
 ) -> Option<SymbolHandle> {
     let unit = &units[unit_idx];
@@ -220,6 +231,7 @@ fn resolve_inherited_symbol_in_project(
             units,
             current,
             per_unit_root_index,
+            visible_units,
             root_index,
         )?;
         let superclass_unit = &units[current.unit.as_usize()];
@@ -345,36 +357,29 @@ fn resolve_project_cross_unit_with_filter(
                 per_unit_root_index[unit.unit_id.as_usize()]
                     .entry((namespace, Arc::clone(&symbol.name)))
                     .or_insert(symbol.id);
-                root_index
-                    .entry((namespace, Arc::clone(&symbol.name)))
-                    .or_default()
-                    .push(SymbolHandle {
-                        unit: unit.unit_id,
-                        symbol: symbol.id,
-                    });
+                if root_symbol_is_visible_across_units_by_default(symbol) {
+                    root_index
+                        .entry((namespace, Arc::clone(&symbol.name)))
+                        .or_default()
+                        .push(SymbolHandle {
+                            unit: unit.unit_id,
+                            symbol: symbol.id,
+                        });
+                }
             }
         }
     }
 
-    let root_symbol_names: HashSet<_> = units
-        .iter()
-        .flat_map(|unit| {
-            unit.symbols
-                .iter()
-                .filter(|symbol| symbol.scope == unit.root_scope)
-                .map(|symbol| Arc::clone(&symbol.name))
-        })
+    let root_symbol_names: HashSet<_> = root_index
+        .keys()
+        .map(|(_, name)| Arc::clone(name))
         .collect();
+    let visible_units = include_visible_units_for_units(units);
 
     for unit_idx in 0..units.len() {
         if dirty_units.is_some_and(|dirty| !dirty.contains(&units[unit_idx].unit_id)) {
             continue;
         }
-        let include_targets: Vec<_> = units[unit_idx]
-            .include_edges
-            .iter()
-            .filter_map(|edge| edge.target)
-            .collect();
         for reference_idx in 0..units[unit_idx].references.len() {
             if units[unit_idx].references[reference_idx]
                 .resolution
@@ -405,6 +410,16 @@ fn resolve_project_cross_unit_with_filter(
                             symbol: symbol_id,
                         }));
                     }
+                    if resolved.is_none() {
+                        resolved = resolve_root_symbol_in_visible_units(
+                            unit_idx,
+                            Namespace::Type,
+                            &superclass_name,
+                            &per_unit_root_index,
+                            &visible_units,
+                        )
+                        .map(Resolution::Symbol);
+                    }
                     if resolved.is_none()
                         && let Some(handles) = root_index.get(&(Namespace::Type, superclass_name))
                         && let Some(symbol) = handles.first().copied()
@@ -430,6 +445,7 @@ fn resolve_project_cross_unit_with_filter(
                         namespace,
                         &reference_name,
                         &per_unit_root_index,
+                        &visible_units,
                         &root_index,
                     ) {
                         resolved = Some(Resolution::Symbol(symbol));
@@ -439,17 +455,15 @@ fn resolve_project_cross_unit_with_filter(
             }
             if resolved.is_none() {
                 for namespace in namespaces {
-                    for target in &include_targets {
-                        if let Some(symbol_id) = per_unit_root_index[target.as_usize()]
-                            .get(&(namespace, Arc::clone(&reference_name)))
-                            .copied()
-                        {
-                            resolved = Some(Resolution::Symbol(SymbolHandle {
-                                unit: *target,
-                                symbol: symbol_id,
-                            }));
-                            break;
-                        }
+                    if let Some(symbol) = resolve_root_symbol_in_visible_units(
+                        unit_idx,
+                        namespace,
+                        &reference_name,
+                        &per_unit_root_index,
+                        &visible_units,
+                    ) {
+                        resolved = Some(Resolution::Symbol(symbol));
+                        break;
                     }
                     if resolved.is_some() {
                         break;
@@ -501,6 +515,7 @@ fn resolve_project_cross_unit_with_filter(
                         unit_idx,
                         type_ref,
                         &per_unit_root_index,
+                        &visible_units,
                         &root_index,
                         &mut units[unit_idx].structures,
                         &mut imported,
@@ -533,6 +548,7 @@ fn resolve_project_cross_unit_with_filter(
                             unit_idx,
                             type_ref,
                             &per_unit_root_index,
+                            &visible_units,
                             &root_index,
                             &mut units[unit_idx].structures,
                             &mut imported,
@@ -567,6 +583,7 @@ fn resolve_project_cross_unit_with_filter(
                     unit_idx,
                     type_ref,
                     &per_unit_root_index,
+                    &visible_units,
                     &root_index,
                     &mut units[unit_idx].structures,
                 )
@@ -585,6 +602,87 @@ fn resolve_project_cross_unit_with_filter(
     }
 }
 
+fn root_symbol_is_visible_across_units_by_default(symbol: &SymbolData) -> bool {
+    match symbol.kind {
+        SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeDef => {
+            !name_looks_program_local(symbol.name.as_ref())
+        }
+        SymbolKind::Module | SymbolKind::Report => true,
+        _ => false,
+    }
+}
+
+fn name_looks_program_local(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    lower.starts_with("lcl_")
+        || lower.starts_with("lif_")
+        || lower.starts_with("lty_")
+        || lower.starts_with("ty_")
+        || lower.starts_with("tty_")
+}
+
+fn include_visible_units_for_units(units: &[UnitAnalysis]) -> Vec<Vec<UnitId>> {
+    let mut visible_units = vec![Vec::new(); units.len()];
+    for unit in units {
+        let mut stack = HashSet::new();
+        let mut expansion = Vec::new();
+        collect_include_expansion(units, unit.unit_id, &mut stack, &mut expansion);
+        for &participant in &expansion {
+            let Some(participant_visible) = visible_units.get_mut(participant.as_usize()) else {
+                continue;
+            };
+            for &candidate in &expansion {
+                if candidate != participant && !participant_visible.contains(&candidate) {
+                    participant_visible.push(candidate);
+                }
+            }
+        }
+    }
+    visible_units
+}
+
+fn collect_include_expansion(
+    units: &[UnitAnalysis],
+    unit_id: UnitId,
+    stack: &mut HashSet<UnitId>,
+    expansion: &mut Vec<UnitId>,
+) {
+    let Some(unit) = units.get(unit_id.as_usize()) else {
+        return;
+    };
+    if !stack.insert(unit_id) {
+        return;
+    }
+    expansion.push(unit_id);
+    for target in unit.include_edges.iter().filter_map(|edge| edge.target) {
+        collect_include_expansion(units, target, stack, expansion);
+    }
+    stack.remove(&unit_id);
+}
+
+fn resolve_root_symbol_in_visible_units(
+    unit_idx: usize,
+    namespace: Namespace,
+    name: &Arc<str>,
+    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
+) -> Option<SymbolHandle> {
+    for visible_unit in visible_units.get(unit_idx)? {
+        let target_idx = visible_unit.as_usize();
+        if let Some(symbol_id) = per_unit_root_index
+            .get(target_idx)
+            .and_then(|index| index.get(&(namespace, Arc::clone(name))))
+            .copied()
+        {
+            return Some(SymbolHandle {
+                unit: *visible_unit,
+                symbol: symbol_id,
+            });
+        }
+    }
+    None
+}
+
 pub fn resolve_project_cross_unit(units: &mut [UnitAnalysis]) {
     resolve_project_cross_unit_with_filter(units, None);
 }
@@ -601,6 +699,7 @@ fn import_structure_for_type_ref(
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
@@ -610,6 +709,7 @@ fn import_structure_for_type_ref(
         unit_idx,
         type_ref,
         per_unit_root_index,
+        visible_units,
         root_index,
     )?;
     let source_unit_idx = handle.unit.as_usize();
@@ -620,6 +720,7 @@ fn import_structure_for_type_ref(
         source_unit_idx,
         handle.symbol,
         per_unit_root_index,
+        visible_units,
         root_index,
         target_structures,
         imported,
@@ -640,6 +741,7 @@ fn resolve_root_symbol_handle(
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
 ) -> Option<SymbolHandle> {
     let namespaces = if type_ref.namespace == Namespace::Value {
@@ -656,6 +758,15 @@ fn resolve_root_symbol_handle(
                 unit: units[unit_idx].unit_id,
                 symbol: symbol_id,
             });
+        }
+        if let Some(handle) = resolve_root_symbol_in_visible_units(
+            unit_idx,
+            namespace,
+            &type_ref.base_name,
+            per_unit_root_index,
+            visible_units,
+        ) {
+            return Some(handle);
         }
         if let Some(handles) = root_index.get(&(namespace, Arc::clone(&type_ref.base_name)))
             && let Some(handle) = handles.first().copied()
@@ -719,6 +830,7 @@ fn resolve_symbol_structure_for_target(
     current_unit_idx: usize,
     symbol_id: SymbolId,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
@@ -749,6 +861,7 @@ fn resolve_symbol_structure_for_target(
         current_unit_idx,
         next_type_ref,
         per_unit_root_index,
+        visible_units,
         root_index,
     )?;
     resolve_symbol_structure_for_target(
@@ -757,6 +870,7 @@ fn resolve_symbol_structure_for_target(
         handle.unit.as_usize(),
         handle.symbol,
         per_unit_root_index,
+        visible_units,
         root_index,
         target_structures,
         imported,
@@ -769,6 +883,7 @@ fn normalize_field_type_ref_for_target(
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
 ) -> Option<(Option<StructureId>, FieldTypeRefData)> {
@@ -787,6 +902,7 @@ fn normalize_field_type_ref_for_target(
         unit_idx,
         &base_ref,
         per_unit_root_index,
+        visible_units,
         root_index,
     )?;
 
@@ -798,6 +914,7 @@ fn normalize_field_type_ref_for_target(
         handle.unit.as_usize(),
         handle.symbol,
         per_unit_root_index,
+        visible_units,
         root_index,
         target_structures,
         &mut imported,
