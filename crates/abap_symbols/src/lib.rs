@@ -1444,6 +1444,42 @@ SELECTION-SCREEN END OF BLOCK fsc.\n";
     }
 
     #[test]
+    fn chained_selection_screen_comments_do_not_create_false_references() {
+        let src = "\
+SELECTION-SCREEN: BEGIN OF BLOCK b02 WITH FRAME TITLE TEXT-b02,\n\
+COMMENT /1(79) TEXT-003,\n\
+COMMENT /1(79) TEXT-004,\n\
+COMMENT /1(79) TEXT-005,\n\
+COMMENT /1(79) TEXT-999,\n\
+COMMENT /1(79) TEXT-006,\n\
+COMMENT /1(79) TEXT-007,\n\
+COMMENT /1(79) TEXT-008,\n\
+END OF BLOCK b02.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///selection_screen_comments.abap", src, &parsed);
+
+        for keyword in [
+            "selection",
+            "screen",
+            "comment",
+            "text",
+            "end",
+            "block",
+            "b02",
+        ] {
+            assert!(
+                unit.references
+                    .iter()
+                    .all(|reference| !reference.name.eq_ignore_ascii_case(keyword)),
+                "unexpected `{keyword}` reference: {:#?}",
+                unit.references
+            );
+        }
+        assert!(unit.diagnostics.is_empty(), "{:#?}", unit.diagnostics);
+    }
+
+    #[test]
     fn select_options_declare_range_table_symbol_and_resolve_for_operand() {
         let src = "\
 DATA lv_rogln TYPE string.\n\

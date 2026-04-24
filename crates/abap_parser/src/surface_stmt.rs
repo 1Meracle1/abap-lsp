@@ -90,6 +90,51 @@ fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> 
     None
 }
 
+fn scan_until_selection_screen_period(
+    tokens: &[Token],
+    source: &str,
+    start: usize,
+) -> StmtPeriodScan {
+    if let Some(period_i) = scan_until_top_level_period(tokens, start) {
+        let has_chain_colon = tokens[start..period_i]
+            .iter()
+            .any(|token| token.kind == TokenKind::Colon);
+        if has_chain_colon {
+            return StmtPeriodScan::Found(period_i);
+        }
+    }
+    scan_until_statement_period(tokens, source, start)
+}
+
+fn parse_selection_screen_stmt_with_period_scan<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    scan_start: usize,
+    start_tok: &Token,
+    missing_period_message: &str,
+    errors: &mut Vec<crate::ParseError>,
+    on_found: F,
+) -> (NodeId, usize)
+where
+    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
+{
+    match scan_until_selection_screen_period(tokens, source, scan_start) {
+        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: missing_period_message.to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
+            (node, next_after_unterminated_scan(tokens, end_exclusive))
+        }
+    }
+}
+
 fn call_method_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -5939,7 +5984,7 @@ pub fn try_parse_selection_screen_stmt(
 ) -> Option<(NodeId, usize)> {
     let lead_end = match_hyphenated_keyword(source, tokens, idx, &["selection", "screen"])?;
     let start_tok = tokens.get(idx)?;
-    Some(parse_stmt_with_period_scan(
+    Some(parse_selection_screen_stmt_with_period_scan(
         b,
         source,
         tokens,
@@ -5948,7 +5993,6 @@ pub fn try_parse_selection_screen_stmt(
         start_tok,
         "syntax error: expected '.' after SELECTION-SCREEN statement",
         errors,
-        next_after_unterminated_scan,
         |b, period_i, _errors| {
             let children = token_children(b, tokens, idx, period_i + 1);
             let node = b.branch(
@@ -9347,6 +9391,31 @@ SELECTION-SCREEN END OF BLOCK date.",
             2
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn parses_chained_selection_screen_block_with_comments() {
+        let parsed = crate::parse(
+            "SELECTION-SCREEN: BEGIN OF BLOCK b02 WITH FRAME TITLE TEXT-b02,\n\
+COMMENT /1(79) TEXT-003,\n\
+COMMENT /1(79) TEXT-004,\n\
+COMMENT /1(79) TEXT-005,\n\
+COMMENT /1(79) TEXT-999,\n\
+COMMENT /1(79) TEXT-006,\n\
+COMMENT /1(79) TEXT-007,\n\
+COMMENT /1(79) TEXT-008,\n\
+END OF BLOCK b02.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectionScreenStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

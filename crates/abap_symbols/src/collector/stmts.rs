@@ -2024,20 +2024,25 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .iter()
             .position(|token| token.text.as_ref() == ".")
             .unwrap_or(tokens.len());
-        if start >= period_idx {
+        let title_end = tokens[start..period_idx]
+            .iter()
+            .position(|token| token.text.as_ref() == ",")
+            .map(|offset| start + offset)
+            .unwrap_or(period_idx);
+        if start >= title_end {
             return;
         }
 
         let mut batch_start = start;
         let mut idx = start;
-        while idx < period_idx {
+        while idx < title_end {
             let is_text_pool = tokens[idx].text.eq_ignore_ascii_case("text")
                 && tokens
                     .get(idx + 1)
                     .is_some_and(|token| token.text.as_ref() == "-")
                 && tokens
                     .get(idx + 2)
-                    .is_some_and(|token| token.text.chars().all(|ch| ch.is_ascii_digit()));
+                    .is_some_and(|token| token.text.chars().all(|ch| ch.is_ascii_alphanumeric()));
             if is_text_pool {
                 self.collect_token_expression_refs_range(tokens, batch_start, idx, scope);
                 idx += 3;
@@ -2046,7 +2051,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
             idx += 1;
         }
-        self.collect_token_expression_refs_range(tokens, batch_start, period_idx, scope);
+        self.collect_token_expression_refs_range(tokens, batch_start, title_end, scope);
     }
 
     pub(super) fn collect_selection_screen_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -2057,8 +2062,18 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
-        if Self::tokens_match_keyword_sequence(&tokens[3..], &["begin", "of", "block"]) {
-            if let Some(with_idx) = self.find_top_level_keyword_infos(&tokens, 6, &["WITH"])
+        let body_start = if tokens
+            .get(3)
+            .is_some_and(|token| token.text.as_ref() == ":")
+        {
+            4
+        } else {
+            3
+        };
+
+        if Self::tokens_match_keyword_sequence(&tokens[body_start..], &["begin", "of", "block"]) {
+            if let Some(with_idx) =
+                self.find_top_level_keyword_infos(&tokens, body_start + 3, &["WITH"])
                 && Self::tokens_match_keyword_sequence(
                     &tokens[with_idx..],
                     &["with", "frame", "title"],
