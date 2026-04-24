@@ -11345,6 +11345,41 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn infers_inline_named_argument_type_from_matching_typed_actual() {
+    let src = "\
+DATA lv_content_key TYPE /sttp/e_save_content_key.
+
+START-OF-SELECTION.
+  /sttp/cl_rr_ru_utilities=>get_safedata_key(
+    IMPORTING
+      ev_key = lv_content_key
+  ).
+
+  /sttp/cl_rr_ru_utilities=>get_safedata_key(
+    IMPORTING
+      ev_key = DATA(lv_content_key2)
+  ).";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///inline_named_arg_observed_type.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "lv_content_key2"
+        })
+        .expect("inline lv_content_key2 symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for lv_content_key2");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "/sttp/e_save_content_key");
+    assert!(declared_type.field_path.is_empty());
+}
+
+#[test]
 fn infers_inline_data_type_from_integer_sum_expression() {
     let src = "\
 DATA lt_obj TYPE STANDARD TABLE OF string WITH EMPTY KEY.

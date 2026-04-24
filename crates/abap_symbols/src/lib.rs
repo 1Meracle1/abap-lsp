@@ -437,6 +437,52 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn unknown_importing_inline_call_argument_is_definitely_assigned() {
+        let src = "\
+CLASS lcl_demo DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS get_data.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_demo IMPLEMENTATION.\n\
+  METHOD get_data.\n\
+    /sttp/cl_rr_ru_utilities=>get_safedata_key(\n\
+      IMPORTING\n\
+        ev_key = DATA(lv_content_key2)\n\
+    ).\n\
+\n\
+    /sttp/cl_safe_data=>get_data(\n\
+      EXPORTING\n\
+        iv_content_key = lv_content_key2\n\
+    ).\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///unknown_importing_inline.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        let read_start = src
+            .find("iv_content_key = lv_content_key2")
+            .expect("content key read")
+            + "iv_content_key = ".len();
+        let read_range = read_start..read_start + "lv_content_key2".len();
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || diagnostic.range != read_range
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn delete_where_row_field_from_project_table_type_does_not_trigger_definite_assignment_warning()
     {
         let main_src = r#"

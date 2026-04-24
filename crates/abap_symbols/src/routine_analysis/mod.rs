@@ -25,9 +25,9 @@ use crate::builtin_routine_spec;
 use crate::def_map::{
     AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
     FormParameterSection, FunctionModuleParameterSection, IfRegionData, LoopRegionData,
-    MethodParameterSection, PerformParameterSection, Resolution, RoutineControlRegionData,
-    RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis,
-    ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
+    MethodParameterSection, NamedArgumentSection, PerformParameterSection, Resolution,
+    RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind,
+    TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -1808,15 +1808,11 @@ fn build_routine_dataflow(
                         ));
                     }
                     for argument in &call_site.arguments {
-                        let effect = call_argument_effects
-                            .get(&(
-                                call_site.range.start,
-                                call_site.range.end,
-                                argument.range.start,
-                                argument.range.end,
-                            ))
-                            .copied()
-                            .unwrap_or(CallArgumentEffect::Unknown);
+                        let effect = call_argument_effect_for_call_argument(
+                            &call_argument_effects,
+                            call_site,
+                            argument,
+                        );
                         if matches!(
                             effect,
                             CallArgumentEffect::OutputOnly | CallArgumentEffect::AssignsOnly
@@ -1826,25 +1822,6 @@ fn build_routine_dataflow(
                                     || read.range.end > argument.range.end
                             });
                         }
-                        let direct_values = direct_non_field_symbol_values_in_range(
-                            &reference_uses,
-                            &argument.range,
-                            &values,
-                        );
-                        if matches!(
-                            effect,
-                            CallArgumentEffect::OutputOnly
-                                | CallArgumentEffect::InOut
-                                | CallArgumentEffect::AssignsOnly
-                        ) {
-                            transfer.writes.extend(direct_values.iter().copied());
-                        }
-                        if matches!(
-                            effect,
-                            CallArgumentEffect::OutputOnly | CallArgumentEffect::AssignsOnly
-                        ) {
-                            transfer.assigned_writes.extend(direct_values);
-                        }
                         if matches!(
                             effect,
                             CallArgumentEffect::OutputOnly
@@ -1852,13 +1829,32 @@ fn build_routine_dataflow(
                                 | CallArgumentEffect::AssignsOnly
                                 | CallArgumentEffect::Unknown
                         ) {
-                            transfer.non_initial_kills.extend(
-                                direct_non_field_symbol_values_in_range(
-                                    &reference_uses,
-                                    &argument.range,
-                                    &values,
-                                ),
+                            let direct_values = direct_non_field_symbol_write_values_in_range(
+                                unit,
+                                &reference_uses,
+                                &value_ids_by_symbol,
+                                &argument.range,
+                                &values,
                             );
+                            if matches!(
+                                effect,
+                                CallArgumentEffect::OutputOnly
+                                    | CallArgumentEffect::InOut
+                                    | CallArgumentEffect::AssignsOnly
+                            ) {
+                                transfer.writes.extend(direct_values.iter().copied());
+                            }
+                            if matches!(
+                                effect,
+                                CallArgumentEffect::OutputOnly | CallArgumentEffect::AssignsOnly
+                            ) {
+                                transfer
+                                    .assigned_writes
+                                    .extend(direct_values.iter().copied());
+                            }
+                            transfer
+                                .non_initial_kills
+                                .extend(direct_values.iter().copied());
                         }
                         if matches!(
                             effect,
@@ -2558,6 +2554,7 @@ fn build_dead_store_diagnostics(
         routine,
         values,
         reference_uses,
+        value_ids_by_symbol,
         call_argument_effects,
     );
     if !tracked_values.words.iter().any(|word| *word != 0) {
@@ -2640,6 +2637,7 @@ fn build_dead_store_tracked_values(
     routine: &RoutineAnalysis,
     values: &[RoutineDataflowValue],
     reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
 ) -> DenseBitSet {
     let mut tracked = DenseBitSet::new(values.len());
@@ -2667,8 +2665,10 @@ fn build_dead_store_tracked_values(
                     if effect == CallArgumentEffect::InputOnly {
                         continue;
                     }
-                    for value in direct_non_field_symbol_values_in_range(
+                    for value in direct_non_field_symbol_write_values_in_range(
+                        unit,
                         reference_uses,
+                        value_ids_by_symbol,
                         &argument.range,
                         values,
                     ) {
@@ -2732,7 +2732,7 @@ fn call_argument_effect_for_call_argument(
     call_site: &crate::CallSiteData,
     argument: &crate::CallArgumentData,
 ) -> CallArgumentEffect {
-    call_argument_effects
+    let effect = call_argument_effects
         .get(&(
             call_site.range.start,
             call_site.range.end,
@@ -2740,7 +2740,25 @@ fn call_argument_effect_for_call_argument(
             argument.range.end,
         ))
         .copied()
-        .unwrap_or(CallArgumentEffect::Unknown)
+        .unwrap_or(CallArgumentEffect::Unknown);
+    if effect == CallArgumentEffect::Unknown {
+        call_argument_effect_from_section(argument.section)
+    } else {
+        effect
+    }
+}
+
+fn call_argument_effect_from_section(section: Option<NamedArgumentSection>) -> CallArgumentEffect {
+    match section {
+        None | Some(NamedArgumentSection::Exporting | NamedArgumentSection::Exceptions) => {
+            CallArgumentEffect::InputOnly
+        }
+        Some(NamedArgumentSection::Importing | NamedArgumentSection::Receiving) => {
+            CallArgumentEffect::OutputOnly
+        }
+        Some(NamedArgumentSection::Changing) => CallArgumentEffect::InOut,
+        Some(NamedArgumentSection::Tables) => CallArgumentEffect::AssignsOnly,
+    }
 }
 
 fn build_form_parameter_effect_summaries(
@@ -4662,6 +4680,35 @@ fn direct_non_field_symbol_values_in_range(
             .map(|use_site| use_site.value)
             .filter(|value| values[value.as_usize()].kind != DataflowValueKind::FieldSymbol),
     )
+}
+
+fn direct_non_field_symbol_write_values_in_range(
+    unit: &UnitAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    range: &TextRange,
+    values: &[RoutineDataflowValue],
+) -> Vec<DataflowValueId> {
+    let mut out = direct_non_field_symbol_values_in_range(reference_uses, range, values);
+    out.extend(
+        unit.symbols
+            .iter()
+            .filter(|symbol| {
+                trackable_symbol_kind(symbol.kind)
+                    && symbol.decl_range.start >= range.start
+                    && symbol.decl_range.end <= range.end
+            })
+            .filter_map(|symbol| {
+                value_ids_by_symbol
+                    .get(&SymbolHandle {
+                        unit: unit.unit_id,
+                        symbol: symbol.id,
+                    })
+                    .copied()
+            })
+            .filter(|value| values[value.as_usize()].kind != DataflowValueKind::FieldSymbol),
+    );
+    sorted_unique_value_ids(out)
 }
 
 fn intersect_predecessor_bits(

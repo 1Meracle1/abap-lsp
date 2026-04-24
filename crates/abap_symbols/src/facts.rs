@@ -4,9 +4,9 @@ use std::sync::Arc;
 use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
     ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
-    MethodParameterSection, NamedArgumentTarget, Resolution, RoutineControlRegionData,
-    RoutineLoopKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
-    ValueFlowTargetData,
+    MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, Resolution,
+    RoutineControlRegionData, RoutineLoopKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData,
+    ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::resolver::{ScopeIndex, build_scope_index};
@@ -34,6 +34,19 @@ struct CallParameterInfo {
     decl_range: Option<abap_lexer::TextRange>,
     type_fact: TypeFactData,
     positional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CallArgumentObservationKey {
+    target: NamedArgumentTarget,
+    name: Arc<str>,
+    section: Option<NamedArgumentSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedCallArgumentType {
+    declared_type: FieldTypeRefData,
+    type_clause_display: Option<Arc<str>>,
 }
 
 pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
@@ -103,6 +116,7 @@ struct FactBuilder<'a> {
     unit_indexes: HashMap<crate::ids::UnitId, usize>,
     root_type_symbols: HashMap<Arc<str>, SymbolHandle>,
     function_modules_by_name: HashMap<Arc<str>, (usize, usize)>,
+    observed_call_argument_types: HashMap<CallArgumentObservationKey, ObservedCallArgumentType>,
 }
 
 impl<'a> FactBuilder<'a> {
@@ -163,14 +177,17 @@ impl<'a> FactBuilder<'a> {
             }
         }
 
-        Self {
+        let mut builder = Self {
             units,
             scope_indexes,
             inline_sql_table_symbols,
             unit_indexes,
             root_type_symbols,
             function_modules_by_name,
-        }
+            observed_call_argument_types: HashMap::new(),
+        };
+        builder.observed_call_argument_types = builder.build_observed_call_argument_types();
+        builder
     }
 
     fn unit_index(&self, unit_id: crate::ids::UnitId) -> Option<usize> {
@@ -221,6 +238,8 @@ impl<'a> FactBuilder<'a> {
 
         out.symbol_type_facts
             .extend(self.loop_inline_target_type_facts(unit_idx));
+        out.symbol_type_facts
+            .extend(self.inline_call_argument_type_facts(unit_idx));
 
         for assignment in &unit.assignment_sites {
             let lhs_type = self.assignment_target_type_fact(unit_idx, assignment);
@@ -305,6 +324,102 @@ impl<'a> FactBuilder<'a> {
             type_fact: fact,
             overwrite_existing: false,
         })
+    }
+
+    fn build_observed_call_argument_types(
+        &self,
+    ) -> HashMap<CallArgumentObservationKey, ObservedCallArgumentType> {
+        let mut observations = HashMap::new();
+        let mut ambiguous = HashSet::new();
+
+        for (unit_idx, unit) in self.units.iter().enumerate() {
+            for call_site in &unit.call_sites {
+                for argument in &call_site.arguments {
+                    let Some(key) = call_argument_observation_key(call_site, argument) else {
+                        continue;
+                    };
+                    let Some(observed) = observed_type_from_call_argument(argument).or_else(|| {
+                        self.direct_call_argument_declared_type(unit_idx, call_site, argument)
+                    }) else {
+                        continue;
+                    };
+                    if let Some(existing) = observations.get(&key) {
+                        if existing != &observed {
+                            ambiguous.insert(key);
+                        }
+                    } else {
+                        observations.insert(key, observed);
+                    }
+                }
+            }
+        }
+
+        for key in ambiguous {
+            observations.remove(&key);
+        }
+        observations
+    }
+
+    fn direct_call_argument_declared_type(
+        &self,
+        unit_idx: usize,
+        call_site: &crate::CallSiteData,
+        argument: &crate::CallArgumentData,
+    ) -> Option<ObservedCallArgumentType> {
+        let unit = &self.units[unit_idx];
+        let mut refs = unit.references.iter().filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.range.start >= argument.range.start
+                && reference.range.end <= argument.range.end
+        });
+        let reference = refs.next()?;
+        if refs.next().is_some() {
+            return None;
+        }
+        let Some(Resolution::Symbol(handle)) = reference.resolution else {
+            return None;
+        };
+        let fact = self.symbol_type_fact_for_site(unit_idx, call_site.scope, handle);
+        let declared_type = fact.declared_type?;
+        Some(ObservedCallArgumentType {
+            declared_type,
+            type_clause_display: fact.type_clause_display,
+        })
+    }
+
+    fn inline_call_argument_type_facts(&self, unit_idx: usize) -> Vec<SymbolTypeFactUpdate> {
+        let unit = &self.units[unit_idx];
+        let mut updates = Vec::new();
+        for call_site in &unit.call_sites {
+            for argument in &call_site.arguments {
+                let Some(key) = call_argument_observation_key(call_site, argument) else {
+                    continue;
+                };
+                let Some(observed) = self.observed_call_argument_types.get(&key) else {
+                    continue;
+                };
+                let Some(symbol_id) = inline_variable_symbol_for_call_argument(unit, argument)
+                else {
+                    continue;
+                };
+                if unit.symbol(symbol_id).declared_type.is_some() {
+                    continue;
+                }
+                let fact = self.type_fact_from_declared_type(
+                    unit_idx,
+                    call_site.scope,
+                    unit_idx,
+                    observed.declared_type.clone(),
+                    observed.type_clause_display.clone(),
+                );
+                updates.push(SymbolTypeFactUpdate {
+                    symbol_id,
+                    type_fact: fact,
+                    overwrite_existing: false,
+                });
+            }
+        }
+        updates
     }
 
     fn loop_inline_target_type_facts(&self, unit_idx: usize) -> Vec<SymbolTypeFactUpdate> {
@@ -1386,6 +1501,42 @@ fn is_append_assignment(unit: &UnitAnalysis, range: &abap_lexer::TextRange) -> b
 
 fn method_parameter_section(section: crate::MethodParameterSection) -> MethodParameterSection {
     section
+}
+
+fn call_argument_observation_key(
+    call_site: &crate::CallSiteData,
+    argument: &crate::CallArgumentData,
+) -> Option<CallArgumentObservationKey> {
+    if argument.section == Some(NamedArgumentSection::Exceptions) {
+        return None;
+    }
+    Some(CallArgumentObservationKey {
+        target: call_site.target.clone(),
+        name: Arc::clone(argument.name.as_ref()?),
+        section: argument.section,
+    })
+}
+
+fn observed_type_from_call_argument(
+    argument: &crate::CallArgumentData,
+) -> Option<ObservedCallArgumentType> {
+    Some(ObservedCallArgumentType {
+        declared_type: argument.type_fact.declared_type.clone()?,
+        type_clause_display: argument.type_fact.type_clause_display.clone(),
+    })
+}
+
+fn inline_variable_symbol_for_call_argument(
+    unit: &UnitAnalysis,
+    argument: &crate::CallArgumentData,
+) -> Option<SymbolId> {
+    let mut matches = unit.symbols.iter().filter(|symbol| {
+        symbol.kind == crate::SymbolKind::Variable
+            && symbol.decl_range.start >= argument.range.start
+            && symbol.decl_range.end <= argument.range.end
+    });
+    let symbol = matches.next()?;
+    matches.next().is_none().then_some(symbol.id)
 }
 
 fn dedup_expression_facts(facts: &mut Vec<ExpressionFactData>) {

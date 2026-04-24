@@ -551,7 +551,7 @@ pub struct MemberAliasData {
     pub range: TextRange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NamedArgumentSection {
     Exporting,
     Importing,
@@ -561,7 +561,7 @@ pub enum NamedArgumentSection {
     Exceptions,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NamedArgumentTarget {
     Constructor {
         type_name: Arc<str>,
