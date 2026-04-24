@@ -23,6 +23,7 @@ pub enum RoutineEdgeKind {
     Leave,
     Exit,
     Continue,
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

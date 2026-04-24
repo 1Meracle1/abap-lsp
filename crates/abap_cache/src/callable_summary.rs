@@ -139,6 +139,7 @@ pub(crate) fn build_project_callable_summary_analysis(
                         kind: RoutineTerminatorKind::Raise
                             | RoutineTerminatorKind::Leave
                             | RoutineTerminatorKind::LeaveListProcessing
+                            | RoutineTerminatorKind::Stop
                     }
                 )
         });

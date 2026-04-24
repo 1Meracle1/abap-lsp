@@ -97,6 +97,7 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("CONTINUE")
         || s.eq_ignore_ascii_case("EXIT")
         || s.eq_ignore_ascii_case("RETURN")
+        || s.eq_ignore_ascii_case("STOP")
         || s.eq_ignore_ascii_case("CASE")
         || s.eq_ignore_ascii_case("ENDCASE")
         || s.eq_ignore_ascii_case("TRY")

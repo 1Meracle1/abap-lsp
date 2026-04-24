@@ -2054,6 +2054,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 self.collector.file.range(node),
                 RoutineSiteKind::Continue,
             );
+        } else if head.text.eq_ignore_ascii_case("stop") {
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Stop,
+            );
         }
 
         if (head.text.eq_ignore_ascii_case("commit") || head.text.eq_ignore_ascii_case("rollback"))

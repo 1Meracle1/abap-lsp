@@ -561,6 +561,7 @@ ast_node!(
 );
 ast_node!(MessageRaisingClause, SyntaxKind::MessageRaisingClause);
 ast_node!(FindStmt, SyntaxKind::FindStmt);
+ast_node!(StopStmt, SyntaxKind::StopStmt);
 ast_node!(FindPatternOperand, SyntaxKind::FindPatternOperand);
 ast_node!(FindInOperand, SyntaxKind::FindInOperand);
 ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);

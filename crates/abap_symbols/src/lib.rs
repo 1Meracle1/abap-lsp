@@ -232,6 +232,54 @@ ENDMODULE.
     }
 
     #[test]
+    fn stop_statement_is_event_block_terminator() {
+        let src = "\
+START-OF-SELECTION.\n\
+  STOP.\n\
+  WRITE 'unreachable'.\n\
+END-OF-SELECTION.\n\
+  WRITE 'done'.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///stop_statement.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+        let start_of_selection = routine_analysis
+            .routines
+            .iter()
+            .find(|routine| routine.descriptor.name.as_ref() == "start-of-selection")
+            .expect("start-of-selection routine");
+
+        assert!(
+            start_of_selection
+                .ir
+                .instructions
+                .iter()
+                .any(|instruction| {
+                    matches!(
+                        instruction.site,
+                        RoutineInstructionSite::Terminator {
+                            kind: RoutineTerminatorKind::Stop
+                        }
+                    ) && src[instruction.range.clone()].contains("STOP")
+                }),
+            "{:#?}",
+            start_of_selection.ir.instructions
+        );
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic.kind == DiagnosticKind::UnreachableCode
+                        && src[diagnostic.range.clone()].contains("WRITE 'unreachable'")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn collects_definitions_and_references() {
         let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
         let parsed = parse(src);

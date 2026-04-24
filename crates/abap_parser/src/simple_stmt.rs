@@ -67,6 +67,7 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("describe", SyntaxKind::DescribeStmt),
     ("perform", SyntaxKind::PerformStmt),
     ("submit", SyntaxKind::SubmitStmt),
+    ("stop", SyntaxKind::StopStmt),
     ("replace", SyntaxKind::ReplaceStmt),
     ("wait", SyntaxKind::WaitStmt),
 ];
@@ -1836,6 +1837,24 @@ fn validate_unparsed_stmt(
     }
 }
 
+fn validate_stop_stmt(significant: &[&Token], errors: &mut Vec<crate::ParseError>) {
+    if significant.len() <= 2 {
+        return;
+    }
+    let start = significant
+        .get(1)
+        .map(|token| token.range.start)
+        .unwrap_or(significant[0].range.end);
+    let end = significant
+        .last()
+        .map(|token| token.range.end)
+        .unwrap_or(significant[0].range.end);
+    errors.push(crate::ParseError {
+        message: "syntax error: STOP does not allow additions".to_string(),
+        range: start..end,
+    });
+}
+
 fn build_assert_or_check_stmt_children(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -1895,6 +1914,9 @@ pub fn try_parse_simple_stmt(
             let significant = significant_stmt_tokens(tokens, idx, period_i);
             validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
             let kind = simple_stmt_kind(source, &significant);
+            if kind == SyntaxKind::StopStmt {
+                validate_stop_stmt(&significant, errors);
+            }
             let kids = match kind {
                 SyntaxKind::ClassSectionStmt => {
                     build_class_section_stmt_children(b, source, tokens, idx, period_i)
@@ -2022,6 +2044,28 @@ ENDCLASS.";
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::SubmitStmt),
             1
+        );
+    }
+
+    #[test]
+    fn classifies_stop_statement_specifically() {
+        let parsed = crate::parse("STOP.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::StopStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn rejects_stop_statement_additions() {
+        let parsed = crate::parse("STOP lv_flag.");
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|err| err.message.contains("STOP does not allow additions")),
+            "{:?}",
+            parsed.errors
         );
     }
 

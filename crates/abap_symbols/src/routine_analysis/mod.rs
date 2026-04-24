@@ -341,6 +341,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                 RoutineSiteKind::Continue => RoutineInstructionSite::Terminator {
                     kind: RoutineTerminatorKind::Continue,
                 },
+                RoutineSiteKind::Stop => RoutineInstructionSite::Terminator {
+                    kind: RoutineTerminatorKind::Stop,
+                },
             };
             if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
                 routine.ir.instructions.push(RoutineInstruction {
@@ -1325,6 +1328,10 @@ impl<'a> CfgBuilder<'a> {
                         reachable: state.reachable,
                     }
                 }
+            }
+            RoutineTerminatorKind::Stop => {
+                self.add_edge(state.block, self.exit, RoutineEdgeKind::Stop);
+                self.new_disconnected_successor(instruction.range.end)
             }
         }
     }
@@ -4930,6 +4937,7 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
             RoutineTerminatorKind::LeaveListProcessing => 3,
             RoutineTerminatorKind::Exit => 4,
             RoutineTerminatorKind::Continue => 5,
+            RoutineTerminatorKind::Stop => 6,
         },
     }
 }

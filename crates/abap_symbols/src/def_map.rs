@@ -713,6 +713,7 @@ pub enum RoutineSiteKind {
     LeaveListProcessing,
     Exit,
     Continue,
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
