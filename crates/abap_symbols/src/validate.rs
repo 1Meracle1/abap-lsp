@@ -2543,6 +2543,178 @@ fn validate_open_sql_into_targets(
     out
 }
 
+struct ReportTablesContext {
+    units: HashSet<UnitId>,
+    table_names: HashSet<Arc<str>>,
+}
+
+fn unit_is_report(unit: &crate::UnitAnalysis) -> bool {
+    unit.symbols
+        .iter()
+        .any(|symbol| symbol.scope == unit.root_scope && symbol.kind == SymbolKind::Report)
+}
+
+fn unit_is_ddic_table_like_dependency(unit: &crate::UnitAnalysis) -> bool {
+    let uri = unit.uri.as_ref().to_ascii_lowercase();
+    if uri.contains("ddic-table-type") || uri.contains("/ddic/tabletypes/") {
+        return false;
+    }
+    uri.contains("/ddic/tables/")
+        || uri.contains("/ddic/database-tables/")
+        || uri.contains("/ddic/views/")
+        || uri.contains("/dictionary/database-tables/")
+        || uri.contains("/dictionary/views/")
+        || uri.contains("/ddic-table/")
+        || uri.contains("/ddic-view/")
+        || uri.contains("\\ddic-table\\")
+        || uri.contains("\\ddic-view\\")
+        || uri.contains("object_type/tabldt/")
+        || uri.contains("object_type/viewdv/")
+        || uri.contains("kind=ddic-table")
+        || uri.contains("kind=ddic-view")
+}
+
+fn include_closure(project: &ProjectAnalysis, root: UnitId) -> HashSet<UnitId> {
+    let mut out = HashSet::new();
+    let mut queue = VecDeque::from([root]);
+    while let Some(unit_id) = queue.pop_front() {
+        if !out.insert(unit_id) {
+            continue;
+        }
+        queue.extend(
+            project.units[unit_id.as_usize()]
+                .include_edges
+                .iter()
+                .filter_map(|edge| edge.target),
+        );
+    }
+    out
+}
+
+fn build_report_tables_contexts(project: &ProjectAnalysis) -> Vec<ReportTablesContext> {
+    project
+        .units
+        .iter()
+        .filter(|unit| unit_is_report(unit))
+        .map(|unit| {
+            let units = include_closure(project, unit.unit_id);
+            let mut table_names = HashSet::new();
+            for unit_id in &units {
+                let context_unit = &project.units[unit_id.as_usize()];
+                table_names.extend(
+                    context_unit
+                        .table_work_areas
+                        .iter()
+                        .filter(|work_area| work_area.scope == context_unit.root_scope)
+                        .map(|work_area| Arc::clone(&work_area.name)),
+                );
+            }
+            ReportTablesContext { units, table_names }
+        })
+        .collect()
+}
+
+fn validate_missing_tables_declarations(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    report_contexts: &[ReportTablesContext],
+    unit: &crate::UnitAnalysis,
+) -> Vec<Diagnostic> {
+    if unit_is_ddic_table_like_dependency(unit) {
+        return Vec::new();
+    }
+
+    let contexts = report_contexts
+        .iter()
+        .filter(|context| context.units.contains(&unit.unit_id))
+        .collect::<Vec<_>>();
+    if contexts.is_empty() {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    let mut emitted = HashSet::<(Arc<str>, usize, usize)>::new();
+    for reference in unit.references.iter().filter(|reference| {
+        reference.kind == ReferenceKind::TypeRef && reference.namespace == Namespace::Type
+    }) {
+        let Some(Resolution::Symbol(handle)) = reference.resolution else {
+            continue;
+        };
+        if !unit_is_ddic_table_like_dependency(&project.units[handle.unit.as_usize()]) {
+            continue;
+        }
+        if unit
+            .table_work_areas
+            .iter()
+            .any(|work_area| work_area.name == reference.name && work_area.range == reference.range)
+        {
+            continue;
+        }
+        if contexts
+            .iter()
+            .all(|context| context.table_names.contains(&reference.name))
+        {
+            continue;
+        }
+        if !emitted.insert((
+            Arc::clone(&reference.name),
+            reference.range.start,
+            reference.range.end,
+        )) {
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::MissingTablesDeclaration,
+            range: reference.range.clone(),
+            message: format!(
+                "DDIC table/view '{}' is used as a report type without a top-level TABLES {} declaration in the report or its includes",
+                reference.name, reference.name
+            ),
+        });
+    }
+    for access in unit.field_accesses.iter().filter(|access| {
+        access.in_type_position
+            && access.base_namespace == Namespace::Value
+            && !access.field_path.is_empty()
+    }) {
+        let Some(handle) = root_symbol_handle_matching(
+            project,
+            lookup,
+            unit,
+            Namespace::Type,
+            &access.base_name,
+            |_| true,
+        ) else {
+            continue;
+        };
+        if !unit_is_ddic_table_like_dependency(&project.units[handle.unit.as_usize()]) {
+            continue;
+        }
+        if contexts
+            .iter()
+            .all(|context| context.table_names.contains(&access.base_name))
+        {
+            continue;
+        }
+        if !emitted.insert((
+            Arc::clone(&access.base_name),
+            access.base_range.start,
+            access.base_range.end,
+        )) {
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::MissingTablesDeclaration,
+            range: access.base_range.clone(),
+            message: format!(
+                "DDIC table/view '{}' is used as a report type without a top-level TABLES {} declaration in the report or its includes",
+                access.base_name, access.base_name
+            ),
+        });
+    }
+    diagnostics
+}
+
 #[allow(dead_code)]
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let scope_indexes: Vec<_> = project.units.iter().map(build_scope_index).collect();
@@ -2564,6 +2736,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
 ) {
     let lookup = build_validation_lookup(project, scope_indexes);
     let global_names = collect_global_names(project);
+    let report_tables_contexts = build_report_tables_contexts(project);
     let form_signatures: HashMap<(u32, u32), Vec<FormParameterData>> = project
         .units
         .iter()
@@ -3524,6 +3697,12 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             &lookup,
             unit,
             scope_indexes,
+        ));
+        unit_diagnostics.extend(validate_missing_tables_declarations(
+            project,
+            &lookup,
+            &report_tables_contexts,
+            unit,
         ));
         unit_diagnostics.extend(abstract_instantiation_diagnostics);
         unit_diagnostics.extend(validate_missing_method_implementations(unit));

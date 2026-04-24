@@ -290,6 +290,7 @@ pub enum DiagnosticKind {
     UnverifiedOpenSqlSource,
     /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
     InvalidOpenSqlIntoTarget,
+    MissingTablesDeclaration,
     UnreachableCode,
     UseBeforeDefiniteAssignment,
     PossiblyUnboundFieldSymbol,
@@ -308,6 +309,13 @@ pub struct IncludeEdge {
     pub name: Arc<str>,
     pub range: TextRange,
     pub target: Option<UnitId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableWorkAreaData {
+    pub name: Arc<str>,
+    pub scope: ScopeId,
+    pub range: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -897,6 +905,7 @@ pub struct UnitAnalysis {
     pub references: Vec<ReferenceData>,
     pub diagnostics: Vec<Diagnostic>,
     pub include_edges: Vec<IncludeEdge>,
+    pub table_work_areas: Vec<TableWorkAreaData>,
     pub field_accesses: Vec<FieldAccess>,
     pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     pub loop_at_field_contexts: Vec<LoopAtFieldContext>,

@@ -492,8 +492,22 @@ fn is_dependency_document_uri(uri: &str) -> bool {
 }
 
 fn dependency_document_uri(workspace_uri: &str, artifact_id: i64, object_name: &str) -> String {
+    dependency_document_uri_with_kind(workspace_uri, artifact_id, object_name, None)
+}
+
+fn dependency_document_uri_with_kind(
+    workspace_uri: &str,
+    artifact_id: i64,
+    object_name: &str,
+    object_kind: Option<&str>,
+) -> String {
+    let kind = object_kind
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+        .map(|kind| format!("&kind={}", encode_uri_component(kind)))
+        .unwrap_or_default();
     format!(
-        "{DEPENDENCY_DOCUMENT_SCHEME}:///{name}.abap?workspace={workspace}&artifact={artifact_id}",
+        "{DEPENDENCY_DOCUMENT_SCHEME}:///{name}.abap?workspace={workspace}&artifact={artifact_id}{kind}",
         name = encode_uri_component(object_name),
         workspace = encode_uri_component(&normalize_lsp_uri(workspace_uri)),
     )
@@ -608,17 +622,18 @@ fn dependency_artifact_for_uri(
     store.read_artifact_source(artifact_id).ok().flatten()
 }
 
-fn dependency_document_input_from_record(
+fn dependency_document_input_from_record_with_kind(
     workspace_uri: &str,
     version: i32,
     record: &StoredArtifactRecord,
     is_dependency: bool,
 ) -> DocumentInput {
     DocumentInput {
-        uri: Arc::from(dependency_document_uri(
+        uri: Arc::from(dependency_document_uri_with_kind(
             workspace_uri,
             record.artifact_id,
             record.object_name.as_str(),
+            Some(record.object_kind.as_str()),
         )),
         version,
         text: Arc::from(record.source_text.as_str()),
@@ -627,16 +642,17 @@ fn dependency_document_input_from_record(
     }
 }
 
-fn dependency_document_input_from_payload(
+fn dependency_document_input_from_payload_with_kind(
     workspace_uri: &str,
     artifact_id: i64,
     record: &StoredArtifactInput,
 ) -> DocumentInput {
     DocumentInput {
-        uri: Arc::from(dependency_document_uri(
+        uri: Arc::from(dependency_document_uri_with_kind(
             workspace_uri,
             artifact_id,
             record.object_name.as_str(),
+            Some(record.object_kind.as_str()),
         )),
         version: 0,
         text: Arc::from(record.source_text.as_str()),
@@ -654,16 +670,26 @@ fn workspace_dependency_document_input(
         record.artifact_id,
         record.object_name.as_str(),
     );
-    if let Some(overlay) = workspace.open_documents.get(&uri) {
+    let uri_with_kind = dependency_document_uri_with_kind(
+        &workspace.root_uri,
+        record.artifact_id,
+        record.object_name.as_str(),
+        Some(record.object_kind.as_str()),
+    );
+    if let Some(overlay) = workspace
+        .open_documents
+        .get(&uri_with_kind)
+        .or_else(|| workspace.open_documents.get(&uri))
+    {
         return DocumentInput {
-            uri: Arc::from(uri),
+            uri: Arc::from(uri_with_kind),
             version: overlay.version,
             text: Arc::clone(&overlay.text),
             is_dependency: false,
             object_name: Some(Arc::from(record.object_name.as_str())),
         };
     }
-    dependency_document_input_from_record(&workspace.root_uri, 0, record, true)
+    dependency_document_input_from_record_with_kind(&workspace.root_uri, 0, record, true)
 }
 
 fn dependency_workspace_for_uri<'a>(
@@ -2296,7 +2322,11 @@ pub fn store_remote_dependency_artifacts(
             .into_iter()
             .zip(artifacts.iter())
             .map(|(artifact_id, artifact)| {
-                dependency_document_input_from_payload(&workspace.root_uri, artifact_id, artifact)
+                dependency_document_input_from_payload_with_kind(
+                    &workspace.root_uri,
+                    artifact_id,
+                    artifact,
+                )
             })
             .collect::<Vec<_>>();
         workspace
@@ -3277,7 +3307,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::UnknownNamedParameter
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
-        | DiagnosticKind::InvalidOpenSqlIntoTarget => DiagnosticSeverity::ERROR,
+        | DiagnosticKind::InvalidOpenSqlIntoTarget
+        | DiagnosticKind::MissingTablesDeclaration => DiagnosticSeverity::ERROR,
     }
 }
 
@@ -3655,10 +3686,11 @@ fn definition_from_dependency_store(
         .lookup_symbol(&profile, candidate.name.as_str(), candidate.kind.as_str())
         .ok()
         .flatten()?;
-    let target_uri = dependency_document_uri(
+    let target_uri = dependency_document_uri_with_kind(
         &workspace.root_uri,
         lookup.artifact_id,
         lookup.object_name.as_str(),
+        Some(lookup.object_kind.as_str()),
     );
     let target_snapshot = match snapshot_for_uri(state, &target_uri) {
         Some(snapshot) => snapshot,
@@ -3726,10 +3758,11 @@ fn dependency_method_target_at_offset(
             .lookup_symbol(&profile, base_name.as_ref(), "type")
             .ok()
             .flatten()?;
-        let target_uri = dependency_document_uri(
+        let target_uri = dependency_document_uri_with_kind(
             &workspace.root_uri,
             owner_lookup.artifact_id,
             owner_lookup.object_name.as_str(),
+            Some(owner_lookup.object_kind.as_str()),
         );
         let target_snapshot = match snapshot_for_uri(state, &target_uri) {
             Some(snapshot) => snapshot,

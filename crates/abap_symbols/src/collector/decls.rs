@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::def_map::{
     AssignmentSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData,
-    IncludeEdge, ReferenceKind, SymbolKind, TypeFactData,
+    IncludeEdge, ReferenceKind, SymbolKind, TableWorkAreaData, TypeFactData,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
@@ -379,6 +379,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         kind: SymbolKind,
     ) {
         let decl_scope = self.ctx.declaration_scope(scope);
+        if self.ctx.file().kind(node) == SyntaxKind::TablesDecl {
+            self.declare_tables_decl_symbols(node, scope, decl_scope, kind);
+            return;
+        }
         if let Some(data_decl) = DataDecl::cast(self.ctx.syntax(node)) {
             let clauses = data_decl
                 .clauses()
@@ -437,6 +441,64 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             } else {
                 self.ctx.walk_node(child_id, scope);
             }
+        }
+    }
+
+    fn declare_tables_decl_symbols(
+        &mut self,
+        node: abap_ast::arena::NodeId,
+        scope: ScopeId,
+        decl_scope: ScopeId,
+        kind: SymbolKind,
+    ) {
+        let Some(decl) = DataLikeDecl::cast(self.ctx.syntax(node)) else {
+            self.ctx.walk_children(node, scope);
+            return;
+        };
+
+        let clauses = decl
+            .clauses()
+            .map(|clause| {
+                let child_id = clause.syntax().id();
+                let name = clause.name().and_then(|name_node| {
+                    Some((name_node.name(self.ctx.source())?, name_node.range()))
+                });
+                (child_id, name)
+            })
+            .collect::<Vec<_>>();
+
+        for (child_id, name) in clauses {
+            if let Some((name, range)) = name {
+                let declared_type = FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: false,
+                    base_name: Arc::clone(&name),
+                    field_path: Vec::new(),
+                };
+                self.ctx.add_reference(
+                    scope,
+                    Arc::clone(&name),
+                    Namespace::Type,
+                    ReferenceKind::TypeRef,
+                    range.clone(),
+                );
+                self.ctx.declare_symbol(
+                    decl_scope,
+                    Arc::clone(&name),
+                    kind,
+                    range.clone(),
+                    None,
+                    Some(declared_type),
+                    Some(Arc::clone(&name)),
+                    None,
+                );
+                self.ctx.emit_table_work_area(TableWorkAreaData {
+                    name,
+                    scope: decl_scope,
+                    range,
+                });
+            }
+            self.ctx.walk_children(child_id, scope);
         }
     }
 

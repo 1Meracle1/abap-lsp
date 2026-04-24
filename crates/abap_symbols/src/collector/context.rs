@@ -6,7 +6,7 @@ use crate::def_map::{
     AssignmentSiteData, CallSiteData, FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SqlNameRefData,
     SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
-    StructureFieldData, SymbolKind, ValueStateCheckData,
+    StructureFieldData, SymbolKind, TableWorkAreaData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::Namespace;
@@ -480,6 +480,10 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
 
     pub(super) fn include_edges_mut(&mut self) -> &mut Vec<IncludeEdge> {
         &mut self.collector.include_edges
+    }
+
+    pub(super) fn emit_table_work_area(&mut self, work_area: TableWorkAreaData) {
+        self.collector.table_work_areas.push(work_area);
     }
 
     pub(super) fn add_reference(

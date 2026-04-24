@@ -593,6 +593,7 @@ fn run() -> Result<i32, String> {
                             | DiagnosticKind::WrongNamespace
                             | DiagnosticKind::UnverifiedOpenSqlSource
                             | DiagnosticKind::InvalidOpenSqlIntoTarget
+                            | DiagnosticKind::MissingTablesDeclaration
                     )
                 })
                 .map(|diag| {

@@ -31,8 +31,8 @@ use crate::def_map::{
     LoopAtFieldContext, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess,
     PerformCallData, ReferenceData, RoutineControlRegionData, RoutineSiteData, SqlNameRefData,
     SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData,
-    StructureFieldData, SymbolData, SystemFieldUpdateData, UnitAnalysis, ValueFlowEdgeData,
-    ValueStateCheckData,
+    StructureFieldData, SymbolData, SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis,
+    ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -121,6 +121,7 @@ pub struct Collector<'a> {
     references: Vec<ReferenceData>,
     diagnostics: Vec<Diagnostic>,
     include_edges: Vec<IncludeEdge>,
+    table_work_areas: Vec<TableWorkAreaData>,
     field_accesses: Vec<FieldAccess>,
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     loop_at_field_contexts: Vec<LoopAtFieldContext>,
@@ -180,6 +181,7 @@ impl<'a> Collector<'a> {
             references: Vec::new(),
             diagnostics: Vec::new(),
             include_edges: Vec::new(),
+            table_work_areas: Vec::new(),
             field_accesses: Vec::new(),
             loop_where_field_contexts: Vec::new(),
             loop_at_field_contexts: Vec::new(),
@@ -251,6 +253,7 @@ impl<'a> Collector<'a> {
             references: self.references,
             diagnostics: self.diagnostics,
             include_edges: self.include_edges,
+            table_work_areas: self.table_work_areas,
             field_accesses: self.field_accesses,
             loop_where_field_contexts: self.loop_where_field_contexts,
             loop_at_field_contexts: self.loop_at_field_contexts,

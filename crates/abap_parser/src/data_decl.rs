@@ -186,6 +186,56 @@ pub fn try_parse_parameters_decl(
     }
 }
 
+pub fn try_parse_tables_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    _errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let kw_tok = tokens.get(idx)?;
+    if !is_keyword(source, kw_tok, "tables") {
+        return None;
+    }
+
+    let mut i = idx + 1;
+    let has_colon = match tokens.get(i).map(|t| t.kind) {
+        Some(TokenKind::Colon) => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+
+    let mut clause_nodes = Vec::new();
+    loop {
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            i += 1;
+        }
+        let (clause, next_i) = parse_tables_clause(b, source, tokens, i)?;
+        clause_nodes.push(clause);
+        i = next_i;
+
+        let next = tokens.get(i)?;
+        match next.kind {
+            TokenKind::Comma if has_colon => i += 1,
+            TokenKind::Period => {
+                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
+                children.push(token_leaf(b, kw_tok));
+                children.extend(clause_nodes);
+                children.push(token_leaf(b, next));
+                let node = b.branch(
+                    SyntaxKind::TablesDecl,
+                    kw_tok.range.start..next.range.end,
+                    &children,
+                );
+                return Some((node, i + 1));
+            }
+            _ => return None,
+        }
+    }
+}
+
 pub fn try_parse_select_options_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -427,6 +477,19 @@ fn parse_data_decl_name(
     let start = first.range.start;
     let end = b.span(*children.last().unwrap()).end;
     Some((b.branch(SyntaxKind::DataDeclName, start..end, &children), i))
+}
+
+fn parse_tables_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let (name, i) = parse_data_decl_name(b, source, tokens, idx)?;
+    let children = vec![name];
+
+    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
+    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
 }
 
 fn parse_optional_length_spec(
@@ -1544,6 +1607,21 @@ mod tests {
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
+    }
+
+    #[test]
+    fn tables_decl_parses_chained_work_areas() {
+        let file = tree_ok("TABLES: tbtco, v_op.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TablesDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataDeclName), 2);
+    }
+
+    #[test]
+    fn tables_decl_parses_single_work_area() {
+        let file = tree_ok("TABLES tbtco.");
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TablesDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
     }
 
     #[test]

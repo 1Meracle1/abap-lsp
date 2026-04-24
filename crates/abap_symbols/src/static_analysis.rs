@@ -264,7 +264,8 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::UnverifiedOpenSqlSource
-        | DiagnosticKind::InvalidOpenSqlIntoTarget => return None,
+        | DiagnosticKind::InvalidOpenSqlIntoTarget
+        | DiagnosticKind::MissingTablesDeclaration => return None,
     };
     Some(StaticAnalysisFinding {
         kind,

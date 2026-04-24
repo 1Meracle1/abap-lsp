@@ -21,6 +21,7 @@ fn ports_legacy_data_and_statics_shapes() {
         SyntaxKind::StaticsDecl,
         1,
     );
+    assert_kind_count("TABLES: tbtco, v_op.", SyntaxKind::TablesDecl, 1);
 }
 
 #[test]

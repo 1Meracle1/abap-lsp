@@ -26,6 +26,7 @@ impl<'a> Collector<'a> {
                 }
             }
             SyntaxKind::DataDecl
+            | SyntaxKind::TablesDecl
             | SyntaxKind::ParametersDecl
             | SyntaxKind::SelectOptionsDecl
             | SyntaxKind::StaticsDecl => {

@@ -1,6 +1,6 @@
 use abap_parser::parse;
 
-use abap_symbols::{ScopeKind, SymbolKind, analyze_unit};
+use abap_symbols::{Namespace, ReferenceKind, Resolution, ScopeKind, SymbolKind, analyze_unit};
 
 #[test]
 fn collects_top_level_and_nested_definitions() {
@@ -63,4 +63,47 @@ FIELD-SYMBOLS <fs_row> TYPE any.
             .iter()
             .any(|scope| scope.kind == ScopeKind::Method)
     );
+}
+
+#[test]
+fn collects_tables_work_area_declarations() {
+    let src = r#"
+TABLES: tbtco, v_op.
+tbtco-jobname = v_op-name.
+"#;
+
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///tables.abap", src, &parsed);
+
+    for name in ["tbtco", "v_op"] {
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("missing TABLES work area symbol {name}"));
+        let declared_type = symbol
+            .declared_type
+            .as_ref()
+            .unwrap_or_else(|| panic!("missing synthesized type for {name}"));
+        assert_eq!(declared_type.namespace, Namespace::Type);
+        assert_eq!(declared_type.base_name.as_ref(), name);
+        assert_eq!(symbol.type_clause_display.as_deref(), Some(name));
+        assert!(
+            unit.table_work_areas
+                .iter()
+                .any(|work_area| work_area.name.as_ref() == name)
+        );
+
+        assert!(unit.references.iter().any(|reference| {
+            reference.name.as_ref() == name
+                && reference.namespace == Namespace::Type
+                && reference.kind == ReferenceKind::TypeRef
+        }));
+        assert!(unit.references.iter().any(|reference| {
+            reference.name.as_ref() == name
+                && reference.namespace == Namespace::Value
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }));
+    }
 }

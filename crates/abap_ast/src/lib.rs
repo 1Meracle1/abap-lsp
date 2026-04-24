@@ -147,6 +147,8 @@ pub enum SyntaxKind {
     InterfacesStmt,
     /// `REPORT ... .`
     ReportStmt,
+    /// `TABLES ... .`
+    TablesDecl,
     /// `PARAMETERS ... .`
     ParametersDecl,
     /// `SELECT-OPTIONS ... .`
@@ -584,6 +586,7 @@ impl SyntaxKind {
             Self::MethodsStmt => "MethodsStmt",
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
+            Self::TablesDecl => "TablesDecl",
             Self::ParametersDecl => "ParametersDecl",
             Self::SelectOptionsDecl => "SelectOptionsDecl",
             Self::SelectionScreenStmt => "SelectionScreenStmt",

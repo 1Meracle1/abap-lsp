@@ -56,6 +56,7 @@ impl GuardedParser {
 
 const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
     GuardedParser::new(&["data"], data_decl::try_parse_data_decl),
+    GuardedParser::new(&["tables"], data_decl::try_parse_tables_decl),
     GuardedParser::new(&["parameters"], data_decl::try_parse_parameters_decl),
     GuardedParser::new(&["select"], data_decl::try_parse_select_options_decl),
     GuardedParser::new(&["class"], data_decl::try_parse_class_data_decl),
