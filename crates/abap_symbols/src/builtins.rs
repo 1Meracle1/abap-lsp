@@ -806,6 +806,39 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
         supports_named_arguments: true,
     },
     BuiltinRoutineSpec {
+        name: "replace",
+        params: &[
+            BuiltinRoutineParamSpec {
+                name: "val",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "sub",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "regex",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "with",
+                type_name: "string",
+            },
+            BuiltinRoutineParamSpec {
+                name: "occ",
+                type_name: "i",
+            },
+            BuiltinRoutineParamSpec {
+                name: "case",
+                type_name: "abap_bool",
+            },
+        ],
+        hover_params: &["val", "sub", "regex", "with", "occ", "case"],
+        return_type: "string",
+        description: "Returns a character string where occurrences of `sub` or `regex` in `val` are replaced by `with`; `occ` selects one occurrence or all occurrences and `case` controls case-sensitive matching.",
+        supports_named_arguments: true,
+    },
+    BuiltinRoutineSpec {
         name: "round",
         params: &[
             BuiltinRoutineParamSpec {

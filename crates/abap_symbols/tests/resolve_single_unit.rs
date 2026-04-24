@@ -12202,6 +12202,52 @@ ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
 }
 
 #[test]
+fn resolves_replace_builtin_with_named_arguments_before_external_fallback() {
+    let src = "\
+DATA iv_jobname TYPE string.\n\
+DATA lv_jobname TYPE string.\n\
+lv_jobname = replace( val = iv_jobname sub = '*' with = '%' occ = 0 ).\n\
+";
+    let parsed = parse(src);
+    let type_src = "TYPES replace TYPE string.";
+    let type_parsed = parse(type_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///builtin_replace.abap",
+            source: src,
+            parse: &parsed,
+        },
+        ProjectInput {
+            uri: "file:///type_replace.abap",
+            source: type_src,
+            parse: &type_parsed,
+        },
+    ]);
+    let unit = &project.units[0];
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::RoutineCall
+                && reference.namespace == Namespace::Routine
+                && reference.name.as_ref() == "replace"
+                && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+        }),
+        "{:#?}",
+        unit.references
+    );
+    assert!(!unit.references.iter().any(|reference| {
+        reference.name.as_ref() == "replace"
+            && matches!(reference.resolution, Some(Resolution::External))
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains("replace")
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("replace")
+    }));
+}
+
+#[test]
 fn resolves_round_builtin_with_named_arguments() {
     let src = "\
 DATA lv_value TYPE decfloat34 VALUE '1.25'.\n\
