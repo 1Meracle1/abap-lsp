@@ -5160,6 +5160,9 @@ fn value_is_definitely_assigned_on_entry(
             if value_has_explicit_declaration_initializer(unit, value) {
                 return true;
             }
+            if value_is_constructor_expression_binding(unit, value) {
+                return true;
+            }
             unit.symbols
                 .get(value.symbol.symbol.as_usize())
                 .is_some_and(|symbol| {
@@ -5170,6 +5173,27 @@ fn value_is_definitely_assigned_on_entry(
         }
         DataflowValueKind::FieldSymbol | DataflowValueKind::Other => false,
     }
+}
+
+fn value_is_constructor_expression_binding(
+    unit: &UnitAnalysis,
+    value: &RoutineDataflowValue,
+) -> bool {
+    let Some(symbol) = unit.symbols.get(value.symbol.symbol.as_usize()) else {
+        return false;
+    };
+    let Some(scope) = unit.scopes.get(symbol.scope.as_usize()) else {
+        return false;
+    };
+    // Constructor/LET/REDUCE binders use LoopBlock scopes but have no statement loop header
+    // transfer; the expression itself initializes them before body reads execute.
+    scope.kind == ScopeKind::LoopBlock
+        && !unit.routine_control_regions.iter().any(|region| {
+            matches!(
+                region,
+                RoutineControlRegionData::Loop(data) if data.body_scope == scope.id
+            )
+        })
 }
 
 fn value_has_explicit_declaration_initializer(

@@ -437,6 +437,56 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn value_for_in_iterator_is_definitely_assigned() {
+        let src = r#"
+FORM process_reload.
+  TYPES: BEGIN OF ty_job,
+           job_status TYPE c LENGTH 1,
+           jobname TYPE string,
+         END OF ty_job.
+  TYPES tt_jobs TYPE STANDARD TABLE OF ty_job WITH EMPTY KEY.
+  TYPES: BEGIN OF ty_range,
+           sign TYPE c LENGTH 1,
+           option TYPE c LENGTH 2,
+           low TYPE string,
+           high TYPE string,
+         END OF ty_range.
+  TYPES tt_range TYPE STANDARD TABLE OF ty_range WITH EMPTY KEY.
+  CONSTANTS lc_status_a TYPE c LENGTH 1 VALUE 'A'.
+  CONSTANTS lc_sign_i TYPE c LENGTH 1 VALUE 'I'.
+  CONSTANTS lc_opt_eq TYPE c LENGTH 2 VALUE 'EQ'.
+  DATA lt_rel_data TYPE tt_jobs.
+  DATA lr_jobname TYPE tt_range.
+
+  lr_jobname = VALUE #(
+    FOR ls_jobs IN lt_rel_data
+    WHERE ( job_status = lc_status_a )
+    ( sign = lc_sign_i
+      option = lc_opt_eq
+      low = ls_jobs-jobname
+      high = '' ) ).
+ENDFORM.
+"#;
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///value_for_iterator_assignment.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !diagnostic.message.contains("ls_jobs")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn unknown_importing_inline_call_argument_is_definitely_assigned() {
         let src = "\
 CLASS lcl_demo DEFINITION.\n\
