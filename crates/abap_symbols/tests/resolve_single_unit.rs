@@ -1865,6 +1865,54 @@ ls_bj2_max-param_value = ls_bj2_max-param_value.
 }
 
 #[test]
+fn resolves_chained_read_table_source_and_targets() {
+    let src = r#"
+TYPES: BEGIN OF ty_trn,
+  docnum TYPE string,
+  trnid TYPE string,
+END OF ty_trn.
+TYPES ty_trn_tab TYPE STANDARD TABLE OF ty_trn WITH DEFAULT KEY.
+DATA lt_aux_dm_trn TYPE ty_trn_tab.
+DATA lt_aux_dm_trn_evt TYPE ty_trn_tab.
+DATA ls_aux_dm_trn TYPE ty_trn.
+DATA ls_aux_dm_trn_evt TYPE ty_trn.
+DATA ls_zatt_ship_pending TYPE ty_trn.
+
+READ TABLE: lt_aux_dm_trn     INTO ls_aux_dm_trn     WITH KEY docnum = ls_zatt_ship_pending-docnum,
+            lt_aux_dm_trn_evt INTO ls_aux_dm_trn_evt WITH KEY trnid  = ls_aux_dm_trn-trnid.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///read_table_stmt_chain.abap", src, &parsed);
+
+    for name in [
+        "lt_aux_dm_trn",
+        "lt_aux_dm_trn_evt",
+        "ls_aux_dm_trn",
+        "ls_aux_dm_trn_evt",
+        "ls_zatt_ship_pending",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved chained READ TABLE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected chained READ TABLE diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_authority_check_operands_without_keyword_false_positives() {
     let src = r#"
 CONSTANTS lc_auth_obj TYPE string VALUE 'S_CARRID'.
@@ -5458,6 +5506,44 @@ ENDFORM.
         !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
                 && diag.message.contains("ls_file")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn chained_read_table_second_into_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+FORM pick_pending_events.
+  TYPES: BEGIN OF ty_trn,
+    docnum TYPE string,
+    trnid TYPE string,
+  END OF ty_trn.
+  TYPES ty_trn_tab TYPE STANDARD TABLE OF ty_trn WITH EMPTY KEY.
+  DATA lt_aux_dm_trn TYPE ty_trn_tab.
+  DATA lt_aux_dm_trn_evt TYPE ty_trn_tab.
+  DATA ls_aux_dm_trn TYPE ty_trn.
+  DATA ls_aux_dm_trn_evt TYPE ty_trn.
+  DATA ls_zatt_ship_pending TYPE ty_trn.
+  DATA lv_trnid TYPE string.
+
+  READ TABLE: lt_aux_dm_trn     INTO ls_aux_dm_trn     WITH KEY docnum = ls_zatt_ship_pending-docnum,
+              lt_aux_dm_trn_evt INTO ls_aux_dm_trn_evt WITH KEY trnid  = ls_aux_dm_trn-trnid.
+  lv_trnid = ls_aux_dm_trn_evt-trnid.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///read_table_chain_into_assignment.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("ls_aux_dm_trn_evt")
         }),
         "{:?}",
         unit.diagnostics

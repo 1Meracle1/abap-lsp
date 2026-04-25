@@ -406,6 +406,161 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn significant_infos_from_children(&self, children: &[NodeId]) -> Vec<SyntaxTokenInfo> {
+        let mut tokens = Vec::new();
+        for &child in children {
+            for token in self.collector.syntax_token_nodes(child) {
+                if !self.collector.syntax_token_is_comment(&token) {
+                    tokens.push(token);
+                }
+            }
+        }
+        tokens
+    }
+
+    fn collect_read_table_entry(&mut self, entry_children: &[NodeId], scope: ScopeId) {
+        let data_inline_targets: Vec<_> = entry_children
+            .iter()
+            .copied()
+            .filter(|&child| self.collector.file.kind(child) == SyntaxKind::DataInlineDecl)
+            .collect();
+        let field_symbol_targets: Vec<_> = entry_children
+            .iter()
+            .copied()
+            .filter(|&child| self.collector.file.kind(child) == SyntaxKind::FieldSymbolInlineDecl)
+            .collect();
+        let mut source_expr = None;
+        let mut target_kind = None;
+        let mut named_into_target = None;
+        let mut named_field_symbol_target = None;
+
+        for &child in entry_children {
+            match self.collector.file.kind(child) {
+                SyntaxKind::Token => {
+                    if let Some(token) = self.collector.syntax_token_nodes(child).into_iter().next()
+                    {
+                        if token.text.eq_ignore_ascii_case("into") {
+                            target_kind = Some("into");
+                        } else if token.text.eq_ignore_ascii_case("assigning") {
+                            target_kind = Some("assigning");
+                        }
+                    }
+                }
+                SyntaxKind::DataInlineDecl | SyntaxKind::FieldSymbolInlineDecl => {}
+                _ => {
+                    if source_expr.is_none() {
+                        source_expr = Some(child);
+                    } else if target_kind == Some("into")
+                        && named_into_target.is_none()
+                        && self
+                            .collector
+                            .value_access_from_node(child, scope)
+                            .is_some()
+                    {
+                        named_into_target = Some(child);
+                    } else if target_kind == Some("assigning")
+                        && named_field_symbol_target.is_none()
+                        && let Some(target) = self.direct_field_symbol_target(child, scope)
+                    {
+                        named_field_symbol_target = Some(target);
+                    }
+                    self.collector.walk_node(child, scope);
+                }
+            }
+        }
+
+        let inferred_metadata = source_expr
+            .map(|expr| {
+                self.collector
+                    .control_lowering()
+                    .loop_source_line_metadata_from_node(expr, scope)
+            })
+            .unwrap_or((None, None));
+
+        if target_kind == Some("into") {
+            let decl_scope = self.collector.declaration_scope(scope);
+            for &node in &data_inline_targets {
+                if let Some(name_node) = self
+                    .collector
+                    .file
+                    .children(node)
+                    .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                    && let Some((name, range)) = self.collector.node_name(name_node)
+                {
+                    self.collector.declare_symbol(
+                        decl_scope,
+                        name,
+                        SymbolKind::Variable,
+                        range,
+                        inferred_metadata.0,
+                        inferred_metadata.1.clone(),
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+
+        if let Some(source_expr) = source_expr {
+            self.collector.add_routine_site(RoutineSiteData {
+                scope,
+                range: self.collector.file.range(source_expr),
+                kind: RoutineSiteKind::ReadTable,
+                target_range: named_into_target.map(|target| self.collector.file.range(target)),
+            });
+            if let Some(source_access) = self.collector.value_access_from_node(source_expr, scope) {
+                let significant = self.significant_infos_from_children(entry_children);
+                self.collect_read_table_with_key_field_accesses(
+                    &significant,
+                    scope,
+                    &source_access,
+                );
+            }
+        }
+
+        if target_kind == Some("assigning") {
+            for target in field_symbol_targets {
+                let target_name = self
+                    .collector
+                    .file
+                    .children(target)
+                    .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                    .and_then(|child| self.collector.node_name(child));
+                self.collector
+                    .decl_lowering()
+                    .declare_inline_field_symbol_decl(
+                        target,
+                        scope,
+                        inferred_metadata.0,
+                        inferred_metadata.1.clone(),
+                        None,
+                    );
+                if let Some((target_name, target_range)) = target_name {
+                    self.emit_field_symbol_binding_edge(
+                        scope,
+                        ValueFlowKind::ConditionalFieldSymbolAssignment,
+                        source_expr,
+                        inferred_metadata.0,
+                        inferred_metadata.1.clone(),
+                        target_name,
+                        target_range,
+                    );
+                }
+            }
+            if let Some((target_name, target_range)) = named_field_symbol_target {
+                self.emit_field_symbol_binding_edge(
+                    scope,
+                    ValueFlowKind::ConditionalFieldSymbolAssignment,
+                    source_expr,
+                    inferred_metadata.0,
+                    inferred_metadata.1.clone(),
+                    target_name,
+                    target_range,
+                );
+            }
+        }
+    }
+
     fn collect_set_pf_status_stmt_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
@@ -1590,145 +1745,27 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             SystemFieldStatementKind::ReadTable,
             &["subrc", "tabix", "tfill", "tleng"],
         );
-        if let Some(stmt) = ReadTableStmt::cast(self.collector.syntax(node)) {
-            let data_inline_targets: Vec<_> = stmt
-                .data_inline_targets()
-                .map(|target| target.id())
-                .collect();
-            let field_symbol_targets: Vec<_> = stmt
-                .field_symbol_inline_targets()
-                .map(|target| target.id())
-                .collect();
-            let mut source_expr = None;
-            let mut target_kind = None;
-            let mut named_into_target = None;
-            let mut named_field_symbol_target = None;
-            for child in self.collector.file.children(node) {
-                match self.collector.file.kind(child) {
-                    SyntaxKind::Token => {
-                        if let Some(token) =
-                            self.collector.syntax_token_nodes(child).into_iter().next()
-                        {
-                            if token.text.eq_ignore_ascii_case("into") {
-                                target_kind = Some("into");
-                            } else if token.text.eq_ignore_ascii_case("assigning") {
-                                target_kind = Some("assigning");
-                            }
-                        }
-                    }
-                    SyntaxKind::DataInlineDecl | SyntaxKind::FieldSymbolInlineDecl => {}
-                    _ => {
-                        if source_expr.is_none() {
-                            source_expr = Some(child);
-                        } else if target_kind == Some("into")
-                            && named_into_target.is_none()
-                            && self
-                                .collector
-                                .value_access_from_node(child, scope)
-                                .is_some()
-                        {
-                            named_into_target = Some(child);
-                        } else if target_kind == Some("assigning")
-                            && named_field_symbol_target.is_none()
-                            && let Some(target) = self.direct_field_symbol_target(child, scope)
-                        {
-                            named_field_symbol_target = Some(target);
-                        }
-                        self.collector.walk_node(child, scope);
-                    }
-                }
-            }
-
-            let inferred_metadata = source_expr
-                .map(|expr| {
-                    self.collector
-                        .control_lowering()
-                        .loop_source_line_metadata_from_node(expr, scope)
-                })
-                .unwrap_or((None, None));
-
-            if target_kind == Some("into") {
-                let decl_scope = self.collector.declaration_scope(scope);
-                for &node in &data_inline_targets {
-                    if let Some(name_node) =
-                        self.collector.file.children(node).find(|&child| {
-                            self.collector.file.kind(child) == SyntaxKind::DataDeclName
-                        })
-                        && let Some((name, range)) = self.collector.node_name(name_node)
+        if ReadTableStmt::cast(self.collector.syntax(node)).is_some() {
+            let children: Vec<_> = self.collector.file.children(node).collect();
+            let mut entry_start = 0usize;
+            while entry_start < children.len() {
+                let mut entry_end = entry_start;
+                while entry_end < children.len() {
+                    let child = children[entry_end];
+                    if self.collector.file.kind(child) == SyntaxKind::Token
+                        && self
+                            .collector
+                            .syntax_token_nodes(child)
+                            .into_iter()
+                            .next()
+                            .is_some_and(|token| token.text.as_ref() == ",")
                     {
-                        self.collector.declare_symbol(
-                            decl_scope,
-                            name,
-                            SymbolKind::Variable,
-                            range,
-                            inferred_metadata.0,
-                            inferred_metadata.1.clone(),
-                            None,
-                            None,
-                        );
+                        break;
                     }
+                    entry_end += 1;
                 }
-            }
-
-            if let Some(source_expr) = source_expr {
-                self.collector.add_routine_site(RoutineSiteData {
-                    scope,
-                    range: self.collector.file.range(source_expr),
-                    kind: RoutineSiteKind::ReadTable,
-                    target_range: named_into_target.map(|target| self.collector.file.range(target)),
-                });
-                if let Some(source_access) =
-                    self.collector.value_access_from_node(source_expr, scope)
-                {
-                    let significant = self.collector.significant_stmt_token_infos(node);
-                    self.collect_read_table_with_key_field_accesses(
-                        &significant,
-                        scope,
-                        &source_access,
-                    );
-                }
-            }
-
-            if target_kind == Some("assigning") {
-                for target in field_symbol_targets {
-                    let target_name = self
-                        .collector
-                        .file
-                        .children(target)
-                        .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
-                        .and_then(|child| self.collector.node_name(child));
-                    self.collector
-                        .decl_lowering()
-                        .declare_inline_field_symbol_decl(
-                            target,
-                            scope,
-                            inferred_metadata.0,
-                            inferred_metadata.1.clone(),
-                            None,
-                        );
-                    if let Some((target_name, target_range)) = target_name {
-                        self.emit_field_symbol_binding_edge(
-                            scope,
-                            ValueFlowKind::ConditionalFieldSymbolAssignment,
-                            source_expr,
-                            inferred_metadata.0,
-                            inferred_metadata.1.clone(),
-                            target_name,
-                            target_range,
-                        );
-                    }
-                }
-                if let Some((target_name, target_range)) = named_field_symbol_target {
-                    self.emit_field_symbol_binding_edge(
-                        scope,
-                        ValueFlowKind::ConditionalFieldSymbolAssignment,
-                        source_expr,
-                        inferred_metadata.0,
-                        inferred_metadata.1.clone(),
-                        target_name,
-                        target_range,
-                    );
-                }
+                self.collect_read_table_entry(&children[entry_start..entry_end], scope);
+                entry_start = entry_end.saturating_add(1);
             }
             return;
         }

@@ -3266,6 +3266,127 @@ fn read_table_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool 
                     .is_some_and(|next| is_keyword(source, next, "into"))))
 }
 
+fn push_read_table_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> bool {
+    let clause_starts =
+        |tokens: &[Token], idx: usize| read_table_clause_starts(source, tokens, idx);
+    let source_end = scan_and_push_expr_clause(
+        b,
+        children,
+        source,
+        tokens,
+        entry_start,
+        entry_end,
+        entry_start.checked_sub(1).and_then(|idx| tokens.get(idx)),
+        &clause_starts,
+    );
+    if source_end == entry_start {
+        return false;
+    }
+
+    let mut i = source_end;
+    while i < entry_end {
+        let token = &tokens[i];
+        if is_keyword(source, token, "into") {
+            children.push(token_leaf(b, token));
+            let target_start = skip_trivia(tokens, i + 1);
+            let target_end = scan_until_clause(tokens, target_start, entry_end, &clause_starts);
+            if let Some((inline_decl, next_idx)) =
+                try_parse_data_inline_decl(b, source, tokens, target_start)
+                && skip_trivia(tokens, next_idx) == target_end
+            {
+                children.push(inline_decl);
+                i = target_end;
+            } else {
+                push_expr_child(
+                    b,
+                    children,
+                    source,
+                    tokens,
+                    target_start,
+                    target_end,
+                    Some(token),
+                );
+                i = target_end;
+            }
+            continue;
+        }
+        if is_keyword(source, token, "assigning") {
+            children.push(token_leaf(b, token));
+            i = scan_and_push_assigning_target_clause(
+                b,
+                children,
+                source,
+                tokens,
+                i + 1,
+                entry_end,
+                token,
+                &clause_starts,
+            );
+            continue;
+        }
+        if is_keyword(source, token, "reference")
+            && tokens
+                .get(i + 1)
+                .is_some_and(|next| is_keyword(source, next, "into"))
+        {
+            i = scan_and_push_reference_into_clause(
+                b,
+                children,
+                source,
+                tokens,
+                i + 1,
+                entry_end,
+                &clause_starts,
+            );
+            continue;
+        }
+        if is_keyword(source, token, "index") {
+            children.push(token_leaf(b, token));
+            i = scan_and_push_expr_clause(
+                b,
+                children,
+                source,
+                tokens,
+                i + 1,
+                entry_end,
+                Some(token),
+                &clause_starts,
+            );
+            continue;
+        }
+        if is_keyword(source, token, "with") {
+            children.push(token_leaf(b, token));
+            i += 1;
+            while i < entry_end {
+                let current = &tokens[i];
+                if clause_starts(tokens, i) {
+                    break;
+                }
+                children.push(token_leaf(b, current));
+                if current.kind == TokenKind::Eq {
+                    let value_end = scan_read_table_key_value_end(source, tokens, i + 1, entry_end);
+                    push_expr_child(b, children, source, tokens, i + 1, value_end, Some(current));
+                    i = value_end;
+                    continue;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+
+    true
+}
+
 fn append_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -7261,126 +7382,76 @@ pub fn try_parse_read_table_stmt(
 
     Some(match scan_read_table_stmt_period(tokens, source, idx + 2) {
         StmtPeriodScan::Found(period_i) => {
-            let clause_starts =
-                |tokens: &[Token], idx: usize| read_table_clause_starts(source, tokens, idx);
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, read_tok));
             children.push(token_leaf(b, &tokens[idx + 1]));
-
-            let mut i = idx + 2;
-            let source_end = scan_and_push_expr_clause(
-                b,
-                &mut children,
-                source,
-                tokens,
-                i,
-                period_i,
-                tokens.get(idx + 1),
-                &clause_starts,
-            );
-            i = source_end;
-
-            while i < period_i {
-                let token = &tokens[i];
-                if is_keyword(source, token, "into") {
-                    children.push(token_leaf(b, token));
-                    let target_start = skip_trivia(tokens, i + 1);
-                    let target_end =
-                        scan_until_clause(tokens, target_start, period_i, &clause_starts);
-                    if let Some((inline_decl, next_idx)) =
-                        try_parse_data_inline_decl(b, source, tokens, target_start)
-                        && skip_trivia(tokens, next_idx) == target_end
-                    {
-                        children.push(inline_decl);
-                        i = target_end;
-                    } else {
-                        push_expr_child(
+            if tokens
+                .get(idx + 2)
+                .is_some_and(|token| token.kind == TokenKind::Colon)
+            {
+                children.push(token_leaf(b, &tokens[idx + 2]));
+                let mut cursor = idx + 3;
+                let mut parsed_entry = false;
+                while cursor < period_i {
+                    while cursor < period_i && tokens[cursor].kind == TokenKind::Comment {
+                        children.push(token_leaf(b, &tokens[cursor]));
+                        cursor += 1;
+                    }
+                    if cursor >= period_i {
+                        break;
+                    }
+                    let entry_end =
+                        find_top_level_token_kind(tokens, cursor, period_i, TokenKind::Comma)
+                            .unwrap_or(period_i);
+                    let entry_start = skip_trivia(tokens, cursor);
+                    if entry_start >= entry_end
+                        || !push_read_table_entry_children(
                             b,
                             &mut children,
                             source,
                             tokens,
-                            target_start,
-                            target_end,
-                            Some(token),
+                            entry_start,
+                            entry_end,
+                        )
+                    {
+                        let raw = token_children(b, tokens, idx, period_i + 1);
+                        let node = b.branch(
+                            SyntaxKind::Error,
+                            read_tok.range.start..tokens[period_i].range.end,
+                            &raw,
                         );
-                        i = target_end;
+                        return Some((node, period_i + 1));
                     }
-                    continue;
-                }
-                if is_keyword(source, token, "assigning") {
-                    children.push(token_leaf(b, token));
-                    i = scan_and_push_assigning_target_clause(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        i + 1,
-                        period_i,
-                        token,
-                        &clause_starts,
-                    );
-                    continue;
-                }
-                if is_keyword(source, token, "reference")
-                    && tokens
-                        .get(i + 1)
-                        .is_some_and(|next| is_keyword(source, next, "into"))
-                {
-                    i = scan_and_push_reference_into_clause(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        i + 1,
-                        period_i,
-                        &clause_starts,
-                    );
-                    continue;
-                }
-                if is_keyword(source, token, "index") {
-                    children.push(token_leaf(b, token));
-                    i = scan_and_push_expr_clause(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        i + 1,
-                        period_i,
-                        Some(token),
-                        &clause_starts,
-                    );
-                    continue;
-                }
-                if is_keyword(source, token, "with") {
-                    children.push(token_leaf(b, token));
-                    i += 1;
-                    while i < period_i {
-                        let current = &tokens[i];
-                        if clause_starts(tokens, i) {
-                            break;
-                        }
-                        children.push(token_leaf(b, current));
-                        if current.kind == TokenKind::Eq {
-                            let value_end =
-                                scan_read_table_key_value_end(source, tokens, i + 1, period_i);
-                            push_expr_child(
-                                b,
-                                &mut children,
-                                source,
-                                tokens,
-                                i + 1,
-                                value_end,
-                                Some(current),
-                            );
-                            i = value_end;
-                            continue;
-                        }
-                        i += 1;
+                    parsed_entry = true;
+                    if entry_end < period_i && tokens[entry_end].kind == TokenKind::Comma {
+                        children.push(token_leaf(b, &tokens[entry_end]));
                     }
-                    continue;
+                    cursor = entry_end + 1;
                 }
-                children.push(token_leaf(b, token));
-                i += 1;
+                if !parsed_entry {
+                    let raw = token_children(b, tokens, idx, period_i + 1);
+                    let node = b.branch(
+                        SyntaxKind::Error,
+                        read_tok.range.start..tokens[period_i].range.end,
+                        &raw,
+                    );
+                    return Some((node, period_i + 1));
+                }
+            } else if !push_read_table_entry_children(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 2,
+                period_i,
+            ) {
+                let raw = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    read_tok.range.start..tokens[period_i].range.end,
+                    &raw,
+                );
+                return Some((node, period_i + 1));
             }
             children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
@@ -10788,6 +10859,18 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             .find_first_kind(parsed.file.root(), SyntaxKind::ReadTableStmt)
             .expect("read table stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 3);
+    }
+
+    #[test]
+    fn parses_chained_read_table_stmt() {
+        let parsed = crate::parse(
+            "READ TABLE: lt_aux_dm_trn INTO ls_aux_dm_trn WITH KEY docnum = ls_zatt_ship_pending-docnum,\n  lt_aux_dm_trn_evt INTO ls_aux_dm_trn_evt WITH KEY trnid = ls_aux_dm_trn-trnid.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadTableStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TemplateExpr), 6);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]
