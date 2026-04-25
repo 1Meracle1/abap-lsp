@@ -1617,23 +1617,47 @@ fn build_routine_dataflow(
         &is_not_initial_field_scope_refinements,
         values.len(),
     );
-    let block_bound_entry_bits = block_bound_entry_refinements(
+    let mut block_bound_entry_bits = block_bound_entry_refinements(
         unit,
         routine,
         &sy_subrc_success_bound_scope_refinements,
         values.len(),
     );
-    let block_assigned_entry_refinements = block_non_initial_entry_refinements(
+    let mut block_assigned_entry_refinements = block_non_initial_entry_refinements(
         unit,
         routine,
         &sy_subrc_success_assigned_scope_refinements,
         values.len(),
     );
-    let block_assigned_field_entry_refinements = block_non_initial_field_entry_refinements(
+    let mut block_assigned_field_entry_refinements = block_non_initial_field_entry_refinements(
         unit,
         routine,
         &sy_subrc_success_structure_field_scope_refinements,
         values.len(),
+    );
+    let (
+        sy_subrc_guard_assigned_block_refinements,
+        sy_subrc_guard_structure_field_block_refinements,
+        sy_subrc_guard_bound_block_refinements,
+    ) = resolve_sy_subrc_success_guard_block_refinements(
+        unit,
+        routine,
+        &reference_uses,
+        &value_ids_by_symbol,
+        &structure_assignment_trackers,
+        &values,
+    );
+    union_dense_scope_refinements(
+        &mut block_assigned_entry_refinements,
+        &sy_subrc_guard_assigned_block_refinements,
+    );
+    union_structure_field_refinements(
+        &mut block_assigned_field_entry_refinements,
+        &sy_subrc_guard_structure_field_block_refinements,
+    );
+    union_dense_scope_refinements(
+        &mut block_bound_entry_bits,
+        &sy_subrc_guard_bound_block_refinements,
     );
     let mut safe_read_refs = safe_field_symbol_checks.clone();
     safe_read_refs.extend(safe_value_state_checks);
@@ -3547,6 +3571,38 @@ fn explicit_else_scope_for_then_scope(unit: &UnitAnalysis, then_scope: ScopeId) 
     })
 }
 
+fn if_region_for_instruction<'a>(
+    unit: &'a UnitAnalysis,
+    instruction: &RoutineInstruction,
+) -> Option<&'a IfRegionData> {
+    unit.routine_control_regions.iter().find_map(|region| {
+        let RoutineControlRegionData::If(if_region) = region else {
+            return None;
+        };
+        (if_region.scope == instruction.scope && if_region.range == instruction.range)
+            .then_some(if_region)
+    })
+}
+
+fn single_negative_sy_subrc_guard_check_for_scope<'a>(
+    unit: &'a UnitAnalysis,
+    scope: ScopeId,
+) -> Option<&'a crate::ValueStateCheckData> {
+    let mut check = None;
+    for candidate in unit
+        .value_state_checks
+        .iter()
+        .filter(|candidate| candidate.scope == scope)
+        .filter(|candidate| candidate.kind != ValueStateCheckKind::ConditionProbe)
+    {
+        if check.is_some() {
+            return None;
+        }
+        check = Some(candidate);
+    }
+    check.filter(|candidate| sy_subrc_negative_guard_check(unit, candidate))
+}
+
 fn resolve_sy_subrc_success_bound_scope_refinements(
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
@@ -3707,9 +3763,20 @@ fn sy_subrc_success_check(unit: &UnitAnalysis, check: &crate::ValueStateCheckDat
     ) {
         return false;
     }
-    if !is_positive_branch_scope(unit, check.scope) {
+    is_positive_branch_scope(unit, check.scope) && is_sy_subrc_check(check)
+}
+
+fn sy_subrc_negative_guard_check(unit: &UnitAnalysis, check: &crate::ValueStateCheckData) -> bool {
+    if !matches!(
+        check.kind,
+        ValueStateCheckKind::NotEqualsZero | ValueStateCheckKind::IsNotInitial
+    ) {
         return false;
     }
+    is_positive_branch_scope(unit, check.scope) && is_sy_subrc_check(check)
+}
+
+fn is_sy_subrc_check(check: &crate::ValueStateCheckData) -> bool {
     let Some(field_name) = check.field_name.as_ref() else {
         return false;
     };
@@ -3734,6 +3801,12 @@ fn union_dense_scope_refinements(out: &mut [DenseBitSet], incoming: &[DenseBitSe
     }
 }
 
+fn union_structure_field_refinements(out: &mut [Vec<u64>], incoming: &[Vec<u64>]) {
+    for (out_masks, incoming_masks) in out.iter_mut().zip(incoming) {
+        union_structure_field_masks(out_masks, incoming_masks);
+    }
+}
+
 fn latest_subrc_update_before_check<'a>(
     unit: &'a UnitAnalysis,
     check: &crate::ValueStateCheckData,
@@ -3746,6 +3819,40 @@ fn latest_subrc_update_before_check<'a>(
                 && scope_descends_from(unit, check.scope, update.scope)
         })
         .max_by_key(|update| (update.range.end, update.range.start))
+}
+
+fn conditional_bound_targets_for_subrc_success_update(
+    unit: &UnitAnalysis,
+    update: &crate::SystemFieldUpdateData,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    values: &[RoutineDataflowValue],
+) -> Vec<DataflowValueId> {
+    if !matches!(
+        update.statement,
+        SystemFieldStatementKind::Assign | SystemFieldStatementKind::ReadTable
+    ) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for edge in &unit.value_flow_edges {
+        if edge.kind != ValueFlowKind::ConditionalFieldSymbolAssignment
+            || edge.scope != update.scope
+            || !system_field_update_contains_field_symbol_bind(update, edge)
+        {
+            continue;
+        }
+        if let Some(target_value) = resolve_field_symbol_target_value_id(
+            unit,
+            edge,
+            reference_uses,
+            value_ids_by_symbol,
+            values,
+        ) {
+            out.push(target_value);
+        }
+    }
+    sorted_unique_value_ids(out)
 }
 
 fn conditional_assignment_targets_for_subrc_success_update(
@@ -3800,6 +3907,99 @@ fn conditional_assignment_targets_for_subrc_success_update(
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn resolve_sy_subrc_success_guard_block_refinements(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    values: &[RoutineDataflowValue],
+) -> (Vec<DenseBitSet>, Vec<Vec<u64>>, Vec<DenseBitSet>) {
+    let mut assigned = vec![DenseBitSet::new(values.len()); routine.cfg.blocks.len()];
+    let mut structure_fields = vec![vec![0u64; values.len()]; routine.cfg.blocks.len()];
+    let mut bound = vec![DenseBitSet::new(values.len()); routine.cfg.blocks.len()];
+
+    for block in &routine.cfg.blocks {
+        let Some(last_instruction_id) = block.instructions.last() else {
+            continue;
+        };
+        let instruction = &routine.ir.instructions[last_instruction_id.as_usize()];
+        let RoutineInstructionSite::Branch {
+            kind: RoutineBranchKind::If,
+        } = instruction.site
+        else {
+            continue;
+        };
+        let Some(region) = if_region_for_instruction(unit, instruction) else {
+            continue;
+        };
+        if region.else_scope.is_some() || !region.elseif_scopes.is_empty() {
+            continue;
+        }
+        let Some(check) = single_negative_sy_subrc_guard_check_for_scope(unit, region.then_scope)
+        else {
+            continue;
+        };
+        let Some(continuation_block) = unique_fallthrough_successor(routine, block.id) else {
+            continue;
+        };
+        let Some(continuation) = routine.cfg.blocks.get(continuation_block.as_usize()) else {
+            continue;
+        };
+        if continuation.predecessors.len() != 1 || continuation.predecessors[0] != block.id {
+            continue;
+        }
+        let Some(update) = latest_subrc_update_before_check(unit, check) else {
+            continue;
+        };
+
+        for target in conditional_assignment_targets_for_subrc_success_update(
+            unit,
+            update,
+            reference_uses,
+            value_ids_by_symbol,
+            structure_assignment_trackers,
+            values,
+        ) {
+            if let Some(mask) = target.field_mask {
+                structure_fields[continuation_block.as_usize()][target.value.as_usize()] |= mask;
+            } else {
+                assigned[continuation_block.as_usize()].insert(target.value);
+            }
+        }
+        for target in conditional_bound_targets_for_subrc_success_update(
+            unit,
+            update,
+            reference_uses,
+            value_ids_by_symbol,
+            values,
+        ) {
+            bound[continuation_block.as_usize()].insert(target);
+        }
+    }
+
+    (assigned, structure_fields, bound)
+}
+
+fn unique_fallthrough_successor(
+    routine: &RoutineAnalysis,
+    block: RoutineBlockId,
+) -> Option<RoutineBlockId> {
+    let mut successor = None;
+    for edge in routine
+        .cfg
+        .edges
+        .iter()
+        .filter(|edge| edge.from == block && edge.kind == RoutineEdgeKind::Fallthrough)
+    {
+        if successor.is_some() {
+            return None;
+        }
+        successor = Some(edge.to);
+    }
+    successor
 }
 
 fn block_non_initial_entry_refinements(
