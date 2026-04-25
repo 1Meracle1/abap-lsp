@@ -3,10 +3,11 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::SyntaxNodeRef;
 
 use crate::def_map::{
-    AssignmentSiteData, CallSiteData, FieldAccess, FieldTypeRefData, FormRoutineData, IncludeEdge,
-    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, SqlNameRefData,
-    SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData,
-    StructureFieldData, SymbolKind, TableWorkAreaData, ValueStateCheckData,
+    AssignmentSiteData, CallSiteData, ConstructorForBindingData, FieldAccess, FieldTypeRefData,
+    FormRoutineData, IncludeEdge, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
+    ReferenceKind, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
+    SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind, TableWorkAreaData,
+    ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::Namespace;
@@ -67,6 +68,10 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         context: crate::def_map::LoopWhereFieldContext,
     ) {
         self.collector.loop_where_field_contexts.push(context);
+    }
+
+    pub(super) fn push_constructor_for_binding(&mut self, binding: ConstructorForBindingData) {
+        self.collector.constructor_for_bindings.push(binding);
     }
 
     pub(super) fn node_name(

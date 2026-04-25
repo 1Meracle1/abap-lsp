@@ -37,6 +37,27 @@ struct LoopFieldContextView<'a> {
     target_access: Option<&'a FieldAccess>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StructureKey {
+    unit: UnitId,
+    structure: StructureId,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConstructorForIteratorUsageKind {
+    ForBinding,
+    LoopTarget,
+    OtherReference,
+}
+
+struct ConstructorForIteratorUsage<'a> {
+    scope: ScopeId,
+    name: Arc<str>,
+    range: TextRange,
+    kind: ConstructorForIteratorUsageKind,
+    binding: Option<&'a crate::ConstructorForBindingData>,
+}
+
 #[derive(Default)]
 struct IncludeOrderIndex {
     roots: Vec<IncludeOrderRoot>,
@@ -638,6 +659,253 @@ fn validate_abstract_class_instantiations(
             })
         })
         .collect()
+}
+
+fn validate_constructor_for_iterator_reuse(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+) -> Vec<Diagnostic> {
+    if unit.constructor_for_bindings.is_empty() {
+        return Vec::new();
+    }
+
+    let binding_names = unit
+        .constructor_for_bindings
+        .iter()
+        .map(|binding| constructor_for_iterator_usage_key(binding.scope, binding.name.as_ref()))
+        .collect::<HashSet<_>>();
+    let mut usages = Vec::new();
+    for binding in &unit.constructor_for_bindings {
+        usages.push(ConstructorForIteratorUsage {
+            scope: binding.scope,
+            name: Arc::<str>::from(binding.name.as_ref().to_ascii_lowercase()),
+            range: binding.range.clone(),
+            kind: ConstructorForIteratorUsageKind::ForBinding,
+            binding: Some(binding),
+        });
+    }
+
+    let mut restricted_loop_target_ranges = HashSet::new();
+    for region in &unit.routine_control_regions {
+        let crate::RoutineControlRegionData::Loop(loop_region) = region else {
+            continue;
+        };
+        if loop_region.kind != crate::RoutineLoopKind::Loop {
+            continue;
+        }
+        let Some(target_access) = loop_region.target_access.as_ref() else {
+            continue;
+        };
+        if target_access.base_namespace != Namespace::Value || !target_access.field_path.is_empty()
+        {
+            continue;
+        }
+        let key =
+            constructor_for_iterator_usage_key(loop_region.scope, target_access.base_name.as_ref());
+        if !binding_names.contains(&key) {
+            continue;
+        }
+        restricted_loop_target_ranges
+            .insert((target_access.base_range.start, target_access.base_range.end));
+        usages.push(ConstructorForIteratorUsage {
+            scope: loop_region.scope,
+            name: key.1,
+            range: target_access.base_range.clone(),
+            kind: ConstructorForIteratorUsageKind::LoopTarget,
+            binding: None,
+        });
+    }
+
+    for reference in &unit.references {
+        if reference.resolution.is_some()
+            || reference.namespace != Namespace::Value
+            || reference.kind != ReferenceKind::Identifier
+            || restricted_loop_target_ranges.contains(&(reference.range.start, reference.range.end))
+        {
+            continue;
+        }
+        let key = constructor_for_iterator_usage_key(reference.scope, reference.name.as_ref());
+        if !binding_names.contains(&key) {
+            continue;
+        }
+        usages.push(ConstructorForIteratorUsage {
+            scope: reference.scope,
+            name: key.1,
+            range: reference.range.clone(),
+            kind: ConstructorForIteratorUsageKind::OtherReference,
+            binding: None,
+        });
+    }
+
+    usages.sort_by_key(|usage| (usage.range.start, usage.range.end));
+
+    let mut diagnostics = Vec::new();
+    let mut first_usage_by_scope_name = HashMap::<(ScopeId, Arc<str>), usize>::new();
+    for idx in 0..usages.len() {
+        let key = (usages[idx].scope, Arc::clone(&usages[idx].name));
+        if let Some(first_idx) = first_usage_by_scope_name.get(&key).copied() {
+            if let Some(diagnostic) = constructor_for_iterator_usage_diagnostic(
+                project,
+                lookup,
+                unit,
+                scope_indexes,
+                scope_index,
+                &usages[first_idx],
+                &usages[idx],
+            ) {
+                diagnostics.push(diagnostic);
+            }
+        } else {
+            first_usage_by_scope_name.insert(key, idx);
+        }
+    }
+
+    diagnostics
+}
+
+fn constructor_for_iterator_usage_key(scope: ScopeId, name: &str) -> (ScopeId, Arc<str>) {
+    (scope, Arc::<str>::from(name.to_ascii_lowercase()))
+}
+
+fn constructor_for_iterator_usage_diagnostic(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+    first: &ConstructorForIteratorUsage<'_>,
+    current: &ConstructorForIteratorUsage<'_>,
+) -> Option<Diagnostic> {
+    match (first.kind, current.kind) {
+        (
+            ConstructorForIteratorUsageKind::ForBinding,
+            ConstructorForIteratorUsageKind::ForBinding,
+        ) => {
+            let first_binding = first.binding?;
+            let current_binding = current.binding?;
+            (!constructor_for_binding_sources_compatible(
+                project,
+                lookup,
+                unit,
+                scope_indexes,
+                scope_index,
+                first_binding,
+                current_binding,
+            ))
+            .then(|| Diagnostic {
+                kind: DiagnosticKind::InvalidConstructorForIteratorReuse,
+                range: current.range.clone(),
+                message: format!(
+                    "constructor FOR iterator '{}' can only be reused with an internal table of the same row type",
+                    current.name
+                ),
+            })
+        }
+        (ConstructorForIteratorUsageKind::ForBinding, _) => Some(Diagnostic {
+            kind: DiagnosticKind::InvalidConstructorForIteratorReuse,
+            range: current.range.clone(),
+            message: format!(
+                "constructor FOR iterator '{}' can only be reused in FOR ... IN expressions in the same scope",
+                current.name
+            ),
+        }),
+        (_, ConstructorForIteratorUsageKind::ForBinding) => Some(Diagnostic {
+            kind: DiagnosticKind::InvalidConstructorForIteratorReuse,
+            range: current.range.clone(),
+            message: format!(
+                "constructor FOR iterator '{}' conflicts with an earlier same-scope usage; it can only be reused by another FOR ... IN expression with the same row type",
+                current.name
+            ),
+        }),
+        _ => None,
+    }
+}
+
+fn constructor_for_binding_sources_compatible(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+    first: &crate::ConstructorForBindingData,
+    current: &crate::ConstructorForBindingData,
+) -> bool {
+    let Some(first_key) = constructor_for_binding_row_structure_key(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        scope_index,
+        first,
+    ) else {
+        return true;
+    };
+    let Some(current_key) = constructor_for_binding_row_structure_key(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        scope_index,
+        current,
+    ) else {
+        return true;
+    };
+    first_key == current_key
+}
+
+fn constructor_for_binding_row_structure_key(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+    binding: &crate::ConstructorForBindingData,
+) -> Option<StructureKey> {
+    let access = binding.source_access.as_ref()?;
+    if access.base_namespace != Namespace::Value {
+        return None;
+    }
+    let base_handle = resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)?;
+    if access.field_path.is_empty() {
+        let base_unit = &project.units[base_handle.unit.as_usize()];
+        let base_symbol = base_unit.symbol(base_handle.symbol);
+        let mut seen = HashSet::new();
+        if !symbol_is_internal_table(
+            project,
+            lookup,
+            base_unit,
+            scope_indexes,
+            base_symbol,
+            &mut seen,
+        ) {
+            return None;
+        }
+    }
+    let (structure_unit, structure_id) =
+        resolve_field_access_structure(project, lookup, unit, scope_indexes, access)?;
+    let structure = structure_unit.structure(structure_id);
+    Some(StructureKey {
+        unit: structure.origin_unit,
+        structure: structure.origin_structure,
+    })
+}
+
+fn reference_is_restricted_constructor_for_iterator_use(
+    unit: &crate::UnitAnalysis,
+    reference: &crate::ReferenceData,
+) -> bool {
+    reference.namespace == Namespace::Value
+        && reference.kind == ReferenceKind::Identifier
+        && unit.constructor_for_bindings.iter().any(|binding| {
+            binding.scope == reference.scope
+                && binding
+                    .name
+                    .as_ref()
+                    .eq_ignore_ascii_case(reference.name.as_ref())
+        })
 }
 
 fn resolve_project_class_symbol<'a>(
@@ -3060,6 +3328,13 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             &project.units[unit_idx],
             &scope_index,
         );
+        let constructor_for_iterator_diagnostics = validate_constructor_for_iterator_reuse(
+            project,
+            &lookup,
+            &project.units[unit_idx],
+            scope_indexes,
+            &scope_index,
+        );
         let field_access_bases: Vec<_> = project.units[unit_idx]
             .field_accesses
             .iter()
@@ -3098,6 +3373,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             .cloned()
             .collect();
         let mut unit_diagnostics = retained;
+        unit_diagnostics.extend(constructor_for_iterator_diagnostics);
 
         for reference in &unit.references {
             let Some(Resolution::Symbol(handle)) = reference.resolution else {
@@ -3126,6 +3402,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
 
         for reference in &unit.references {
             if reference.resolution.is_some() {
+                continue;
+            }
+            if reference_is_restricted_constructor_for_iterator_use(unit, reference) {
                 continue;
             }
             let is_field_symbol_binding_target =

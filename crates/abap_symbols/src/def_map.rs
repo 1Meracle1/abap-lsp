@@ -293,6 +293,7 @@ pub enum DiagnosticKind {
     UnverifiedOpenSqlSource,
     /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
     InvalidOpenSqlIntoTarget,
+    InvalidConstructorForIteratorReuse,
     MissingTablesDeclaration,
     UnreachableCode,
     UseBeforeDefiniteAssignment,
@@ -337,6 +338,14 @@ pub struct LoopWhereFieldContext {
     pub range: TextRange,
     pub source_access: FieldAccess,
     pub target_access: Option<FieldAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstructorForBindingData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub name: Arc<str>,
+    pub source_access: Option<FieldAccess>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -920,6 +929,7 @@ pub struct UnitAnalysis {
     pub field_accesses: Vec<FieldAccess>,
     pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     pub loop_at_field_contexts: Vec<LoopAtFieldContext>,
+    pub constructor_for_bindings: Vec<ConstructorForBindingData>,
     pub class_members: Vec<ClassMemberData>,
     pub class_definitions: Vec<ClassDefinitionData>,
     pub class_inheritance: Vec<ClassInheritanceData>,

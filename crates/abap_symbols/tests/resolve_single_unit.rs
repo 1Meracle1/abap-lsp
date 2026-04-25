@@ -9009,6 +9009,201 @@ lt_sequen_buff = VALUE #( BASE lt_sequen_buff
 }
 
 #[test]
+fn value_base_self_assignment_to_table_alias_marks_target_fields() {
+    let src = r#"
+TYPES:
+    BEGIN OF ts_obj_ids,
+      objid TYPE char50,
+      owner TYPE char12,
+      product TYPE char10,
+      serial TYPE char60,
+    END OF ts_obj_ids,
+
+    BEGIN OF ts_evt_rel,
+      objid TYPE char50,
+      evtid TYPE char50,
+      native TYPE abap_bool,
+    END OF ts_evt_rel,
+
+    tt_obj_ids TYPE TABLE OF ts_obj_ids,
+    tt_evt_rel TYPE TABLE OF ts_evt_rel.
+
+DATA: lt_obj_ids TYPE tt_obj_ids,
+      lt_evt_rel TYPE tt_evt_rel.
+
+lt_obj_ids = VALUE #( BASE lt_obj_ids
+                      FOR ls_rel IN lt_evt_rel
+                      WHERE ( native IS NOT INITIAL )
+                      ( objid = ls_rel-objid ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///value_base_table_alias.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lt_obj_ids")
+        }),
+        "unexpected definite-assignment diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnknownField | DiagnosticKind::UnresolvedReference
+            ) && (diag.message.contains("objid")
+                || diag.message.contains("native")
+                || diag.message.contains("lt_evt_rel"))
+        }),
+        "unexpected VALUE constructor diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    let target_objid = src.find("( objid =").expect("target objid") + 2;
+    assert!(
+        unit.field_accesses.iter().any(|access| {
+            access.base_namespace == Namespace::Value
+                && access.base_name.as_ref() == "lt_obj_ids"
+                && access.field_path.len() == 1
+                && access.field_path[0].name.as_ref() == "objid"
+                && access.field_path[0].range.start == target_objid
+        }),
+        "expected VALUE constructor target field access for objid, accesses={:?}",
+        unit.field_accesses
+    );
+}
+
+#[test]
+fn rejects_constructor_for_iterator_reuse_with_different_row_type_or_loop_target() {
+    let src = r#"
+TYPES:
+    BEGIN OF ts_obj_ids,
+      objid TYPE c LENGTH 50,
+      owner TYPE char12,
+      product TYPE char10,
+      serial TYPE c LENGTH 60,
+    END OF ts_obj_ids,
+
+    BEGIN OF ts_evt_rel,
+      objid TYPE c LENGTH 50,
+      evtid TYPE c LENGTH 50,
+      native TYPE abap_bool,
+    END OF ts_evt_rel,
+
+    tt_obj_ids TYPE TABLE OF ts_obj_ids,
+    tt_evt_rel TYPE TABLE OF ts_evt_rel.
+
+DATA: lt_obj_ids TYPE tt_obj_ids,
+      lt_evt_rel TYPE tt_evt_rel.
+
+lt_obj_ids = VALUE #( BASE lt_obj_ids
+                      FOR ls_rel IN lt_evt_rel
+                      WHERE ( native IS NOT INITIAL )
+                      ( objid = ls_rel-objid ) ).
+
+lt_obj_ids = VALUE #(
+           FOR ls_rel IN lt_obj_ids
+           ( objid = ls_rel-objid ) ).
+
+LOOP AT lt_evt_rel INTO ls_rel.
+ENDLOOP.
+
+LOOP AT lt_evt_rel INTO DATA(ls_rel).
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///constructor_for_iterator_reuse.abap", src, &parsed);
+
+    let second_for = src
+        .match_indices("FOR ls_rel")
+        .nth(1)
+        .map(|(offset, _)| offset + "FOR ".len())
+        .expect("second FOR iterator");
+    let loop_target = src.find("INTO ls_rel").expect("plain LOOP target") + "INTO ".len();
+    let inline_loop_target = src.find("DATA(ls_rel)").expect("inline LOOP target") + "DATA(".len();
+
+    for offset in [second_for, loop_target, inline_loop_target] {
+        assert!(
+            unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::InvalidConstructorForIteratorReuse
+                    && diag.range.start == offset
+                    && diag.message.contains("ls_rel")
+            }),
+            "expected constructor FOR iterator diagnostic at {offset}, diagnostics={:?}",
+            unit.diagnostics
+        );
+    }
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("ls_rel")
+        }),
+        "constructor FOR iterator validation should suppress generic unknown-symbol diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_constructor_for_iterator_reuse_at_for_when_loop_target_came_first() {
+    let src = r#"
+TYPES:
+    BEGIN OF ts_obj_ids,
+      objid TYPE c LENGTH 50,
+      owner TYPE char12,
+      product TYPE char10,
+      serial TYPE c LENGTH 60,
+    END OF ts_obj_ids,
+
+    BEGIN OF ts_evt_rel,
+      objid TYPE c LENGTH 50,
+      evtid TYPE c LENGTH 50,
+      native TYPE abap_bool,
+    END OF ts_evt_rel,
+
+    tt_obj_ids TYPE TABLE OF ts_obj_ids,
+    tt_evt_rel TYPE TABLE OF ts_evt_rel.
+
+DATA: lt_obj_ids TYPE tt_obj_ids,
+      lt_evt_rel TYPE tt_evt_rel.
+
+LOOP AT lt_evt_rel INTO DATA(ls_rel).
+ENDLOOP.
+
+lt_obj_ids = VALUE #( BASE lt_obj_ids
+                      FOR ls_rel IN lt_evt_rel
+                      WHERE ( native IS NOT INITIAL )
+                      ( objid = ls_rel-objid ) ).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit(
+        "file:///constructor_for_iterator_loop_first.abap",
+        src,
+        &parsed,
+    );
+
+    let for_iterator = src.find("FOR ls_rel").expect("FOR iterator") + "FOR ".len();
+    let inline_loop_target = src.find("DATA(ls_rel)").expect("inline LOOP target") + "DATA(".len();
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidConstructorForIteratorReuse
+                && diag.range.start == for_iterator
+                && diag.message.contains("ls_rel")
+        }),
+        "expected constructor FOR iterator diagnostic at FOR usage, diagnostics={:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidConstructorForIteratorReuse
+                && diag.range.start == inline_loop_target
+        }),
+        "flipped-order validation should not blame the first LOOP target usage: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_value_for_where_clause_bindings() {
     let src = r#"
 TYPES: BEGIN OF ty_row,

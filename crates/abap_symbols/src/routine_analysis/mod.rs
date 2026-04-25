@@ -4,7 +4,7 @@ mod ids;
 mod ir;
 mod metrics;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use abap_lexer::TextRange;
@@ -1557,6 +1557,7 @@ fn build_routine_dataflow(
         values.len(),
     );
     let is_not_initial_field_scope_refinements = resolve_is_not_initial_field_scope_refinements(
+        project,
         unit,
         &reference_uses,
         &value_ids_by_symbol,
@@ -1598,6 +1599,7 @@ fn build_routine_dataflow(
             &values,
         );
     let structure_field_reads = resolve_structure_field_reads(
+        project,
         unit,
         &reference_uses,
         &structure_assignment_trackers,
@@ -2157,6 +2159,7 @@ fn build_routine_dataflow(
     let mut entry_structure_fields = vec![0u64; values.len()];
     for value in &values {
         if value_is_definitely_assigned_on_entry(
+            project,
             unit,
             value,
             &values,
@@ -3472,6 +3475,7 @@ fn resolve_is_not_initial_scope_refinements(
 }
 
 fn resolve_is_not_initial_field_scope_refinements(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
@@ -3503,7 +3507,7 @@ fn resolve_is_not_initial_field_scope_refinements(
                 || !value_ids_by_symbol.contains_key(&handle)
                 || reference.scope != check.scope
                 || reference.name != check.symbol_name
-                || value_symbol_is_internal_table(unit, use_site.value, values)
+                || value_symbol_is_internal_table(project, unit, use_site.value, values)
             {
                 continue;
             }
@@ -4072,6 +4076,7 @@ fn is_table_line_mutation_assignment(unit: &UnitAnalysis, range: &TextRange) -> 
 }
 
 fn resolve_structure_field_reads(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
@@ -4097,7 +4102,7 @@ fn resolve_structure_field_reads(
         else {
             continue;
         };
-        if value_symbol_is_internal_table(unit, base_use.value, values) {
+        if value_symbol_is_internal_table(project, unit, base_use.value, values) {
             continue;
         }
         let Some(mask) = tracker
@@ -4143,6 +4148,7 @@ fn build_structure_assignment_tracker(
 }
 
 fn value_symbol_is_internal_table(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     value: DataflowValueId,
     values: &[RoutineDataflowValue],
@@ -4153,13 +4159,45 @@ fn value_symbol_is_internal_table(
     else {
         return false;
     };
-    symbol_type_clause_suggests_internal_table(symbol)
+    let mut seen = HashSet::new();
+    symbol_is_internal_table(project, unit, symbol, &mut seen)
+}
+
+fn symbol_is_internal_table(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+    seen: &mut HashSet<(u32, u32)>,
+) -> bool {
+    if symbol_type_clause_suggests_internal_table(symbol)
         || unit.sql_targets.iter().any(|target| {
             target.is_inline
                 && target.is_table
                 && target.scope == symbol.scope
                 && target.target_name.as_deref() == Some(symbol.name.as_ref())
         })
+    {
+        return true;
+    }
+
+    let Some(type_ref) = symbol.declared_type.as_ref() else {
+        return false;
+    };
+    if !type_ref.field_path.is_empty() {
+        return false;
+    }
+    let Some((resolved_unit, symbol_id)) =
+        resolve_type_ref_symbol_project(project, unit, unit, symbol.scope, type_ref)
+    else {
+        return false;
+    };
+    if !seen.insert((resolved_unit.unit_id.0, symbol_id.0)) {
+        return false;
+    }
+    let Some(resolved_symbol) = resolved_unit.symbols.get(symbol_id.as_usize()) else {
+        return false;
+    };
+    symbol_is_internal_table(project, resolved_unit, resolved_symbol, seen)
 }
 
 fn resolve_value_access_structure_project<'a>(
@@ -5149,6 +5187,7 @@ fn trackable_symbol_kind(kind: SymbolKind) -> bool {
 }
 
 fn value_is_definitely_assigned_on_entry(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     value: &RoutineDataflowValue,
     values: &[RoutineDataflowValue],
@@ -5168,7 +5207,7 @@ fn value_is_definitely_assigned_on_entry(
                 .is_some_and(|symbol| {
                     symbol.type_clause_display.is_some()
                         && (structure_assignment_trackers[value.id.as_usize()].is_none()
-                            || value_symbol_is_internal_table(unit, value.id, values))
+                            || value_symbol_is_internal_table(project, unit, value.id, values))
                 })
         }
         DataflowValueKind::FieldSymbol | DataflowValueKind::Other => false,

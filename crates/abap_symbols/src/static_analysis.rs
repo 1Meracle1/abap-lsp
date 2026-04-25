@@ -267,6 +267,7 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::UnverifiedOpenSqlSource
         | DiagnosticKind::InvalidOpenSqlIntoTarget
+        | DiagnosticKind::InvalidConstructorForIteratorReuse
         | DiagnosticKind::MissingTablesDeclaration => return None,
     };
     Some(StaticAnalysisFinding {

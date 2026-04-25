@@ -26,13 +26,14 @@ use abap_lexer::{TextRange, Token, TokenKind};
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassDefinitionData, ClassInheritanceData, ClassMemberData,
-    Diagnostic, DiagnosticKind, ExpressionFactData, FieldAccess, FieldSymbolStateCheckData,
-    FieldTypeRefData, FindSiteData, FormRoutineData, FunctionModuleData, ImplementedInterfaceData,
-    IncludeEdge, LoopAtFieldContext, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess,
-    PerformCallData, ReferenceData, ReferenceKind, RoutineControlRegionData, RoutineSiteData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData, StructureData, StructureFieldData, SymbolData, SymbolKind,
-    SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
+    ConstructorForBindingData, Diagnostic, DiagnosticKind, ExpressionFactData, FieldAccess,
+    FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData, FormRoutineData, FunctionModuleData,
+    ImplementedInterfaceData, IncludeEdge, LoopAtFieldContext, LoopWhereFieldContext,
+    MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData, ReferenceKind,
+    RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
+    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, StructureFieldData, SymbolData,
+    SymbolKind, SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis, ValueFlowEdgeData,
+    ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -129,6 +130,7 @@ pub struct Collector<'a> {
     field_accesses: Vec<FieldAccess>,
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     loop_at_field_contexts: Vec<LoopAtFieldContext>,
+    constructor_for_bindings: Vec<ConstructorForBindingData>,
     class_members: Vec<ClassMemberData>,
     class_definition_symbols: std::collections::HashSet<SymbolId>,
     deferred_class_symbols: std::collections::HashSet<SymbolId>,
@@ -191,6 +193,7 @@ impl<'a> Collector<'a> {
             field_accesses: Vec::new(),
             loop_where_field_contexts: Vec::new(),
             loop_at_field_contexts: Vec::new(),
+            constructor_for_bindings: Vec::new(),
             class_members: Vec::new(),
             class_definition_symbols: std::collections::HashSet::new(),
             deferred_class_symbols: std::collections::HashSet::new(),
@@ -265,6 +268,7 @@ impl<'a> Collector<'a> {
             field_accesses: self.field_accesses,
             loop_where_field_contexts: self.loop_where_field_contexts,
             loop_at_field_contexts: self.loop_at_field_contexts,
+            constructor_for_bindings: self.constructor_for_bindings,
             class_members: self.class_members,
             class_definitions,
             class_inheritance,

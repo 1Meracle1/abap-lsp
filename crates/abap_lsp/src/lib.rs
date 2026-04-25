@@ -3333,6 +3333,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::InvalidOpenSqlIntoTarget
+        | DiagnosticKind::InvalidConstructorForIteratorReuse
         | DiagnosticKind::MissingTablesDeclaration => DiagnosticSeverity::ERROR,
     }
 }

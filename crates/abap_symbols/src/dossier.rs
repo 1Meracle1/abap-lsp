@@ -1601,6 +1601,9 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::MissingRequiredParameter => "missing_required_parameter",
         DiagnosticKind::UnverifiedOpenSqlSource => "unverified_open_sql_source",
         DiagnosticKind::InvalidOpenSqlIntoTarget => "invalid_open_sql_into_target",
+        DiagnosticKind::InvalidConstructorForIteratorReuse => {
+            "invalid_constructor_for_iterator_reuse"
+        }
         DiagnosticKind::MissingTablesDeclaration => "missing_tables_declaration",
         DiagnosticKind::UnreachableCode => "unreachable_code",
         DiagnosticKind::UseBeforeDefiniteAssignment => "use_before_definite_assignment",
