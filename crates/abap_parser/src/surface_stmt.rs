@@ -2911,6 +2911,94 @@ fn consume_concatenate_operand(
     idx
 }
 
+fn push_split_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> bool {
+    let Some(at_idx) = find_top_level_keyword_index(source, tokens, entry_start, entry_end, "at")
+    else {
+        return false;
+    };
+    let Some(into_idx) =
+        find_top_level_keyword_index(source, tokens, at_idx + 1, entry_end, "into")
+    else {
+        return false;
+    };
+
+    push_wrapped_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        entry_start,
+        at_idx,
+        tokens.get(entry_start.saturating_sub(1)),
+        SyntaxKind::SplitSourceOperand,
+    );
+    children.push(token_leaf(b, &tokens[at_idx]));
+
+    let separator_end =
+        consume_concatenate_operand(source, tokens, at_idx + 1, into_idx, &["into"]);
+    push_wrapped_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        at_idx + 1,
+        separator_end,
+        Some(&tokens[at_idx]),
+        SyntaxKind::SplitSeparatorOperand,
+    );
+
+    children.push(token_leaf(b, &tokens[into_idx]));
+    let mut i = separator_end.max(into_idx + 1);
+    if i < entry_end && is_keyword(source, &tokens[i], "table") {
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    while i < entry_end {
+        let token = &tokens[i];
+        if is_keyword(source, token, "in") {
+            push_token_children(b, children, tokens, i, entry_end);
+            break;
+        }
+        if let Some(next_i) = push_wrapped_data_inline_decl_child(
+            b,
+            children,
+            source,
+            tokens,
+            i,
+            SyntaxKind::SplitTargetOperand,
+        ) {
+            i = next_i;
+            continue;
+        }
+        let end_idx = consume_concatenate_operand(source, tokens, i, entry_end, &["in"]);
+        if end_idx == i {
+            children.push(token_leaf(b, token));
+            i += 1;
+            continue;
+        }
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            i,
+            end_idx,
+            tokens.get(i.saturating_sub(1)),
+            SyntaxKind::SplitTargetOperand,
+        );
+        i = end_idx;
+    }
+
+    true
+}
+
 fn read_table_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -4422,98 +4510,74 @@ pub fn try_parse_split_stmt(
         next_after_unterminated_scan,
         |b, period_i, _errors| {
             let mut children = vec![token_leaf(b, split_tok)];
-            let Some(at_idx) =
-                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "at")
-            else {
-                let raw = token_children(b, tokens, idx, period_i + 1);
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    split_tok.range.start..tokens[period_i].range.end,
-                    &raw,
-                );
-                return (node, period_i + 1);
-            };
-            let Some(into_idx) =
-                find_top_level_keyword_index(source, tokens, at_idx + 1, period_i, "into")
-            else {
-                let raw = token_children(b, tokens, idx, period_i + 1);
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    split_tok.range.start..tokens[period_i].range.end,
-                    &raw,
-                );
-                return (node, period_i + 1);
-            };
 
-            push_wrapped_expr_child(
+            if tokens
+                .get(idx + 1)
+                .is_some_and(|token| token.kind == TokenKind::Colon)
+            {
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                let mut cursor = idx + 2;
+                let mut parsed_entry = false;
+                while cursor < period_i {
+                    while cursor < period_i && tokens[cursor].kind == TokenKind::Comment {
+                        children.push(token_leaf(b, &tokens[cursor]));
+                        cursor += 1;
+                    }
+                    if cursor >= period_i {
+                        break;
+                    }
+                    let entry_end =
+                        find_top_level_token_kind(tokens, cursor, period_i, TokenKind::Comma)
+                            .unwrap_or(period_i);
+                    let entry_start = skip_trivia(tokens, cursor);
+                    if entry_start >= entry_end
+                        || !push_split_entry_children(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            entry_start,
+                            entry_end,
+                        )
+                    {
+                        let raw = token_children(b, tokens, idx, period_i + 1);
+                        let node = b.branch(
+                            SyntaxKind::Error,
+                            split_tok.range.start..tokens[period_i].range.end,
+                            &raw,
+                        );
+                        return (node, period_i + 1);
+                    }
+                    parsed_entry = true;
+                    if entry_end < period_i && tokens[entry_end].kind == TokenKind::Comma {
+                        children.push(token_leaf(b, &tokens[entry_end]));
+                    }
+                    cursor = entry_end + 1;
+                }
+                if !parsed_entry {
+                    let raw = token_children(b, tokens, idx, period_i + 1);
+                    let node = b.branch(
+                        SyntaxKind::Error,
+                        split_tok.range.start..tokens[period_i].range.end,
+                        &raw,
+                    );
+                    return (node, period_i + 1);
+                }
+            } else if !push_split_entry_children(
                 b,
                 &mut children,
                 source,
                 tokens,
                 idx + 1,
-                at_idx,
-                Some(split_tok),
-                SyntaxKind::SplitSourceOperand,
-            );
-            children.push(token_leaf(b, &tokens[at_idx]));
-
-            let separator_end =
-                consume_concatenate_operand(source, tokens, at_idx + 1, into_idx, &["into"]);
-            push_wrapped_expr_child(
-                b,
-                &mut children,
-                source,
-                tokens,
-                at_idx + 1,
-                separator_end,
-                Some(&tokens[at_idx]),
-                SyntaxKind::SplitSeparatorOperand,
-            );
-
-            children.push(token_leaf(b, &tokens[into_idx]));
-            let mut i = separator_end.max(into_idx + 1);
-            if i < period_i && is_keyword(source, &tokens[i], "table") {
-                children.push(token_leaf(b, &tokens[i]));
-                i += 1;
-            }
-            while i < period_i {
-                let token = &tokens[i];
-                if is_keyword(source, token, "in") {
-                    push_token_children(b, &mut children, tokens, i, period_i);
-                    break;
-                }
-                if let Some(next_i) = push_wrapped_data_inline_decl_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    i,
-                    SyntaxKind::SplitTargetOperand,
-                ) {
-                    i = next_i;
-                    continue;
-                }
-                let end_idx = consume_concatenate_operand(source, tokens, i, period_i, &["in"]);
-                if end_idx == i {
-                    children.push(token_leaf(b, token));
-                    i += 1;
-                    continue;
-                }
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    i,
-                    end_idx,
-                    Some(if i == into_idx + 1 {
-                        &tokens[into_idx]
-                    } else {
-                        &tokens[i - 1]
-                    }),
-                    SyntaxKind::SplitTargetOperand,
+                period_i,
+            ) {
+                let raw = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    split_tok.range.start..tokens[period_i].range.end,
+                    &raw,
                 );
-                i = end_idx;
+                return (node, period_i + 1);
             }
 
             children.push(token_leaf(b, &tokens[period_i]));
@@ -9880,6 +9944,32 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_chained_split_stmt_into_tables() {
+        let parsed = crate::parse(
+            "SPLIT: gs_user_creation-user_role AT ',' INTO TABLE lt_roles,\n\
+                    gs_user_creation-gln       AT ',' INTO TABLE lt_glns.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SplitStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SplitSourceOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SplitSeparatorOperand),
+            2
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SplitTargetOperand),
+            2
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 

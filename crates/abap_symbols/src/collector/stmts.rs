@@ -3480,18 +3480,44 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     pub(super) fn collect_split_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         if SplitStmt::cast(self.collector.syntax(node)).is_some() {
-            let byte_mode = self.collector.file.children(node).any(|child| {
-                self.collector.file.kind(child) == SyntaxKind::Token
-                    && self
-                        .collector
-                        .syntax_token_nodes(child)
-                        .into_iter()
-                        .next()
-                        .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
-            });
+            let children: Vec<_> = self.collector.file.children(node).collect();
+            let mut split_target_byte_modes = Vec::new();
+            let mut entry_start = 0usize;
+            while entry_start < children.len() {
+                let mut entry_end = entry_start;
+                while entry_end < children.len() {
+                    let child = children[entry_end];
+                    if self.collector.file.kind(child) == SyntaxKind::Token
+                        && self
+                            .collector
+                            .syntax_token_nodes(child)
+                            .into_iter()
+                            .next()
+                            .is_some_and(|token| token.text.as_ref() == ",")
+                    {
+                        break;
+                    }
+                    entry_end += 1;
+                }
+                let byte_mode = children[entry_start..entry_end].iter().any(|&child| {
+                    self.collector.file.kind(child) == SyntaxKind::Token
+                        && self
+                            .collector
+                            .syntax_token_nodes(child)
+                            .into_iter()
+                            .next()
+                            .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
+                });
+                for &child in &children[entry_start..entry_end] {
+                    if self.collector.file.kind(child) == SyntaxKind::SplitTargetOperand {
+                        split_target_byte_modes.push((child, byte_mode));
+                    }
+                }
+                entry_start = entry_end.saturating_add(1);
+            }
             let mut seen_into = false;
             let mut into_table = false;
-            for child in self.collector.file.children(node) {
+            for child in children {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {
                         if let Some(token) =
@@ -3502,6 +3528,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                                 into_table = false;
                             } else if seen_into && token.text.eq_ignore_ascii_case("table") {
                                 into_table = true;
+                            } else if token.text.as_ref() == "," {
+                                seen_into = false;
+                                into_table = false;
                             }
                         }
                     }
@@ -3515,6 +3544,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             continue;
                         };
                         if self.collector.file.kind(value) == SyntaxKind::DataInlineDecl {
+                            let byte_mode = split_target_byte_modes
+                                .iter()
+                                .find_map(|(target, byte_mode)| {
+                                    (*target == child).then_some(*byte_mode)
+                                })
+                                .unwrap_or(false);
                             self.declare_split_inline_data_target(
                                 value, scope, into_table, byte_mode,
                             );

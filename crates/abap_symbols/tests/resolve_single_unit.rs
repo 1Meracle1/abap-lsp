@@ -3822,6 +3822,103 @@ CLEAR lt_split.
 }
 
 #[test]
+fn resolves_chained_split_into_table_sources_and_targets() {
+    let src = r#"
+TYPES: BEGIN OF ty_user_creation,
+         user_role TYPE string,
+         gln       TYPE string,
+       END OF ty_user_creation.
+DATA gs_user_creation TYPE ty_user_creation.
+DATA lt_roles TYPE STANDARD TABLE OF string.
+DATA lt_glns TYPE STANDARD TABLE OF string.
+
+SPLIT: gs_user_creation-user_role AT ',' INTO TABLE lt_roles,
+       gs_user_creation-gln       AT ',' INTO TABLE lt_glns.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///chained_split_stmt.abap", src, &parsed);
+
+    for name in ["gs_user_creation", "lt_roles", "lt_glns"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved chained SPLIT reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("gs_user_creation")
+                    || diag.message.contains("lt_roles")
+                    || diag.message.contains("lt_glns")
+                    || diag.message.contains("table"))
+        }),
+        "unexpected chained SPLIT diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_chained_split_inline_table_targets() {
+    let src = r#"
+TYPES: BEGIN OF ty_user_creation,
+         user_role TYPE string,
+         gln       TYPE string,
+       END OF ty_user_creation.
+DATA gs_user_creation TYPE ty_user_creation.
+
+SPLIT: gs_user_creation-user_role AT ',' INTO TABLE DATA(lt_roles),
+       gs_user_creation-gln       AT ',' INTO TABLE DATA(lt_glns).
+CLEAR lt_roles.
+CLEAR lt_glns.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///chained_split_inline_stmt.abap", src, &parsed);
+
+    for name in ["lt_roles", "lt_glns"] {
+        assert!(
+            unit.symbols.iter().any(|symbol| {
+                symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == name
+            }),
+            "expected chained SPLIT inline target symbol `{name}`, symbols={:?}",
+            unit.symbols
+        );
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved chained SPLIT inline target reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("gs_user_creation")
+                    || diag.message.contains("lt_roles")
+                    || diag.message.contains("lt_glns")
+                    || diag.message.contains("table"))
+        }),
+        "unexpected chained SPLIT inline diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_assign_to_inline_field_symbol() {
     let src = r#"
 DATA lv_value TYPE string.
