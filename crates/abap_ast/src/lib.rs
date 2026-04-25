@@ -241,6 +241,8 @@ pub enum SyntaxKind {
     AtStmt,
     /// `AT source` inside `LOOP`.
     LoopSourceClause,
+    /// `GROUP group` in `LOOP AT GROUP group`.
+    LoopAtGroupClause,
     /// `INTO target` inside `LOOP`.
     LoopIntoClause,
     /// `ASSIGNING target` inside `LOOP`.
@@ -255,6 +257,8 @@ pub enum SyntaxKind {
     LoopToClause,
     /// `STEP expr` inside `LOOP`.
     LoopStepClause,
+    /// `GROUP BY ...` inside `LOOP`.
+    LoopGroupByClause,
     /// `TRY. ... [CATCH ... . ...]* [CLEANUP. ...] ENDTRY.`
     TryStmt,
     /// `CATCH ... . ...`
@@ -635,6 +639,7 @@ impl SyntaxKind {
             Self::LoopStmt => "LoopStmt",
             Self::AtStmt => "AtStmt",
             Self::LoopSourceClause => "LoopSourceClause",
+            Self::LoopAtGroupClause => "LoopAtGroupClause",
             Self::LoopIntoClause => "LoopIntoClause",
             Self::LoopAssigningClause => "LoopAssigningClause",
             Self::LoopReferenceIntoClause => "LoopReferenceIntoClause",
@@ -642,6 +647,7 @@ impl SyntaxKind {
             Self::LoopFromClause => "LoopFromClause",
             Self::LoopToClause => "LoopToClause",
             Self::LoopStepClause => "LoopStepClause",
+            Self::LoopGroupByClause => "LoopGroupByClause",
             Self::TryStmt => "TryStmt",
             Self::CatchClause => "CatchClause",
             Self::CleanupClause => "CleanupClause",

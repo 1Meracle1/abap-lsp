@@ -314,6 +314,24 @@ fn try_parse_loop_inline_field_symbol_target(
     ))
 }
 
+fn is_loop_group_by_start(source: &str, tokens: &[Token], idx: usize) -> bool {
+    tokens
+        .get(idx)
+        .is_some_and(|token| is_keyword(source, token, "group"))
+        && tokens
+            .get(skip_trivia(tokens, idx + 1))
+            .is_some_and(|token| is_keyword(source, token, "by"))
+}
+
+fn is_loop_at_group_start(source: &str, tokens: &[Token], idx: usize) -> bool {
+    tokens
+        .get(idx)
+        .is_some_and(|token| is_keyword(source, token, "group"))
+        && !tokens
+            .get(skip_trivia(tokens, idx + 1))
+            .is_some_and(|token| is_keyword(source, token, "by"))
+}
+
 fn loop_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -324,7 +342,7 @@ fn loop_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
             || is_keyword(source, token, "where")
             || is_keyword(source, token, "using")
             || is_keyword(source, token, "transporting")
-            || is_keyword(source, token, "group")
+            || is_loop_group_by_start(source, tokens, idx)
             || is_keyword(source, token, "from")
             || is_keyword(source, token, "to")
             || is_keyword(source, token, "step")
@@ -350,6 +368,55 @@ fn scan_loop_expr_end(source: &str, tokens: &[Token], start: usize, end_exclusiv
             && bracket == 0
             && brace == 0
             && (token.kind == TokenKind::Period || loop_clause_starts(source, tokens, idx))
+        {
+            break;
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+
+    idx
+}
+
+fn loop_group_by_tail_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    is_keyword(source, token, "ascending")
+        || is_keyword(source, token, "descending")
+        || is_keyword(source, token, "without")
+        || loop_clause_starts(source, tokens, idx)
+}
+
+fn scan_loop_group_by_expr_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    let mut idx = start;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && (token.kind == TokenKind::Period || loop_group_by_tail_starts(source, tokens, idx))
         {
             break;
         }
@@ -395,6 +462,33 @@ fn parse_loop_clause_expr(
         .collect();
     children.push(expr);
     Some(b.branch(kind, start..end, &children))
+}
+
+fn parse_loop_group_by_clause(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    group_idx: usize,
+    by_idx: usize,
+    expr_start: usize,
+    expr_end: usize,
+) -> Option<NodeId> {
+    if expr_start >= expr_end {
+        return None;
+    }
+    let mut children = vec![
+        token_leaf(b, &tokens[group_idx]),
+        token_leaf(b, &tokens[by_idx]),
+    ];
+    children.extend(
+        tokens[expr_start..expr_end]
+            .iter()
+            .map(|token| token_leaf(b, token)),
+    );
+    Some(b.branch(
+        SyntaxKind::LoopGroupByClause,
+        tokens[group_idx].range.start..tokens[expr_end - 1].range.end,
+        &children,
+    ))
 }
 
 pub fn try_parse_while_stmt(
@@ -692,24 +786,58 @@ pub fn try_parse_loop_stmt(
         StmtPeriodScan::Found(period_i) => {
             let mut children = vec![token_leaf(b, loop_tok), token_leaf(b, at_tok)];
             let mut cursor = idx + 2;
-            let source_end = scan_loop_expr_end(source, tokens, cursor, period_i);
-            if let Some(source_clause) = parse_loop_clause_expr(
-                b,
-                source,
-                tokens,
-                cursor,
-                source_end,
-                Some(at_tok),
-                SyntaxKind::LoopSourceClause,
-                &[idx + 1],
-                false,
-            ) {
-                children.push(source_clause);
+            let first_operand = skip_trivia(tokens, cursor);
+            if is_loop_at_group_start(source, tokens, first_operand) {
+                let group_tok = &tokens[first_operand];
+                let group_start = skip_trivia(tokens, first_operand + 1);
+                let group_end = scan_loop_expr_end(source, tokens, group_start, period_i);
+                if let Some(group_clause) = parse_loop_clause_expr(
+                    b,
+                    source,
+                    tokens,
+                    group_start,
+                    group_end,
+                    Some(group_tok),
+                    SyntaxKind::LoopAtGroupClause,
+                    &[first_operand],
+                    false,
+                ) {
+                    children.push(group_clause);
+                }
+                cursor = group_end;
+            } else {
+                let source_end = scan_loop_expr_end(source, tokens, cursor, period_i);
+                if let Some(source_clause) = parse_loop_clause_expr(
+                    b,
+                    source,
+                    tokens,
+                    cursor,
+                    source_end,
+                    Some(at_tok),
+                    SyntaxKind::LoopSourceClause,
+                    &[idx + 1],
+                    false,
+                ) {
+                    children.push(source_clause);
+                }
+                cursor = source_end;
             }
-            cursor = source_end;
 
             while cursor < period_i {
                 let token = &tokens[cursor];
+                if is_loop_group_by_start(source, tokens, cursor) {
+                    let by_idx = skip_trivia(tokens, cursor + 1);
+                    let expr_start = skip_trivia(tokens, by_idx + 1);
+                    let expr_end =
+                        scan_loop_group_by_expr_end(source, tokens, expr_start, period_i);
+                    if let Some(clause) =
+                        parse_loop_group_by_clause(b, tokens, cursor, by_idx, expr_start, expr_end)
+                    {
+                        children.push(clause);
+                    }
+                    cursor = expr_end;
+                    continue;
+                }
                 if is_keyword(source, token, "into") {
                     let target_start = skip_trivia(tokens, cursor + 1);
                     let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
@@ -1197,6 +1325,30 @@ mod tests {
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::LoopStmt),
             1
+        );
+    }
+
+    #[test]
+    fn parses_loop_group_by_and_loop_at_group_clauses() {
+        let parsed = crate::parse(
+            "LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<row>) WHERE status = space GROUP BY <row>-archivekey.\n  LOOP AT GROUP <row> ASSIGNING FIELD-SYMBOL(<member>).\n  ENDLOOP.\nENDLOOP.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LoopStmt), 2);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::LoopGroupByClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::LoopAtGroupClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::LoopAssigningClause),
+            2
         );
     }
 

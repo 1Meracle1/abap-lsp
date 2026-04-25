@@ -108,6 +108,10 @@ enum SqlClauseKind {
 struct LoopGroupContext {
     source_access: Option<FieldAccess>,
     target_access: Option<FieldAccess>,
+    source_structure: Option<StructureId>,
+    source_declared_type: Option<FieldTypeRefData>,
+    source_type_clause_display: Option<Arc<str>>,
+    allows_internal_table_line_selector: bool,
 }
 
 pub struct Collector<'a> {

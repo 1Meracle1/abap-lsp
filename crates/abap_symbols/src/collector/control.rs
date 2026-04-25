@@ -132,6 +132,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::LoopSourceClause
+                | SyntaxKind::LoopAtGroupClause
                 | SyntaxKind::LoopIntoClause
                 | SyntaxKind::LoopAssigningClause
                 | SyntaxKind::LoopReferenceIntoClause
@@ -139,6 +140,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 | SyntaxKind::LoopFromClause
                 | SyntaxKind::LoopToClause
                 | SyntaxKind::LoopStepClause
+                | SyntaxKind::LoopGroupByClause
                 | SyntaxKind::Token => {}
                 _ => self.collector.walk_node(child, child_scope),
             }
@@ -352,10 +354,21 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             declared_type: None,
             type_clause_display: None,
         };
+        let mut group_key_metadata = InlineLoopTargetMetadata {
+            structure: None,
+            declared_type: None,
+            type_clause_display: None,
+        };
+        let reference_row_metadata = InlineLoopTargetMetadata {
+            structure: None,
+            declared_type: None,
+            type_clause_display: None,
+        };
         let mut source_access = None;
         let mut source_range = None;
         let mut target_access = None;
         let mut allows_internal_table_line_selector = false;
+        let mut seen_group_by = false;
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {
                 SyntaxKind::LoopSourceClause => {
@@ -387,31 +400,60 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                         source_range = Some(self.collector.file.range(expr));
                     }
                 }
+                SyntaxKind::LoopAtGroupClause => {
+                    if let Some(parent_group) = self.collector.loop_group_stack.last() {
+                        source_access = parent_group.source_access.clone();
+                        source_metadata = InlineLoopTargetMetadata {
+                            structure: parent_group.source_structure,
+                            declared_type: parent_group.source_declared_type.clone(),
+                            type_clause_display: parent_group.source_type_clause_display.clone(),
+                        };
+                        allows_internal_table_line_selector =
+                            parent_group.allows_internal_table_line_selector;
+                        source_range = Some(self.collector.file.range(child));
+                    }
+                    if let Some(expr) = self.collector.first_non_token_child(child) {
+                        source_range = Some(self.collector.file.range(expr));
+                        self.collector.expr_lowering().collect_expr(expr, scope);
+                    }
+                }
                 SyntaxKind::LoopIntoClause => {
                     if let Some(target) = self.collector.first_non_token_child(child) {
+                        let target_metadata = if seen_group_by {
+                            &group_key_metadata
+                        } else {
+                            &source_metadata
+                        };
                         target_access = self.loop_target_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
                             SymbolKind::Variable,
-                            &source_metadata,
+                            target_metadata,
                         );
                     }
                 }
                 SyntaxKind::LoopAssigningClause => {
                     if let Some(target) = self.collector.first_non_token_child(child) {
+                        let target_metadata = if seen_group_by {
+                            &group_key_metadata
+                        } else {
+                            &source_metadata
+                        };
                         target_access = self.loop_target_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
                             SymbolKind::FieldSymbol,
-                            &source_metadata,
+                            target_metadata,
                         );
-                        if let (Some(source_access), Some(source_range), Some(target_access)) = (
-                            source_access.as_ref(),
-                            source_range.clone(),
-                            target_access.as_ref(),
-                        ) {
+                        if !seen_group_by
+                            && let (Some(source_access), Some(source_range), Some(target_access)) = (
+                                source_access.as_ref(),
+                                source_range.clone(),
+                                target_access.as_ref(),
+                            )
+                        {
                             self.emit_loop_field_symbol_binding_edge(
                                 scope,
                                 source_access,
@@ -427,16 +469,17 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::LoopReferenceIntoClause => {
                     if let Some(target) = self.collector.last_non_token_child(child) {
+                        let target_metadata = if seen_group_by {
+                            &group_key_metadata
+                        } else {
+                            &reference_row_metadata
+                        };
                         target_access = self.loop_target_access_from_node(target, scope);
                         self.collect_loop_target_node(
                             target,
                             scope,
                             SymbolKind::Variable,
-                            &InlineLoopTargetMetadata {
-                                structure: None,
-                                declared_type: None,
-                                type_clause_display: None,
-                            },
+                            target_metadata,
                         );
                     }
                 }
@@ -460,6 +503,21 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
                         self.collector.expr_lowering().collect_expr(expr, scope);
                     }
                 }
+                SyntaxKind::LoopGroupByClause => {
+                    seen_group_by = true;
+                    if let Some(source_access) = source_access.clone() {
+                        self.collector
+                            .loop_where_field_contexts
+                            .push(LoopWhereFieldContext {
+                                scope,
+                                range: self.collector.file.range(child),
+                                source_access,
+                                target_access: target_access.clone(),
+                            });
+                    }
+                    self.collect_loop_group_by_clause(child, scope);
+                    group_key_metadata = self.loop_group_key_metadata_from_clause(child, scope);
+                }
                 _ => {}
             }
         }
@@ -468,7 +526,197 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         LoopGroupContext {
             source_access,
             target_access,
+            source_structure: source_metadata.structure,
+            source_declared_type: source_metadata.declared_type,
+            source_type_clause_display: source_metadata.type_clause_display,
+            allows_internal_table_line_selector,
         }
+    }
+
+    fn collect_loop_group_by_clause(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.syntax_token_nodes(node);
+        let key_tokens = self.loop_group_by_key_tokens(&tokens);
+        self.collect_loop_group_key_tokens(key_tokens, scope);
+    }
+
+    fn loop_group_key_metadata_from_clause(
+        &self,
+        node: NodeId,
+        scope: ScopeId,
+    ) -> InlineLoopTargetMetadata {
+        let tokens = self.collector.syntax_token_nodes(node);
+        let key_tokens = self.loop_group_by_key_tokens(&tokens);
+        let key_tokens = self.trim_comment_tokens(key_tokens);
+        if self.loop_group_key_is_structured(key_tokens) {
+            return InlineLoopTargetMetadata {
+                structure: None,
+                declared_type: None,
+                type_clause_display: None,
+            };
+        }
+        if let Some(expr) = self.collector.first_non_token_child(node) {
+            let (structure, declared_type) = self
+                .collector
+                .inline_decl_assignment_source_metadata(expr, scope);
+            return InlineLoopTargetMetadata {
+                structure,
+                declared_type,
+                type_clause_display: None,
+            };
+        }
+        InlineLoopTargetMetadata {
+            structure: None,
+            declared_type: None,
+            type_clause_display: None,
+        }
+    }
+
+    fn loop_group_by_key_tokens<'t>(&self, tokens: &'t [SyntaxTokenInfo]) -> &'t [SyntaxTokenInfo] {
+        let mut saw_group = false;
+        for (idx, token) in tokens.iter().enumerate() {
+            if self.collector.syntax_token_is_comment(token) {
+                continue;
+            }
+            if !saw_group {
+                saw_group = token.text.eq_ignore_ascii_case("group");
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("by") {
+                return &tokens[idx + 1..];
+            }
+        }
+        &[]
+    }
+
+    fn collect_loop_group_key_tokens(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let tokens = self.trim_comment_tokens(tokens);
+        if tokens.is_empty() {
+            return;
+        }
+        if let Some(inner) = self.outer_paren_group_inner(tokens)
+            && self.collect_structured_loop_group_key_tokens(inner, scope)
+        {
+            return;
+        }
+        self.collector
+            .collect_token_expression_refs_infos(tokens, scope, true);
+    }
+
+    fn collect_structured_loop_group_key_tokens(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> bool {
+        let assignments = self.loop_group_key_assignments(tokens);
+        if assignments.is_empty() {
+            return false;
+        }
+        for (value_start, value_end) in assignments {
+            let value_tokens = self.trim_comment_tokens(&tokens[value_start..value_end]);
+            if value_tokens.is_empty() || self.is_loop_group_key_special_value(value_tokens) {
+                continue;
+            }
+            self.collector
+                .collect_token_expression_refs_infos(value_tokens, scope, true);
+        }
+        true
+    }
+
+    fn loop_group_key_is_structured(&self, tokens: &[SyntaxTokenInfo]) -> bool {
+        self.outer_paren_group_inner(tokens)
+            .is_some_and(|inner| !self.loop_group_key_assignments(inner).is_empty())
+    }
+
+    fn loop_group_key_assignments(&self, tokens: &[SyntaxTokenInfo]) -> Vec<(usize, usize)> {
+        let mut assignment_heads = Vec::new();
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+
+        for (idx, token) in tokens.iter().enumerate() {
+            if self.collector.syntax_token_is_comment(token) {
+                continue;
+            }
+            let at_top_level = paren == 0 && bracket == 0 && brace == 0;
+            match token.text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                "=" if at_top_level => {
+                    if let Some(name_idx) = self.previous_significant_token_idx(tokens, idx)
+                        && self.collector.syntax_token_is_ident_like(&tokens[name_idx])
+                    {
+                        assignment_heads.push((name_idx, idx));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assignment_heads
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &(_name_idx, eq_idx))| {
+                let value_start = eq_idx + 1;
+                let value_end = assignment_heads
+                    .get(idx + 1)
+                    .map(|(next_name_idx, _)| *next_name_idx)
+                    .unwrap_or(tokens.len());
+                (value_start < value_end).then_some((value_start, value_end))
+            })
+            .collect()
+    }
+
+    fn previous_significant_token_idx(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        before: usize,
+    ) -> Option<usize> {
+        (0..before)
+            .rev()
+            .find(|&idx| !self.collector.syntax_token_is_comment(&tokens[idx]))
+    }
+
+    fn trim_comment_tokens<'t>(&self, tokens: &'t [SyntaxTokenInfo]) -> &'t [SyntaxTokenInfo] {
+        let mut start = 0usize;
+        let mut end = tokens.len();
+        while start < end && self.collector.syntax_token_is_comment(&tokens[start]) {
+            start += 1;
+        }
+        while end > start && self.collector.syntax_token_is_comment(&tokens[end - 1]) {
+            end -= 1;
+        }
+        &tokens[start..end]
+    }
+
+    fn outer_paren_group_inner<'t>(
+        &self,
+        tokens: &'t [SyntaxTokenInfo],
+    ) -> Option<&'t [SyntaxTokenInfo]> {
+        if tokens.first().map(|token| token.text.as_ref()) != Some("(") {
+            return None;
+        }
+        let end_idx = self
+            .collector
+            .find_matching_group_end_infos(tokens, 0, "(", ")")?;
+        (end_idx == tokens.len() - 1).then_some(&tokens[1..end_idx])
+    }
+
+    fn is_loop_group_key_special_value(&self, tokens: &[SyntaxTokenInfo]) -> bool {
+        let significant: Vec<_> = tokens
+            .iter()
+            .filter(|token| !self.collector.syntax_token_is_comment(token))
+            .collect();
+        matches!(
+            significant.as_slice(),
+            [first, second]
+                if first.text.eq_ignore_ascii_case("group")
+                    && (second.text.eq_ignore_ascii_case("size")
+                        || second.text.eq_ignore_ascii_case("index"))
+        )
     }
 
     fn emit_loop_field_symbol_binding_edge(

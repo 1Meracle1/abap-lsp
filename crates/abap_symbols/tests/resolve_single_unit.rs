@@ -1113,6 +1113,155 @@ ENDLOOP.
 }
 
 #[test]
+fn resolves_loop_group_by_and_loop_at_group_symbols() {
+    let src = r#"
+TYPES:
+  BEGIN OF ty_row,
+    status TYPE c,
+    archivekey TYPE string,
+    objid TYPE string,
+  END OF ty_row,
+  ty_rows TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.
+DATA lt_rel_data TYPE ty_rows.
+
+LOOP AT lt_rel_data ASSIGNING FIELD-SYMBOL(<fs_arch>)
+  WHERE status = space
+  GROUP BY <fs_arch>-archivekey.
+  LOOP AT GROUP <fs_arch> ASSIGNING FIELD-SYMBOL(<fs_arch_key>)
+    WHERE status = space.
+    DATA(lv_objid) = <fs_arch_key>-objid.
+  ENDLOOP.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_group_by.abap", src, &parsed);
+
+    let fs_arch_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<fs_arch>"
+        })
+        .collect();
+    assert_eq!(
+        fs_arch_refs.len(),
+        2,
+        "expected GROUP BY and LOOP AT GROUP references, got {fs_arch_refs:?}"
+    );
+    assert!(
+        fs_arch_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected <fs_arch> references to resolve, refs={fs_arch_refs:?} diagnostics={:?}",
+        unit.diagnostics
+    );
+
+    let member_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<fs_arch_key>"
+        })
+        .collect();
+    assert!(
+        member_refs
+            .iter()
+            .any(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected LOOP AT GROUP member field-symbol reference, refs={member_refs:?} diagnostics={:?}",
+        unit.diagnostics
+    );
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_name.as_ref() == "<fs_arch>"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "archivekey"
+    }));
+    assert!(unit.field_accesses.iter().any(|access| {
+        access.base_name.as_ref() == "<fs_arch_key>"
+            && access.field_path.len() == 1
+            && access.field_path[0].name.as_ref() == "objid"
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("<fs_arch>")
+                    || diag.message.contains("<fs_arch_key>")
+                    || diag.message.contains("status"))
+        }),
+        "unexpected LOOP GROUP diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn structured_loop_group_by_collects_value_symbols_only() {
+    let src = r#"
+TYPES:
+  BEGIN OF ty_row,
+    archivekey TYPE string,
+  END OF ty_row,
+  ty_rows TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.
+DATA lt_rows TYPE ty_rows.
+
+LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<row>)
+  GROUP BY ( key = <row>-archivekey size = GROUP SIZE )
+  INTO DATA(ls_group).
+  LOOP AT GROUP ls_group ASSIGNING FIELD-SYMBOL(<member>).
+    DATA(lv_key) = <member>-archivekey.
+  ENDLOOP.
+ENDLOOP.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///loop_group_by_structured.abap", src, &parsed);
+
+    let row_refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "<row>"
+        })
+        .collect();
+    assert_eq!(
+        row_refs.len(),
+        1,
+        "expected only RHS <row> ref: {row_refs:?}"
+    );
+    assert!(
+        row_refs
+            .iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected structured GROUP BY RHS reference to resolve, refs={row_refs:?} diagnostics={:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "ls_group"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected LOOP AT GROUP group-key binding to resolve, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("key")
+                    || diag.message.contains("size")
+                    || diag.message.contains("GROUP"))
+        }),
+        "structured GROUP BY component names should not be value refs: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_append_source_and_target() {
     let src = r#"
 DATA ls_evt TYPE string.
