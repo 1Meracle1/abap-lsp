@@ -6661,6 +6661,68 @@ DATA lv_value TYPE ty_outer-a.";
 }
 
 #[test]
+fn data_begin_of_block_with_include_type_declares_structure_members() {
+    let src = "\
+TYPES datum TYPE d.\n\
+TYPES: BEGIN OF zatt_trans_cust,\n\
+         trans_id TYPE i,\n\
+       END OF zatt_trans_cust.\n\
+DATA BEGIN OF wa_zatt_trans_cust.\n\
+INCLUDE TYPE  zatt_trans_cust.\n\
+DATA: status_info     TYPE string,\n\
+      transport_info  TYPE string,\n\
+      recall_info     TYPE string,\n\
+      zz_req_del_date TYPE datum,\n\
+      zz_plan_gi_date TYPE datum,\n\
+      check           TYPE char1,\n\
+      END OF wa_zatt_trans_cust.\n\
+wa_zatt_trans_cust-trans_id = 1.\n\
+wa_zatt_trans_cust-status_info = 'ready'.\n\
+DATA lv_req_date TYPE wa_zatt_trans_cust-zz_req_del_date.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///data_begin_of_include.abap", src, &parsed);
+
+    let wa = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable
+                && symbol.name.as_ref() == "wa_zatt_trans_cust"
+        })
+        .expect("structured data symbol");
+    let structure = unit.structure(wa.structure.expect("data structure metadata"));
+    for field_name in [
+        "trans_id",
+        "status_info",
+        "transport_info",
+        "recall_info",
+        "zz_req_del_date",
+        "zz_plan_gi_date",
+        "check",
+    ] {
+        assert!(
+            structure
+                .fields
+                .iter()
+                .any(|field| field.name.as_ref() == field_name),
+            "expected `{field_name}` field, fields={:?}",
+            structure.fields
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnknownField
+                || diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn include_type_alias_and_suffix_support_direct_and_alias_component_access() {
     let src = "\
 TYPES: BEGIN OF ty_inner,\n\

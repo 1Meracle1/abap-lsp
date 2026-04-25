@@ -982,6 +982,8 @@ fn parse_structured_decl(
     if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comma) {
         children.push(token_leaf(b, tokens.get(i)?));
         i += 1;
+    } else if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Period) {
+        i = consume_structured_decl_period_separator(b, source, tokens, i, &mut children)?;
     }
 
     while i < tokens.len() {
@@ -1037,26 +1039,41 @@ fn parse_structured_decl(
             continue;
         }
         if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Period) {
-            children.push(token_leaf(b, tokens.get(i)?));
-            i += 1;
-            while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-                children.push(token_leaf(b, tokens.get(i)?));
-                i += 1;
-            }
-            if tokens
-                .get(i)
-                .is_some_and(|token| is_structured_decl_continuation_keyword(source, token))
-            {
-                children.push(token_leaf(b, tokens.get(i)?));
-                i += 1;
-                if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Colon) {
-                    children.push(token_leaf(b, tokens.get(i)?));
-                    i += 1;
-                }
-            }
+            i = consume_structured_decl_period_separator(b, source, tokens, i, &mut children)?;
         }
     }
     None
+}
+
+fn consume_structured_decl_period_separator(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    children: &mut Vec<NodeId>,
+) -> Option<usize> {
+    if tokens.get(idx).map(|t| t.kind) != Some(TokenKind::Period) {
+        return None;
+    }
+
+    children.push(token_leaf(b, tokens.get(idx)?));
+    let mut i = idx + 1;
+    while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+        children.push(token_leaf(b, tokens.get(i)?));
+        i += 1;
+    }
+    if tokens
+        .get(i)
+        .is_some_and(|token| is_structured_decl_continuation_keyword(source, token))
+    {
+        children.push(token_leaf(b, tokens.get(i)?));
+        i += 1;
+        if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Colon) {
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+        }
+    }
+    Some(i)
 }
 
 fn parse_structured_include_clause(
@@ -1667,6 +1684,52 @@ DATA: BEGIN OF gs_user_creation,\n\
             3
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn block_structured_data_decl_parses_include_and_data_components() {
+        let src = "\
+DATA BEGIN OF wa_zatt_trans_cust.\n\
+INCLUDE TYPE  zatt_trans_cust.\n\
+DATA: status_info     TYPE string,\n\
+      transport_info  TYPE string,\n\
+      recall_info     TYPE string,\n\
+      zz_req_del_date TYPE datum,\n\
+      zz_plan_gi_date TYPE datum,\n\
+      check           TYPE char1,\n\
+      END OF wa_zatt_trans_cust.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredIncludeClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredFieldClause),
+            6
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::IncludeStmt),
+            0
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error),
+            0
+        );
     }
 
     #[test]
