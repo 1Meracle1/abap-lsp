@@ -2896,6 +2896,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     diag.kind,
                     DiagnosticKind::DuplicateDeclaration
                         | DiagnosticKind::ShadowedSymbol
+                        | DiagnosticKind::MismatchedStructuredDeclaration
                         | DiagnosticKind::UnresolvedInclude
                 )
             })

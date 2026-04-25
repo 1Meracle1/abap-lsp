@@ -26,13 +26,13 @@ use abap_lexer::{TextRange, Token, TokenKind};
 use crate::builtins::builtin_routine_spec;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassDefinitionData, ClassInheritanceData, ClassMemberData,
-    Diagnostic, ExpressionFactData, FieldAccess, FieldSymbolStateCheckData, FieldTypeRefData,
-    FindSiteData, FormRoutineData, FunctionModuleData, ImplementedInterfaceData, IncludeEdge,
-    LoopAtFieldContext, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess,
-    PerformCallData, ReferenceData, RoutineControlRegionData, RoutineSiteData, SqlNameRefData,
-    SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData,
-    StructureFieldData, SymbolData, SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis,
-    ValueFlowEdgeData, ValueStateCheckData,
+    Diagnostic, DiagnosticKind, ExpressionFactData, FieldAccess, FieldSymbolStateCheckData,
+    FieldTypeRefData, FindSiteData, FormRoutineData, FunctionModuleData, ImplementedInterfaceData,
+    IncludeEdge, LoopAtFieldContext, LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess,
+    PerformCallData, ReferenceData, ReferenceKind, RoutineControlRegionData, RoutineSiteData,
+    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
+    SqlTargetData, StructureData, StructureFieldData, SymbolData, SymbolKind,
+    SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -1188,6 +1188,95 @@ impl<'a> Collector<'a> {
         let name_range = self.structured_decl_name_range(node)?;
         let structure = self.pending_structure_from_node(node, scope)?;
         Some((structure.name, name_range, structure.members))
+    }
+
+    fn structured_decl_name_pair(
+        &self,
+        node: NodeId,
+    ) -> Option<((Arc<str>, TextRange), (Arc<str>, TextRange))> {
+        let tokens: Vec<_> = self
+            .file
+            .children(node)
+            .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
+            .collect();
+        let begin_tok = tokens.first().copied()?;
+        let of_tok = tokens.get(1).copied()?;
+        let name_tok = tokens.get(2).copied()?;
+        let begin_text = self.syntax(begin_tok).text(self.source)?;
+        let of_text = self.syntax(of_tok).text(self.source)?;
+        if !begin_text.eq_ignore_ascii_case("begin") || !of_text.eq_ignore_ascii_case("of") {
+            return None;
+        }
+        let (begin_name, begin_range) = self.node_name(name_tok)?;
+        if !self.syntax_token_is_identifier_node(name_tok) {
+            return None;
+        }
+
+        let end_name_tok = tokens.windows(3).rev().find_map(|window| {
+            let end_text = self.syntax(window[0]).text(self.source)?;
+            let of_text = self.syntax(window[1]).text(self.source)?;
+            if end_text.eq_ignore_ascii_case("end") && of_text.eq_ignore_ascii_case("of") {
+                Some(window[2])
+            } else {
+                None
+            }
+        })?;
+        if !self.syntax_token_is_identifier_node(end_name_tok) {
+            return None;
+        }
+        let (end_name, end_range) = self.node_name(end_name_tok)?;
+        Some(((begin_name, begin_range), (end_name, end_range)))
+    }
+
+    fn syntax_token_is_identifier_node(&self, node: NodeId) -> bool {
+        self.file.kind(node) == SyntaxKind::Token
+            && self
+                .syntax(node)
+                .token_kind()
+                .is_some_and(|kind| kind == TokenKind::Ident)
+    }
+
+    fn check_structured_decl_end_name(&mut self, node: NodeId) -> bool {
+        let Some(((begin_name, _), (end_name, end_range))) = self.structured_decl_name_pair(node)
+        else {
+            return false;
+        };
+        if begin_name.eq_ignore_ascii_case(end_name.as_ref()) {
+            return true;
+        }
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::MismatchedStructuredDeclaration,
+            range: end_range,
+            message: format!(
+                "structured declaration ends with '{}', but began with '{}'",
+                end_name, begin_name
+            ),
+        });
+        false
+    }
+
+    fn add_structured_decl_end_reference(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        kind: SymbolKind,
+    ) {
+        if !self.check_structured_decl_end_name(node) {
+            return;
+        }
+        let Some((_, (end_name, end_range))) = self.structured_decl_name_pair(node) else {
+            return;
+        };
+        let Some(namespace) = kind.namespaces().first().copied() else {
+            return;
+        };
+        self.add_reference(
+            scope,
+            end_name,
+            namespace,
+            ReferenceKind::StructuredDeclEnd,
+            end_range,
+        );
     }
 
     fn structured_decl_name_range(&self, node: NodeId) -> Option<TextRange> {

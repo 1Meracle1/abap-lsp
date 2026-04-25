@@ -182,7 +182,10 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
 
         for reference in unit.references.iter().filter(|reference| {
             reference.namespace == Namespace::Value
-                && !matches!(reference.kind, crate::ReferenceKind::TypeRef)
+                && !matches!(
+                    reference.kind,
+                    crate::ReferenceKind::TypeRef | crate::ReferenceKind::StructuredDeclEnd
+                )
                 // Structured instruction sites already model execution of nested references.
                 && !unit.call_sites.iter().any(|call_site| {
                     call_site.scope == reference.scope
@@ -1508,7 +1511,10 @@ fn build_routine_dataflow(
         .iter()
         .filter(|reference| {
             reference.namespace == Namespace::Value
-                && !matches!(reference.kind, crate::ReferenceKind::TypeRef)
+                && !matches!(
+                    reference.kind,
+                    crate::ReferenceKind::TypeRef | crate::ReferenceKind::StructuredDeclEnd
+                )
         })
         .filter_map(|reference| {
             resolved_value_id_for_reference(unit, reference.id, &value_ids_by_symbol).map(|value| {

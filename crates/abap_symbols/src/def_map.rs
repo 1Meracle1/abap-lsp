@@ -103,6 +103,7 @@ impl SymbolKind {
 pub enum ReferenceKind {
     Identifier,
     TypeRef,
+    StructuredDeclEnd,
     MessageClass,
     RoutineCall,
     StaticTarget,
@@ -271,6 +272,7 @@ pub struct ReferenceData {
 pub enum DiagnosticKind {
     DuplicateDeclaration,
     ShadowedSymbol,
+    MismatchedStructuredDeclaration,
     UnresolvedReference,
     UnresolvedInclude,
     IncludeCycle,

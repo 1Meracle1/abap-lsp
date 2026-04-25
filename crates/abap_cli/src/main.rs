@@ -1144,6 +1144,7 @@ fn local_export_candidate_kind_for_reference(
         abap_symbols::ReferenceKind::Include => Some("include"),
         abap_symbols::ReferenceKind::StaticTarget => Some("static"),
         abap_symbols::ReferenceKind::TypeRef => Some("type"),
+        abap_symbols::ReferenceKind::StructuredDeclEnd => None,
         abap_symbols::ReferenceKind::MessageClass => Some("message-class"),
         abap_symbols::ReferenceKind::RoutineCall
             if namespace == abap_symbols::Namespace::Routine =>

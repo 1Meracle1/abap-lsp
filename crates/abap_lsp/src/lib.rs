@@ -2571,6 +2571,7 @@ fn local_export_candidate_kind_for_reference(
         ReferenceKind::Include => Some("include"),
         ReferenceKind::StaticTarget => Some("static"),
         ReferenceKind::TypeRef => Some("type"),
+        ReferenceKind::StructuredDeclEnd => None,
         ReferenceKind::MessageClass => Some("message-class"),
         ReferenceKind::RoutineCall if namespace == abap_symbols::Namespace::Routine => {
             Some("function")
@@ -2607,6 +2608,7 @@ fn collect_remote_dependency_candidates_for_unit(
             ReferenceKind::Include => continue,
             ReferenceKind::StaticTarget => "static",
             ReferenceKind::TypeRef => "type",
+            ReferenceKind::StructuredDeclEnd => continue,
             ReferenceKind::MessageClass => "message-class",
             ReferenceKind::RoutineCall
                 if reference.namespace == abap_symbols::Namespace::Routine =>
@@ -3319,6 +3321,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
         | DiagnosticKind::IncludeCycle
+        | DiagnosticKind::MismatchedStructuredDeclaration
         | DiagnosticKind::WrongNamespace
         | DiagnosticKind::UnknownField
         | DiagnosticKind::InvalidBuiltinNamedArgument
@@ -3591,6 +3594,7 @@ fn remote_dependency_candidate_at_offset(
             ReferenceKind::Include => None,
             ReferenceKind::StaticTarget => Some("static"),
             ReferenceKind::TypeRef => Some("type"),
+            ReferenceKind::StructuredDeclEnd => None,
             ReferenceKind::MessageClass => Some("message-class"),
             ReferenceKind::RoutineCall
                 if reference.namespace == abap_symbols::Namespace::Routine =>
@@ -6171,6 +6175,78 @@ ls_row-field_a = 1.";
                         && (modifiers & decl_mod) == 0
                 }),
             "expected field access token, tokens={positions:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_structured_decl_end_names() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+DATA BEGIN OF wa_row.
+DATA: value TYPE i,
+      END OF wa_row.
+TYPES: BEGIN OF ty_row,
+         field TYPE i,
+       END OF ty_row.";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///sem_structured_end_names.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let snapshot = state
+            .cache
+            .get("file:///sem_structured_end_names.abap")
+            .expect("snapshot");
+        let tokens = sem_tokens::build_semantic_tokens(snapshot.as_ref());
+        let legend = sem_tokens::semantic_tokens_legend();
+        let variable_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::VARIABLE)
+            .expect("legend has variable") as u32;
+        let type_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
+        let decl_mod = 1u32
+            << legend
+                .token_modifiers
+                .iter()
+                .position(|m| m.as_str() == "declaration")
+                .expect("declaration modifier");
+
+        let positions = semantic_token_positions(&tokens);
+        assert!(
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, modifiers)| {
+                    line == 2
+                        && character == 13
+                        && token_type == variable_idx
+                        && (modifiers & decl_mod) == 0
+                }),
+            "expected END OF DATA name token, tokens={positions:?}"
+        );
+        assert!(
+            positions
+                .iter()
+                .any(|&(line, character, _, token_type, modifiers)| {
+                    line == 5
+                        && character == 14
+                        && token_type == type_idx
+                        && (modifiers & decl_mod) == 0
+                }),
+            "expected END OF TYPES name token, tokens={positions:?}"
         );
     }
 

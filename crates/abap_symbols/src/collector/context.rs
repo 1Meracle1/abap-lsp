@@ -474,6 +474,16 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         )
     }
 
+    pub(super) fn add_structured_decl_end_reference(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        kind: SymbolKind,
+    ) {
+        self.collector
+            .add_structured_decl_end_reference(node, scope, kind);
+    }
+
     pub(super) fn declaration_scope(&self, scope: ScopeId) -> ScopeId {
         self.collector.declaration_scope(scope)
     }

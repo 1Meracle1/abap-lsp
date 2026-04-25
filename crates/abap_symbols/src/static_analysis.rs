@@ -248,6 +248,7 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         DiagnosticKind::DeadStore => StaticAnalysisFindingKind::DeadStore,
         DiagnosticKind::DuplicateDeclaration
         | DiagnosticKind::ShadowedSymbol
+        | DiagnosticKind::MismatchedStructuredDeclaration
         | DiagnosticKind::UnresolvedReference
         | DiagnosticKind::UnresolvedInclude
         | DiagnosticKind::IncludeCycle

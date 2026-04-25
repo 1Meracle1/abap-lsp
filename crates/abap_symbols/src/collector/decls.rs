@@ -518,6 +518,8 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             );
             self.ctx
                 .declare_symbol(scope, name, kind, range, Some(structure), None, None, None);
+            self.ctx
+                .add_structured_decl_end_reference(node, scope, kind);
             return;
         }
 
@@ -562,6 +564,8 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             );
             self.ctx
                 .declare_symbol(scope, name, kind, range, Some(structure), None, None, None);
+            self.ctx
+                .add_structured_decl_end_reference(node, scope, kind);
         }
     }
 

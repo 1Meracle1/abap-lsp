@@ -6452,6 +6452,123 @@ ls_date-yyyy = '2026'.";
 }
 
 #[test]
+fn structured_begin_end_closing_names_emit_resolved_references() {
+    let src = "\
+DATA BEGIN OF wa_zatt_trans_cust.\n\
+DATA: status_info TYPE string,\n\
+      END OF wa_zatt_trans_cust.\n\
+\n\
+TYPES: BEGIN OF ts_obj_ids,\n\
+         owner TYPE char12,\n\
+       END OF ts_obj_ids.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///structured_end_refs.abap", src, &parsed);
+
+    let data_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "wa_zatt_trans_cust"
+        })
+        .expect("structured DATA symbol");
+    let data_end_offset = src
+        .match_indices("wa_zatt_trans_cust")
+        .nth(1)
+        .expect("closing DATA name")
+        .0;
+    let data_end_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.name.as_ref() == "wa_zatt_trans_cust"
+                && reference.range.start == data_end_offset
+        })
+        .expect("END OF DATA reference");
+    assert_eq!(data_end_ref.namespace, Namespace::Value);
+    assert_eq!(data_end_ref.kind, ReferenceKind::StructuredDeclEnd);
+    assert_eq!(
+        data_end_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: data_symbol.id,
+        }))
+    );
+
+    let type_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::TypeDef && symbol.name.as_ref() == "ts_obj_ids")
+        .expect("structured TYPES symbol");
+    let type_end_offset = src
+        .match_indices("ts_obj_ids")
+        .nth(1)
+        .expect("closing TYPES name")
+        .0;
+    let type_end_ref = unit
+        .references
+        .iter()
+        .find(|reference| {
+            reference.name.as_ref() == "ts_obj_ids" && reference.range.start == type_end_offset
+        })
+        .expect("END OF TYPES reference");
+    assert_eq!(type_end_ref.namespace, Namespace::Type);
+    assert_eq!(type_end_ref.kind, ReferenceKind::StructuredDeclEnd);
+    assert_eq!(
+        type_end_ref.resolution,
+        Some(Resolution::Symbol(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: type_symbol.id,
+        }))
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MismatchedStructuredDeclaration),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("wa_zatt_trans_cust")
+        }),
+        "END OF reference must not count as an executable read: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_mismatched_structured_begin_end_names() {
+    let src = "\
+TYPES: BEGIN OF ty_open, field TYPE i, END OF ty_close.\n\
+DATA: BEGIN OF ls_open, field TYPE i, END OF ls_close.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///structured_name_mismatch.abap", src, &parsed);
+
+    let diagnostics: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::MismatchedStructuredDeclaration)
+        .collect();
+    assert_eq!(diagnostics.len(), 2, "diagnostics={:?}", unit.diagnostics);
+    assert!(diagnostics[0].message.contains("ty_close"));
+    assert!(diagnostics[0].message.contains("ty_open"));
+    assert!(diagnostics[1].message.contains("ls_close"));
+    assert!(diagnostics[1].message.contains("ls_open"));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("ty_close") || diag.message.contains("ls_close"))
+        }),
+        "mismatch should not also emit unresolved closing-name diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn grouped_data_begin_of_with_like_fields_declares_structure_and_following_symbols() {
     let src = "\
 DATA: BEGIN OF gs_user_creation,\n\

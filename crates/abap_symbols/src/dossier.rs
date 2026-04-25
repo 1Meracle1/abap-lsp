@@ -1528,6 +1528,7 @@ fn reference_kind_name(kind: ReferenceKind) -> &'static str {
     match kind {
         ReferenceKind::Identifier => "identifier",
         ReferenceKind::TypeRef => "type_ref",
+        ReferenceKind::StructuredDeclEnd => "structured_decl_end",
         ReferenceKind::MessageClass => "message_class",
         ReferenceKind::RoutineCall => "routine_call",
         ReferenceKind::StaticTarget => "static_target",
@@ -1580,6 +1581,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
     match kind {
         DiagnosticKind::DuplicateDeclaration => "duplicate_declaration",
         DiagnosticKind::ShadowedSymbol => "shadowed_symbol",
+        DiagnosticKind::MismatchedStructuredDeclaration => "mismatched_structured_declaration",
         DiagnosticKind::UnresolvedReference => "unresolved_reference",
         DiagnosticKind::UnresolvedInclude => "unresolved_include",
         DiagnosticKind::IncludeCycle => "include_cycle",

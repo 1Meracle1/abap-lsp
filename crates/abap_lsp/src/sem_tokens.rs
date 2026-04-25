@@ -105,9 +105,14 @@ fn reference_fallback_type(reference: &ReferenceData, ix: SemanticTokenTypeIndic
         ReferenceKind::TypeRef | ReferenceKind::MessageClass | ReferenceKind::StaticTarget => {
             ix.type_
         }
+        ReferenceKind::StructuredDeclEnd
+            if reference.namespace == abap_symbols::Namespace::Type =>
+        {
+            ix.type_
+        }
         ReferenceKind::RoutineCall => ix.function,
         ReferenceKind::Include => ix.variable,
-        ReferenceKind::Identifier => ix.variable,
+        ReferenceKind::Identifier | ReferenceKind::StructuredDeclEnd => ix.variable,
     }
 }
 

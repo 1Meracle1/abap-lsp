@@ -232,6 +232,10 @@ impl<'a> Collector<'a> {
                     self.type_clause_ns_stack.pop();
                 }
             }
+            SyntaxKind::StructuredDecl => {
+                self.check_structured_decl_end_name(node);
+                self.walk_children(node, scope);
+            }
             _ => self.walk_children(node, scope),
         }
     }
