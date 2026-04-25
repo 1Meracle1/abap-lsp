@@ -1449,6 +1449,77 @@ MODIFY lt_rows FROM ls_row
 }
 
 #[test]
+fn treats_modify_with_index_and_transporting_as_internal_table() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         status TYPE string,
+         status_info TYPE string,
+         retrig_status TYPE string,
+         last_response TYPE string,
+       END OF ty_row.
+DATA ls_data_aux TYPE ty_row.
+DATA lv_index TYPE i.
+
+MODIFY it_zatt_trans_cust FROM ls_data_aux INDEX lv_index
+  TRANSPORTING status status_info retrig_status last_response.
+
+DATA it_zatt_trans_cust TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///modify_index_transporting.abap", src, &parsed);
+
+    assert!(
+        unit.sql_queries.is_empty(),
+        "MODIFY with INDEX/TRANSPORTING should not be lowered as Open SQL: {:?}",
+        unit.sql_queries
+    );
+    assert!(
+        unit.sql_sources.is_empty(),
+        "MODIFY target should not be treated as a DB source: {:?}",
+        unit.sql_sources
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnverifiedOpenSqlSource
+                && diag.message.contains("it_zatt_trans_cust")
+        }),
+        "unexpected Open SQL diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(unit.system_field_updates.iter().any(|update| {
+        update.statement == abap_symbols::SystemFieldStatementKind::ModifyTable
+            && update.field_name.as_ref() == "subrc"
+    }));
+
+    for name in ["it_zatt_trans_cust", "ls_data_aux", "lv_index"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved MODIFY reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for field_name in ["status", "status_info", "retrig_status", "last_response"] {
+        assert!(
+            unit.field_accesses.iter().any(|access| {
+                access.base_namespace == Namespace::Value
+                    && access.base_name.as_ref() == "it_zatt_trans_cust"
+                    && access.field_path.len() == 1
+                    && access.field_path[0].name.as_ref() == field_name
+            }),
+            "expected MODIFY TRANSPORTING field access for `{field_name}`, accesses={:?}",
+            unit.field_accesses
+        );
+    }
+}
+
+#[test]
 fn collects_sql_semantics_for_modify_dbtab_from_work_area() {
     let src = r#"
 TYPES ty_trans TYPE BEGIN OF ty_trans,

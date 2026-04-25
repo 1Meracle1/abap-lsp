@@ -843,8 +843,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     fn modify_stmt_operands(
         &self,
         node: NodeId,
-    ) -> (bool, Option<NodeId>, Option<NodeId>, Option<NodeId>) {
+    ) -> (bool, bool, Option<NodeId>, Option<NodeId>, Option<NodeId>) {
         let mut saw_table_keyword = false;
+        let mut saw_internal_table_clause = false;
         let mut head_expr = None;
         let mut from_expr = None;
         let mut where_expr = None;
@@ -859,7 +860,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     } else if text.eq_ignore_ascii_case("from") {
                         expect_from_expr = true;
                         saw_where = false;
+                    } else if text.eq_ignore_ascii_case("index")
+                        || text.eq_ignore_ascii_case("transporting")
+                    {
+                        saw_internal_table_clause = true;
                     } else if text.eq_ignore_ascii_case("where") {
+                        saw_internal_table_clause = true;
                         saw_where = true;
                         expect_from_expr = false;
                     } else if expect_from_expr && text.eq_ignore_ascii_case("table") {
@@ -883,7 +889,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
         }
 
-        (saw_table_keyword, head_expr, from_expr, where_expr)
+        (
+            saw_table_keyword,
+            saw_internal_table_clause,
+            head_expr,
+            from_expr,
+            where_expr,
+        )
     }
 
     fn modify_transporting_field_paths(&self, node: NodeId) -> Vec<Vec<FieldAccessSegment>> {
@@ -1392,9 +1404,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
-        let (saw_table_keyword, head_expr, from_expr, _where_expr) =
+        let (saw_table_keyword, saw_internal_table_clause, head_expr, from_expr, _where_expr) =
             self.modify_stmt_operands(node);
         if !saw_table_keyword
+            && !saw_internal_table_clause
             && from_expr.is_some()
             && let Some(source_expr) = head_expr
             && let Some(source_name) = self.simple_delete_source_name(source_expr)
