@@ -4003,6 +4003,44 @@ pub fn code_actions(state: &ServerState, params: &CodeActionParams) -> Option<Co
         }));
     }
 
+    if let Some(offset) = position_to_offset_snapshot(&snapshot, params.range.start)
+        && let Some(action) = snapshot.method_parameter_comments_action_at(offset)
+    {
+        let Some(start) = offset_to_position_snapshot(snapshot.as_ref(), action.edit_range.start)
+        else {
+            return Some(actions);
+        };
+        let Some(end) = offset_to_position_snapshot(snapshot.as_ref(), action.edit_range.end)
+        else {
+            return Some(actions);
+        };
+        let uri: Uri = snapshot
+            .uri
+            .as_ref()
+            .parse()
+            .expect("cached document URI must be a valid URL");
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: action.title,
+            kind: Some(CodeActionKind::REFACTOR_REWRITE),
+            diagnostics: None,
+            edit: Some(WorkspaceEdit {
+                changes: Some(HashMap::from([(
+                    uri,
+                    vec![TextEdit {
+                        range: Range { start, end },
+                        new_text: action.new_text,
+                    }],
+                )])),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            is_preferred: None,
+            disabled: None,
+            data: None,
+            command: None,
+        }));
+    }
+
     Some(actions)
 }
 
@@ -4234,8 +4272,6 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
     let mut hint_infos = snapshot.perform_parameter_inlay_hints_in_range(byte_range.clone());
     hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range.clone()));
     hint_infos.extend(snapshot.method_parameter_inlay_hints_in_range(byte_range.clone()));
-    hint_infos
-        .extend(snapshot.method_implementation_parameter_inlay_hints_in_range(byte_range.clone()));
     hint_infos.sort_by_key(|hint| hint.position);
     let mut hints: Vec<_> = hint_infos
         .into_iter()
@@ -14326,8 +14362,9 @@ START-OF-SELECTION.
     }
 
     #[test]
-    fn inlay_hints_show_method_parameters_on_implementation_headers() {
+    fn code_action_syncs_method_parameter_comments_on_implementation_header() {
         let state = ServerState::default();
+        let uri = Uri::from_str("file:///method_impl_comments.abap").expect("uri");
         let text = "\
 CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
@@ -14356,7 +14393,7 @@ ENDCLASS.
             &state,
             &DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
-                    uri: Uri::from_str("file:///method_impl_inlay.abap").expect("uri"),
+                    uri: uri.clone(),
                     language_id: "abap".to_string(),
                     version: 1,
                     text: text.to_string(),
@@ -14364,51 +14401,141 @@ ENDCLASS.
             },
         );
 
-        let hints = inlay_hints(
+        let header_offset = text
+            .rfind("METHOD do_stmt_else")
+            .expect("method implementation");
+        let header_position =
+            offset_to_position(text, header_offset + "METHOD ".len()).expect("header position");
+        let actions = code_actions(
             &state,
-            &InlayHintParams {
-                text_document: TextDocumentIdentifier {
-                    uri: Uri::from_str("file:///method_impl_inlay.abap").expect("uri"),
-                },
+            &CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 range: Range {
-                    start: offset_to_position(text, 0).expect("start position"),
-                    end: offset_to_position(text, text.len()).expect("end position"),
+                    start: header_position,
+                    end: header_position,
+                },
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
                 },
                 work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
             },
         )
-        .expect("inlay hints");
+        .expect("code actions");
 
-        let parameter_hints: Vec<_> = hints
-            .iter()
-            .filter(|hint| matches!(hint.kind, Some(InlayHintKind::PARAMETER)))
-            .collect();
-        assert_eq!(parameter_hints.len(), 1, "{hints:?}");
-
-        let implementation_position = offset_to_position(
-            text,
-            text.rfind("METHOD do_stmt_else.")
-                .expect("method implementation")
-                + "METHOD do_stmt_else.".len(),
-        )
-        .expect("implementation hint position");
-        let hint = parameter_hints[0];
-        assert_eq!(hint.position, implementation_position);
-        assert_eq!(
-            inlay_hint_label_string(hint),
-            "\n  IMPORTING\n    iv_importing TYPE i\n  EXPORTING\n    ev_exporting TYPE i\n  CHANGING\n    cv_changing TYPE i\n  RECEIVING\n    VALUE(rv_receiving) TYPE i\n  RETURNING\n    VALUE(rv_returning) TYPE i"
-        );
-        assert_eq!(hint.padding_left, None);
-        assert_eq!(hint.padding_right, None);
-        let Some(InlayHintTooltip::MarkupContent(tooltip)) = hint.tooltip.as_ref() else {
-            panic!("expected markdown tooltip");
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected code action");
         };
-        assert!(
-            tooltip
-                .value
-                .contains("parameters of METHOD `do_stmt_else` implementation")
+        assert_eq!(
+            action.title,
+            "Sync method parameter comments for 'do_stmt_else'"
         );
-        assert!(tooltip.value.contains("VALUE(rv_returning) TYPE i"));
+        let changes = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .expect("workspace changes");
+        let edits = changes.get(&uri).expect("uri changes");
+        assert_eq!(edits.len(), 1);
+        let expected_insert = text.find("  ENDMETHOD.").expect("method body");
+        assert_eq!(
+            edits[0].range.start,
+            offset_to_position(text, expected_insert).expect("insert position")
+        );
+        assert_eq!(edits[0].range.start, edits[0].range.end);
+        assert_eq!(
+            edits[0].new_text,
+            "    \" IMPORTING\n    \"   iv_importing TYPE i\n    \" EXPORTING\n    \"   ev_exporting TYPE i\n    \" CHANGING\n    \"   cv_changing TYPE i\n    \" RECEIVING\n    \"   VALUE(rv_receiving) TYPE i\n    \" RETURNING\n    \"   VALUE(rv_returning) TYPE i\n"
+        );
+    }
+
+    #[test]
+    fn code_action_replaces_stale_method_parameter_comments() {
+        let state = ServerState::default();
+        let uri = Uri::from_str("file:///method_impl_stale_comments.abap").expect("uri");
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING
+        iv_new TYPE string
+      CHANGING
+        cv_count TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    \" abap-lsp: parameters begin
+    \" IMPORTING
+    \"   iv_old TYPE i
+    \" abap-lsp: parameters end
+    cv_count = cv_count.
+  ENDMETHOD.
+ENDCLASS.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let header_position = offset_to_position(
+            text,
+            text.rfind("METHOD run").expect("method implementation") + "METHOD ".len(),
+        )
+        .expect("header position");
+        let actions = code_actions(
+            &state,
+            &CodeActionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                range: Range {
+                    start: header_position,
+                    end: header_position,
+                },
+                context: CodeActionContext {
+                    diagnostics: Vec::new(),
+                    only: None,
+                    trigger_kind: None,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("code actions");
+
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected code action");
+        };
+        let changes = action
+            .edit
+            .as_ref()
+            .and_then(|edit| edit.changes.as_ref())
+            .expect("workspace changes");
+        let edits = changes.get(&uri).expect("uri changes");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].range.start,
+            offset_to_position(
+                text,
+                text.find("    \" abap-lsp: parameters begin")
+                    .expect("managed block start")
+            )
+            .expect("managed block start position")
+        );
+        assert_eq!(
+            edits[0].new_text,
+            "    \" IMPORTING\n    \"   iv_new TYPE string\n    \" CHANGING\n    \"   cv_count TYPE i\n"
+        );
     }
 
     #[test]

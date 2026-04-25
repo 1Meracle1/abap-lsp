@@ -253,6 +253,13 @@ pub struct MissingMethodImplementationAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodParameterCommentsAction {
+    pub title: String,
+    pub edit_range: Range<usize>,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceTarget {
     pub uri: Arc<str>,
     pub range: Range<usize>,
@@ -1039,53 +1046,6 @@ impl AnalysisSnapshot {
         hints
     }
 
-    pub fn method_implementation_parameter_inlay_hints_in_range(
-        &self,
-        range: Range<usize>,
-    ) -> Vec<ParameterInlayHintInfo> {
-        let mut hints = Vec::new();
-        for unit in &self.project.units {
-            for member in &unit.class_members {
-                if member.kind != ClassMemberKind::Method {
-                    continue;
-                }
-                let Some(implementation) = member.implementation.as_ref() else {
-                    continue;
-                };
-                if implementation.unit != self.symbols.unit_id {
-                    continue;
-                }
-                let position = method_implementation_parameter_inlay_position(
-                    self.text.as_ref(),
-                    &implementation.range,
-                );
-                if position < range.start || position >= range.end {
-                    continue;
-                }
-                let (signature_unit, signature_member) =
-                    method_implementation_signature_member(self, unit, member);
-                if signature_member.parameters.is_empty() {
-                    continue;
-                }
-                hints.push(ParameterInlayHintInfo {
-                    position,
-                    label: Arc::from(method_implementation_parameters_inlay_hint_label(
-                        &signature_member.parameters,
-                    )),
-                    trailing_colon: false,
-                    padding_left: false,
-                    padding_right: false,
-                    tooltip_markdown: method_implementation_parameters_inlay_hint_markdown(
-                        signature_unit,
-                        signature_member,
-                    ),
-                });
-            }
-        }
-        hints.sort_by_key(|hint| hint.position);
-        hints
-    }
-
     pub fn inline_variable_type_inlay_hints_in_range(
         &self,
         range: Range<usize>,
@@ -1203,6 +1163,41 @@ impl AnalysisSnapshot {
                     )
                 }
             },
+        })
+    }
+
+    pub fn method_parameter_comments_action_at(
+        &self,
+        offset: usize,
+    ) -> Option<MethodParameterCommentsAction> {
+        let (_, member, signature_member) =
+            method_implementation_signature_member_at_offset(self, offset)?;
+        let implementation = member.implementation.as_ref()?;
+        let header_end =
+            method_implementation_parameter_anchor(self.text.as_ref(), &implementation.range);
+        let insertion = line_end_including_newline(self.text.as_ref(), header_end);
+        let managed_range =
+            managed_method_parameter_comment_block_range(self.text.as_ref(), insertion);
+
+        if signature_member.parameters.is_empty() {
+            let edit_range = managed_range?;
+            return Some(MethodParameterCommentsAction {
+                title: "Remove ABAP LSP method parameter comments".to_string(),
+                edit_range,
+                new_text: String::new(),
+            });
+        }
+
+        let new_text = build_method_parameter_comment_block(
+            self.text.as_ref(),
+            &implementation.range,
+            &signature_member.parameters,
+        );
+        let edit_range = managed_range.unwrap_or(insertion..insertion);
+        Some(MethodParameterCommentsAction {
+            title: format!("Sync method parameter comments for '{}'", member.name),
+            edit_range,
+            new_text,
         })
     }
 
@@ -4026,7 +4021,7 @@ fn method_parameter_inlay_hint_markdown(
     )
 }
 
-fn method_implementation_parameter_inlay_position(text: &str, range: &Range<usize>) -> usize {
+fn method_implementation_parameter_anchor(text: &str, range: &Range<usize>) -> usize {
     let Some(tail) = text.get(range.end..) else {
         return range.end;
     };
@@ -4039,6 +4034,36 @@ fn method_implementation_parameter_inlay_position(text: &str, range: &Range<usiz
         }
     }
     range.end
+}
+
+fn line_start(text: &str, offset: usize) -> usize {
+    text.get(..offset)
+        .and_then(|prefix| prefix.rfind('\n').map(|idx| idx + 1))
+        .unwrap_or(0)
+}
+
+fn line_end_including_newline(text: &str, offset: usize) -> usize {
+    text.get(offset..)
+        .and_then(|tail| tail.find('\n').map(|idx| offset + idx + 1))
+        .unwrap_or(text.len())
+}
+
+fn line_ending_at(text: &str, offset: usize) -> &'static str {
+    if text.get(offset..).is_some_and(|tail| tail.contains("\r\n")) {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn line_indent(text: &str, offset: usize) -> &str {
+    let start = line_start(text, offset);
+    let line_prefix = text.get(start..offset).unwrap_or_default();
+    let indent_end = line_prefix
+        .char_indices()
+        .find_map(|(idx, ch)| (!matches!(ch, ' ' | '\t')).then_some(idx))
+        .unwrap_or(line_prefix.len());
+    &line_prefix[..indent_end]
 }
 
 fn method_implementation_parameter_signature(parameter: &ClassMemberParameterData) -> String {
@@ -4071,7 +4096,7 @@ fn method_implementation_parameter_signature(parameter: &ClassMemberParameterDat
     rendered
 }
 
-fn method_implementation_parameters_inlay_body(parameters: &[ClassMemberParameterData]) -> String {
+fn method_implementation_parameters_body(parameters: &[ClassMemberParameterData]) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current_section = None;
     for parameter in parameters {
@@ -4087,36 +4112,102 @@ fn method_implementation_parameters_inlay_body(parameters: &[ClassMemberParamete
             method_implementation_parameter_signature(parameter)
         ));
     }
-    lines.join("\n")
+    lines
 }
 
-fn method_implementation_parameters_inlay_hint_label(
+fn build_method_parameter_comment_block(
+    text: &str,
+    implementation_range: &Range<usize>,
     parameters: &[ClassMemberParameterData],
 ) -> String {
-    format!(
-        "\n{}",
-        method_implementation_parameters_inlay_body(parameters)
+    let newline = line_ending_at(text, implementation_range.end);
+    let body_indent = format!("{}  ", line_indent(text, implementation_range.start));
+    let lines: Vec<_> = method_implementation_parameters_body(parameters)
+        .into_iter()
+        .map(|line| {
+            let display = line.strip_prefix("  ").unwrap_or(&line);
+            format!("{body_indent}\" {display}")
+        })
+        .collect();
+    format!("{}{}", lines.join(newline), newline)
+}
+
+fn managed_method_parameter_comment_block_range(
+    text: &str,
+    insertion: usize,
+) -> Option<Range<usize>> {
+    let mut cursor = insertion;
+    while cursor < text.len() {
+        let line_end = line_end_including_newline(text, cursor);
+        let line = text.get(cursor..line_end)?;
+        if !line.trim().is_empty() {
+            break;
+        }
+        cursor = line_end;
+    }
+    let start = cursor;
+    let first_end = line_end_including_newline(text, cursor);
+    let first = text.get(cursor..first_end)?;
+    if first
+        .trim_start()
+        .starts_with("\" abap-lsp: parameters begin")
+    {
+        cursor = first_end;
+        while cursor < text.len() {
+            let line_end = line_end_including_newline(text, cursor);
+            let line = text.get(cursor..line_end)?;
+            cursor = line_end;
+            if line.trim_start().starts_with("\" abap-lsp: parameters end") {
+                return Some(start..cursor);
+            }
+        }
+        return None;
+    }
+
+    let first_content = abap_comment_content(first)?;
+    if !first.trim_start().starts_with('"') || !is_method_parameter_section_comment(first_content) {
+        return None;
+    }
+    cursor = first_end;
+    let mut saw_parameter = false;
+    while cursor < text.len() {
+        let line_end = line_end_including_newline(text, cursor);
+        let line = text.get(cursor..line_end)?;
+        let Some(content) = abap_comment_content(line) else {
+            break;
+        };
+        if is_method_parameter_section_comment(content) {
+            cursor = line_end;
+            continue;
+        }
+        if is_method_parameter_detail_comment(content) {
+            saw_parameter = true;
+            cursor = line_end;
+            continue;
+        }
+        break;
+    }
+    saw_parameter.then_some(start..cursor)
+}
+
+fn abap_comment_content(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let content = trimmed.strip_prefix('"')?;
+    Some(content.trim_end_matches(['\r', '\n']))
+}
+
+fn is_method_parameter_section_comment(content: &str) -> bool {
+    matches!(
+        content.trim(),
+        "IMPORTING" | "EXPORTING" | "CHANGING" | "RECEIVING" | "RETURNING"
     )
 }
 
-fn method_implementation_parameters_inlay_hint_markdown(
-    member_unit: &UnitAnalysis,
-    member: &ClassMemberData,
-) -> String {
-    let owner = if member.name.as_ref().eq_ignore_ascii_case("constructor") {
-        format!(
-            "parameters of CONSTRUCTOR `{}` implementation",
-            member_unit.symbol(member.class_symbol).name
-        )
-    } else {
-        format!("parameters of METHOD `{}` implementation", member.name)
-    };
-    format!(
-        "{owner}\n\n{}",
-        format_hover_abap(&method_implementation_parameters_inlay_body(
-            &member.parameters
-        ))
-    )
+fn is_method_parameter_detail_comment(content: &str) -> bool {
+    content
+        .strip_prefix(' ')
+        .and_then(|content| content.strip_prefix(' '))
+        .is_some_and(|content| !content.trim().is_empty())
 }
 
 fn markdown_lines_for_declared_symbol(
@@ -6772,6 +6863,38 @@ fn method_implementation_signature_member<'a>(
         return (resolved_unit, resolved_member);
     }
     (member_unit, member)
+}
+
+fn method_implementation_signature_member_at_offset<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    offset: usize,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData, &'a ClassMemberData)> {
+    for unit in &snapshot.project.units {
+        for member in &unit.class_members {
+            if member.kind != ClassMemberKind::Method {
+                continue;
+            }
+            let Some(implementation) = member.implementation.as_ref() else {
+                continue;
+            };
+            if implementation.unit != snapshot.symbols.unit_id {
+                continue;
+            }
+            let anchor = method_implementation_parameter_anchor(
+                snapshot.text.as_ref(),
+                &implementation.range,
+            );
+            let header_start = line_start(snapshot.text.as_ref(), implementation.range.start);
+            let header_end = line_end_including_newline(snapshot.text.as_ref(), anchor);
+            if offset < header_start || offset > header_end {
+                continue;
+            }
+            let (_, signature_member) =
+                method_implementation_signature_member(snapshot, unit, member);
+            return Some((unit, member, signature_member));
+        }
+    }
+    None
 }
 
 fn collect_class_methods_in_hierarchy<'a>(
