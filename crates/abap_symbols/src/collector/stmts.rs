@@ -1809,9 +1809,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 match self.collector.file.kind(child) {
                     SyntaxKind::Token => {}
                     SyntaxKind::DataInlineDecl => {
-                        self.collector
-                            .decl_lowering()
-                            .walk_inline_decl(child, scope);
+                        let (structure, declared_type) =
+                            self.collector.inline_decl_inferred_type(child, scope);
+                        self.collector.decl_lowering().declare_inline_variable_decl(
+                            child,
+                            scope,
+                            structure,
+                            declared_type,
+                        );
                         target_range = self
                             .collector
                             .file

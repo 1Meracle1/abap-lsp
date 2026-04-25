@@ -682,15 +682,22 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 SyntaxKind::Token | SyntaxKind::DataDeclName
             )
         });
-        let (Some(lhs_range), Some(rhs_expr)) = (lhs_range, rhs_expr) else {
+        let Some(lhs_range) = lhs_range else {
             return;
         };
-        let (rhs_structure, rhs_declared_type) = self.ctx.inline_decl_inferred_type(node, scope);
+        let rhs_range = rhs_expr
+            .map(|rhs_expr| self.ctx.file().range(rhs_expr))
+            .unwrap_or_else(|| lhs_range.end..lhs_range.end);
+        let (rhs_structure, rhs_declared_type) = if rhs_expr.is_some() {
+            self.ctx.inline_decl_inferred_type(node, scope)
+        } else {
+            (None, None)
+        };
         self.ctx.emit_assignment_site(AssignmentSiteData {
             scope,
             range: self.ctx.file().range(node),
             lhs_range,
-            rhs_range: self.ctx.file().range(rhs_expr),
+            rhs_range,
             lhs_target_access: None,
             lhs: TypeFactData {
                 structure,
@@ -704,7 +711,8 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 type_clause_display: None,
                 table_line: None,
             },
-            rhs_is_top_level_sum: self.ctx.rhs_is_top_level_sum(rhs_expr),
+            rhs_is_top_level_sum: rhs_expr
+                .is_some_and(|rhs_expr| self.ctx.rhs_is_top_level_sum(rhs_expr)),
         });
     }
 

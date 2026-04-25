@@ -533,6 +533,35 @@ ENDCLASS.\n";
     }
 
     #[test]
+    fn call_transformation_result_inline_data_is_definitely_assigned() {
+        let src = "\
+FORM process_reload.\n\
+  DATA lt_objects_email TYPE string.\n\
+  lt_objects_email = 'x'.\n\
+  CALL TRANSFORMATION id SOURCE root = lt_objects_email\n\
+                         RESULT XML DATA(lv_xstring).\n\
+  DATA(lv_copy) = lv_xstring.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///call_transformation_inline.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !diagnostic.message.contains("lv_xstring")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn message_into_target_is_definitely_assigned() {
         let src = "\
 FORM get_data.\n\
