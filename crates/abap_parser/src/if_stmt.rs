@@ -6,7 +6,10 @@ use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::ensure_forward_progress;
 use crate::expr::parse_logical_expr;
-use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::stmt_period::{
+    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
+    unterminated_err_end,
+};
 use crate::syntax::token_leaf;
 
 #[derive(Clone, Copy)]
@@ -135,7 +138,28 @@ pub fn try_parse_if_stmt(
             let period_tok = tokens.get(period_i)?;
             let cond_tokens = &tokens[cond_start..period_i];
             let prev_before_cond = idx.checked_sub(1).and_then(|j| tokens.get(j));
-            let cond = parse_logical_expr(b, source, cond_tokens, prev_before_cond);
+            let cond = if let Some(delim_error) = delimiter_error(tokens, cond_start, period_i) {
+                errors.push(delim_error);
+                let err_children = error_token_children(b, tokens, cond_start, period_i);
+                b.branch(
+                    SyntaxKind::Error,
+                    if_tok.range.end..period_tok.range.start,
+                    &err_children,
+                )
+            } else if has_non_comment_tokens(tokens, cond_start, period_i) {
+                parse_logical_expr(b, source, cond_tokens, prev_before_cond)
+            } else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected condition after IF".to_string(),
+                    range: if_tok.range.start..period_tok.range.end,
+                });
+                let err_children = error_token_children(b, tokens, cond_start, period_i);
+                b.branch(
+                    SyntaxKind::Error,
+                    if_tok.range.end..period_tok.range.start,
+                    &err_children,
+                )
+            };
             (
                 vec![token_leaf(b, if_tok), cond, token_leaf(b, period_tok)],
                 period_i + 1,
@@ -173,7 +197,30 @@ pub fn try_parse_if_stmt(
                 StmtPeriodScan::Found(period_e) => {
                     let period_et = tokens.get(period_e)?;
                     let cond_e_tokens = &tokens[cond_start_e..period_e];
-                    let cond_e = parse_logical_expr(b, source, cond_e_tokens, Some(elseif_tok));
+                    let cond_e = if let Some(delim_error) =
+                        delimiter_error(tokens, cond_start_e, period_e)
+                    {
+                        errors.push(delim_error);
+                        let err_children = error_token_children(b, tokens, cond_start_e, period_e);
+                        b.branch(
+                            SyntaxKind::Error,
+                            elseif_tok.range.end..period_et.range.start,
+                            &err_children,
+                        )
+                    } else if has_non_comment_tokens(tokens, cond_start_e, period_e) {
+                        parse_logical_expr(b, source, cond_e_tokens, Some(elseif_tok))
+                    } else {
+                        errors.push(crate::ParseError {
+                            message: "syntax error: expected condition after ELSEIF".to_string(),
+                            range: elseif_tok.range.start..period_et.range.end,
+                        });
+                        let err_children = error_token_children(b, tokens, cond_start_e, period_e);
+                        b.branch(
+                            SyntaxKind::Error,
+                            elseif_tok.range.end..period_et.range.start,
+                            &err_children,
+                        )
+                    };
                     (
                         vec![token_leaf(b, elseif_tok), cond_e, token_leaf(b, period_et)],
                         period_e + 1,

@@ -11,7 +11,10 @@ mod surface_stmt;
 pub mod syntax;
 mod type_ref;
 
-use crate::stmt_period::is_definite_stmt_lead_keyword;
+use crate::stmt_period::{
+    StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period,
+    unterminated_err_end,
+};
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::Token;
@@ -170,6 +173,74 @@ fn try_parse_lone_ident_stmt_error(
     Some((node, idx + 2))
 }
 
+const STRAY_BLOCK_BOUNDARIES: &[(&str, &str)] = &[
+    ("ELSEIF", "IF"),
+    ("ELSE", "IF"),
+    ("ENDIF", "IF"),
+    ("WHEN", "CASE"),
+    ("ENDCASE", "CASE"),
+    ("ENDWHILE", "WHILE"),
+    ("ENDDO", "DO"),
+    ("ENDLOOP", "LOOP"),
+    ("CATCH", "TRY"),
+    ("CLEANUP", "TRY"),
+    ("ENDTRY", "TRY"),
+    ("ENDCLASS", "CLASS"),
+    ("ENDINTERFACE", "INTERFACE"),
+    ("ENDMETHOD", "METHOD"),
+    ("ENDFORM", "FORM"),
+    ("ENDFUNCTION", "FUNCTION"),
+    ("ENDMODULE", "MODULE"),
+    ("ENDSELECT", "SELECT"),
+];
+
+fn stray_block_boundary(source: &str, token: &Token) -> Option<(&'static str, &'static str)> {
+    if token.kind != TokenKind::Ident {
+        return None;
+    }
+    let text = token.lexeme(source);
+    STRAY_BLOCK_BOUNDARIES
+        .iter()
+        .copied()
+        .find(|(boundary, _)| text.eq_ignore_ascii_case(boundary))
+}
+
+fn try_parse_stray_block_boundary_error(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<ParseError>,
+) -> Option<(NodeId, usize)> {
+    let token = tokens.get(idx)?;
+    let (boundary, opener) = stray_block_boundary(source, token)?;
+    let (end_exclusive, err_end) = match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => (period_i + 1, tokens[period_i].range.end),
+        StmtPeriodScan::Unterminated { end_exclusive } => (
+            end_exclusive,
+            unterminated_err_end(tokens, end_exclusive, token.range.end),
+        ),
+    };
+
+    errors.push(ParseError {
+        message: format!("syntax error: unexpected {boundary} without matching {opener}"),
+        range: token.range.start..err_end,
+    });
+    let children = tokens
+        .get(idx..end_exclusive)
+        .unwrap_or(&[])
+        .iter()
+        .map(|tok| syntax::token_leaf(b, tok))
+        .collect::<Vec<_>>();
+    let node = b.branch(SyntaxKind::Error, token.range.start..err_end, &children);
+    let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
+        tokens.len()
+    } else {
+        end_exclusive
+    };
+    Some((node, next))
+}
+
 /// One top-level statement or template chunk (used by [`syntax::build_file_tree`] and `IF` bodies).
 pub(crate) fn parse_file_level_item(
     b: &mut SyntaxTreeBuilder,
@@ -206,6 +277,10 @@ pub(crate) fn parse_file_level_item(
         return (node, next);
     }
     if let Some((node, next)) = try_parse_lone_ident_stmt_error(b, source, tokens, idx, errors) {
+        return (node, next);
+    }
+    if let Some((node, next)) = try_parse_stray_block_boundary_error(b, source, tokens, idx, errors)
+    {
         return (node, next);
     }
     if let Some((node, next)) = simple_stmt::try_parse_simple_stmt(b, source, tokens, idx, errors) {

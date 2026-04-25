@@ -8,7 +8,10 @@ use crate::block_helpers::{
     scan_boundary_keywords, skip_trivia,
 };
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
-use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::stmt_period::{
+    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
+    unterminated_err_end,
+};
 use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
 
@@ -99,6 +102,12 @@ fn parse_catch_header_until_period(
     let catch_tok = &tokens[catch_idx];
     match scan_until_statement_period(tokens, source, catch_idx + 1) {
         StmtPeriodScan::Found(period_i) => {
+            if !has_non_comment_tokens(tokens, catch_idx + 1, period_i) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected exception class after CATCH".to_string(),
+                    range: catch_tok.range.start..tokens[period_i].range.end,
+                });
+            }
             let mut children = vec![token_leaf(b, catch_tok)];
             let mut cursor = catch_idx + 1;
             while cursor < period_i {
@@ -505,7 +514,28 @@ pub fn try_parse_while_stmt(
 
     let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let cond = parse_logical_expr(b, source, &tokens[idx + 1..period_i], Some(while_tok));
+            let cond = if let Some(delim_error) = delimiter_error(tokens, idx + 1, period_i) {
+                errors.push(delim_error);
+                let err_children = error_token_children(b, tokens, idx + 1, period_i);
+                b.branch(
+                    SyntaxKind::Error,
+                    while_tok.range.end..tokens[period_i].range.start,
+                    &err_children,
+                )
+            } else if has_non_comment_tokens(tokens, idx + 1, period_i) {
+                parse_logical_expr(b, source, &tokens[idx + 1..period_i], Some(while_tok))
+            } else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected condition after WHILE".to_string(),
+                    range: while_tok.range.start..tokens[period_i].range.end,
+                });
+                let err_children = error_token_children(b, tokens, idx + 1, period_i);
+                b.branch(
+                    SyntaxKind::Error,
+                    while_tok.range.end..tokens[period_i].range.start,
+                    &err_children,
+                )
+            };
             (
                 vec![
                     token_leaf(b, while_tok),
@@ -593,6 +623,16 @@ fn trim_trailing_comments(tokens: &[Token], start: usize, end_exclusive: usize) 
         e -= 1;
     }
     e
+}
+
+fn is_loop_clause_keyword(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "into")
+        || is_keyword(source, token, "assigning")
+        || is_keyword(source, token, "reference")
+        || is_keyword(source, token, "where")
+        || is_keyword(source, token, "from")
+        || is_keyword(source, token, "to")
+        || is_keyword(source, token, "step")
 }
 
 /// `DO .` or `DO <arith> TIMES .` — parses the repetition count as an expression (like `WHILE` does
@@ -787,6 +827,12 @@ pub fn try_parse_loop_stmt(
             let mut children = vec![token_leaf(b, loop_tok), token_leaf(b, at_tok)];
             let mut cursor = idx + 2;
             let first_operand = skip_trivia(tokens, cursor);
+            if first_operand >= period_i || is_loop_clause_keyword(source, &tokens[first_operand]) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected loop source after LOOP AT".to_string(),
+                    range: at_tok.range.start..tokens[period_i].range.end,
+                });
+            }
             if is_loop_at_group_start(source, tokens, first_operand) {
                 let group_tok = &tokens[first_operand];
                 let group_start = skip_trivia(tokens, first_operand + 1);
@@ -857,6 +903,10 @@ pub fn try_parse_loop_stmt(
                         clause_children.push(expr);
                         cursor = target_end;
                     } else {
+                        errors.push(crate::ParseError {
+                            message: "syntax error: expected target after INTO".to_string(),
+                            range: token.range.start..tokens[period_i].range.start,
+                        });
                         cursor = target_start;
                     }
                     let end = clause_children
@@ -890,6 +940,10 @@ pub fn try_parse_loop_stmt(
                         clause_children.push(expr);
                         cursor = target_end;
                     } else {
+                        errors.push(crate::ParseError {
+                            message: "syntax error: expected target after ASSIGNING".to_string(),
+                            range: token.range.start..tokens[period_i].range.start,
+                        });
                         cursor = target_start;
                     }
                     let end = clause_children
@@ -921,6 +975,12 @@ pub fn try_parse_loop_stmt(
                             Some(into_tok),
                         );
                         clause_children.push(expr);
+                    } else {
+                        errors.push(crate::ParseError {
+                            message: "syntax error: expected target after REFERENCE INTO"
+                                .to_string(),
+                            range: token.range.start..tokens[period_i].range.start,
+                        });
                     }
                     let end = clause_children
                         .last()
@@ -961,6 +1021,14 @@ pub fn try_parse_loop_stmt(
                         logical,
                     ) {
                         children.push(clause);
+                    } else {
+                        errors.push(crate::ParseError {
+                            message: format!(
+                                "syntax error: expected expression after {}",
+                                token.lexeme(source).to_ascii_uppercase()
+                            ),
+                            range: token.range.start..tokens[period_i].range.start,
+                        });
                     }
                     cursor = expr_end;
                     continue;
@@ -1026,7 +1094,28 @@ pub fn try_parse_case_stmt(
 
     let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let expr = parse_arithmetic_expr(b, source, &tokens[idx + 1..period_i], Some(case_tok));
+            let expr = if let Some(delim_error) = delimiter_error(tokens, idx + 1, period_i) {
+                errors.push(delim_error);
+                let err_children = error_token_children(b, tokens, idx + 1, period_i);
+                b.branch(
+                    SyntaxKind::Error,
+                    case_tok.range.end..tokens[period_i].range.start,
+                    &err_children,
+                )
+            } else if has_non_comment_tokens(tokens, idx + 1, period_i) {
+                parse_arithmetic_expr(b, source, &tokens[idx + 1..period_i], Some(case_tok))
+            } else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected expression after CASE".to_string(),
+                    range: case_tok.range.start..tokens[period_i].range.end,
+                });
+                let err_children = error_token_children(b, tokens, idx + 1, period_i);
+                b.branch(
+                    SyntaxKind::Error,
+                    case_tok.range.end..tokens[period_i].range.start,
+                    &err_children,
+                )
+            };
             (
                 vec![
                     token_leaf(b, case_tok),
@@ -1060,6 +1149,19 @@ pub fn try_parse_case_stmt(
             Some(Boundary::Keyword("WHEN")) => {
                 let when_idx = skip_trivia(tokens, next);
                 let when_tok = &tokens[when_idx];
+                if let StmtPeriodScan::Found(period_i) =
+                    scan_until_statement_period(tokens, source, when_idx + 1)
+                {
+                    if let Some(delim_error) = delimiter_error(tokens, when_idx + 1, period_i) {
+                        errors.push(delim_error);
+                    }
+                    if !has_non_comment_tokens(tokens, when_idx + 1, period_i) {
+                        errors.push(crate::ParseError {
+                            message: "syntax error: expected expression after WHEN".to_string(),
+                            range: when_tok.range.start..tokens[period_i].range.end,
+                        });
+                    }
+                }
                 let (mut when_children, body_start) = parse_header_until_period(
                     b,
                     source,

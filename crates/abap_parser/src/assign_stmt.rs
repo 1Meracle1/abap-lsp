@@ -5,7 +5,10 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::expr::parse_arithmetic_expr;
-use crate::stmt_period::{is_definite_stmt_lead_keyword, token_begins_line, unterminated_err_end};
+use crate::stmt_period::{
+    delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword, token_begins_line,
+    unterminated_err_end,
+};
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
     b.token_leaf(
@@ -56,11 +59,11 @@ fn find_stmt_level_assign_op(tokens: &[Token], start: usize) -> Option<usize> {
         }
         match t.kind {
             TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
+            TokenKind::RParen if paren > 0 => paren -= 1,
             TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
             TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
             TokenKind::Period if paren == 0 && bracket == 0 && brace == 0 => return None,
             TokenKind::Eq | TokenKind::QuestionEq if paren == 0 && bracket == 0 && brace == 0 => {
                 return Some(i);
@@ -171,15 +174,17 @@ fn scan_assign_rhs(tokens: &[Token], source: &str, start: usize) -> AssignRhsSca
                 }
             }
             TokenKind::RParen => {
-                group_paren -= 1;
-                if !paren_stack.pop().unwrap_or(false) {
+                if group_paren > 0 {
+                    group_paren -= 1;
+                }
+                if !paren_stack.pop().unwrap_or(true) {
                     non_call_paren_depth -= 1;
                 }
             }
             TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
             TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
             TokenKind::Eq | TokenKind::QuestionEq if non_call_paren_depth > 0 => {
                 if !paren_stack.iter().rev().any(|is_call| *is_call) {
                     nested_eq = true;
@@ -235,11 +240,42 @@ pub fn try_parse_assign_stmt(
             let period_tok = &tokens[period_i];
             let rhs_tokens = &tokens[eq_i + 1..period_i];
 
+            if let Some(delim_error) = delimiter_error(tokens, idx, period_i) {
+                errors.push(delim_error);
+                let mut kids = Vec::with_capacity(period_i - idx + 1);
+                for t in &tokens[idx..=period_i] {
+                    kids.push(token_leaf(b, t));
+                }
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    first.range.start..period_tok.range.end,
+                    &kids,
+                );
+                return Some((node, period_i + 1));
+            }
+
             if nested_eq {
                 errors.push(crate::ParseError {
                     message: "syntax error: assignment value must not contain '=' inside nested parentheses, brackets, or braces"
                         .to_string(),
                     range: first.range.start..period_tok.range.end,
+                });
+                let mut kids = Vec::with_capacity(period_i - idx + 1);
+                for t in &tokens[idx..=period_i] {
+                    kids.push(token_leaf(b, t));
+                }
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    first.range.start..period_tok.range.end,
+                    &kids,
+                );
+                return Some((node, period_i + 1));
+            }
+
+            if !has_non_comment_tokens(tokens, eq_i + 1, period_i) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected assignment value after '='".to_string(),
+                    range: eq_tok.range.start..period_tok.range.end,
                 });
                 let mut kids = Vec::with_capacity(period_i - idx + 1);
                 for t in &tokens[idx..=period_i] {

@@ -3,10 +3,88 @@
 
 use abap_lexer::{Token, TokenKind};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delimiter {
+    Paren,
+    Bracket,
+    Brace,
+}
+
+impl Delimiter {
+    fn open_text(self) -> &'static str {
+        match self {
+            Delimiter::Paren => "(",
+            Delimiter::Bracket => "[",
+            Delimiter::Brace => "{",
+        }
+    }
+
+    fn close_text(self) -> &'static str {
+        match self {
+            Delimiter::Paren => ")",
+            Delimiter::Bracket => "]",
+            Delimiter::Brace => "}",
+        }
+    }
+}
+
 #[inline]
 pub(crate) fn token_begins_line(source: &str, tok: &Token) -> bool {
     let _ = source;
     tok.range.start == 0 || tok.has_newline_before()
+}
+
+#[inline]
+pub(crate) fn has_non_comment_tokens(tokens: &[Token], start: usize, end_exclusive: usize) -> bool {
+    tokens
+        .get(start..end_exclusive)
+        .unwrap_or(&[])
+        .iter()
+        .any(|token| token.kind != TokenKind::Comment)
+}
+
+pub(crate) fn delimiter_error(
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<crate::ParseError> {
+    let mut stack: Vec<(Delimiter, &Token)> = Vec::new();
+    for token in tokens.get(start..end_exclusive).unwrap_or(&[]) {
+        let closing = match token.kind {
+            TokenKind::LParen => {
+                stack.push((Delimiter::Paren, token));
+                continue;
+            }
+            TokenKind::LBracket => {
+                stack.push((Delimiter::Bracket, token));
+                continue;
+            }
+            TokenKind::LBrace => {
+                stack.push((Delimiter::Brace, token));
+                continue;
+            }
+            TokenKind::RParen => Some(Delimiter::Paren),
+            TokenKind::RBracket => Some(Delimiter::Bracket),
+            TokenKind::RBrace => Some(Delimiter::Brace),
+            TokenKind::Comment => continue,
+            _ => None,
+        };
+        let Some(closing) = closing else {
+            continue;
+        };
+        if !matches!(stack.last(), Some((open, _)) if *open == closing) {
+            return Some(crate::ParseError {
+                message: format!("syntax error: unmatched closing '{}'", closing.close_text()),
+                range: token.range.clone(),
+            });
+        }
+        stack.pop();
+    }
+
+    stack.first().map(|(open, token)| crate::ParseError {
+        message: format!("syntax error: unclosed '{}' in statement", open.open_text()),
+        range: token.range.clone(),
+    })
 }
 
 #[inline]
@@ -64,6 +142,8 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("ELSEIF")
         || s.eq_ignore_ascii_case("ELSE")
         || s.eq_ignore_ascii_case("ENDIF")
+        || s.eq_ignore_ascii_case("ASSERT")
+        || s.eq_ignore_ascii_case("CHECK")
         || s.eq_ignore_ascii_case("CASE")
         || s.eq_ignore_ascii_case("WHEN")
         || s.eq_ignore_ascii_case("ENDCASE")
@@ -218,11 +298,11 @@ pub(crate) fn scan_until_statement_period(
         }
         match t.kind {
             TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
+            TokenKind::RParen if paren > 0 => paren -= 1,
             TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
             TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
             _ => {}
         }
         i += 1;
@@ -240,11 +320,12 @@ pub(crate) fn unterminated_err_end(
     if end_exclusive == 0 {
         return fallback_start;
     }
-    if tokens[end_exclusive].kind == TokenKind::Eof {
-        return tokens
+    match tokens.get(end_exclusive) {
+        Some(token) if token.kind == TokenKind::Eof => tokens
             .get(end_exclusive.saturating_sub(1))
             .map(|t| t.range.end)
-            .unwrap_or(fallback_start);
+            .unwrap_or(fallback_start),
+        Some(token) => token.range.start,
+        None => tokens.last().map(|t| t.range.end).unwrap_or(fallback_start),
     }
-    tokens[end_exclusive].range.start
 }

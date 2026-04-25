@@ -4,7 +4,10 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
-use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::stmt_period::{
+    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
+    unterminated_err_end,
+};
 use crate::type_ref::parse_type_ref_tokens;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
@@ -745,6 +748,37 @@ fn try_parse_data_inline_decl(
     }
     match scan_until_statement_period(tokens, source, i + 2) {
         StmtPeriodScan::Found(period_i) => {
+            if let Some(delim_error) = delimiter_error(tokens, idx, period_i) {
+                errors.push(delim_error);
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                for t in &tokens[idx..=period_i] {
+                    children.push(token_leaf(b, t));
+                }
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    data_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return Some((node, period_i + 1));
+            }
+            if !has_non_comment_tokens(tokens, i + 2, period_i) {
+                errors.push(crate::ParseError {
+                    message:
+                        "syntax error: expected expression after '=' in inline DATA declaration"
+                            .to_string(),
+                    range: eq_tok.range.start..tokens[period_i].range.end,
+                });
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                for t in &tokens[idx..=period_i] {
+                    children.push(token_leaf(b, t));
+                }
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    data_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return Some((node, period_i + 1));
+            }
             let rhs = crate::expr::parse_arithmetic_expr(
                 b,
                 source,

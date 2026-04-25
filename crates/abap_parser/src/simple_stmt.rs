@@ -5,7 +5,10 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
-use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
+use crate::stmt_period::{
+    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
+    unterminated_err_end,
+};
 use crate::type_ref::build_type_ref_node;
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
@@ -2044,10 +2047,32 @@ pub fn try_parse_simple_stmt(
         StmtPeriodScan::Found(period_i) => {
             let period_tok = &tokens[period_i];
             let significant = significant_stmt_tokens(tokens, idx, period_i);
+            if let Some(delim_error) = delimiter_error(tokens, idx, period_i) {
+                errors.push(delim_error);
+                let kids = tokens[idx..=period_i]
+                    .iter()
+                    .map(|t| token_leaf(b, t))
+                    .collect::<Vec<_>>();
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    first.range.start..period_tok.range.end,
+                    &kids,
+                );
+                return Some((node, period_i + 1));
+            }
             validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
             let kind = simple_stmt_kind(source, &significant);
             if kind == SyntaxKind::StopStmt {
                 validate_stop_stmt(&significant, errors);
+            }
+            if matches!(kind, SyntaxKind::AssertStmt | SyntaxKind::CheckStmt)
+                && !has_non_comment_tokens(tokens, idx + 1, period_i)
+            {
+                let keyword = first.lexeme(source).to_ascii_uppercase();
+                errors.push(crate::ParseError {
+                    message: format!("syntax error: expected condition after {keyword}"),
+                    range: first.range.start..period_tok.range.end,
+                });
             }
             let kids = match kind {
                 SyntaxKind::ClassDeferredStmt => {
