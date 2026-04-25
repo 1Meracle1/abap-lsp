@@ -21,6 +21,13 @@ fn token_matches_keyword(source: &str, token: &Token, keyword: &str) -> bool {
     token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(keyword)
 }
 
+fn token_matches_occurrence_keyword(source: &str, token: &Token) -> bool {
+    token_matches_keyword(source, token, "occurrence")
+        || token_matches_keyword(source, token, "occurrences")
+        || token_matches_keyword(source, token, "occurence")
+        || token_matches_keyword(source, token, "occurences")
+}
+
 type SimpleStmtClassifier = fn(&str, &[&Token]) -> Option<SyntaxKind>;
 
 #[derive(Clone, Copy)]
@@ -1374,10 +1381,7 @@ fn build_replace_stmt_children(
     {
         children.push(token_leaf(b, &tokens[cursor]));
         cursor += 1;
-        if cursor < period_i
-            && (token_matches_keyword(source, &tokens[cursor], "occurrence")
-                || token_matches_keyword(source, &tokens[cursor], "occurrences"))
-        {
+        if cursor < period_i && token_matches_occurrence_keyword(source, &tokens[cursor]) {
             children.push(token_leaf(b, &tokens[cursor]));
             cursor += 1;
         }
@@ -2430,6 +2434,41 @@ WAIT UP TO lv_stamp SECONDS.",
             .expect("wait stmt");
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::WaitOperand), 1);
         assert_eq!(parsed.file.count_kind(wait, SyntaxKind::ExprIdent), 1);
+    }
+
+    #[test]
+    fn replace_all_occurences_addition_builds_operands() {
+        let parsed = crate::parse("REPLACE ALL OCCURENCES OF '*' IN p_plant-low WITH '%'.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let replace = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::ReplaceStmt)
+            .expect("replace stmt");
+        let pattern = parsed
+            .file
+            .find_first_kind(replace, SyntaxKind::ReplacePatternOperand)
+            .expect("replace pattern");
+
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplacePatternOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplaceTargetOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplaceWithOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(pattern, SyntaxKind::ExprIdent), 0);
+        assert_eq!(parsed.file.count_kind(replace, SyntaxKind::SelectorExpr), 1);
     }
 
     #[test]
