@@ -1744,7 +1744,7 @@ fn build_routine_dataflow(
             RoutineInstructionSite::Assignment { index } => {
                 if let Some(assignment) = unit.assignment_sites.get(index as usize) {
                     let suppress_rhs_definite_assignment =
-                        is_append_assignment(unit, &assignment.range);
+                        is_table_line_mutation_assignment(unit, &assignment.range);
                     transfer.reads.extend(read_occurrences_in_range(
                         &reference_uses,
                         &assignment.lhs_range,
@@ -4056,9 +4056,12 @@ fn read_occurrences_in_range(
         .collect()
 }
 
-fn is_append_assignment(unit: &UnitAnalysis, range: &TextRange) -> bool {
+fn is_table_line_mutation_assignment(unit: &UnitAnalysis, range: &TextRange) -> bool {
     unit.system_field_updates.iter().any(|update| {
-        update.statement == crate::SystemFieldStatementKind::Append && &update.range == range
+        matches!(
+            update.statement,
+            crate::SystemFieldStatementKind::Append | crate::SystemFieldStatementKind::InsertTable
+        ) && &update.range == range
     })
 }
 

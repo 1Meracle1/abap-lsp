@@ -1897,7 +1897,98 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             SystemFieldStatementKind::InsertTable,
             &["subrc"],
         );
-        self.collector.walk_children(node, scope);
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum InsertClause {
+            Source,
+            Target,
+            Index,
+            Assigning,
+            ReferenceInto,
+        }
+
+        let stmt_range = self.collector.file.range(node);
+        let mut clause = InsertClause::Source;
+        let mut saw_reference = false;
+        let mut saw_lines_keyword = false;
+        let mut source_is_lines_of = false;
+        let mut source_expr = None;
+        let mut target_expr = None;
+
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::Token {
+                if let Some(token) = self.collector.syntax_token_nodes(child).into_iter().next() {
+                    if token.text.eq_ignore_ascii_case("reference") {
+                        saw_reference = true;
+                    } else if saw_reference && token.text.eq_ignore_ascii_case("into") {
+                        clause = InsertClause::ReferenceInto;
+                        saw_reference = false;
+                        saw_lines_keyword = false;
+                    } else if token.text.eq_ignore_ascii_case("into") {
+                        clause = InsertClause::Target;
+                        saw_reference = false;
+                        saw_lines_keyword = false;
+                    } else if token.text.eq_ignore_ascii_case("index") {
+                        clause = InsertClause::Index;
+                        saw_reference = false;
+                        saw_lines_keyword = false;
+                    } else if token.text.eq_ignore_ascii_case("assigning") {
+                        clause = InsertClause::Assigning;
+                        saw_reference = false;
+                        saw_lines_keyword = false;
+                    } else if clause == InsertClause::Source
+                        && token.text.eq_ignore_ascii_case("lines")
+                    {
+                        saw_lines_keyword = true;
+                    } else if clause == InsertClause::Source
+                        && saw_lines_keyword
+                        && token.text.eq_ignore_ascii_case("of")
+                    {
+                        source_is_lines_of = true;
+                        saw_lines_keyword = false;
+                    } else if !token.text.eq_ignore_ascii_case("line")
+                        && !token.text.eq_ignore_ascii_case("lines")
+                        && !token.text.eq_ignore_ascii_case("of")
+                        && !token.text.eq_ignore_ascii_case("table")
+                    {
+                        saw_reference = false;
+                        saw_lines_keyword = false;
+                    }
+                }
+                continue;
+            }
+
+            match clause {
+                InsertClause::Source => {
+                    if source_expr.is_none() {
+                        source_expr = Some(child);
+                    }
+                }
+                InsertClause::Target => {
+                    if target_expr.is_none() {
+                        target_expr = Some(child);
+                    }
+                }
+                InsertClause::Index | InsertClause::Assigning | InsertClause::ReferenceInto => {}
+            }
+
+            self.collector.walk_node(child, scope);
+        }
+
+        if let Some(target_expr) = target_expr {
+            let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
+            let rhs_fact = source_expr
+                .filter(|_| source_is_lines_of)
+                .map(|expr| self.type_fact_from_table_line_node(expr, scope));
+            self.emit_assignment_site_with_type_facts(
+                scope,
+                stmt_range,
+                target_expr,
+                &rhs_nodes,
+                None,
+                rhs_fact,
+            );
+        }
     }
 
     fn collect_message_head_clause_infos(&mut self, node: NodeId, scope: ScopeId) {

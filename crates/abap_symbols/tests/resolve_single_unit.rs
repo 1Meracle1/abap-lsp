@@ -5060,6 +5060,43 @@ ENDFORM.
 }
 
 #[test]
+fn insert_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+FORM f_set_descriptions.
+  TYPES ty_zatt_trans_cust_tab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+  DATA lt_zatt_trans_cust TYPE ty_zatt_trans_cust_tab.
+  DATA wa_zatt_trans_cust TYPE i.
+  DATA lv_index TYPE i.
+  DATA lv_count TYPE i.
+
+  wa_zatt_trans_cust = 1.
+  lv_index = 1.
+  INSERT wa_zatt_trans_cust INTO lt_zatt_trans_cust INDEX lv_index.
+  lv_count = lines( lt_zatt_trans_cust ).
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///insert_target_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lt_zatt_trans_cust")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("ty_zatt_trans_cust_tab")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn legacy_table_body_assignment_target_counts_as_assignment_for_definite_assignment() {
     let src = r#"
 TYPES: BEGIN OF ty_output_row,
