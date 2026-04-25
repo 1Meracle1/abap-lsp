@@ -11746,6 +11746,41 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_treats_move_corresponding_target_as_definite_assignment() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_job,
+             jobname TYPE string,
+             username TYPE string,
+           END OF ty_job.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_source TYPE ty_job.
+    ls_source-jobname = 'BATCH'.
+    ls_source-username = 'USER'.
+    DATA ls_target TYPE ty_job.
+    MOVE-CORRESPONDING ls_source TO ls_target.
+    DATA ls_copy TYPE ty_job.
+    ls_copy = ls_target.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_move_corresponding_target.abap", 1, src);
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(use_before.is_empty(), "{use_before:?}");
+    }
+
+    #[test]
     fn routine_analysis_allows_partial_structure_selector_initialization_for_whole_value_reads() {
         let store = DocumentStore::default();
         let src = "\
