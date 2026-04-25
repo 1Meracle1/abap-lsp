@@ -4118,6 +4118,12 @@ fn structured_field_hover(
             }
             lines.push("interface".to_string());
         }
+        abap_cache::HoveredComponentKind::Type => {
+            if let Some(declaration) = &component.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push(format!("type definition of `{}`", component.base_name));
+        }
     }
     if let Some(declared_type) = component.declared_type {
         lines.push(format!("declared as `{}`", declared_type));
@@ -4470,6 +4476,7 @@ fn completion_item_to_lsp(
                 Some(match item.kind {
                     abap_cache::HoveredComponentKind::Method => CompletionItemKind::METHOD,
                     abap_cache::HoveredComponentKind::Interface => CompletionItemKind::INTERFACE,
+                    abap_cache::HoveredComponentKind::Type => CompletionItemKind::TYPE_PARAMETER,
                     abap_cache::HoveredComponentKind::Attribute
                     | abap_cache::HoveredComponentKind::Scalar
                     | abap_cache::HoveredComponentKind::Structured { .. } => {
@@ -4577,6 +4584,15 @@ fn completion_item_metadata(
             lines.push("interface".to_string());
             item.declaration.clone()
         }
+        abap_cache::HoveredComponentKind::Type => {
+            if let Some(declaration) = &item.declaration {
+                lines[0] = format!("```abap\n{}\n```", declaration);
+            }
+            lines.push("type definition".to_string());
+            item.declared_type
+                .clone()
+                .or_else(|| item.declaration.clone())
+        }
     };
     if let Some(declared_type) = &item.declared_type {
         lines.push(format!("declared as `{}`", declared_type));
@@ -4637,12 +4653,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
-        CodeActionContext, CodeActionOrCommand, DiagnosticSeverity, DidChangeTextDocumentParams,
-        DidOpenTextDocumentParams, Documentation, GotoDefinitionResponse, HoverContents,
-        InlayHintKind, InlayHintLabel, InlayHintTooltip, InsertTextFormat, NumberOrString,
-        Position, PrepareRenameResponse, Range, SemanticTokensParams,
-        TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-        TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
+        CodeActionContext, CodeActionOrCommand, CompletionContext, CompletionTriggerKind,
+        DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
+        GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel, InlayHintTooltip,
+        InsertTextFormat, NumberOrString, Position, PrepareRenameResponse, Range,
+        SemanticTokensParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+        TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     };
 
     use crate::sem_tokens;
@@ -12608,6 +12624,164 @@ some_class=>exec( iv_value = 1 )."
         assert!(markup.value.contains("CLASS-METHODS exec"));
         assert!(markup.value.contains("iv_value TYPE i"));
         assert!(markup.value.contains("static method of `some_class`"));
+    }
+
+    #[test]
+    fn hover_definition_and_completion_cover_class_type_selectors() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_repro DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_errors TYPE RANGE OF string.
+ENDCLASS.
+
+DATA lt_data TYPE lcl_repro=>tr_errors.
+DATA lv_other TYPE lcl_repro=>tr";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_class_type.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let type_use_offset = text.rfind("tr_errors").expect("type use");
+        let type_use_position = offset_to_position(text, type_use_offset + 1).expect("position");
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_class_type.abap").expect("uri"),
+                    },
+                    position: type_use_position,
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup
+                .value
+                .contains("TYPES tr_errors TYPE RANGE OF string.")
+        );
+        assert!(markup.value.contains("type definition of `lcl_repro`"));
+        assert!(markup.value.contains("used in type position"));
+
+        let definition_result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_class_type.abap").expect("uri"),
+                    },
+                    position: type_use_position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = definition_result else {
+            panic!("expected scalar definition");
+        };
+        assert_eq!(
+            location.range.start,
+            offset_to_position(
+                text,
+                text.find("tr_errors TYPE RANGE OF string")
+                    .expect("type declaration"),
+            )
+            .expect("declaration position")
+        );
+
+        let completion_offset =
+            text.rfind("lcl_repro=>tr").expect("completion use") + "lcl_repro=>tr".len();
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_class_type.abap").expect("uri"),
+                    },
+                    position: offset_to_position(text, completion_offset)
+                        .expect("completion position"),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "tr_errors");
+        assert_eq!(
+            items[0].kind,
+            Some(lsp_types::CompletionItemKind::TYPE_PARAMETER)
+        );
+        assert_eq!(items[0].detail.as_deref(), Some("TYPE RANGE OF string"));
+        let Some(Documentation::MarkupContent(completion_docs)) = &items[0].documentation else {
+            panic!("expected markdown docs");
+        };
+        assert!(completion_docs.value.contains("type definition"));
+    }
+
+    #[test]
+    fn completion_returns_class_types_after_bare_fat_arrow() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_repro DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_errors TYPE RANGE OF string.
+ENDCLASS.
+
+DATA lt_data TYPE lcl_repro=>";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_class_type_bare.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_class_type_bare.abap").expect("uri"),
+                    },
+                    position: offset_to_position(text, text.len()).expect("completion position"),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: Some(CompletionContext {
+                    trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                    trigger_character: Some(">".to_string()),
+                }),
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "tr_errors");
     }
 
     #[test]

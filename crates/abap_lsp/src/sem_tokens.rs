@@ -256,6 +256,7 @@ fn collect_pending(
                     abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
                     abap_cache::HoveredComponentKind::Method => ty_ix.method,
                     abap_cache::HoveredComponentKind::Interface => ty_ix.type_,
+                    abap_cache::HoveredComponentKind::Type => ty_ix.type_,
                 })
                 .unwrap_or(ty_ix.property);
             push_pending(
@@ -699,6 +700,36 @@ DATA(lv_msgv1) = <ls_return>-message_v1.
                 "expected `{field_name}` to highlight as property"
             );
         }
+    }
+
+    #[test]
+    fn semantic_tokens_mark_class_type_selector_segments_as_type() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_repro DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_errors TYPE RANGE OF string.
+ENDCLASS.
+
+DATA lt_data TYPE lcl_repro=>tr_errors.
+";
+        let snapshot = store.publish("file:///semantic_class_type_selector.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let type_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
+        let type_offset = src.rfind("tr_errors").expect("type selector use");
+        let (line, character) = byte_offset_to_line_character_utf16_reference(src, type_offset)
+            .expect("type selector position");
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, line, character),
+            Some(type_idx),
+            "expected class type selector to highlight as type"
+        );
     }
 
     #[test]

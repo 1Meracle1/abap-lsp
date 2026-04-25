@@ -194,6 +194,7 @@ pub enum HoveredComponentKind {
     Attribute,
     Method,
     Interface,
+    Type,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -685,6 +686,37 @@ impl AnalysisSnapshot {
                     value_clause_display: None,
                     declaration: Some(format!("INTERFACE {}", access.field_path[0].name)),
                     kind: HoveredComponentKind::Interface,
+                    is_static_method: false,
+                    in_type_position: access.in_type_position,
+                });
+            }
+            if let Some((type_unit, type_symbol)) =
+                resolve_class_selector_type_symbol_with_scope_index(
+                    self,
+                    self.scope_index(),
+                    access,
+                    segment_index,
+                    unit,
+                    symbol_id,
+                )
+            {
+                return Some(HoveredComponentInfo {
+                    base_name: Arc::clone(&access.base_name),
+                    base_namespace: access.base_namespace,
+                    component_path: access
+                        .field_path
+                        .iter()
+                        .take(segment_index + 1)
+                        .map(|segment| Arc::clone(&segment.name))
+                        .collect(),
+                    field_name: Arc::clone(&type_symbol.name),
+                    field_owner_structure_name: None,
+                    range: access.field_path[segment_index].range.clone(),
+                    declared_type: symbol_selector_declared_type(type_unit, type_symbol),
+                    description: None,
+                    value_clause_display: None,
+                    declaration: Some(format_selector_type_declaration(type_unit, type_symbol)),
+                    kind: HoveredComponentKind::Type,
                     is_static_method: false,
                     in_type_position: access.in_type_position,
                 });
@@ -1301,6 +1333,18 @@ impl AnalysisSnapshot {
                         access.field_path[0].name.as_ref(),
                     ),
                 ));
+            }
+            if let Some((type_unit, type_symbol)) =
+                resolve_class_selector_type_symbol_with_scope_index(
+                    self,
+                    self.scope_index(),
+                    access,
+                    segment_index,
+                    unit,
+                    symbol_id,
+                )
+            {
+                return Some(definition_target_for_symbol(type_unit, type_symbol));
             }
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
@@ -2175,29 +2219,39 @@ impl AnalysisSnapshot {
                     &query.base_name,
                 )
         {
-            let mut items: Vec<_> = collect_class_methods_in_hierarchy(self, unit, class_symbol_id)
-                .into_iter()
-                .filter(|member| {
-                    let (member_unit, member) = member;
-                    (!requires_static || member.is_static)
-                        && class_member_visible_to(
-                            self,
-                            self.symbols.as_ref(),
-                            query.scope,
-                            member_unit,
-                            member,
-                        )
-                        && member.name.as_ref().starts_with(query.prefix.as_ref())
-                })
-                .map(|(member_unit, member)| SelectorCompletionItem {
-                    name: Arc::clone(&member.name),
-                    declared_type: None,
-                    declaration: Some(format_class_member_signature(member_unit, member)),
-                    kind: HoveredComponentKind::Method,
-                    field_owner_structure_name: None,
-                    insertion: callable_completion_insertion(member),
-                })
-                .collect();
+            let mut items: Vec<_> = if query.in_type_position {
+                collect_class_types_in_hierarchy(self, unit, class_symbol_id)
+                    .into_iter()
+                    .filter(|(_, symbol)| symbol.name.as_ref().starts_with(query.prefix.as_ref()))
+                    .map(|(type_unit, type_symbol)| {
+                        selector_completion_item_for_type_symbol(type_unit, type_symbol)
+                    })
+                    .collect()
+            } else {
+                collect_class_methods_in_hierarchy(self, unit, class_symbol_id)
+                    .into_iter()
+                    .filter(|member| {
+                        let (member_unit, member) = member;
+                        (!requires_static || member.is_static)
+                            && class_member_visible_to(
+                                self,
+                                self.symbols.as_ref(),
+                                query.scope,
+                                member_unit,
+                                member,
+                            )
+                            && member.name.as_ref().starts_with(query.prefix.as_ref())
+                    })
+                    .map(|(member_unit, member)| SelectorCompletionItem {
+                        name: Arc::clone(&member.name),
+                        declared_type: None,
+                        declaration: Some(format_class_member_signature(member_unit, member)),
+                        kind: HoveredComponentKind::Method,
+                        field_owner_structure_name: None,
+                        insertion: callable_completion_insertion(member),
+                    })
+                    .collect()
+            };
             items.sort_by(|left, right| left.name.cmp(&right.name));
             return Some(SelectorCompletionInfo {
                 replace_range: query.replace_range,
@@ -5444,6 +5498,40 @@ fn resolve_field_access_container_structure_with_scope_index<'a>(
     }
 
     if segment_index > 0
+        && access.in_type_position
+        && let Some((type_unit, type_symbol)) = resolve_class_selector_type_symbol_with_scope_index(
+            snapshot,
+            scope_index,
+            access,
+            0,
+            unit,
+            symbol_id,
+        )
+    {
+        let mut structure_id = type_symbol.structure?;
+        let lookup_scope = if type_unit.scopes.get(access.scope.as_usize()).is_some() {
+            access.scope
+        } else {
+            type_unit.root_scope
+        };
+        for segment in &access.field_path[1..segment_index] {
+            let field = resolve_structure_field_info_with_scope_index(
+                snapshot,
+                scope_index,
+                type_unit,
+                lookup_scope,
+                structure_id,
+                segment.name.as_ref(),
+            )?;
+            structure_id = match field.shape {
+                StructureFieldShape::Structured { structure } => structure,
+                StructureFieldShape::Scalar => return None,
+            };
+        }
+        return Some((type_unit, structure_id));
+    }
+
+    if segment_index > 0
         && let Some((member_unit, member)) = resolve_class_selector_member_with_scope_index(
             snapshot,
             scope_index,
@@ -5557,7 +5645,21 @@ fn resolve_selector_component_path_structure_with_scope_index<'a>(
                 .collect(),
             in_type_position,
         };
-        if let Some((member_unit, member)) = resolve_class_selector_member_with_scope_index(
+        if in_type_position
+            && let Some((type_unit, type_symbol)) =
+                resolve_class_selector_type_symbol_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    &synthetic_access,
+                    0,
+                    unit,
+                    symbol_id,
+                )
+        {
+            current_unit = type_unit;
+            current_structure = Some(type_symbol.structure?);
+            start_idx = 1;
+        } else if let Some((member_unit, member)) = resolve_class_selector_member_with_scope_index(
             snapshot,
             scope_index,
             &synthetic_access,
@@ -6936,6 +7038,115 @@ fn hovered_component_kind_for_class_member(member: &ClassMemberData) -> HoveredC
     }
 }
 
+fn class_scoped_type_symbol_for_owner<'a>(
+    unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    type_name: &str,
+) -> Option<&'a SymbolData> {
+    unit.symbols.iter().find(|symbol| {
+        symbol.kind == SymbolKind::TypeDef
+            && symbol.name.as_ref() == type_name
+            && unit.scope(symbol.scope).owner == Some(owner_symbol)
+            && matches!(
+                unit.scope(symbol.scope).kind,
+                ScopeKind::Class | ScopeKind::Interface
+            )
+    })
+}
+
+fn resolve_class_type_symbol_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol: SymbolId,
+    type_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a SymbolData)> {
+    let mut current = (class_unit.unit_id, class_symbol);
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let unit = &snapshot.project.units[current.0.as_usize()];
+        if let Some(symbol) = class_scoped_type_symbol_for_owner(unit, current.1, type_name) {
+            return Some((unit, symbol));
+        }
+        let Some((next_unit, next_symbol)) =
+            direct_superclass_from_class(snapshot, unit, current.1)
+        else {
+            return None;
+        };
+        current = (next_unit.unit_id, next_symbol);
+    }
+}
+
+fn collect_class_types_in_hierarchy<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    class_unit: &'a UnitAnalysis,
+    class_symbol: SymbolId,
+) -> Vec<(&'a UnitAnalysis, &'a SymbolData)> {
+    let mut current = (class_unit.unit_id, class_symbol);
+    let mut visited_classes = HashSet::new();
+    let mut seen_names = HashSet::new();
+    let mut out = Vec::new();
+    loop {
+        if !visited_classes.insert(current) {
+            break;
+        }
+        let unit = &snapshot.project.units[current.0.as_usize()];
+        for symbol in unit.symbols.iter().filter(|symbol| {
+            symbol.kind == SymbolKind::TypeDef
+                && unit.scope(symbol.scope).owner == Some(current.1)
+                && matches!(
+                    unit.scope(symbol.scope).kind,
+                    ScopeKind::Class | ScopeKind::Interface
+                )
+        }) {
+            if !seen_names.insert(Arc::clone(&symbol.name)) {
+                continue;
+            }
+            out.push((unit, symbol));
+        }
+        let Some((next_unit, next_symbol)) =
+            direct_superclass_from_class(snapshot, unit, current.1)
+        else {
+            break;
+        };
+        current = (next_unit.unit_id, next_symbol);
+    }
+    out
+}
+
+fn symbol_selector_declared_type(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
+    symbol_type_presentation(None, symbol)
+        .map(|presentation| presentation.rendered_clause)
+        .or_else(|| {
+            symbol
+                .structure
+                .map(|structure_id| format!("TYPE {}", unit.structure(structure_id).name))
+        })
+}
+
+fn format_selector_type_declaration(unit: &UnitAnalysis, symbol: &SymbolData) -> String {
+    match symbol_selector_declared_type(unit, symbol) {
+        Some(declared_type) => format!("TYPES {} {}.", symbol.name, declared_type),
+        None => format!("TYPES {}.", symbol.name),
+    }
+}
+
+fn selector_completion_item_for_type_symbol(
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> SelectorCompletionItem {
+    SelectorCompletionItem {
+        name: Arc::clone(&symbol.name),
+        declared_type: symbol_selector_declared_type(unit, symbol),
+        declaration: Some(format_selector_type_declaration(unit, symbol)),
+        kind: HoveredComponentKind::Type,
+        field_owner_structure_name: None,
+        insertion: identifier_completion_insertion(symbol.name.as_ref()),
+    }
+}
+
 fn resolve_class_selector_member<'a>(
     snapshot: &'a AnalysisSnapshot,
     access: &abap_symbols::FieldAccess,
@@ -6994,6 +7205,32 @@ fn resolve_interface_selector_method_symbol_with_scope_index<'a>(
         access.field_path[1].name.as_ref(),
     )?;
     Some((method_unit, method_unit.symbol(method_symbol_id)))
+}
+
+fn resolve_class_selector_type_symbol_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    unit: &'a UnitAnalysis,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, &'a SymbolData)> {
+    if segment_index != 0 || access.base_namespace != Namespace::Type {
+        return None;
+    }
+    let (class_unit, class_symbol_id, _) = resolve_class_selector_base_with_scope_index(
+        snapshot,
+        scope_index,
+        access,
+        unit,
+        symbol_id,
+    )?;
+    resolve_class_type_symbol_in_hierarchy(
+        snapshot,
+        class_unit,
+        class_symbol_id,
+        access.field_path[segment_index].name.as_ref(),
+    )
 }
 
 fn resolve_class_selector_member_with_scope_index<'a>(
@@ -7537,6 +7774,16 @@ fn classify_field_access_segment_with_scope_index(
         .is_some()
     {
         return Some(HoveredComponentKind::Interface);
+    }
+    if let Some((_, _)) = resolve_class_selector_type_symbol_with_scope_index(
+        snapshot,
+        scope_index,
+        access,
+        segment_index,
+        unit,
+        symbol_id,
+    ) {
+        return Some(HoveredComponentKind::Type);
     }
     if let Some((_, member)) = resolve_class_selector_member_with_scope_index(
         snapshot,
@@ -10353,7 +10600,7 @@ mod tests {
         dependency_surface_text, opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
-        Diagnostic, DiagnosticKind, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
+        Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
         RoutineEdgeKind, RoutineInstructionSite, RoutineKind, ScopeId, ScopeKind,
         StructureFieldShape, SymbolHandle, SymbolId, SymbolKind,
     };
@@ -16868,6 +17115,53 @@ ENDCLASS.";
     }
 
     #[test]
+    fn hover_and_definition_work_for_static_class_type_selector() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_repro DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_errors TYPE RANGE OF string.
+ENDCLASS.
+
+DATA lt_data TYPE lcl_repro=>tr_errors.";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let type_use = src.rfind("tr_errors").expect("type use");
+
+        let hovered = snapshot
+            .hovered_component_at(type_use + 1)
+            .expect("hovered component");
+        assert_eq!(hovered.base_name.as_ref(), "lcl_repro");
+        assert_eq!(
+            hovered
+                .component_path
+                .iter()
+                .map(|part| part.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["tr_errors"]
+        );
+        assert_eq!(hovered.field_name.as_ref(), "tr_errors");
+        assert_eq!(
+            hovered.declared_type.as_deref(),
+            Some("TYPE RANGE OF string")
+        );
+        assert_eq!(
+            hovered.declaration.as_deref(),
+            Some("TYPES tr_errors TYPE RANGE OF string.")
+        );
+        assert!(matches!(hovered.kind, HoveredComponentKind::Type));
+
+        let target = snapshot
+            .definition_at(type_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "tr_errors");
+        assert_eq!(
+            target.range.start,
+            src.find("tr_errors TYPE RANGE OF string")
+                .expect("type declaration")
+        );
+    }
+
+    #[test]
     fn hover_and_definition_work_for_value_constructor_named_field() {
         let store = DocumentStore::default();
         let src = "\
@@ -17240,6 +17534,126 @@ some_class=>e";
                 .as_deref()
                 .is_some_and(|decl| decl.contains("CLASS-METHODS"))
         }));
+    }
+
+    #[test]
+    fn lists_public_class_types_after_fat_arrow_in_type_position() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_errors TYPE RANGE OF string.
+    TYPES ty_output TYPE string.
+    CLASS-METHODS exec.
+ENDCLASS.
+
+DATA lt_data TYPE some_class=>t";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("selector completion");
+        assert!(completion.in_type_position);
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["tr_errors", "ty_output"]
+        );
+        assert!(
+            completion
+                .items
+                .iter()
+                .all(|item| matches!(item.kind, HoveredComponentKind::Type))
+        );
+        assert_eq!(
+            completion.items[0].declared_type.as_deref(),
+            Some("TYPE RANGE OF string")
+        );
+        assert_eq!(
+            completion.items[0].declaration.as_deref(),
+            Some("TYPES tr_errors TYPE RANGE OF string.")
+        );
+        assert!(
+            completion
+                .items
+                .iter()
+                .all(|item| item.name.as_ref() != "exec"),
+            "unexpected method completion in type position: {:?}",
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn lists_public_class_types_after_bare_fat_arrow_in_type_position() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_errors TYPE RANGE OF string.
+    TYPES ty_output TYPE string.
+ENDCLASS.
+
+DATA lt_data TYPE some_class=>";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let query = snapshot
+            .selector_completion_query_at(src.len())
+            .expect("selector query");
+        assert_eq!(query.base_name.as_ref(), "some_class");
+        assert_eq!(query.base_namespace, Namespace::Type);
+        assert!(query.component_path.is_empty());
+        assert!(query.in_type_position);
+        assert_eq!(query.prefix.as_ref(), "");
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("selector completion");
+        assert!(completion.in_type_position);
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["tr_errors", "ty_output"]
+        );
+    }
+
+    #[test]
+    fn lists_selector_completion_items_after_class_type_structure_dash_in_type_position() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_outer,
+             low TYPE i,
+             high TYPE i,
+           END OF ty_outer.
+ENDCLASS.
+
+DATA lr_data TYPE lcl_demo=>ty_outer-l";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("selector completion");
+        assert!(completion.in_type_position);
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["low"]
+        );
+        assert_eq!(completion.items[0].declared_type.as_deref(), Some("TYPE i"));
     }
 
     #[test]
