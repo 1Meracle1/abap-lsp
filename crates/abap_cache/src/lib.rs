@@ -227,6 +227,8 @@ pub struct ParameterInlayHintInfo {
     pub position: usize,
     pub label: Arc<str>,
     pub trailing_colon: bool,
+    pub padding_left: bool,
+    pub padding_right: bool,
     pub tooltip_markdown: String,
 }
 
@@ -988,6 +990,8 @@ impl AnalysisSnapshot {
                         position: argument.range.start,
                         label: Arc::clone(&parameter.name),
                         trailing_colon: true,
+                        padding_left: false,
+                        padding_right: true,
                         tooltip_markdown: perform_parameter_inlay_hint_markdown(&parameter),
                     })
                 })
@@ -1031,6 +1035,53 @@ impl AnalysisSnapshot {
                 })
             })
             .collect();
+        hints.sort_by_key(|hint| hint.position);
+        hints
+    }
+
+    pub fn method_implementation_parameter_inlay_hints_in_range(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<ParameterInlayHintInfo> {
+        let mut hints = Vec::new();
+        for unit in &self.project.units {
+            for member in &unit.class_members {
+                if member.kind != ClassMemberKind::Method {
+                    continue;
+                }
+                let Some(implementation) = member.implementation.as_ref() else {
+                    continue;
+                };
+                if implementation.unit != self.symbols.unit_id {
+                    continue;
+                }
+                let position = method_implementation_parameter_inlay_position(
+                    self.text.as_ref(),
+                    &implementation.range,
+                );
+                if position < range.start || position >= range.end {
+                    continue;
+                }
+                let (signature_unit, signature_member) =
+                    method_implementation_signature_member(self, unit, member);
+                if signature_member.parameters.is_empty() {
+                    continue;
+                }
+                hints.push(ParameterInlayHintInfo {
+                    position,
+                    label: Arc::from(method_implementation_parameters_inlay_hint_label(
+                        &signature_member.parameters,
+                    )),
+                    trailing_colon: false,
+                    padding_left: false,
+                    padding_right: false,
+                    tooltip_markdown: method_implementation_parameters_inlay_hint_markdown(
+                        signature_unit,
+                        signature_member,
+                    ),
+                });
+            }
+        }
         hints.sort_by_key(|hint| hint.position);
         hints
     }
@@ -3975,6 +4026,99 @@ fn method_parameter_inlay_hint_markdown(
     )
 }
 
+fn method_implementation_parameter_inlay_position(text: &str, range: &Range<usize>) -> usize {
+    let Some(tail) = text.get(range.end..) else {
+        return range.end;
+    };
+    for (offset, ch) in tail.char_indices() {
+        if ch == '.' {
+            return range.end + offset + ch.len_utf8();
+        }
+        if ch == '\n' || !ch.is_whitespace() {
+            break;
+        }
+    }
+    range.end
+}
+
+fn method_implementation_parameter_signature(parameter: &ClassMemberParameterData) -> String {
+    let rendered_name = if matches!(
+        parameter.section,
+        MethodParameterSection::Receiving | MethodParameterSection::Returning
+    ) {
+        format!("VALUE({})", parameter.name)
+    } else {
+        parameter.name.to_string()
+    };
+    let mut rendered = rendered_name;
+    if let Some(type_clause) = parameter
+        .declared_type
+        .as_ref()
+        .map(format_field_type_ref)
+        .or_else(|| {
+            parameter
+                .type_clause_display
+                .as_ref()
+                .map(|display| display.trim().to_string())
+        })
+    {
+        rendered.push(' ');
+        rendered.push_str(&type_clause);
+    }
+    if parameter.is_optional {
+        rendered.push_str(" OPTIONAL");
+    }
+    rendered
+}
+
+fn method_implementation_parameters_inlay_body(parameters: &[ClassMemberParameterData]) -> String {
+    let mut lines = Vec::new();
+    let mut current_section = None;
+    for parameter in parameters {
+        if current_section != Some(parameter.section) {
+            current_section = Some(parameter.section);
+            lines.push(format!(
+                "  {}",
+                method_parameter_section_keyword(parameter.section)
+            ));
+        }
+        lines.push(format!(
+            "    {}",
+            method_implementation_parameter_signature(parameter)
+        ));
+    }
+    lines.join("\n")
+}
+
+fn method_implementation_parameters_inlay_hint_label(
+    parameters: &[ClassMemberParameterData],
+) -> String {
+    format!(
+        "\n{}",
+        method_implementation_parameters_inlay_body(parameters)
+    )
+}
+
+fn method_implementation_parameters_inlay_hint_markdown(
+    member_unit: &UnitAnalysis,
+    member: &ClassMemberData,
+) -> String {
+    let owner = if member.name.as_ref().eq_ignore_ascii_case("constructor") {
+        format!(
+            "parameters of CONSTRUCTOR `{}` implementation",
+            member_unit.symbol(member.class_symbol).name
+        )
+    } else {
+        format!("parameters of METHOD `{}` implementation", member.name)
+    };
+    format!(
+        "{owner}\n\n{}",
+        format_hover_abap(&method_implementation_parameters_inlay_body(
+            &member.parameters
+        ))
+    )
+}
+
 fn markdown_lines_for_declared_symbol(
     snapshot: &AnalysisSnapshot,
     unit: &UnitAnalysis,
@@ -5994,6 +6138,8 @@ fn function_module_parameter_inlay_hint(
         position,
         label: Arc::from(label),
         trailing_colon: false,
+        padding_left: false,
+        padding_right: true,
         tooltip_markdown: function_module_parameter_inlay_hint_markdown(function_name, parameter),
     })
 }
@@ -6027,6 +6173,8 @@ fn method_parameter_inlay_hint(
         position,
         label: Arc::from(label),
         trailing_colon: false,
+        padding_left: false,
+        padding_right: true,
         tooltip_markdown: method_parameter_inlay_hint_markdown(call_site, member, parameter),
     })
 }
@@ -6606,6 +6754,24 @@ fn class_member_uses_inherited_signature(member: &ClassMemberData) -> bool {
             let keyword = part.trim_end_matches('.');
             keyword.eq_ignore_ascii_case("redefinition")
         })
+}
+
+fn method_implementation_signature_member<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    member_unit: &'a UnitAnalysis,
+    member: &'a ClassMemberData,
+) -> (&'a UnitAnalysis, &'a ClassMemberData) {
+    if class_member_uses_inherited_signature(member)
+        && let Some((resolved_unit, resolved_member)) = resolve_class_member_in_hierarchy(
+            snapshot,
+            member_unit,
+            member.class_symbol,
+            member.name.as_ref(),
+        )
+    {
+        return (resolved_unit, resolved_member);
+    }
+    (member_unit, member)
 }
 
 fn collect_class_methods_in_hierarchy<'a>(

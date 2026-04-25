@@ -4234,6 +4234,8 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
     let mut hint_infos = snapshot.perform_parameter_inlay_hints_in_range(byte_range.clone());
     hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range.clone()));
     hint_infos.extend(snapshot.method_parameter_inlay_hints_in_range(byte_range.clone()));
+    hint_infos
+        .extend(snapshot.method_implementation_parameter_inlay_hints_in_range(byte_range.clone()));
     hint_infos.sort_by_key(|hint| hint.position);
     let mut hints: Vec<_> = hint_infos
         .into_iter()
@@ -4255,8 +4257,8 @@ pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<
                     }
                     .into(),
                 ),
-                padding_left: None,
-                padding_right: Some(true),
+                padding_left: hint.padding_left.then_some(true),
+                padding_right: hint.padding_right.then_some(true),
                 data: None,
             })
         })
@@ -4684,6 +4686,13 @@ mod tests {
         .expect("read dependency document")
         .expect("dependency document")
         .source_text
+    }
+
+    fn inlay_hint_label_string(hint: &lsp_types::InlayHint) -> &str {
+        let InlayHintLabel::String(label) = &hint.label else {
+            panic!("expected string label");
+        };
+        label
     }
 
     fn semantic_token_type_at(
@@ -14317,6 +14326,92 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn inlay_hints_show_method_parameters_on_implementation_headers() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS do_stmt_else
+      IMPORTING
+        iv_importing TYPE i
+      EXPORTING
+        ev_exporting TYPE i
+      CHANGING
+        cv_changing TYPE i
+      RECEIVING
+        VALUE(rv_receiving) TYPE i
+      RETURNING
+        VALUE(rv_returning) TYPE i.
+    METHODS no_params.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD do_stmt_else.
+  ENDMETHOD.
+  METHOD no_params.
+  ENDMETHOD.
+ENDCLASS.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///method_impl_inlay.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Uri::from_str("file:///method_impl_inlay.abap").expect("uri"),
+                },
+                range: Range {
+                    start: offset_to_position(text, 0).expect("start position"),
+                    end: offset_to_position(text, text.len()).expect("end position"),
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+
+        let parameter_hints: Vec<_> = hints
+            .iter()
+            .filter(|hint| matches!(hint.kind, Some(InlayHintKind::PARAMETER)))
+            .collect();
+        assert_eq!(parameter_hints.len(), 1, "{hints:?}");
+
+        let implementation_position = offset_to_position(
+            text,
+            text.rfind("METHOD do_stmt_else.")
+                .expect("method implementation")
+                + "METHOD do_stmt_else.".len(),
+        )
+        .expect("implementation hint position");
+        let hint = parameter_hints[0];
+        assert_eq!(hint.position, implementation_position);
+        assert_eq!(
+            inlay_hint_label_string(hint),
+            "\n  IMPORTING\n    iv_importing TYPE i\n  EXPORTING\n    ev_exporting TYPE i\n  CHANGING\n    cv_changing TYPE i\n  RECEIVING\n    VALUE(rv_receiving) TYPE i\n  RETURNING\n    VALUE(rv_returning) TYPE i"
+        );
+        assert_eq!(hint.padding_left, None);
+        assert_eq!(hint.padding_right, None);
+        let Some(InlayHintTooltip::MarkupContent(tooltip)) = hint.tooltip.as_ref() else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(
+            tooltip
+                .value
+                .contains("parameters of METHOD `do_stmt_else` implementation")
+        );
+        assert!(tooltip.value.contains("VALUE(rv_returning) TYPE i"));
+    }
+
+    #[test]
     fn inlay_hints_cover_method_and_constructor_parameters_in_all_call_syntaxes() {
         let state = ServerState::default();
         let text = "\
@@ -14393,8 +14488,13 @@ START-OF-SELECTION.
             .iter()
             .filter(|hint| matches!(hint.kind, Some(InlayHintKind::TYPE)))
             .collect();
+        let call_parameter_hints: Vec<_> = parameter_hints
+            .iter()
+            .copied()
+            .filter(|hint| matches!(inlay_hint_label_string(hint), "string" | "i"))
+            .collect();
 
-        assert_eq!(parameter_hints.len(), 6, "{hints:?}");
+        assert_eq!(call_parameter_hints.len(), 6, "{hints:?}");
         assert_eq!(type_hints.len(), 3, "{hints:?}");
 
         let expected_positions = [
@@ -14424,14 +14524,12 @@ START-OF-SELECTION.
             ),
         ];
 
-        for (idx, hint) in parameter_hints.iter().enumerate() {
+        for (idx, hint) in call_parameter_hints.iter().enumerate() {
             assert_eq!(
                 hint.position,
                 offset_to_position(text, expected_positions[idx]).expect("hint position")
             );
-            let InlayHintLabel::String(label) = &hint.label else {
-                panic!("expected string label");
-            };
+            let label = inlay_hint_label_string(hint);
             assert_eq!(label, expected_labels[idx]);
             let Some(InlayHintTooltip::MarkupContent(tooltip)) = hint.tooltip.as_ref() else {
                 panic!("expected markdown tooltip");
