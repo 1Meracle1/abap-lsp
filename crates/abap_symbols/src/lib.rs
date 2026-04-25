@@ -595,6 +595,45 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn implicit_me_is_definitely_assigned_in_instance_method_bodies() {
+        let src = "\
+CLASS lcl_demo DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS constructor IMPORTING iv_value TYPE i.\n\
+    METHODS get_value RETURNING VALUE(rv_value) TYPE i.\n\
+  PRIVATE SECTION.\n\
+    DATA mv_value TYPE i.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_demo IMPLEMENTATION.\n\
+  METHOD constructor.\n\
+    me->mv_value = iv_value.\n\
+  ENDMETHOD.\n\
+\n\
+  METHOD get_value.\n\
+    rv_value = me->mv_value.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///implicit_me_dataflow.abap", src, &parsed);
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !diagnostic.message.contains("'me'")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn delete_where_row_field_from_project_table_type_does_not_trigger_definite_assignment_warning()
     {
         let main_src = r#"

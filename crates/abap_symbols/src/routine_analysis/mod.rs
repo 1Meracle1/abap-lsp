@@ -5199,6 +5199,9 @@ fn value_is_definitely_assigned_on_entry(
             if value_has_explicit_declaration_initializer(unit, value) {
                 return true;
             }
+            if value_is_implicit_me_symbol(unit, value) {
+                return true;
+            }
             if value_is_constructor_expression_binding(unit, value) {
                 return true;
             }
@@ -5212,6 +5215,31 @@ fn value_is_definitely_assigned_on_entry(
         }
         DataflowValueKind::FieldSymbol | DataflowValueKind::Other => false,
     }
+}
+
+fn value_is_implicit_me_symbol(unit: &UnitAnalysis, value: &RoutineDataflowValue) -> bool {
+    let Some(symbol) = unit.symbols.get(value.symbol.symbol.as_usize()) else {
+        return false;
+    };
+    if symbol.kind != SymbolKind::Variable || symbol.name.as_ref() != "me" {
+        return false;
+    }
+    let Some(scope) = unit.scopes.get(symbol.scope.as_usize()) else {
+        return false;
+    };
+    if scope.kind != ScopeKind::Method {
+        return false;
+    }
+    let Some(owner_id) = scope.owner else {
+        return false;
+    };
+    let Some(owner_symbol) = unit.symbols.get(owner_id.as_usize()) else {
+        return false;
+    };
+    if owner_symbol.kind != SymbolKind::Method {
+        return false;
+    }
+    symbol.decl_range == (0..0) || symbol.decl_range == owner_symbol.decl_range
 }
 
 fn value_is_constructor_expression_binding(
