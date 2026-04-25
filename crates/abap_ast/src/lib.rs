@@ -137,6 +137,8 @@ pub enum SyntaxKind {
     FieldSymbolInlineDecl,
     /// A valid statement kept as raw tokens through a top-level `.` when no more specific kind applies yet.
     UnparsedStmt,
+    /// `CLASS class DEFINITION DEFERRED [PUBLIC].`
+    ClassDeferredStmt,
     /// `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
     ClassSectionStmt,
     /// Visibility keyword inside `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
@@ -587,6 +589,7 @@ impl SyntaxKind {
             Self::AssignSourceExpr => "AssignSourceExpr",
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::UnparsedStmt => "UnparsedStmt",
+            Self::ClassDeferredStmt => "ClassDeferredStmt",
             Self::ClassSectionStmt => "ClassSectionStmt",
             Self::ClassSectionVisibility => "ClassSectionVisibility",
             Self::MethodsStmt => "MethodsStmt",

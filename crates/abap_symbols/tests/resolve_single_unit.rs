@@ -5556,6 +5556,80 @@ ENDCLASS.
 }
 
 #[test]
+fn reports_local_class_type_reference_before_definition_without_deferred() {
+    let src = r#"
+CLASS c2 DEFINITION.
+  PUBLIC SECTION.
+    DATA c1ref TYPE REF TO c1.
+ENDCLASS.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    DATA c2ref TYPE REF TO c2.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit(
+        "file:///class_forward_ref_without_deferred.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message == "type 'c1' is declared after its use"
+        }),
+        "expected declaration-order diagnostic for c1, diagnostics={:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_local_class_type_reference_after_deferred_declaration() {
+    let src = r#"
+CLASS c1 DEFINITION DEFERRED.
+
+CLASS c2 DEFINITION.
+  PUBLIC SECTION.
+    DATA c1ref TYPE REF TO c1.
+ENDCLASS.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    DATA c2ref TYPE REF TO c2.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///class_forward_ref_with_deferred.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("c1")
+        }),
+        "unexpected c1 diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
+        "deferred declaration plus definition should share one class symbol: {:?}",
+        unit.diagnostics
+    );
+    assert_eq!(
+        unit.symbols
+            .iter()
+            .filter(|symbol| symbol.kind == SymbolKind::Class && symbol.name.as_ref() == "c1")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn collects_public_static_method_metadata_from_class_definition() {
     let src = r#"
 CLASS some_class DEFINITION.

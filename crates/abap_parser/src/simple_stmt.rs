@@ -58,6 +58,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
         &["public", "protected", "private"],
         classify_class_section_stmt,
     ),
+    GuardedSimpleStmtClassifier::new(&["class"], classify_class_deferred_stmt),
     GuardedSimpleStmtClassifier::new(&["set"], classify_set_gui_stmt),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
@@ -502,6 +503,29 @@ fn build_class_section_stmt_children(
             continue;
         }
         children.push(token_leaf(b, token));
+    }
+    children
+}
+
+fn build_class_deferred_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut wrapped_name = false;
+    for i in idx..=period_i {
+        if !wrapped_name
+            && i > idx
+            && let Some((name, next_i)) = parse_inline_name_local(b, tokens, i)
+            && next_i == i + 1
+        {
+            children.push(name);
+            wrapped_name = true;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
     }
     children
 }
@@ -1623,6 +1647,24 @@ fn classify_class_section_stmt(source: &str, significant: &[&Token]) -> Option<S
     class_section_statement(source, significant).then_some(SyntaxKind::ClassSectionStmt)
 }
 
+fn classify_class_deferred_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period
+        || significant.len() < 5
+        || significant.len() > 6
+        || !token_matches_keyword(source, significant[0], "class")
+        || significant[1].kind != TokenKind::Ident
+        || !token_matches_keyword(source, significant[2], "definition")
+        || !token_matches_keyword(source, significant[3], "deferred")
+    {
+        return None;
+    }
+    if significant.len() == 6 && !token_matches_keyword(source, significant[4], "public") {
+        return None;
+    }
+    Some(SyntaxKind::ClassDeferredStmt)
+}
+
 fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     method_statement_name_idx(source, significant).map(|_| SyntaxKind::MethodsStmt)
 }
@@ -1922,6 +1964,9 @@ pub fn try_parse_simple_stmt(
                 validate_stop_stmt(&significant, errors);
             }
             let kids = match kind {
+                SyntaxKind::ClassDeferredStmt => {
+                    build_class_deferred_stmt_children(b, tokens, idx, period_i)
+                }
                 SyntaxKind::ClassSectionStmt => {
                     build_class_section_stmt_children(b, source, tokens, idx, period_i)
                 }
@@ -2119,6 +2164,20 @@ ENDCLASS.";
                 .count_kind(interfaces, SyntaxKind::TypeRefSimple),
             1
         );
+    }
+
+    #[test]
+    fn classifies_class_deferred_statement_specifically() {
+        let parsed = crate::parse("CLASS lcl_demo DEFINITION DEFERRED PUBLIC.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ClassDeferredStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClassDecl), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDeclName), 1);
     }
 
     #[test]

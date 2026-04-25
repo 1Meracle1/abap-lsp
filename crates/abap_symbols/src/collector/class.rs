@@ -355,6 +355,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn walk_class_deferred_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+        let symbol = self
+            .collector
+            .declare_plain_symbol(scope, name, SymbolKind::Class, range);
+        self.collector.deferred_class_symbols.insert(symbol);
+    }
+
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
         let Some((is_implementation, is_abstract, name, range, superclass_info)) = (|| {
             let class_decl = ClassDecl::cast(self.collector.syntax(node))?;
@@ -404,12 +415,21 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 )
             }
         } else {
-            self.collector.declare_plain_symbol(
-                scope,
-                Arc::clone(&name),
-                SymbolKind::Class,
-                range.clone(),
-            )
+            self.collector
+                .lookup_symbol_in_scope_chain(scope, Namespace::Type, name.as_ref())
+                .filter(|&id| {
+                    self.collector.symbol(id).kind == SymbolKind::Class
+                        && self.collector.deferred_class_symbols.contains(&id)
+                        && !self.collector.class_definition_symbols.contains(&id)
+                })
+                .unwrap_or_else(|| {
+                    self.collector.declare_plain_symbol(
+                        scope,
+                        Arc::clone(&name),
+                        SymbolKind::Class,
+                        range.clone(),
+                    )
+                })
         };
         if impl_header_refs_class {
             self.collector.add_reference(

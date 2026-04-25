@@ -74,6 +74,9 @@ impl<'a> Collector<'a> {
             ),
             SyntaxKind::EventBlock => self.decl_lowering().walk_event_block(node, scope),
             SyntaxKind::ClassDecl => self.class_lowering().walk_class_decl(node, scope),
+            SyntaxKind::ClassDeferredStmt => {
+                self.class_lowering().walk_class_deferred_stmt(node, scope)
+            }
             SyntaxKind::InterfaceDecl => self.class_lowering().walk_interface_decl(node, scope),
             SyntaxKind::MethodDecl => self.decl_lowering().walk_method_decl(node, scope),
             SyntaxKind::IfStmt => self.control_lowering().walk_if_stmt(node, scope),

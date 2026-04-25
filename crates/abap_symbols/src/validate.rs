@@ -3033,7 +3033,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             }
             let symbol_unit = &project.units[handle.unit.as_usize()];
             let symbol = symbol_unit.symbol(handle.symbol);
-            if symbol.kind == SymbolKind::TypeDef
+            if matches!(symbol.kind, SymbolKind::TypeDef | SymbolKind::Class)
                 && lookup.include_order.type_decl_after_reference(
                     unit.unit_id,
                     reference.range.start,
