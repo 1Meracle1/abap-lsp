@@ -46,6 +46,12 @@ impl<'a> Collector<'a> {
                     .walk_data_like_decl(node, scope, SymbolKind::FieldSymbol)
             }
             SyntaxKind::DataInlineDecl => self.decl_lowering().walk_inline_decl(node, scope),
+            SyntaxKind::ValueClause => {
+                let tokens = self.syntax_token_nodes(node);
+                if tokens.len() > 1 {
+                    self.collect_token_expression_refs_infos(&tokens[1..], scope, true);
+                }
+            }
             SyntaxKind::IncludeStmt => self.decl_lowering().walk_include_stmt(node, scope),
             SyntaxKind::ReportStmt => self.decl_lowering().walk_report_decl(node, scope),
             SyntaxKind::FormDecl => self.decl_lowering().walk_block_decl(

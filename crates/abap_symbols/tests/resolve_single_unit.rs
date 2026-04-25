@@ -5925,6 +5925,30 @@ fn resolves_builtin_abap_boolean_constants_and_type() {
 }
 
 #[test]
+fn resolves_data_value_clause_boolean_constant_as_value_reference() {
+    let src = "DATA gv_error_refresh TYPE boolean VALUE abap_false.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///data_value_boolean_constant.abap", src, &parsed);
+
+    let false_ref = unit
+        .references
+        .iter()
+        .find(|reference| reference.name.as_ref() == "abap_false")
+        .expect("expected abap_false initializer reference");
+    assert_eq!(false_ref.namespace, Namespace::Value);
+    assert_eq!(false_ref.kind, ReferenceKind::Identifier);
+    assert!(matches!(false_ref.resolution, Some(Resolution::Symbol(_))));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("abap_false")),
+        "unexpected abap_false diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_any_as_builtin_type() {
     let src = "DATA lr_any TYPE any.";
     let parsed = parse(src);
