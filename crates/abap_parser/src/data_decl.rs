@@ -66,12 +66,14 @@ const PARAMETERS_TYPE_STOP_KEYWORDS: &[&str] = &[
 
 const SELECT_OPTIONS_FOR_STOP_KEYWORDS: &[&str] = &[
     "DEFAULT",
+    "HELP",
     "LOWER",
     "MATCHCODE",
     "MEMORY",
     "MODIF",
     "NO",
     "OBLIGATORY",
+    "VALUE",
     "VISIBLE",
 ];
 
@@ -1624,6 +1626,21 @@ mod tests {
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
+    }
+
+    #[test]
+    fn select_options_clause_accepts_documented_additions() {
+        let src = "\
+SELECT-OPTIONS:
+  s_gln FOR gv_gln OBLIGATORY VISIBLE LENGTH 20 DEFAULT 'A' TO 'Z' OPTION BT SIGN I LOWER CASE MATCHCODE OBJECT /sttp/h_loc_gln MEMORY ID gln NO DATABASE SELECTION HELP-REQUEST FOR LOW VALUE-REQUEST FOR HIGH,
+  s_dyn FOR (lv_type) NO-DISPLAY NO-EXTENSION NO INTERVALS MODIF ID grp.";
+        let file = tree_ok(src);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::SelectOptionsDecl),
+            1
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 2);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 2);
     }
 
     #[test]

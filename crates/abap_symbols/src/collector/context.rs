@@ -545,6 +545,10 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         self.collector.syntax_token_is_comment(token)
     }
 
+    pub(super) fn syntax_token_is_ident_like(&self, token: &SyntaxTokenInfo) -> bool {
+        self.collector.syntax_token_is_ident_like(token)
+    }
+
     pub(super) fn simple_type_ref_base_from_infos(
         &self,
         tokens: &[SyntaxTokenInfo],

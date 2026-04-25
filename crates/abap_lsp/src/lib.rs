@@ -6819,6 +6819,24 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn select_options_matchcode_object_emits_type_dependency_candidate() {
+        let store = DocumentStore::default();
+        let snapshot = store.publish(
+            "file:///select_options_matchcode.abap",
+            1,
+            "DATA gv_gln TYPE string.\nSELECT-OPTIONS s_gln FOR gv_gln NO INTERVALS LOWER CASE MATCHCODE OBJECT /sttp/h_loc_gln.",
+        );
+
+        let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.kind == "type" && candidate.name == "/sttp/h_loc_gln"
+            }),
+            "{candidates:#?}"
+        );
+    }
+
+    #[test]
     fn collects_function_module_remote_dependency_candidates() {
         let store = DocumentStore::default();
         let snapshot = store.publish(

@@ -13,7 +13,7 @@ use abap_ast::{
 use abap_lexer::TextRange;
 
 use super::context::DeclContext;
-use super::{Collector, PendingStructure};
+use super::{Collector, PendingStructure, SyntaxTokenInfo};
 
 pub(super) struct DeclLowering<'ctx, 'a> {
     ctx: DeclContext<'ctx, 'a>,
@@ -116,6 +116,86 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 .simple_type_ref_base_from_infos(&tokens[next_idx..]);
         }
         None
+    }
+
+    fn collect_select_options_dynamic_for_reference(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        for idx in 0..tokens.len() {
+            if !tokens[idx].text.eq_ignore_ascii_case("for") {
+                continue;
+            }
+            let Some(lparen) = tokens.get(idx + 1) else {
+                continue;
+            };
+            let Some(name) = tokens.get(idx + 2) else {
+                continue;
+            };
+            let Some(rparen) = tokens.get(idx + 3) else {
+                continue;
+            };
+            if lparen.text.as_ref() != "("
+                || rparen.text.as_ref() != ")"
+                || !self.ctx.syntax_token_is_ident_like(name)
+            {
+                continue;
+            }
+            self.ctx.add_reference(
+                scope,
+                Arc::<str>::from(name.text.to_ascii_lowercase()),
+                Namespace::Value,
+                ReferenceKind::Identifier,
+                name.range.clone(),
+            );
+            return;
+        }
+    }
+
+    fn collect_select_options_matchcode_references(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            if !tokens[idx].text.eq_ignore_ascii_case("matchcode")
+                || !tokens
+                    .get(idx + 1)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("object"))
+            {
+                idx += 1;
+                continue;
+            }
+            if let Some(search_help) = tokens.get(idx + 2)
+                && self.ctx.syntax_token_is_ident_like(search_help)
+            {
+                self.ctx.add_reference(
+                    scope,
+                    Arc::<str>::from(search_help.text.to_ascii_lowercase()),
+                    Namespace::Type,
+                    ReferenceKind::TypeRef,
+                    search_help.range.clone(),
+                );
+            }
+            idx += 3;
+        }
+    }
+
+    fn collect_select_options_clause_references(
+        &mut self,
+        node: abap_ast::arena::NodeId,
+        scope: ScopeId,
+    ) {
+        let tokens = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect::<Vec<_>>();
+        self.collect_select_options_dynamic_for_reference(&tokens, scope);
+        self.collect_select_options_matchcode_references(&tokens, scope);
     }
 
     fn include_stmt_is_structured_include(&self, include_stmt: IncludeStmt<'_>) -> bool {
@@ -410,6 +490,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             self.ctx.walk_children(node, scope);
             return;
         };
+        let is_select_options_decl = self.ctx.file().kind(node) == SyntaxKind::SelectOptionsDecl;
         let children: Vec<_> = decl
             .syntax()
             .children()
@@ -428,6 +509,9 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                         }
                         self.declare_decl_clause_symbol(child_id, decl_scope, kind);
                         self.ctx.walk_children(child_id, scope);
+                        if is_select_options_decl {
+                            self.collect_select_options_clause_references(child_id, scope);
+                        }
                         if hint.is_some() {
                             self.ctx.type_clause_ns_stack_mut().pop();
                         }

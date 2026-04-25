@@ -1577,6 +1577,51 @@ SELECT-OPTIONS: s_rogln FOR lv_rogln.\n";
     }
 
     #[test]
+    fn select_options_collect_matchcode_and_dynamic_for_references() {
+        let src = "\
+DATA gv_gln TYPE string.\n\
+DATA lv_type TYPE string.\n\
+SELECT-OPTIONS:
+  s_gln FOR gv_gln NO INTERVALS LOWER CASE MATCHCODE OBJECT /sttp/h_loc_gln HELP-REQUEST FOR LOW VALUE-REQUEST FOR HIGH,
+  s_dyn FOR (lv_type) NO-DISPLAY.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///select_options_matchcode.abap", src, &parsed);
+
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "s_gln")
+            .expect("select-options symbol");
+        assert_eq!(
+            symbol.type_clause_display.as_deref(),
+            Some("RANGE OF gv_gln")
+        );
+
+        let search_help_ref = unit
+            .references
+            .iter()
+            .find(|reference| reference.name.as_ref() == "/sttp/h_loc_gln")
+            .expect("search help reference");
+        assert_eq!(search_help_ref.kind, ReferenceKind::TypeRef);
+        assert_eq!(search_help_ref.namespace, Namespace::Type);
+
+        let dynamic_for_ref = unit
+            .references
+            .iter()
+            .find(|reference| {
+                reference.name.as_ref() == "lv_type"
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.namespace == Namespace::Value
+            })
+            .expect("dynamic FOR operand reference");
+        assert!(matches!(
+            dynamic_for_ref.resolution,
+            Some(Resolution::Symbol(_))
+        ));
+    }
+
+    #[test]
     fn checkbox_parameters_default_to_abap_bool() {
         let src = "PARAMETERS: c_rom AS CHECKBOX.\n";
         let parsed = parse(src);
