@@ -24,10 +24,15 @@ fn is_keyword(source: &str, token: &Token, kw: &str) -> bool {
     token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(kw)
 }
 
+#[inline]
+fn is_parameters_keyword(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "parameters") || is_keyword(source, token, "parameter")
+}
+
 fn is_structured_decl_continuation_keyword(source: &str, token: &Token) -> bool {
     is_keyword(source, token, "types")
         || is_keyword(source, token, "data")
-        || is_keyword(source, token, "parameters")
+        || is_parameters_keyword(source, token)
         || is_keyword(source, token, "statics")
         || is_keyword(source, token, "constants")
         || is_keyword(source, token, "field-symbols")
@@ -150,7 +155,7 @@ pub fn try_parse_parameters_decl(
     _errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let kw_tok = tokens.get(idx)?;
-    if !is_keyword(source, kw_tok, "parameters") {
+    if !is_parameters_keyword(source, kw_tok) {
         return None;
     }
 
@@ -1628,6 +1633,16 @@ mod tests {
     #[test]
     fn parameters_chain_parses_typed_clauses_and_defaults() {
         let src = "PARAMETERS:\n  p_text TYPE string LOWER CASE OBLIGATORY,\n  p_pub TYPE localfile LOWER CASE OBLIGATORY,\n  p_app TYPE ssfappl DEFAULT 'DFAULT',\n  p_sym TYPE ssfencr DEFAULT 'AES128-CBC'.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 4);
+        assert!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple) >= 4);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 2);
+    }
+
+    #[test]
+    fn parameter_chain_parses_typed_clauses_and_defaults() {
+        let src = "PARAMETER:\n  p_text TYPE string LOWER CASE OBLIGATORY,\n  p_pub TYPE localfile LOWER CASE OBLIGATORY,\n  p_app TYPE ssfappl DEFAULT 'DFAULT',\n  p_sym TYPE ssfencr DEFAULT 'AES128-CBC'.";
         let file = tree_ok(src);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 4);

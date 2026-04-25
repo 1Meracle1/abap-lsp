@@ -1613,6 +1613,59 @@ START-OF-SELECTION.\n\
     }
 
     #[test]
+    fn parameter_declare_symbols_and_at_selection_screen_becomes_event_block() {
+        let src = "\
+REPORT z_demo.\n\
+\n\
+PARAMETER p_pub TYPE string.\n\
+\n\
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\n\
+  PERFORM pick_public_key_file CHANGING p_pub.\n\
+\n\
+START-OF-SELECTION.\n\
+  WRITE p_pub.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///parameter_event.abap", src, &parsed);
+
+        assert!(unit.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "p_pub"
+        }));
+
+        let event = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Event
+                    && symbol.name.as_ref() == "at selection-screen on value-request for p_pub"
+            })
+            .expect("selection-screen event symbol");
+        assert_eq!(
+            &src[event.decl_range.clone()],
+            "AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub"
+        );
+
+        let header_ref_offset = src.find("FOR p_pub").expect("header ref") + "FOR ".len() + 1;
+        let header_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(header_ref_offset)
+            .expect("header reference");
+        assert_eq!(header_ref.name.as_ref(), "p_pub");
+        assert!(matches!(header_ref.resolution, Some(Resolution::Symbol(_))));
+
+        assert!(
+            unit.diagnostics.iter().all(|diagnostic| {
+                !diagnostic.message.contains("unknown symbol 'p_pub'")
+                    && !diagnostic.message.contains("unknown symbol 'selection'")
+                    && !diagnostic.message.contains("unknown symbol 'request'")
+            }),
+            "{:#?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
     fn selection_screen_block_title_resolves_without_screen_false_positive() {
         let src = "\
 DATA gv_fselc TYPE string.\n\
