@@ -68,6 +68,83 @@ fn included_units_share_the_including_compilation_context() {
 }
 
 #[test]
+fn reports_type_reference_to_type_declared_in_later_include() {
+    let root_src = "REPORT zmain. INCLUDE: zdata, ztypes.";
+    let data_src = "DATA: ls_object_src TYPE ts_obj_ids.";
+    let types_src = "\
+TYPES:\n\
+  BEGIN OF ts_obj_ids,\n\
+    owner TYPE char12,\n\
+  END OF ts_obj_ids.";
+    let root_parse = parse(root_src);
+    let data_parse = parse(data_src);
+    let types_parse = parse(types_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "zdata.abap",
+            source: data_src,
+            parse: &data_parse,
+        },
+        ProjectInput {
+            uri: "ztypes.abap",
+            source: types_src,
+            parse: &types_parse,
+        },
+    ]);
+
+    let data = project.unit_by_uri("zdata.abap").expect("data include");
+    assert!(
+        data.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("declared after its use")
+        }),
+        "expected later include type diagnostic, diagnostics={:?}",
+        data.diagnostics
+    );
+}
+
+#[test]
+fn accepts_type_reference_to_type_declared_in_prior_include() {
+    let root_src = "REPORT zmain. INCLUDE ztypes. DATA: ls_object_src TYPE ts_obj_ids.";
+    let types_src = "\
+TYPES:\n\
+  BEGIN OF ts_obj_ids,\n\
+    owner TYPE char12,\n\
+  END OF ts_obj_ids.";
+    let root_parse = parse(root_src);
+    let types_parse = parse(types_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztypes.abap",
+            source: types_src,
+            parse: &types_parse,
+        },
+    ]);
+
+    let root = project.unit_by_uri("zmain.abap").expect("root unit");
+    assert!(
+        !root.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("declared after its use")
+        }),
+        "unexpected declaration-order diagnostic: {:?}",
+        root.diagnostics
+    );
+}
+
+#[test]
 fn does_not_resolve_sibling_unit_symbols_without_include_edge() {
     let root_src = "REPORT zmain. gr_demo = 1.";
     let sibling_src = "DATA gr_demo TYPE i.";

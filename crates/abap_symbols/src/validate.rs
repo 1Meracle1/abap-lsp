@@ -26,6 +26,7 @@ struct ValidationLookup<'a> {
     per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     include_predecessors: Vec<Vec<UnitId>>,
+    include_order: IncludeOrderIndex,
 }
 
 #[derive(Clone, Copy)]
@@ -34,6 +35,105 @@ struct LoopFieldContextView<'a> {
     range: &'a TextRange,
     source_access: &'a FieldAccess,
     target_access: Option<&'a FieldAccess>,
+}
+
+#[derive(Default)]
+struct IncludeOrderIndex {
+    roots: Vec<IncludeOrderRoot>,
+}
+
+#[derive(Clone)]
+struct IncludeOrderRoot {
+    unit_prefixes: Vec<Vec<Vec<usize>>>,
+}
+
+impl IncludeOrderIndex {
+    fn type_decl_after_reference(
+        &self,
+        reference_unit: UnitId,
+        reference_offset: usize,
+        decl_unit: UnitId,
+        decl_offset: usize,
+    ) -> bool {
+        self.roots.iter().any(|root| {
+            let Some(reference_prefixes) = root.unit_prefixes.get(reference_unit.as_usize()) else {
+                return false;
+            };
+            let Some(decl_prefixes) = root.unit_prefixes.get(decl_unit.as_usize()) else {
+                return false;
+            };
+            reference_prefixes.iter().any(|reference_prefix| {
+                let reference_key = location_order_key(reference_prefix, reference_offset);
+                decl_prefixes
+                    .iter()
+                    .any(|decl_prefix| location_order_key(decl_prefix, decl_offset) > reference_key)
+            })
+        })
+    }
+}
+
+fn location_order_key(prefix: &[usize], offset: usize) -> Vec<usize> {
+    let mut key = prefix.to_vec();
+    key.push(order_component(offset, 0));
+    key
+}
+
+fn order_component(offset: usize, tag: usize) -> usize {
+    offset.saturating_mul(2).saturating_add(tag)
+}
+
+fn build_include_order_index(project: &ProjectAnalysis) -> IncludeOrderIndex {
+    let roots = project
+        .units
+        .iter()
+        .map(|unit| {
+            let mut root = IncludeOrderRoot {
+                unit_prefixes: vec![Vec::new(); project.units.len()],
+            };
+            collect_include_order_prefixes(
+                project,
+                unit.unit_id,
+                Vec::new(),
+                &mut root,
+                &mut HashSet::new(),
+            );
+            root
+        })
+        .collect();
+    IncludeOrderIndex { roots }
+}
+
+fn collect_include_order_prefixes(
+    project: &ProjectAnalysis,
+    unit_id: UnitId,
+    prefix: Vec<usize>,
+    root: &mut IncludeOrderRoot,
+    stack: &mut HashSet<UnitId>,
+) {
+    let Some(unit) = project.units.get(unit_id.as_usize()) else {
+        return;
+    };
+    if !stack.insert(unit_id) {
+        return;
+    }
+
+    if let Some(prefixes) = root.unit_prefixes.get_mut(unit_id.as_usize()) {
+        prefixes.push(prefix.clone());
+    }
+
+    let mut edges = unit
+        .include_edges
+        .iter()
+        .filter_map(|edge| Some((edge.range.start, edge.target?)))
+        .collect::<Vec<_>>();
+    edges.sort_by_key(|(offset, _)| *offset);
+    for (offset, target) in edges {
+        let mut child_prefix = prefix.clone();
+        child_prefix.push(order_component(offset, 1));
+        collect_include_order_prefixes(project, target, child_prefix, root, stack);
+    }
+
+    stack.remove(&unit_id);
 }
 
 fn build_validation_lookup<'a>(
@@ -69,6 +169,7 @@ fn build_validation_lookup<'a>(
         per_unit_root_index,
         root_index,
         include_predecessors: project.include_predecessor_units_by_unit(),
+        include_order: build_include_order_index(project),
     }
 }
 
@@ -2922,6 +3023,31 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             .cloned()
             .collect();
         let mut unit_diagnostics = retained;
+
+        for reference in &unit.references {
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if reference.kind != ReferenceKind::TypeRef || reference.namespace != Namespace::Type {
+                continue;
+            }
+            let symbol_unit = &project.units[handle.unit.as_usize()];
+            let symbol = symbol_unit.symbol(handle.symbol);
+            if symbol.kind == SymbolKind::TypeDef
+                && lookup.include_order.type_decl_after_reference(
+                    unit.unit_id,
+                    reference.range.start,
+                    handle.unit,
+                    symbol.decl_range.start,
+                )
+            {
+                unit_diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::UnresolvedReference,
+                    range: reference.range.clone(),
+                    message: format!("type '{}' is declared after its use", reference.name),
+                });
+            }
+        }
 
         for reference in &unit.references {
             if reference.resolution.is_some() {

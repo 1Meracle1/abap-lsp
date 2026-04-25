@@ -6603,6 +6603,33 @@ TYPES: BEGIN OF ts_obj_ids,\n\
 }
 
 #[test]
+fn reports_type_reference_to_type_declared_later_in_same_unit() {
+    let src = "\
+DATA: ls_object_src TYPE ts_obj_ids.\n\
+\n\
+TYPES:\n\
+    BEGIN OF ts_obj_ids,\n\
+      owner TYPE char12,\n\
+      product TYPE char10,\n\
+      serial TYPE char60,\n\
+    END OF ts_obj_ids.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///forward_type_ref.abap", src, &parsed);
+
+    let forward_type_offset = src.find("ts_obj_ids").expect("DATA type reference");
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.range.start == forward_type_offset
+                && diag.message.contains("declared after its use")
+        }),
+        "expected forward type reference diagnostic, diagnostics={:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_mismatched_structured_begin_end_names() {
     let src = "\
 TYPES: BEGIN OF ty_open, field TYPE i, END OF ty_close.\n\
