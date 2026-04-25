@@ -492,7 +492,7 @@ fn manifest_with_discovered_units(
     }
 
     let mut discovered = manifest.clone();
-    discovered.units = discover_conventional_src_units(root_path);
+    discovered.units = discover_settings_only_manifest_units(root_path);
     discovered
 }
 
@@ -837,6 +837,14 @@ fn collect_abap_sources(
     }
 }
 
+fn discover_settings_only_manifest_units(root_path: &Path) -> Vec<ManifestUnit> {
+    let mut units = discover_conventional_src_units(root_path);
+    if units.is_empty() {
+        units = discover_uncovered_workspace_file_units(root_path);
+    }
+    units
+}
+
 fn discover_conventional_src_units(root_path: &Path) -> Vec<ManifestUnit> {
     let src_path = root_path.join("src");
     if !src_path.is_dir() {
@@ -1011,6 +1019,16 @@ fn discover_uncovered_src_file_units(
         .collect()
 }
 
+fn discover_uncovered_workspace_file_units(root_path: &Path) -> Vec<ManifestUnit> {
+    let mut file_paths = Vec::new();
+    collect_workspace_abap_file_paths(root_path, &mut file_paths);
+    file_paths.sort();
+    file_paths
+        .into_iter()
+        .map(|path| single_file_unit(root_path, &path, infer_single_file_unit_kind(&path)))
+        .collect()
+}
+
 fn infer_single_file_unit_kind(path: &Path) -> &'static str {
     let Some(statement) = first_abap_statement_start(path) else {
         return "include";
@@ -1072,6 +1090,30 @@ fn collect_abap_file_paths(dir_path: &Path, output: &mut Vec<PathBuf>) {
         };
         if file_type.is_dir() {
             collect_abap_file_paths(&path, output);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) == Some("abap") {
+            output.push(path);
+        }
+    }
+}
+
+fn collect_workspace_abap_file_paths(dir_path: &Path, output: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir_path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == ".git" || name == "target" || name == ".abapls" {
+                continue;
+            }
+            collect_workspace_abap_file_paths(&path, output);
             continue;
         }
         if path.extension().and_then(|ext| ext.to_str()) == Some("abap") {
@@ -4190,6 +4232,66 @@ cache_dir = ".abapls/cache"
             loaded_uris
                 .iter()
                 .any(|uri| uri.ends_with("/src/function-groups/ZFG/includes/LZFGTOP.abap"))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_only_manifest_discovers_flat_workspace_files_without_src_tree() {
+        let root = std::env::temp_dir().join("abap-lsp-settings-only-flat-root-discovery");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("workspace dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("basic.abap"),
+            "INCLUDE decl.\nDATA ls_object_src TYPE ts_obj_ids.\n",
+        )
+        .expect("basic");
+        fs::write(
+            root.join("decl.abap"),
+            "TYPES: BEGIN OF ts_obj_ids,\n  owner TYPE char12,\nEND OF ts_obj_ids.\n",
+        )
+        .expect("decl");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let manifest = loaded.manifest.as_ref().expect("effective manifest");
+        let loaded_uris: Vec<_> = loaded
+            .documents
+            .iter()
+            .map(|document| document.uri.as_ref())
+            .collect();
+
+        assert!(
+            manifest
+                .units
+                .iter()
+                .any(|unit| unit.root_file == "basic.abap")
+        );
+        assert!(
+            manifest
+                .units
+                .iter()
+                .any(|unit| unit.root_file == "decl.abap")
+        );
+        assert!(
+            loaded_uris.iter().any(|uri| uri.ends_with("/basic.abap")),
+            "{loaded_uris:?}"
+        );
+        assert!(
+            loaded_uris.iter().any(|uri| uri.ends_with("/decl.abap")),
+            "{loaded_uris:?}"
         );
 
         let _ = fs::remove_dir_all(&root);

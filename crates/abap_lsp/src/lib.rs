@@ -7167,6 +7167,67 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn workspace_refresh_resolves_flat_root_includes_without_opening_them() {
+        let workspace_path = temp_workspace_path("workspace_flat_root_includes");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "local-first"
+cache_dir = ".abapls/cache"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("basic.abap"),
+            "INCLUDE decl.\nDATA ls_object_src TYPE ts_obj_ids.\n",
+        )
+        .expect("basic");
+        fs::write(
+            workspace_path.join("decl.abap"),
+            "TYPES: BEGIN OF ts_obj_ids,\n  owner TYPE char12,\nEND OF ts_obj_ids.\n",
+        )
+        .expect("decl");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let basic_uri = normalize_lsp_uri(&format!("{workspace_uri}/basic.abap"));
+        let decl_uri = normalize_lsp_uri(&format!("{workspace_uri}/decl.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        assert!(
+            snapshot_for_uri(&state, &decl_uri).is_some(),
+            "root include should be loaded by workspace refresh"
+        );
+        let snapshot = snapshot_for_uri(&state, &basic_uri).expect("basic snapshot");
+        let include_targets: Vec<_> = snapshot
+            .symbols
+            .include_edges
+            .iter()
+            .filter_map(|edge| edge.target)
+            .filter_map(|target| snapshot.project.units.get(target.as_usize()))
+            .map(|unit| unit.uri.as_ref())
+            .collect();
+
+        assert!(include_targets.contains(&decl_uri.as_str()));
+        assert!(
+            !snapshot.symbols.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedInclude
+                    || diag.message.contains("ts_obj_ids")
+            }),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn workspace_refresh_does_not_leak_unincluded_flat_src_siblings() {
         let workspace_path = temp_workspace_path("workspace_flat_src_unincluded_siblings");
         let _ = fs::remove_dir_all(&workspace_path);
