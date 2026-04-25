@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
     ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
-    MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, Resolution,
+    MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, Resolution,
     RoutineControlRegionData, RoutineLoopKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData,
     ValueFlowKind, ValueFlowTargetData,
 };
@@ -554,12 +554,7 @@ impl<'a> FactBuilder<'a> {
     ) -> Vec<ExpressionFactData> {
         let mut out = Vec::new();
         let mut current_unit_idx = unit_idx;
-        let Some(mut current_fact) = self.base_access_type_fact(
-            unit_idx,
-            access.scope,
-            access.base_namespace,
-            &access.base_name,
-        ) else {
+        let Some(mut current_fact) = self.base_access_type_fact_for_access(unit_idx, access) else {
             for segment in &access.field_path {
                 out.push(ExpressionFactData {
                     scope: access.scope,
@@ -976,6 +971,58 @@ impl<'a> FactBuilder<'a> {
         }
     }
 
+    fn base_access_type_fact_for_access(
+        &self,
+        unit_idx: usize,
+        access: &FieldAccess,
+    ) -> Option<TypeFactData> {
+        if access.base_namespace == Namespace::Value {
+            let handle = self.value_access_base_handle(unit_idx, access)?;
+            return Some(self.symbol_type_fact_for_site(unit_idx, access.scope, handle));
+        }
+
+        self.base_access_type_fact(
+            unit_idx,
+            access.scope,
+            access.base_namespace,
+            &access.base_name,
+        )
+    }
+
+    fn value_access_base_handle(
+        &self,
+        unit_idx: usize,
+        access: &FieldAccess,
+    ) -> Option<SymbolHandle> {
+        let unit = &self.units[unit_idx];
+        if let Some(symbol_id) = lookup_scope_chain(
+            unit,
+            &self.scope_indexes[unit_idx],
+            access.scope,
+            Namespace::Value,
+            &access.base_name,
+        ) {
+            return Some(SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol_id,
+            });
+        }
+
+        unit.references.iter().find_map(|reference| {
+            if reference.scope == access.scope
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name == access.base_name
+                && reference.range == access.base_range
+                && let Some(Resolution::Symbol(handle)) = reference.resolution
+            {
+                Some(handle)
+            } else {
+                None
+            }
+        })
+    }
+
     fn base_access_type_fact(
         &self,
         unit_idx: usize,
@@ -1011,12 +1058,7 @@ impl<'a> FactBuilder<'a> {
     }
 
     fn type_fact_for_access(&self, unit_idx: usize, access: &FieldAccess) -> TypeFactData {
-        let Some(mut current_fact) = self.base_access_type_fact(
-            unit_idx,
-            access.scope,
-            access.base_namespace,
-            &access.base_name,
-        ) else {
+        let Some(mut current_fact) = self.base_access_type_fact_for_access(unit_idx, access) else {
             return TypeFactData::default();
         };
         let mut current_unit_idx = unit_idx;
@@ -1398,6 +1440,20 @@ impl<'a> FactBuilder<'a> {
                 symbol,
             });
         }
+        if scope != self.units[unit_idx].root_scope
+            && let Some(symbol) = lookup_scope_chain(
+                &self.units[unit_idx],
+                &self.scope_indexes[unit_idx],
+                self.units[unit_idx].root_scope,
+                Namespace::Type,
+                &local_name,
+            )
+        {
+            return Some(SymbolHandle {
+                unit: self.units[unit_idx].unit_id,
+                symbol,
+            });
+        }
         self.root_type_symbols.get(name).copied()
     }
 
@@ -1478,7 +1534,21 @@ fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId
 
 fn is_internal_table_type_display(display: &str) -> bool {
     let upper = display.trim().to_ascii_uppercase();
-    upper.contains(" TABLE OF ")
+    [
+        "STANDARD TABLE",
+        "SORTED TABLE",
+        "HASHED TABLE",
+        "ANY TABLE",
+        "INDEX TABLE",
+        "TABLE",
+    ]
+    .into_iter()
+    .any(|prefix| {
+        upper == prefix
+            || upper
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
 }
 
 fn is_range_table_type_display(display: &str) -> bool {

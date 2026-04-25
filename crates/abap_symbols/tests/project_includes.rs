@@ -2,7 +2,7 @@ use abap_parser::parse;
 
 use abap_symbols::{
     ClassMemberKind, DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution,
-    SqlNameRefKind, analyze_project,
+    SqlNameRefKind, SymbolKind, analyze_project,
 };
 
 #[test]
@@ -640,6 +640,88 @@ ENDFORM.
             unit.diagnostics
         );
     }
+}
+
+#[test]
+fn infers_loop_inline_target_type_from_table_declared_in_prior_include() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+"#;
+    let top_src = r#"
+TYPES: BEGIN OF ty_b2p_outs,
+         objid TYPE string,
+       END OF ty_b2p_outs,
+       tt_b2p_outs TYPE TABLE OF ty_b2p_outs INITIAL SIZE 0.
+
+DATA gt_b2p_outs TYPE tt_b2p_outs.
+"#;
+    let f01_src = r#"
+FORM process_data.
+  LOOP AT gt_b2p_outs INTO DATA(ls_b2p_outs).
+    DATA(lv_objid) = ls_b2p_outs-objid.
+  ENDLOOP.
+ENDFORM.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let f01 = project.unit_by_uri("zf01.abap").expect("form include");
+    let top = project.unit_by_uri("ztop.abap").expect("top include");
+    assert!(
+        f01.references.iter().any(|reference| {
+            reference.name.as_ref() == "gt_b2p_outs"
+                && matches!(reference.resolution, Some(Resolution::Symbol(handle)) if handle.unit == top.unit_id)
+        }),
+        "expected LOOP source to resolve to top include symbol, refs={:?}",
+        f01.references
+    );
+
+    let ls_b2p_outs = f01
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "ls_b2p_outs")
+        .expect("loop inline target");
+    let declared_type = ls_b2p_outs
+        .declared_type
+        .as_ref()
+        .expect("loop inline target declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_b2p_outs");
+    assert!(declared_type.field_path.is_empty());
+
+    assert!(
+        !f01.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("gt_b2p_outs")
+                || diag.message.contains("ls_b2p_outs")
+                || diag.message.contains("objid"))
+        }),
+        "unexpected include LOOP diagnostics: {:?}",
+        f01.diagnostics
+    );
 }
 
 #[test]
