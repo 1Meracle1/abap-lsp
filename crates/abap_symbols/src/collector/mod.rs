@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, CallArgList, CallExpr, ConstructorBaseClause, ConstructorForClause,
+    AstNode, CallArgList, CallExpr, ConstructorBaseClause, ConstructorExpr, ConstructorForClause,
     ConstructorLinesOfClause, DeclClause, MethodsParamSectionKind, StructuredIncludeClause,
     StructuredIncludeKind, TableExpr, TypeClauseKind, TypeRefSimple,
 };
@@ -400,18 +400,27 @@ impl<'a> Collector<'a> {
         scope: ScopeId,
     ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
         let keyword = self.constructor_keyword(node);
-        if let Some((type_name, _)) = self.constructor_type_ref(node)
-            && type_name.as_ref() != "#"
+        if let Some(constructor) = ConstructorExpr::cast(self.syntax(node))
+            && let Some(type_ref) = constructor.type_ref()
+            && let Some(display_text) = type_ref.display_text(self.source)
+            && display_text != "#"
+            && let Some(mut declared_type) =
+                self.field_type_ref_from_node(type_ref.syntax().id(), Namespace::Type)
         {
-            let declared_type = FieldTypeRefData {
-                namespace: Namespace::Type,
-                is_ref: keyword.as_deref() == Some("new"),
-                base_name: Arc::clone(&type_name),
-                field_path: Vec::new(),
-            };
-            let structure = self
-                .lookup_structure_symbol(scope, Namespace::Type, type_name.as_ref(), false)
-                .and_then(|symbol_id| self.symbol(symbol_id).structure);
+            declared_type.is_ref = keyword.as_deref() == Some("new");
+            let structure = declared_type
+                .field_path
+                .is_empty()
+                .then(|| {
+                    self.lookup_structure_symbol(
+                        scope,
+                        declared_type.namespace,
+                        declared_type.base_name.as_ref(),
+                        false,
+                    )
+                    .and_then(|symbol_id| self.symbol(symbol_id).structure)
+                })
+                .flatten();
             return self.normalize_inferred_metadata(scope, structure, Some(declared_type));
         }
 

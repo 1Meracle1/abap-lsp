@@ -204,6 +204,41 @@ ENDCLASS.
 }
 
 #[test]
+fn accepts_inline_value_constructor_with_class_qualified_local_type() {
+    let src = r#"
+CLASS lcl_archive_connector DEFINITION.
+  PUBLIC SECTION.
+    TYPES tr_retriable_errs TYPE RANGE OF string.
+ENDCLASS.
+
+DATA(lr_retriable_errs) = VALUE lcl_archive_connector=>tr_retriable_errs( ).
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///class_qualified_value_type.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lr_retriable_errs")
+        .expect("inline value constructor target");
+    let declared_type = symbol.declared_type.as_ref().expect("declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(!declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "lcl_archive_connector");
+    assert_eq!(declared_type.field_path.len(), 1);
+    assert_eq!(declared_type.field_path[0].as_ref(), "tr_retriable_errs");
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::InvalidObjectTypeReference),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn type_pools_statement_is_ignored_for_semantic_analysis() {
     let src = r#"
 FORM f.
