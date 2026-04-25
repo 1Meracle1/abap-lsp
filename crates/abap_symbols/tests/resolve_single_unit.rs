@@ -10822,6 +10822,45 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn system_function_call_resolves_operands_without_keyword_diagnostics() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA lv_cfunc TYPE string VALUE 'ThWpInfo'.
+  DATA lv_id TYPE string VALUE 'OPCODE'.
+  DATA opcode_wp_get_info TYPE i.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+  CALL lv_cfunc ID lv_id FIELD opcode_wp_get_info
+                ID 'ROWS' FIELD lt_rows[].
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///system_function_call.abap", src, &parsed);
+
+    for keyword in ["ID", "FIELD"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for name in ["lv_cfunc", "lv_id", "opcode_wp_get_info", "lt_rows"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected `{name}` reference to resolve, got refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn unsupported_simple_statements_from_aif_function_group_do_not_emit_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.

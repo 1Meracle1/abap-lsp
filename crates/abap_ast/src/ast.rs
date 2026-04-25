@@ -70,6 +70,7 @@ pub enum FunctionParamSectionKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallStmtKind {
     Function,
+    SystemFunction,
     Transformation,
     Badi,
     Screen,
@@ -2678,7 +2679,12 @@ impl<'a> CallMethodTarget<'a> {
 
 impl<'a> CallStmt<'a> {
     pub fn call_kind(self, source: &str) -> Option<CallStmtKind> {
-        let token = self.syntax.children_by_kind(SyntaxKind::Token).nth(1)?;
+        let mut tokens = self.syntax.children_by_kind(SyntaxKind::Token);
+        let first = tokens.next()?;
+        if !first.text(source)?.eq_ignore_ascii_case("call") {
+            return None;
+        }
+        let token = tokens.next()?;
         let text = token.text(source)?;
         if text.eq_ignore_ascii_case("function") {
             Some(CallStmtKind::Function)
@@ -2689,8 +2695,19 @@ impl<'a> CallStmt<'a> {
         } else if text.eq_ignore_ascii_case("screen") {
             Some(CallStmtKind::Screen)
         } else {
-            None
+            Some(CallStmtKind::SystemFunction)
         }
+    }
+
+    pub fn system_function_callee(self) -> Option<SyntaxNodeRef<'a>> {
+        if self.syntax.children_by_kind(SyntaxKind::Token).count() == 2 {
+            return self.syntax.first_non_token_child();
+        }
+        let call_token = self.syntax.children_by_kind(SyntaxKind::Token).next()?;
+        let call_end = call_token.range().end;
+        self.syntax.non_token_children().find(|child| {
+            child.range().start >= call_end && child.kind() != SyntaxKind::CallArgList
+        })
     }
 
     pub fn callee_token(self) -> Option<SyntaxNodeRef<'a>> {

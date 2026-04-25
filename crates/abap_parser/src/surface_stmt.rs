@@ -53,6 +53,7 @@ const GET_REFERENCE_OF_LEAD: &[&str] = &["get", "reference", "of"];
 enum CallLikeLeadKind {
     CallMethod,
     CallStmt,
+    SystemFunctionCall,
     CreateObject,
     CreateData,
 }
@@ -65,6 +66,20 @@ const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
     (&["call", "screen"], CallLikeLeadKind::CallStmt),
     (&["create", "object"], CallLikeLeadKind::CreateObject),
     (&["create", "data"], CallLikeLeadKind::CreateData),
+];
+
+const NON_SYSTEM_CALL_VARIANTS: &[&str] = &[
+    "badi",
+    "customer",
+    "database",
+    "dialog",
+    "function",
+    "method",
+    "screen",
+    "selection",
+    "subscreen",
+    "transaction",
+    "transformation",
 ];
 
 fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
@@ -1873,6 +1888,16 @@ fn call_like_lead_kind(
             return Some((*kind, next));
         }
     }
+    if is_keyword(source, tokens.get(idx)?, "call")
+        && tokens.get(idx + 1).is_some_and(|next| {
+            next.kind != TokenKind::Period
+                && !NON_SYSTEM_CALL_VARIANTS
+                    .iter()
+                    .any(|variant| is_keyword(source, next, variant))
+        })
+    {
+        return Some((CallLikeLeadKind::SystemFunctionCall, idx + 1));
+    }
     None
 }
 
@@ -2620,6 +2645,37 @@ fn push_call_argument_value_child(
     );
 }
 
+fn push_call_positional_arg_node(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+) {
+    if start >= end_exclusive {
+        return;
+    }
+    let mut positional_children = Vec::new();
+    push_call_argument_value_child(
+        b,
+        &mut positional_children,
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        prev_before_first,
+    );
+    if !positional_children.is_empty() {
+        children.push(b.branch(
+            SyntaxKind::CallPositionalArg,
+            tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+            &positional_children,
+        ));
+    }
+}
+
 fn trim_trailing_comment_tokens(tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
     let mut end = end_exclusive;
     while end > start && tokens[end - 1].kind == TokenKind::Comment {
@@ -2755,6 +2811,145 @@ fn build_call_argument_list_node(
                 &positional_children,
             ));
         }
+    }
+
+    if children.is_empty() {
+        return None;
+    }
+    Some(b.branch(
+        SyntaxKind::CallArgList,
+        tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+        &children,
+    ))
+}
+
+fn system_call_addition_keyword(source: &str, tokens: &[Token], idx: usize, keyword: &str) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind != TokenKind::Comment && is_keyword(source, token, keyword)
+}
+
+fn system_call_id_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    system_call_addition_keyword(source, tokens, idx, "id")
+}
+
+fn system_call_field_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    system_call_addition_keyword(source, tokens, idx, "field")
+}
+
+fn scan_until_system_call_id_clause(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    scan_until_clause(tokens, start, end_exclusive, |tokens, at| {
+        system_call_id_clause_starts(source, tokens, at)
+    })
+}
+
+fn scan_until_system_call_field_clause(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    scan_until_clause(tokens, start, end_exclusive, |tokens, at| {
+        system_call_field_clause_starts(source, tokens, at)
+    })
+}
+
+fn skip_comment_tokens(tokens: &[Token], mut idx: usize, end_exclusive: usize) -> usize {
+    while idx < end_exclusive && tokens[idx].kind == TokenKind::Comment {
+        idx += 1;
+    }
+    idx
+}
+
+fn push_system_call_arg_section(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    token: &Token,
+) {
+    let section_leaf = token_leaf(b, token);
+    children.push(b.branch(
+        SyntaxKind::CallArgSection,
+        token.range.clone(),
+        &[section_leaf],
+    ));
+}
+
+fn build_system_function_call_argument_list_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if start >= end_exclusive {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    let mut idx = start;
+    while idx < end_exclusive {
+        idx = skip_comment_tokens(tokens, idx, end_exclusive);
+        if idx >= end_exclusive {
+            break;
+        }
+
+        if !system_call_id_clause_starts(source, tokens, idx) {
+            push_call_positional_arg_node(b, &mut children, source, tokens, idx, idx + 1, None);
+            idx += 1;
+            continue;
+        }
+
+        push_system_call_arg_section(b, &mut children, &tokens[idx]);
+        idx += 1;
+
+        let id_start = skip_comment_tokens(tokens, idx, end_exclusive);
+        let id_end = scan_until_system_call_field_clause(
+            source,
+            tokens,
+            id_start.saturating_add(1).min(end_exclusive),
+            end_exclusive,
+        );
+        push_call_positional_arg_node(
+            b,
+            &mut children,
+            source,
+            tokens,
+            id_start,
+            id_end,
+            Some(&tokens[idx - 1]),
+        );
+        idx = skip_comment_tokens(tokens, id_end, end_exclusive);
+
+        if idx >= end_exclusive || !system_call_field_clause_starts(source, tokens, idx) {
+            continue;
+        }
+
+        push_system_call_arg_section(b, &mut children, &tokens[idx]);
+        idx += 1;
+
+        let field_start = skip_comment_tokens(tokens, idx, end_exclusive);
+        let field_end = scan_until_system_call_id_clause(
+            source,
+            tokens,
+            field_start.saturating_add(1).min(end_exclusive),
+            end_exclusive,
+        );
+        push_call_positional_arg_node(
+            b,
+            &mut children,
+            source,
+            tokens,
+            field_start,
+            field_end,
+            Some(&tokens[idx - 1]),
+        );
+        idx = field_end;
     }
 
     if children.is_empty() {
@@ -6859,7 +7054,9 @@ pub fn try_parse_call_like_stmt(
             CallLikeLeadKind::CreateObject => SyntaxKind::CreateObjectStmt,
             CallLikeLeadKind::CreateData => SyntaxKind::CreateDataStmt,
             CallLikeLeadKind::CallMethod => SyntaxKind::CallMethodStmt,
-            CallLikeLeadKind::CallStmt => SyntaxKind::CallStmt,
+            CallLikeLeadKind::CallStmt | CallLikeLeadKind::SystemFunctionCall => {
+                SyntaxKind::CallStmt
+            }
         };
         let mut children = Vec::with_capacity(period_i - idx + 1);
         match lead_kind {
@@ -6973,6 +7170,22 @@ pub fn try_parse_call_like_stmt(
                             ));
                         }
                     }
+                }
+                children.push(token_leaf(b, &tokens[period_i]));
+            }
+            CallLikeLeadKind::SystemFunctionCall => {
+                children.push(token_leaf(b, &tokens[idx]));
+                let arg_start = scan_until_system_call_id_clause(
+                    source,
+                    tokens,
+                    lead_end.saturating_add(1).min(period_i),
+                    period_i,
+                );
+                push_expr_child(b, &mut children, source, tokens, lead_end, arg_start, None);
+                if let Some(arg_list) = build_system_function_call_argument_list_node(
+                    b, source, tokens, arg_start, period_i,
+                ) {
+                    children.push(arg_list);
                 }
                 children.push(token_leaf(b, &tokens[period_i]));
             }
@@ -9537,10 +9750,10 @@ pub fn try_parse_close_cursor_stmt(
 mod tests {
     use abap_ast::SyntaxKind;
     use abap_ast::ast::{
-        AstNode, ClassDecl, CloseCursorStmt, DataLikeDecl, DataLikeStorageKind, FormDecl,
-        FormParamPassingKind, FormParamSectionKind, FunctionDecl, FunctionParamSectionKind,
-        IncludeStmt, MethodDecl, OpenCursorStmt, SelectIntoClause, SubmitStmt, SyntaxNodeRef,
-        WriteStmt,
+        AstNode, CallStmt, CallStmtKind, ClassDecl, CloseCursorStmt, DataLikeDecl,
+        DataLikeStorageKind, FormDecl, FormParamPassingKind, FormParamSectionKind, FunctionDecl,
+        FunctionParamSectionKind, IncludeStmt, MethodDecl, OpenCursorStmt, SelectIntoClause,
+        SubmitStmt, SyntaxNodeRef, WriteStmt,
     };
 
     #[test]
@@ -11757,6 +11970,74 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_system_function_call_with_id_field_pairs() {
+        let src = "CALL 'ThWpInfo' ID 'OPCODE' FIELD opcode_wp_get_info \" #EC CI_CCALL\n  ID 'DIAWP' FIELD num_dia_wps\n  ID 'FREE_DIAWP' FIELD num_free_dia_wps\n  ID 'BTCWP' FIELD num_btc_wps\n  ID 'FREE_BTCWP' FIELD num_free_btc_wps\n  ID 'LOAD_INFO' FIELD load_info\n  ID 'SERVER_NAME' FIELD ls_msglist-name.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt_id = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("system call stmt");
+        let stmt = CallStmt::cast(SyntaxNodeRef::new(&parsed.file, stmt_id)).expect("call stmt");
+        assert_eq!(stmt.call_kind(src), Some(CallStmtKind::SystemFunction));
+        assert!(stmt.system_function_callee().is_some());
+        assert_eq!(parsed.file.count_kind(stmt_id, SyntaxKind::CallArgList), 1);
+        assert_eq!(
+            parsed.file.count_kind(stmt_id, SyntaxKind::CallArgSection),
+            14
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt_id, SyntaxKind::CallPositionalArg),
+            14
+        );
+        assert_eq!(parsed.file.count_kind(stmt_id, SyntaxKind::SelectorExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt_id, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_system_function_call_with_dynamic_operands_and_table_field() {
+        let src = "CALL lv_cfunc ID lv_parameter FIELD lt_rows[].";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt_id = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("system call stmt");
+        let stmt = CallStmt::cast(SyntaxNodeRef::new(&parsed.file, stmt_id)).expect("call stmt");
+        assert_eq!(stmt.call_kind(src), Some(CallStmtKind::SystemFunction));
+        assert_eq!(
+            parsed.file.count_kind(stmt_id, SyntaxKind::CallArgSection),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(stmt_id, SyntaxKind::CallPositionalArg),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(stmt_id, SyntaxKind::TableExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt_id, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_system_function_call_keyword_named_operands_as_values() {
+        for src in ["CALL id.", "CALL 'C_FUNC' ID field FIELD id."] {
+            let parsed = crate::parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            let stmt_id = parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+                .expect("system call stmt");
+            let stmt =
+                CallStmt::cast(SyntaxNodeRef::new(&parsed.file, stmt_id)).expect("call stmt");
+            assert_eq!(stmt.call_kind(src), Some(CallStmtKind::SystemFunction));
+            assert_eq!(parsed.file.count_kind(stmt_id, SyntaxKind::Error), 0);
+        }
     }
 
     #[test]

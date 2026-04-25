@@ -405,7 +405,7 @@ pub enum SyntaxKind {
     SubmitJobNumberOperand,
     /// Operand after `LANGUAGE` in `VIA JOB`.
     SubmitLanguageOperand,
-    /// `CALL FUNCTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
+    /// `CALL cfunc .`, `CALL FUNCTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
     CallStmt,
     /// `CREATE OBJECT ... .`
     CreateObjectStmt,

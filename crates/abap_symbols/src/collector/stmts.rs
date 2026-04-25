@@ -3165,15 +3165,31 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         };
         let stmt_range = self.collector.file.range(node);
 
-        if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Screen) {
+        let call_kind = stmt.call_kind(self.collector.source);
+
+        if call_kind == Some(CallStmtKind::Screen) {
             self.record_unknown_effect(node, scope);
             let significant = self.collector.significant_stmt_token_infos(node);
             self.collect_call_screen_stmt_infos(&significant, scope);
             return;
         }
 
-        let function_name = if stmt.call_kind(self.collector.source) == Some(CallStmtKind::Function)
-        {
+        if call_kind == Some(CallStmtKind::SystemFunction) {
+            self.record_unknown_effect(node, scope);
+            for child in self.collector.file.children(node) {
+                match self.collector.file.kind(child) {
+                    SyntaxKind::CallArgList => self
+                        .collector
+                        .expr_lowering()
+                        .collect_structured_argument_values_from_children(child, scope),
+                    SyntaxKind::Token => {}
+                    _ => self.collector.walk_node(child, scope),
+                }
+            }
+            return;
+        }
+
+        let function_name = if call_kind == Some(CallStmtKind::Function) {
             let function_info = stmt.callee_token().and_then(|token| {
                 let range = token.range();
                 let name = token.text(self.collector.source)?;
