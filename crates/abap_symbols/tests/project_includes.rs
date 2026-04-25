@@ -1064,6 +1064,51 @@ SELECT-OPTIONS so_st FOR v_op-status.
 }
 
 #[test]
+fn resolves_tables_work_area_against_ddic_table_like_dependency() {
+    let src = r#"
+REPORT zmain.
+TABLES sscrfields.
+sscrfields-ucomm = 'BUT1'.
+"#;
+    let table_src = "TYPES: BEGIN OF sscrfields, ucomm TYPE string, END OF sscrfields.";
+    let parse_src = parse(src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: src,
+            parse: &parse_src,
+        },
+        ProjectInput {
+            uri: "/sap/bc/adt/vit/wb/object_type/tabldt/object_name/SSCRFIELDS",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+
+    let unit = project.unit_by_uri("zmain.abap").expect("report unit");
+    let dependency = project
+        .unit_by_uri("/sap/bc/adt/vit/wb/object_type/tabldt/object_name/SSCRFIELDS")
+        .expect("dependency unit");
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.kind == ReferenceKind::TypeRef
+            && reference.namespace == Namespace::Type
+            && reference.name.as_ref() == "sscrfields"
+            && matches!(
+                reference.resolution,
+                Some(Resolution::Symbol(handle)) if handle.unit == dependency.unit_id
+            )
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference
+            || diag.kind == DiagnosticKind::WrongNamespace
+            || diag.kind == DiagnosticKind::UnknownField
+    }));
+}
+
+#[test]
 fn resolves_inherited_protected_attribute_across_project_units() {
     let parent_src = r#"
 CLASS zcl_parent DEFINITION.

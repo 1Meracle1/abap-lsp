@@ -6311,6 +6311,20 @@ fn reports_wrong_namespace_for_type_references() {
 }
 
 #[test]
+fn tables_declaration_reports_unknown_type_instead_of_wrong_namespace() {
+    let src = "TABLES sscrfields.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///tables_decl.abap", src, &parsed);
+
+    assert!(unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("sscrfields")
+    }));
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::WrongNamespace && diag.message.contains("sscrfields")
+    }));
+}
+
+#[test]
 fn resolves_like_line_of_internal_table_variable_for_field_symbols() {
     let src = "\
 DATA lt_tab TYPE STANDARD TABLE OF string.\n\

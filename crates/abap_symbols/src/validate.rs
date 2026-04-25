@@ -255,6 +255,18 @@ fn build_scope_names(unit: &crate::UnitAnalysis) -> HashMap<Arc<str>, HashSet<Na
     scope_names
 }
 
+fn reference_is_tables_decl_type_ref(
+    unit: &crate::UnitAnalysis,
+    reference: &crate::ReferenceData,
+) -> bool {
+    reference.kind == ReferenceKind::TypeRef
+        && reference.namespace == Namespace::Type
+        && unit
+            .table_work_areas
+            .iter()
+            .any(|work_area| work_area.name == reference.name && work_area.range == reference.range)
+}
+
 fn resolve_symbol_in_scope_chain(
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
@@ -3412,9 +3424,10 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
 
             let local_namespaces = scope_names.get(&reference.name);
             let global_namespaces = global_names.get(&reference.name);
-            let has_other_namespace = local_namespaces
-                .or(global_namespaces)
-                .is_some_and(|namespaces| !namespaces.contains(&reference.namespace));
+            let has_other_namespace = !reference_is_tables_decl_type_ref(unit, reference)
+                && local_namespaces
+                    .or(global_namespaces)
+                    .is_some_and(|namespaces| !namespaces.contains(&reference.namespace));
 
             let (kind, message) = if has_other_namespace {
                 (
