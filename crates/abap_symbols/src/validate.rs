@@ -3013,7 +3013,6 @@ fn build_report_tables_contexts(project: &ProjectAnalysis) -> Vec<ReportTablesCo
 
 fn validate_missing_tables_declarations(
     project: &ProjectAnalysis,
-    lookup: &ValidationLookup<'_>,
     report_contexts: &[ReportTablesContext],
     unit: &crate::UnitAnalysis,
 ) -> Vec<Diagnostic> {
@@ -3031,8 +3030,15 @@ fn validate_missing_tables_declarations(
 
     let mut diagnostics = Vec::new();
     let mut emitted = HashSet::<(Arc<str>, usize, usize)>::new();
+    let selection_screen_report_type_positions = unit
+        .selection_screen_report_type_positions
+        .iter()
+        .map(|range| (range.start, range.end))
+        .collect::<HashSet<_>>();
     for reference in unit.references.iter().filter(|reference| {
-        reference.kind == ReferenceKind::TypeRef && reference.namespace == Namespace::Type
+        reference.kind == ReferenceKind::TypeRef
+            && selection_screen_report_type_positions
+                .contains(&(reference.range.start, reference.range.end))
     }) {
         let Some(Resolution::Symbol(handle)) = reference.resolution else {
             continue;
@@ -3066,46 +3072,6 @@ fn validate_missing_tables_declarations(
             message: format!(
                 "DDIC table/view '{}' is used as a report type without a top-level TABLES {} declaration in the report or its includes",
                 reference.name, reference.name
-            ),
-        });
-    }
-    for access in unit.field_accesses.iter().filter(|access| {
-        access.in_type_position
-            && access.base_namespace == Namespace::Value
-            && !access.field_path.is_empty()
-    }) {
-        let Some(handle) = root_symbol_handle_matching(
-            project,
-            lookup,
-            unit,
-            Namespace::Type,
-            &access.base_name,
-            |_| true,
-        ) else {
-            continue;
-        };
-        if !unit_is_ddic_table_like_dependency(&project.units[handle.unit.as_usize()]) {
-            continue;
-        }
-        if contexts
-            .iter()
-            .all(|context| context.table_names.contains(&access.base_name))
-        {
-            continue;
-        }
-        if !emitted.insert((
-            Arc::clone(&access.base_name),
-            access.base_range.start,
-            access.base_range.end,
-        )) {
-            continue;
-        }
-        diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::MissingTablesDeclaration,
-            range: access.base_range.clone(),
-            message: format!(
-                "DDIC table/view '{}' is used as a report type without a top-level TABLES {} declaration in the report or its includes",
-                access.base_name, access.base_name
             ),
         });
     }
@@ -4215,7 +4181,6 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         ));
         unit_diagnostics.extend(validate_missing_tables_declarations(
             project,
-            &lookup,
             &report_tables_contexts,
             unit,
         ));

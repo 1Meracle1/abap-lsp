@@ -491,6 +491,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             return;
         };
         let is_select_options_decl = self.ctx.file().kind(node) == SyntaxKind::SelectOptionsDecl;
+        let is_selection_screen_decl = matches!(
+            self.ctx.file().kind(node),
+            SyntaxKind::ParametersDecl | SyntaxKind::SelectOptionsDecl
+        );
         let children: Vec<_> = decl
             .syntax()
             .children()
@@ -507,8 +511,15 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                         if let Some(ns) = hint {
                             self.ctx.type_clause_ns_stack_mut().push(ns);
                         }
+                        let track_report_type_position = is_selection_screen_decl && hint.is_some();
+                        if track_report_type_position {
+                            *self.ctx.selection_screen_report_type_depth_mut() += 1;
+                        }
                         self.declare_decl_clause_symbol(child_id, decl_scope, kind);
                         self.ctx.walk_children(child_id, scope);
+                        if track_report_type_position {
+                            *self.ctx.selection_screen_report_type_depth_mut() -= 1;
+                        }
                         if is_select_options_decl {
                             self.collect_select_options_clause_references(child_id, scope);
                         }
@@ -795,6 +806,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 ReferenceKind::TypeRef,
                 range.clone(),
             );
+            if self.ctx.selection_screen_report_type_active() {
+                self.ctx
+                    .record_selection_screen_report_type_position(range.clone());
+            }
             if !field_path.is_empty() {
                 self.ctx.emit_field_access(FieldAccess {
                     scope,

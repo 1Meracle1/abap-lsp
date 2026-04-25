@@ -926,6 +926,7 @@ pub struct UnitAnalysis {
     pub diagnostics: Vec<Diagnostic>,
     pub include_edges: Vec<IncludeEdge>,
     pub table_work_areas: Vec<TableWorkAreaData>,
+    pub selection_screen_report_type_positions: Vec<TextRange>,
     pub field_accesses: Vec<FieldAccess>,
     pub loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     pub loop_at_field_contexts: Vec<LoopAtFieldContext>,

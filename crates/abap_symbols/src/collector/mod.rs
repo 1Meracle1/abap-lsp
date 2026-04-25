@@ -127,6 +127,7 @@ pub struct Collector<'a> {
     diagnostics: Vec<Diagnostic>,
     include_edges: Vec<IncludeEdge>,
     table_work_areas: Vec<TableWorkAreaData>,
+    selection_screen_report_type_positions: Vec<TextRange>,
     field_accesses: Vec<FieldAccess>,
     loop_where_field_contexts: Vec<LoopWhereFieldContext>,
     loop_at_field_contexts: Vec<LoopAtFieldContext>,
@@ -167,6 +168,7 @@ pub struct Collector<'a> {
     /// `TYPE` vs `LIKE` for the innermost typed declaration clause being walked; drives whether
     /// simple names in `TypeRefSimple` (e.g. after `LINE OF`) resolve as types or data objects.
     type_clause_ns_stack: Vec<Namespace>,
+    selection_screen_report_type_depth: usize,
     loop_group_stack: Vec<LoopGroupContext>,
 }
 
@@ -190,6 +192,7 @@ impl<'a> Collector<'a> {
             diagnostics: Vec::new(),
             include_edges: Vec::new(),
             table_work_areas: Vec::new(),
+            selection_screen_report_type_positions: Vec::new(),
             field_accesses: Vec::new(),
             loop_where_field_contexts: Vec::new(),
             loop_at_field_contexts: Vec::new(),
@@ -225,6 +228,7 @@ impl<'a> Collector<'a> {
             class_method_signatures: std::collections::HashMap::new(),
             scope_symbols: Vec::new(),
             type_clause_ns_stack: Vec::new(),
+            selection_screen_report_type_depth: 0,
             loop_group_stack: Vec::new(),
         }
     }
@@ -265,6 +269,7 @@ impl<'a> Collector<'a> {
             diagnostics: self.diagnostics,
             include_edges: self.include_edges,
             table_work_areas: self.table_work_areas,
+            selection_screen_report_type_positions: self.selection_screen_report_type_positions,
             field_accesses: self.field_accesses,
             loop_where_field_contexts: self.loop_where_field_contexts,
             loop_at_field_contexts: self.loop_at_field_contexts,

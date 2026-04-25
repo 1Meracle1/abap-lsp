@@ -802,12 +802,12 @@ ENDFORM.
 }
 
 #[test]
-fn reports_ddic_table_type_use_without_tables_in_report_include_closure() {
+fn reports_ddic_table_type_use_without_tables_in_selection_screen_include_closure() {
     let root_src = r#"
 REPORT zmain.
 INCLUDE zf01.
 "#;
-    let include_src = "DATA ls_lagp TYPE lagp.";
+    let include_src = "PARAMETERS p_lagp TYPE lagp.";
     let table_src = "TYPES lagp TYPE string.";
     let root_parse = parse(root_src);
     let include_parse = parse(include_src);
@@ -842,14 +842,14 @@ INCLUDE zf01.
 }
 
 #[test]
-fn accepts_ddic_table_type_use_when_tables_is_declared_in_relevant_include() {
+fn accepts_ddic_table_type_use_in_selection_screen_when_tables_is_declared_in_relevant_include() {
     let root_src = r#"
 REPORT zmain.
 INCLUDE: ztop,
          zf01.
 "#;
     let top_src = "TABLES lagp.";
-    let include_src = "DATA ls_lagp TYPE lagp.";
+    let include_src = "PARAMETERS p_lagp TYPE lagp.";
     let table_src = "TYPES lagp TYPE string.";
     let root_parse = parse(root_src);
     let top_parse = parse(top_src);
@@ -891,12 +891,12 @@ INCLUDE: ztop,
 }
 
 #[test]
-fn reports_ddic_table_field_type_use_without_tables_work_area() {
+fn reports_ddic_table_field_type_use_in_parameters_without_tables_work_area() {
     let root_src = r#"
 REPORT zmain.
 INCLUDE zf01.
 "#;
-    let include_src = "DATA lv_jobname TYPE tbtco-jobname.";
+    let include_src = "PARAMETERS p_jobname LIKE tbtco-jobname.";
     let table_src = "TYPES: BEGIN OF tbtco, jobname TYPE string, END OF tbtco.";
     let root_parse = parse(root_src);
     let include_parse = parse(include_src);
@@ -927,6 +927,72 @@ INCLUDE zf01.
         }),
         "expected missing TABLES diagnostic for tbtco-jobname, got {:?}",
         include.diagnostics
+    );
+}
+
+#[test]
+fn ignores_ddic_table_type_use_outside_selection_screen_declarations() {
+    let src = r#"
+REPORT zmain.
+DATA gt_lagp TYPE STANDARD TABLE OF lagp.
+"#;
+    let table_src = "TYPES lagp TYPE string.";
+    let parse_src = parse(src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: src,
+            parse: &parse_src,
+        },
+        ProjectInput {
+            uri: "/sap/bc/adt/ddic/tables/lagp",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+
+    let unit = project.unit_by_uri("zmain.abap").expect("report unit");
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::MissingTablesDeclaration),
+        "unexpected missing TABLES diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn ignores_ddic_table_field_type_use_outside_selection_screen_declarations() {
+    let src = r#"
+REPORT zmain.
+DATA lv_jobname TYPE tbtco-jobname.
+"#;
+    let table_src = "TYPES: BEGIN OF tbtco, jobname TYPE string, END OF tbtco.";
+    let parse_src = parse(src);
+    let table_parse = parse(table_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: src,
+            parse: &parse_src,
+        },
+        ProjectInput {
+            uri: "/sap/bc/adt/vit/wb/object_type/tabldt/object_name/TBTCO",
+            source: table_src,
+            parse: &table_parse,
+        },
+    ]);
+
+    let unit = project.unit_by_uri("zmain.abap").expect("report unit");
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::MissingTablesDeclaration),
+        "unexpected missing TABLES diagnostic: {:?}",
+        unit.diagnostics
     );
 }
 

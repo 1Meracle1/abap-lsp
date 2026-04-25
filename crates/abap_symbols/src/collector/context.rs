@@ -619,6 +619,23 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         &mut self.collector.type_clause_ns_stack
     }
 
+    pub(super) fn selection_screen_report_type_depth_mut(&mut self) -> &mut usize {
+        &mut self.collector.selection_screen_report_type_depth
+    }
+
+    pub(super) fn selection_screen_report_type_active(&self) -> bool {
+        self.collector.selection_screen_report_type_depth > 0
+    }
+
+    pub(super) fn record_selection_screen_report_type_position(
+        &mut self,
+        range: abap_lexer::TextRange,
+    ) {
+        self.collector
+            .selection_screen_report_type_positions
+            .push(range);
+    }
+
     pub(super) fn namespace_from_type_clause_kind(
         &self,
         kind: abap_ast::ast::TypeClauseKind,
