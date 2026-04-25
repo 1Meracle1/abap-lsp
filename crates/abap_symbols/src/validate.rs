@@ -203,6 +203,25 @@ fn resolve_symbol_handle_in_scope_or_includes(
         );
     }
 
+    for predecessor_unit_id in lookup
+        .include_predecessors
+        .get(unit.unit_id.as_usize())
+        .into_iter()
+        .flatten()
+        .rev()
+        .copied()
+    {
+        if let Some(symbol_ids) =
+            lookup.per_unit_root_index[predecessor_unit_id.as_usize()].get(&key)
+            && let Some(symbol_id) = symbol_ids.last().copied()
+        {
+            return Some(SymbolHandle {
+                unit: predecessor_unit_id,
+                symbol: symbol_id,
+            });
+        }
+    }
+
     None
 }
 
@@ -2989,18 +3008,21 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             let (has_leading_deref, field_path) = split_leading_deref(access);
             if access.base_namespace == Namespace::Type && base_symbol.kind == SymbolKind::Class {
                 let mut idx = 0usize;
-                let mut structure_tail: Option<crate::StructureId> = None;
+                let mut structure_tail: Option<(&crate::UnitAnalysis, crate::StructureId)> = None;
                 let mut static_structure_holder: Option<Arc<str>> = None;
                 while idx < field_path.len() {
                     let step = &field_path[idx];
-                    if let Some(structure_id) = structure_tail {
+                    if let Some((structure_unit, structure_id)) = structure_tail {
                         let holder = static_structure_holder.as_deref().unwrap_or("?");
-                        let structure = unit.structure(structure_id);
-                        let Some(field) = structure
-                            .fields
-                            .iter()
-                            .find(|field| field.name.as_ref() == step.name.as_ref())
-                        else {
+                        let Some(field) = resolve_structure_field_info_project(
+                            project,
+                            &lookup,
+                            scope_indexes,
+                            structure_unit,
+                            access.scope,
+                            structure_id,
+                            step.name.as_ref(),
+                        ) else {
                             unit_diagnostics.push(Diagnostic {
                                 kind: DiagnosticKind::UnknownField,
                                 range: step.range.clone(),
@@ -3015,7 +3037,10 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         if idx == field_path.len() {
                             break;
                         }
-                        let Some(next_structure) = field.structure else {
+                        let StructureFieldShape::Structured {
+                            structure: next_structure,
+                        } = field.shape
+                        else {
                             let next_step = &field_path[idx];
                             unit_diagnostics.push(Diagnostic {
                                 kind: DiagnosticKind::UnknownField,
@@ -3027,7 +3052,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                             });
                             break;
                         };
-                        structure_tail = Some(next_structure);
+                        structure_tail = Some((structure_unit, next_structure));
                         continue;
                     }
 
@@ -3064,7 +3089,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                                 break;
                             };
                             static_structure_holder = Some(Arc::clone(&type_symbol.name));
-                            structure_tail = Some(next_structure);
+                            structure_tail = Some((type_unit, next_structure));
                             continue;
                         }
                         unit_diagnostics.push(Diagnostic {
@@ -3114,7 +3139,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         break;
                     };
                     static_structure_holder = Some(Arc::clone(&member.name));
-                    structure_tail = Some(next_structure);
+                    structure_tail = Some((member_unit, next_structure));
                 }
                 continue;
             }

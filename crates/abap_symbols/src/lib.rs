@@ -588,6 +588,59 @@ TYPES: BEGIN OF /sttp/s_ltak,
     }
 
     #[test]
+    fn delete_where_field_resolves_against_prior_include_table_type_when_include_is_target() {
+        let main_src = "\
+REPORT z_demo.
+INCLUDE z_demo_top.
+INCLUDE z_demo_f01.
+";
+        let top_src = "\
+TYPES: BEGIN OF ty_b2p_outs,
+         sgtin TYPE string,
+         objid TYPE string,
+       END OF ty_b2p_outs,
+       tt_b2p_outs TYPE STANDARD TABLE OF ty_b2p_outs WITH EMPTY KEY.
+DATA gt_b2p_outs TYPE tt_b2p_outs.
+";
+        let f01_src = "\
+FORM get_data.
+  DELETE gt_b2p_outs WHERE sgtin = ''.
+ENDFORM.
+";
+        let main_parse = parse(main_src);
+        let top_parse = parse(top_src);
+        let f01_parse = parse(f01_src);
+        let project = analyze_project(&[
+            ProjectInput {
+                uri: "file:///workspace/z_demo/z_demo.abap",
+                source: main_src,
+                parse: &main_parse,
+            },
+            ProjectInput {
+                uri: "file:///workspace/z_demo/Includes/z_demo_top.abap",
+                source: top_src,
+                parse: &top_parse,
+            },
+            ProjectInput {
+                uri: "file:///workspace/z_demo/Includes/z_demo_f01.abap",
+                source: f01_src,
+                parse: &f01_parse,
+            },
+        ]);
+        let unit = project
+            .unit_by_uri("file:///workspace/z_demo/Includes/z_demo_f01.abap")
+            .expect("include unit");
+
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("unknown symbol 'sgtin'")),
+            "{:#?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
     fn at_group_processing_branches_affect_dataflow() {
         let src = "\
 FORM run.\n\
