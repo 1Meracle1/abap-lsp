@@ -3328,6 +3328,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::InvalidPerformCall
         | DiagnosticKind::AbstractClassInstantiation
         | DiagnosticKind::MissingSuperConstructorCall
+        | DiagnosticKind::InvalidObjectTypeReference
         | DiagnosticKind::UnknownNamedParameter
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter

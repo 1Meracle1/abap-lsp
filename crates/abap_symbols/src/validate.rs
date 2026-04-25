@@ -2844,6 +2844,73 @@ fn validate_missing_tables_declarations(
     diagnostics
 }
 
+fn invalid_object_type_reference_diagnostic(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope: ScopeId,
+    range: &TextRange,
+    type_ref: &FieldTypeRefData,
+) -> Option<Diagnostic> {
+    if type_ref.namespace != Namespace::Type || type_ref.is_ref || !type_ref.field_path.is_empty() {
+        return None;
+    }
+
+    let handle =
+        resolve_type_like_symbol_handle(project, lookup, unit, scope_indexes, scope, type_ref)?;
+    let symbol = project.units[handle.unit.as_usize()].symbol(handle.symbol);
+    if !matches!(symbol.kind, SymbolKind::Class | SymbolKind::Interface) {
+        return None;
+    }
+
+    Some(Diagnostic {
+        kind: DiagnosticKind::InvalidObjectTypeReference,
+        range: range.clone(),
+        message: format!(
+            "object type '{}' can only be referenced using REF TO",
+            type_ref.base_name
+        ),
+    })
+}
+
+fn validate_object_type_references(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    original_symbol_count: usize,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut emitted = HashSet::<(Arc<str>, usize, usize)>::new();
+
+    for symbol in unit.symbols.iter().take(original_symbol_count) {
+        let Some(type_ref) = symbol.declared_type.as_ref() else {
+            continue;
+        };
+        let Some(diagnostic) = invalid_object_type_reference_diagnostic(
+            project,
+            lookup,
+            unit,
+            scope_indexes,
+            symbol.scope,
+            &symbol.decl_range,
+            type_ref,
+        ) else {
+            continue;
+        };
+        if emitted.insert((
+            Arc::clone(&type_ref.base_name),
+            diagnostic.range.start,
+            diagnostic.range.end,
+        )) {
+            diagnostics.push(diagnostic);
+        }
+    }
+
+    diagnostics
+}
+
 #[allow(dead_code)]
 pub fn validate_project(project: &mut ProjectAnalysis) {
     let scope_indexes: Vec<_> = project.units.iter().map(build_scope_index).collect();
@@ -2884,6 +2951,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         if !dirty_unit_ids.contains(&project.units[unit_idx].unit_id) {
             continue;
         }
+        let original_symbol_count = project.units[unit_idx].symbols.len();
         let mut scope_index = scope_indexes[unit_idx].clone();
         let synthetic_symbols = {
             let unit = &project.units[unit_idx];
@@ -2978,6 +3046,13 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             &lookup,
             &project.units[unit_idx],
             &scope_index,
+        );
+        let object_type_diagnostics = validate_object_type_references(
+            project,
+            &lookup,
+            &project.units[unit_idx],
+            scope_indexes,
+            original_symbol_count,
         );
         let abstract_instantiation_diagnostics = validate_abstract_class_instantiations(
             project,
@@ -3865,6 +3940,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             &report_tables_contexts,
             unit,
         ));
+        unit_diagnostics.extend(object_type_diagnostics);
         unit_diagnostics.extend(abstract_instantiation_diagnostics);
         unit_diagnostics.extend(validate_missing_method_implementations(unit));
         unit_diagnostics.extend(constructor_diagnostics);

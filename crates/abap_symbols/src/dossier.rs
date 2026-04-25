@@ -1593,6 +1593,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::AbstractClassInstantiation => "abstract_class_instantiation",
         DiagnosticKind::MissingMethodImplementation => "missing_method_implementation",
         DiagnosticKind::MissingSuperConstructorCall => "missing_super_constructor_call",
+        DiagnosticKind::InvalidObjectTypeReference => "invalid_object_type_reference",
         DiagnosticKind::IncompatibleAssignmentType => "incompatible_assignment_type",
         DiagnosticKind::IncompatibleArgumentType => "incompatible_argument_type",
         DiagnosticKind::UnknownNamedParameter => "unknown_named_parameter",

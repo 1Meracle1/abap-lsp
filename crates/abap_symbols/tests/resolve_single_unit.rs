@@ -150,6 +150,60 @@ ENDFORM.
 }
 
 #[test]
+fn reports_class_type_data_decl_without_ref_to() {
+    let src = r#"
+CLASS c1 DEFINITION.
+ENDCLASS.
+
+CLASS c2 DEFINITION.
+  PUBLIC SECTION.
+    DATA c2ref TYPE c1.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///class_type_without_ref.abap", src, &parsed);
+
+    let diagnostic = unit
+        .diagnostics
+        .iter()
+        .find(|diag| {
+            diag.kind == DiagnosticKind::InvalidObjectTypeReference && diag.message.contains("c1")
+        })
+        .expect("invalid object type diagnostic");
+    assert_eq!(&src[diagnostic.range.clone()], "c2ref");
+    assert!(
+        diagnostic.message.contains("REF TO"),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_class_type_data_decl_with_ref_to() {
+    let src = r#"
+CLASS c1 DEFINITION.
+ENDCLASS.
+
+CLASS c2 DEFINITION.
+  PUBLIC SECTION.
+    DATA c2ref TYPE REF TO c1.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///class_type_with_ref.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::InvalidObjectTypeReference),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn type_pools_statement_is_ignored_for_semantic_analysis() {
     let src = r#"
 FORM f.
