@@ -242,7 +242,23 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             self.ctx.walk_node(from_expr, scope);
         }
         if let Some(where_expr) = where_expr {
-            self.ctx.walk_node(where_expr, scope);
+            let predicate_tokens = self.ctx.syntax_token_nodes(where_expr);
+            let predicate_kind = if Self::sql_tokens_are_dynamic_where(&predicate_tokens) {
+                SqlPredicateKind::DynamicWhere
+            } else {
+                SqlPredicateKind::Where
+            };
+            self.ctx.emit_sql_predicate(SqlPredicateData {
+                query_id,
+                range: self.ctx.file().range(where_expr),
+                kind: predicate_kind,
+            });
+            if predicate_kind == SqlPredicateKind::DynamicWhere {
+                self.ctx
+                    .collect_token_expression_refs_infos(&predicate_tokens, scope, true);
+            } else {
+                self.collect_sql_host_and_name_refs_in_node(query_id, where_expr, scope, true);
+            }
         }
     }
 

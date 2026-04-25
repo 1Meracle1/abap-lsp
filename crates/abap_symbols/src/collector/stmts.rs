@@ -840,6 +840,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         (head_expr, from_expr, where_expr)
     }
 
+    fn delete_stmt_starts_with_from(&self, node: NodeId) -> bool {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        tokens
+            .first()
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("delete"))
+            && tokens
+                .get(1)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("from"))
+    }
+
     fn modify_stmt_operands(
         &self,
         node: NodeId,
@@ -1313,7 +1323,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         let (source_expr, from_expr, where_expr) = self.delete_stmt_operands(node);
         if let Some(source_expr) = source_expr
-            && from_expr.is_some()
+            && (from_expr.is_some() || self.delete_stmt_starts_with_from(node))
             && let Some(source_name) = self.simple_delete_source_name(source_expr)
             && self
                 .collector

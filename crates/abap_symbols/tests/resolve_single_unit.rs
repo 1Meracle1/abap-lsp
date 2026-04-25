@@ -12826,6 +12826,107 @@ ENDFORM.
 }
 
 #[test]
+fn delete_from_dbtab_where_collects_open_sql_source_instead_of_value_ref() {
+    let src = r#"
+FORM run.
+  DATA lr_objid TYPE RANGE OF string.
+  DELETE FROM zattp_reload_ret WHERE objid IN lr_objid.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///delete_from_dbtab_where.abap", src, &parsed);
+
+    assert!(
+        unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "zattp_reload_ret"
+        }),
+        "expected Open SQL source ref for DELETE FROM dbtab, sql refs={:?} diagnostics={:?}",
+        unit.sql_name_refs,
+        unit.diagnostics
+    );
+    assert!(
+        unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Column && sql_ref.name.as_ref() == "objid"
+        }),
+        "expected Open SQL column ref for DELETE WHERE field, sql refs={:?}",
+        unit.sql_name_refs
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lr_objid"
+        }),
+        "expected host/value reference for DELETE WHERE range operand, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "zattp_reload_ret"
+        }),
+        "unexpected value reference for DELETE FROM dbtab source, refs={:?}",
+        unit.references
+    );
+    assert!(
+        unit.system_field_updates.iter().any(|update| {
+            update.statement == abap_symbols::SystemFieldStatementKind::DeleteDbTable
+                && update.field_name.as_ref() == "subrc"
+        }),
+        "expected DELETE db table system field update, updates={:?}",
+        unit.system_field_updates
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("zattp_reload_ret") || diag.message.contains("objid"))
+        }),
+        "unexpected unresolved diagnostic for DELETE FROM dbtab: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn delete_from_local_itab_keeps_internal_table_precedence() {
+    let src = r#"
+TYPES ty_reload_ret TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA zattp_reload_ret TYPE ty_reload_ret.
+
+FORM run.
+  DELETE FROM zattp_reload_ret WHERE table_line IS NOT INITIAL.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///delete_from_local_itab.abap", src, &parsed);
+
+    assert!(
+        !unit.sql_name_refs.iter().any(|sql_ref| {
+            sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "zattp_reload_ret"
+        }),
+        "unexpected Open SQL source ref for local internal table, sql refs={:?}",
+        unit.sql_name_refs
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "zattp_reload_ret"
+        }),
+        "expected value reference for local internal table DELETE source, refs={:?}",
+        unit.references
+    );
+    assert!(
+        unit.system_field_updates.iter().any(|update| {
+            update.statement == abap_symbols::SystemFieldStatementKind::DeleteTable
+                && update.field_name.as_ref() == "subrc"
+        }),
+        "expected DELETE internal table system field update, updates={:?}",
+        unit.system_field_updates
+    );
+}
+
+#[test]
 fn suppresses_unknown_symbol_for_bare_delete_where_field_name_on_external_table_type() {
     let main_src = r#"
 DATA lt_trans_del TYPE /sttp/tt_evt_sdr.
