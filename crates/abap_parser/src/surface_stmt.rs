@@ -3144,6 +3144,86 @@ fn insert_db_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usize
     token.kind == TokenKind::Ident && is_keyword(source, token, "accepting")
 }
 
+fn insert_textpool_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "from") || is_keyword(source, token, "language"))
+}
+
+fn build_insert_textpool_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    insert_idx: usize,
+    period_i: usize,
+) -> NodeId {
+    let insert_tok = &tokens[insert_idx];
+    let textpool_idx = insert_idx + 1;
+    let Some(from_idx) =
+        find_top_level_keyword_index(source, tokens, textpool_idx + 1, period_i, "from")
+    else {
+        let children = token_children(b, tokens, insert_idx, period_i + 1);
+        return b.branch(
+            SyntaxKind::Error,
+            insert_tok.range.start..tokens[period_i].range.end,
+            &children,
+        );
+    };
+    let language_idx =
+        find_top_level_keyword_index(source, tokens, from_idx + 1, period_i, "language");
+
+    let mut children = Vec::with_capacity(period_i - insert_idx + 1);
+    children.push(token_leaf(b, insert_tok));
+    children.push(token_leaf(b, &tokens[textpool_idx]));
+
+    let clause_starts =
+        |tokens: &[Token], i: usize| insert_textpool_clause_starts(source, tokens, i);
+    scan_and_push_expr_clause(
+        b,
+        &mut children,
+        source,
+        tokens,
+        textpool_idx + 1,
+        from_idx,
+        Some(&tokens[textpool_idx]),
+        &clause_starts,
+    );
+    children.push(token_leaf(b, &tokens[from_idx]));
+    let itab_end = language_idx.unwrap_or(period_i);
+    scan_and_push_expr_clause(
+        b,
+        &mut children,
+        source,
+        tokens,
+        from_idx + 1,
+        itab_end,
+        Some(&tokens[from_idx]),
+        &clause_starts,
+    );
+    if let Some(language_idx) = language_idx {
+        children.push(token_leaf(b, &tokens[language_idx]));
+        scan_and_push_expr_clause(
+            b,
+            &mut children,
+            source,
+            tokens,
+            language_idx + 1,
+            period_i,
+            Some(&tokens[language_idx]),
+            &clause_starts,
+        );
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+
+    b.branch(
+        SyntaxKind::InsertTextpoolStmt,
+        insert_tok.range.start..tokens[period_i].range.end,
+        &children,
+    )
+}
+
 fn find_insert_into_db_table_target_end(
     source: &str,
     tokens: &[Token],
@@ -7454,6 +7534,13 @@ pub fn try_parse_insert_table_stmt(
     }
     match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
+            if tokens
+                .get(idx + 1)
+                .is_some_and(|token| is_keyword(source, token, "textpool"))
+            {
+                let node = build_insert_textpool_stmt(b, source, tokens, idx, period_i);
+                return Some((node, period_i + 1));
+            }
             let Some(into_idx) =
                 find_top_level_keyword_index(source, tokens, idx + 1, period_i, "into")
             else {
@@ -10642,6 +10729,38 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .count_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_insert_textpool_operands_as_ast_children() {
+        let parsed = crate::parse("INSERT TEXTPOOL program FROM text2 LANGUAGE langu2.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertTextpoolStmt)
+            .expect("insert textpool stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InsertDbTableStmt),
+            0
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 3);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_insert_textpool_without_language() {
+        let parsed = crate::parse("INSERT TEXTPOOL lv_progname FROM lt_textpool.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertTextpoolStmt)
+            .expect("insert textpool stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -2004,6 +2004,21 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_insert_textpool_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::InsertTextpool,
+            &["subrc"],
+        );
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) != SyntaxKind::Token {
+                self.collector.walk_node(child, scope);
+            }
+        }
+    }
+
     fn collect_message_head_clause_infos(&mut self, node: NodeId, scope: ScopeId) {
         for child in self.collector.file.children(node) {
             match self.collector.file.kind(child) {

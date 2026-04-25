@@ -337,6 +337,8 @@ pub enum SyntaxKind {
     InsertTableStmt,
     /// `INSERT dbtab FROM [TABLE] src ... .`
     InsertDbTableStmt,
+    /// `INSERT TEXTPOOL prog FROM itab [LANGUAGE lang] .`
+    InsertTextpoolStmt,
     /// `APPEND ... TO ... .`
     AppendStmt,
     /// `MOVE-CORRESPONDING ... TO ... .`
@@ -681,6 +683,7 @@ impl SyntaxKind {
             Self::SqlParenGroup => "SqlParenGroup",
             Self::InsertTableStmt => "InsertTableStmt",
             Self::InsertDbTableStmt => "InsertDbTableStmt",
+            Self::InsertTextpoolStmt => "InsertTextpoolStmt",
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::MoveStmt => "MoveStmt",

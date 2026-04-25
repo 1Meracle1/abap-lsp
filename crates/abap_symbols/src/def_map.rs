@@ -768,6 +768,7 @@ pub enum SystemFieldStatementKind {
     Find,
     InsertTable,
     InsertDbTable,
+    InsertTextpool,
     LoopAt,
     Message,
     ModifyTable,

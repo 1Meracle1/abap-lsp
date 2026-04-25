@@ -115,6 +115,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::InsertTableStmt => {
                 self.stmt_lowering().collect_insert_table_stmt(node, scope)
             }
+            SyntaxKind::InsertTextpoolStmt => self
+                .stmt_lowering()
+                .collect_insert_textpool_stmt(node, scope),
             SyntaxKind::MoveStmt | SyntaxKind::MoveCorrespondingStmt => {
                 self.stmt_lowering().collect_move_stmt(node, scope)
             }

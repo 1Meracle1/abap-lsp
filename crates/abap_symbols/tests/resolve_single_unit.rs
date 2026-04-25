@@ -2097,6 +2097,90 @@ INSERT zattp_sequen_bf FROM TABLE lt_sequen_buff ACCEPTING DUPLICATE KEYS.
 }
 
 #[test]
+fn resolves_insert_textpool_operands() {
+    let src = r#"
+DATA program TYPE sy-repid.
+DATA text2 TYPE STANDARD TABLE OF textpool WITH EMPTY KEY.
+DATA langu2 TYPE spras.
+
+INSERT TEXTPOOL program FROM text2 LANGUAGE langu2.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///insert_textpool.abap", src, &parsed);
+
+    for name in ["program", "text2", "langu2"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved INSERT TEXTPOOL reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected INSERT TEXTPOOL diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+    assert!(unit.sql_queries.is_empty(), "{:?}", unit.sql_queries);
+}
+
+#[test]
+fn resolves_insert_textpool_operands_without_language() {
+    let src = r#"
+DATA lv_progname TYPE sy-repid.
+DATA lt_textpool TYPE STANDARD TABLE OF textpool WITH EMPTY KEY.
+
+INSERT TEXTPOOL lv_progname FROM lt_textpool.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit(
+        "file:///insert_textpool_without_language.abap",
+        src,
+        &parsed,
+    );
+
+    for name in ["lv_progname", "lt_textpool"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved INSERT TEXTPOOL reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected INSERT TEXTPOOL diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+    for keyword in ["insert", "textpool", "from"] {
+        assert!(
+            !unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.eq_ignore_ascii_case(keyword)
+            }),
+            "keyword `{keyword}` should not be collected as a value reference: {:?}",
+            unit.references
+        );
+    }
+    assert!(unit.sql_queries.is_empty(), "{:?}", unit.sql_queries);
+}
+
+#[test]
 fn collects_sql_semantics_for_insert_into_dbtab_values_constructor_expr() {
     let src = r#"
 TYPES: BEGIN OF zattp_rs_ruleacc,
@@ -6342,9 +6426,13 @@ fn collects_system_field_updates_for_supported_statements() {
     let src = r#"
 DATA itab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
 DATA wa TYPE i.
+DATA program TYPE sy-repid.
+DATA text2 TYPE STANDARD TABLE OF textpool WITH EMPTY KEY.
+DATA langu2 TYPE spras.
 
 APPEND 1 TO itab.
 INSERT 2 INTO TABLE itab.
+INSERT TEXTPOOL program FROM text2 LANGUAGE langu2.
 MODIFY TABLE itab FROM 3.
 DELETE itab WHERE table_line = 3.
 AUTHORITY-CHECK OBJECT 'S_CARRID'
@@ -6380,6 +6468,10 @@ ENDLOOP.
     ));
     assert!(has_update(
         abap_symbols::SystemFieldStatementKind::InsertTable,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::InsertTextpool,
         "subrc"
     ));
     assert!(has_update(

@@ -1557,6 +1557,7 @@ fn system_field_statement_kind_name(kind: SystemFieldStatementKind) -> &'static 
         SystemFieldStatementKind::Find => "find",
         SystemFieldStatementKind::InsertTable => "insert_table",
         SystemFieldStatementKind::InsertDbTable => "insert_db_table",
+        SystemFieldStatementKind::InsertTextpool => "insert_textpool",
         SystemFieldStatementKind::LoopAt => "loop_at",
         SystemFieldStatementKind::Message => "message",
         SystemFieldStatementKind::ModifyTable => "modify_table",
