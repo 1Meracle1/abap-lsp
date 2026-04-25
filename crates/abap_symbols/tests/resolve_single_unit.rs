@@ -5169,6 +5169,31 @@ ENDFORM.
 }
 
 #[test]
+fn refresh_target_counts_as_assignment_for_definite_assignment() {
+    let src = r#"
+FORM event_posting_attp.
+  TYPES ty_msg_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lt_msg TYPE ty_msg_tab.
+  DATA lv_count TYPE i.
+
+  REFRESH: lt_msg.
+  lv_count = lines( lt_msg ).
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///refresh_target_assignment.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UseBeforeDefiniteAssignment
+                && diag.message.contains("lt_msg")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn insert_target_counts_as_assignment_for_definite_assignment() {
     let src = r#"
 FORM f_set_descriptions.

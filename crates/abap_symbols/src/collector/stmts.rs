@@ -2281,6 +2281,11 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             return;
         }
 
+        if head.text.eq_ignore_ascii_case("refresh") {
+            self.collect_refresh_stmt_infos(tail, scope);
+            return;
+        }
+
         if head.text.eq_ignore_ascii_case("log")
             && self.collect_log_point_stmt_infos(&significant, scope)
         {
@@ -2290,6 +2295,36 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         self.record_unknown_effect(node, scope);
         self.collector
             .collect_token_expression_refs_infos(tail, scope, true);
+    }
+
+    fn collect_refresh_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            match tokens[idx].text.as_ref() {
+                ":" | "," => {
+                    idx += 1;
+                }
+                "." => break,
+                _ => {
+                    let end = self.consume_simple_operand_tokens(tokens, idx);
+                    if end <= idx {
+                        idx += 1;
+                        continue;
+                    }
+                    self.collector.collect_token_expression_refs_infos(
+                        &tokens[idx..end],
+                        scope,
+                        true,
+                    );
+                    self.record_routine_site(
+                        scope,
+                        tokens[idx].range.start..tokens[end - 1].range.end,
+                        RoutineSiteKind::Clear,
+                    );
+                    idx = end;
+                }
+            }
+        }
     }
 
     pub(super) fn collect_close_cursor_stmt(&mut self, node: NodeId, scope: ScopeId) {
