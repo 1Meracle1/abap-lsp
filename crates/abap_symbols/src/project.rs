@@ -58,6 +58,7 @@ pub(crate) struct LocallyResolvedUnit {
 pub(crate) struct WorkspaceIndex {
     pub(crate) uri_to_unit: HashMap<Arc<str>, UnitId>,
     pub(crate) provided_name_to_unit: HashMap<Arc<str>, UnitId>,
+    pub(crate) provided_name_to_units: HashMap<Arc<str>, Vec<UnitId>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -599,6 +600,7 @@ pub fn analyze_unit_locally(
 pub(crate) fn build_workspace_index(local_units: &[LocallyResolvedUnit]) -> WorkspaceIndex {
     let mut uri_to_unit = HashMap::new();
     let mut provided_name_to_unit = HashMap::new();
+    let mut provided_name_to_units = HashMap::<Arc<str>, Vec<UnitId>>::new();
 
     for local in local_units {
         let unit = &local.unit;
@@ -608,28 +610,135 @@ pub(crate) fn build_workspace_index(local_units: &[LocallyResolvedUnit]) -> Work
             provided_name_to_unit
                 .entry(Arc::clone(name))
                 .or_insert(unit_id);
+            provided_name_to_units
+                .entry(Arc::clone(name))
+                .or_default()
+                .push(unit_id);
         }
     }
 
     WorkspaceIndex {
         uri_to_unit,
         provided_name_to_unit,
+        provided_name_to_units,
     }
+}
+
+pub(crate) fn build_workspace_index_from_units(units: &[UnitAnalysis]) -> WorkspaceIndex {
+    let mut uri_to_unit = HashMap::with_capacity(units.len());
+    let mut provided_name_to_unit = HashMap::new();
+    let mut provided_name_to_units = HashMap::<Arc<str>, Vec<UnitId>>::new();
+
+    for unit in units {
+        let unit_id = unit.unit_id;
+        uri_to_unit.insert(Arc::clone(&unit.uri), unit_id);
+        for name in &unit.provided_names {
+            provided_name_to_unit
+                .entry(Arc::clone(name))
+                .or_insert(unit_id);
+            provided_name_to_units
+                .entry(Arc::clone(name))
+                .or_default()
+                .push(unit_id);
+        }
+    }
+
+    WorkspaceIndex {
+        uri_to_unit,
+        provided_name_to_unit,
+        provided_name_to_units,
+    }
+}
+
+fn normalized_uri_path_key(uri: &str) -> String {
+    uri.trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn uri_parent_dir_key(uri: &str) -> Option<String> {
+    let normalized = normalized_uri_path_key(uri);
+    let slash = normalized.rfind('/')?;
+    Some(normalized[..slash].to_string())
+}
+
+fn child_dir_key(parent: &str, child: &str) -> String {
+    let child = child.trim_matches('/').to_ascii_lowercase();
+    if parent.is_empty() {
+        child
+    } else {
+        format!("{}/{}", parent.trim_end_matches('/'), child)
+    }
+}
+
+fn find_include_candidate_in_dir(
+    candidates: &[UnitId],
+    unit_dir_keys: &[Option<String>],
+    dir_key: &str,
+) -> Option<UnitId> {
+    candidates.iter().copied().find(|candidate| {
+        unit_dir_keys
+            .get(candidate.as_usize())
+            .and_then(|dir| dir.as_deref())
+            .is_some_and(|candidate_dir| candidate_dir == dir_key)
+    })
+}
+
+fn resolve_include_target(
+    source_dir_key: Option<&str>,
+    include_name: &Arc<str>,
+    workspace_index: &WorkspaceIndex,
+    unit_dir_keys: &[Option<String>],
+) -> Option<UnitId> {
+    let candidates = workspace_index
+        .provided_name_to_units
+        .get(include_name.as_ref())?;
+
+    if let Some(source_dir_key) = source_dir_key {
+        if let Some(target) =
+            find_include_candidate_in_dir(candidates, unit_dir_keys, source_dir_key)
+        {
+            return Some(target);
+        }
+
+        let includes_dir_key = child_dir_key(source_dir_key, "includes");
+        if let Some(target) =
+            find_include_candidate_in_dir(candidates, unit_dir_keys, &includes_dir_key)
+        {
+            return Some(target);
+        }
+    }
+
+    workspace_index
+        .provided_name_to_unit
+        .get(include_name.as_ref())
+        .copied()
+        .or_else(|| candidates.first().copied())
 }
 
 pub(crate) fn resolve_include_edges_for_units(
     units: &mut [UnitAnalysis],
-    provided_name_to_unit: &HashMap<Arc<str>, UnitId>,
+    workspace_index: &WorkspaceIndex,
     dirty_unit_ids: &HashSet<UnitId>,
 ) {
+    let unit_dir_keys: Vec<_> = units
+        .iter()
+        .map(|unit| uri_parent_dir_key(unit.uri.as_ref()))
+        .collect();
+
     for unit in units {
         if !dirty_unit_ids.contains(&unit.unit_id) {
             continue;
         }
+        let source_dir_key = unit_dir_keys
+            .get(unit.unit_id.as_usize())
+            .and_then(|dir| dir.as_deref());
         unit.diagnostics
             .retain(|diagnostic| !matches!(diagnostic.kind, DiagnosticKind::UnresolvedInclude));
         for edge in &mut unit.include_edges {
-            edge.target = provided_name_to_unit.get(&edge.name).copied();
+            edge.target =
+                resolve_include_target(source_dir_key, &edge.name, workspace_index, &unit_dir_keys);
             if edge.target.is_none() {
                 unit.diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::UnresolvedInclude,
@@ -732,14 +841,23 @@ fn dirty_set_for_all_units(local_units: &[LocallyResolvedUnit]) -> DirtySet {
 
 fn include_component_dirty_set(
     local_units: &[LocallyResolvedUnit],
-    provided_name_to_unit: &HashMap<Arc<str>, UnitId>,
+    workspace_index: &WorkspaceIndex,
     seed_unit_ids: &HashSet<UnitId>,
 ) -> HashSet<UnitId> {
     let mut adjacency: HashMap<UnitId, HashSet<UnitId>> = HashMap::new();
+    let unit_dir_keys: Vec<_> = local_units
+        .iter()
+        .map(|local| uri_parent_dir_key(local.unit.uri.as_ref()))
+        .collect();
     for local in local_units {
         let unit_id = local.unit.unit_id;
+        let source_dir_key = unit_dir_keys
+            .get(unit_id.as_usize())
+            .and_then(|dir| dir.as_deref());
         for edge in &local.unit.include_edges {
-            let Some(target) = provided_name_to_unit.get(&edge.name).copied() else {
+            let Some(target) =
+                resolve_include_target(source_dir_key, &edge.name, workspace_index, &unit_dir_keys)
+            else {
                 continue;
             };
             adjacency.entry(unit_id).or_default().insert(target);
@@ -821,11 +939,7 @@ fn compute_dirty_set(
         }
     }
 
-    for unit_id in include_component_dirty_set(
-        local_units,
-        &workspace_index.provided_name_to_unit,
-        &changed_unit_ids,
-    ) {
+    for unit_id in include_component_dirty_set(local_units, workspace_index, &changed_unit_ids) {
         dirty.unit_ids.insert(unit_id);
         dirty
             .uris
@@ -941,11 +1055,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     metrics.apply_local_updates_micros = apply_local_updates_timer.elapsed().as_micros();
 
     let resolve_include_edges_timer = std::time::Instant::now();
-    resolve_include_edges_for_units(
-        &mut units,
-        &workspace_index.provided_name_to_unit,
-        &dirty_set.unit_ids,
-    );
+    resolve_include_edges_for_units(&mut units, &workspace_index, &dirty_set.unit_ids);
     metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
     let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit_for_units(&mut units, &dirty_set.unit_ids);
@@ -1008,11 +1118,7 @@ fn analyze_project_from_local_units_profiled(
     };
 
     let resolve_include_edges_timer = std::time::Instant::now();
-    resolve_include_edges_for_units(
-        &mut units,
-        &workspace_index.provided_name_to_unit,
-        &dirty_unit_ids,
-    );
+    resolve_include_edges_for_units(&mut units, &workspace_index, &dirty_unit_ids);
     metrics.resolve_include_edges_micros = resolve_include_edges_timer.elapsed().as_micros();
     let resolve_cross_unit_timer = std::time::Instant::now();
     resolve_project_cross_unit(&mut units);

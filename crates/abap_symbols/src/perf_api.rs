@@ -9,8 +9,9 @@ use crate::ids::UnitId;
 use crate::project::{
     IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis, ProjectUpdateMetrics,
     analyze_project_incremental_from_locals, analyze_unit_locally_for_project,
-    analyze_unit_locally_phased, collect_project_diagnostics, exported_signature_for_unit,
-    link_class_member_implementations, resolve_include_edges_for_units,
+    analyze_unit_locally_phased, build_workspace_index_from_units, collect_project_diagnostics,
+    exported_signature_for_unit, link_class_member_implementations,
+    resolve_include_edges_for_units,
 };
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
 use crate::validate::{
@@ -204,22 +205,6 @@ pub fn incremental_project_update(
     }
 }
 
-fn rebuild_project_maps(
-    units: &[UnitAnalysis],
-) -> (HashMap<Arc<str>, UnitId>, HashMap<Arc<str>, UnitId>) {
-    let mut uri_to_unit = HashMap::with_capacity(units.len());
-    let mut provided_name_to_unit = HashMap::new();
-    for unit in units {
-        uri_to_unit.insert(Arc::clone(&unit.uri), unit.unit_id);
-        for name in &unit.provided_names {
-            provided_name_to_unit
-                .entry(Arc::clone(name))
-                .or_insert(unit.unit_id);
-        }
-    }
-    (uri_to_unit, provided_name_to_unit)
-}
-
 #[doc(hidden)]
 pub fn preview_project_update(
     previous_project: Option<&ProjectAnalysis>,
@@ -272,7 +257,7 @@ pub fn preview_project_update(
         }
     }
 
-    let (uri_to_unit, provided_name_to_unit) = rebuild_project_maps(&units);
+    let workspace_index = build_workspace_index_from_units(&units);
     let dirty_unit_ids = HashSet::from([changed_unit_id]);
     let mut fell_back_to_single_document = false;
     let mut scope_indexes = Vec::with_capacity(units.len());
@@ -287,7 +272,7 @@ pub fn preview_project_update(
         }
     }
 
-    resolve_include_edges_for_units(&mut units, &provided_name_to_unit, &dirty_unit_ids);
+    resolve_include_edges_for_units(&mut units, &workspace_index, &dirty_unit_ids);
     crate::resolver::resolve_project_cross_unit_for_units(&mut units, &dirty_unit_ids);
     link_class_member_implementations(&mut units);
     for unit_id in &dirty_unit_ids {
@@ -296,8 +281,8 @@ pub fn preview_project_update(
 
     let mut project = ProjectAnalysis {
         units,
-        uri_to_unit,
-        provided_name_to_unit,
+        uri_to_unit: workspace_index.uri_to_unit,
+        provided_name_to_unit: workspace_index.provided_name_to_unit,
         diagnostics: Vec::new(),
     };
     validate_project_with_scope_indexes_for_units(&mut project, &scope_indexes, &dirty_unit_ids);

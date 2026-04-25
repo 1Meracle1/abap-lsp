@@ -2205,6 +2205,59 @@ fn push_logical_expr_child(
     ));
 }
 
+fn push_write_separator_or_position_tokens(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    tokens: &[Token],
+    idx: usize,
+    end_exclusive: usize,
+) -> Option<usize> {
+    let token = tokens.get(idx)?;
+    if matches!(token.kind, TokenKind::Colon | TokenKind::Comma) {
+        children.push(token_leaf(b, token));
+        return Some(idx + 1);
+    }
+
+    if token.kind != TokenKind::Slash {
+        return None;
+    }
+
+    children.push(token_leaf(b, token));
+    let mut next = idx + 1;
+    if next < end_exclusive
+        && tokens[next].kind == TokenKind::Number
+        && !have_space_between(token, &tokens[next])
+    {
+        children.push(token_leaf(b, &tokens[next]));
+        next += 1;
+        if next < end_exclusive
+            && tokens[next].kind == TokenKind::LParen
+            && !have_space_between(&tokens[next - 1], &tokens[next])
+        {
+            let mut depth = 0i32;
+            while next < end_exclusive {
+                let current = &tokens[next];
+                children.push(token_leaf(b, current));
+                match current.kind {
+                    TokenKind::LParen => depth += 1,
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        next += 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                next += 1;
+            }
+        }
+    }
+
+    Some(next)
+}
+
 fn scan_until_clause(
     tokens: &[Token],
     start: usize,
@@ -4326,13 +4379,17 @@ pub fn try_parse_write_stmt(
             let mut children = vec![token_leaf(b, write_tok)];
             let mut i = idx + 1;
             while i < period_i {
-                if matches!(tokens[i].kind, TokenKind::Slash | TokenKind::Comma) {
-                    children.push(token_leaf(b, &tokens[i]));
-                    i += 1;
+                if let Some(next) =
+                    push_write_separator_or_position_tokens(b, &mut children, tokens, i, period_i)
+                {
+                    i = next;
                     continue;
                 }
                 let expr_end = scan_until_clause(tokens, i, period_i, |tokens, at| {
-                    matches!(tokens[at].kind, TokenKind::Slash | TokenKind::Comma)
+                    matches!(
+                        tokens[at].kind,
+                        TokenKind::Colon | TokenKind::Slash | TokenKind::Comma
+                    )
                 });
                 push_expr_child(
                     b,
@@ -9396,6 +9453,7 @@ mod tests {
         AstNode, ClassDecl, CloseCursorStmt, DataLikeDecl, DataLikeStorageKind, FormDecl,
         FormParamPassingKind, FormParamSectionKind, FunctionDecl, FunctionParamSectionKind,
         IncludeStmt, MethodDecl, OpenCursorStmt, SelectIntoClause, SubmitStmt, SyntaxNodeRef,
+        WriteStmt,
     };
 
     #[test]
@@ -10030,6 +10088,25 @@ CONCATENATE lv_evttime+6(4) '-'\n\
         assert!(parsed.file.count_kind(root, SyntaxKind::CallExpr) >= 1);
         assert!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr) >= 1);
         assert!(parsed.file.count_kind(root, SyntaxKind::ExprIdent) >= 3);
+    }
+
+    #[test]
+    fn write_position_literal_keeps_following_selector_as_operand() {
+        let src = "WRITE: /5 ls_outers-parent_epc.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr), 1);
+
+        let write = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::WriteStmt)
+            .and_then(|node| WriteStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("WRITE statement");
+        let operands = write.operands().collect::<Vec<_>>();
+        assert_eq!(operands.len(), 1);
+        assert_eq!(operands[0].text(src), Some("ls_outers-parent_epc"));
     }
 
     #[test]

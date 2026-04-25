@@ -4512,6 +4512,44 @@ lv_value = ls_outer-inner-value.
 }
 
 #[test]
+fn write_position_literal_semantically_analyzes_following_selector_operand() {
+    let src = r#"
+TYPES: BEGIN OF ty_outers,
+         parent_epc TYPE string,
+       END OF ty_outers.
+
+DATA ls_outers TYPE ty_outers.
+
+WRITE: /5 ls_outers-parent_epc.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///write_position_selector.abap", src, &parsed);
+    let offset = src.rfind("parent_epc").expect("selector component");
+    let fact = unit
+        .semantic()
+        .facts()
+        .expression_fact_at_offset(offset)
+        .expect("selector fact");
+
+    assert_eq!(
+        fact.type_fact
+            .declared_type
+            .as_ref()
+            .map(|type_ref| type_ref.base_name.as_ref()),
+        Some("string")
+    );
+    assert!(
+        unit.diagnostics.iter().all(|diagnostic| !matches!(
+            diagnostic.kind,
+            DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+        )),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn semantic_facts_follow_object_member_access() {
     let src = r#"
 TYPES: BEGIN OF ty_payload,

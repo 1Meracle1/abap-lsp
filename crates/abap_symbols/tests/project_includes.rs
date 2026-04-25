@@ -153,6 +153,98 @@ fn resolves_symbols_from_second_chained_include_unit() {
 }
 
 #[test]
+fn resolves_include_from_sibling_includes_folder_before_global_name_fallback() {
+    let root_src = "REPORT zrep.\nINCLUDE zrep_top.\nSTART-OF-SELECTION.\n  lv_includes = 1.";
+    let global_src = "DATA lv_global TYPE i.";
+    let includes_src = "DATA lv_includes TYPE i.";
+    let root_parse = parse(root_src);
+    let global_parse = parse(global_src);
+    let includes_parse = parse(includes_src);
+
+    let includes_uri = "file:///workspace/src/ZREP/Includes/ZREP_TOP.abap";
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///workspace/src/ZREP/ZREP.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "file:///workspace/src/includes/ZREP_TOP.abap",
+            source: global_src,
+            parse: &global_parse,
+        },
+        ProjectInput {
+            uri: includes_uri,
+            source: includes_src,
+            parse: &includes_parse,
+        },
+    ]);
+
+    let root = project
+        .unit_by_uri("file:///workspace/src/ZREP/ZREP.abap")
+        .expect("root unit");
+    let target_uri = root
+        .include_edges
+        .iter()
+        .find(|edge| edge.name.as_ref() == "zrep_top")
+        .and_then(|edge| edge.target)
+        .and_then(|target| project.units.get(target.as_usize()))
+        .map(|unit| unit.uri.as_ref())
+        .expect("include target");
+    assert_eq!(target_uri, includes_uri);
+    assert!(root.references.iter().any(|reference| {
+        reference.name.as_ref() == "lv_includes"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
+fn resolves_same_folder_include_before_sibling_includes_folder() {
+    let root_src = "REPORT zrep.\nINCLUDE zrep_top.\nSTART-OF-SELECTION.\n  lv_same_folder = 1.";
+    let includes_src = "DATA lv_includes TYPE i.";
+    let same_folder_src = "DATA lv_same_folder TYPE i.";
+    let root_parse = parse(root_src);
+    let includes_parse = parse(includes_src);
+    let same_folder_parse = parse(same_folder_src);
+
+    let same_folder_uri = "file:///workspace/src/ZREP/ZREP_TOP.abap";
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///workspace/src/ZREP/ZREP.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "file:///workspace/src/ZREP/Includes/ZREP_TOP.abap",
+            source: includes_src,
+            parse: &includes_parse,
+        },
+        ProjectInput {
+            uri: same_folder_uri,
+            source: same_folder_src,
+            parse: &same_folder_parse,
+        },
+    ]);
+
+    let root = project
+        .unit_by_uri("file:///workspace/src/ZREP/ZREP.abap")
+        .expect("root unit");
+    let target_uri = root
+        .include_edges
+        .iter()
+        .find(|edge| edge.name.as_ref() == "zrep_top")
+        .and_then(|edge| edge.target)
+        .and_then(|target| project.units.get(target.as_usize()))
+        .map(|unit| unit.uri.as_ref())
+        .expect("include target");
+    assert_eq!(target_uri, same_folder_uri);
+    assert!(root.references.iter().any(|reference| {
+        reference.name.as_ref() == "lv_same_folder"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
 fn reports_missing_method_calls_across_include_units() {
     let root_src = r#"
 REPORT zmain.
