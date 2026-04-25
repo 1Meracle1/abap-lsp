@@ -9871,10 +9871,21 @@ fn dependency_class_block_for_keywords(keywords: &[String]) -> Option<Dependency
     if keywords.first().map(String::as_str) != Some("class") {
         return None;
     }
-    if keywords.iter().any(|keyword| keyword == "implementation") {
+    let second = keywords.get(1).map(String::as_str);
+    let third = keywords.get(2).map(String::as_str);
+    if matches!(second, Some("methods" | "data" | "events")) {
+        return None;
+    }
+    if third == Some("implementation") {
         return Some(DependencyBlock::ClassImplementation);
     }
-    if keywords.iter().any(|keyword| keyword == "definition") {
+    if third == Some("definition") {
+        if keywords
+            .iter()
+            .any(|keyword| matches!(keyword.as_str(), "load" | "deferred"))
+        {
+            return None;
+        }
         return Some(DependencyBlock::ClassDefinition {
             visibility: DependencyVisibility::Private,
         });
@@ -10764,6 +10775,69 @@ ENDCLASS.",
         assert!(
             method_names.contains(&"conv2string"),
             "expected subsequent class-method, got {method_names:?}"
+        );
+    }
+
+    #[test]
+    fn dependency_surface_keeps_public_methods_after_class_load_declaration() {
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![DocumentInput {
+            uri: Arc::from("file:///dep.abap"),
+            version: 1,
+            text: Arc::from(
+                "\
+CLASS cl_document_bcs DEFINITION
+  PUBLIC
+  FINAL
+  CREATE PUBLIC.
+  GLOBAL FRIENDS cb_document_bcs
+                 cl_bcs.
+
+PUBLIC SECTION.
+  CLASS ca_document_bcs DEFINITION LOAD.
+
+  CLASS-METHODS create_document
+    RETURNING VALUE(result) TYPE REF TO cl_document_bcs.
+  METHODS add_attachment.
+
+PROTECTED SECTION.
+  DATA subject TYPE string.
+ENDCLASS.
+CLASS cl_document_bcs IMPLEMENTATION.
+ENDCLASS.",
+            ),
+            is_dependency: true,
+            object_name: Some(Arc::from("cl_document_bcs")),
+        }]);
+        let snapshot = snapshots
+            .get("file:///dep.abap")
+            .expect("dependency snapshot");
+        let class_symbol = snapshot
+            .symbols
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name.as_ref() == "cl_document_bcs")
+            .expect("class symbol")
+            .id;
+        let member_names: Vec<_> = snapshot
+            .symbols
+            .class_members
+            .iter()
+            .filter(|member| member.class_symbol == class_symbol)
+            .map(|member| member.name.as_ref())
+            .collect();
+
+        assert!(
+            member_names.contains(&"create_document"),
+            "expected class method before instance method, got {member_names:?}"
+        );
+        assert!(
+            member_names.contains(&"add_attachment"),
+            "expected public instance method after CLASS ... DEFINITION LOAD, got {member_names:?}"
+        );
+        assert!(
+            member_names.contains(&"subject"),
+            "expected protected members to remain visible, got {member_names:?}"
         );
     }
 
