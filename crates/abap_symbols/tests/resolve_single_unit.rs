@@ -5750,6 +5750,54 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_chained_methods_stmt_parameter_type_refs_after_colon() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS : check_wp_availability EXPORTING ev_ok TYPE char1,
+      process_reload,
+      send_email IMPORTING iv_content  TYPE xstring
+                 EXPORTING ev_response TYPE string.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD check_wp_availability.
+  ENDMETHOD.
+
+  METHOD process_reload.
+  ENDMETHOD.
+
+  METHOD send_email.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///chained_method_parameter_types.abap", src, &parsed);
+
+    for type_name in ["char1", "xstring", "string"] {
+        let refs: Vec<_> = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.kind == ReferenceKind::TypeRef
+                    && reference.namespace == Namespace::Type
+                    && reference.name.as_ref() == type_name
+            })
+            .collect();
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected one type ref for {type_name}, refs={:?}",
+            unit.references
+        );
+        assert!(
+            matches!(refs[0].resolution, Some(Resolution::BuiltinType)),
+            "expected {type_name} to resolve as a builtin type, refs={refs:?}"
+        );
+    }
+}
+
+#[test]
 fn resolves_public_class_data_static_members() {
     let src = r#"
 CLASS zcl_demo DEFINITION.

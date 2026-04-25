@@ -184,6 +184,7 @@ fn skip_method_signature_type_expression(
                 depth -= 1;
                 idx += 1;
             }
+            TokenKind::Comma if depth == 0 => return idx,
             TokenKind::Period if depth == 0 => return idx,
             _ if depth == 0
                 && (method_signature_section(source, token)
@@ -222,9 +223,15 @@ fn methods_stmt_type_ref_ranges(
         .map(|(offset, token)| (idx + offset, token))
         .collect();
     let significant_tokens: Vec<_> = significant.iter().map(|(_, token)| *token).collect();
-    let Some(name_idx) = method_statement_name_idx(source, &significant_tokens) else {
+    let Some(mut name_idx) = method_statement_name_idx(source, &significant_tokens) else {
         return Vec::new();
     };
+    while matches!(
+        significant_tokens.get(name_idx).map(|token| token.kind),
+        Some(TokenKind::Colon | TokenKind::Comma)
+    ) {
+        name_idx += 1;
+    }
     if significant_tokens.get(name_idx).map(|token| token.kind) != Some(TokenKind::Ident) {
         return Vec::new();
     }
@@ -1854,6 +1861,82 @@ fn validate_method_modifier_order(
     }
 }
 
+fn validate_methods_stmt_chaining(
+    source: &str,
+    significant: &[&Token],
+    errors: &mut Vec<crate::ParseError>,
+) {
+    let Some(name_idx) = method_statement_name_idx(source, significant) else {
+        return;
+    };
+    if significant.get(name_idx).map(|token| token.kind) == Some(TokenKind::Colon) {
+        return;
+    }
+    if significant.get(name_idx).map(|token| token.kind) != Some(TokenKind::Ident) {
+        return;
+    }
+
+    let mut i = name_idx + 1;
+    while i + 1 < significant.len()
+        && significant[i].kind == TokenKind::Tilde
+        && significant[i + 1].kind == TokenKind::Ident
+    {
+        i += 2;
+    }
+    while i < significant.len() {
+        let token = significant[i];
+        if token.kind == TokenKind::Period {
+            return;
+        }
+        if token.kind == TokenKind::Comma {
+            break;
+        }
+        if let Some(modifier_len) = method_header_modifier_len(source, significant, i) {
+            i += modifier_len;
+            continue;
+        }
+        if token_matches_keyword(source, token, "default")
+            && significant.get(i + 1).is_some_and(|next| {
+                token_matches_keyword(source, next, "ignore")
+                    || token_matches_keyword(source, next, "fail")
+            })
+        {
+            i += 2;
+            continue;
+        }
+        if method_signature_section(source, token)
+            || token_matches_keyword(source, token, "for")
+            || token_matches_keyword(source, token, "amdp")
+        {
+            break;
+        }
+        errors.push(crate::ParseError {
+            message: "syntax error: expected '.' after method declaration; use METHODS: for chained declarations"
+                .to_string(),
+            range: token.range.clone(),
+        });
+        return;
+    }
+
+    let mut depth = 0i32;
+    for token in significant.iter().skip(i) {
+        match token.kind {
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+            TokenKind::Comma if depth == 0 => {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected '.' after method declaration; use METHODS: for chained declarations"
+                            .to_string(),
+                    range: token.range.clone(),
+                });
+                return;
+            }
+            TokenKind::Period if depth == 0 => return,
+            _ => {}
+        }
+    }
+}
+
 fn validate_unparsed_stmt(
     source: &str,
     significant: &[&Token],
@@ -1864,6 +1947,9 @@ fn validate_unparsed_stmt(
 ) {
     validate_method_modifier_order(source, tokens, idx, period_i, errors);
     let is_method_stmt = method_statement_name_idx(source, significant).is_some();
+    if is_method_stmt {
+        validate_methods_stmt_chaining(source, significant, errors);
+    }
     if !is_method_stmt
         && direct_call_statement(source, significant)
         && !direct_call_padding_is_valid(significant)
@@ -2085,6 +2171,48 @@ ENDCLASS.";
     }
 
     #[test]
+    fn reports_plain_methods_statement_with_multiple_method_entries() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    METHODS run IMPORTING iv_x TYPE i, reset.\nENDCLASS.",
+        );
+        assert!(
+            parsed.errors.iter().any(|err| err
+                .message
+                .contains("expected '.' after method declaration")),
+            "{:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
+    fn reports_plain_methods_statement_with_second_name_before_period() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    METHODS run reset.\nENDCLASS.",
+        );
+        assert!(
+            parsed.errors.iter().any(|err| err
+                .message
+                .contains("expected '.' after method declaration")),
+            "{:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
+    fn reports_plain_class_methods_statement_with_multiple_method_entries() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    CLASS-METHODS run, reset.\nENDCLASS.",
+        );
+        assert!(
+            parsed.errors.iter().any(|err| err
+                .message
+                .contains("expected '.' after method declaration")),
+            "{:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
     fn classifies_submit_statement_specifically() {
         let parsed = crate::parse("SUBMIT rsnast00 AND RETURN.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -2224,6 +2352,28 @@ ENDCLASS.";
                 .file
                 .count_kind(methods, SyntaxKind::TypeRefSelectorChain),
             1
+        );
+    }
+
+    #[test]
+    fn chained_methods_stmt_builds_parameter_type_refs_after_colon() {
+        let parsed = crate::parse(
+            "CLASS lcl_demo DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS : check_wp_availability EXPORTING ev_ok TYPE char1,\n\
+      process_reload,\n\
+      send_email IMPORTING iv_content  TYPE xstring\n\
+                 EXPORTING ev_response TYPE string.\n\
+ENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+            .expect("methods stmt");
+        assert_eq!(
+            parsed.file.count_kind(methods, SyntaxKind::TypeRefSimple),
+            3
         );
     }
 
