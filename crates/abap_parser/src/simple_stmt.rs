@@ -1840,6 +1840,10 @@ fn direct_call_statement(source: &str, significant: &[&Token]) -> bool {
     for (idx, token) in significant.iter().enumerate() {
         match token.kind {
             TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
+                if dynamic_selector_lparen(significant, idx) {
+                    paren += 1;
+                    continue;
+                }
                 first_top_level_lparen = Some(idx);
                 break;
             }
@@ -1873,6 +1877,20 @@ fn direct_call_statement(source: &str, significant: &[&Token]) -> bool {
     })
 }
 
+fn dynamic_selector_lparen(significant: &[&Token], lparen_idx: usize) -> bool {
+    if significant.get(lparen_idx).map(|token| token.kind) != Some(TokenKind::LParen) {
+        return false;
+    }
+    let Some(prev) = lparen_idx
+        .checked_sub(1)
+        .and_then(|idx| significant.get(idx).copied())
+    else {
+        return false;
+    };
+    matches!(prev.kind, TokenKind::Arrow | TokenKind::FatArrow)
+        && !have_space_between(prev, significant[lparen_idx])
+}
+
 fn direct_call_paren_pair(significant: &[&Token]) -> Option<(usize, usize)> {
     let mut paren = 0i32;
     let mut bracket = 0i32;
@@ -1881,6 +1899,10 @@ fn direct_call_paren_pair(significant: &[&Token]) -> Option<(usize, usize)> {
     for (idx, token) in significant.iter().enumerate() {
         match token.kind {
             TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
+                if dynamic_selector_lparen(significant, idx) {
+                    paren += 1;
+                    continue;
+                }
                 first_top_level_lparen = Some(idx);
                 paren += 1;
             }
@@ -1909,9 +1931,7 @@ fn direct_call_padding_is_valid(significant: &[&Token]) -> bool {
     let rparen = significant[rparen_idx];
     let inner = &significant[lparen_idx + 1..rparen_idx];
     match (inner.first(), inner.last()) {
-        (Some(first), Some(last)) => {
-            have_space_between(lparen, first) && have_space_between(last, rparen)
-        }
+        (Some(first), Some(_)) => have_space_between(lparen, first),
         _ => have_space_between(lparen, rparen),
     }
 }
@@ -3661,11 +3681,8 @@ DESCRIBE TABLE: lt_aux_bup_adr    LINES lv_n_customers,
     }
 
     #[test]
-    fn rejects_instance_method_calls_without_inner_padding() {
-        for src in [
-            "lo_prog->add_statement(lo_assign ).",
-            "lo_prog->add_statement( lo_print).",
-        ] {
+    fn rejects_instance_method_calls_without_opening_padding() {
+        for src in ["lo_prog->add_statement(lo_assign )."] {
             let parsed = crate::parse(src);
             assert!(
                 parsed
@@ -3688,6 +3705,38 @@ DESCRIBE TABLE: lt_aux_bup_adr    LINES lv_n_customers,
                     >= 1
             );
         }
+    }
+
+    #[test]
+    fn accepts_instance_method_calls_without_closing_padding() {
+        let parsed = crate::parse("lo_prog->add_statement( lo_print).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error),
+            0
+        );
+    }
+
+    #[test]
+    fn accepts_direct_call_with_compact_closing_paren_before_pragma() {
+        let parsed =
+            crate::parse("mo_writer->open_element( name = lv_name prefix = 'cbvmda') ##NO_TEXT.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

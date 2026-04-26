@@ -256,21 +256,35 @@ impl<'a, 'b> Parser<'a, 'b> {
             ) || (curr.kind == TokenKind::Minus
                 && !have_space_between(self.prev, curr));
             if is_selector {
+                let saved_idx = self.idx;
+                let saved_prev = self.prev;
                 let op_tok = self.bump()?;
-                let field_tok = self.curr()?;
-                if field_tok.kind != TokenKind::Ident
-                    && !(op_tok.kind == TokenKind::Arrow && field_tok.kind == TokenKind::Star)
+                let field = if matches!(op_tok.kind, TokenKind::Arrow | TokenKind::FatArrow)
+                    && let Some(dynamic_field) = self.try_parse_dynamic_selector_field(op_tok)
                 {
-                    break;
-                }
-                let field_tok = self.bump()?;
+                    dynamic_field
+                } else {
+                    let Some(field_tok) = self.curr() else {
+                        self.idx = saved_idx;
+                        self.prev = saved_prev;
+                        break;
+                    };
+                    if field_tok.kind != TokenKind::Ident
+                        && !(op_tok.kind == TokenKind::Arrow && field_tok.kind == TokenKind::Star)
+                    {
+                        self.idx = saved_idx;
+                        self.prev = saved_prev;
+                        break;
+                    }
+                    let field_tok = self.bump()?;
+                    let field_leaf = token_leaf(self.b, field_tok);
+                    self.b.branch(
+                        SyntaxKind::ExprIdent,
+                        field_tok.range.clone(),
+                        &[field_leaf],
+                    )
+                };
                 let op = token_leaf(self.b, op_tok);
-                let field_leaf = token_leaf(self.b, field_tok);
-                let field = self.b.branch(
-                    SyntaxKind::ExprIdent,
-                    field_tok.range.clone(),
-                    &[field_leaf],
-                );
                 let range = self.b.span(value).start..self.b.span(field).end;
                 value = self
                     .b
@@ -301,6 +315,31 @@ impl<'a, 'b> Parser<'a, 'b> {
             break;
         }
         Some(value)
+    }
+
+    fn try_parse_dynamic_selector_field(&mut self, op_tok: &'a Token) -> Option<NodeId> {
+        let lparen_idx = self.idx;
+        let lparen = self.tokens.get(lparen_idx)?;
+        if lparen.kind != TokenKind::LParen || have_space_between(op_tok, lparen) {
+            return None;
+        }
+        let rparen_idx = self.find_matching_paren_from(lparen_idx)?;
+        if rparen_idx <= lparen_idx + 1 {
+            return None;
+        }
+        let inner =
+            self.parse_complete_concat_expr(&self.tokens[lparen_idx + 1..rparen_idx], lparen)?;
+        let rparen = self.tokens.get(rparen_idx)?;
+        let lparen_leaf = token_leaf(self.b, lparen);
+        let rparen_leaf = token_leaf(self.b, rparen);
+        let field = self.b.branch(
+            SyntaxKind::ParenExpr,
+            lparen.range.start..rparen.range.end,
+            &[lparen_leaf, inner, rparen_leaf],
+        );
+        self.idx = rparen_idx + 1;
+        self.prev = rparen;
+        Some(field)
     }
 
     fn try_parse_substring_expr(&mut self, base: NodeId) -> Option<NodeId> {
@@ -504,9 +543,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             last = Some(token);
         }
         match (first, last) {
-            (Some(first), Some(last)) => {
-                have_space_between(lparen, first) && have_space_between(last, rparen)
-            }
+            (Some(first), Some(_)) => have_space_between(lparen, first),
             _ => have_space_between(lparen, rparen),
         }
     }
@@ -3071,10 +3108,9 @@ mod tests {
     }
 
     #[test]
-    fn call_expr_requires_padding_inside_parentheses() {
+    fn call_expr_requires_padding_after_opening_parenthesis() {
         for src in [
             "lv = lo_prog->add_statement(lo_assign).",
-            "lv = lo_prog->add_statement( lo_assign).",
             "lv = lo_prog->add_statement(lo_assign ).",
         ] {
             let parsed = crate::parse(src);
@@ -3089,6 +3125,16 @@ mod tests {
                 "{src}"
             );
         }
+    }
+
+    #[test]
+    fn call_expr_accepts_compact_closing_parenthesis() {
+        let parsed = crate::parse("lv = lo_prog->add_statement( lo_assign).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

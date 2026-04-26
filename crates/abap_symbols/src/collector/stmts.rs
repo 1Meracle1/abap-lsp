@@ -3423,14 +3423,31 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     _ => self.collector.expr_lowering().collect_expr(callee, scope),
                 }
             }
-            if let (Some(target), Some(arg_list_id)) = (target, arg_list_id) {
+            if let Some(target) = target {
                 let call_range = self.collector.file.range(node);
-                self.collector.expr_lowering().collect_call_argument_list(
-                    arg_list_id,
-                    scope,
-                    target,
-                    call_range,
-                );
+                if let Some(arg_list_id) = arg_list_id {
+                    self.collector.expr_lowering().collect_call_argument_list(
+                        arg_list_id,
+                        scope,
+                        target,
+                        call_range,
+                    );
+                } else {
+                    self.collector.emit_call_site(CallSiteData {
+                        scope,
+                        range: call_range,
+                        target,
+                        arguments: Vec::new(),
+                    });
+                }
+                return;
+            }
+            if target_node_id.is_some() {
+                if let Some(arg_list_id) = arg_list_id {
+                    self.collector
+                        .expr_lowering()
+                        .collect_structured_argument_values_from_children(arg_list_id, scope);
+                }
                 return;
             }
         }

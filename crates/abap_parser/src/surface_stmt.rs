@@ -182,11 +182,20 @@ fn call_inner_padding_is_valid(tokens: &[Token], lparen_idx: usize, rparen_idx: 
         last = Some(token);
     }
     match (first, last) {
-        (Some(first), Some(last)) => {
-            have_space_between(lparen, first) && have_space_between(last, rparen)
-        }
+        (Some(first), Some(_)) => have_space_between(lparen, first),
         _ => have_space_between(lparen, rparen),
     }
+}
+
+fn dynamic_selector_lparen(tokens: &[Token], lparen_idx: usize) -> bool {
+    if tokens.get(lparen_idx).map(|token| token.kind) != Some(TokenKind::LParen) {
+        return false;
+    }
+    let Some(prev) = lparen_idx.checked_sub(1).and_then(|idx| tokens.get(idx)) else {
+        return false;
+    };
+    matches!(prev.kind, TokenKind::Arrow | TokenKind::FatArrow)
+        && !have_space_between(prev, &tokens[lparen_idx])
 }
 
 fn validate_call_method_inline_args_spacing(
@@ -211,7 +220,10 @@ fn validate_call_method_inline_args_spacing(
         }
         match token.kind {
             TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
-                if i > idx + 2 && !have_space_between(&tokens[i - 1], token) {
+                if i > idx + 2
+                    && !dynamic_selector_lparen(tokens, i)
+                    && !have_space_between(&tokens[i - 1], token)
+                {
                     lparen_idx = Some(i);
                 }
                 paren += 1;
@@ -13064,6 +13076,25 @@ EXPORT ls_aup_parent_evt\n\
     }
 
     #[test]
+    fn parses_legacy_call_method_with_dynamic_instance_target() {
+        let parsed = crate::parse("CALL METHOD lo_obj->(l_method) RECEIVING result = lv_result.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallMethodStmt)
+            .expect("call method stmt");
+        assert_eq!(
+            parsed.file.count_kind(stmt, SyntaxKind::CallMethodTarget),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::SelectorExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ParenExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn legacy_call_method_builds_structured_argument_list() {
         let parsed = crate::parse(
             "CALL METHOD zcl_demo=>get_hash EXPORTING iv_text = mv_text RECEIVING rv_hash = DATA(lv_hash).",
@@ -14910,11 +14941,8 @@ ENDFORM.",
     }
 
     #[test]
-    fn rejects_call_method_inline_args_without_inner_padding() {
-        for src in [
-            "CALL METHOD lo_handler->run(iv_mode = lv_mode ).",
-            "CALL METHOD lo_handler->run( iv_mode = lv_mode).",
-        ] {
+    fn rejects_call_method_inline_args_without_opening_padding() {
+        for src in ["CALL METHOD lo_handler->run(iv_mode = lv_mode )."] {
             let parsed = crate::parse(src);
             assert!(
                 parsed
@@ -14949,6 +14977,19 @@ ENDFORM.",
                 .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
             1
         );
+    }
+
+    #[test]
+    fn accepts_call_method_inline_args_without_closing_padding() {
+        let parsed = crate::parse("CALL METHOD lo_handler->run( iv_mode = lv_mode).");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallMethodStmt)
+            .expect("call method stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -6793,6 +6793,61 @@ ENDCLASS.
 }
 
 #[test]
+fn dynamic_legacy_call_method_target_collects_operands_without_fake_method_reference() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS exec.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD exec.
+    DATA lo_obj TYPE REF TO zcl_demo.
+    DATA l_method TYPE string.
+    DATA lv_result TYPE string.
+
+    CALL METHOD lo_obj->(l_method)
+      RECEIVING
+        result = lv_result.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///dynamic_legacy_call_method.abap", src, &parsed);
+
+    for name in ["lo_obj", "l_method", "lv_result"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved value reference for `{name}`: {:?}",
+            unit.references
+        );
+    }
+
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Routine && reference.name.as_ref() == "lo_obj"
+        }),
+        "dynamic CALL METHOD target must not become an implicit routine call: {:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_implicit_legacy_call_method_named_arguments() {
     let src = r#"
 CLASS zcl_demo DEFINITION.
