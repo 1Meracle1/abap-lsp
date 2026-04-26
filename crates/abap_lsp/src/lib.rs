@@ -1387,6 +1387,13 @@ fn unit_references_object(snapshot: &AnalysisSnapshot, object_name: &str) -> boo
             NamedArgumentTarget::Method { base_name, .. } => {
                 base_name.eq_ignore_ascii_case(object_name)
             }
+            NamedArgumentTarget::Event {
+                qualifier,
+                event_name,
+            } => qualifier
+                .as_ref()
+                .is_some_and(|qualifier| qualifier.eq_ignore_ascii_case(object_name))
+                || event_name.eq_ignore_ascii_case(object_name),
         })
 }
 

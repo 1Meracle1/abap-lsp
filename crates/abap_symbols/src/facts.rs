@@ -783,6 +783,42 @@ impl<'a> FactBuilder<'a> {
                         .collect(),
                 )
             }
+            NamedArgumentTarget::Event {
+                qualifier,
+                event_name,
+            } => {
+                let (member_unit_idx, member) = self.resolve_event_target_member(
+                    unit_idx,
+                    scope,
+                    qualifier.as_ref(),
+                    event_name,
+                )?;
+                Some(
+                    member
+                        .parameters
+                        .iter()
+                        .map(|parameter| CallParameterInfo {
+                            name: Some(Arc::clone(&parameter.name)),
+                            decl_unit: Some(self.units[member_unit_idx].unit_id),
+                            decl_range: Some(parameter.range.clone()),
+                            type_fact: parameter
+                                .declared_type
+                                .clone()
+                                .map(|declared_type| {
+                                    self.type_fact_from_declared_type(
+                                        unit_idx,
+                                        scope,
+                                        member_unit_idx,
+                                        declared_type,
+                                        parameter.type_clause_display.clone(),
+                                    )
+                                })
+                                .unwrap_or_default(),
+                            positional: false,
+                        })
+                        .collect(),
+                )
+            }
             NamedArgumentTarget::Constructor { .. }
             | NamedArgumentTarget::Report { .. }
             | NamedArgumentTarget::Routine { .. } => None,
@@ -831,6 +867,7 @@ impl<'a> FactBuilder<'a> {
                 };
                 self.method_return_type_fact(unit_idx, scope, member_unit_idx, member)
             }
+            NamedArgumentTarget::Event { .. } => TypeFactData::default(),
             _ => TypeFactData::default(),
         }
     }
@@ -1387,6 +1424,212 @@ impl<'a> FactBuilder<'a> {
             }
             Namespace::Routine => None,
         }
+    }
+
+    fn resolve_event_target_member(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        qualifier: Option<&Arc<str>>,
+        event_name: &Arc<str>,
+    ) -> Option<(usize, &'a crate::ClassMemberData)> {
+        let class_symbol = enclosing_class_owner(&self.units[unit_idx], scope)?;
+        self.resolve_class_event_in_hierarchy(
+            SymbolHandle {
+                unit: self.units[unit_idx].unit_id,
+                symbol: class_symbol,
+            },
+            qualifier.map(|name| name.as_ref()),
+            event_name.as_ref(),
+            scope,
+        )
+    }
+
+    fn resolve_class_event_in_hierarchy(
+        &self,
+        owner: SymbolHandle,
+        qualifier: Option<&str>,
+        event_name: &str,
+        lookup_scope: ScopeId,
+    ) -> Option<(usize, &'a crate::ClassMemberData)> {
+        self.resolve_class_event_in_hierarchy_inner(
+            owner,
+            qualifier,
+            event_name,
+            lookup_scope,
+            &mut Vec::new(),
+        )
+    }
+
+    fn resolve_class_event_in_hierarchy_inner(
+        &self,
+        owner: SymbolHandle,
+        qualifier: Option<&str>,
+        event_name: &str,
+        lookup_scope: ScopeId,
+        visited: &mut Vec<(SymbolHandle, Option<Arc<str>>, Arc<str>)>,
+    ) -> Option<(usize, &'a crate::ClassMemberData)> {
+        let key = (
+            owner,
+            qualifier.map(Arc::<str>::from),
+            Arc::<str>::from(event_name),
+        );
+        if visited.contains(&key) {
+            return None;
+        }
+        visited.push(key);
+
+        let direct_owner = if let Some(interface_name) = qualifier {
+            self.resolve_exposed_interface_handle(owner, lookup_scope, interface_name)?
+        } else {
+            owner
+        };
+        let unit_idx = self.unit_index(direct_owner.unit)?;
+        let unit = &self.units[unit_idx];
+        if let Some(member) = unit
+            .class_member(direct_owner.symbol, event_name)
+            .filter(|member| member.kind == crate::ClassMemberKind::Event)
+        {
+            return Some((unit_idx, member));
+        }
+
+        if let Some(alias) = unit.member_aliases.iter().find(|alias| {
+            alias.owner_symbol == direct_owner.symbol && alias.alias_name.as_ref() == event_name
+        }) {
+            return self.resolve_class_event_in_hierarchy_inner(
+                direct_owner,
+                Some(alias.target_interface_name.as_ref()),
+                alias.target_member_name.as_ref(),
+                lookup_scope,
+                visited,
+            );
+        }
+
+        if qualifier.is_none() {
+            for implemented in unit
+                .implemented_interfaces
+                .iter()
+                .filter(|implemented| implemented.owner_symbol == direct_owner.symbol)
+            {
+                let Some(interface_handle) = self.resolve_exposed_interface_handle(
+                    direct_owner,
+                    lookup_scope,
+                    implemented.interface_name.as_ref(),
+                ) else {
+                    continue;
+                };
+                if let Some(found) = self.resolve_class_event_in_hierarchy_inner(
+                    interface_handle,
+                    None,
+                    event_name,
+                    lookup_scope,
+                    visited,
+                ) {
+                    return Some(found);
+                }
+            }
+        }
+
+        if qualifier.is_none()
+            && unit.symbol(direct_owner.symbol).kind == crate::SymbolKind::Class
+            && let Some(superclass) = self.direct_superclass_handle(direct_owner)
+        {
+            return self.resolve_class_event_in_hierarchy_inner(
+                superclass,
+                None,
+                event_name,
+                lookup_scope,
+                visited,
+            );
+        }
+
+        None
+    }
+
+    fn resolve_exposed_interface_handle(
+        &self,
+        owner: SymbolHandle,
+        lookup_scope: ScopeId,
+        interface_name: &str,
+    ) -> Option<SymbolHandle> {
+        self.resolve_exposed_interface_handle_inner(
+            owner,
+            lookup_scope,
+            interface_name,
+            &mut Vec::new(),
+        )
+    }
+
+    fn resolve_exposed_interface_handle_inner(
+        &self,
+        owner: SymbolHandle,
+        lookup_scope: ScopeId,
+        interface_name: &str,
+        visited: &mut Vec<SymbolHandle>,
+    ) -> Option<SymbolHandle> {
+        if visited.contains(&owner) {
+            return None;
+        }
+        visited.push(owner);
+
+        let unit_idx = self.unit_index(owner.unit)?;
+        let unit = &self.units[unit_idx];
+        for implemented in unit
+            .implemented_interfaces
+            .iter()
+            .filter(|implemented| implemented.owner_symbol == owner.symbol)
+        {
+            let interface_handle = self.resolve_type_symbol_handle(
+                unit_idx,
+                lookup_scope,
+                implemented.interface_name.as_ref(),
+            )?;
+            let interface_unit_idx = self.unit_index(interface_handle.unit)?;
+            if self.units[interface_unit_idx].symbol(interface_handle.symbol).kind
+                != crate::SymbolKind::Interface
+            {
+                continue;
+            }
+            if implemented
+                .interface_name
+                .as_ref()
+                .eq_ignore_ascii_case(interface_name)
+            {
+                return Some(interface_handle);
+            }
+            if let Some(found) = self.resolve_exposed_interface_handle_inner(
+                interface_handle,
+                lookup_scope,
+                interface_name,
+                visited,
+            ) {
+                return Some(found);
+            }
+        }
+
+        if unit.symbol(owner.symbol).kind == crate::SymbolKind::Class
+            && let Some(superclass) = self.direct_superclass_handle(owner)
+        {
+            return self.resolve_exposed_interface_handle_inner(
+                superclass,
+                lookup_scope,
+                interface_name,
+                visited,
+            );
+        }
+
+        None
+    }
+
+    fn direct_superclass_handle(&self, current: SymbolHandle) -> Option<SymbolHandle> {
+        let unit_idx = self.unit_index(current.unit)?;
+        let unit = &self.units[unit_idx];
+        let inheritance = unit.class_superclass(current.symbol)?;
+        self.resolve_type_symbol_handle(
+            unit_idx,
+            unit.root_scope,
+            inheritance.superclass_name.as_ref(),
+        )
     }
 
     fn resolve_class_member_in_hierarchy(

@@ -643,7 +643,7 @@ fn call_site_edge_kind(target: &NamedArgumentTarget) -> Option<CallGraphEdgeKind
         NamedArgumentTarget::Function { .. } | NamedArgumentTarget::Report { .. } => {
             Some(CallGraphEdgeKind::FunctionCall)
         }
-        NamedArgumentTarget::Routine { .. } => None,
+        NamedArgumentTarget::Routine { .. } | NamedArgumentTarget::Event { .. } => None,
     }
 }
 
@@ -661,6 +661,13 @@ fn unresolved_call_target_name(target: &NamedArgumentTarget) -> Arc<str> {
             method_name,
             ..
         } => Arc::from(format!("{base_name}->{method_name}")),
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => qualifier
+            .as_ref()
+            .map(|qualifier| Arc::from(format!("{qualifier}~{event_name}")))
+            .unwrap_or_else(|| Arc::clone(event_name)),
     }
 }
 
@@ -697,6 +704,7 @@ fn routine_target_name(target: &NamedArgumentTarget) -> Option<&Arc<str>> {
         NamedArgumentTarget::Report { report_name } => Some(report_name),
         NamedArgumentTarget::ImplicitMethod { method_name } => Some(method_name),
         NamedArgumentTarget::Routine { routine_name } => Some(routine_name),
+        NamedArgumentTarget::Event { event_name, .. } => Some(event_name),
         NamedArgumentTarget::Constructor { .. } | NamedArgumentTarget::Method { .. } => None,
     }
 }
@@ -774,7 +782,8 @@ fn resolve_call_site_target<'a>(
                 NamedArgumentTarget::Method { method_name, .. } => method_name.as_ref(),
                 NamedArgumentTarget::Function { .. }
                 | NamedArgumentTarget::Report { .. }
-                | NamedArgumentTarget::Routine { .. } => {
+                | NamedArgumentTarget::Routine { .. }
+                | NamedArgumentTarget::Event { .. } => {
                     return None;
                 }
             };
@@ -797,7 +806,7 @@ fn resolve_call_site_target<'a>(
                     member,
                 })
         }
-        NamedArgumentTarget::Routine { .. } => None,
+        NamedArgumentTarget::Routine { .. } | NamedArgumentTarget::Event { .. } => None,
     }
 }
 
@@ -860,6 +869,7 @@ fn resolve_method_target(
             }
             Namespace::Routine => None,
         },
+        NamedArgumentTarget::Event { .. } => None,
         NamedArgumentTarget::Function { .. }
         | NamedArgumentTarget::Report { .. }
         | NamedArgumentTarget::Routine { .. } => None,

@@ -769,6 +769,26 @@ impl<'a> Collector<'a> {
             NamedArgumentTarget::Function { .. } => None,
             NamedArgumentTarget::Report { .. } => None,
             NamedArgumentTarget::Routine { .. } => None,
+            NamedArgumentTarget::Event {
+                qualifier,
+                event_name,
+            } => self
+                .enclosing_class_owner(scope)
+                .and_then(|class_symbol| {
+                    self.class_event_target_data(
+                        class_symbol,
+                        qualifier.as_deref(),
+                        event_name.as_ref(),
+                        scope,
+                    )
+                })
+                .and_then(|member| {
+                    member
+                        .parameters
+                        .iter()
+                        .find(|param| param.name == *argument_name)
+                        .and_then(|param| param.declared_type.clone())
+                }),
             NamedArgumentTarget::ImplicitMethod { method_name } => self
                 .enclosing_class_owner(scope)
                 .and_then(|class_symbol| {

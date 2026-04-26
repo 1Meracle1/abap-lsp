@@ -214,6 +214,7 @@ fn collect_pending(
         let token_type = match member.kind {
             abap_symbols::ClassMemberKind::Attribute => ty_ix.property,
             abap_symbols::ClassMemberKind::Method => ty_ix.method,
+            abap_symbols::ClassMemberKind::Event => ty_ix.event,
         };
         push_pending(
             &mut pending,

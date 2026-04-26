@@ -5,8 +5,8 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, AuthorityCheckStmt, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt,
     ConcatenateStmt, ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt,
-    FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt, SplitStmt,
-    SubmitStmt, WaitStmt, WriteStmt,
+    EventsStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt,
+    SplitStmt, SubmitStmt, WaitStmt, WriteStmt,
 };
 
 use crate::def_map::{
@@ -2666,7 +2666,86 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
         if !trailing_tokens.is_empty() {
             self.collector
-                .collect_token_expression_refs_infos(&trailing_tokens, scope, true);
+            .collect_token_expression_refs_infos(&trailing_tokens, scope, true);
+        }
+    }
+
+    pub(super) fn collect_raise_event_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_routine_site(
+            scope,
+            self.collector.file.range(node),
+            RoutineSiteKind::Raise,
+        );
+        let significant = self.collector.significant_stmt_token_infos(node);
+        if significant.len() < 3 {
+            return;
+        }
+
+        let mut qualifier = None;
+        let mut event_name = None;
+        if significant.get(3).is_some_and(|token| token.text.as_ref() == "~")
+            && let (Some(qualifier_tok), Some(event_tok)) = (significant.get(2), significant.get(4))
+            && self.collector.syntax_token_is_ident_like(qualifier_tok)
+            && self.collector.syntax_token_is_ident_like(event_tok)
+        {
+            let qualifier_name = Arc::<str>::from(qualifier_tok.text.to_ascii_lowercase());
+            self.collector.add_reference(
+                scope,
+                qualifier_name.clone(),
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                qualifier_tok.range.clone(),
+            );
+            self.collector.emit_field_access(FieldAccess {
+                scope,
+                base_namespace: Namespace::Type,
+                base_name: qualifier_name.clone(),
+                base_range: qualifier_tok.range.clone(),
+                field_path: vec![FieldAccessSegment {
+                    name: Arc::<str>::from(event_tok.text.to_ascii_lowercase()),
+                    range: event_tok.range.clone(),
+                }],
+                in_type_position: false,
+            });
+            qualifier = Some(qualifier_name);
+            event_name = Some(Arc::<str>::from(event_tok.text.to_ascii_lowercase()));
+        } else if let Some(event_tok) = significant.get(2)
+            && self.collector.syntax_token_is_ident_like(event_tok)
+        {
+            let event = Arc::<str>::from(event_tok.text.to_ascii_lowercase());
+            self.collector.add_reference(
+                scope,
+                event.clone(),
+                Namespace::Routine,
+                ReferenceKind::RoutineCall,
+                event_tok.range.clone(),
+            );
+            event_name = Some(event);
+        }
+
+        let Some(event_name) = event_name else {
+            self.record_unknown_effect(node, scope);
+            self.collector
+                .collect_token_expression_refs_infos(&significant[2..], scope, true);
+            return;
+        };
+
+        let arg_list = self
+            .collector
+            .file
+            .children(node)
+            .find(|&child| self.collector.file.kind(child) == SyntaxKind::CallArgList);
+        let stmt_range = self.collector.file.range(node);
+        if let Some(arg_list) = arg_list {
+            self.collector.expr_lowering().collect_call_argument_list(
+                arg_list,
+                scope,
+                NamedArgumentTarget::Event {
+                    qualifier,
+                    event_name,
+                },
+                stmt_range,
+            );
         }
     }
 
@@ -2977,8 +3056,92 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let methods_stmt = MethodsStmt::cast(self.collector.syntax(node)).expect("methods stmt");
-        let type_refs: Vec<_> = methods_stmt
+        let (type_refs, handler_infos) = {
+            let methods_stmt = MethodsStmt::cast(self.collector.syntax(node)).expect("methods stmt");
+            let type_refs = methods_stmt
+                .type_refs()
+                .map(|type_ref| type_ref.syntax().id())
+                .collect::<Vec<_>>();
+            let handler_infos = methods_stmt
+                .entries(self.collector.source)
+                .into_iter()
+                .filter_map(|entry| {
+                    let handler = entry.event_handler(self.collector.source)?;
+                    let event_name = Arc::<str>::from(
+                        handler
+                            .event_name()
+                            .text(self.collector.source)?
+                            .to_ascii_lowercase(),
+                    );
+                    let source_type_name = Arc::<str>::from(
+                        handler
+                            .source_type_ref()
+                            .display_text(self.collector.source)?
+                            .to_ascii_lowercase(),
+                    );
+                    Some((
+                        handler.event_qualifier().and_then(|token| {
+                            Some((
+                                Arc::<str>::from(
+                                    token.text(self.collector.source)?.to_ascii_lowercase(),
+                                ),
+                                token.range(),
+                            ))
+                        }),
+                        source_type_name,
+                        handler.source_type_ref().syntax().range(),
+                        event_name,
+                        handler.event_name().range(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            (type_refs, handler_infos)
+        };
+        for type_ref in type_refs {
+            self.collector
+                .decl_lowering()
+                .collect_type_ref(type_ref, scope);
+        }
+        for (qualifier, source_type_name, source_type_range, event_name, event_range) in handler_infos
+        {
+            if let Some((qualifier_name, qualifier_range)) = qualifier {
+                self.collector.add_reference(
+                    scope,
+                    qualifier_name.clone(),
+                    Namespace::Type,
+                    ReferenceKind::TypeRef,
+                    qualifier_range.clone(),
+                );
+                self.collector.emit_field_access(crate::FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Type,
+                    base_name: qualifier_name,
+                    base_range: qualifier_range,
+                    field_path: vec![crate::FieldAccessSegment {
+                        name: event_name,
+                        range: event_range,
+                    }],
+                    in_type_position: false,
+                });
+            } else {
+                self.collector.emit_field_access(crate::FieldAccess {
+                    scope,
+                    base_namespace: Namespace::Type,
+                    base_name: source_type_name,
+                    base_range: source_type_range,
+                    field_path: vec![crate::FieldAccessSegment {
+                        name: event_name,
+                        range: event_range,
+                    }],
+                    in_type_position: false,
+                });
+            }
+        }
+    }
+
+    pub(super) fn collect_events_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let events_stmt = EventsStmt::cast(self.collector.syntax(node)).expect("events stmt");
+        let type_refs: Vec<_> = events_stmt
             .type_refs()
             .map(|type_ref| type_ref.syntax().id())
             .collect();
@@ -3007,13 +3170,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             else {
                 continue;
             };
-            self.collector
-                .implemented_interfaces
-                .push(crate::ImplementedInterfaceData {
-                    owner_symbol,
-                    interface_name,
-                    range,
-                });
+            if !self.collector.implemented_interfaces.iter().any(|implemented| {
+                implemented.owner_symbol == owner_symbol && implemented.interface_name == interface_name
+            }) {
+                self.collector
+                    .implemented_interfaces
+                    .push(crate::ImplementedInterfaceData {
+                        owner_symbol,
+                        interface_name,
+                        range,
+                    });
+            }
             recorded = true;
         }
         if !recorded {

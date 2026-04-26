@@ -41,6 +41,7 @@ pub enum Visibility {
 pub enum ClassMemberKind {
     Attribute,
     Method,
+    Event,
 }
 
 impl SymbolKind {
@@ -596,6 +597,10 @@ pub enum NamedArgumentTarget {
         base_namespace: Namespace,
         base_name: Arc<str>,
         method_name: Arc<str>,
+    },
+    Event {
+        qualifier: Option<Arc<str>>,
+        event_name: Arc<str>,
     },
 }
 

@@ -385,6 +385,10 @@ pub enum CallTargetDossier {
         base_name: String,
         method_name: String,
     },
+    Event {
+        qualifier: Option<String>,
+        event_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1135,6 +1139,13 @@ fn call_target_dossier(target: &NamedArgumentTarget) -> CallTargetDossier {
             base_name: base_name.to_string(),
             method_name: method_name.to_string(),
         },
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => CallTargetDossier::Event {
+            qualifier: qualifier.as_ref().map(arc_str_to_string),
+            event_name: event_name.to_string(),
+        },
     }
 }
 
@@ -1635,6 +1646,7 @@ fn class_member_kind_name(kind: ClassMemberKind) -> &'static str {
     match kind {
         ClassMemberKind::Attribute => "attribute",
         ClassMemberKind::Method => "method",
+        ClassMemberKind::Event => "event",
     }
 }
 

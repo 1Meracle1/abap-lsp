@@ -2647,6 +2647,7 @@ fn call_target_kind_name(target: &NamedArgumentTarget) -> &'static str {
         NamedArgumentTarget::Report { .. } => "report",
         NamedArgumentTarget::Routine { .. } => "routine",
         NamedArgumentTarget::ImplicitMethod { .. } | NamedArgumentTarget::Method { .. } => "method",
+        NamedArgumentTarget::Event { .. } => "event",
     }
 }
 
@@ -2662,6 +2663,13 @@ fn call_target_name(target: &NamedArgumentTarget) -> String {
             method_name,
             ..
         } => format!("{base_name}->{method_name}"),
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => qualifier
+            .as_ref()
+            .map(|qualifier| format!("{qualifier}~{event_name}"))
+            .unwrap_or_else(|| event_name.to_string()),
     }
 }
 
@@ -2694,6 +2702,13 @@ fn call_target_matches(target: &NamedArgumentTarget, query: &str) -> bool {
         NamedArgumentTarget::Constructor { type_name } => {
             format!("{type_name}~constructor").eq_ignore_ascii_case(query)
         }
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => event_name.as_ref().eq_ignore_ascii_case(query)
+            || qualifier
+                .as_ref()
+                .is_some_and(|qualifier| format!("{qualifier}~{event_name}").eq_ignore_ascii_case(query)),
     }
 }
 

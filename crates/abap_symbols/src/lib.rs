@@ -1416,6 +1416,181 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn class_events_collect_members_and_handler_parameters() {
+        let src = "\
+CLASS lcl_sender DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    EVENTS changed EXPORTING VALUE(text) TYPE string.\n\
+    CLASS-EVENTS finished EXPORTING VALUE(code) TYPE i.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_handler DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS on_changed FOR EVENT changed OF lcl_sender IMPORTING text sender.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_sender IMPLEMENTATION.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_handler IMPLEMENTATION.\n\
+  METHOD on_changed.\n\
+    DATA lv_text TYPE string.\n\
+    lv_text = text.\n\
+    sender = sender.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let project = analyze_project_from_units(vec![analyze_unit(
+            "file:///class_events.abap",
+            src,
+            &parsed,
+        )]);
+        let unit = &project.units[0];
+
+        let changed = unit
+            .class_members
+            .iter()
+            .find(|member| {
+                member.kind == super::ClassMemberKind::Event
+                    && member.name.as_ref() == "changed"
+                    && unit.symbol(member.class_symbol).name.as_ref() == "lcl_sender"
+            })
+            .expect("changed event");
+        assert_eq!(changed.kind, super::ClassMemberKind::Event);
+        assert!(!changed.is_static);
+        assert_eq!(changed.parameters.len(), 1);
+        assert_eq!(changed.parameters[0].name.as_ref(), "text");
+        assert_eq!(
+            changed.parameters[0].type_clause_display.as_deref(),
+            Some("string")
+        );
+
+        let finished = unit
+            .class_members
+            .iter()
+            .find(|member| {
+                member.kind == super::ClassMemberKind::Event
+                    && member.name.as_ref() == "finished"
+                    && unit.symbol(member.class_symbol).name.as_ref() == "lcl_sender"
+            })
+            .expect("finished event");
+        assert_eq!(finished.kind, super::ClassMemberKind::Event);
+        assert!(finished.is_static);
+
+        let text_offset = src.rfind("text.").expect("text use") + 1;
+        let text_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(text_offset)
+            .expect("text reference");
+        assert_eq!(text_ref.name.as_ref(), "text");
+        assert!(matches!(text_ref.resolution, Some(Resolution::Symbol(_))));
+
+        let sender_offset = src.rfind("sender.").expect("sender use") + 1;
+        let sender_ref = unit
+            .semantic()
+            .refs()
+            .reference_at_offset(sender_offset)
+            .expect("sender reference");
+        let Resolution::Symbol(sender_handle) = sender_ref.resolution.expect("sender resolution")
+        else {
+            panic!("unexpected sender resolution: {:?}", sender_ref.resolution);
+        };
+        let sender_symbol = unit.symbol(sender_handle.symbol);
+        let sender_type = sender_symbol.declared_type.as_ref().expect("sender type");
+        assert!(sender_type.is_ref);
+        assert_eq!(sender_type.base_name.as_ref(), "lcl_sender");
+    }
+
+    #[test]
+    fn raise_event_uses_event_signature_for_validation() {
+        let src = "\
+CLASS lcl_sender DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    EVENTS changed EXPORTING VALUE(value) TYPE i.\n\
+    METHODS trigger.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_sender IMPLEMENTATION.\n\
+  METHOD trigger.\n\
+    RAISE EVENT changed EXPORTING wrong = 1.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let project = analyze_project_from_units(vec![analyze_unit(
+            "file:///raise_event_validate.abap",
+            src,
+            &parsed,
+        )]);
+        let unit = &project.units[0];
+
+        assert!(unit.call_sites.iter().any(|call_site| {
+            matches!(
+                &call_site.target,
+                NamedArgumentTarget::Event {
+                    qualifier: None,
+                    event_name
+                } if event_name.as_ref() == "changed"
+            )
+        }));
+        assert!(unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownNamedParameter
+                && src[diag.range.clone()].contains("wrong")
+        }));
+        assert!(unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::MissingRequiredParameter
+                && diag.message.contains("event 'changed'")
+        }));
+    }
+
+    #[test]
+    fn implemented_interface_events_raise_unqualified() {
+        let src = "\
+INTERFACE lif_source.\n\
+  EVENTS changed EXPORTING VALUE(value) TYPE string.\n\
+ENDINTERFACE.\n\
+\n\
+CLASS lcl_sender DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    INTERFACES lif_source.\n\
+    METHODS trigger.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_sender IMPLEMENTATION.\n\
+  METHOD trigger.\n\
+    RAISE EVENT changed EXPORTING value = 'x'.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let project = analyze_project_from_units(vec![analyze_unit(
+            "file:///interface_event_raise.abap",
+            src,
+            &parsed,
+        )]);
+        let unit = &project.units[0];
+
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diag| diag.kind != DiagnosticKind::UnknownNamedParameter),
+            "{:#?}",
+            unit.diagnostics
+        );
+        assert!(unit.call_sites.iter().any(|call_site| {
+            matches!(
+                &call_site.target,
+                NamedArgumentTarget::Event {
+                    qualifier: None,
+                    event_name
+                } if event_name.as_ref() == "changed"
+            )
+        }));
+    }
+
+    #[test]
     fn submit_statement_collects_report_call_sites_and_dynamic_target_refs() {
         let src = "\
 REPORT zsubmit_demo.

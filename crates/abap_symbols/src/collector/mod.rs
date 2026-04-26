@@ -83,10 +83,20 @@ struct PendingMethodParameter {
     is_optional: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PendingEventHandlerSpec {
+    event_qualifier: Option<Arc<str>>,
+    event_name: Arc<str>,
+    source_type_name: Arc<str>,
+    source_type_display: Arc<str>,
+    importing_names: Vec<(Arc<str>, TextRange)>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct PendingMethodSignature {
     parameters: Vec<PendingMethodParameter>,
     is_redefinition: bool,
+    event_handler: Option<PendingEventHandlerSpec>,
 }
 
 #[derive(Debug, Clone)]

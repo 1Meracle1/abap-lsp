@@ -65,6 +65,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["set"], classify_set_gui_stmt),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
+    GuardedSimpleStmtClassifier::new(&["events", "class"], classify_events_stmt),
     GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
@@ -100,6 +101,22 @@ fn method_statement_name_idx(source: &str, significant: &[&Token]) -> Option<usi
     if token_matches_keyword(source, first, "class")
         && second.kind == TokenKind::Minus
         && token_matches_keyword(source, third, "methods")
+    {
+        return Some(3);
+    }
+    None
+}
+
+fn event_statement_name_idx(source: &str, significant: &[&Token]) -> Option<usize> {
+    let first = *significant.first()?;
+    if token_matches_keyword(source, first, "events") {
+        return Some(1);
+    }
+    let second = *significant.get(1)?;
+    let third = *significant.get(2)?;
+    if token_matches_keyword(source, first, "class")
+        && second.kind == TokenKind::Minus
+        && token_matches_keyword(source, third, "events")
     {
         return Some(3);
     }
@@ -254,6 +271,34 @@ fn methods_stmt_type_ref_ranges(
             i += modifier_len;
             continue;
         }
+        if token_matches_keyword(source, token, "for")
+            && significant_tokens
+                .get(i + 1)
+                .is_some_and(|next| token_matches_keyword(source, next, "event"))
+        {
+            let mut of_idx = i + 2;
+            while of_idx < significant_tokens.len()
+                && !token_matches_keyword(source, significant_tokens[of_idx], "of")
+                && significant_tokens[of_idx].kind != TokenKind::Period
+            {
+                of_idx += 1;
+            }
+            if token_matches_keyword(source, significant_tokens[of_idx], "of")
+                && let Some((raw_type_idx, _)) = significant.get(of_idx + 1)
+            {
+                let mut expr_start = *raw_type_idx;
+                while expr_start <= period_i && tokens[expr_start].kind == TokenKind::Comment {
+                    expr_start += 1;
+                }
+                let expr_end =
+                    skip_method_signature_type_expression(source, tokens, expr_start, period_i + 1);
+                if expr_start < expr_end {
+                    ranges.push((expr_start, expr_end));
+                }
+                i = of_idx + 2;
+                continue;
+            }
+        }
         if token_matches_keyword(source, token, "raising") {
             saw_parameter_section = true;
             in_raising = true;
@@ -392,6 +437,88 @@ fn methods_stmt_type_ref_ranges(
     ranges
 }
 
+fn events_stmt_type_ref_ranges(source: &str, tokens: &[Token], idx: usize, period_i: usize) -> Vec<(usize, usize)> {
+    let significant: Vec<_> = tokens[idx..=period_i]
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| token.kind != TokenKind::Comment)
+        .map(|(offset, token)| (idx + offset, token))
+        .collect();
+    let significant_tokens: Vec<_> = significant.iter().map(|(_, token)| *token).collect();
+    let Some(mut i) = event_statement_name_idx(source, &significant_tokens) else {
+        return Vec::new();
+    };
+    while matches!(
+        significant_tokens.get(i).map(|token| token.kind),
+        Some(TokenKind::Colon | TokenKind::Comma)
+    ) {
+        i += 1;
+    }
+    if significant_tokens.get(i).map(|token| token.kind) != Some(TokenKind::Ident) {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    i += 1;
+    while i < significant_tokens.len() {
+        let token = significant_tokens[i];
+        if token.kind == TokenKind::Period {
+            break;
+        }
+        if token_matches_keyword(source, token, "exporting") {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i;
+        while matches!(
+            significant_tokens.get(j).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            j += 1;
+        }
+        let Some(name_token) = significant_tokens.get(j) else {
+            break;
+        };
+        let mut after_name = if token_matches_keyword(source, name_token, "value")
+            || token_matches_keyword(source, name_token, "reference")
+        {
+            j + 4
+        } else if name_token.kind == TokenKind::Ident {
+            j + 1
+        } else {
+            i += 1;
+            continue;
+        };
+        while matches!(
+            significant_tokens.get(after_name).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            after_name += 1;
+        }
+        let Some(type_token) = significant_tokens.get(after_name) else {
+            break;
+        };
+        if !token_matches_keyword(source, type_token, "type")
+            && !token_matches_keyword(source, type_token, "like")
+        {
+            i += 1;
+            continue;
+        }
+        let raw_type_idx = significant[after_name].0;
+        let mut expr_start = raw_type_idx + 1;
+        while expr_start <= period_i && tokens[expr_start].kind == TokenKind::Comment {
+            expr_start += 1;
+        }
+        let expr_end =
+            skip_method_signature_type_expression(source, tokens, expr_start, period_i + 1);
+        if expr_start < expr_end {
+            ranges.push((expr_start, expr_end));
+        }
+        i = after_name + 1;
+    }
+    ranges
+}
+
 fn build_methods_stmt_children(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -400,6 +527,38 @@ fn build_methods_stmt_children(
     period_i: usize,
 ) -> Vec<NodeId> {
     let ranges = methods_stmt_type_ref_ranges(source, tokens, idx, period_i);
+    if ranges.is_empty() {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|t| token_leaf(b, t))
+            .collect();
+    }
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut i = idx;
+    let mut range_idx = 0usize;
+    while i <= period_i {
+        if let Some((start, end)) = ranges.get(range_idx).copied()
+            && i == start
+        {
+            children.push(build_type_ref_node(b, source, &tokens[start..end]));
+            i = end;
+            range_idx += 1;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children
+}
+
+fn build_events_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let ranges = events_stmt_type_ref_ranges(source, tokens, idx, period_i);
     if ranges.is_empty() {
         return tokens[idx..=period_i]
             .iter()
@@ -1696,6 +1855,10 @@ fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
     method_statement_name_idx(source, significant).map(|_| SyntaxKind::MethodsStmt)
 }
 
+fn classify_events_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    event_statement_name_idx(source, significant).map(|_| SyntaxKind::EventsStmt)
+}
+
 fn classify_interfaces_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     let first = *significant.first()?;
     let last = *significant.last()?;
@@ -2104,6 +2267,9 @@ pub fn try_parse_simple_stmt(
                 SyntaxKind::MethodsStmt => {
                     build_methods_stmt_children(b, source, tokens, idx, period_i)
                 }
+                SyntaxKind::EventsStmt => {
+                    build_events_stmt_children(b, source, tokens, idx, period_i)
+                }
                 SyntaxKind::InterfacesStmt => {
                     build_interfaces_stmt_children(b, source, tokens, idx, period_i)
                 }
@@ -2158,7 +2324,10 @@ pub fn try_parse_simple_stmt(
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
-    use abap_ast::ast::{AstNode, ClassSectionStmt, ClassSectionVisibilityKind, SyntaxNodeRef};
+    use abap_ast::ast::{
+        AstNode, ClassSectionStmt, ClassSectionVisibilityKind, EventsStmt, MethodsStmt,
+        SyntaxNodeRef,
+    };
 
     #[test]
     fn reports_method_modifier_after_parameter_declarations() {
@@ -2318,6 +2487,80 @@ ENDCLASS.";
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::InterfacesStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn classifies_events_statement_specifically() {
+        let parsed = crate::parse(
+            "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    EVENTS changed EXPORTING VALUE(value) TYPE string.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventsStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn events_stmt_exposes_signature_parameters() {
+        let src = "CLASS lcl DEFINITION.\n  PUBLIC SECTION.\n    CLASS-EVENTS changed EXPORTING VALUE(value) TYPE string OPTIONAL.\nENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let events = EventsStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::EventsStmt)
+                .expect("events stmt"),
+        ))
+        .expect("events stmt");
+        let entries = events.entries(src);
+        assert_eq!(entries.len(), 1);
+        let params = entries[0].signature(src).parameters().to_vec();
+        assert_eq!(params.len(), 1);
+        assert_eq!(
+            params[0]
+                .name_token()
+                .text(src)
+                .map(|text| text.to_ascii_lowercase())
+                .as_deref(),
+            Some("value")
+        );
+        assert_eq!(params[0].type_display_text(src), Some("string"));
+        assert!(params[0].is_optional());
+    }
+
+    #[test]
+    fn methods_event_handler_builds_source_type_ref() {
+        let src = "CLASS lcl_handler DEFINITION.\n  PUBLIC SECTION.\n    METHODS on_changed FOR EVENT changed OF lcl_sender IMPORTING value sender.\nENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = MethodsStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+                .expect("methods stmt"),
+        ))
+        .expect("methods stmt");
+        let entry = methods
+            .entries(src)
+            .into_iter()
+            .next()
+            .expect("method entry");
+        let handler = entry.event_handler(src).expect("event handler");
+        assert_eq!(
+            handler.source_type_ref().display_text(src),
+            Some("lcl_sender")
+        );
+        assert_eq!(
+            handler
+                .importing_names()
+                .iter()
+                .filter_map(|name| name.text(src))
+                .map(|name| name.to_ascii_lowercase())
+                .collect::<Vec<_>>(),
+            vec!["value".to_string(), "sender".to_string()]
+        );
     }
 
     #[test]

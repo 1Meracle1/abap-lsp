@@ -997,7 +997,7 @@ impl AnalysisSnapshot {
     }
 
     pub fn hovered_call_target_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
-        let (range, member_unit, member) = self.call_target_method_at(offset)?;
+        let (range, member_unit, member) = self.call_target_member_at(offset)?;
         Some(HoveredSymbolInfo {
             range,
             display_name: Arc::clone(&member.name),
@@ -1422,7 +1422,7 @@ impl AnalysisSnapshot {
     }
 
     fn definition_target_for_call_target_at(&self, offset: usize) -> Option<DefinitionTarget> {
-        let (_, member_unit, member) = self.call_target_method_at(offset)?;
+        let (_, member_unit, member) = self.call_target_member_at(offset)?;
         Some(definition_target_for_class_member(member_unit, member))
     }
 
@@ -2520,7 +2520,7 @@ impl AnalysisSnapshot {
         })
     }
 
-    fn call_target_method_at(
+    fn call_target_member_at(
         &self,
         offset: usize,
     ) -> Option<(Range<usize>, &UnitAnalysis, &ClassMemberData)> {
@@ -2528,22 +2528,32 @@ impl AnalysisSnapshot {
             .call_sites
             .iter()
             .filter_map(|call_site| {
-                let method_name = match &call_site.target {
-                    NamedArgumentTarget::ImplicitMethod { method_name } => method_name,
-                    NamedArgumentTarget::Method { method_name, .. } => method_name,
-                    _ => return None,
-                };
-                let range =
-                    call_site_target_name_range(self.text.as_ref(), call_site, method_name)?;
-                (range.start <= offset && offset < range.end).then_some((
-                    call_site,
-                    method_name,
-                    range,
-                ))
+                match &call_site.target {
+                    NamedArgumentTarget::ImplicitMethod { method_name }
+                    | NamedArgumentTarget::Method { method_name, .. } => {
+                        let range =
+                            call_site_target_name_range(self.text.as_ref(), call_site, method_name)?;
+                        (range.start <= offset && offset < range.end)
+                            .then_some((call_site, range))
+                    }
+                    NamedArgumentTarget::Event {
+                        qualifier,
+                        event_name,
+                    } => {
+                        let range = call_site_event_name_range(
+                            self.text.as_ref(),
+                            call_site,
+                            qualifier.as_ref(),
+                            event_name,
+                        )?;
+                        (range.start <= offset && offset < range.end)
+                            .then_some((call_site, range))
+                    }
+                    _ => None,
+                }
             })
-            .filter_map(|(call_site, method_name, range)| {
-                let (member_unit, member) =
-                    resolve_call_target_method(self, call_site, method_name)?;
+            .filter_map(|(call_site, range)| {
+                let (member_unit, member) = resolve_call_target_member(self, call_site)?;
                 Some((range, member_unit, member))
             })
             .min_by_key(|(range, _, _)| range.end.saturating_sub(range.start))
@@ -2571,6 +2581,23 @@ impl AnalysisSnapshot {
                 .iter()
                 .filter(|parameter| {
                     call_section_matches_parameter(section, parameter.section)
+                        && !present_named_parameters.contains(parameter.name.as_ref())
+                        && parameter.name.as_ref().starts_with(prefix.as_ref())
+                })
+                .map(|parameter| {
+                    CompletionItem::NamedArgument(NamedArgumentCompletionItem {
+                        name: Arc::clone(&parameter.name),
+                        declared_type: parameter_completion_declared_type(parameter),
+                        declaration: Some(format_parameter_completion_declaration(parameter)),
+                        insertion: named_argument_completion_insertion(parameter.name.as_ref()),
+                    })
+                })
+                .collect(),
+            CallableCompletionTarget::Event(member) => member
+                .parameters
+                .iter()
+                .filter(|parameter| {
+                    call_section_matches_event_parameter(section, parameter)
                         && !present_named_parameters.contains(parameter.name.as_ref())
                         && parameter.name.as_ref().starts_with(prefix.as_ref())
                 })
@@ -3586,6 +3613,19 @@ fn call_section_matches_function_parameter(
     )
 }
 
+fn call_section_matches_event_parameter(
+    section: Option<NamedArgumentSection>,
+    parameter: &ClassMemberParameterData,
+) -> bool {
+    matches!(
+        (section, parameter.section),
+        (
+            None | Some(NamedArgumentSection::Exporting),
+            MethodParameterSection::Exporting
+        )
+    )
+}
+
 fn named_argument_completion_insertion(name: &str) -> CompletionInsertion {
     CompletionInsertion {
         plain_text: format!("{name} = "),
@@ -3795,6 +3835,7 @@ fn completion_item_name(item: &CompletionItem) -> &str {
 #[derive(Debug, Clone, Copy)]
 enum CallableCompletionTarget<'a> {
     Method(&'a ClassMemberData),
+    Event(&'a ClassMemberData),
     Function(&'a FunctionModuleData),
 }
 
@@ -4128,6 +4169,9 @@ fn method_parameter_inlay_hint_markdown(
         NamedArgumentTarget::Constructor { type_name } => {
             format!("parameter of CONSTRUCTOR `{}`", type_name)
         }
+        NamedArgumentTarget::Event { event_name, .. } => {
+            format!("parameter of EVENT `{}`", event_name)
+        }
         _ => format!("parameter of METHOD `{}`", member.name),
     };
     format!(
@@ -4384,6 +4428,7 @@ fn markdown_lines_for_class_member(unit: &UnitAnalysis, member: &ClassMemberData
     let kind = match member.kind {
         ClassMemberKind::Attribute => "attribute",
         ClassMemberKind::Method => "method",
+        ClassMemberKind::Event => "event",
     };
     vec![
         format!(
@@ -5965,13 +6010,53 @@ fn call_site_target_name_range(
     Some(call_site.range.start + rel_start..call_site.range.start + rel_start + method_name.len())
 }
 
-fn resolve_call_target_method<'a>(
+fn call_site_event_name_range(
+    text: &str,
+    call_site: &abap_symbols::CallSiteData,
+    qualifier: Option<&Arc<str>>,
+    event_name: &Arc<str>,
+) -> Option<Range<usize>> {
+    let call_text = text.get(call_site.range.clone())?;
+    let lowered = call_text.to_ascii_lowercase();
+    let event_name = event_name.as_ref().to_ascii_lowercase();
+    if let Some(qualifier) = qualifier {
+        let qualifier_lower = qualifier.as_ref().to_ascii_lowercase();
+        let pattern = format!("{qualifier_lower}~{event_name}");
+        let rel_start = lowered.find(&pattern)? + qualifier_lower.len() + 1;
+        return Some(
+            call_site.range.start + rel_start..call_site.range.start + rel_start + event_name.len(),
+        );
+    }
+    let rel_start = lowered.find(&event_name)?;
+    Some(call_site.range.start + rel_start..call_site.range.start + rel_start + event_name.len())
+}
+
+fn resolve_call_target_member<'a>(
     snapshot: &'a AnalysisSnapshot,
     call_site: &abap_symbols::CallSiteData,
-    method_name: &Arc<str>,
 ) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
     match &call_site.target {
-        NamedArgumentTarget::ImplicitMethod { .. } => {
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => {
+            let (member_unit, member) = resolve_event_target_member_from_context(
+                snapshot,
+                snapshot.scope_index(),
+                call_site.scope,
+                qualifier.as_ref(),
+                event_name,
+            )?;
+            class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                call_site.scope,
+                member_unit,
+                member,
+            )
+            .then_some((member_unit, member))
+        }
+        NamedArgumentTarget::ImplicitMethod { method_name } => {
             let unit = snapshot.symbols.as_ref();
             let class_symbol_id = enclosing_class_owner(unit, call_site.scope)?;
             let (member_unit, member) =
@@ -5991,7 +6076,7 @@ fn resolve_call_target_method<'a>(
         NamedArgumentTarget::Method {
             base_namespace,
             base_name,
-            ..
+            method_name,
         } => {
             let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
                 snapshot,
@@ -6167,6 +6252,30 @@ fn resolve_callable_completion_target<'a>(
         }
         NamedArgumentTarget::Report { .. } => None,
         NamedArgumentTarget::Routine { .. } => None,
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => {
+            let (member_unit, member) = resolve_event_target_member_from_context(
+                snapshot,
+                snapshot.scope_index(),
+                call_site.scope,
+                qualifier.as_ref(),
+                event_name,
+            )?;
+            if member.kind != ClassMemberKind::Event
+                || !class_member_visible_to(
+                    snapshot,
+                    snapshot.symbols.as_ref(),
+                    call_site.scope,
+                    member_unit,
+                    member,
+                )
+            {
+                return None;
+            }
+            Some(CallableCompletionTarget::Event(member))
+        }
     }
 }
 
@@ -6291,6 +6400,35 @@ fn resolve_named_argument_parameter_with_scope_index<'a>(
             })
         }
         NamedArgumentTarget::Report { .. } => None,
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => {
+            let (member_unit, member) = resolve_event_target_member_from_context(
+                snapshot,
+                scope_index,
+                access.scope,
+                qualifier.as_ref(),
+                event_name,
+            )?;
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member.parameters.iter().find(|parameter| {
+                parameter.name == access.name
+                    && call_section_matches_event_parameter(access.section, parameter)
+            })?;
+            Some(NamedArgumentParameterInfo {
+                name: Arc::clone(&parameter.name),
+                declared_type: parameter.declared_type.clone(),
+            })
+        }
         NamedArgumentTarget::Routine { routine_name } => {
             resolve_routine_named_argument_parameter_with_scope_index(
                 snapshot,
@@ -6416,15 +6554,24 @@ fn method_parameter_inlay_hint(
         return None;
     }
     let argument_name = argument.name.as_ref()?;
-    let CallableCompletionTarget::Method(member) =
-        resolve_callable_completion_target(snapshot, call_site)?
-    else {
-        return None;
+    let callable = resolve_callable_completion_target(snapshot, call_site)?;
+    let (member, parameter) = match callable {
+        CallableCompletionTarget::Method(member) => {
+            let parameter = member.parameters.iter().find(|parameter| {
+                parameter.name == *argument_name
+                    && call_section_matches_parameter(argument.section, parameter.section)
+            })?;
+            (member, parameter)
+        }
+        CallableCompletionTarget::Event(member) => {
+            let parameter = member.parameters.iter().find(|parameter| {
+                parameter.name == *argument_name
+                    && call_section_matches_event_parameter(argument.section, parameter)
+            })?;
+            (member, parameter)
+        }
+        CallableCompletionTarget::Function(_) => return None,
     };
-    let parameter = member.parameters.iter().find(|parameter| {
-        parameter.name == *argument_name
-            && call_section_matches_parameter(argument.section, parameter.section)
-    })?;
     let position = named_argument_value_inlay_position(snapshot.text.as_ref(), &argument.range)?;
     let label = parameter_completion_declared_type(parameter)?;
     Some(ParameterInlayHintInfo {
@@ -6500,6 +6647,35 @@ fn resolve_named_argument_target(
             Some(definition_target_for_range(unit, exception.range.clone()))
         }
         NamedArgumentTarget::Report { .. } => None,
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => {
+            let (member_unit, member) = resolve_event_target_member_from_context(
+                snapshot,
+                snapshot.scope_index(),
+                access.scope,
+                qualifier.as_ref(),
+                event_name,
+            )?;
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member.parameters.iter().find(|parameter| {
+                parameter.name == access.name
+                    && call_section_matches_event_parameter(access.section, parameter)
+            })?;
+            Some(definition_target_for_range(
+                member_unit,
+                parameter.range.clone(),
+            ))
+        }
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,
@@ -6622,6 +6798,32 @@ fn resolve_named_argument_symbol(
             None
         }
         NamedArgumentTarget::Report { .. } => None,
+        NamedArgumentTarget::Event {
+            qualifier,
+            event_name,
+        } => {
+            let (member_unit, member) = resolve_event_target_member_from_context(
+                snapshot,
+                snapshot.scope_index(),
+                access.scope,
+                qualifier.as_ref(),
+                event_name,
+            )?;
+            if !class_member_visible_to(
+                snapshot,
+                snapshot.symbols.as_ref(),
+                access.scope,
+                member_unit,
+                member,
+            ) {
+                return None;
+            }
+            let parameter = member.parameters.iter().find(|parameter| {
+                parameter.name == access.name
+                    && call_section_matches_event_parameter(access.section, parameter)
+            })?;
+            symbol_handle_for_decl_range(member_unit, &parameter.range, SymbolKind::Parameter)
+        }
         NamedArgumentTarget::Routine { routine_name } => {
             let (unit, routine_symbol_id) = resolve_symbol_from_context(
                 snapshot,
@@ -6908,6 +7110,26 @@ fn resolve_method_target_from_context_with_scope_index<'a>(
     )
 }
 
+fn resolve_event_target_member_from_context<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    qualifier: Option<&Arc<str>>,
+    event_name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let unit = snapshot.symbols.as_ref();
+    let class_symbol_id = enclosing_class_owner(unit, scope)?;
+    resolve_class_event_in_hierarchy_with_scope_index(
+        snapshot,
+        scope_index,
+        unit,
+        class_symbol_id,
+        scope,
+        qualifier.map(|name| name.as_ref()),
+        event_name.as_ref(),
+    )
+}
+
 fn resolve_direct_superclass_from_scope_with_scope_index<'a>(
     snapshot: &'a AnalysisSnapshot,
     scope_index: &ScopeIndex,
@@ -7100,6 +7322,7 @@ fn hovered_component_kind_for_class_member(member: &ClassMemberData) -> HoveredC
     match member.kind {
         ClassMemberKind::Attribute => HoveredComponentKind::Attribute,
         ClassMemberKind::Method => HoveredComponentKind::Method,
+        ClassMemberKind::Event => HoveredComponentKind::Method,
     }
 }
 
@@ -7664,6 +7887,138 @@ fn resolve_exposed_interface_handle_with_scope_index<'a>(
         interface_name,
         &mut HashSet::new(),
     )
+}
+
+fn resolve_class_event_in_hierarchy_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    scope: ScopeId,
+    qualifier: Option<&str>,
+    event_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    resolve_class_event_in_hierarchy_inner_with_scope_index(
+        snapshot,
+        scope_index,
+        owner_unit,
+        owner_symbol,
+        scope,
+        qualifier,
+        event_name,
+        &mut HashSet::new(),
+    )
+}
+
+fn resolve_class_event_in_hierarchy_inner_with_scope_index<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope_index: &ScopeIndex,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    scope: ScopeId,
+    qualifier: Option<&str>,
+    event_name: &str,
+    visited: &mut HashSet<(UnitId, SymbolId, Option<Arc<str>>, Arc<str>)>,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let key = (
+        owner_unit.unit_id,
+        owner_symbol,
+        qualifier.map(Arc::<str>::from),
+        Arc::<str>::from(event_name),
+    );
+    if !visited.insert(key) {
+        return None;
+    }
+
+    let (direct_unit, direct_symbol) = if let Some(interface_name) = qualifier {
+        let interface_name = Arc::<str>::from(interface_name.to_ascii_lowercase());
+        resolve_exposed_interface_handle_with_scope_index(
+            snapshot,
+            scope_index,
+            owner_unit,
+            owner_symbol,
+            scope,
+            &interface_name,
+        )?
+    } else {
+        (owner_unit, owner_symbol)
+    };
+
+    if let Some(member) = direct_unit
+        .semantic()
+        .decls()
+        .class_member(direct_symbol, event_name)
+        .filter(|member| member.kind == ClassMemberKind::Event)
+    {
+        return Some((direct_unit, member));
+    }
+
+    if let Some(alias) = direct_unit.member_aliases.iter().find(|alias| {
+        alias.owner_symbol == direct_symbol && alias.alias_name.as_ref() == event_name
+    }) {
+        return resolve_class_event_in_hierarchy_inner_with_scope_index(
+            snapshot,
+            scope_index,
+            direct_unit,
+            direct_symbol,
+            scope,
+            Some(alias.target_interface_name.as_ref()),
+            alias.target_member_name.as_ref(),
+            visited,
+        );
+    }
+
+    if qualifier.is_none() {
+        for implemented in direct_unit
+            .implemented_interfaces
+            .iter()
+            .filter(|implemented| implemented.owner_symbol == direct_symbol)
+        {
+            let Some((interface_unit, interface_symbol)) =
+                resolve_exposed_interface_handle_with_scope_index(
+                    snapshot,
+                    scope_index,
+                    direct_unit,
+                    direct_symbol,
+                    scope,
+                    &implemented.interface_name,
+                )
+            else {
+                continue;
+            };
+            if let Some(found) = resolve_class_event_in_hierarchy_inner_with_scope_index(
+                snapshot,
+                scope_index,
+                interface_unit,
+                interface_symbol,
+                scope,
+                None,
+                event_name,
+                visited,
+            ) {
+                return Some(found);
+            }
+        }
+    }
+
+    if qualifier.is_none()
+        && direct_unit.symbol(direct_symbol).kind == SymbolKind::Class
+        && let Some((super_unit, super_symbol)) =
+            direct_superclass_from_class(snapshot, direct_unit, direct_symbol)
+    {
+        return resolve_class_event_in_hierarchy_inner_with_scope_index(
+            snapshot,
+            scope_index,
+            super_unit,
+            super_symbol,
+            scope,
+            None,
+            event_name,
+            visited,
+        );
+    }
+
+    None
 }
 
 fn resolve_exposed_interface_handle_inner<'a>(
@@ -15978,6 +16333,73 @@ START-OF-SELECTION.
             .expect("parameter definition");
         assert_eq!(target.uri.as_ref(), "file:///fm_completion_dep.abap");
         assert_eq!(&dep_src[target.range.clone()], "cv_text");
+    }
+
+    #[test]
+    fn completion_and_definition_work_for_raise_event_named_arguments() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE lif_source.
+  EVENTS changed EXPORTING VALUE(value) TYPE string.
+ENDINTERFACE.
+
+CLASS lcl_sender DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_source.
+    METHODS trigger.
+ENDCLASS.
+
+CLASS lcl_sender IMPLEMENTATION.
+  METHOD trigger.
+    RAISE EVENT changed
+      EXPORTING
+        val.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///event_completion.abap", 1, src);
+
+        let completion_offset = src.find("val.\n").expect("value prefix") + 2;
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("event named argument completion");
+        let names: Vec<_> = completion
+            .items
+            .iter()
+            .map(|item| match item {
+                crate::CompletionItem::Selector(item) => item.name.as_ref(),
+                crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Template(item) => item.name.as_ref(),
+                crate::CompletionItem::Callable(item) => item.name.as_ref(),
+            })
+            .collect();
+        assert_eq!(names, vec!["value"]);
+
+        let src_with_value = src.replace("val.", "value = 'x'.");
+        let snapshot = store.publish("file:///event_completion.abap", 2, &src_with_value);
+        let parameter_offset = src_with_value.rfind("value").expect("event parameter use") + 1;
+
+        let hovered = snapshot
+            .hovered_named_argument_at(parameter_offset)
+            .expect("event parameter hover");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE string\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+
+        let target = snapshot
+            .definition_at(parameter_offset)
+            .expect("event parameter definition");
+        assert_target_slice(&target, "file:///event_completion.abap", &src_with_value, "value");
+        assert_eq!(
+            target.range.start,
+            src_with_value
+                .find("value) TYPE string")
+                .expect("event parameter declaration")
+        );
     }
 
     #[test]

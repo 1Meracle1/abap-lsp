@@ -145,6 +145,8 @@ pub enum SyntaxKind {
     ClassSectionVisibility,
     /// `METHODS ... .` or `CLASS-METHODS ... .`
     MethodsStmt,
+    /// `EVENTS ... .` or `CLASS-EVENTS ... .`
+    EventsStmt,
     /// `INTERFACES if_name .`
     InterfacesStmt,
     /// `REPORT ... .`
@@ -427,6 +429,8 @@ pub enum SyntaxKind {
     RollbackWorkStmt,
     /// `RAISE ... .`
     RaiseStmt,
+    /// `RAISE EVENT ... .`
+    RaiseEventStmt,
     /// `MESSAGE ... .`
     MessageStmt,
     /// `MESSAGE` payload before `WITH` / `INTO` / `DISPLAY LIKE` / `RAISING`.
@@ -593,6 +597,7 @@ impl SyntaxKind {
             Self::ClassSectionStmt => "ClassSectionStmt",
             Self::ClassSectionVisibility => "ClassSectionVisibility",
             Self::MethodsStmt => "MethodsStmt",
+            Self::EventsStmt => "EventsStmt",
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
             Self::TablesDecl => "TablesDecl",
@@ -734,6 +739,7 @@ impl SyntaxKind {
             Self::CommitWorkStmt => "CommitWorkStmt",
             Self::RollbackWorkStmt => "RollbackWorkStmt",
             Self::RaiseStmt => "RaiseStmt",
+            Self::RaiseEventStmt => "RaiseEventStmt",
             Self::MessageStmt => "MessageStmt",
             Self::MessageHeadClause => "MessageHeadClause",
             Self::MessageIdOperand => "MessageIdOperand",

@@ -343,7 +343,8 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             }
             NamedArgumentTarget::Constructor { .. }
             | NamedArgumentTarget::Function { .. }
-            | NamedArgumentTarget::Report { .. } => TypeFactData::default(),
+            | NamedArgumentTarget::Report { .. }
+            | NamedArgumentTarget::Event { .. } => TypeFactData::default(),
         }
     }
 

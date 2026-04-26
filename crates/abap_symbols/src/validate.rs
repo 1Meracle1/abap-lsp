@@ -1505,6 +1505,75 @@ fn inherited_redefinition_method_scope_symbol_specs(
     out
 }
 
+fn resolve_event_handler_method_context<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let method_symbol = enclosing_method_owner(unit, scope)?;
+    let method_name = unit.symbol(method_symbol).name.as_ref();
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let (member_unit, member) =
+        resolve_class_member_in_hierarchy(project, lookup, unit, class_symbol, method_name)?;
+    member
+        .signature
+        .split_ascii_whitespace()
+        .any(|part| part.eq_ignore_ascii_case("for"))
+        .then_some((member_unit, member))
+        .filter(|(_, member)| member.signature.to_ascii_lowercase().contains("for event"))
+}
+
+fn event_handler_method_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    let method_scopes: Vec<_> = unit
+        .scopes
+        .iter()
+        .filter(|scope| scope.kind == ScopeKind::Method)
+        .map(|scope| scope.id)
+        .collect();
+    let mut out = Vec::new();
+    let mut next_symbol_id = unit.symbols.len() as u32;
+
+    for scope_id in method_scopes {
+        let Some((_, member)) = resolve_event_handler_method_context(project, lookup, unit, scope_id)
+        else {
+            continue;
+        };
+        for param in &member.parameters {
+            let has_param = unit.symbols.iter().any(|symbol| {
+                symbol.scope == scope_id
+                    && symbol.kind == SymbolKind::Parameter
+                    && symbol.name == param.name
+            });
+            if has_param {
+                continue;
+            }
+            let id = SymbolId(next_symbol_id);
+            next_symbol_id += 1;
+            out.push((
+                scope_id,
+                crate::SymbolData {
+                    id,
+                    name: Arc::clone(&param.name),
+                    kind: SymbolKind::Parameter,
+                    scope: scope_id,
+                    decl_range: 0..0,
+                    structure: None,
+                    declared_type: param.declared_type.clone(),
+                    type_clause_display: param.type_clause_display.clone(),
+                    value_clause_display: None,
+                },
+            ));
+        }
+    }
+
+    out
+}
+
 fn loop_field_scope_symbol_specs<'a>(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -1987,6 +2056,7 @@ fn resolve_method_target_handle(
             }
             Namespace::Routine => None,
         },
+        NamedArgumentTarget::Event { .. } => None,
         NamedArgumentTarget::Function { .. }
         | NamedArgumentTarget::Report { .. }
         | NamedArgumentTarget::Routine { .. } => None,
@@ -2013,6 +2083,7 @@ fn resolve_call_target_member<'a>(
         NamedArgumentTarget::Constructor { .. } => "constructor",
         NamedArgumentTarget::ImplicitMethod { method_name } => method_name.as_ref(),
         NamedArgumentTarget::Method { method_name, .. } => method_name.as_ref(),
+        NamedArgumentTarget::Event { .. } => return None,
         NamedArgumentTarget::Function { .. }
         | NamedArgumentTarget::Report { .. }
         | NamedArgumentTarget::Routine { .. } => return None,
@@ -2028,6 +2099,154 @@ fn resolve_call_target_member<'a>(
                 .class_member(handle.symbol, method_name)
                 .map(|member| (target_unit, member))
         })
+}
+
+fn call_section_matches_event_parameter(
+    call_section: Option<crate::NamedArgumentSection>,
+    parameter_section: crate::MethodParameterSection,
+) -> bool {
+    matches!(
+        (call_section, parameter_section),
+        (
+            None | Some(crate::NamedArgumentSection::Exporting),
+            crate::MethodParameterSection::Exporting
+        )
+    )
+}
+
+fn event_parameter_is_required(parameter: &crate::ClassMemberParameterData) -> bool {
+    !parameter.is_optional && parameter.section == crate::MethodParameterSection::Exporting
+}
+
+fn resolve_call_target_event_member<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    call_site: &crate::CallSiteData,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let NamedArgumentTarget::Event {
+        qualifier,
+        event_name,
+    } = &call_site.target
+    else {
+        return None;
+    };
+    let class_symbol = enclosing_class_owner(unit, call_site.scope)?;
+    resolve_class_event_in_hierarchy(
+        project,
+        lookup,
+        SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class_symbol,
+        },
+        qualifier.as_deref(),
+        event_name.as_ref(),
+    )
+}
+
+fn resolve_class_event_in_hierarchy<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    owner: SymbolHandle,
+    qualifier: Option<&str>,
+    event_name: &str,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    resolve_class_event_in_hierarchy_inner(
+        project,
+        lookup,
+        owner,
+        qualifier,
+        event_name,
+        &mut HashSet::new(),
+    )
+}
+
+fn resolve_class_event_in_hierarchy_inner<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    owner: SymbolHandle,
+    qualifier: Option<&str>,
+    event_name: &str,
+    visited: &mut HashSet<(SymbolHandle, Option<Arc<str>>, Arc<str>)>,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let key = (
+        owner,
+        qualifier.map(Arc::<str>::from),
+        Arc::<str>::from(event_name),
+    );
+    if !visited.insert(key) {
+        return None;
+    }
+
+    let direct_owner = if let Some(interface_name) = qualifier {
+        resolve_exposed_interface_handle(project, lookup, owner, interface_name)?
+    } else {
+        owner
+    };
+    let direct_owner_unit = &project.units[direct_owner.unit.as_usize()];
+    if let Some(member) = direct_owner_unit
+        .class_member(direct_owner.symbol, event_name)
+        .filter(|member| member.kind == ClassMemberKind::Event)
+    {
+        return Some((direct_owner_unit, member));
+    }
+
+    if let Some(alias) = direct_owner_unit.member_aliases.iter().find(|alias| {
+        alias.owner_symbol == direct_owner.symbol && alias.alias_name.as_ref() == event_name
+    }) {
+        return resolve_class_event_in_hierarchy_inner(
+            project,
+            lookup,
+            direct_owner,
+            Some(alias.target_interface_name.as_ref()),
+            alias.target_member_name.as_ref(),
+            visited,
+        );
+    }
+
+    if qualifier.is_none() {
+        for implemented in direct_owner_unit
+            .implemented_interfaces
+            .iter()
+            .filter(|implemented| implemented.owner_symbol == direct_owner.symbol)
+        {
+            let Some(interface_handle) = resolve_exposed_interface_handle(
+                project,
+                lookup,
+                direct_owner,
+                implemented.interface_name.as_ref(),
+            ) else {
+                continue;
+            };
+            if let Some(found) = resolve_class_event_in_hierarchy_inner(
+                project,
+                lookup,
+                interface_handle,
+                None,
+                event_name,
+                visited,
+            ) {
+                return Some(found);
+            }
+        }
+    }
+
+    if qualifier.is_none()
+        && direct_owner_unit.symbol(direct_owner.symbol).kind == SymbolKind::Class
+        && let Some(superclass) =
+            direct_superclass_handle(project, lookup, direct_owner_unit, direct_owner.symbol)
+    {
+        return resolve_class_event_in_hierarchy_inner(
+            project,
+            lookup,
+            superclass,
+            None,
+            event_name,
+            visited,
+        );
+    }
+
+    None
 }
 
 fn resolve_call_target_function_module<'a>(
@@ -3205,6 +3424,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             symbols.extend(inherited_redefinition_method_scope_symbol_specs(
                 project, &lookup, unit,
             ));
+            symbols.extend(event_handler_method_scope_symbol_specs(
+                project, &lookup, unit,
+            ));
             symbols.extend(loop_where_scope_symbol_specs(
                 project,
                 &lookup,
@@ -3981,6 +4203,85 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                                 "missing required parameter '{}' for function module '{}'",
                                 parameter.name,
                                 target_unit.symbol(function_module.symbol).name
+                            ),
+                        });
+                    }
+                }
+
+                continue;
+            }
+
+            if let Some((target_unit, member)) =
+                resolve_call_target_event_member(project, &lookup, unit, call_site)
+            {
+                let mut matched_required = HashSet::<Arc<str>>::new();
+                let mut seen_named = HashSet::<Arc<str>>::new();
+
+                for argument in &call_site.arguments {
+                    let Some(name) = argument.name.as_ref() else {
+                        continue;
+                    };
+                    if !seen_named.insert(Arc::clone(name)) {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::DuplicateNamedParameter,
+                            range: argument.range.clone(),
+                            message: format!("duplicate named parameter '{}'", name),
+                        });
+                        continue;
+                    }
+                    let Some(parameter) = member.parameters.iter().find(|parameter| {
+                        parameter.name == *name
+                            && call_section_matches_event_parameter(
+                                argument.section,
+                                parameter.section,
+                            )
+                    }) else {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnknownNamedParameter,
+                            range: argument.range.clone(),
+                            message: format!(
+                                "unknown named parameter '{}' for event '{}'",
+                                name, member.name
+                            ),
+                        });
+                        continue;
+                    };
+                    if event_parameter_is_required(parameter) {
+                        matched_required.insert(Arc::clone(&parameter.name));
+                    }
+                    if matches!(
+                        type_facts_compatible(
+                            project,
+                            target_unit,
+                            &method_parameter_type_fact(parameter),
+                            unit,
+                            &argument.type_fact,
+                        ),
+                        Some(false)
+                    ) {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::IncompatibleArgumentType,
+                            range: argument.range.clone(),
+                            message: format!(
+                                "argument '{}' expects '{}', got '{}'",
+                                parameter.name,
+                                type_fact_label(&method_parameter_type_fact(parameter)),
+                                type_fact_label(&argument.type_fact)
+                            ),
+                        });
+                    }
+                }
+
+                for parameter in &member.parameters {
+                    if event_parameter_is_required(parameter)
+                        && !matched_required.contains(&parameter.name)
+                    {
+                        unit_diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::MissingRequiredParameter,
+                            range: call_site.range.clone(),
+                            message: format!(
+                                "missing required parameter '{}' for event '{}'",
+                                parameter.name, member.name
                             ),
                         });
                     }

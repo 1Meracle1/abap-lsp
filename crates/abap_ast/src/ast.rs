@@ -11,6 +11,12 @@ pub enum MethodsStmtKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventsStmtKind {
+    Instance,
+    Class,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MethodsParamSectionKind {
     Importing,
     Exporting,
@@ -176,6 +182,32 @@ impl<'a> MethodsStmtSignature<'a> {
 }
 
 #[derive(Clone)]
+pub struct MethodsStmtEventHandler<'a> {
+    event_qualifier: Option<SyntaxNodeRef<'a>>,
+    event_name: SyntaxNodeRef<'a>,
+    source_type_ref: TypeRefSimple<'a>,
+    importing: Vec<SyntaxNodeRef<'a>>,
+}
+
+impl<'a> MethodsStmtEventHandler<'a> {
+    pub fn event_qualifier(&self) -> Option<SyntaxNodeRef<'a>> {
+        self.event_qualifier
+    }
+
+    pub fn event_name(&self) -> SyntaxNodeRef<'a> {
+        self.event_name
+    }
+
+    pub fn source_type_ref(&self) -> TypeRefSimple<'a> {
+        self.source_type_ref
+    }
+
+    pub fn importing_names(&self) -> &[SyntaxNodeRef<'a>] {
+        &self.importing
+    }
+}
+
+#[derive(Clone)]
 pub struct MethodsStmtEntry<'a> {
     kind: MethodsStmtKind,
     items: Vec<SyntaxNodeRef<'a>>,
@@ -208,6 +240,90 @@ impl<'a> MethodsStmtEntry<'a> {
 
     pub fn signature(&self, source: &str) -> MethodsStmtSignature<'a> {
         MethodsStmt::parse_signature_items(&self.items, source)
+    }
+
+    pub fn event_handler(&self, source: &str) -> Option<MethodsStmtEventHandler<'a>> {
+        MethodsStmt::parse_event_handler_items(&self.items, source)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct EventsStmtParameter<'a> {
+    name: SyntaxNodeRef<'a>,
+    type_clause: MethodsTypeClauseKind,
+    type_ref: Option<TypeRefSimple<'a>>,
+    type_display_range: Option<(usize, usize)>,
+    is_optional: bool,
+}
+
+impl<'a> EventsStmtParameter<'a> {
+    pub fn name_token(self) -> SyntaxNodeRef<'a> {
+        self.name
+    }
+
+    pub fn type_clause(self) -> MethodsTypeClauseKind {
+        self.type_clause
+    }
+
+    pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
+        self.type_ref
+    }
+
+    pub fn type_display_text(self, source: &'a str) -> Option<&'a str> {
+        let (start, end) = self.type_display_range?;
+        let text = source.get(start..end)?;
+        let trimmed = text.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    }
+
+    pub fn is_optional(self) -> bool {
+        self.is_optional
+    }
+}
+
+pub struct EventsStmtSignature<'a> {
+    parameters: Vec<EventsStmtParameter<'a>>,
+}
+
+impl<'a> EventsStmtSignature<'a> {
+    pub fn parameters(&self) -> &[EventsStmtParameter<'a>] {
+        &self.parameters
+    }
+}
+
+#[derive(Clone)]
+pub struct EventsStmtEntry<'a> {
+    kind: EventsStmtKind,
+    items: Vec<SyntaxNodeRef<'a>>,
+}
+
+impl<'a> EventsStmtEntry<'a> {
+    pub fn member_kind(&self) -> EventsStmtKind {
+        self.kind
+    }
+
+    pub fn name_token(&self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        self.items
+            .iter()
+            .copied()
+            .find(|item| EventsStmt::is_ident_token(*item, source))
+    }
+
+    pub fn signature_text(&self, source: &str) -> String {
+        let keyword = match self.kind {
+            EventsStmtKind::Instance => "EVENTS",
+            EventsStmtKind::Class => "CLASS-EVENTS",
+        };
+        let body = signature_text_from_tokens(&self.items, source);
+        if body.is_empty() {
+            keyword.to_string()
+        } else {
+            format!("{keyword} {body}")
+        }
+    }
+
+    pub fn signature(&self, source: &str) -> EventsStmtSignature<'a> {
+        EventsStmt::parse_signature_items(&self.items, source)
     }
 }
 
@@ -492,6 +608,7 @@ ast_node!(MethodDeclTarget, SyntaxKind::MethodDeclTarget);
 ast_node!(ClassSectionStmt, SyntaxKind::ClassSectionStmt);
 ast_node!(ClassSectionVisibility, SyntaxKind::ClassSectionVisibility);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
+ast_node!(EventsStmt, SyntaxKind::EventsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(ClearStmt, SyntaxKind::ClearStmt);
 ast_node!(ClearOperand, SyntaxKind::ClearOperand);
@@ -1993,6 +2110,113 @@ impl<'a> MethodsStmt<'a> {
         signature
     }
 
+    fn parse_event_handler_items(
+        items: &[SyntaxNodeRef<'a>],
+        source: &str,
+    ) -> Option<MethodsStmtEventHandler<'a>> {
+        let mut idx = 0usize;
+        while let Some(item) = items.get(idx).copied() {
+            if Self::is_punctuation(item, source) {
+                idx += 1;
+                continue;
+            }
+            if Self::is_ident_token(item, source) {
+                idx += 1;
+            }
+            break;
+        }
+        while idx < items.len() {
+            let item = items[idx];
+            if let Some(next_idx) = Self::header_modifier_span(items, idx, source) {
+                idx = next_idx;
+                continue;
+            }
+            if Self::token_text_is(item, source, "default")
+                && items
+                    .get(idx + 1)
+                    .is_some_and(|next| {
+                        Self::token_text_is(*next, source, "ignore")
+                            || Self::token_text_is(*next, source, "fail")
+                    })
+            {
+                idx += 2;
+                continue;
+            }
+            break;
+        }
+        if !items
+            .get(idx)
+            .is_some_and(|item| Self::token_text_is(*item, source, "for"))
+            || !items
+                .get(idx + 1)
+                .is_some_and(|item| Self::token_text_is(*item, source, "event"))
+        {
+            return None;
+        }
+        idx += 2;
+
+        let event_qualifier = items.get(idx).copied().and_then(|item| {
+            items.get(idx + 1)
+                .filter(|tilde| Self::token_text_is(**tilde, source, "~"))
+                .and(items.get(idx + 2))
+                .filter(|event_name| Self::is_ident_token(**event_name, source))
+                .map(|_| item)
+        });
+        let event_name = if event_qualifier.is_some() {
+            let event_name = *items.get(idx + 2)?;
+            idx += 3;
+            event_name
+        } else {
+            let event_name = *items.get(idx)?;
+            if !Self::is_ident_token(event_name, source) {
+                return None;
+            }
+            idx += 1;
+            event_name
+        };
+
+        if !items
+            .get(idx)
+            .is_some_and(|item| Self::token_text_is(*item, source, "of"))
+        {
+            return None;
+        }
+        idx += 1;
+        let source_type_ref = items.get(idx).copied().and_then(TypeRefSimple::cast)?;
+        idx += 1;
+
+        let mut importing = Vec::new();
+        if items
+            .get(idx)
+            .is_some_and(|item| Self::token_text_is(*item, source, "importing"))
+        {
+            idx += 1;
+            while let Some(item) = items.get(idx).copied() {
+                if Self::token_text_is(item, source, ".")
+                    || Self::token_text_is(item, source, "raising")
+                    || Self::token_text_is(item, source, "exceptions")
+                {
+                    break;
+                }
+                if Self::is_punctuation(item, source) {
+                    idx += 1;
+                    continue;
+                }
+                if Self::is_ident_token(item, source) {
+                    importing.push(item);
+                }
+                idx += 1;
+            }
+        }
+
+        Some(MethodsStmtEventHandler {
+            event_qualifier,
+            event_name,
+            source_type_ref,
+            importing,
+        })
+    }
+
     fn significant_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
         let _ = source;
         self.syntax.children().collect()
@@ -2249,6 +2473,191 @@ impl<'a> MethodsStmt<'a> {
             }
         }
         first.zip(last)
+    }
+}
+
+impl<'a> EventsStmt<'a> {
+    pub fn type_refs(&self) -> impl DoubleEndedIterator<Item = TypeRefSimple<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(TypeRefSimple::cast)
+    }
+
+    pub fn member_kind(self, source: &str) -> Option<EventsStmtKind> {
+        let items = self.significant_children(source);
+        let first = *items.first()?;
+        if Self::token_text_is(first, source, "events") {
+            return Some(EventsStmtKind::Instance);
+        }
+        if items.len() >= 3
+            && Self::token_text_is(items[0], source, "class")
+            && Self::token_text_is(items[1], source, "-")
+            && Self::token_text_is(items[2], source, "events")
+        {
+            return Some(EventsStmtKind::Class);
+        }
+        None
+    }
+
+    pub fn entries(self, source: &str) -> Vec<EventsStmtEntry<'a>> {
+        let items = self.significant_children(source);
+        let (kind, mut idx) = match self.member_kind(source) {
+            Some(EventsStmtKind::Instance) => (EventsStmtKind::Instance, 1),
+            Some(EventsStmtKind::Class) => (EventsStmtKind::Class, 3),
+            None => return Vec::new(),
+        };
+        let mut entries = Vec::new();
+        while idx < items.len() {
+            while items
+                .get(idx)
+                .is_some_and(|item| Self::is_punctuation(*item, source))
+            {
+                idx += 1;
+            }
+            if items
+                .get(idx)
+                .is_some_and(|item| Self::token_text_is(*item, source, "."))
+            {
+                break;
+            }
+            if idx >= items.len() {
+                break;
+            }
+            let start = idx;
+            let mut depth = 0i32;
+            while idx < items.len() {
+                let item = items[idx];
+                match item.text(source) {
+                    Some("(" | "[" | "{") => depth += 1,
+                    Some(")" | "]" | "}") => depth -= 1,
+                    Some(",") | Some(".") if depth == 0 => break,
+                    _ => {}
+                }
+                idx += 1;
+            }
+            let entry_items = items[start..idx].to_vec();
+            if !entry_items.is_empty() {
+                entries.push(EventsStmtEntry {
+                    kind,
+                    items: entry_items,
+                });
+            }
+            if items
+                .get(idx)
+                .is_some_and(|item| Self::token_text_is(*item, source, "."))
+            {
+                break;
+            }
+            idx += 1;
+        }
+        entries
+    }
+
+    fn parse_signature_items(items: &[SyntaxNodeRef<'a>], source: &str) -> EventsStmtSignature<'a> {
+        let mut signature = EventsStmtSignature {
+            parameters: Vec::new(),
+        };
+        let mut idx = 0usize;
+        while let Some(item) = items.get(idx).copied() {
+            if Self::is_punctuation(item, source) {
+                idx += 1;
+                continue;
+            }
+            if Self::is_ident_token(item, source) {
+                idx += 1;
+            }
+            break;
+        }
+        if !items
+            .get(idx)
+            .is_some_and(|item| Self::token_text_is(*item, source, "exporting"))
+        {
+            return signature;
+        }
+        idx += 1;
+        while idx < items.len() {
+            let item = items[idx];
+            if Self::token_text_is(item, source, ".") {
+                break;
+            }
+            if let Some((param, next_idx)) = Self::try_consume_parameter(items, idx, source) {
+                signature.parameters.push(param);
+                idx = next_idx;
+                continue;
+            }
+            idx += 1;
+        }
+        signature
+    }
+
+    fn significant_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
+        let _ = source;
+        self.syntax.children().collect()
+    }
+
+    fn token_text_is(node: SyntaxNodeRef<'a>, source: &str, expected: &str) -> bool {
+        node.text(source)
+            .is_some_and(|text| text.eq_ignore_ascii_case(expected))
+    }
+
+    fn is_ident_token(node: SyntaxNodeRef<'a>, source: &str) -> bool {
+        node.kind() == SyntaxKind::Token
+            && !matches!(
+                node.text(source),
+                Some("(" | ")" | "[" | "]" | ":" | "," | "." | "-")
+            )
+    }
+
+    fn is_punctuation(node: SyntaxNodeRef<'a>, source: &str) -> bool {
+        node.kind() == SyntaxKind::Token
+            && node
+                .text(source)
+                .is_some_and(|text| matches!(text, ":" | "," | "."))
+    }
+
+    fn try_consume_parameter(
+        items: &[SyntaxNodeRef<'a>],
+        idx: usize,
+        source: &str,
+    ) -> Option<(EventsStmtParameter<'a>, usize)> {
+        let mut j = idx;
+        while items
+            .get(j)
+            .is_some_and(|item| Self::is_punctuation(*item, source))
+        {
+            j += 1;
+        }
+
+        let (name, mut j) = MethodsStmt::parameter_name(items, j, source)?;
+        while items
+            .get(j)
+            .is_some_and(|item| Self::is_punctuation(*item, source))
+        {
+            j += 1;
+        }
+
+        let type_clause = match items.get(j).copied() {
+            Some(item) if Self::token_text_is(item, source, "type") => MethodsTypeClauseKind::Type,
+            Some(item) if Self::token_text_is(item, source, "like") => MethodsTypeClauseKind::Like,
+            _ => return None,
+        };
+        j += 1;
+
+        let type_ref = items.get(j).copied().and_then(TypeRefSimple::cast);
+        let next_idx = MethodsStmt::skip_type_expression(items, j, source);
+        let type_display_range = MethodsStmt::token_span(&items[j..next_idx]);
+        let is_optional = items.get(next_idx).is_some_and(|item| {
+            Self::token_text_is(*item, source, "optional")
+                || Self::token_text_is(*item, source, "default")
+        });
+        Some((
+            EventsStmtParameter {
+                name,
+                type_clause,
+                type_ref,
+                type_display_range,
+                is_optional,
+            },
+            next_idx,
+        ))
     }
 }
 
@@ -2794,6 +3203,12 @@ impl<'a> CallStmt<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::CallArgList)
             .and_then(CallArgList::cast)
+    }
+}
+
+impl<'a> InterfacesStmt<'a> {
+    pub fn type_refs(&self) -> impl DoubleEndedIterator<Item = TypeRefSimple<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(TypeRefSimple::cast)
     }
 }
 

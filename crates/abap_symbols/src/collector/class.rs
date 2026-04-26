@@ -3,8 +3,9 @@ use std::sync::Arc;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, DataLikeDecl,
-    DataLikeStorageKind, InterfaceDecl, MethodsParamSectionKind, MethodsStmt, MethodsStmtEntry,
-    MethodsStmtKind, MethodsTypeClauseKind,
+    DataLikeStorageKind, EventsStmt, EventsStmtEntry, EventsStmtKind, InterfaceDecl,
+    MethodsParamSectionKind, MethodsStmt, MethodsStmtEntry, MethodsStmtKind,
+    MethodsTypeClauseKind,
 };
 use abap_lexer::TextRange;
 
@@ -97,6 +98,22 @@ impl<'a> Collector<'a> {
             owner_symbol,
             qualifier,
             member_name,
+            lookup_scope,
+            &mut Vec::new(),
+        )
+    }
+
+    pub(super) fn class_event_target_data(
+        &self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
+        event_name: &str,
+        lookup_scope: ScopeId,
+    ) -> Option<ClassMemberData> {
+        self.class_event_target_data_inner(
+            owner_symbol,
+            qualifier,
+            event_name,
             lookup_scope,
             &mut Vec::new(),
         )
@@ -220,6 +237,97 @@ impl<'a> Collector<'a> {
                 superclass_symbol,
                 None,
                 member_name,
+                lookup_scope,
+                visited,
+            );
+        }
+
+        None
+    }
+
+    fn class_event_target_data_inner(
+        &self,
+        owner_symbol: SymbolId,
+        qualifier: Option<&str>,
+        event_name: &str,
+        lookup_scope: ScopeId,
+        visited: &mut Vec<(SymbolId, Option<Arc<str>>, Arc<str>)>,
+    ) -> Option<ClassMemberData> {
+        let key = (
+            owner_symbol,
+            qualifier.map(Arc::<str>::from),
+            Arc::<str>::from(event_name),
+        );
+        if visited.contains(&key) {
+            return None;
+        }
+        visited.push(key);
+
+        let direct_owner = if let Some(interface_name) = qualifier {
+            self.resolve_exposed_interface_symbol(owner_symbol, lookup_scope, interface_name)?
+        } else {
+            owner_symbol
+        };
+
+        if let Some(member) = self.class_members.iter().find(|member| {
+            member.class_symbol == direct_owner
+                && member.kind == ClassMemberKind::Event
+                && member.name.as_ref() == event_name
+        }) {
+            return Some(member.clone());
+        }
+
+        if let Some(alias) = self.member_alias(direct_owner, event_name) {
+            return self.class_event_target_data_inner(
+                direct_owner,
+                Some(alias.target_interface_name.as_ref()),
+                alias.target_member_name.as_ref(),
+                lookup_scope,
+                visited,
+            );
+        }
+
+        if qualifier.is_none() {
+            for implemented in self
+                .implemented_interfaces
+                .iter()
+                .filter(|implemented| implemented.owner_symbol == direct_owner)
+            {
+                let Some(interface_symbol) = self
+                    .lookup_symbol_in_scope_chain(
+                        lookup_scope,
+                        Namespace::Type,
+                        implemented.interface_name.as_ref(),
+                    )
+                    .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Interface)
+                else {
+                    continue;
+                };
+                if let Some(found) = self.class_event_target_data_inner(
+                    interface_symbol,
+                    None,
+                    event_name,
+                    lookup_scope,
+                    visited,
+                ) {
+                    return Some(found);
+                }
+            }
+        }
+
+        if qualifier.is_none() && self.symbol(direct_owner).kind == SymbolKind::Class {
+            let superclass_name = self.class_superclasses.get(&direct_owner)?;
+            let superclass_symbol = self
+                .lookup_symbol_in_scope_chain(
+                    lookup_scope,
+                    Namespace::Type,
+                    superclass_name.as_ref(),
+                )
+                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class)?;
+            return self.class_event_target_data_inner(
+                superclass_symbol,
+                None,
+                event_name,
                 lookup_scope,
                 visited,
             );
@@ -492,6 +600,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         default_visibility: Visibility,
     ) {
         let mut visibility = default_visibility;
+        let mut pending_methods = Vec::new();
+        let mut pending_events = Vec::new();
         let mut stack: Vec<_> = self.collector.file.children(node).rev().collect();
         while let Some(child) = stack.pop() {
             match self.collector.file.kind(child) {
@@ -509,38 +619,37 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                         visibility = section_visibility;
                     }
                 }
+                abap_ast::SyntaxKind::InterfacesStmt => {
+                    self.collect_interface_exposure_stmt(child, class_symbol, class_scope);
+                }
                 abap_ast::SyntaxKind::MethodsStmt => {
                     let Some(methods_stmt) = MethodsStmt::cast(self.collector.syntax(child)) else {
                         continue;
                     };
-                    let mut pending_methods = Vec::new();
                     for entry in methods_stmt.entries(self.collector.source) {
-                        let Some(mut member) =
+                        let Some(member) =
                             self.class_member_from_methods_stmt(class_symbol, visibility, &entry)
                         else {
                             continue;
                         };
-                        if member.kind == ClassMemberKind::Method {
-                            let signature = self.parse_method_signature(&entry);
-                            member.parameters = self.class_member_parameters(&signature);
-                            pending_methods.push((member, Some(signature)));
-                        } else {
-                            pending_methods.push((member, None));
-                        }
+                        let signature = self.parse_method_signature(&entry);
+                        pending_methods.push((member, signature, self.collector.file.range(child)));
                     }
-                    for (member, signature) in pending_methods {
-                        if let Some(signature) = signature {
-                            self.declare_method_signature_parameter_symbols(
-                                self.collector.file.range(child),
-                                &signature,
-                            );
-                            self.collector
-                                .class_method_signatures
-                                .entry(class_symbol)
-                                .or_default()
-                                .insert(Arc::clone(&member.name), signature);
-                        }
-                        self.collector.emit_class_member(member);
+                }
+                abap_ast::SyntaxKind::EventsStmt => {
+                    let Some(events_stmt) = EventsStmt::cast(self.collector.syntax(child)) else {
+                        continue;
+                    };
+                    for entry in events_stmt.entries(self.collector.source) {
+                        let Some(member) = self.class_member_from_events_stmt(
+                            class_symbol,
+                            visibility,
+                            &entry,
+                            class_scope,
+                        ) else {
+                            continue;
+                        };
+                        pending_events.push(member);
                     }
                 }
                 abap_ast::SyntaxKind::DataDecl
@@ -559,6 +668,23 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                     }
                 }
             }
+        }
+
+        for member in pending_events {
+            self.declare_event_member_symbol(class_scope, &member);
+            self.collector.emit_class_member(member);
+        }
+
+        for (mut member, mut signature, stmt_range) in pending_methods {
+            self.resolve_event_handler_signature_parameters(class_symbol, class_scope, &mut signature);
+            member.parameters = self.class_member_parameters(&signature);
+            self.declare_method_signature_parameter_symbols(stmt_range, &signature);
+            self.collector
+                .class_method_signatures
+                .entry(class_symbol)
+                .or_default()
+                .insert(Arc::clone(&member.name), signature);
+            self.collector.emit_class_member(member);
         }
     }
 
@@ -591,6 +717,81 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             parameters: Vec::new(),
             structure: None,
         })
+    }
+
+    fn class_member_from_events_stmt(
+        &self,
+        class_symbol: SymbolId,
+        visibility: Visibility,
+        entry: &EventsStmtEntry<'_>,
+        scope: ScopeId,
+    ) -> Option<ClassMemberData> {
+        let is_static = matches!(entry.member_kind(), EventsStmtKind::Class);
+        let name_tok = entry.name_token(self.collector.source)?;
+        Some(ClassMemberData {
+            class_symbol,
+            name: Arc::<str>::from(
+                name_tok
+                    .text(self.collector.source)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            ),
+            kind: ClassMemberKind::Event,
+            visibility,
+            is_static,
+            decl_range: name_tok.range(),
+            implementation_range: None,
+            implementation: None,
+            signature: Arc::<str>::from(entry.signature_text(self.collector.source)),
+            parameters: self.class_event_parameters(entry, scope),
+            structure: None,
+        })
+    }
+
+    fn collect_interface_exposure_stmt(
+        &mut self,
+        node: NodeId,
+        owner_symbol: SymbolId,
+        scope: ScopeId,
+    ) {
+        let Some(stmt) = abap_ast::ast::InterfacesStmt::cast(self.collector.syntax(node)) else {
+            return;
+        };
+        let interfaces = stmt
+            .type_refs()
+            .filter_map(|type_ref| {
+                self.collector
+                    .type_ref_access_chain(type_ref.syntax().id(), Namespace::Type)
+                    .map(|(_, _, interface_name, range, _)| (interface_name, range))
+            })
+            .collect::<Vec<_>>();
+        for (interface_name, range) in interfaces {
+            if !self.collector.implemented_interfaces.iter().any(|implemented| {
+                implemented.owner_symbol == owner_symbol && implemented.interface_name == interface_name
+            }) {
+                self.collector
+                    .implemented_interfaces
+                    .push(crate::ImplementedInterfaceData {
+                        owner_symbol,
+                        interface_name,
+                        range,
+                    });
+            }
+        }
+        let _ = scope;
+    }
+
+    fn declare_event_member_symbol(&mut self, scope: ScopeId, member: &ClassMemberData) {
+        self.collector.declare_symbol(
+            scope,
+            Arc::clone(&member.name),
+            SymbolKind::Event,
+            member.decl_range.clone(),
+            None,
+            None,
+            None,
+            None,
+        );
     }
 
     fn collect_class_attribute_members(
@@ -679,6 +880,41 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 declared_type: param.declared_type.clone(),
                 type_clause_display: param.type_clause_display.clone(),
                 is_optional: param.is_optional,
+            })
+            .collect()
+    }
+
+    fn class_event_parameters(
+        &self,
+        entry: &EventsStmtEntry<'_>,
+        _scope: ScopeId,
+    ) -> Vec<crate::def_map::ClassMemberParameterData> {
+        entry.signature(self.collector.source)
+            .parameters()
+            .iter()
+            .map(|param| {
+                let clause_ns = match param.type_clause() {
+                    MethodsTypeClauseKind::Type => Namespace::Type,
+                    MethodsTypeClauseKind::Like => Namespace::Value,
+                };
+                crate::def_map::ClassMemberParameterData {
+                    section: MethodParameterSection::Exporting,
+                    name: Arc::<str>::from(
+                        param.name_token()
+                            .text(self.collector.source)
+                            .unwrap_or_default()
+                            .to_ascii_lowercase(),
+                    ),
+                    range: param.name_token().range(),
+                    declared_type: param.type_ref().and_then(|type_ref| {
+                        self.collector
+                            .field_type_ref_from_node(type_ref.syntax().id(), clause_ns)
+                    }),
+                    type_clause_display: param
+                        .type_display_text(self.collector.source)
+                        .map(Arc::from),
+                    is_optional: param.is_optional(),
+                }
             })
             .collect()
     }
@@ -783,7 +1019,132 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 is_optional: param.is_optional(),
             });
         }
+        if let Some(handler) = entry.event_handler(self.collector.source)
+            && let Some(spec) = self.pending_event_handler_spec(&handler)
+        {
+            signature.event_handler = Some(spec);
+        }
         signature
+    }
+
+    fn pending_event_handler_spec(
+        &self,
+        handler: &abap_ast::ast::MethodsStmtEventHandler<'_>,
+    ) -> Option<super::PendingEventHandlerSpec> {
+        let source_type_ref = handler.source_type_ref();
+        let source_type_display = Arc::<str>::from(
+            source_type_ref
+                .display_text(self.collector.source)?
+                .trim()
+                .to_string(),
+        );
+        let source_type_name = Arc::<str>::from(source_type_display.to_ascii_lowercase());
+        let event_qualifier = handler.event_qualifier().and_then(|token| {
+            token.text(self.collector.source)
+                .map(|text| Arc::<str>::from(text.to_ascii_lowercase()))
+        });
+        let event_name = Arc::<str>::from(
+            handler
+                .event_name()
+                .text(self.collector.source)?
+                .to_ascii_lowercase(),
+        );
+        let importing_names = handler
+            .importing_names()
+            .iter()
+            .filter_map(|token| {
+                Some((
+                    Arc::<str>::from(token.text(self.collector.source)?.to_ascii_lowercase()),
+                    token.range(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        Some(super::PendingEventHandlerSpec {
+            event_qualifier,
+            event_name,
+            source_type_name,
+            source_type_display,
+            importing_names,
+        })
+    }
+
+    fn resolve_event_handler_signature_parameters(
+        &self,
+        _owner_symbol: SymbolId,
+        lookup_scope: ScopeId,
+        signature: &mut PendingMethodSignature,
+    ) {
+        if !signature.parameters.is_empty() {
+            return;
+        }
+        let Some(spec) = signature.event_handler.as_ref() else {
+            return;
+        };
+        let Some(source_symbol) = self
+            .collector
+            .lookup_symbol_in_scope_chain(
+                lookup_scope,
+                Namespace::Type,
+                spec.source_type_name.as_ref(),
+            )
+            .filter(|&symbol_id| {
+                matches!(
+                    self.collector.symbol(symbol_id).kind,
+                    SymbolKind::Class | SymbolKind::Interface
+                )
+            })
+        else {
+            return;
+        };
+        let Some(event_member) = self.collector.class_event_target_data(
+            source_symbol,
+            spec.event_qualifier.as_deref(),
+            spec.event_name.as_ref(),
+            lookup_scope,
+        ) else {
+            return;
+        };
+
+        signature.parameters = spec
+            .importing_names
+            .iter()
+            .filter_map(|(name, range)| {
+                if name.as_ref() == "sender" {
+                    if event_member.is_static {
+                        return None;
+                    }
+                    return Some(PendingMethodParameter {
+                        section: MethodsParamSectionKind::Importing,
+                        name: Arc::clone(name),
+                        range: range.clone(),
+                        declared_type: Some(FieldTypeRefData {
+                            namespace: Namespace::Type,
+                            is_ref: true,
+                            base_name: Arc::clone(&spec.source_type_name),
+                            field_path: Vec::new(),
+                        }),
+                        type_clause_display: Some(Arc::<str>::from(format!(
+                            "REF TO {}",
+                            spec.source_type_display
+                        ))),
+                        is_optional: false,
+                    });
+                }
+                let parameter = event_member
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == *name);
+                Some(PendingMethodParameter {
+                    section: MethodsParamSectionKind::Importing,
+                    name: Arc::clone(name),
+                    range: range.clone(),
+                    declared_type: parameter.and_then(|parameter| parameter.declared_type.clone()),
+                    type_clause_display: parameter
+                        .and_then(|parameter| parameter.type_clause_display.clone()),
+                    is_optional: parameter.is_some_and(|parameter| parameter.is_optional),
+                })
+            })
+            .collect();
     }
 
     pub(super) fn declare_method_target_signature_parameters(

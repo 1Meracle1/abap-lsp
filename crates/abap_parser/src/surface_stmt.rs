@@ -5339,6 +5339,13 @@ pub fn try_parse_raise_stmt(
         Some(cursor + 2)
     }
 
+    fn raise_event_prefix_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
+        tokens
+            .get(idx + 1)
+            .filter(|token| is_keyword(source, token, "event"))
+            .map(|_| idx + 2)
+    }
+
     Some(parse_stmt_with_period_scan(
         b,
         source,
@@ -5350,6 +5357,34 @@ pub fn try_parse_raise_stmt(
         errors,
         next_after_unterminated_scan,
         |b, period_i, _errors| {
+            if let Some(target_start) = raise_event_prefix_end(source, tokens, idx) {
+                let arg_start = scan_until_clause(tokens, target_start, period_i, |tokens, at| {
+                    named_argument_section_keyword(source, tokens, at)
+                });
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                for token in &tokens[idx..arg_start] {
+                    children.push(token_leaf(b, token));
+                }
+                if arg_start < period_i {
+                    if let Some(arg_list) =
+                        build_call_argument_list_node(b, source, tokens, arg_start, period_i)
+                    {
+                        children.push(arg_list);
+                    } else {
+                        for token in &tokens[arg_start..period_i] {
+                            children.push(token_leaf(b, token));
+                        }
+                    }
+                }
+                children.push(token_leaf(b, &tokens[period_i]));
+                let node = b.branch(
+                    SyntaxKind::RaiseEventStmt,
+                    first.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            }
+
             let Some(type_start) = raise_exception_type_prefix_end(source, tokens, idx) else {
                 let children = token_children(b, tokens, idx, period_i + 1);
                 let node = b.branch(
@@ -10056,6 +10091,18 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pub.\nWRITE 'c'.",
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 3);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn classifies_raise_event_statement_specifically() {
+        let parsed = crate::parse(
+            "CLASS lcl_demo IMPLEMENTATION.\n  METHOD trigger.\n    RAISE EVENT changed EXPORTING value = 'x'.\n  ENDMETHOD.\nENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RaiseEventStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
