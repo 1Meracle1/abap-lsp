@@ -309,8 +309,18 @@ pub enum SyntaxKind {
     SelectOrderByClause,
     /// `FOR ALL ENTRIES IN ...`
     SelectForAllEntriesClause,
+    /// `FOR UPDATE`
+    SelectForUpdateClause,
     /// `UP TO ... ROWS`
     SelectUpToClause,
+    /// `PACKAGE SIZE ...`
+    SelectPackageSizeClause,
+    /// `OFFSET ...`
+    SelectOffsetClause,
+    /// ABAP-specific SELECT options such as `BYPASSING BUFFER` or `CONNECTION ...`.
+    SelectAbapOptionsClause,
+    /// Set operator tail such as `UNION SELECT ...`.
+    SelectSetOperatorClause,
     /// `DISTINCT`
     SelectDistinctClause,
     /// Table or view source in a SQL `FROM`/`JOIN`.
@@ -679,7 +689,12 @@ impl SyntaxKind {
             Self::SelectHavingClause => "SelectHavingClause",
             Self::SelectOrderByClause => "SelectOrderByClause",
             Self::SelectForAllEntriesClause => "SelectForAllEntriesClause",
+            Self::SelectForUpdateClause => "SelectForUpdateClause",
             Self::SelectUpToClause => "SelectUpToClause",
+            Self::SelectPackageSizeClause => "SelectPackageSizeClause",
+            Self::SelectOffsetClause => "SelectOffsetClause",
+            Self::SelectAbapOptionsClause => "SelectAbapOptionsClause",
+            Self::SelectSetOperatorClause => "SelectSetOperatorClause",
             Self::SelectDistinctClause => "SelectDistinctClause",
             Self::SqlDataSource => "SqlDataSource",
             Self::SqlAliasClause => "SqlAliasClause",

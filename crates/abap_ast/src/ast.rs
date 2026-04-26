@@ -742,6 +742,11 @@ ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
 ast_node!(SelectFromClause, SyntaxKind::SelectFromClause);
 ast_node!(SelectIntoClause, SyntaxKind::SelectIntoClause);
 ast_node!(SelectJoinClause, SyntaxKind::SelectJoinClause);
+ast_node!(SelectForUpdateClause, SyntaxKind::SelectForUpdateClause);
+ast_node!(SelectPackageSizeClause, SyntaxKind::SelectPackageSizeClause);
+ast_node!(SelectOffsetClause, SyntaxKind::SelectOffsetClause);
+ast_node!(SelectAbapOptionsClause, SyntaxKind::SelectAbapOptionsClause);
+ast_node!(SelectSetOperatorClause, SyntaxKind::SelectSetOperatorClause);
 ast_node!(SqlPredicateExpr, SyntaxKind::SqlPredicateExpr);
 ast_node!(SqlPredicateOperand, SyntaxKind::SqlPredicateOperand);
 ast_node!(SqlProjectionItem, SyntaxKind::SqlProjectionItem);
@@ -3834,9 +3839,16 @@ impl<'a> SqlDataSource<'a> {
     pub fn source_name(self, source: &'a str) -> Option<(&'a str, TextRange)> {
         let alias_clause_range = self.alias_clause().map(|alias| alias.syntax().range());
         let tokens = self.syntax.token_descendants();
+        let token_texts = tokens
+            .iter()
+            .map(|token| token.text(source))
+            .collect::<Option<Vec<_>>>()?;
         let mut start = None;
         let mut end = None;
-        for token in tokens {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        for (idx, token) in tokens.into_iter().enumerate() {
             let range = token.range();
             if alias_clause_range
                 .as_ref()
@@ -3844,12 +3856,32 @@ impl<'a> SqlDataSource<'a> {
             {
                 break;
             }
-            let text = token.text(source)?;
-            if text.eq_ignore_ascii_case("as") {
+            let text = token_texts[idx];
+            let is_source_modifier = paren == 0
+                && bracket == 0
+                && brace == 0
+                && ((text.eq_ignore_ascii_case("with")
+                    && token_texts
+                        .get(idx + 1)
+                        .is_some_and(|next| next.eq_ignore_ascii_case("privileged")))
+                    || (text.eq_ignore_ascii_case("client")
+                        && token_texts
+                            .get(idx + 1)
+                            .is_some_and(|next| next.eq_ignore_ascii_case("specified"))));
+            if text.eq_ignore_ascii_case("as") || is_source_modifier {
                 break;
             }
             start.get_or_insert(range.start);
             end = Some(range.end);
+            match text {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                _ => {}
+            }
         }
         let start = start?;
         let end = end?;

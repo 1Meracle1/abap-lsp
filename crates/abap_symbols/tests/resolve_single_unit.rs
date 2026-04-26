@@ -2411,6 +2411,79 @@ WRITE lt_flights.
 }
 
 #[test]
+fn collects_sql_semantics_for_documented_select_tail_clauses() {
+    let src = r#"
+DATA lv_pack TYPE i.
+DATA lv_skip TYPE i.
+DATA lv_conn TYPE string.
+
+SELECT FROM scarr
+       FIELDS carrid
+       INTO TABLE @DATA(lt_rows)
+       PACKAGE SIZE @lv_pack
+       OFFSET @lv_skip
+       BYPASSING BUFFER
+       CONNECTION @lv_conn.
+  WRITE lines( lt_rows ).
+ENDSELECT.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_tail_clauses.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    let query = &unit.sql_queries[0];
+    assert!(query.has_endselect);
+    assert!(query.has_package_size);
+    assert!(query.package_size_clause.is_some());
+    assert!(query.offset_clause.is_some());
+    assert!(query.abap_options_clause.is_some());
+
+    for name in ["lv_pack", "lv_skip", "lv_conn"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved host reference for {name}, refs={:?}",
+            unit.references
+        );
+    }
+}
+
+#[test]
+fn collects_sql_for_update_and_set_operator_metadata() {
+    let src = r#"
+SELECT SINGLE FOR UPDATE * FROM scarr INTO @DATA(ls_scarr).
+
+SELECT carrid FROM scarr
+UNION ALL SELECT carrid FROM spfli
+INTO TABLE @DATA(lt_ids).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_for_update_set.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 2, "{:?}", unit.sql_queries);
+    assert!(unit.sql_queries[0].is_single);
+    assert!(unit.sql_queries[0].is_for_update);
+    assert!(unit.sql_queries[0].for_update_clause.is_some());
+    assert!(unit.sql_queries[1].has_set_operators);
+    assert!(unit.sql_queries[1].set_operator_clause.is_some());
+}
+
+#[test]
+fn open_sql_source_name_excludes_privileged_access_modifier() {
+    let src = r#"
+SELECT * FROM scarr WITH PRIVILEGED ACCESS INTO TABLE @DATA(lt_scarr).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_privileged_access_source.abap", src, &parsed);
+
+    assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
+    assert_eq!(unit.sql_sources[0].name.as_ref(), "scarr");
+}
+
+#[test]
 fn collects_sql_semantics_for_insert_dbtab_from_table() {
     let src = r#"
 DATA lt_sequen_buff TYPE STANDARD TABLE OF string WITH EMPTY KEY.

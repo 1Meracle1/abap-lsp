@@ -111,9 +111,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             having_clause: None,
             order_by_clause: None,
             for_all_entries_clause: None,
+            for_update_clause: None,
             up_to_clause: None,
+            package_size_clause: None,
+            offset_clause: None,
+            abap_options_clause: None,
+            set_operator_clause: None,
             is_single: false,
             is_distinct: false,
+            is_for_update: false,
+            has_package_size: false,
+            has_set_operators: false,
             has_endselect: false,
             has_dynamic_where: false,
         });
@@ -210,9 +218,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             having_clause: None,
             order_by_clause: None,
             for_all_entries_clause: None,
+            for_update_clause: None,
             up_to_clause: None,
+            package_size_clause: None,
+            offset_clause: None,
+            abap_options_clause: None,
+            set_operator_clause: None,
             is_single: false,
             is_distinct: false,
+            is_for_update: false,
+            has_package_size: false,
+            has_set_operators: false,
             has_endselect: false,
             has_dynamic_where: false,
         });
@@ -319,9 +335,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             having_clause: None,
             order_by_clause: None,
             for_all_entries_clause: None,
+            for_update_clause: None,
             up_to_clause: None,
+            package_size_clause: None,
+            offset_clause: None,
+            abap_options_clause: None,
+            set_operator_clause: None,
             is_single: false,
             is_distinct: false,
+            is_for_update: false,
+            has_package_size: false,
+            has_set_operators: false,
             has_endselect: false,
             has_dynamic_where: false,
         });
@@ -438,9 +462,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             having_clause: None,
             order_by_clause: None,
             for_all_entries_clause: None,
+            for_update_clause: None,
             up_to_clause: None,
+            package_size_clause: None,
+            offset_clause: None,
+            abap_options_clause: None,
+            set_operator_clause: None,
             is_single: false,
             is_distinct: false,
+            is_for_update: false,
+            has_package_size: false,
+            has_set_operators: false,
             has_endselect: false,
             has_dynamic_where,
         });
@@ -533,9 +565,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let mut having_clause = None;
         let mut order_by_clause = None;
         let mut for_all_entries_clause = None;
+        let mut for_update_clause = None;
         let mut up_to_clause = None;
+        let mut package_size_clause = None;
+        let mut offset_clause = None;
+        let mut abap_options_clause: Option<abap_lexer::TextRange> = None;
+        let mut set_operator_clause: Option<abap_lexer::TextRange> = None;
         let mut is_single = false;
         let mut is_distinct = false;
+        let mut is_for_update = false;
+        let mut has_package_size = false;
+        let mut has_set_operators = false;
         let mut has_dynamic_where = false;
 
         for (child_id, child_kind, child_range) in children {
@@ -592,8 +632,40 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                         SqlClauseKind::ForAllEntries,
                     );
                 }
+                SyntaxKind::SelectForUpdateClause => {
+                    for_update_clause = Some(child_range);
+                    is_for_update = true;
+                }
                 SyntaxKind::SelectUpToClause => {
                     up_to_clause = Some(child_range);
+                    self.collect_sql_host_refs_in_node(child_id, scope);
+                }
+                SyntaxKind::SelectPackageSizeClause => {
+                    package_size_clause = Some(child_range);
+                    has_package_size = true;
+                    self.collect_sql_host_refs_in_node(child_id, scope);
+                }
+                SyntaxKind::SelectOffsetClause => {
+                    offset_clause = Some(child_range);
+                    self.collect_sql_host_refs_in_node(child_id, scope);
+                }
+                SyntaxKind::SelectAbapOptionsClause => {
+                    abap_options_clause = Some(match abap_options_clause {
+                        Some(existing) => {
+                            existing.start.min(child_range.start)..existing.end.max(child_range.end)
+                        }
+                        None => child_range.clone(),
+                    });
+                    self.collect_sql_host_refs_in_node(child_id, scope);
+                }
+                SyntaxKind::SelectSetOperatorClause => {
+                    set_operator_clause = Some(match set_operator_clause {
+                        Some(existing) => {
+                            existing.start.min(child_range.start)..existing.end.max(child_range.end)
+                        }
+                        None => child_range.clone(),
+                    });
+                    has_set_operators = true;
                     self.collect_sql_host_refs_in_node(child_id, scope);
                 }
                 _ => {}
@@ -613,9 +685,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             having_clause,
             order_by_clause,
             for_all_entries_clause,
+            for_update_clause,
             up_to_clause,
+            package_size_clause,
+            offset_clause,
+            abap_options_clause,
+            set_operator_clause,
             is_single,
             is_distinct,
+            is_for_update,
+            has_package_size,
+            has_set_operators,
             has_endselect,
             has_dynamic_where,
         });
@@ -1894,17 +1974,32 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 | "into"
                 | "appending"
                 | "where"
+                | "with"
                 | "group"
                 | "by"
                 | "having"
                 | "order"
                 | "for"
+                | "update"
                 | "all"
                 | "entries"
                 | "in"
                 | "up"
                 | "to"
                 | "rows"
+                | "package"
+                | "size"
+                | "offset"
+                | "bypassing"
+                | "buffer"
+                | "connection"
+                | "client"
+                | "specified"
+                | "privileged"
+                | "access"
+                | "union"
+                | "intersect"
+                | "except"
                 | "as"
                 | "join"
                 | "inner"

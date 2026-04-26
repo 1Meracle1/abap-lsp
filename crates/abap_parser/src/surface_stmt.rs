@@ -258,55 +258,296 @@ fn select_header_is_flat(
     idx: usize,
     next_after_header: usize,
 ) -> bool {
-    let mut i = idx + 1;
     let header_end = next_after_header.saturating_sub(1);
-    while i < header_end {
-        let tok = &tokens[i];
-        if is_keyword(source, tok, "single") {
-            return true;
-        }
-        if tok.kind == TokenKind::Ident
-            && matches!(
-                tok.lexeme(source).to_ascii_uppercase().as_str(),
-                "COUNT" | "MAX" | "MIN" | "SUM" | "AVG"
-            )
-            && tokens.get(i + 1).map(|next| next.kind) == Some(TokenKind::LParen)
+    if select_header_has_top_level_keyword_sequence(
+        source,
+        tokens,
+        idx + 1,
+        header_end,
+        &["single"],
+    ) {
+        return true;
+    }
+    if select_header_has_top_level_keyword_sequence(
+        source,
+        tokens,
+        idx + 1,
+        header_end,
+        &["package", "size"],
+    ) {
+        return false;
+    }
+    if select_header_has_top_level_set_operator(source, tokens, idx + 1, header_end) {
+        return false;
+    }
+    if select_header_has_top_level_keyword_sequence(
+        source,
+        tokens,
+        idx + 1,
+        header_end,
+        &["group", "by"],
+    ) {
+        return false;
+    }
+    if select_header_has_into_table_target(source, tokens, idx + 1, header_end) {
+        return true;
+    }
+    select_header_projection_is_aggregate_only(source, tokens, idx + 1, header_end)
+}
+
+fn token_keyword_sequence_matches(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    parts: &[&str],
+) -> bool {
+    match_keyword_sequence(source, tokens, idx, parts).is_some()
+}
+
+fn select_header_top_level_positions<F>(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    mut predicate: F,
+) -> bool
+where
+    F: FnMut(&[Token], usize) -> bool,
+{
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut sql_case_depth = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 && sql_case_depth == 0 && predicate(tokens, idx)
         {
             return true;
         }
-        if is_keyword(source, tok, "into") || is_keyword(source, tok, "appending") {
-            let mut j = skip_trivia(tokens, i + 1);
-            if tokens.get(j).map(|next| next.kind) == Some(TokenKind::LParen) {
-                return true;
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            TokenKind::Ident if is_keyword(source, token, "case") => sql_case_depth += 1,
+            TokenKind::Ident if is_keyword(source, token, "end") && sql_case_depth > 0 => {
+                sql_case_depth -= 1
             }
-            if tokens
-                .get(j)
-                .is_some_and(|next| is_keyword(source, next, "corresponding"))
-            {
-                j = skip_trivia(tokens, j + 1);
-                if tokens
-                    .get(j)
-                    .is_some_and(|next| is_keyword(source, next, "fields"))
-                {
-                    j = skip_trivia(tokens, j + 1);
-                }
-                if tokens
-                    .get(j)
-                    .is_some_and(|next| is_keyword(source, next, "of"))
-                {
-                    j = skip_trivia(tokens, j + 1);
-                }
-            }
-            if tokens
-                .get(j)
-                .is_some_and(|next| is_keyword(source, next, "table"))
-            {
-                return true;
-            }
+            _ => {}
         }
-        i += 1;
+        idx += 1;
     }
     false
+}
+
+fn select_header_has_top_level_keyword_sequence(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    parts: &[&str],
+) -> bool {
+    select_header_top_level_positions(source, tokens, start, end_exclusive, |tokens, idx| {
+        token_keyword_sequence_matches(source, tokens, idx, parts)
+    })
+}
+
+fn select_set_operator_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "union")
+            || is_keyword(source, token, "intersect")
+            || is_keyword(source, token, "except"))
+}
+
+fn select_header_has_top_level_set_operator(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> bool {
+    select_header_top_level_positions(source, tokens, start, end_exclusive, |tokens, idx| {
+        select_set_operator_starts(source, tokens, idx)
+    })
+}
+
+fn select_header_has_into_table_target(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> bool {
+    select_header_top_level_positions(source, tokens, start, end_exclusive, |tokens, idx| {
+        let Some(token) = tokens.get(idx) else {
+            return false;
+        };
+        if !(is_keyword(source, token, "into") || is_keyword(source, token, "appending")) {
+            return false;
+        }
+        let mut target_idx = advance_select_target_prefix(source, tokens, idx + 1);
+        if tokens.get(target_idx).map(|token| token.kind) == Some(TokenKind::At) {
+            target_idx = skip_trivia(tokens, target_idx + 1);
+        }
+        tokens
+            .get(skip_trivia(tokens, idx + 1))
+            .is_some_and(|next| is_keyword(source, next, "table"))
+            || tokens
+                .get(target_idx.saturating_sub(1))
+                .is_some_and(|prev| is_keyword(source, prev, "table"))
+    })
+}
+
+fn select_header_projection_bounds(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<(usize, usize)> {
+    let mut cursor = skip_trivia(tokens, start);
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| is_keyword(source, token, "single"))
+    {
+        cursor = skip_trivia(tokens, cursor + 1);
+        if token_keyword_sequence_matches(source, tokens, cursor, &["for", "update"]) {
+            cursor = skip_trivia(tokens, cursor + 2);
+        }
+    }
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| is_keyword(source, token, "distinct"))
+    {
+        cursor = skip_trivia(tokens, cursor + 1);
+    }
+
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| is_keyword(source, token, "from"))
+    {
+        let fields_idx =
+            find_top_level_keyword(source, tokens, cursor + 1, end_exclusive, "fields")?;
+        let projection_start = skip_trivia(tokens, fields_idx + 1);
+        let projection_end =
+            scan_until_clause(tokens, projection_start, end_exclusive, |tokens, idx| {
+                select_clause_start_kind(source, tokens, idx)
+                    .is_some_and(|kind| kind != SelectClauseKind::Fields)
+            });
+        return (projection_start < projection_end).then_some((projection_start, projection_end));
+    }
+
+    let projection_end = scan_until_clause(tokens, cursor, end_exclusive, |tokens, idx| {
+        select_clause_start_kind(source, tokens, idx).is_some()
+    });
+    (cursor < projection_end).then_some((cursor, projection_end))
+}
+
+fn sql_token_is_aggregate_name(source: &str, token: &Token) -> bool {
+    token.kind == TokenKind::Ident
+        && matches!(
+            token.lexeme(source).to_ascii_uppercase().as_str(),
+            "COUNT"
+                | "MAX"
+                | "MIN"
+                | "SUM"
+                | "AVG"
+                | "MEDIAN"
+                | "STDDEV"
+                | "VAR"
+                | "CORR"
+                | "CORR_SPEARMAN"
+                | "ALLOW_PRECISION_LOSS"
+        )
+}
+
+fn skip_projection_alias_after_aggregate(
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    end_exclusive: usize,
+) -> usize {
+    idx = skip_trivia(tokens, idx);
+    if tokens
+        .get(idx)
+        .is_some_and(|token| is_keyword(source, token, "as"))
+    {
+        let alias_idx = skip_trivia(tokens, idx + 1);
+        if tokens
+            .get(alias_idx)
+            .is_some_and(|token| token.kind == TokenKind::Ident)
+        {
+            return skip_trivia(tokens, alias_idx + 1);
+        }
+        return idx;
+    }
+    if idx < end_exclusive
+        && tokens[idx].kind == TokenKind::Ident
+        && !sql_token_is_aggregate_name(source, &tokens[idx])
+        && !sql_token_is_keyword(source, &tokens[idx])
+    {
+        return skip_trivia(tokens, idx + 1);
+    }
+    idx
+}
+
+fn select_header_projection_is_aggregate_only(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> bool {
+    let Some((projection_start, projection_end)) =
+        select_header_projection_bounds(source, tokens, start, end_exclusive)
+    else {
+        return false;
+    };
+    let mut idx = projection_start;
+    let mut saw_aggregate = false;
+    while idx < projection_end {
+        idx = skip_trivia(tokens, idx);
+        while idx < projection_end && tokens[idx].kind == TokenKind::Comma {
+            idx = skip_trivia(tokens, idx + 1);
+        }
+        if idx >= projection_end {
+            break;
+        }
+        if !sql_token_is_aggregate_name(source, &tokens[idx])
+            || tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .map(|token| token.kind)
+                != Some(TokenKind::LParen)
+        {
+            return false;
+        }
+        let lparen_idx = skip_trivia(tokens, idx + 1);
+        let Some(close_idx) = find_matching_delim_in_range(
+            tokens,
+            lparen_idx,
+            projection_end,
+            TokenKind::LParen,
+            TokenKind::RParen,
+        ) else {
+            return false;
+        };
+        saw_aggregate = true;
+        idx = skip_projection_alias_after_aggregate(source, tokens, close_idx + 1, projection_end);
+        if idx < projection_end && tokens[idx].kind != TokenKind::Comma {
+            if sql_token_is_aggregate_name(source, &tokens[idx])
+                && tokens
+                    .get(skip_trivia(tokens, idx + 1))
+                    .map(|token| token.kind)
+                    == Some(TokenKind::LParen)
+            {
+                continue;
+            }
+            return false;
+        }
+    }
+    saw_aggregate
 }
 
 fn select_target_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -319,8 +560,14 @@ fn select_target_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bo
             || is_keyword(source, token, "group")
             || is_keyword(source, token, "order")
             || is_keyword(source, token, "package")
+            || is_keyword(source, token, "bypassing")
+            || is_keyword(source, token, "connection")
+            || is_keyword(source, token, "client")
+            || is_keyword(source, token, "privileged")
             || is_keyword(source, token, "up")
             || is_keyword(source, token, "union")
+            || is_keyword(source, token, "intersect")
+            || is_keyword(source, token, "except")
             || is_keyword(source, token, "for")
             || is_keyword(source, token, "offset"))
 }
@@ -496,6 +743,10 @@ enum SelectClauseKind {
     Distinct,
     Fields,
     UpTo,
+    PackageSize,
+    Offset,
+    AbapOptions,
+    SetOperator,
     From,
     Into,
     Appending,
@@ -504,6 +755,7 @@ enum SelectClauseKind {
     Having,
     OrderBy,
     ForAllEntries,
+    ForUpdate,
 }
 
 fn select_clause_start_kind(
@@ -587,6 +839,39 @@ fn select_clause_start_kind(
     {
         return Some(SelectClauseKind::UpTo);
     }
+    if is_keyword(source, token, "package")
+        && tokens
+            .get(skip_trivia(tokens, idx + 1))
+            .is_some_and(|next| is_keyword(source, next, "size"))
+    {
+        return Some(SelectClauseKind::PackageSize);
+    }
+    if is_keyword(source, token, "offset") {
+        return Some(SelectClauseKind::Offset);
+    }
+    let previous_is_with = previous_non_comment_token(tokens, idx)
+        .and_then(|prev_idx| tokens.get(prev_idx))
+        .is_some_and(|prev| is_keyword(source, prev, "with"));
+    if (is_keyword(source, token, "bypassing")
+        && tokens
+            .get(skip_trivia(tokens, idx + 1))
+            .is_some_and(|next| is_keyword(source, next, "buffer")))
+        || is_keyword(source, token, "connection")
+        || (is_keyword(source, token, "client")
+            && tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .is_some_and(|next| is_keyword(source, next, "specified")))
+        || (!previous_is_with
+            && is_keyword(source, token, "privileged")
+            && tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .is_some_and(|next| is_keyword(source, next, "access")))
+    {
+        return Some(SelectClauseKind::AbapOptions);
+    }
+    if select_set_operator_starts(source, tokens, idx) {
+        return Some(SelectClauseKind::SetOperator);
+    }
     if is_keyword(source, token, "group")
         && tokens
             .get(skip_trivia(tokens, idx + 1))
@@ -616,6 +901,12 @@ fn select_clause_start_kind(
                 .is_some_and(|next| is_keyword(source, next, "in"))
         {
             return Some(SelectClauseKind::ForAllEntries);
+        }
+        if tokens
+            .get(all_idx)
+            .is_some_and(|next| is_keyword(source, next, "update"))
+        {
+            return Some(SelectClauseKind::ForUpdate);
         }
     }
     None
@@ -756,17 +1047,32 @@ fn sql_token_text_is_keyword(text: &str) -> bool {
             | "into"
             | "appending"
             | "where"
+            | "with"
             | "group"
             | "by"
             | "having"
             | "order"
             | "for"
+            | "update"
             | "all"
             | "entries"
             | "in"
             | "up"
             | "to"
             | "rows"
+            | "package"
+            | "size"
+            | "offset"
+            | "bypassing"
+            | "buffer"
+            | "connection"
+            | "client"
+            | "specified"
+            | "privileged"
+            | "access"
+            | "union"
+            | "intersect"
+            | "except"
             | "as"
             | "join"
             | "inner"
@@ -1516,6 +1822,34 @@ fn build_select_clause(
             start,
             end_exclusive,
         ),
+        SelectClauseKind::PackageSize => build_token_branch(
+            b,
+            SyntaxKind::SelectPackageSizeClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::Offset => build_token_branch(
+            b,
+            SyntaxKind::SelectOffsetClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::AbapOptions => build_token_branch(
+            b,
+            SyntaxKind::SelectAbapOptionsClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
+        SelectClauseKind::SetOperator => build_token_branch(
+            b,
+            SyntaxKind::SelectSetOperatorClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
         SelectClauseKind::From => build_select_from_clause(b, source, tokens, start, end_exclusive),
         SelectClauseKind::Into | SelectClauseKind::Appending => {
             let mut children = Vec::new();
@@ -1568,7 +1902,98 @@ fn build_select_clause(
             start,
             end_exclusive,
         ),
+        SelectClauseKind::ForUpdate => build_token_branch(
+            b,
+            SyntaxKind::SelectForUpdateClause,
+            tokens,
+            start,
+            end_exclusive,
+        ),
     }
+}
+
+fn select_set_operator_tail_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(kind) = select_clause_start_kind(source, tokens, idx) else {
+        return false;
+    };
+    matches!(
+        kind,
+        SelectClauseKind::Into
+            | SelectClauseKind::Appending
+            | SelectClauseKind::UpTo
+            | SelectClauseKind::PackageSize
+            | SelectClauseKind::Offset
+            | SelectClauseKind::AbapOptions
+            | SelectClauseKind::SetOperator
+    )
+}
+
+fn scan_select_set_operator_clause_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut sql_case_depth = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && sql_case_depth == 0
+            && select_set_operator_tail_clause_starts(source, tokens, idx)
+        {
+            return idx;
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            TokenKind::Ident if is_keyword(source, token, "case") => sql_case_depth += 1,
+            TokenKind::Ident if is_keyword(source, token, "end") && sql_case_depth > 0 => {
+                sql_case_depth -= 1
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    end_exclusive
+}
+
+fn previous_non_comment_token(tokens: &[Token], before: usize) -> Option<usize> {
+    let mut idx = before.checked_sub(1)?;
+    loop {
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.kind != TokenKind::Comment)
+        {
+            return Some(idx);
+        }
+        idx = idx.checked_sub(1)?;
+    }
+}
+
+fn select_token_is_set_operand_lead(source: &str, tokens: &[Token], select_idx: usize) -> bool {
+    let Some(prev_idx) = previous_non_comment_token(tokens, select_idx) else {
+        return false;
+    };
+    let prev = &tokens[prev_idx];
+    if select_set_operator_starts(source, tokens, prev_idx) {
+        return true;
+    }
+    if (is_keyword(source, prev, "all") || is_keyword(source, prev, "distinct"))
+        && let Some(operator_idx) = previous_non_comment_token(tokens, prev_idx)
+    {
+        return select_set_operator_starts(source, tokens, operator_idx);
+    }
+    false
 }
 
 fn parse_select_header_until_period(
@@ -1605,12 +2030,14 @@ fn parse_select_header_until_period(
                 let Some(kind) = select_clause_start_kind(source, tokens, cursor) else {
                     break;
                 };
-                let clause_end = if kind == SelectClauseKind::Distinct {
-                    skip_trivia(tokens, cursor + 1)
-                } else {
-                    scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
+                let clause_end = match kind {
+                    SelectClauseKind::Distinct => skip_trivia(tokens, cursor + 1),
+                    SelectClauseKind::SetOperator => {
+                        scan_select_set_operator_clause_end(source, tokens, cursor + 1, period_i)
+                    }
+                    _ => scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
                         select_clause_start_kind(source, tokens, idx).is_some()
-                    })
+                    }),
                 };
                 if let Some(clause) =
                     build_select_clause(b, source, tokens, kind, cursor, clause_end)
@@ -1683,6 +2110,8 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
+                    && !(is_keyword(source, t, "select")
+                        && select_token_is_set_operand_lead(source, tokens, i))
                     && !(is_sql_case_start
                         || is_sql_case_branch && sql_case_depth > 0
                         || is_sql_case_end && sql_case_depth > 0)
@@ -10049,7 +10478,7 @@ mod tests {
         AstNode, CallStmt, CallStmtKind, ClassDecl, CloseCursorStmt, DataLikeDecl,
         DataLikeStorageKind, FormDecl, FormParamPassingKind, FormParamSectionKind, FunctionDecl,
         FunctionParamSectionKind, IncludeStmt, MethodDecl, OpenCursorStmt, SelectIntoClause,
-        SubmitStmt, SyntaxNodeRef, WriteStmt,
+        SelectStmt, SubmitStmt, SyntaxNodeRef, WriteStmt,
     };
 
     #[test]
@@ -10548,6 +10977,111 @@ END OF BLOCK b02.",
         );
         assert_eq!(
             parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_select_package_size_as_endselect_loop_clause() {
+        let src = "SELECT * FROM demo INTO TABLE lt_rows PACKAGE SIZE @lv_pack.\n  WRITE lines( lt_rows ).\nENDSELECT.\nWRITE 'done'.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectPackageSizeClause),
+            1
+        );
+        let select = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::SelectStmt)
+            .and_then(|node| SelectStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("SELECT statement");
+        assert_eq!(
+            select
+                .non_query_children()
+                .filter(|child| child.kind() == SyntaxKind::WriteStmt)
+                .count(),
+            1
+        );
+        assert!(
+            select
+                .syntax()
+                .text(src)
+                .is_some_and(|text| text.contains("ENDSELECT"))
+        );
+    }
+
+    #[test]
+    fn parses_select_for_update_offset_and_abap_options() {
+        let parsed = crate::parse(
+            "SELECT SINGLE FOR UPDATE * FROM demo INTO @DATA(ls_row) OFFSET @lv_skip BYPASSING BUFFER CONNECTION @lv_conn.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectForUpdateClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectOffsetClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectAbapOptionsClause),
+            2
+        );
+    }
+
+    #[test]
+    fn parses_grouped_aggregate_select_as_endselect_loop() {
+        let src = "SELECT carrid, COUNT( * ) FROM sflight GROUP BY carrid INTO ( lv_carrid, lv_count ).\n  WRITE lv_carrid.\nENDSELECT.\nWRITE 'done'.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        let select = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::SelectStmt)
+            .and_then(|node| SelectStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("SELECT statement");
+        assert!(
+            select
+                .syntax()
+                .text(src)
+                .is_some_and(|text| text.contains("ENDSELECT"))
+        );
+        assert_eq!(
+            select
+                .non_query_children()
+                .filter(|child| child.kind() == SyntaxKind::WriteStmt)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_select_set_operator_tail_without_statement_split() {
+        let parsed = crate::parse(
+            "SELECT carrid FROM scarr\nUNION ALL SELECT carrid FROM spfli\nINTO TABLE @DATA(lt_ids).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectSetOperatorClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
             1
         );
     }
