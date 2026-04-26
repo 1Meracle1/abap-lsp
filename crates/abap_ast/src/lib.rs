@@ -179,6 +179,38 @@ pub enum SyntaxKind {
     ClearStmt,
     /// One cleared operand inside `CLEAR`.
     ClearOperand,
+    /// `REFRESH itab .`
+    RefreshStmt,
+    /// One refreshed table operand inside `REFRESH`.
+    RefreshOperand,
+    /// `COLLECT wa [INTO itab] .`
+    CollectStmt,
+    /// Source row operand inside `COLLECT`.
+    CollectSourceOperand,
+    /// Target table operand after `INTO` inside `COLLECT`.
+    CollectTargetOperand,
+    /// `FREE dobj .` or `FREE MEMORY ID ... .`
+    FreeStmt,
+    /// One freed operand inside `FREE`.
+    FreeOperand,
+    /// `UNASSIGN <fs> .`
+    UnassignStmt,
+    /// Field-symbol operand inside `UNASSIGN`.
+    UnassignOperand,
+    /// `IMPORT ... FROM MEMORY ID ... .`
+    ImportMemoryStmt,
+    /// Imported cluster/object name before `TO` in `IMPORT ... FROM MEMORY ID`.
+    ImportMemorySourceOperand,
+    /// Target operand after `TO` in `IMPORT ... FROM MEMORY ID`.
+    ImportMemoryTargetOperand,
+    /// `EXPORT ... TO MEMORY ID ... .`
+    ExportMemoryStmt,
+    /// Exported cluster/object name before `FROM` in `EXPORT ... TO MEMORY ID`.
+    ExportMemoryNameOperand,
+    /// Source operand after `FROM` in `EXPORT ... TO MEMORY ID`.
+    ExportMemorySourceOperand,
+    /// Memory ID operand after `MEMORY ID`.
+    MemoryIdOperand,
     /// `CONVERT ... .`
     ConvertStmt,
     /// Source operand inside `CONVERT`.
@@ -636,6 +668,22 @@ impl SyntaxKind {
             Self::AliasMember => "AliasMember",
             Self::ClearStmt => "ClearStmt",
             Self::ClearOperand => "ClearOperand",
+            Self::RefreshStmt => "RefreshStmt",
+            Self::RefreshOperand => "RefreshOperand",
+            Self::CollectStmt => "CollectStmt",
+            Self::CollectSourceOperand => "CollectSourceOperand",
+            Self::CollectTargetOperand => "CollectTargetOperand",
+            Self::FreeStmt => "FreeStmt",
+            Self::FreeOperand => "FreeOperand",
+            Self::UnassignStmt => "UnassignStmt",
+            Self::UnassignOperand => "UnassignOperand",
+            Self::ImportMemoryStmt => "ImportMemoryStmt",
+            Self::ImportMemorySourceOperand => "ImportMemorySourceOperand",
+            Self::ImportMemoryTargetOperand => "ImportMemoryTargetOperand",
+            Self::ExportMemoryStmt => "ExportMemoryStmt",
+            Self::ExportMemoryNameOperand => "ExportMemoryNameOperand",
+            Self::ExportMemorySourceOperand => "ExportMemorySourceOperand",
+            Self::MemoryIdOperand => "MemoryIdOperand",
             Self::ConvertStmt => "ConvertStmt",
             Self::ConvertOperand => "ConvertOperand",
             Self::ConvertTargetOperand => "ConvertTargetOperand",

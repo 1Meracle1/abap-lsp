@@ -613,6 +613,31 @@ ast_node!(EventsStmt, SyntaxKind::EventsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(ClearStmt, SyntaxKind::ClearStmt);
 ast_node!(ClearOperand, SyntaxKind::ClearOperand);
+ast_node!(RefreshStmt, SyntaxKind::RefreshStmt);
+ast_node!(RefreshOperand, SyntaxKind::RefreshOperand);
+ast_node!(CollectStmt, SyntaxKind::CollectStmt);
+ast_node!(CollectSourceOperand, SyntaxKind::CollectSourceOperand);
+ast_node!(CollectTargetOperand, SyntaxKind::CollectTargetOperand);
+ast_node!(FreeStmt, SyntaxKind::FreeStmt);
+ast_node!(FreeOperand, SyntaxKind::FreeOperand);
+ast_node!(UnassignStmt, SyntaxKind::UnassignStmt);
+ast_node!(UnassignOperand, SyntaxKind::UnassignOperand);
+ast_node!(ImportMemoryStmt, SyntaxKind::ImportMemoryStmt);
+ast_node!(
+    ImportMemorySourceOperand,
+    SyntaxKind::ImportMemorySourceOperand
+);
+ast_node!(
+    ImportMemoryTargetOperand,
+    SyntaxKind::ImportMemoryTargetOperand
+);
+ast_node!(ExportMemoryStmt, SyntaxKind::ExportMemoryStmt);
+ast_node!(ExportMemoryNameOperand, SyntaxKind::ExportMemoryNameOperand);
+ast_node!(
+    ExportMemorySourceOperand,
+    SyntaxKind::ExportMemorySourceOperand
+);
+ast_node!(MemoryIdOperand, SyntaxKind::MemoryIdOperand);
 ast_node!(ConvertStmt, SyntaxKind::ConvertStmt);
 ast_node!(ConvertOperand, SyntaxKind::ConvertOperand);
 ast_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);

@@ -177,6 +177,14 @@ impl<'a> Collector<'a> {
                 .collect_get_time_stamp_stmt(node, scope),
             SyntaxKind::AliasesStmt => self.stmt_lowering().collect_aliases_stmt(node, scope),
             SyntaxKind::ClearStmt => self.stmt_lowering().collect_clear_stmt(node, scope),
+            SyntaxKind::RefreshStmt => self.stmt_lowering().collect_refresh_stmt(node, scope),
+            SyntaxKind::CollectStmt
+            | SyntaxKind::FreeStmt
+            | SyntaxKind::UnassignStmt
+            | SyntaxKind::ImportMemoryStmt
+            | SyntaxKind::ExportMemoryStmt => self
+                .stmt_lowering()
+                .collect_structured_effect_stmt(node, scope),
             SyntaxKind::ConvertStmt => self.stmt_lowering().collect_convert_stmt(node, scope),
             SyntaxKind::DescribeStmt => self.stmt_lowering().collect_describe_stmt(node, scope),
             SyntaxKind::FindStmt => self.stmt_lowering().collect_find_stmt(node, scope),

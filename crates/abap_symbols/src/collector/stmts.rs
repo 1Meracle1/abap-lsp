@@ -2500,6 +2500,28 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_refresh_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::RefreshOperand => {
+                    self.record_routine_site(
+                        scope,
+                        self.collector.file.range(child),
+                        RoutineSiteKind::Clear,
+                    );
+                    self.collector.walk_children(child, scope);
+                }
+                SyntaxKind::Token => {}
+                _ => self.collector.walk_node(child, scope),
+            }
+        }
+    }
+
+    pub(super) fn collect_structured_effect_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        self.collector.walk_children(node, scope);
+    }
+
     pub(super) fn collect_describe_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         self.record_system_field_updates(

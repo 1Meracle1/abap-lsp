@@ -3463,6 +3463,58 @@ fn find_top_level_keyword_index(
     None
 }
 
+fn match_keyword_sequence_at(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    end_exclusive: usize,
+    keywords: &[&str],
+) -> Option<usize> {
+    let mut cursor = idx;
+    for keyword in keywords {
+        if cursor >= end_exclusive || !is_keyword(source, &tokens[cursor], keyword) {
+            return None;
+        }
+        cursor += 1;
+    }
+    Some(cursor)
+}
+
+fn find_top_level_keyword_sequence_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keywords: &[&str],
+) -> Option<(usize, usize)> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && let Some(sequence_end) =
+                match_keyword_sequence_at(source, tokens, idx, end_exclusive, keywords)
+        {
+            return Some((idx, sequence_end));
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
 fn find_top_level_token_kind(
     tokens: &[Token],
     start: usize,
@@ -9569,6 +9621,562 @@ pub fn try_parse_delete_stmt(
     ))
 }
 
+fn push_classic_operand_entry(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+    wrapper_kind: SyntaxKind,
+    prefix_keywords: &[&str],
+) {
+    let mut operand_start = entry_start;
+    while operand_start < entry_end {
+        let token = &tokens[operand_start];
+        if token.kind == TokenKind::Comment
+            || prefix_keywords
+                .iter()
+                .any(|keyword| is_keyword(source, token, keyword))
+        {
+            children.push(token_leaf(b, token));
+            operand_start += 1;
+            continue;
+        }
+        break;
+    }
+
+    if operand_start < entry_end {
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            operand_start,
+            entry_end,
+            tokens.get(operand_start.saturating_sub(1)),
+            wrapper_kind,
+        );
+    }
+}
+
+fn push_chained_classic_operands(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    wrapper_kind: SyntaxKind,
+    prefix_keywords: &[&str],
+) {
+    let mut cursor = start;
+    while cursor < end_exclusive {
+        let token = &tokens[cursor];
+        if matches!(
+            token.kind,
+            TokenKind::Colon | TokenKind::Comma | TokenKind::Comment
+        ) {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        }
+
+        let entry_end = find_top_level_token_kind(tokens, cursor, end_exclusive, TokenKind::Comma)
+            .unwrap_or(end_exclusive);
+        push_classic_operand_entry(
+            b,
+            children,
+            source,
+            tokens,
+            cursor,
+            entry_end,
+            wrapper_kind,
+            prefix_keywords,
+        );
+        cursor = entry_end;
+    }
+}
+
+fn push_memory_id_sequence_and_operand(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    sequence_start: usize,
+    sequence_end: usize,
+    period_i: usize,
+) {
+    push_token_children(b, children, tokens, sequence_start, sequence_end);
+    push_wrapped_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        sequence_end,
+        period_i,
+        tokens.get(sequence_end.saturating_sub(1)),
+        SyntaxKind::MemoryIdOperand,
+    );
+}
+
+pub fn try_parse_refresh_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let refresh_tok = tokens.get(idx)?;
+    if !is_keyword(source, refresh_tok, "refresh") {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        refresh_tok,
+        "syntax error: expected '.' after REFRESH statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, refresh_tok)];
+            push_chained_classic_operands(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                SyntaxKind::RefreshOperand,
+                &["table"],
+            );
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::RefreshStmt,
+                refresh_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+fn push_collect_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) {
+    let entry_start = skip_trivia(tokens, entry_start);
+    if entry_start >= entry_end {
+        return;
+    }
+
+    if let Some(into_idx) =
+        find_top_level_keyword_index(source, tokens, entry_start, entry_end, "into")
+    {
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            entry_start,
+            into_idx,
+            tokens.get(entry_start.saturating_sub(1)),
+            SyntaxKind::CollectSourceOperand,
+        );
+        children.push(token_leaf(b, &tokens[into_idx]));
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            into_idx + 1,
+            entry_end,
+            Some(&tokens[into_idx]),
+            SyntaxKind::CollectTargetOperand,
+        );
+    } else {
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            entry_start,
+            entry_end,
+            tokens.get(entry_start.saturating_sub(1)),
+            SyntaxKind::CollectSourceOperand,
+        );
+    }
+}
+
+pub fn try_parse_collect_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let collect_tok = tokens.get(idx)?;
+    if !is_keyword(source, collect_tok, "collect") {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        collect_tok,
+        "syntax error: expected '.' after COLLECT statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, collect_tok)];
+            let mut cursor = idx + 1;
+            while cursor < period_i {
+                let token = &tokens[cursor];
+                if matches!(
+                    token.kind,
+                    TokenKind::Colon | TokenKind::Comma | TokenKind::Comment
+                ) {
+                    children.push(token_leaf(b, token));
+                    cursor += 1;
+                    continue;
+                }
+
+                let entry_end =
+                    find_top_level_token_kind(tokens, cursor, period_i, TokenKind::Comma)
+                        .unwrap_or(period_i);
+                push_collect_entry_children(b, &mut children, source, tokens, cursor, entry_end);
+                cursor = entry_end;
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::CollectStmt,
+                collect_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_free_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let free_tok = tokens.get(idx)?;
+    if !is_keyword(source, free_tok, "free") {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        free_tok,
+        "syntax error: expected '.' after FREE statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, free_tok)];
+            if let Some((memory_idx, memory_id_start)) = find_top_level_keyword_sequence_index(
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                &["memory", "id"],
+            ) {
+                push_memory_id_sequence_and_operand(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    memory_idx,
+                    memory_id_start,
+                    period_i,
+                );
+            } else {
+                push_chained_classic_operands(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    period_i,
+                    SyntaxKind::FreeOperand,
+                    &["object"],
+                );
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::FreeStmt,
+                free_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_unassign_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let unassign_tok = tokens.get(idx)?;
+    if !is_keyword(source, unassign_tok, "unassign") {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        unassign_tok,
+        "syntax error: expected '.' after UNASSIGN statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let mut children = vec![token_leaf(b, unassign_tok)];
+            push_chained_classic_operands(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                SyntaxKind::UnassignOperand,
+                &[],
+            );
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::UnassignStmt,
+                unassign_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_import_memory_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let import_tok = tokens.get(idx)?;
+    if !is_keyword(source, import_tok, "import") {
+        return None;
+    }
+
+    match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let (from_idx, memory_id_start) = find_top_level_keyword_sequence_index(
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                &["from", "memory", "id"],
+            )?;
+            let mut children = vec![token_leaf(b, import_tok)];
+            if let Some(to_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, from_idx, "to")
+            {
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    to_idx,
+                    Some(import_tok),
+                    SyntaxKind::ImportMemorySourceOperand,
+                );
+                children.push(token_leaf(b, &tokens[to_idx]));
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    to_idx + 1,
+                    from_idx,
+                    Some(&tokens[to_idx]),
+                    SyntaxKind::ImportMemoryTargetOperand,
+                );
+            } else {
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    from_idx,
+                    Some(import_tok),
+                    SyntaxKind::ImportMemoryTargetOperand,
+                );
+            }
+            push_memory_id_sequence_and_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                from_idx,
+                memory_id_start,
+                period_i,
+            );
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::ImportMemoryStmt,
+                import_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            Some((node, period_i + 1))
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            find_top_level_keyword_sequence_index(
+                source,
+                tokens,
+                idx + 1,
+                end_exclusive,
+                &["from", "memory", "id"],
+            )?;
+            let err_end = unterminated_err_end(tokens, end_exclusive, import_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after IMPORT FROM MEMORY ID statement"
+                    .to_string(),
+                range: import_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(
+                SyntaxKind::Error,
+                import_tok.range.start..err_end,
+                &children,
+            );
+            Some((node, next_after_unterminated_scan(tokens, end_exclusive)))
+        }
+    }
+}
+
+pub fn try_parse_export_memory_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let export_tok = tokens.get(idx)?;
+    if !is_keyword(source, export_tok, "export") {
+        return None;
+    }
+
+    match scan_until_statement_period(tokens, source, idx + 1) {
+        StmtPeriodScan::Found(period_i) => {
+            let (to_idx, memory_id_start) = find_top_level_keyword_sequence_index(
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+                &["to", "memory", "id"],
+            )?;
+            let mut children = vec![token_leaf(b, export_tok)];
+            if let Some(from_idx) =
+                find_top_level_keyword_index(source, tokens, idx + 1, to_idx, "from")
+            {
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    from_idx,
+                    Some(export_tok),
+                    SyntaxKind::ExportMemoryNameOperand,
+                );
+                children.push(token_leaf(b, &tokens[from_idx]));
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    from_idx + 1,
+                    to_idx,
+                    Some(&tokens[from_idx]),
+                    SyntaxKind::ExportMemorySourceOperand,
+                );
+            } else {
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    to_idx,
+                    Some(export_tok),
+                    SyntaxKind::ExportMemorySourceOperand,
+                );
+            }
+            push_memory_id_sequence_and_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                to_idx,
+                memory_id_start,
+                period_i,
+            );
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::ExportMemoryStmt,
+                export_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            Some((node, period_i + 1))
+        }
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            find_top_level_keyword_sequence_index(
+                source,
+                tokens,
+                idx + 1,
+                end_exclusive,
+                &["to", "memory", "id"],
+            )?;
+            let err_end = unterminated_err_end(tokens, end_exclusive, export_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after EXPORT TO MEMORY ID statement"
+                    .to_string(),
+                range: export_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(
+                SyntaxKind::Error,
+                export_tok.range.start..err_end,
+                &children,
+            );
+            Some((node, next_after_unterminated_scan(tokens, end_exclusive)))
+        }
+    }
+}
+
 pub fn try_parse_update_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -11391,6 +11999,90 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .count_kind(parsed.file.root(), SyntaxKind::CondenseStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_classic_refresh_collect_free_and_unassign_statements() {
+        let parsed = crate::parse(
+            "REFRESH: lt_data_ext, lt_encode_decode.\n\
+COLLECT ls_archstats_del_line INTO gt_archstats_del.\n\
+FREE lt_data_ext.\n\
+FREE MEMORY ID MEMORY_ID.\n\
+UNASSIGN <fs_choice>.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RefreshStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RefreshOperand), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CollectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CollectSourceOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CollectTargetOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FreeStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FreeOperand), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MemoryIdOperand), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnassignStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnassignOperand), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_import_and_export_memory_id_statements() {
+        let parsed = crate::parse(
+            "IMPORT lt_mem_return TO lt_return FROM MEMORY ID 'ZATTP_3PL_OER'.\n\
+IMPORT <fs_choice> TO lt_choice1 FROM MEMORY ID 'LV_CHOICE'.\n\
+EXPORT lv_bizstep FROM cs_event_data-bizstep TO MEMORY ID 'LV_BIZSTEP'.\n\
+EXPORT ls_aup_parent_evt\n\
+  FROM ls_aup_parent_evt\n\
+  TO MEMORY ID  'MMID_AUP' .",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ImportMemoryStmt),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportMemorySourceOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportMemoryTargetOperand),
+            2
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ExportMemoryStmt),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ExportMemoryNameOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ExportMemorySourceOperand),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MemoryIdOperand), 4);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]
