@@ -78,6 +78,10 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
     IdentLeadParserRegistration::new(&["while"], control_stmt::try_parse_while_stmt),
     IdentLeadParserRegistration::new(&["do"], control_stmt::try_parse_do_stmt),
     IdentLeadParserRegistration::new(&["loop"], control_stmt::try_parse_loop_stmt),
+    IdentLeadParserRegistration::new(
+        &["catch"],
+        control_stmt::try_parse_catch_system_exceptions_stmt,
+    ),
     IdentLeadParserRegistration::new(&["try"], control_stmt::try_parse_try_stmt),
     IdentLeadParserRegistration::new(&["report", "program"], surface_stmt::try_parse_report_stmt),
     IdentLeadParserRegistration::new(&["include"], surface_stmt::try_parse_include_stmt),
@@ -248,6 +252,7 @@ const STRAY_BLOCK_BOUNDARIES: &[(&str, &str)] = &[
     ("CATCH", "TRY"),
     ("CLEANUP", "TRY"),
     ("ENDTRY", "TRY"),
+    ("ENDCATCH", "CATCH SYSTEM-EXCEPTIONS"),
     ("ENDCLASS", "CLASS"),
     ("ENDINTERFACE", "INTERFACE"),
     ("ENDMETHOD", "METHOD"),

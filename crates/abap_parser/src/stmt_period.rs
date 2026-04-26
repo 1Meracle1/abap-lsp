@@ -184,6 +184,7 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("CATCH")
         || s.eq_ignore_ascii_case("CLEANUP")
         || s.eq_ignore_ascii_case("ENDTRY")
+        || s.eq_ignore_ascii_case("ENDCATCH")
         || s.eq_ignore_ascii_case("TYPES")
         || s.eq_ignore_ascii_case("CONSTANTS")
         || s.eq_ignore_ascii_case("FIELD-SYMBOLS")

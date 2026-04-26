@@ -178,6 +178,89 @@ fn parse_catch_header_until_period(
     }
 }
 
+fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut i = start;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        match token.kind {
+            TokenKind::Eof => return None,
+            TokenKind::Period if paren == 0 && bracket == 0 && brace == 0 => return Some(i),
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen if paren > 0 => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn catch_system_exceptions_body_start(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
+    let catch_tok = tokens.get(idx)?;
+    if !is_keyword(source, catch_tok, "catch") {
+        return None;
+    }
+
+    let system_idx = skip_trivia(tokens, idx + 1);
+    let system_tok = tokens.get(system_idx)?;
+    if !is_keyword(source, system_tok, "system") {
+        return None;
+    }
+    if tokens.get(system_idx + 1).map(|token| token.kind) != Some(TokenKind::Minus) {
+        return None;
+    }
+    let exceptions_idx = system_idx + 2;
+    let exceptions_tok = tokens.get(exceptions_idx)?;
+    if !is_keyword(source, exceptions_tok, "exceptions") {
+        return None;
+    }
+    Some(exceptions_idx + 1)
+}
+
+fn parse_catch_system_exceptions_header_until_period(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    catch_idx: usize,
+    body_start_idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> (Vec<NodeId>, usize) {
+    let catch_tok = &tokens[catch_idx];
+    match scan_until_top_level_period(tokens, body_start_idx) {
+        Some(period_i) => {
+            let children = error_token_children(b, tokens, catch_idx, period_i + 1);
+            (children, period_i + 1)
+        }
+        None => {
+            let end_exclusive = tokens
+                .iter()
+                .position(|token| token.kind == TokenKind::Eof)
+                .unwrap_or(tokens.len());
+            let err_end = unterminated_err_end(tokens, end_exclusive, catch_tok.range.end);
+            errors.push(crate::ParseError {
+                message: "syntax error: expected '.' after CATCH SYSTEM-EXCEPTIONS header"
+                    .to_string(),
+                range: catch_tok.range.start..err_end,
+            });
+            let err_children = error_token_children(b, tokens, catch_idx, end_exclusive);
+            let header = b.branch(
+                SyntaxKind::Error,
+                catch_tok.range.start..err_end,
+                &err_children,
+            );
+            (
+                vec![header],
+                next_after_unterminated_scan(tokens, end_exclusive),
+            )
+        }
+    }
+}
+
 fn parse_inline_name(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
@@ -1326,6 +1409,47 @@ pub fn try_parse_try_stmt(
     Some((node, next_after))
 }
 
+pub fn try_parse_catch_system_exceptions_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let catch_tok = tokens.get(idx)?;
+    let body_start_idx = catch_system_exceptions_body_start(source, tokens, idx)?;
+    let (mut children, mut next) =
+        parse_catch_system_exceptions_header_until_period(b, tokens, idx, body_start_idx, errors);
+    let (body, after_body) =
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDCATCH"]);
+    children.extend(body);
+    next = after_body;
+
+    let (end_children, next_after, end_pos) = parse_end_keyword(
+        b,
+        source,
+        tokens,
+        next,
+        catch_tok,
+        "ENDCATCH",
+        "syntax error: expected ENDCATCH",
+        errors,
+    );
+    children.extend(end_children);
+    let node_end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(end_pos)
+        .max(end_pos);
+    let node = b.branch(
+        SyntaxKind::CatchSystemExceptionsStmt,
+        catch_tok.range.start..node_end,
+        &children,
+    );
+    Some((node, next_after))
+}
+
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
@@ -1414,6 +1538,40 @@ mod tests {
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CatchClause), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
+    }
+
+    #[test]
+    fn parses_catch_system_exceptions_block() {
+        let parsed =
+            crate::parse("CATCH SYSTEM-EXCEPTIONS move_cast_error = 1.\n  lv = 1.\nENDCATCH.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CatchSystemExceptionsStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_catch_system_exceptions_multiline_mappings() {
+        let parsed = crate::parse(
+            "CATCH SYSTEM-EXCEPTIONS\n  dataset_too_many_files = 6\n  open_dataset_no_authority = 7\n  open_pipe_no_authority = 8\n  dataset_no_pipe = 9.\n  IF lv = 1.\n    lv = 2.\n  ENDIF.\nENDCATCH.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CatchSystemExceptionsStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

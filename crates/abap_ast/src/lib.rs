@@ -269,6 +269,8 @@ pub enum SyntaxKind {
     CatchClause,
     /// `CLEANUP. ...`
     CleanupClause,
+    /// `CATCH SYSTEM-EXCEPTIONS ... . ... ENDCATCH.`
+    CatchSystemExceptionsStmt,
     /// `CLASS ... . ... ENDCLASS.`
     ClassDecl,
     /// `INHERITING FROM ...` clause inside a class header.
@@ -671,6 +673,7 @@ impl SyntaxKind {
             Self::TryStmt => "TryStmt",
             Self::CatchClause => "CatchClause",
             Self::CleanupClause => "CleanupClause",
+            Self::CatchSystemExceptionsStmt => "CatchSystemExceptionsStmt",
             Self::ClassDecl => "ClassDecl",
             Self::ClassInheritanceClause => "ClassInheritanceClause",
             Self::ClassImplementationMarker => "ClassImplementationMarker",
