@@ -1936,20 +1936,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
 
         if let Some(raising_clause_id) = raising_clause_id {
-            let mut had_non_token = false;
             for child in self.collector.file.children(raising_clause_id) {
-                if self.collector.file.kind(child) != SyntaxKind::Token {
-                    had_non_token = true;
-                    self.collector.walk_node(child, scope);
+                if self.collector.file.kind(child) == SyntaxKind::Token {
+                    continue;
                 }
-            }
-            if !had_non_token {
-                let sig = self
-                    .collector
-                    .significant_stmt_token_infos(raising_clause_id);
-                if sig.len() > 1 {
-                    self.collect_message_operand_refs_infos(&sig[1..], scope);
-                }
+                // MESSAGE ... RAISING raises a non-class-based exception name.
+                // The trailing identifier is not a value expression and should not
+                // produce unresolved value-symbol diagnostics such as `file_error`.
             }
         }
     }

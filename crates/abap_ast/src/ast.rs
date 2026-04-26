@@ -49,6 +49,7 @@ pub enum FormParamSectionKind {
     Tables,
     Using,
     Changing,
+    Raising,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +65,7 @@ pub enum FunctionParamSectionKind {
     Exporting,
     Changing,
     Tables,
+    Raising,
     Exceptions,
 }
 
@@ -192,30 +194,40 @@ impl<'a> MethodsStmtEntry<'a> {
     }
 
     pub fn signature_text(&self, source: &str) -> String {
-        let mut rendered = match self.kind {
-            MethodsStmtKind::Instance => "METHODS".to_string(),
-            MethodsStmtKind::Class => "CLASS-METHODS".to_string(),
+        let keyword = match self.kind {
+            MethodsStmtKind::Instance => "METHODS",
+            MethodsStmtKind::Class => "CLASS-METHODS",
         };
-        let mut prev_text: Option<&str> = None;
-        for item in &self.items {
-            let Some(text) = item.text(source) else {
-                continue;
-            };
-            let needs_space = !rendered.is_empty()
-                && !matches!(text, "," | ":" | "-" | "(" | "[" | ")" | "]")
-                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
-            if needs_space {
-                rendered.push(' ');
-            }
-            rendered.push_str(text);
-            prev_text = Some(text);
+        let body = signature_text_from_tokens(&self.items, source);
+        if body.is_empty() {
+            keyword.to_string()
+        } else {
+            format!("{keyword} {body}")
         }
-        rendered
     }
 
     pub fn signature(&self, source: &str) -> MethodsStmtSignature<'a> {
         MethodsStmt::parse_signature_items(&self.items, source)
     }
+}
+
+fn signature_text_from_tokens<'a>(items: &[SyntaxNodeRef<'a>], source: &str) -> String {
+    let mut rendered = String::new();
+    let mut prev_text: Option<&str> = None;
+    for item in items {
+        let Some(text) = item.text(source) else {
+            continue;
+        };
+        let needs_space = !rendered.is_empty()
+            && !matches!(text, "," | ":" | "-" | "(" | "[" | ")" | "]")
+            && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
+        if needs_space {
+            rendered.push(' ');
+        }
+        rendered.push_str(text);
+        prev_text = Some(text);
+    }
+    rendered
 }
 
 #[derive(Clone, Copy)]
@@ -737,11 +749,35 @@ impl<'a> TypeRefSimple<'a> {
     }
 }
 
+fn block_header_signature_text<'a>(syntax: SyntaxNodeRef<'a>, source: &str) -> String {
+    let mut header_tokens = Vec::new();
+    for child in syntax.children() {
+        let child_tokens = child.token_descendants();
+        let stop_after_child = child_tokens
+            .iter()
+            .any(|token| token.text(source).is_some_and(|text| text == "."));
+        for token in child_tokens {
+            if token.text(source).is_some_and(|text| text == ".") {
+                return signature_text_from_tokens(&header_tokens, source);
+            }
+            header_tokens.push(token);
+        }
+        if stop_after_child {
+            break;
+        }
+    }
+    signature_text_from_tokens(&header_tokens, source)
+}
+
 impl<'a> FormDecl<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
         self.syntax
             .child_by_kind(SyntaxKind::DataDeclName)
             .and_then(DataDeclName::cast)
+    }
+
+    pub fn signature_text(self, source: &str) -> String {
+        block_header_signature_text(self.syntax, source)
     }
 
     pub fn param_sections(
@@ -761,6 +797,8 @@ impl<'a> FormParamSection<'a> {
             Some(FormParamSectionKind::Using)
         } else if text.eq_ignore_ascii_case("changing") {
             Some(FormParamSectionKind::Changing)
+        } else if text.eq_ignore_ascii_case("raising") {
+            Some(FormParamSectionKind::Raising)
         } else {
             None
         }
@@ -815,6 +853,14 @@ impl<'a> FormParam<'a> {
             .child_by_kind(SyntaxKind::TypeRefSimple)
             .and_then(TypeRefSimple::cast)
     }
+
+    pub fn is_resumable(self, source: &str) -> bool {
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .next()
+            .and_then(|token| token.text(source))
+            .is_some_and(|text| text.eq_ignore_ascii_case("resumable"))
+    }
 }
 
 impl<'a> FunctionDecl<'a> {
@@ -822,6 +868,10 @@ impl<'a> FunctionDecl<'a> {
         self.syntax
             .child_by_kind(SyntaxKind::DataDeclName)
             .and_then(DataDeclName::cast)
+    }
+
+    pub fn signature_text(self, source: &str) -> String {
+        block_header_signature_text(self.syntax, source)
     }
 
     pub fn param_sections(
@@ -845,6 +895,8 @@ impl<'a> FunctionParamSection<'a> {
             Some(FunctionParamSectionKind::Changing)
         } else if text.eq_ignore_ascii_case("tables") {
             Some(FunctionParamSectionKind::Tables)
+        } else if text.eq_ignore_ascii_case("raising") {
+            Some(FunctionParamSectionKind::Raising)
         } else if text.eq_ignore_ascii_case("exceptions") {
             Some(FunctionParamSectionKind::Exceptions)
         } else {
@@ -920,6 +972,14 @@ impl<'a> FunctionParam<'a> {
                     .text(source)
                     .is_some_and(|text| text.eq_ignore_ascii_case("default"))
             })
+    }
+
+    pub fn is_resumable(self, source: &str) -> bool {
+        self.syntax
+            .children_by_kind(SyntaxKind::Token)
+            .next()
+            .and_then(|token| token.text(source))
+            .is_some_and(|text| text.eq_ignore_ascii_case("resumable"))
     }
 }
 

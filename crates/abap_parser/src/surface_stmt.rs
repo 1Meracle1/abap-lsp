@@ -3239,8 +3239,13 @@ fn push_concatenate_entry_children(
             children.push(token_leaf(b, token));
             children.push(token_leaf(b, &tokens[i + 1]));
             let sep_start = i + 2;
-            let sep_end =
-                consume_concatenate_operand(source, tokens, sep_start, entry_end, &["respecting", "in"]);
+            let sep_end = consume_concatenate_operand(
+                source,
+                tokens,
+                sep_start,
+                entry_end,
+                &["respecting", "in"],
+            );
             if sep_end <= sep_start {
                 return false;
             }
@@ -4090,7 +4095,7 @@ fn form_header_section_keyword(source: &str, token: &Token) -> bool {
     is_keyword(source, token, "tables")
         || is_keyword(source, token, "using")
         || is_keyword(source, token, "changing")
-        || is_keyword(source, token, "raises")
+        || is_keyword(source, token, "raising")
 }
 
 fn function_header_section_keyword(source: &str, token: &Token) -> bool {
@@ -4098,7 +4103,20 @@ fn function_header_section_keyword(source: &str, token: &Token) -> bool {
         || is_keyword(source, token, "exporting")
         || is_keyword(source, token, "changing")
         || is_keyword(source, token, "tables")
+        || is_keyword(source, token, "raising")
         || is_keyword(source, token, "exceptions")
+}
+
+fn form_header_section_is_raising(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "raising")
+}
+
+fn function_header_section_is_raising(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "raising")
+}
+
+fn function_header_section_is_exceptions(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "exceptions")
 }
 
 fn form_header_starts_typed_param(source: &str, tokens: &[Token], idx: usize, end: usize) -> bool {
@@ -4215,6 +4233,65 @@ fn skip_function_header_type_expression(
     idx
 }
 
+fn consume_raising_type_ref_end(tokens: &[Token], idx: usize, end: usize) -> Option<usize> {
+    let first = tokens.get(idx)?;
+    if first.kind != TokenKind::Ident {
+        return None;
+    }
+    let mut i = idx + 1;
+    while i + 1 < end {
+        let op = &tokens[i];
+        let next = &tokens[i + 1];
+        if matches!(
+            op.kind,
+            TokenKind::Minus | TokenKind::Arrow | TokenKind::Tilde | TokenKind::FatArrow
+        ) && next.kind == TokenKind::Ident
+        {
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    Some(i)
+}
+
+fn build_raising_entry_node(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    end: usize,
+    kind: SyntaxKind,
+) -> Option<(NodeId, usize)> {
+    let token = tokens.get(idx)?;
+    let start = token.range.start;
+
+    if is_keyword(source, token, "resumable") {
+        let lparen_idx = idx + 1;
+        if tokens.get(lparen_idx).map(|token| token.kind) != Some(TokenKind::LParen) {
+            return None;
+        }
+        let rparen_idx =
+            find_matching_delim(tokens, lparen_idx, TokenKind::LParen, TokenKind::RParen)?;
+        if rparen_idx >= end || idx + 2 >= rparen_idx {
+            return None;
+        }
+        let children = vec![
+            token_leaf(b, &tokens[idx]),
+            token_leaf(b, &tokens[lparen_idx]),
+            build_type_ref_node(b, source, &tokens[idx + 2..rparen_idx]),
+            token_leaf(b, &tokens[rparen_idx]),
+        ];
+        let node = b.branch(kind, start..tokens[rparen_idx].range.end, &children);
+        return Some((node, rparen_idx + 1));
+    }
+
+    let type_end = consume_raising_type_ref_end(tokens, idx, end)?;
+    let child = build_type_ref_node(b, source, &tokens[idx..type_end]);
+    let node = b.branch(kind, start..tokens[type_end - 1].range.end, &[child]);
+    Some((node, type_end))
+}
+
 fn build_form_header_children(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -4243,6 +4320,7 @@ fn build_form_header_children(
         if is_keyword(source, token, "tables")
             || is_keyword(source, token, "using")
             || is_keyword(source, token, "changing")
+            || is_keyword(source, token, "raising")
         {
             let (section, next_i) = build_form_param_section_node(b, source, tokens, i, period_i);
             children.push(section);
@@ -4264,6 +4342,7 @@ fn build_form_param_section_node(
     period_i: usize,
 ) -> (NodeId, usize) {
     let mut children = vec![token_leaf(b, &tokens[idx])];
+    let raising_section = form_header_section_is_raising(source, &tokens[idx]);
     let mut i = idx + 1;
     while i <= period_i {
         let token = &tokens[i];
@@ -4273,6 +4352,14 @@ fn build_form_param_section_node(
         if token.kind == TokenKind::Comment {
             children.push(token_leaf(b, token));
             i += 1;
+            continue;
+        }
+        if raising_section
+            && let Some((param, next_i)) =
+                build_raising_entry_node(b, source, tokens, i, period_i + 1, SyntaxKind::FormParam)
+        {
+            children.push(param);
+            i = next_i;
             continue;
         }
         if let Some((param, next_i)) = build_form_param_node(b, source, tokens, i, period_i + 1) {
@@ -4418,6 +4505,8 @@ fn build_function_param_section_node(
     period_i: usize,
 ) -> (NodeId, usize) {
     let mut children = vec![token_leaf(b, &tokens[idx])];
+    let raising_section = function_header_section_is_raising(source, &tokens[idx]);
+    let exceptions_section = function_header_section_is_exceptions(source, &tokens[idx]);
     let mut i = idx + 1;
     while i <= period_i {
         let token = &tokens[i];
@@ -4427,6 +4516,30 @@ fn build_function_param_section_node(
         if token.kind == TokenKind::Comment {
             children.push(token_leaf(b, token));
             i += 1;
+            continue;
+        }
+        if raising_section
+            && let Some((param, next_i)) = build_raising_entry_node(
+                b,
+                source,
+                tokens,
+                i,
+                period_i + 1,
+                SyntaxKind::FunctionParam,
+            )
+        {
+            children.push(param);
+            i = next_i;
+            continue;
+        }
+        if exceptions_section && let Some((name, next_i)) = parse_inline_name(b, tokens, i) {
+            let node = b.branch(
+                SyntaxKind::FunctionParam,
+                b.span(name).start..b.span(name).end,
+                &[name],
+            );
+            children.push(node);
+            i = next_i;
             continue;
         }
         let can_start_param = i == idx + 1 || token.has_newline_before();
@@ -10052,6 +10165,39 @@ END OF BLOCK b02.",
     }
 
     #[test]
+    fn form_header_exposes_raising_section_and_exception_type_refs() {
+        let src = "FORM run RAISING resumable(/sttp/cx_demo) cx_other. ENDFORM.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let form = FormDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FormDecl)
+                .expect("form decl"),
+        ))
+        .expect("form decl");
+        let sections = form.param_sections().collect::<Vec<_>>();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].kind(src), Some(FormParamSectionKind::Raising));
+        let entries = sections[0].params().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].is_resumable(src));
+        assert_eq!(
+            entries[0]
+                .type_ref()
+                .and_then(|type_ref| type_ref.display_text(src)),
+            Some("/sttp/cx_demo")
+        );
+        assert_eq!(
+            entries[1]
+                .type_ref()
+                .and_then(|type_ref| type_ref.display_text(src)),
+            Some("cx_other")
+        );
+    }
+
+    #[test]
     fn include_stmt_exposes_structured_names() {
         let src = "INCLUDE: lfoo, lbar.";
         let parsed = crate::parse(src);
@@ -12309,6 +12455,73 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .file
                 .count_kind(function.syntax().id(), SyntaxKind::FunctionParam),
             7
+        );
+    }
+
+    #[test]
+    fn function_header_exposes_inline_exceptions_entries() {
+        let src = "FUNCTION z_demo EXCEPTIONS not_found failed. ENDFUNCTION.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let function = FunctionDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FunctionDecl)
+                .expect("function decl"),
+        ))
+        .expect("function decl");
+        let section = function
+            .param_sections()
+            .next()
+            .expect("exceptions section");
+        assert_eq!(
+            section.kind(src),
+            Some(FunctionParamSectionKind::Exceptions)
+        );
+        let names = section
+            .params()
+            .filter_map(|param| param.name_token().and_then(|name| name.name(src)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names.iter().map(|name| name.as_ref()).collect::<Vec<_>>(),
+            vec!["not_found", "failed"]
+        );
+    }
+
+    #[test]
+    fn function_header_exposes_raising_section_and_exception_type_refs() {
+        let src = "FUNCTION z_demo IMPORTING iv_count TYPE i RAISING resumable(/sttp/cx_demo) cx_other. ENDFUNCTION.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let function = FunctionDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FunctionDecl)
+                .expect("function decl"),
+        ))
+        .expect("function decl");
+        let sections = function.param_sections().collect::<Vec<_>>();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(
+            sections[1].kind(src),
+            Some(FunctionParamSectionKind::Raising)
+        );
+        let entries = sections[1].params().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].is_resumable(src));
+        assert_eq!(
+            entries[0]
+                .type_ref()
+                .and_then(|type_ref| type_ref.display_text(src)),
+            Some("/sttp/cx_demo")
+        );
+        assert_eq!(
+            entries[1]
+                .type_ref()
+                .and_then(|type_ref| type_ref.display_text(src)),
+            Some("cx_other")
         );
     }
 

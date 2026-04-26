@@ -339,6 +339,7 @@ pub struct FunctionModuleExceptionDossier {
 pub struct FunctionModuleDossier {
     pub symbol_id: u32,
     pub name: Option<String>,
+    pub signature: String,
     pub parameters: Vec<FunctionModuleParameterDossier>,
     pub exceptions: Vec<FunctionModuleExceptionDossier>,
 }
@@ -1068,6 +1069,7 @@ fn function_module_dossier(
     FunctionModuleDossier {
         symbol_id: function_module.symbol.0,
         name: unit_symbol_name(unit, function_module.symbol),
+        signature: function_module.signature.to_string(),
         parameters: function_module
             .parameters
             .iter()

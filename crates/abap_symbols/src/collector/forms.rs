@@ -360,6 +360,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                 Some(AstFormParamSectionKind::Tables) => FormParameterSection::Tables,
                 Some(AstFormParamSectionKind::Using) => FormParameterSection::Using,
                 Some(AstFormParamSectionKind::Changing) => FormParameterSection::Changing,
+                Some(AstFormParamSectionKind::Raising) => continue,
                 None => continue,
             };
             for param in section.params() {
@@ -596,6 +597,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         let Some(function_decl) = FunctionDecl::cast(self.collector.syntax(function_node)) else {
             return FunctionModuleData {
                 symbol: function_symbol,
+                signature: Arc::from(""),
                 parameters: Vec::new(),
                 exceptions: Vec::new(),
             };
@@ -603,11 +605,13 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         if function_decl.name_token().is_none() {
             return FunctionModuleData {
                 symbol: function_symbol,
+                signature: Arc::from(function_decl.signature_text(self.collector.source)),
                 parameters: Vec::new(),
                 exceptions: Vec::new(),
             };
         }
 
+        let signature = Arc::from(function_decl.signature_text(self.collector.source));
         let mut parameter_infos = Vec::new();
         let mut exceptions = Vec::new();
         for section in function_decl.param_sections() {
@@ -695,6 +699,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                         });
                     }
                 }
+                Some(AstFunctionParamSectionKind::Raising) => {}
                 None => {}
             }
         }
@@ -714,6 +719,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
 
         FunctionModuleData {
             symbol: function_symbol,
+            signature,
             parameters: parameter_infos,
             exceptions,
         }

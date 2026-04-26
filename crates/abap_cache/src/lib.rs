@@ -3911,6 +3911,59 @@ fn render_form_parameter_signature_data(
     })
 }
 
+const FORM_SIGNATURE_SECTION_KEYWORDS: &[&str] = &["TABLES", "USING", "CHANGING", "RAISING"];
+const FUNCTION_SIGNATURE_SECTION_KEYWORDS: &[&str] = &[
+    "IMPORTING",
+    "EXPORTING",
+    "CHANGING",
+    "TABLES",
+    "RAISING",
+    "EXCEPTIONS",
+];
+
+fn signature_section_items<'a>(
+    signature: &'a str,
+    section: &str,
+    section_keywords: &[&str],
+) -> Vec<&'a str> {
+    let tokens: Vec<_> = signature.split_whitespace().collect();
+    let Some(start_idx) = tokens
+        .iter()
+        .position(|token| token.eq_ignore_ascii_case(section))
+    else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    let mut idx = start_idx + 1;
+    while idx < tokens.len() {
+        if section_keywords
+            .iter()
+            .any(|keyword| tokens[idx].eq_ignore_ascii_case(keyword))
+        {
+            break;
+        }
+        items.push(tokens[idx]);
+        idx += 1;
+    }
+    items
+}
+
+fn append_signature_section_lines(
+    lines: &mut Vec<String>,
+    signature: &str,
+    section: &str,
+    section_keywords: &[&str],
+) {
+    let items = signature_section_items(signature, section, section_keywords);
+    if items.is_empty() {
+        return;
+    }
+    lines.push(format!("  {section}"));
+    for item in items {
+        lines.push(format!("    {item}"));
+    }
+}
+
 fn render_form_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<String> {
     let routine = unit.semantic().decls().form_routine(symbol.id)?;
     let mut lines = vec![format!("FORM {}", symbol.name)];
@@ -3928,6 +3981,12 @@ fn render_form_signature(unit: &UnitAnalysis, symbol: &SymbolData) -> Option<Str
             render_form_parameter_signature_data(unit, parameter)
         ));
     }
+    append_signature_section_lines(
+        &mut lines,
+        routine.signature.as_ref(),
+        "RAISING",
+        FORM_SIGNATURE_SECTION_KEYWORDS,
+    );
     Some(lines.join("\n"))
 }
 
@@ -4006,6 +4065,12 @@ fn render_function_module_signature(unit: &UnitAnalysis, symbol: &SymbolData) ->
             render_function_module_parameter_signature(parameter)
         ));
     }
+    append_signature_section_lines(
+        &mut lines,
+        function_module.signature.as_ref(),
+        "RAISING",
+        FUNCTION_SIGNATURE_SECTION_KEYWORDS,
+    );
     if !function_module.exceptions.is_empty() {
         lines.push("  EXCEPTIONS".to_string());
         for exception in &function_module.exceptions {
@@ -15415,6 +15480,71 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn hovered_resolved_symbol_at_includes_function_module_raising_signature_section() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+FUNCTION z_demo
+  IMPORTING
+    iv_name TYPE string
+  RAISING
+    resumable(cx_demo)
+    cx_other.
+ENDFUNCTION.
+
+CLASS cx_other DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.";
+        let main_src = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'Z_DEMO'.";
+        store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///fm_hover_raising_main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///fm_hover_raising_dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            },
+        ]);
+        let snapshot = store
+            .documents
+            .read()
+            .get("file:///fm_hover_raising_main.abap")
+            .cloned()
+            .expect("main snapshot");
+        let offset = main_src.find("Z_DEMO").expect("fm name") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("function module hover");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("RAISING")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("resumable(cx_demo)")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
     fn hovered_resolved_symbol_at_formats_form_parameter_signature() {
         let store = DocumentStore::default();
         let src = "\
@@ -15441,6 +15571,46 @@ ENDFORM.";
                 .markdown_lines
                 .iter()
                 .all(|line| !line.contains("FORM f")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_includes_form_raising_signature_section() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+CLASS cx_other DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+FORM f USING VALUE(iv_input) TYPE i RAISING resumable(cx_demo) cx_other.
+ENDFORM.
+
+        START-OF-SELECTION.
+  DATA lv_input TYPE i VALUE 1.
+  PERFORM f USING lv_input.
+";
+        let snapshot = store.publish("file:///form_hover_raising.abap", 1, src);
+        let offset = src.rfind("PERFORM f").expect("perform target") + "PERFORM ".len();
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("form hover");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("RAISING")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("cx_other")),
             "{:?}",
             hovered.markdown_lines
         );

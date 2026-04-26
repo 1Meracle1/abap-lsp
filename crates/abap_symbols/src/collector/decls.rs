@@ -8,7 +8,7 @@ use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
 use abap_ast::{
     SyntaxKind,
-    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, IncludeStmt, MethodDecl},
+    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, FormDecl, IncludeStmt, MethodDecl},
 };
 use abap_lexer::TextRange;
 
@@ -343,8 +343,12 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                 .ctx
                 .forms_lowering()
                 .declare_form_parameters_from_header(node, child_scope);
+            let signature = FormDecl::cast(self.ctx.syntax(node))
+                .map(|decl| Arc::<str>::from(decl.signature_text(self.ctx.source())))
+                .unwrap_or_else(|| Arc::<str>::from(""));
             self.ctx.emit_form_routine(FormRoutineData {
                 symbol: owner,
+                signature,
                 parameters,
             });
         } else if scope_kind == ScopeKind::Module && kind == SymbolKind::Module {

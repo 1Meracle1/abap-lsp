@@ -477,6 +477,7 @@ pub struct FormParameterData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormRoutineData {
     pub symbol: SymbolId,
+    pub signature: Arc<str>,
     pub parameters: Vec<FormParameterData>,
 }
 
@@ -509,6 +510,7 @@ pub struct FunctionModuleExceptionData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionModuleData {
     pub symbol: SymbolId,
+    pub signature: Arc<str>,
     pub parameters: Vec<FunctionModuleParameterData>,
     pub exceptions: Vec<FunctionModuleExceptionData>,
 }

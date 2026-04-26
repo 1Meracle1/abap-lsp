@@ -12027,6 +12027,50 @@ ENDFUNCTION.
 }
 
 #[test]
+fn form_and_function_raising_headers_do_not_emit_keyword_diagnostics() {
+    let src = r#"
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+CLASS cx_other DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+FUNCTION z_demo
+  RAISING
+    resumable(cx_demo)
+    cx_other.
+ENDFUNCTION.
+
+FORM run RAISING resumable(cx_demo) cx_other.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///raising_headers.abap", src, &parsed);
+
+    for keyword in ["RAISING", "RESUMABLE"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for name in ["cx_demo", "cx_other"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Type
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved type reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn validates_call_function_against_dependency_interface() {
     let dep_src = r#"
 FUNCTION /AIF/FILE_PROCESS_DATA
@@ -15055,6 +15099,46 @@ ENDCLASS.
                 && reference.resolution.is_some()
         }),
         "expected MESSAGE operand lv_name to resolve: {:?}",
+        unit.references
+    );
+}
+
+#[test]
+fn message_stmt_raising_in_form_does_not_treat_exception_name_as_value_symbol() {
+    let src = r#"
+REPORT zmain.
+DATA gv_file_name TYPE string.
+
+FORM run.
+  MESSAGE e323(bf00) WITH gv_file_name RAISING file_error.
+ENDFORM.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///message_stmt_raising_form.abap", src, &parsed);
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'file_error'")
+        }),
+        "unexpected unresolved file_error diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'gv_file_name'")
+        }),
+        "unexpected unresolved gv_file_name diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "gv_file_name"
+                && reference.resolution.is_some()
+        }),
+        "expected gv_file_name MESSAGE operand to resolve: {:?}",
         unit.references
     );
 }

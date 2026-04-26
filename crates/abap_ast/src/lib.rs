@@ -209,13 +209,13 @@ pub enum SyntaxKind {
     WaitOperand,
     /// `FORM ... . ... ENDFORM.`
     FormDecl,
-    /// `TABLES` / `USING` / `CHANGING` parameter section inside a `FORM`.
+    /// `TABLES` / `USING` / `CHANGING` / `RAISING` section inside a `FORM`.
     FormParamSection,
     /// One parameter entry inside a `FORM` header section.
     FormParam,
     /// `FUNCTION ... . ... ENDFUNCTION.`
     FunctionDecl,
-    /// `IMPORTING` / `EXPORTING` / `CHANGING` / `TABLES` / `EXCEPTIONS` section inside a `FUNCTION`.
+    /// `IMPORTING` / `EXPORTING` / `CHANGING` / `TABLES` / `RAISING` / `EXCEPTIONS` section inside a `FUNCTION`.
     FunctionParamSection,
     /// One parameter or exception entry inside a `FUNCTION` header section.
     FunctionParam,
