@@ -62,6 +62,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
         classify_class_section_stmt,
     ),
     GuardedSimpleStmtClassifier::new(&["class"], classify_class_deferred_stmt),
+    GuardedSimpleStmtClassifier::new(&["interface"], classify_interface_deferred_stmt),
     GuardedSimpleStmtClassifier::new(&["set"], classify_set_gui_stmt),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
@@ -681,7 +682,7 @@ fn build_class_section_stmt_children(
     children
 }
 
-fn build_class_deferred_stmt_children(
+fn build_deferred_type_stmt_children(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
     idx: usize,
@@ -1856,6 +1857,19 @@ fn classify_class_deferred_stmt(source: &str, significant: &[&Token]) -> Option<
     Some(SyntaxKind::ClassDeferredStmt)
 }
 
+fn classify_interface_deferred_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period
+        || significant.len() != 4
+        || !token_matches_keyword(source, significant[0], "interface")
+        || significant[1].kind != TokenKind::Ident
+        || !token_matches_keyword(source, significant[2], "deferred")
+    {
+        return None;
+    }
+    Some(SyntaxKind::InterfaceDeferredStmt)
+}
+
 fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     method_statement_name_idx(source, significant).map(|_| SyntaxKind::MethodsStmt)
 }
@@ -2261,7 +2275,10 @@ pub fn try_parse_simple_stmt(
             }
             let kids = match kind {
                 SyntaxKind::ClassDeferredStmt => {
-                    build_class_deferred_stmt_children(b, tokens, idx, period_i)
+                    build_deferred_type_stmt_children(b, tokens, idx, period_i)
+                }
+                SyntaxKind::InterfaceDeferredStmt => {
+                    build_deferred_type_stmt_children(b, tokens, idx, period_i)
                 }
                 SyntaxKind::ClassSectionStmt => {
                     build_class_section_stmt_children(b, source, tokens, idx, period_i)
@@ -2594,6 +2611,22 @@ ENDCLASS.";
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClassDecl), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDeclName), 1);
+    }
+
+    #[test]
+    fn classifies_interface_deferred_statement_specifically() {
+        let parsed = crate::parse("INTERFACE if_da_stat_wl DEFERRED.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::InterfaceDeferredStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::InterfaceDecl), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDeclName), 1);
     }

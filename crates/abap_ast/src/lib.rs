@@ -139,6 +139,8 @@ pub enum SyntaxKind {
     UnparsedStmt,
     /// `CLASS class DEFINITION DEFERRED [PUBLIC].`
     ClassDeferredStmt,
+    /// `INTERFACE interface DEFERRED.`
+    InterfaceDeferredStmt,
     /// `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
     ClassSectionStmt,
     /// Visibility keyword inside `PUBLIC SECTION.` / `PROTECTED SECTION.` / `PRIVATE SECTION.`
@@ -608,6 +610,7 @@ impl SyntaxKind {
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::UnparsedStmt => "UnparsedStmt",
             Self::ClassDeferredStmt => "ClassDeferredStmt",
+            Self::InterfaceDeferredStmt => "InterfaceDeferredStmt",
             Self::ClassSectionStmt => "ClassSectionStmt",
             Self::ClassSectionVisibility => "ClassSectionVisibility",
             Self::MethodsStmt => "MethodsStmt",

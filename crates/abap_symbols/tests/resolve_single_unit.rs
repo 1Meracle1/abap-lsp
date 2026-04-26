@@ -6012,6 +6012,51 @@ ENDCLASS.
 }
 
 #[test]
+fn accepts_local_interface_type_reference_after_deferred_declaration() {
+    let src = r#"
+INTERFACE i1 DEFERRED.
+
+CLASS c1 DEFINITION.
+  PUBLIC SECTION.
+    DATA i1ref TYPE REF TO i1.
+ENDCLASS.
+
+INTERFACE i1.
+ENDINTERFACE.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit(
+        "file:///interface_forward_ref_with_deferred.abap",
+        src,
+        &parsed,
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("i1")
+        }),
+        "unexpected i1 diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
+        "deferred declaration plus definition should share one interface symbol: {:?}",
+        unit.diagnostics
+    );
+    assert_eq!(
+        unit.symbols
+            .iter()
+            .filter(|symbol| symbol.kind == SymbolKind::Interface && symbol.name.as_ref() == "i1")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn collects_public_static_method_metadata_from_class_definition() {
     let src = r#"
 CLASS some_class DEFINITION.

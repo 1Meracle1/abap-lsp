@@ -252,6 +252,48 @@ fn class_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool {
     true
 }
 
+fn interface_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool {
+    let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) else {
+        return true;
+    };
+    let significant = tokens[idx..=period_i]
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect::<Vec<_>>();
+    if significant
+        .last()
+        .map(|token| token.kind != TokenKind::Period)
+        .unwrap_or(true)
+        || significant
+            .first()
+            .map(|token| !is_keyword(source, token, "interface"))
+            .unwrap_or(true)
+    {
+        return true;
+    }
+    if significant.len() == 4
+        && significant
+            .get(1)
+            .is_some_and(|token| token.kind == TokenKind::Ident)
+        && significant
+            .get(2)
+            .is_some_and(|token| is_keyword(source, token, "deferred"))
+    {
+        return false;
+    }
+    if significant.len() >= 4
+        && significant
+            .get(1)
+            .is_some_and(|token| token.kind == TokenKind::Ident)
+        && significant
+            .get(significant.len() - 2)
+            .is_some_and(|token| is_keyword(source, token, "load"))
+    {
+        return false;
+    }
+    true
+}
+
 fn select_header_is_flat(
     tokens: &[Token],
     source: &str,
@@ -10234,7 +10276,7 @@ pub fn try_parse_interface_decl(
     if starts_hyphenated_keyword(tokens, idx) {
         return None;
     }
-    if statement_starts_interface_load_stmt(source, tokens, idx) {
+    if !interface_header_is_block(tokens, source, idx) {
         return None;
     }
     let start_tok = tokens.get(idx)?;
@@ -10285,21 +10327,6 @@ pub fn try_parse_interface_decl(
         &children,
     );
     Some((node, next_after))
-}
-
-fn statement_starts_interface_load_stmt(source: &str, tokens: &[Token], idx: usize) -> bool {
-    let period_idx = match scan_until_statement_period(tokens, source, idx) {
-        StmtPeriodScan::Found(period_idx) => period_idx,
-        StmtPeriodScan::Unterminated { .. } => return false,
-    };
-    let keywords = tokens[idx..period_idx]
-        .iter()
-        .filter(|token| token.kind == TokenKind::Ident)
-        .map(|token| token.lexeme(source))
-        .collect::<Vec<_>>();
-    keywords.len() >= 3
-        && keywords[0].eq_ignore_ascii_case("interface")
-        && keywords[keywords.len() - 1].eq_ignore_ascii_case("load")
 }
 
 pub fn try_parse_method_decl(

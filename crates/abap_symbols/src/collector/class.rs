@@ -446,12 +446,24 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             self.collector.walk_children(node, scope);
             return;
         };
-        let owner = self.collector.declare_plain_symbol(
-            scope,
-            Arc::clone(&name),
-            SymbolKind::Interface,
-            name_tok.range(),
-        );
+        let range = name_tok.range();
+        let owner = self
+            .collector
+            .lookup_symbol_in_scope_chain(scope, Namespace::Type, name.as_ref())
+            .filter(|&id| {
+                self.collector.symbol(id).kind == SymbolKind::Interface
+                    && self.collector.deferred_interface_symbols.contains(&id)
+                    && !self.collector.interface_definition_symbols.contains(&id)
+            })
+            .unwrap_or_else(|| {
+                self.collector.declare_plain_symbol(
+                    scope,
+                    Arc::clone(&name),
+                    SymbolKind::Interface,
+                    range.clone(),
+                )
+            });
+        self.collector.interface_definition_symbols.insert(owner);
         let node_range = self.collector.file.range(node);
         let child_scope =
             self.collector
@@ -471,6 +483,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             .collector
             .declare_plain_symbol(scope, name, SymbolKind::Class, range);
         self.collector.deferred_class_symbols.insert(symbol);
+    }
+
+    pub(super) fn walk_interface_deferred_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+            self.collector.walk_children(node, scope);
+            return;
+        };
+        let symbol = self
+            .collector
+            .declare_plain_symbol(scope, name, SymbolKind::Interface, range);
+        self.collector.deferred_interface_symbols.insert(symbol);
     }
 
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {
