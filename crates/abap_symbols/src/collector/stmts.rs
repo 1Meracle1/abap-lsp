@@ -3791,55 +3791,82 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
-        if let Some(stmt) = ConcatenateStmt::cast(self.collector.syntax(node)) {
+        if ConcatenateStmt::cast(self.collector.syntax(node)).is_some() {
             let stmt_range = self.collector.file.range(node);
-            let byte_mode = self.collector.file.children(node).any(|child| {
-                self.collector.file.kind(child) == SyntaxKind::Token
-                    && self
-                        .collector
-                        .syntax_token_nodes(child)
-                        .into_iter()
-                        .next()
-                        .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
-            });
-            let (operand_ids, target_id, separator_id) = {
-                let operand_ids: Vec<_> = stmt
-                    .sources()
-                    .filter_map(|operand| operand.value())
-                    .map(|value| value.id())
+            let children: Vec<_> = self.collector.file.children(node).collect();
+            let mut entry_start = 0usize;
+            while entry_start < children.len() {
+                let mut entry_end = entry_start;
+                while entry_end < children.len() {
+                    let child = children[entry_end];
+                    if self.collector.file.kind(child) == SyntaxKind::Token
+                        && self
+                            .collector
+                            .syntax_token_nodes(child)
+                            .into_iter()
+                            .next()
+                            .is_some_and(|token| token.text.as_ref() == ",")
+                    {
+                        break;
+                    }
+                    entry_end += 1;
+                }
+
+                let byte_mode = children[entry_start..entry_end].iter().any(|&child| {
+                    self.collector.file.kind(child) == SyntaxKind::Token
+                        && self
+                            .collector
+                            .syntax_token_nodes(child)
+                            .into_iter()
+                            .next()
+                            .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
+                });
+                let operand_ids: Vec<_> = children[entry_start..entry_end]
+                    .iter()
+                    .copied()
+                    .filter(|&child| self.collector.file.kind(child) == SyntaxKind::ConcatenateSourceOperand)
+                    .filter_map(|operand| self.collector.first_non_token_child(operand))
                     .collect();
-                let target_id = stmt
-                    .target()
-                    .and_then(|operand| operand.value())
-                    .map(|value| value.id());
-                let separator_id = stmt
-                    .separator()
-                    .and_then(|operand| operand.value())
-                    .map(|value| value.id());
-                (operand_ids, target_id, separator_id)
-            };
-            let target_is_inline = target_id.is_some_and(|target| {
-                self.collector.file.kind(target) == SyntaxKind::DataInlineDecl
-            });
-            for &operand in &operand_ids {
-                self.collector.walk_node(operand, scope);
-            }
-            if let Some(target) = target_id {
-                if target_is_inline {
-                    self.declare_concatenate_inline_data_target(target, scope, byte_mode);
-                } else {
-                    self.collector.walk_node(target, scope);
+                let target_id = children[entry_start..entry_end]
+                    .iter()
+                    .copied()
+                    .find(|&child| self.collector.file.kind(child) == SyntaxKind::ConcatenateTargetOperand)
+                    .and_then(|target| self.collector.first_non_token_child(target));
+                let separator_id = children[entry_start..entry_end]
+                    .iter()
+                    .copied()
+                    .find(|&child| {
+                        self.collector.file.kind(child) == SyntaxKind::ConcatenateSeparatorOperand
+                    })
+                    .and_then(|separator| self.collector.first_non_token_child(separator));
+
+                for &operand in &operand_ids {
+                    self.collector.walk_node(operand, scope);
                 }
-            }
-            if let Some(separator) = separator_id {
-                self.collector.walk_node(separator, scope);
-            }
-            if let Some(target) = target_id {
-                let mut rhs_nodes = operand_ids;
+                if let Some(target) = target_id {
+                    if self.collector.file.kind(target) == SyntaxKind::DataInlineDecl {
+                        self.declare_concatenate_inline_data_target(target, scope, byte_mode);
+                    } else {
+                        self.collector.walk_node(target, scope);
+                    }
+                }
                 if let Some(separator) = separator_id {
-                    rhs_nodes.push(separator);
+                    self.collector.walk_node(separator, scope);
                 }
-                self.emit_assignment_site_from_ranges(scope, stmt_range, target, &rhs_nodes);
+                if let Some(target) = target_id {
+                    let mut rhs_nodes = operand_ids;
+                    if let Some(separator) = separator_id {
+                        rhs_nodes.push(separator);
+                    }
+                    self.emit_assignment_site_from_ranges(
+                        scope,
+                        stmt_range.clone(),
+                        target,
+                        &rhs_nodes,
+                    );
+                }
+
+                entry_start = entry_end.saturating_add(1);
             }
             return;
         }

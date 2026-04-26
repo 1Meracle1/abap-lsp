@@ -4163,6 +4163,74 @@ ENDFORM.
 }
 
 #[test]
+fn resolves_grouped_concatenate_stmt_entries() {
+    let src = r#"
+TYPES: BEGIN OF ty_transloading,
+         vhcnum TYPE string,
+       END OF ty_transloading.
+DATA ls_zatt_transloading TYPE ty_transloading.
+DATA lv_question TYPE string.
+
+CONCATENATE: TEXT-010 ls_zatt_transloading-vhcnum INTO lv_question SEPARATED BY space,
+             lv_question TEXT-041                 INTO lv_question SEPARATED BY space.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///grouped_concatenate_stmt.abap", src, &parsed);
+
+    for name in ["ls_zatt_transloading", "lv_question"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved grouped CONCATENATE reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let lv_question_refs = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lv_question"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        })
+        .count();
+    assert!(
+        lv_question_refs >= 3,
+        "expected grouped CONCATENATE to resolve both target occurrences and the reused source, refs={:?}",
+        unit.references
+    );
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "text"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected grouped CONCATENATE to resolve builtin TEXT selector base, refs={:?} diagnostics={:?}",
+        unit.references,
+        unit.diagnostics
+    );
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("ls_zatt_transloading")
+                    || diag.message.contains("lv_question"))
+        }),
+        "unexpected unresolved CONCATENATE diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_split_source_separator_and_into_targets() {
     let src = r#"
 DATA iv_sgtin TYPE string.

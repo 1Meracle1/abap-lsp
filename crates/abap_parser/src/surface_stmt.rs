@@ -3159,6 +3159,111 @@ fn consume_concatenate_operand(
     idx
 }
 
+fn push_concatenate_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> bool {
+    let Some(into_idx) =
+        find_top_level_keyword_index(source, tokens, entry_start, entry_end, "into")
+    else {
+        return false;
+    };
+
+    let mut i = entry_start;
+    while i < into_idx {
+        let end_idx = consume_concatenate_operand(source, tokens, i, into_idx, &["into"]);
+        if end_idx == i {
+            i += 1;
+            continue;
+        }
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            i,
+            end_idx,
+            tokens
+                .get(i.checked_sub(1).unwrap_or(entry_start))
+                .filter(|_| i > entry_start),
+            SyntaxKind::ConcatenateSourceOperand,
+        );
+        i = end_idx;
+    }
+
+    children.push(token_leaf(b, &tokens[into_idx]));
+    if let Some(next_i) = push_wrapped_data_inline_decl_child(
+        b,
+        children,
+        source,
+        tokens,
+        into_idx + 1,
+        SyntaxKind::ConcatenateTargetOperand,
+    ) {
+        i = next_i;
+    } else {
+        let target_end = consume_concatenate_operand(
+            source,
+            tokens,
+            into_idx + 1,
+            entry_end,
+            &["separated", "respecting", "in"],
+        );
+        if target_end <= into_idx + 1 {
+            return false;
+        }
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            into_idx + 1,
+            target_end,
+            Some(&tokens[into_idx]),
+            SyntaxKind::ConcatenateTargetOperand,
+        );
+        i = target_end;
+    }
+
+    while i < entry_end {
+        let token = &tokens[i];
+        if is_keyword(source, token, "separated")
+            && tokens
+                .get(i + 1)
+                .is_some_and(|next| is_keyword(source, next, "by"))
+        {
+            children.push(token_leaf(b, token));
+            children.push(token_leaf(b, &tokens[i + 1]));
+            let sep_start = i + 2;
+            let sep_end =
+                consume_concatenate_operand(source, tokens, sep_start, entry_end, &["respecting", "in"]);
+            if sep_end <= sep_start {
+                return false;
+            }
+            push_wrapped_expr_child(
+                b,
+                children,
+                source,
+                tokens,
+                sep_start,
+                sep_end,
+                Some(&tokens[i + 1]),
+                SyntaxKind::ConcatenateSeparatorOperand,
+            );
+            i = sep_end;
+            continue;
+        }
+        children.push(token_leaf(b, token));
+        i += 1;
+    }
+
+    true
+}
+
 fn push_split_entry_children(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -4832,9 +4937,66 @@ pub fn try_parse_concatenate_stmt(
         next_after_unterminated_scan,
         |b, period_i, _errors| {
             let mut children = vec![token_leaf(b, concat_tok)];
-            let Some(into_idx) =
-                find_top_level_keyword_index(source, tokens, idx + 1, period_i, "into")
-            else {
+            if tokens
+                .get(idx + 1)
+                .is_some_and(|token| token.kind == TokenKind::Colon)
+            {
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                let mut cursor = idx + 2;
+                let mut parsed_entry = false;
+                while cursor < period_i {
+                    while cursor < period_i && tokens[cursor].kind == TokenKind::Comment {
+                        children.push(token_leaf(b, &tokens[cursor]));
+                        cursor += 1;
+                    }
+                    if cursor >= period_i {
+                        break;
+                    }
+                    let entry_end =
+                        find_top_level_token_kind(tokens, cursor, period_i, TokenKind::Comma)
+                            .unwrap_or(period_i);
+                    let entry_start = skip_trivia(tokens, cursor);
+                    if entry_start >= entry_end
+                        || !push_concatenate_entry_children(
+                            b,
+                            &mut children,
+                            source,
+                            tokens,
+                            entry_start,
+                            entry_end,
+                        )
+                    {
+                        let raw = token_children(b, tokens, idx, period_i + 1);
+                        let node = b.branch(
+                            SyntaxKind::Error,
+                            concat_tok.range.start..tokens[period_i].range.end,
+                            &raw,
+                        );
+                        return (node, period_i + 1);
+                    }
+                    parsed_entry = true;
+                    if entry_end < period_i && tokens[entry_end].kind == TokenKind::Comma {
+                        children.push(token_leaf(b, &tokens[entry_end]));
+                    }
+                    cursor = entry_end + 1;
+                }
+                if !parsed_entry {
+                    let raw = token_children(b, tokens, idx, period_i + 1);
+                    let node = b.branch(
+                        SyntaxKind::Error,
+                        concat_tok.range.start..tokens[period_i].range.end,
+                        &raw,
+                    );
+                    return (node, period_i + 1);
+                }
+            } else if !push_concatenate_entry_children(
+                b,
+                &mut children,
+                source,
+                tokens,
+                idx + 1,
+                period_i,
+            ) {
                 let raw = token_children(b, tokens, idx, period_i + 1);
                 let node = b.branch(
                     SyntaxKind::Error,
@@ -4842,91 +5004,6 @@ pub fn try_parse_concatenate_stmt(
                     &raw,
                 );
                 return (node, period_i + 1);
-            };
-
-            let mut i = idx + 1;
-            while i < into_idx {
-                let end_idx = consume_concatenate_operand(source, tokens, i, into_idx, &["into"]);
-                if end_idx == i {
-                    i += 1;
-                    continue;
-                }
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    i,
-                    end_idx,
-                    Some(concat_tok),
-                    SyntaxKind::ConcatenateSourceOperand,
-                );
-                i = end_idx;
-            }
-
-            children.push(token_leaf(b, &tokens[into_idx]));
-            if let Some(next_i) = push_wrapped_data_inline_decl_child(
-                b,
-                &mut children,
-                source,
-                tokens,
-                into_idx + 1,
-                SyntaxKind::ConcatenateTargetOperand,
-            ) {
-                i = next_i;
-            } else {
-                let target_end = consume_concatenate_operand(
-                    source,
-                    tokens,
-                    into_idx + 1,
-                    period_i,
-                    &["separated", "respecting", "in"],
-                );
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    into_idx + 1,
-                    target_end,
-                    Some(&tokens[into_idx]),
-                    SyntaxKind::ConcatenateTargetOperand,
-                );
-                i = target_end;
-            }
-
-            while i < period_i {
-                let token = &tokens[i];
-                if is_keyword(source, token, "separated")
-                    && tokens
-                        .get(i + 1)
-                        .is_some_and(|next| is_keyword(source, next, "by"))
-                {
-                    children.push(token_leaf(b, token));
-                    children.push(token_leaf(b, &tokens[i + 1]));
-                    let sep_start = i + 2;
-                    let sep_end = consume_concatenate_operand(
-                        source,
-                        tokens,
-                        sep_start,
-                        period_i,
-                        &["respecting", "in"],
-                    );
-                    push_wrapped_expr_child(
-                        b,
-                        &mut children,
-                        source,
-                        tokens,
-                        sep_start,
-                        sep_end,
-                        Some(&tokens[i + 1]),
-                        SyntaxKind::ConcatenateSeparatorOperand,
-                    );
-                    i = sep_end;
-                    continue;
-                }
-                children.push(token_leaf(b, token));
-                i += 1;
             }
 
             children.push(token_leaf(b, &tokens[period_i]));
@@ -10325,6 +10402,36 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .file
                 .count_kind(root, SyntaxKind::ConcatenateTargetOperand),
             1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_grouped_concatenate_stmt() {
+        let parsed = crate::parse(
+            "CONCATENATE: TEXT-010 ls_zatt_transloading-vhcnum INTO lv_question SEPARATED BY space,\n\
+                         lv_question TEXT-041                 INTO lv_question SEPARATED BY space.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConcatenateStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateSourceOperand),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateTargetOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateSeparatorOperand),
+            2
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
