@@ -2800,9 +2800,20 @@ impl AnalysisSnapshot {
         }
         let prefix_end = offset.min(token.range.end);
         let replace_range = token.range.start..prefix_end;
+        let selector_context = selector_completion_context(&self.parse, offset);
+        let parsed_type_position = selector_context
+            .as_ref()
+            .is_some_and(|context| context.in_type_position);
+        let in_type_position = parsed_type_position
+            || (offset_is_in_error_node(&self.parse, offset)
+                && bare_identifier_token_context_is_type_position(
+                    &self.parse,
+                    self.text.as_ref(),
+                    token_start,
+                    prefix_idx,
+                ));
         Some(BareIdentifierCompletionContext {
-            in_type_position: selector_completion_context(&self.parse, offset)
-                .is_some_and(|context| context.in_type_position),
+            in_type_position,
             prefix: Arc::<str>::from(self.text[token.range.start..prefix_end].to_ascii_lowercase()),
             replace_range,
         })
@@ -8501,18 +8512,7 @@ fn selector_completion_context(
         let mut path = vec![root];
         let mut current = root;
         loop {
-            let Some(next) = parse
-                .file
-                .children(current)
-                .filter(|&child| {
-                    let range = parse.file.range(child);
-                    range.start <= offset && offset <= range.end
-                })
-                .min_by_key(|&child| {
-                    let range = parse.file.range(child);
-                    range.end.saturating_sub(range.start)
-                })
-            else {
+            let Some(next) = child_at_offset_prefer_left_boundary(parse, current, offset) else {
                 break;
             };
             path.push(next);
@@ -8556,24 +8556,37 @@ fn node_path_at_offset(parse: &ParseResult, offset: usize) -> Vec<abap_ast::aren
     let mut path = vec![root];
     let mut current = root;
     loop {
-        let Some(next) = parse
-            .file
-            .children(current)
-            .filter(|&child| {
-                let range = parse.file.range(child);
-                range.start <= offset && offset <= range.end
-            })
-            .min_by_key(|&child| {
-                let range = parse.file.range(child);
-                range.end.saturating_sub(range.start)
-            })
-        else {
+        let Some(next) = child_at_offset_prefer_left_boundary(parse, current, offset) else {
             break;
         };
         path.push(next);
         current = next;
     }
     path
+}
+
+fn offset_is_in_error_node(parse: &ParseResult, offset: usize) -> bool {
+    node_path_at_offset(parse, offset)
+        .into_iter()
+        .any(|node| parse.file.kind(node) == SyntaxKind::Error)
+}
+
+fn child_at_offset_prefer_left_boundary(
+    parse: &ParseResult,
+    parent: abap_ast::arena::NodeId,
+    offset: usize,
+) -> Option<abap_ast::arena::NodeId> {
+    parse
+        .file
+        .children(parent)
+        .filter(|&child| {
+            let range = parse.file.range(child);
+            range.start <= offset && offset <= range.end
+        })
+        .min_by_key(|&child| {
+            let range = parse.file.range(child);
+            (range.start == offset, range.end.saturating_sub(range.start))
+        })
 }
 
 fn corresponding_constructor_source_query(
@@ -9799,6 +9812,44 @@ fn type_keyword_before_base(
     };
     let keyword = parse.tokens[keyword_idx].lexeme(text);
     keyword.eq_ignore_ascii_case("type") || keyword.eq_ignore_ascii_case("like")
+}
+
+fn bare_identifier_token_context_is_type_position(
+    parse: &ParseResult,
+    text: &str,
+    start: usize,
+    ident_idx: usize,
+) -> bool {
+    let Some(prev_idx) = previous_significant_token(parse, start, ident_idx) else {
+        return false;
+    };
+    let prev = parse.tokens[prev_idx].lexeme(text);
+    if prev.eq_ignore_ascii_case("type") {
+        return true;
+    }
+    if prev.eq_ignore_ascii_case("like") {
+        return false;
+    }
+    if !prev.eq_ignore_ascii_case("of") && !prev.eq_ignore_ascii_case("to") {
+        return false;
+    }
+
+    let mut cursor = prev_idx;
+    while let Some(idx) = previous_significant_token(parse, start, cursor) {
+        match parse.tokens[idx].kind.as_str() {
+            "Comma" | "Colon" | "Period" => return false,
+            _ => {}
+        }
+        let lexeme = parse.tokens[idx].lexeme(text);
+        if lexeme.eq_ignore_ascii_case("type") {
+            return true;
+        }
+        if lexeme.eq_ignore_ascii_case("like") {
+            return false;
+        }
+        cursor = idx;
+    }
+    false
 }
 
 #[derive(Debug, Default)]
@@ -16784,6 +16835,64 @@ SORT lt_obj BY objid.
                 && sort_names.contains(&"lt_obj_ids")
                 && sort_names.contains(&"lt_loc"),
             "expected global table variables in completion: {sort_names:?}"
+        );
+    }
+
+    #[test]
+    fn completion_returns_type_names_inside_types_table_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ts_obj,
+        objid TYPE c LENGTH 50,
+       END OF ts_obj,
+       tt_obj TYPE TABLE OF ts_.
+";
+        let snapshot = store.publish("file:///types_table_completion.abap", 1, src);
+        let completion_offset = src
+            .find("tt_obj TYPE TABLE OF ts_")
+            .expect("table type declaration")
+            + "tt_obj TYPE TABLE OF ts_".len();
+
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("type completion");
+        assert!(completion.in_type_position);
+        assert!(
+            completion.items.iter().any(|item| {
+                matches!(
+                    item,
+                    crate::CompletionItem::Symbol(item)
+                        if item.kind == SymbolKind::TypeDef && item.name.as_ref() == "ts_obj"
+                )
+            }),
+            "expected ts_obj type completion: {:?}",
+            completion.items
+        );
+    }
+
+    #[test]
+    fn completion_returns_type_names_inside_unterminated_types_table_declaration() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ts_obj,
+        objid TYPE c LENGTH 50,
+       END OF ts_obj.
+
+TYPES tt_obj TYPE TABLE OF ts_";
+        let snapshot = store.publish("file:///unterminated_types_table_completion.abap", 1, src);
+
+        let completion = snapshot.completion_at(src.len()).expect("type completion");
+        assert!(completion.in_type_position);
+        assert!(
+            completion.items.iter().any(|item| {
+                matches!(
+                    item,
+                    crate::CompletionItem::Symbol(item)
+                        if item.kind == SymbolKind::TypeDef && item.name.as_ref() == "ts_obj"
+                )
+            }),
+            "expected ts_obj type completion: {:?}",
+            completion.items
         );
     }
 
