@@ -12,8 +12,8 @@ use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
     FormParameterSection, FunctionModuleData, FunctionModuleParameterData,
     FunctionModuleParameterSection, NamedArgumentTarget, PerformParameterSection, ReferenceKind,
-    Resolution, SqlNameRefKind, StructureFieldShape, TypeFactData, ValueFlowKind,
-    ValueFlowTargetData,
+    Resolution, SqlNameRefData, SqlNameRefKind, SqlSourceData, StructureFieldShape, TypeFactData,
+    ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
@@ -2301,6 +2301,50 @@ fn open_sql_source_has_workspace_type_definition(
     workspace_root_defines_type_name(lookup, name)
 }
 
+fn open_sql_source_symbol_handle(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    query_scope: ScopeId,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    if let Some(symbol_id) =
+        resolve_symbol_in_scope_chain(unit, scope_index, query_scope, Namespace::Type, name)
+    {
+        return Some(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: symbol_id,
+        });
+    }
+
+    root_symbol_handle_matching(project, lookup, unit, Namespace::Type, name, |symbol| {
+        symbol.kind.occupies(Namespace::Type)
+    })
+}
+
+fn open_sql_source_structure_for_name<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+    query_scope: ScopeId,
+    name: &Arc<str>,
+) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
+    let handle =
+        open_sql_source_symbol_handle(project, lookup, unit, scope_index, query_scope, name)?;
+    let source_unit = &project.units[handle.unit.as_usize()];
+    resolve_symbol_structure_project(
+        project,
+        lookup,
+        source_unit,
+        scope_indexes,
+        scope_for_unit(source_unit, query_scope),
+        handle.symbol,
+    )
+}
+
 fn validate_open_sql_sources(
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
@@ -2337,6 +2381,91 @@ fn validate_open_sql_sources(
             ),
         });
     }
+    out
+}
+
+fn sql_source_matches_qualifier(source: &SqlSourceData, qualifier: &Arc<str>) -> bool {
+    source.alias.as_ref() == Some(qualifier) || source.name == *qualifier
+}
+
+fn sql_source_for_name_ref<'a>(
+    unit: &'a crate::UnitAnalysis,
+    sql_ref: &SqlNameRefData,
+) -> Option<&'a SqlSourceData> {
+    let sources: Vec<_> = unit
+        .sql_sources
+        .iter()
+        .filter(|source| source.query_id == sql_ref.query_id)
+        .collect();
+    if let Some(qualifier) = sql_ref.qualifier.as_ref() {
+        return sources
+            .into_iter()
+            .find(|source| sql_source_matches_qualifier(source, qualifier));
+    }
+    if sources.len() == 1 {
+        return sources.first().copied();
+    }
+    None
+}
+
+fn validate_open_sql_fields(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    let mut emitted = HashSet::<(usize, usize)>::new();
+
+    for sql_ref in &unit.sql_name_refs {
+        if !matches!(
+            sql_ref.kind,
+            SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+        ) {
+            continue;
+        }
+        let Some(source) = sql_source_for_name_ref(unit, sql_ref) else {
+            continue;
+        };
+        let Some((source_unit, structure_id)) = open_sql_source_structure_for_name(
+            project,
+            lookup,
+            unit,
+            scope_indexes,
+            scope_index,
+            sql_ref.scope,
+            &source.name,
+        ) else {
+            continue;
+        };
+        if resolve_structure_field_info_project(
+            project,
+            lookup,
+            scope_indexes,
+            source_unit,
+            sql_ref.scope,
+            structure_id,
+            sql_ref.name.as_ref(),
+        )
+        .is_some()
+            || structure_has_proxy_include_fields(source_unit, structure_id)
+        {
+            continue;
+        }
+        if !emitted.insert((sql_ref.range.start, sql_ref.range.end)) {
+            continue;
+        }
+        out.push(Diagnostic {
+            kind: DiagnosticKind::UnknownField,
+            range: sql_ref.range.clone(),
+            message: format!(
+                "unknown Open SQL field '{}' for source '{}'",
+                sql_ref.name, source.name
+            ),
+        });
+    }
+
     out
 }
 
@@ -4483,6 +4612,13 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         }
 
         unit_diagnostics.extend(validate_open_sql_sources(&lookup, unit, &scope_index));
+        unit_diagnostics.extend(validate_open_sql_fields(
+            project,
+            &lookup,
+            unit,
+            scope_indexes,
+            &scope_index,
+        ));
         unit_diagnostics.extend(validate_open_sql_into_targets(
             project,
             &lookup,

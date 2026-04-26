@@ -3487,6 +3487,87 @@ SELECT * FROM ty_row INTO TABLE lt.
 }
 
 #[test]
+fn verifies_open_sql_fields_against_workspace_ddic_type() {
+    let ddic_src = r#"
+TYPES: BEGIN OF zattp_agg_pro,
+         mguid TYPE c LENGTH 32,
+         docref TYPE c LENGTH 20,
+         evt_time TYPE p LENGTH 21 DECIMALS 7,
+       END OF zattp_agg_pro.
+"#;
+    let main_src = r#"
+SELECT mguid, docref, evt_time
+  FROM zattp_agg_pro
+  INTO TABLE @DATA(lt_rows).
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_zattp_agg_pro.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_zattp_agg_pro.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_zattp_agg_pro.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            DiagnosticKind::UnverifiedOpenSqlSource | DiagnosticKind::UnknownField
+        )),
+        "unexpected Open SQL diagnostics: {:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_unknown_open_sql_field_for_resolved_workspace_ddic_type() {
+    let ddic_src = r#"
+TYPES: BEGIN OF zattp_agg_pro,
+         mguid TYPE c LENGTH 32,
+       END OF zattp_agg_pro.
+"#;
+    let main_src = r#"
+SELECT ztb~missing
+  FROM zattp_agg_pro AS ztb
+  INTO TABLE @DATA(lt_rows).
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_zattp_agg_pro_bad.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_zattp_agg_pro_bad.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_zattp_agg_pro_bad.abap")
+        .expect("main unit");
+
+    assert!(
+        main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
+        }),
+        "expected UnknownField for SQL column, got {:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn select_from_dynamic_dbtab_resolves_operand_without_sql_source_diag() {
     let src = r#"
 DATA lv_idx_tbl TYPE string.

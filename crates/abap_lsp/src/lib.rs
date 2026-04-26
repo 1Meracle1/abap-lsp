@@ -7502,6 +7502,166 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn workspace_refresh_indexes_local_adt_ddic_xml_for_types_and_open_sql() {
+        let workspace_path = temp_workspace_path("workspace_local_adt_ddic_xml");
+        let export_root = temp_workspace_path("workspace_local_adt_ddic_xml_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src/reports/ZREP")).expect("report dir");
+        fs::create_dir_all(export_root.join("ZPKG/Dictionary/Database Tables")).expect("table dir");
+        fs::create_dir_all(export_root.join("ZPKG/Dictionary/Structures")).expect("structure dir");
+        fs::create_dir_all(export_root.join("ZPKG/Dictionary/Table Types"))
+            .expect("table type dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/ZREP.abap"),
+            r#"
+REPORT zrep.
+DATA ls_monitor TYPE zarrive_monitor.
+DATA lt_return TYPE zattp_tt_bapiret2.
+
+SELECT mguid, docref, evt_time
+  FROM zattp_agg_pro
+  INTO TABLE @DATA(lt_rows).
+
+SELECT ztb~missing
+  FROM zattp_agg_pro AS ztb
+  INTO TABLE @DATA(lt_bad).
+"#,
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/reports/ZREP/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        fs::write(
+            export_root.join("ZPKG/Dictionary/Database Tables/ZATTP_AGG_PRO.xml"),
+            r#"
+<abapsource:elementInfo adtcore:name="zattp_agg_pro"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="mguid">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIsKey">true</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicLength">000032</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="docref">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicLength">000020</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="evt_time">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">dec</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicLength">000021</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDecimals">000007</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#,
+        )
+        .expect("table xml");
+        fs::write(
+            export_root.join("ZPKG/Dictionary/Structures/ZARRIVE_MONITOR.xml"),
+            r#"
+<abapsource:elementInfo adtcore:name="zarrive_monitor"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="delivery">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicLength">000020</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#,
+        )
+        .expect("structure xml");
+        fs::write(
+            export_root.join("ZPKG/Dictionary/Structures/ZATTP_DT_BAPIRET2.xml"),
+            r#"
+<abapsource:elementInfo adtcore:name="zattp_dt_bapiret2"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="message">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">string</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#,
+        )
+        .expect("row structure xml");
+        fs::write(
+            export_root.join("ZPKG/Dictionary/Table Types/ZATTP_TT_BAPIRET2.xml"),
+            r#"
+<abapsource:elementInfo adtcore:name="zattp_tt_bapiret2"
+    xmlns:abapsource="http://www.sap.com/adt/abapsource"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="zattp_dt_bapiret2">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicRowType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>
+"#,
+        )
+        .expect("table type xml");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let target_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/reports/ZREP/ZREP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &target_uri).expect("snapshot");
+        assert!(
+            !snapshot.symbols.diagnostics.iter().any(|diag| {
+                matches!(
+                    diag.kind,
+                    DiagnosticKind::UnresolvedReference | DiagnosticKind::UnverifiedOpenSqlSource
+                )
+            }),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+        assert!(
+            snapshot.symbols.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
+            }),
+            "expected SQL UnknownField, got {:#?}",
+            snapshot.symbols.diagnostics
+        );
+        assert!(
+            build_remote_dependency_request(&mut state, &target_uri).is_none(),
+            "resolved local DDIC XML should not trigger remote request"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
     fn workspace_refresh_prefers_workspace_include_over_same_named_local_export() {
         let workspace_path = temp_workspace_path("workspace_local_include_before_export");
         let export_root = temp_workspace_path("workspace_local_include_before_export_root");
