@@ -1399,12 +1399,19 @@ impl<'a> DeclClause<'a> {
         let begin = tokens.next()?;
         let of = tokens.next()?;
         let name = tokens.next()?;
+        let part = tokens.next();
         if !begin
             .text(source)
             .is_some_and(|text| text.eq_ignore_ascii_case("begin"))
             || !of
                 .text(source)
                 .is_some_and(|text| text.eq_ignore_ascii_case("of"))
+            || (name
+                .text(source)
+                .is_some_and(|text| text.eq_ignore_ascii_case("common"))
+                && part
+                    .and_then(|token| token.text(source))
+                    .is_some_and(|text| text.eq_ignore_ascii_case("part")))
         {
             return None;
         }

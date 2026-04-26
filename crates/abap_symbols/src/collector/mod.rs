@@ -1334,6 +1334,11 @@ impl<'a> Collector<'a> {
         let name_text = name_tok.text(self.source)?;
         if !begin_text.eq_ignore_ascii_case("begin")
             || !of_text.eq_ignore_ascii_case("of")
+            || (name_text.eq_ignore_ascii_case("common")
+                && tokens
+                    .next()
+                    .and_then(|token| token.text(self.source))
+                    .is_some_and(|text| text.eq_ignore_ascii_case("part")))
             || matches!(name_text, "." | "," | ":" | "-")
         {
             return None;

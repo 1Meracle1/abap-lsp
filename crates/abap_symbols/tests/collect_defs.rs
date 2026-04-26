@@ -109,6 +109,92 @@ tbtco-jobname = v_op-name.
 }
 
 #[test]
+fn common_part_delimiters_do_not_emit_bogus_symbols() {
+    let src = r#"
+DATA: BEGIN OF COMMON PART fm06lcbe.
+DATA: BEGIN OF bet OCCURS 50.
+        INCLUDE STRUCTURE ekbe.
+DATA: END OF bet.
+DATA: END OF COMMON PART.
+"#;
+
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///common_part.abap", src, &parsed);
+
+    assert!(
+        unit.symbols
+            .iter()
+            .any(|symbol| { symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "bet" })
+    );
+    for bogus in ["begin", "common", "end"] {
+        assert!(
+            !unit
+                .symbols
+                .iter()
+                .any(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == bogus),
+            "unexpected common-part delimiter symbol {bogus}: {:?}",
+            unit.symbols
+        );
+        assert!(
+            !unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier && reference.name.as_ref() == bogus
+            }),
+            "unexpected common-part delimiter reference {bogus}: {:?}",
+            unit.references
+        );
+    }
+}
+
+#[test]
+fn legacy_occurs_header_line_keeps_declared_type_clean() {
+    let src = "DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.";
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///occurs_header.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "int_eket")
+        .expect("int_eket symbol");
+    let declared_type = symbol.declared_type.as_ref().expect("declared type");
+    assert_eq!(declared_type.namespace, Namespace::Value);
+    assert_eq!(declared_type.base_name.as_ref(), "beket");
+    assert_eq!(symbol.type_clause_display.as_deref(), Some("beket"));
+}
+
+#[test]
+fn constant_structure_collects_numeric_prefixed_component_names() {
+    let src = r#"
+CONSTANTS: BEGIN OF gc_bapi_proc_mode,
+             aip VALUE 'A',
+             46c VALUE 'B',
+           END OF gc_bapi_proc_mode.
+"#;
+
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///constant_components.abap", src, &parsed);
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Constant && symbol.name.as_ref() == "gc_bapi_proc_mode"
+        })
+        .expect("constant structure symbol");
+    let structure_id = symbol.structure.expect("constant structure id");
+    let structure = &unit.structures[structure_id.as_usize()];
+    let field_names = structure
+        .fields
+        .iter()
+        .map(|field| field.name.as_ref())
+        .collect::<Vec<_>>();
+    assert_eq!(field_names, vec!["aip", "46c"]);
+}
+
+#[test]
 fn collects_amdp_method_symbol_and_using_dependencies() {
     let src = r#"
 CLASS zcl_attp_ua_dep_rl_amdp DEFINITION.
