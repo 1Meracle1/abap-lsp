@@ -641,6 +641,7 @@ ast_node!(
     SyntaxKind::ExportMemorySourceOperand
 );
 ast_node!(MemoryIdOperand, SyntaxKind::MemoryIdOperand);
+ast_node!(DataBufferOperand, SyntaxKind::DataBufferOperand);
 ast_node!(ConvertStmt, SyntaxKind::ConvertStmt);
 ast_node!(ConvertOperand, SyntaxKind::ConvertOperand);
 ast_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);

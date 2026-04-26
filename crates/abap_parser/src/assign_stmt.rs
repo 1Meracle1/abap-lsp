@@ -6,8 +6,8 @@ use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::expr::parse_arithmetic_expr;
 use crate::stmt_period::{
-    delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword, token_begins_line,
-    unterminated_err_end,
+    delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
+    line_start_named_arg_continues, token_begins_line, unterminated_err_end,
 };
 
 fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
@@ -141,9 +141,12 @@ fn scan_assign_rhs(tokens: &[Token], source: &str, start: usize) -> AssignRhsSca
                 allow_line_start_condition_comparison = true;
             }
             if i > start {
+                let named_arg_continuation =
+                    allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
+                    && !named_arg_continuation
                 {
                     return AssignRhsScan::Unterminated {
                         end_exclusive: i,

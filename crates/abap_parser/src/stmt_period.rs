@@ -435,6 +435,14 @@ pub(crate) fn line_start_table_key_component_continues(tokens: &[Token], idx: us
     false
 }
 
+#[inline]
+pub(crate) fn line_start_named_arg_continues(tokens: &[Token], idx: usize) -> bool {
+    matches!(
+        tokens.get(idx + 1).map(|token| token.kind),
+        Some(TokenKind::Eq | TokenKind::QuestionEq)
+    )
+}
+
 pub(crate) fn starts_with_table_key_clause(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(with_tok) = tokens.get(idx) else {
         return false;
@@ -474,10 +482,19 @@ pub(crate) fn scan_until_statement_period(
     source: &str,
     start: usize,
 ) -> StmtPeriodScan {
+    scan_until_statement_period_with_named_args(tokens, source, start, false)
+}
+
+pub(crate) fn scan_until_statement_period_with_named_args(
+    tokens: &[Token],
+    source: &str,
+    start: usize,
+    initial_allow_line_start_named_args: bool,
+) -> StmtPeriodScan {
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
-    let mut allow_line_start_named_args = false;
+    let mut allow_line_start_named_args = initial_allow_line_start_named_args;
     let mut allow_line_start_condition_comparison = false;
     let mut allow_line_start_table_key_components = false;
     let in_chained_methods_decl = statement_starts_chained_methods_decl(source, tokens, start);
@@ -505,6 +522,8 @@ pub(crate) fn scan_until_statement_period(
                     && line_start_condition_operand_continues(source, tokens, i);
                 let table_key_continuation = allow_line_start_table_key_components
                     && line_start_table_key_component_continues(tokens, i);
+                let named_arg_continuation =
+                    allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
@@ -513,6 +532,7 @@ pub(crate) fn scan_until_statement_period(
                     && !is_inline_decl_continuation(source, tokens, i)
                     && !(in_chained_methods_decl
                         && is_chained_methods_entry_after_separator(tokens, i))
+                    && !named_arg_continuation
                     && !condition_continuation
                     && !table_key_continuation
                 {

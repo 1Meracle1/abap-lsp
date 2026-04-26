@@ -10,8 +10,9 @@ use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
     StmtPeriodScan, is_condition_continuation_keyword, is_definite_stmt_lead_keyword,
     is_inline_decl_continuation, is_named_arg_clause_keyword,
-    line_start_condition_operand_continues, line_start_table_key_component_continues,
-    scan_until_statement_period, starts_with_table_key_clause, token_begins_line,
+    line_start_condition_operand_continues, line_start_named_arg_continues,
+    line_start_table_key_component_continues, scan_until_statement_period,
+    scan_until_statement_period_with_named_args, starts_with_table_key_clause, token_begins_line,
     unterminated_err_end,
 };
 use crate::syntax::token_leaf;
@@ -2170,6 +2171,8 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
             if i > start {
                 let condition_continuation = allow_line_start_condition_comparison
                     && line_start_condition_operand_continues(source, tokens, i);
+                let named_arg_continuation =
+                    allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
@@ -2178,6 +2181,7 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                     && !(is_sql_case_start
                         || is_sql_case_branch && sql_case_depth > 0
                         || is_sql_case_end && sql_case_depth > 0)
+                    && !named_arg_continuation
                     && !condition_continuation
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
@@ -10035,6 +10039,28 @@ fn push_memory_id_sequence_and_operand(
     sequence_end: usize,
     period_i: usize,
 ) {
+    push_cluster_sequence_and_operand(
+        b,
+        children,
+        source,
+        tokens,
+        sequence_start,
+        sequence_end,
+        period_i,
+        SyntaxKind::MemoryIdOperand,
+    );
+}
+
+fn push_cluster_sequence_and_operand(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    sequence_start: usize,
+    sequence_end: usize,
+    period_i: usize,
+    operand_kind: SyntaxKind,
+) {
     push_token_children(b, children, tokens, sequence_start, sequence_end);
     push_wrapped_expr_child(
         b,
@@ -10044,8 +10070,68 @@ fn push_memory_id_sequence_and_operand(
         sequence_end,
         period_i,
         tokens.get(sequence_end.saturating_sub(1)),
-        SyntaxKind::MemoryIdOperand,
+        operand_kind,
     );
+}
+
+fn find_import_cluster_sequence_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<(usize, usize, SyntaxKind)> {
+    find_top_level_keyword_sequence_index(
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        &["from", "memory", "id"],
+    )
+    .map(|(sequence_start, operand_start)| {
+        (sequence_start, operand_start, SyntaxKind::MemoryIdOperand)
+    })
+    .or_else(|| {
+        find_top_level_keyword_sequence_index(
+            source,
+            tokens,
+            start,
+            end_exclusive,
+            &["from", "data", "buffer"],
+        )
+        .map(|(sequence_start, operand_start)| {
+            (sequence_start, operand_start, SyntaxKind::DataBufferOperand)
+        })
+    })
+}
+
+fn find_export_cluster_sequence_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<(usize, usize, SyntaxKind)> {
+    find_top_level_keyword_sequence_index(
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        &["to", "memory", "id"],
+    )
+    .map(|(sequence_start, operand_start)| {
+        (sequence_start, operand_start, SyntaxKind::MemoryIdOperand)
+    })
+    .or_else(|| {
+        find_top_level_keyword_sequence_index(
+            source,
+            tokens,
+            start,
+            end_exclusive,
+            &["to", "data", "buffer"],
+        )
+        .map(|(sequence_start, operand_start)| {
+            (sequence_start, operand_start, SyntaxKind::DataBufferOperand)
+        })
+    })
 }
 
 pub fn try_parse_refresh_stmt(
@@ -10317,15 +10403,10 @@ pub fn try_parse_import_memory_stmt(
         return None;
     }
 
-    match scan_until_statement_period(tokens, source, idx + 1) {
+    match scan_until_statement_period_with_named_args(tokens, source, idx + 1, true) {
         StmtPeriodScan::Found(period_i) => {
-            let (from_idx, memory_id_start) = find_top_level_keyword_sequence_index(
-                source,
-                tokens,
-                idx + 1,
-                period_i,
-                &["from", "memory", "id"],
-            )?;
+            let (from_idx, operand_start, operand_kind) =
+                find_import_cluster_sequence_index(source, tokens, idx + 1, period_i)?;
             let mut children = vec![token_leaf(b, import_tok)];
             if let Some(to_idx) =
                 find_top_level_keyword_index(source, tokens, idx + 1, from_idx, "to")
@@ -10363,14 +10444,15 @@ pub fn try_parse_import_memory_stmt(
                     SyntaxKind::ImportMemoryTargetOperand,
                 );
             }
-            push_memory_id_sequence_and_operand(
+            push_cluster_sequence_and_operand(
                 b,
                 &mut children,
                 source,
                 tokens,
                 from_idx,
-                memory_id_start,
+                operand_start,
                 period_i,
+                operand_kind,
             );
             children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
@@ -10381,17 +10463,12 @@ pub fn try_parse_import_memory_stmt(
             Some((node, period_i + 1))
         }
         StmtPeriodScan::Unterminated { end_exclusive } => {
-            find_top_level_keyword_sequence_index(
-                source,
-                tokens,
-                idx + 1,
-                end_exclusive,
-                &["from", "memory", "id"],
-            )?;
+            find_import_cluster_sequence_index(source, tokens, idx + 1, end_exclusive)?;
             let err_end = unterminated_err_end(tokens, end_exclusive, import_tok.range.end);
             errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after IMPORT FROM MEMORY ID statement"
-                    .to_string(),
+                message:
+                    "syntax error: expected '.' after IMPORT FROM MEMORY ID/DATA BUFFER statement"
+                        .to_string(),
                 range: import_tok.range.start..err_end,
             });
             let children = token_children(b, tokens, idx, end_exclusive);
@@ -10417,15 +10494,10 @@ pub fn try_parse_export_memory_stmt(
         return None;
     }
 
-    match scan_until_statement_period(tokens, source, idx + 1) {
+    match scan_until_statement_period_with_named_args(tokens, source, idx + 1, true) {
         StmtPeriodScan::Found(period_i) => {
-            let (to_idx, memory_id_start) = find_top_level_keyword_sequence_index(
-                source,
-                tokens,
-                idx + 1,
-                period_i,
-                &["to", "memory", "id"],
-            )?;
+            let (to_idx, operand_start, operand_kind) =
+                find_export_cluster_sequence_index(source, tokens, idx + 1, period_i)?;
             let mut children = vec![token_leaf(b, export_tok)];
             if let Some(from_idx) =
                 find_top_level_keyword_index(source, tokens, idx + 1, to_idx, "from")
@@ -10463,14 +10535,15 @@ pub fn try_parse_export_memory_stmt(
                     SyntaxKind::ExportMemorySourceOperand,
                 );
             }
-            push_memory_id_sequence_and_operand(
+            push_cluster_sequence_and_operand(
                 b,
                 &mut children,
                 source,
                 tokens,
                 to_idx,
-                memory_id_start,
+                operand_start,
                 period_i,
+                operand_kind,
             );
             children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
@@ -10481,17 +10554,12 @@ pub fn try_parse_export_memory_stmt(
             Some((node, period_i + 1))
         }
         StmtPeriodScan::Unterminated { end_exclusive } => {
-            find_top_level_keyword_sequence_index(
-                source,
-                tokens,
-                idx + 1,
-                end_exclusive,
-                &["to", "memory", "id"],
-            )?;
+            find_export_cluster_sequence_index(source, tokens, idx + 1, end_exclusive)?;
             let err_end = unterminated_err_end(tokens, end_exclusive, export_tok.range.end);
             errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after EXPORT TO MEMORY ID statement"
-                    .to_string(),
+                message:
+                    "syntax error: expected '.' after EXPORT TO MEMORY ID/DATA BUFFER statement"
+                        .to_string(),
                 range: export_tok.range.start..err_end,
             });
             let children = token_children(b, tokens, idx, end_exclusive);
@@ -12736,6 +12804,49 @@ EXPORT ls_aup_parent_evt\n\
     }
 
     #[test]
+    fn parses_import_and_export_data_buffer_statements_with_named_payloads() {
+        let parsed = crate::parse(
+            "EXPORT\n\
+               INSERT_DATA_TAB = lt_insert_data\n\
+               UPDATE_DATA_TAB = lt_update_data\n\
+               DELETE_TAB      = lt_delete_data\n\
+                 to data buffer xcontainer.\n\
+             IMPORT\n\
+               INSERT_DATA_TAB = lt_insert_data\n\
+               from data buffer xcontainer.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ExportMemoryStmt),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ImportMemoryStmt),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::DataBufferOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ExportMemorySourceOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportMemoryTargetOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn condense_stmt_no_gaps_is_not_picked_up_inside_parens() {
         let parsed = crate::parse("CONDENSE func( NO-GAPS ).");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -14158,6 +14269,45 @@ ENDFORM.",
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
+    }
+
+    #[test]
+    fn parses_raise_exception_type_with_statement_keyword_named_arg() {
+        let parsed = crate::parse(
+            "RAISE EXCEPTION TYPE zcx_feedback\n  EXPORTING\n    textid = zcx_feedback=>http_error\n    method = 'CREATE_DEEP_ENTITY'.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::RaiseStmt)
+            .expect("raise stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::RaiseStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 1);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 2);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MethodDecl),
+            0
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::AssignStmt),
+            0
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error),
             0
         );
     }

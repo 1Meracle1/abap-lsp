@@ -209,13 +209,13 @@ pub enum SyntaxKind {
     UnassignStmt,
     /// Field-symbol operand inside `UNASSIGN`.
     UnassignOperand,
-    /// `IMPORT ... FROM MEMORY ID ... .`
+    /// `IMPORT ... FROM MEMORY ID ... .` or `IMPORT ... FROM DATA BUFFER ... .`
     ImportMemoryStmt,
     /// Imported cluster/object name before `TO` in `IMPORT ... FROM MEMORY ID`.
     ImportMemorySourceOperand,
     /// Target operand after `TO` in `IMPORT ... FROM MEMORY ID`.
     ImportMemoryTargetOperand,
-    /// `EXPORT ... TO MEMORY ID ... .`
+    /// `EXPORT ... TO MEMORY ID ... .` or `EXPORT ... TO DATA BUFFER ... .`
     ExportMemoryStmt,
     /// Exported cluster/object name before `FROM` in `EXPORT ... TO MEMORY ID`.
     ExportMemoryNameOperand,
@@ -223,6 +223,8 @@ pub enum SyntaxKind {
     ExportMemorySourceOperand,
     /// Memory ID operand after `MEMORY ID`.
     MemoryIdOperand,
+    /// Data buffer operand after `DATA BUFFER`.
+    DataBufferOperand,
     /// `CONVERT ... .`
     ConvertStmt,
     /// Source operand inside `CONVERT`.
@@ -752,6 +754,7 @@ impl SyntaxKind {
             Self::ExportMemoryNameOperand => "ExportMemoryNameOperand",
             Self::ExportMemorySourceOperand => "ExportMemorySourceOperand",
             Self::MemoryIdOperand => "MemoryIdOperand",
+            Self::DataBufferOperand => "DataBufferOperand",
             Self::ConvertStmt => "ConvertStmt",
             Self::ConvertOperand => "ConvertOperand",
             Self::ConvertTargetOperand => "ConvertTargetOperand",
