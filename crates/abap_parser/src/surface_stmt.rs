@@ -2429,6 +2429,52 @@ where
     }
 }
 
+fn scan_until_chained_statement_period(
+    tokens: &[Token],
+    source: &str,
+    start: usize,
+) -> StmtPeriodScan {
+    let chain_start = skip_trivia(tokens, start);
+    if tokens
+        .get(chain_start)
+        .is_some_and(|token| token.kind == TokenKind::Colon)
+        && let Some(period_i) = scan_until_top_level_period(tokens, chain_start + 1)
+    {
+        return StmtPeriodScan::Found(period_i);
+    }
+    scan_until_statement_period(tokens, source, start)
+}
+
+fn parse_chained_stmt_with_period_scan<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    scan_start: usize,
+    start_tok: &Token,
+    missing_period_message: &str,
+    errors: &mut Vec<crate::ParseError>,
+    next_on_unterminated: fn(&[Token], usize) -> usize,
+    on_found: F,
+) -> (NodeId, usize)
+where
+    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
+{
+    match scan_until_chained_statement_period(tokens, source, scan_start) {
+        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: missing_period_message.to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
+            (node, next_on_unterminated(tokens, end_exclusive))
+        }
+    }
+}
+
 fn parse_simple_keyword_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -9088,6 +9134,84 @@ fn move_simple_source_clause_starts(source: &str, tokens: &[Token], idx: usize) 
     token.kind == TokenKind::Ident && is_keyword(source, token, "to")
 }
 
+fn push_move_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) {
+    let mut cursor = entry_start;
+    while cursor < entry_end && tokens[cursor].kind == TokenKind::Comment {
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    if cursor >= entry_end {
+        return;
+    }
+
+    let clause_starts =
+        |tokens: &[Token], idx: usize| move_simple_source_clause_starts(source, tokens, idx);
+    let Some(to_idx) = find_top_level_keyword_index(source, tokens, cursor, entry_end, "to") else {
+        push_token_children(b, children, tokens, cursor, entry_end);
+        return;
+    };
+
+    let source_end = scan_and_push_expr_clause(
+        b,
+        children,
+        source,
+        tokens,
+        cursor,
+        to_idx,
+        tokens.get(cursor.saturating_sub(1)),
+        &clause_starts,
+    );
+    push_token_children(b, children, tokens, source_end, to_idx);
+    children.push(token_leaf(b, &tokens[to_idx]));
+
+    let no_clause = |_: &[Token], _: usize| false;
+    let target_end = scan_and_push_expr_clause(
+        b,
+        children,
+        source,
+        tokens,
+        to_idx + 1,
+        entry_end,
+        Some(&tokens[to_idx]),
+        &no_clause,
+    );
+    push_token_children(b, children, tokens, target_end, entry_end);
+}
+
+fn push_chained_move_entries(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) {
+    let mut cursor = start;
+    while cursor < end_exclusive {
+        let token = &tokens[cursor];
+        if matches!(
+            token.kind,
+            TokenKind::Colon | TokenKind::Comma | TokenKind::Comment
+        ) {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        }
+
+        let entry_end = find_top_level_token_kind(tokens, cursor, end_exclusive, TokenKind::Comma)
+            .unwrap_or(end_exclusive);
+        push_move_entry_children(b, children, source, tokens, cursor, entry_end);
+        cursor = entry_end;
+    }
+}
+
 /// `MOVE ... TO ...` and `MOVE-CORRESPONDING ...` (delegates to [`try_parse_move_corresponding_stmt`]).
 pub fn try_parse_move_stmt(
     b: &mut SyntaxTreeBuilder,
@@ -9103,7 +9227,7 @@ pub fn try_parse_move_stmt(
     if !is_keyword(source, move_tok, "move") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_chained_stmt_with_period_scan(
         b,
         source,
         tokens,
@@ -9114,6 +9238,22 @@ pub fn try_parse_move_stmt(
         errors,
         |_, end_exclusive| end_exclusive,
         |b, period_i, _errors| {
+            if tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .is_some_and(|token| token.kind == TokenKind::Colon)
+            {
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                children.push(token_leaf(b, move_tok));
+                push_chained_move_entries(b, &mut children, source, tokens, idx + 1, period_i);
+                children.push(token_leaf(b, &tokens[period_i]));
+                let node = b.branch(
+                    SyntaxKind::MoveStmt,
+                    move_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            }
+
             let clause_starts = |tokens: &[Token], idx: usize| {
                 move_simple_source_clause_starts(source, tokens, idx)
             };
@@ -9905,7 +10045,7 @@ pub fn try_parse_refresh_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_chained_stmt_with_period_scan(
         b,
         source,
         tokens,
@@ -12515,6 +12655,23 @@ UNASSIGN <fs_choice>.",
     }
 
     #[test]
+    fn parses_multiline_chained_refresh_with_statement_keyword_operand() {
+        let parsed = crate::parse(
+            "REFRESH: ITEMS[],\n\
+           ALL_ITEMS[],\n\
+*          FILTER_DESCRIPTION[],\n\
+           SELECTION[].\n\
+CALL METHOD transport_from_model( my_model ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RefreshStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RefreshOperand), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallMethodStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn parses_import_and_export_memory_id_statements() {
         let parsed = crate::parse(
             "IMPORT lt_mem_return TO lt_return FROM MEMORY ID 'ZATTP_3PL_OER'.\n\
@@ -13310,6 +13467,28 @@ EXPORT ls_aup_parent_evt\n\
             .expect("move stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+    }
+
+    #[test]
+    fn parses_multiline_chained_move_with_function_named_source() {
+        let parsed = crate::parse(
+            "FORM update_status.\n\
+  MOVE: STATUS-DATA TO <STATUS>-ST_DATA,\n\
+        STATUS-MODE TO <STATUS>-ST_MODE,\n\
+*       L TO <STATUS>-CUR_LINE,\n\
+        FUNCTION    TO <STATUS>-FCODE.\n\
+ENDFORM.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FormDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FunctionDecl), 0);
+        let stmt = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::MoveStmt)
+            .expect("move stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 6);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]
