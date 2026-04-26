@@ -64,6 +64,10 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["class"], classify_class_deferred_stmt),
     GuardedSimpleStmtClassifier::new(&["interface"], classify_interface_deferred_stmt),
     GuardedSimpleStmtClassifier::new(&["set"], classify_set_gui_stmt),
+    GuardedSimpleStmtClassifier::new(&["read"], classify_read_runtime_stmt),
+    GuardedSimpleStmtClassifier::new(&["open", "close", "delete"], classify_dataset_stmt),
+    GuardedSimpleStmtClassifier::new(&["generate"], classify_generate_stmt),
+    GuardedSimpleStmtClassifier::new(&["get"], classify_get_runtime_stmt),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
     GuardedSimpleStmtClassifier::new(&["function"], classify_function_pool_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
@@ -94,6 +98,7 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("stop", SyntaxKind::StopStmt),
     ("subtract", SyntaxKind::SubtractStmt),
     ("translate", SyntaxKind::TranslateStmt),
+    ("transfer", SyntaxKind::TransferStmt),
     ("replace", SyntaxKind::ReplaceStmt),
     ("wait", SyntaxKind::WaitStmt),
 ];
@@ -1981,6 +1986,83 @@ fn classify_function_pool_stmt(source: &str, significant: &[&Token]) -> Option<S
     Some(SyntaxKind::FunctionPoolStmt)
 }
 
+fn classify_read_runtime_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period
+        || significant.len() < 3
+        || !token_matches_keyword(source, significant[0], "read")
+    {
+        return None;
+    }
+
+    if token_matches_keyword(source, significant[1], "dataset") {
+        Some(SyntaxKind::ReadDatasetStmt)
+    } else if token_matches_keyword(source, significant[1], "textpool") {
+        Some(SyntaxKind::ReadTextpoolStmt)
+    } else {
+        None
+    }
+}
+
+fn classify_dataset_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period
+        || significant.len() < 3
+        || !token_matches_keyword(source, significant[1], "dataset")
+    {
+        return None;
+    }
+
+    if token_matches_keyword(source, significant[0], "open") {
+        Some(SyntaxKind::OpenDatasetStmt)
+    } else if token_matches_keyword(source, significant[0], "close") {
+        Some(SyntaxKind::CloseDatasetStmt)
+    } else if token_matches_keyword(source, significant[0], "delete") {
+        Some(SyntaxKind::DeleteDatasetStmt)
+    } else {
+        None
+    }
+}
+
+fn classify_generate_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period
+        || significant.len() < 3
+        || !token_matches_keyword(source, significant[0], "generate")
+    {
+        return None;
+    }
+
+    if token_matches_keyword(source, significant[1], "dynpro") {
+        return Some(SyntaxKind::GenerateDynproStmt);
+    }
+    if significant.len() >= 4
+        && token_matches_keyword(source, significant[1], "subroutine")
+        && token_matches_keyword(source, significant[2], "pool")
+    {
+        return Some(SyntaxKind::GenerateSubroutinePoolStmt);
+    }
+    None
+}
+
+fn classify_get_runtime_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period
+        || significant.len() < 3
+        || !token_matches_keyword(source, significant[0], "get")
+    {
+        return None;
+    }
+
+    if token_matches_keyword(source, significant[1], "badi") {
+        Some(SyntaxKind::GetBadiStmt)
+    } else if token_matches_keyword(source, significant[1], "cursor") {
+        Some(SyntaxKind::GetCursorStmt)
+    } else {
+        None
+    }
+}
+
 fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     let last = *significant.last()?;
     if last.kind != TokenKind::Period {
@@ -1999,6 +2081,21 @@ fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
         && token_matches_keyword(source, significant[1], "titlebar")
     {
         Some(SyntaxKind::SetTitlebarStmt)
+    } else if significant.len() >= 3
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "screen")
+    {
+        Some(SyntaxKind::SetScreenStmt)
+    } else if significant.len() >= 3
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "cursor")
+    {
+        Some(SyntaxKind::SetCursorStmt)
+    } else if significant.len() >= 3
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "handler")
+    {
+        Some(SyntaxKind::SetHandlerStmt)
     } else {
         None
     }

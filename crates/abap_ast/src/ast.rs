@@ -82,6 +82,7 @@ pub enum CallStmtKind {
     Transformation,
     Badi,
     Screen,
+    Transaction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -729,6 +730,8 @@ ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
 ast_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
 ast_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
+ast_node!(ReadDatasetStmt, SyntaxKind::ReadDatasetStmt);
+ast_node!(ReadTextpoolStmt, SyntaxKind::ReadTextpoolStmt);
 ast_node!(AuthorityCheckStmt, SyntaxKind::AuthorityCheckStmt);
 ast_node!(
     AuthorityCheckObjectOperand,
@@ -744,9 +747,20 @@ ast_node!(
     AuthorityCheckFieldOperand,
     SyntaxKind::AuthorityCheckFieldOperand
 );
+ast_node!(GetBadiStmt, SyntaxKind::GetBadiStmt);
+ast_node!(GetCursorStmt, SyntaxKind::GetCursorStmt);
 ast_node!(SetPfStatusStmt, SyntaxKind::SetPfStatusStmt);
 ast_node!(SetTitlebarStmt, SyntaxKind::SetTitlebarStmt);
+ast_node!(SetScreenStmt, SyntaxKind::SetScreenStmt);
+ast_node!(SetCursorStmt, SyntaxKind::SetCursorStmt);
+ast_node!(SetHandlerStmt, SyntaxKind::SetHandlerStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
+ast_node!(TransferStmt, SyntaxKind::TransferStmt);
+ast_node!(
+    GenerateSubroutinePoolStmt,
+    SyntaxKind::GenerateSubroutinePoolStmt
+);
+ast_node!(GenerateDynproStmt, SyntaxKind::GenerateDynproStmt);
 ast_node!(SplitStmt, SyntaxKind::SplitStmt);
 ast_node!(SplitSourceOperand, SyntaxKind::SplitSourceOperand);
 ast_node!(SplitSeparatorOperand, SyntaxKind::SplitSeparatorOperand);
@@ -767,6 +781,8 @@ ast_node!(
 ast_node!(SelectStmt, SyntaxKind::SelectStmt);
 ast_node!(OpenCursorStmt, SyntaxKind::OpenCursorStmt);
 ast_node!(CloseCursorStmt, SyntaxKind::CloseCursorStmt);
+ast_node!(OpenDatasetStmt, SyntaxKind::OpenDatasetStmt);
+ast_node!(CloseDatasetStmt, SyntaxKind::CloseDatasetStmt);
 ast_node!(CursorHandleOperand, SyntaxKind::CursorHandleOperand);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
@@ -3221,6 +3237,8 @@ impl<'a> CallStmt<'a> {
             Some(CallStmtKind::Badi)
         } else if text.eq_ignore_ascii_case("screen") {
             Some(CallStmtKind::Screen)
+        } else if text.eq_ignore_ascii_case("transaction") {
+            Some(CallStmtKind::Transaction)
         } else {
             Some(CallStmtKind::SystemFunction)
         }

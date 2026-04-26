@@ -209,6 +209,40 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn collect_call_transaction_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 3
+            || !Self::tokens_match_keyword_sequence(tokens, &["call", "transaction"])
+        {
+            return;
+        }
+
+        let mut idx = self.collect_positional_operand_tokens(tokens, 2, 1, scope);
+        while idx < tokens.len() {
+            if tokens[idx].text.as_ref() == "." {
+                break;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["using"]) {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 1, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["mode"])
+                || Self::tokens_match_keyword_sequence(&tokens[idx..], &["update"])
+            {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 1, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["messages", "into"]) {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 2, 1, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["options", "from"]) {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 2, 1, scope);
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
     fn collect_modify_screen_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
         if tokens.len() < 2 || !Self::tokens_match_keyword_sequence(tokens, &["modify", "screen"]) {
             return;
@@ -3414,10 +3448,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         let call_kind = stmt.call_kind(self.collector.source);
 
-        if call_kind == Some(CallStmtKind::Screen) {
+        if call_kind == Some(CallStmtKind::Screen) || call_kind == Some(CallStmtKind::Transaction) {
             self.record_unknown_effect(node, scope);
             let significant = self.collector.significant_stmt_token_infos(node);
-            self.collect_call_screen_stmt_infos(&significant, scope);
+            if call_kind == Some(CallStmtKind::Screen) {
+                self.collect_call_screen_stmt_infos(&significant, scope);
+            } else {
+                self.collect_call_transaction_stmt_infos(&significant, scope);
+            }
             return;
         }
 

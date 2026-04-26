@@ -83,6 +83,72 @@ fn classifies_classic_arithmetic_string_and_list_statements() {
 }
 
 #[test]
+fn classifies_runtime_generated_and_dynpro_statements() {
+    let src = concat!(
+        "CALL TRANSACTION u_tcode WITH AUTHORITY-CHECK      \"#EC CI_CALLTA\n",
+        "                         AND SKIP FIRST SCREEN.\n",
+        "OPEN DATASET ds_phy_name IN TEXT MODE FOR INPUT\n",
+        "             ENCODING DEFAULT.\n",
+        "READ DATASET ds_phy_name INTO wa.\n",
+        "TRANSFER wa TO ds_phy_name.\n",
+        "CLOSE DATASET ds_phy_name.\n",
+        "DELETE DATASET ds_phy_name.\n",
+        "READ TEXTPOOL MASTER_FPOOL INTO TEXTPOOL_TAB LANGUAGE SY-LANGU.\n",
+        "INSERT TEXTPOOL lv_progname FROM lt_textpool.\n",
+        "GENERATE SUBROUTINE POOL lt_source_code NAME l_program_pool \"#EC CI_GENERATE\n",
+        "  MESSAGE l_message LINE l_line WORD l_word OFFSET l_offset.\n",
+        "GENERATE DYNPRO h f e m ID i_dynid.\n",
+        "SET SCREEN sy-dynnr.\n",
+        "SET CURSOR FIELD l_dynpro_field-screenname.\n",
+        "SET CURSOR 2 LS-CLINE.\n",
+        "GET CURSOR FIELD l_field.\n",
+        "GET CURSOR FIELD f LINE l OFFSET o.\n",
+        "GET BADI lr_runtime.\n",
+        "SET HANDLER lcl_alv_handler=>added_function FOR events.\n"
+    );
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::OpenDatasetStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadDatasetStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::TransferStmt), 1);
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::CloseDatasetStmt),
+        1
+    );
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::DeleteDatasetStmt),
+        1
+    );
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::ReadTextpoolStmt),
+        1
+    );
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::InsertTextpoolStmt),
+        1
+    );
+    assert_eq!(
+        parsed
+            .file
+            .count_kind(root, SyntaxKind::GenerateSubroutinePoolStmt),
+        1
+    );
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::GenerateDynproStmt),
+        1
+    );
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetScreenStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetCursorStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetCursorStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetBadiStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetHandlerStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+}
+
+#[test]
 fn program_statement_is_classified_as_report_stmt() {
     let src = "PROGRAM rsnast00 MESSAGE-ID vn.\n";
     let parsed = parse(src);

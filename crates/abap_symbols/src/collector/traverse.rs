@@ -210,6 +210,19 @@ impl<'a> Collector<'a> {
             | SyntaxKind::StopStmt
             | SyntaxKind::SetPfStatusStmt
             | SyntaxKind::SetTitlebarStmt
+            | SyntaxKind::SetScreenStmt
+            | SyntaxKind::SetCursorStmt
+            | SyntaxKind::SetHandlerStmt
+            | SyntaxKind::GetBadiStmt
+            | SyntaxKind::GetCursorStmt
+            | SyntaxKind::ReadDatasetStmt
+            | SyntaxKind::ReadTextpoolStmt
+            | SyntaxKind::OpenDatasetStmt
+            | SyntaxKind::CloseDatasetStmt
+            | SyntaxKind::DeleteDatasetStmt
+            | SyntaxKind::TransferStmt
+            | SyntaxKind::GenerateSubroutinePoolStmt
+            | SyntaxKind::GenerateDynproStmt
             | SyntaxKind::CommitWorkStmt
             | SyntaxKind::RollbackWorkStmt
             | SyntaxKind::EndAtStmt => self

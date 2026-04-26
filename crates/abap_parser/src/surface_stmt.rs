@@ -67,6 +67,7 @@ const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
     (&["call", "transformation"], CallLikeLeadKind::CallStmt),
     (&["call", "badi"], CallLikeLeadKind::CallStmt),
     (&["call", "screen"], CallLikeLeadKind::CallStmt),
+    (&["call", "transaction"], CallLikeLeadKind::CallStmt),
     (&["create", "object"], CallLikeLeadKind::CreateObject),
     (&["create", "data"], CallLikeLeadKind::CreateData),
 ];
@@ -9613,6 +9614,19 @@ pub fn try_parse_delete_stmt(
         errors,
         |_, end_exclusive| end_exclusive,
         |b, period_i, _errors| {
+            if tokens
+                .get(idx + 1)
+                .is_some_and(|token| is_keyword(source, token, "dataset"))
+            {
+                let children = token_children(b, tokens, idx, period_i + 1);
+                let node = b.branch(
+                    SyntaxKind::DeleteDatasetStmt,
+                    delete_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                return (node, period_i + 1);
+            }
+
             let clause_starts =
                 |tokens: &[Token], idx: usize| delete_clause_starts(source, tokens, idx);
             let stmt_kind = delete_stmt_kind(source, tokens, idx + 1, period_i);
@@ -14477,6 +14491,7 @@ EXPORT ls_aup_parent_evt\n\
             "CALL BADI lo_badi->run.",
             "CALL SCREEN 9000.",
             "CALL SCREEN 9000 STARTING AT 10 5 ENDING AT 40 20.",
+            "CALL TRANSACTION u_tcode WITH AUTHORITY-CHECK AND SKIP FIRST SCREEN.",
         ] {
             let parsed = crate::parse(src);
             assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
@@ -14488,6 +14503,19 @@ EXPORT ls_aup_parent_evt\n\
                 "{src}"
             );
         }
+    }
+
+    #[test]
+    fn parses_call_transaction_kind() {
+        let src = "CALL TRANSACTION u_tcode WITH AUTHORITY-CHECK AND SKIP FIRST SCREEN.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt_id = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+            .expect("call transaction stmt");
+        let stmt = CallStmt::cast(SyntaxNodeRef::new(&parsed.file, stmt_id)).expect("call stmt");
+        assert_eq!(stmt.call_kind(src), Some(CallStmtKind::Transaction));
     }
 
     #[test]

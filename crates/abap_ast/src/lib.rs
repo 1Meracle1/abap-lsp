@@ -343,6 +343,10 @@ pub enum SyntaxKind {
     OpenCursorStmt,
     /// `CLOSE CURSOR cursor .`
     CloseCursorStmt,
+    /// `OPEN DATASET ... .`
+    OpenDatasetStmt,
+    /// `CLOSE DATASET ... .`
+    CloseDatasetStmt,
     /// Cursor handle operand in `OPEN CURSOR ...`, `FETCH NEXT CURSOR ...`, etc.
     CursorHandleOperand,
     /// Structured SQL query payload inside `SELECT`.
@@ -413,6 +417,8 @@ pub enum SyntaxKind {
     InsertDbTableStmt,
     /// `INSERT TEXTPOOL prog FROM itab [LANGUAGE lang] .`
     InsertTextpoolStmt,
+    /// `READ TEXTPOOL prog INTO itab [LANGUAGE lang] .`
+    ReadTextpoolStmt,
     /// `APPEND ... TO ... .`
     AppendStmt,
     /// `MOVE-CORRESPONDING ... TO ... .`
@@ -457,6 +463,8 @@ pub enum SyntaxKind {
     DeleteStmt,
     /// `DELETE dbtab FROM TABLE itab .`
     DeleteDbTableStmt,
+    /// `DELETE DATASET ... .`
+    DeleteDatasetStmt,
     /// `ASSERT ... .`
     AssertStmt,
     /// `CHECK ... .`
@@ -503,7 +511,7 @@ pub enum SyntaxKind {
     SubmitJobNumberOperand,
     /// Operand after `LANGUAGE` in `VIA JOB`.
     SubmitLanguageOperand,
-    /// `CALL cfunc .`, `CALL FUNCTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
+    /// `CALL cfunc .`, `CALL FUNCTION ... .`, `CALL TRANSACTION ... .`, `CALL TRANSFORMATION ... .`, or `CALL BADI ... .`
     CallStmt,
     /// `CREATE OBJECT ... .`
     CreateObjectStmt,
@@ -563,6 +571,8 @@ pub enum SyntaxKind {
     FindResultsTarget,
     /// `READ TABLE ... .`
     ReadTableStmt,
+    /// `READ DATASET ... .`
+    ReadDatasetStmt,
     /// `AUTHORITY-CHECK ... .`
     AuthorityCheckStmt,
     /// Operand after `OBJECT` inside `AUTHORITY-CHECK`.
@@ -581,14 +591,30 @@ pub enum SyntaxKind {
     GetReferenceStmt,
     /// `GET BIT ... OF ... INTO ... .`
     GetBitStmt,
+    /// `GET BADI ... .`
+    GetBadiStmt,
+    /// `GET CURSOR ... .`
+    GetCursorStmt,
     /// `SET BIT ... OF ... TO ... .`
     SetBitStmt,
     /// `SET PF-STATUS ... .`
     SetPfStatusStmt,
     /// `SET TITLEBAR ... .`
     SetTitlebarStmt,
+    /// `SET SCREEN ... .`
+    SetScreenStmt,
+    /// `SET CURSOR ... .`
+    SetCursorStmt,
+    /// `SET HANDLER ... .`
+    SetHandlerStmt,
     /// `WRITE ... .`
     WriteStmt,
+    /// `TRANSFER ... .`
+    TransferStmt,
+    /// `GENERATE SUBROUTINE POOL ... .`
+    GenerateSubroutinePoolStmt,
+    /// `GENERATE DYNPRO ... .`
+    GenerateDynproStmt,
     /// `SPLIT ... AT ... INTO ... .`
     SplitStmt,
     /// Source operand before `AT` inside `SPLIT`.
@@ -786,6 +812,8 @@ impl SyntaxKind {
             Self::SelectStmt => "SelectStmt",
             Self::OpenCursorStmt => "OpenCursorStmt",
             Self::CloseCursorStmt => "CloseCursorStmt",
+            Self::OpenDatasetStmt => "OpenDatasetStmt",
+            Self::CloseDatasetStmt => "CloseDatasetStmt",
             Self::CursorHandleOperand => "CursorHandleOperand",
             Self::SelectQuery => "SelectQuery",
             Self::SelectProjectionList => "SelectProjectionList",
@@ -821,6 +849,7 @@ impl SyntaxKind {
             Self::InsertTableStmt => "InsertTableStmt",
             Self::InsertDbTableStmt => "InsertDbTableStmt",
             Self::InsertTextpoolStmt => "InsertTextpoolStmt",
+            Self::ReadTextpoolStmt => "ReadTextpoolStmt",
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::MoveStmt => "MoveStmt",
@@ -843,6 +872,7 @@ impl SyntaxKind {
             Self::UpdateWhereClause => "UpdateWhereClause",
             Self::DeleteStmt => "DeleteInternalTableStmt",
             Self::DeleteDbTableStmt => "DeleteDbTableFromTableStmt",
+            Self::DeleteDatasetStmt => "DeleteDatasetStmt",
             Self::AssertStmt => "AssertStmt",
             Self::CheckStmt => "CheckStmt",
             Self::ContinueStmt => "ContinueStmt",
@@ -896,6 +926,7 @@ impl SyntaxKind {
             Self::FindSubmatchTarget => "FindSubmatchTarget",
             Self::FindResultsTarget => "FindResultsTarget",
             Self::ReadTableStmt => "ReadTableStmt",
+            Self::ReadDatasetStmt => "ReadDatasetStmt",
             Self::AuthorityCheckStmt => "AuthorityCheckStmt",
             Self::AuthorityCheckObjectOperand => "AuthorityCheckObjectOperand",
             Self::AuthorityCheckUserOperand => "AuthorityCheckUserOperand",
@@ -905,10 +936,18 @@ impl SyntaxKind {
             Self::GetTimeStampStmt => "GetTimeStampStmt",
             Self::GetReferenceStmt => "GetReferenceStmt",
             Self::GetBitStmt => "GetBitStmt",
+            Self::GetBadiStmt => "GetBadiStmt",
+            Self::GetCursorStmt => "GetCursorStmt",
             Self::SetBitStmt => "SetBitStmt",
             Self::SetPfStatusStmt => "SetPfStatusStmt",
             Self::SetTitlebarStmt => "SetTitlebarStmt",
+            Self::SetScreenStmt => "SetScreenStmt",
+            Self::SetCursorStmt => "SetCursorStmt",
+            Self::SetHandlerStmt => "SetHandlerStmt",
             Self::WriteStmt => "WriteStmt",
+            Self::TransferStmt => "TransferStmt",
+            Self::GenerateSubroutinePoolStmt => "GenerateSubroutinePoolStmt",
+            Self::GenerateDynproStmt => "GenerateDynproStmt",
             Self::SplitStmt => "SplitStmt",
             Self::SplitSourceOperand => "SplitSourceOperand",
             Self::SplitSeparatorOperand => "SplitSeparatorOperand",
