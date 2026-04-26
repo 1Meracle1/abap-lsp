@@ -1269,6 +1269,56 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn resolves_grouped_perform_edges() {
+        let graph = graph_for(
+            vec![DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(
+                    "\
+REPORT zmain.
+
+FORM set_status USING iv_value TYPE string.
+ENDFORM.
+
+FORM set_mode USING iv_value TYPE string.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM:
+    set_status USING 'ready',
+    set_mode USING 'truck'.",
+                ),
+                is_dependency: false,
+                object_name: None,
+            }],
+            "file:///main.abap",
+        );
+
+        let event = graph.find_nodes("start-of-selection")[0];
+        let status_form = graph
+            .find_nodes("set_status")
+            .into_iter()
+            .find(|node| node.kind == CallGraphNodeKind::Form)
+            .expect("status form node");
+        let mode_form = graph
+            .find_nodes("set_mode")
+            .into_iter()
+            .find(|node| node.kind == CallGraphNodeKind::Form)
+            .expect("mode form node");
+        let outbound = graph.outbound_calls(event.id.as_ref());
+        assert_eq!(outbound.len(), 2);
+        assert!(outbound.iter().any(|edge| {
+            edge.edge_kind == CallGraphEdgeKind::Perform
+                && edge.target.as_deref() == Some(status_form.id.as_ref())
+        }));
+        assert!(outbound.iter().any(|edge| {
+            edge.edge_kind == CallGraphEdgeKind::Perform
+                && edge.target.as_deref() == Some(mode_form.id.as_ref())
+        }));
+    }
+
+    #[test]
     fn resolves_call_function_edges_across_units() {
         let graph = graph_for(
             vec![

@@ -2498,6 +2498,15 @@ ENDCLASS.";
     }
 
     #[test]
+    fn classifies_grouped_perform_statement_specifically() {
+        let parsed =
+            crate::parse("PERFORM: f_set_status USING lv_status, f_set_mode USING lv_mode.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+    }
+
+    #[test]
     fn parses_dynamic_perform_in_program_without_direct_call_spacing_error() {
         let parsed = crate::parse(
             "PERFORM (lc_formname) IN PROGRAM (lc_progname) USING lt_files_index_del[] lv_log_handle.",

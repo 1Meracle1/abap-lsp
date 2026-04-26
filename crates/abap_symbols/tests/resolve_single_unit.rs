@@ -817,6 +817,72 @@ PERFORM append_fldcat1 USING:
 }
 
 #[test]
+fn expands_grouped_perform_calls_into_individual_calls() {
+    let src = r#"
+FORM f_set_individual_status
+    USING iv_status TYPE string
+    CHANGING cv_description TYPE string.
+ENDFORM.
+
+FORM f_set_individual_trans_mode
+    USING iv_mode TYPE string
+    CHANGING cv_description TYPE string.
+ENDFORM.
+
+DATA lv_status TYPE string.
+DATA lv_mode TYPE string.
+DATA lv_description_status TYPE string.
+DATA lv_description_mode TYPE string.
+
+PERFORM: f_set_individual_status USING lv_status CHANGING lv_description_status,
+         f_set_individual_trans_mode USING lv_mode CHANGING lv_description_mode.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///perform_grouped.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::InvalidPerformCall),
+        "unexpected grouped PERFORM diagnostics: {:?}",
+        unit.diagnostics
+    );
+    assert_eq!(unit.perform_calls.len(), 2);
+    assert_eq!(
+        unit.perform_calls[0].routine_name.as_ref(),
+        "f_set_individual_status"
+    );
+    assert_eq!(
+        unit.perform_calls[0].parameters,
+        vec![
+            abap_symbols::PerformParameterSection::Using,
+            abap_symbols::PerformParameterSection::Changing,
+        ]
+    );
+    assert_eq!(
+        unit.perform_calls[1].routine_name.as_ref(),
+        "f_set_individual_trans_mode"
+    );
+    assert_eq!(
+        unit.perform_calls[1].parameters,
+        vec![
+            abap_symbols::PerformParameterSection::Using,
+            abap_symbols::PerformParameterSection::Changing,
+        ]
+    );
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Routine
+            && reference.name.as_ref() == "f_set_individual_trans_mode"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_description_mode"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+}
+
+#[test]
 fn rejects_invalid_perform_argument_shapes() {
     let cases = [
         "PERFORM process_data USING CHANGING lv_count.",

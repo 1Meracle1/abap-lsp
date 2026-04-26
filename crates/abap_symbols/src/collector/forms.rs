@@ -433,34 +433,33 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return;
         };
         let tokens = self.collector.significant_stmt_token_infos(node);
-        let Some(target) = self.collect_perform_target_info(&tokens, scope) else {
-            return;
-        };
-        self.collect_perform_stmt_infos(&tokens, scope, target, self.collector.file.range(node));
+        self.collect_perform_stmt_infos(&tokens, scope, self.collector.file.range(node));
     }
 
     fn collect_perform_stmt_infos(
         &mut self,
         tokens: &[SyntaxTokenInfo],
         scope: ScopeId,
-        target: PerformTargetInfo,
         stmt_range: abap_lexer::TextRange,
     ) {
         if tokens.is_empty() || !tokens[0].text.eq_ignore_ascii_case("perform") {
             return;
         }
-        if !target.is_dynamic && target.program.is_none() {
-            self.collector.add_reference(
-                scope,
-                Arc::clone(&target.routine_name),
-                Namespace::Routine,
-                ReferenceKind::RoutineCall,
-                target.routine_range.clone(),
-            );
-        }
 
         if let Some(calls) = self.split_chained_perform_calls_infos(tokens) {
             for (call_tokens, call_range) in calls {
+                let Some(target) = self.collect_perform_target_info(&call_tokens, scope) else {
+                    continue;
+                };
+                if !target.is_dynamic && target.program.is_none() {
+                    self.collector.add_reference(
+                        scope,
+                        Arc::clone(&target.routine_name),
+                        Namespace::Routine,
+                        ReferenceKind::RoutineCall,
+                        target.routine_range.clone(),
+                    );
+                }
                 self.collect_single_perform_stmt_infos(
                     &call_tokens,
                     scope,
@@ -471,6 +470,18 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return;
         }
 
+        let Some(target) = self.collect_perform_target_info(tokens, scope) else {
+            return;
+        };
+        if !target.is_dynamic && target.program.is_none() {
+            self.collector.add_reference(
+                scope,
+                Arc::clone(&target.routine_name),
+                Namespace::Routine,
+                ReferenceKind::RoutineCall,
+                target.routine_range.clone(),
+            );
+        }
         self.collect_single_perform_stmt_infos(tokens, scope, target, stmt_range);
     }
 
