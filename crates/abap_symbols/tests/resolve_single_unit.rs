@@ -12646,6 +12646,51 @@ ENDIF.";
 }
 
 #[test]
+fn resolves_grouped_describe_table_lines_targets() {
+    let src = "\
+DATA lt_aux_bup_adr TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_aux_dm_evt_sdr TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_n_customers TYPE i.
+DATA lv_n_total TYPE i.
+
+DESCRIBE TABLE: lt_aux_bup_adr    LINES lv_n_customers,
+                lt_aux_dm_evt_sdr LINES lv_n_total.
+
+IF lv_n_customers + lv_n_total > 0.
+  WRITE lv_n_total.
+ENDIF.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///grouped_describe_table.abap", src, &parsed);
+
+    for name in [
+        "lt_aux_bup_adr",
+        "lt_aux_dm_evt_sdr",
+        "lv_n_customers",
+        "lv_n_total",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.name.as_ref() == name
+                    && reference.namespace == Namespace::Value
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved reference for `{name}`, refs={:?}",
+            unit.references
+        );
+    }
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            )
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn infers_inline_data_type_from_builtin_lines_call() {
     let src = "\
 DATA lt_obj TYPE STANDARD TABLE OF string WITH EMPTY KEY.

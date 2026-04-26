@@ -2516,22 +2516,25 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             &["tfill", "tleng"],
         );
         if let Some(stmt) = DescribeStmt::cast(self.collector.syntax(node)) {
-            let table_operand = stmt
-                .table_operand()
-                .and_then(|operand| operand.value())
-                .map(|value| value.id());
-            let lines_target = stmt
-                .lines_target()
-                .and_then(|target| target.value())
-                .map(|value| value.id());
-            if let Some(table_operand) = table_operand {
+            let table_operands: Vec<_> = stmt
+                .table_operands()
+                .filter_map(|operand| operand.value())
+                .map(|value| value.id())
+                .collect();
+            let lines_targets: Vec<_> = stmt
+                .lines_targets()
+                .filter_map(|target| target.value())
+                .map(|value| value.id())
+                .collect();
+            for table_operand in table_operands {
                 self.collector.walk_node(table_operand, scope);
             }
-            if let Some(lines_target) = lines_target
-                && (!self.declare_describe_lines_inline_target(lines_target, scope)
-                    || self.collector.file.kind(lines_target) != SyntaxKind::DataInlineDecl)
-            {
-                self.collector.walk_node(lines_target, scope);
+            for lines_target in lines_targets {
+                if !self.declare_describe_lines_inline_target(lines_target, scope)
+                    || self.collector.file.kind(lines_target) != SyntaxKind::DataInlineDecl
+                {
+                    self.collector.walk_node(lines_target, scope);
+                }
             }
         }
     }

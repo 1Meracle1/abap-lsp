@@ -2289,16 +2289,26 @@ impl<'a> DescribeLinesTarget<'a> {
 }
 
 impl<'a> DescribeStmt<'a> {
-    pub fn table_operand(self) -> Option<DescribeTableOperand<'a>> {
+    pub fn table_operands(
+        self,
+    ) -> impl DoubleEndedIterator<Item = DescribeTableOperand<'a>> + Clone + 'a {
         self.syntax
-            .child_by_kind(SyntaxKind::DescribeTableOperand)
-            .and_then(DescribeTableOperand::cast)
+            .children()
+            .filter_map(DescribeTableOperand::cast)
+    }
+
+    pub fn lines_targets(
+        self,
+    ) -> impl DoubleEndedIterator<Item = DescribeLinesTarget<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(DescribeLinesTarget::cast)
+    }
+
+    pub fn table_operand(self) -> Option<DescribeTableOperand<'a>> {
+        self.table_operands().next()
     }
 
     pub fn lines_target(self) -> Option<DescribeLinesTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DescribeLinesTarget)
-            .and_then(DescribeLinesTarget::cast)
+        self.lines_targets().next()
     }
 }
 

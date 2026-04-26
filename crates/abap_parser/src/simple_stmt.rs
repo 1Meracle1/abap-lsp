@@ -1336,66 +1336,83 @@ fn build_describe_stmt_children(
     period_i: usize,
 ) -> Vec<NodeId> {
     let mut children = vec![token_leaf(b, &tokens[idx])];
-    if idx + 1 >= period_i || !token_matches_keyword(source, &tokens[idx + 1], "table") {
+    let table_idx = next_non_comment(tokens, idx + 1, period_i);
+    if table_idx >= period_i || !token_matches_keyword(source, &tokens[table_idx], "table") {
         return tokens[idx..=period_i]
             .iter()
             .map(|token| token_leaf(b, token))
             .collect();
     }
-    children.push(token_leaf(b, &tokens[idx + 1]));
-    let source_start = next_non_comment(tokens, idx + 2, period_i);
-    let Some(lines_idx) =
-        find_top_level_keyword_index(source, tokens, source_start, period_i, "lines")
-    else {
-        return tokens[idx..=period_i]
-            .iter()
-            .map(|token| token_leaf(b, token))
-            .collect();
-    };
-    if source_start < lines_idx {
-        push_token_range(b, &mut children, tokens, idx + 2, source_start);
-        children.push(build_wrapped_expr_child(
-            b,
-            source,
-            tokens,
-            source_start,
-            lines_idx,
-            SyntaxKind::DescribeTableOperand,
-        ));
-    }
-    push_token_range(b, &mut children, tokens, lines_idx, lines_idx + 1);
+    push_token_range(b, &mut children, tokens, idx + 1, table_idx);
+    children.push(token_leaf(b, &tokens[table_idx]));
 
-    let target_start = next_non_comment(tokens, lines_idx + 1, period_i);
-    if target_start >= period_i {
-        children.push(token_leaf(b, &tokens[period_i]));
-        return children;
-    }
-    push_token_range(b, &mut children, tokens, lines_idx + 1, target_start);
-    let target = if token_matches_keyword(source, &tokens[target_start], "data") {
-        build_wrapped_data_inline_decl_child(
+    let mut cursor = table_idx + 1;
+    while cursor <= period_i {
+        let token = &tokens[cursor];
+        if matches!(
+            token.kind,
+            TokenKind::Comment | TokenKind::Colon | TokenKind::Comma
+        ) {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        }
+        if token.kind == TokenKind::Period {
+            children.push(token_leaf(b, token));
+            break;
+        }
+
+        let entry_end = scan_expr_end(source, tokens, cursor, period_i, &[], &[TokenKind::Comma]);
+        let Some(lines_idx) =
+            find_top_level_keyword_index(source, tokens, cursor, entry_end, "lines")
+        else {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        };
+
+        let source_start = next_non_comment(tokens, cursor, lines_idx);
+        if cursor < source_start {
+            push_token_range(b, &mut children, tokens, cursor, source_start);
+        }
+        if source_start < lines_idx {
+            children.push(build_wrapped_expr_child(
+                b,
+                source,
+                tokens,
+                source_start,
+                lines_idx,
+                SyntaxKind::DescribeTableOperand,
+            ));
+        }
+
+        children.push(token_leaf(b, &tokens[lines_idx]));
+
+        let target_start = next_non_comment(tokens, lines_idx + 1, entry_end);
+        if lines_idx + 1 < target_start {
+            push_token_range(b, &mut children, tokens, lines_idx + 1, target_start);
+        }
+        if let Some(target) = build_wrapped_expr_or_data_inline_decl_child(
             b,
             source,
             tokens,
             target_start,
-            period_i,
+            entry_end,
             SyntaxKind::DescribeLinesTarget,
-        )
-    } else {
-        Some(build_wrapped_expr_child(
-            b,
-            source,
-            tokens,
-            target_start,
-            period_i,
-            SyntaxKind::DescribeLinesTarget,
-        ))
-    };
-    if let Some(target) = target {
-        children.push(target);
-    } else {
-        push_token_range(b, &mut children, tokens, target_start, period_i);
+        ) {
+            children.push(target);
+            push_token_range(
+                b,
+                &mut children,
+                tokens,
+                trim_trailing_comments(tokens, target_start, entry_end),
+                entry_end,
+            );
+        } else {
+            push_token_range(b, &mut children, tokens, target_start, entry_end);
+        }
+        cursor = entry_end;
     }
-    children.push(token_leaf(b, &tokens[period_i]));
     children
 }
 
@@ -2816,6 +2833,38 @@ SET TITLEBAR lv_title OF PROGRAM lv_prog WITH lv_text1 lv_text2.";
                 .count_kind(parsed.file.root(), SyntaxKind::DescribeStmt),
             0
         );
+    }
+
+    #[test]
+    fn chained_describe_table_builds_structured_operands_and_targets() {
+        let parsed = crate::parse(
+            "\
+DATA lt_aux_bup_adr TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_aux_dm_evt_sdr TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_n_customers TYPE i.
+DATA lv_n_total TYPE i.
+
+DESCRIBE TABLE: lt_aux_bup_adr    LINES lv_n_customers,
+                lt_aux_dm_evt_sdr LINES lv_n_total.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let describe = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::DescribeStmt)
+            .expect("describe stmt");
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(describe, SyntaxKind::DescribeTableOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(describe, SyntaxKind::DescribeLinesTarget),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(describe, SyntaxKind::ExprIdent), 4);
     }
 
     #[test]
