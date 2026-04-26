@@ -4463,6 +4463,7 @@ fn cache_completion_item_name(item: &abap_cache::CompletionItem) -> &str {
         abap_cache::CompletionItem::NamedArgument(item) => item.name.as_ref(),
         abap_cache::CompletionItem::Template(item) => item.name.as_ref(),
         abap_cache::CompletionItem::Callable(item) => item.name.as_ref(),
+        abap_cache::CompletionItem::Keyword(item) => item.name.as_ref(),
     }
 }
 
@@ -4526,6 +4527,14 @@ fn completion_item_to_lsp(
                 item.insertion.snippet_text.clone(),
             )
         }
+        abap_cache::CompletionItem::Keyword(item) => (
+            item.name.to_string(),
+            Some(CompletionItemKind::KEYWORD),
+            Some("ABAP keyword".to_string()),
+            None,
+            item.insertion.plain_text.clone(),
+            item.insertion.snippet_text.clone(),
+        ),
     };
     let (new_text, insert_text_format) = if snippet_support {
         if let Some(snippet_text) = snippet_text {
@@ -4537,6 +4546,7 @@ fn completion_item_to_lsp(
         (plain_text, None)
     };
     CompletionItem {
+        sort_text: Some(completion_item_sort_text(item, &label)),
         label,
         kind,
         detail,
@@ -4548,6 +4558,14 @@ fn completion_item_to_lsp(
         })),
         ..CompletionItem::default()
     }
+}
+
+fn completion_item_sort_text(item: &abap_cache::CompletionItem, label: &str) -> String {
+    let priority = match item {
+        abap_cache::CompletionItem::Keyword(_) => "2",
+        _ => "1",
+    };
+    format!("{priority}:{}", label.to_ascii_lowercase())
 }
 
 fn completion_item_metadata(
@@ -8914,6 +8932,7 @@ ENDFORM.";
                 abap_cache::CompletionItem::NamedArgument(item) => item.name.to_string(),
                 abap_cache::CompletionItem::Template(item) => item.name.to_string(),
                 abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
+                abap_cache::CompletionItem::Keyword(item) => item.name.to_string(),
             })
             .collect();
 
@@ -16364,6 +16383,70 @@ ENDCLASS."
     }
 
     #[test]
+    fn completion_marks_keyword_items_as_secondary_priority_after_symbols() {
+        let state = ServerState::default();
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_keywords_after_symbols.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_input TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    i
+  ENDMETHOD.
+ENDCLASS."
+                        .to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_keywords_after_symbols.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 5,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let symbol = items
+            .iter()
+            .find(|item| item.label == "iv_input")
+            .expect("symbol completion item");
+        let keyword = items
+            .iter()
+            .find(|item| item.label == "IF")
+            .expect("keyword completion item");
+        assert_eq!(symbol.kind, Some(lsp_types::CompletionItemKind::VARIABLE));
+        assert_eq!(keyword.kind, Some(lsp_types::CompletionItemKind::KEYWORD));
+        assert_eq!(symbol.sort_text.as_deref(), Some("1:iv_input"));
+        assert_eq!(keyword.sort_text.as_deref(), Some("2:if"));
+    }
+
+    #[test]
     fn completion_filters_already_specified_named_arguments() {
         let state = ServerState::default();
         publish_open_document(
@@ -16510,6 +16593,7 @@ ENDCLASS."
                             }
                             abap_cache::CompletionItem::Template(item) => item.name.to_string(),
                             abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
+                            abap_cache::CompletionItem::Keyword(item) => item.name.to_string(),
                         })
                         .collect::<Vec<_>>()
                 })

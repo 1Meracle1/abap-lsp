@@ -33,6 +33,7 @@ mod call_dataflow;
 mod call_graph;
 mod callable_summary;
 mod effective_source;
+mod keyword_completion;
 mod workspace;
 pub use call_dataflow::{
     CallDataflowByteRange, CallDataflowFieldMapping, CallDataflowLifecycle,
@@ -332,11 +333,18 @@ pub struct CallableCompletionItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeywordCompletionItem {
+    pub name: Arc<str>,
+    pub insertion: CompletionInsertion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionItem {
     Selector(SelectorCompletionItem),
     NamedArgument(NamedArgumentCompletionItem),
     Template(TemplateCompletionItem),
     Callable(CallableCompletionItem),
+    Keyword(KeywordCompletionItem),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -967,7 +975,7 @@ impl AnalysisSnapshot {
         if let Some(completion) = self.named_argument_completion_at(offset) {
             return Some(completion);
         }
-        self.method_parameter_completion_at(offset)
+        self.bare_identifier_completion_at(offset)
     }
 
     pub fn callable_statement_completion_context_at(
@@ -2681,6 +2689,45 @@ impl AnalysisSnapshot {
         })
     }
 
+    fn bare_identifier_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let mut completion = self.method_parameter_completion_at(offset);
+        let Some(keyword_completion) = self.keyword_completion_at(offset) else {
+            return completion;
+        };
+        if let Some(existing_completion) = completion.as_mut() {
+            if existing_completion.replace_range == keyword_completion.replace_range
+                && existing_completion.in_type_position == keyword_completion.in_type_position
+            {
+                let mut seen: HashSet<_> = existing_completion
+                    .items
+                    .iter()
+                    .map(|item| completion_item_name(item).to_ascii_lowercase())
+                    .collect();
+                existing_completion.items.extend(
+                    keyword_completion.items.into_iter().filter(|item| {
+                        seen.insert(completion_item_name(item).to_ascii_lowercase())
+                    }),
+                );
+            }
+            completion
+        } else {
+            Some(keyword_completion)
+        }
+    }
+
+    fn keyword_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let (replace_range, prefix) = self.bare_identifier_completion_context(offset)?;
+        let items = keyword_completion::keyword_completion_items(prefix.as_ref());
+        if items.is_empty() {
+            return None;
+        }
+        Some(CompletionInfo {
+            replace_range,
+            items: items.into_iter().map(CompletionItem::Keyword).collect(),
+            in_type_position: false,
+        })
+    }
+
     fn bare_identifier_completion_context(
         &self,
         offset: usize,
@@ -3829,6 +3876,7 @@ fn completion_item_name(item: &CompletionItem) -> &str {
         CompletionItem::NamedArgument(item) => item.name.as_ref(),
         CompletionItem::Template(item) => item.name.as_ref(),
         CompletionItem::Callable(item) => item.name.as_ref(),
+        CompletionItem::Keyword(item) => item.name.as_ref(),
     }
 }
 
@@ -16311,6 +16359,7 @@ START-OF-SELECTION.
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
                 crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
+                crate::CompletionItem::Keyword(item) => item.name.as_ref(),
             })
             .collect();
         assert_eq!(names, vec!["iv_mode", "iv_name"]);
@@ -16370,6 +16419,7 @@ ENDCLASS.";
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
                 crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
+                crate::CompletionItem::Keyword(item) => item.name.as_ref(),
             })
             .collect();
         assert_eq!(names, vec!["value"]);
@@ -16400,6 +16450,60 @@ ENDCLASS.";
                 .find("value) TYPE string")
                 .expect("event parameter declaration")
         );
+    }
+
+    #[test]
+    fn completion_returns_keyword_combinations_for_bare_identifier_prefix() {
+        let store = DocumentStore::default();
+        let src = "cl";
+        let snapshot = store.publish("file:///keyword_completion.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("keyword completion");
+        let labels: Vec<_> = completion
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::CompletionItem::Keyword(item) => Some(item.name.as_ref()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(labels.contains(&"CLASS"));
+        assert!(labels.contains(&"CLASS-DATA"));
+        assert!(labels.contains(&"CLASS-METHODS"));
+        assert!(labels.contains(&"CLASS DEFINITION"));
+    }
+
+    #[test]
+    fn completion_appends_keywords_after_method_parameter_symbols() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_input TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    i
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///keyword_after_symbols.abap", 1, src);
+        let completion_offset = src.find("    i\n").expect("completion prefix") + "    i".len();
+
+        let completion = snapshot
+            .completion_at(completion_offset)
+            .expect("mixed completion");
+        let first = completion.items.first().expect("first completion item");
+        assert!(matches!(
+            first,
+            crate::CompletionItem::NamedArgument(item) if item.name.as_ref() == "iv_input"
+        ));
+        assert!(completion.items.iter().any(|item| {
+            matches!(item, crate::CompletionItem::Keyword(item) if item.name.as_ref() == "IF")
+        }));
     }
 
     #[test]
@@ -16521,6 +16625,7 @@ ENDCLASS.";
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
                 crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
+                crate::CompletionItem::Keyword(item) => item.name.as_ref(),
             })
             .collect();
         assert_eq!(names, vec!["iv_importing"]);
@@ -16963,7 +17068,15 @@ REPORT zdemo.
 meth";
         let snapshot = store.publish("file:///method_definition_template_global.abap", 1, src);
 
-        assert!(snapshot.completion_at(src.len()).is_none());
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("keyword completion");
+        assert!(!completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Template(item) if item.name.as_ref() == "methods"
+            )
+        }));
     }
 
     #[test]
