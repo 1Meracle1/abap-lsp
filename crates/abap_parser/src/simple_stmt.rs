@@ -76,9 +76,12 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("assert", SyntaxKind::AssertStmt),
     ("check", SyntaxKind::CheckStmt),
     ("clear", SyntaxKind::ClearStmt),
+    ("continue", SyntaxKind::ContinueStmt),
     ("convert", SyntaxKind::ConvertStmt),
     ("describe", SyntaxKind::DescribeStmt),
+    ("exit", SyntaxKind::ExitStmt),
     ("perform", SyntaxKind::PerformStmt),
+    ("return", SyntaxKind::ReturnStmt),
     ("submit", SyntaxKind::SubmitStmt),
     ("stop", SyntaxKind::StopStmt),
     ("replace", SyntaxKind::ReplaceStmt),
@@ -2463,6 +2466,17 @@ ENDCLASS.";
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::StopStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn classifies_simple_flow_statements_specifically() {
+        let parsed = crate::parse("EXIT. CONTINUE. RETURN.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExitStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ContinueStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReturnStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 

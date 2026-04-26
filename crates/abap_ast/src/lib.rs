@@ -393,6 +393,12 @@ pub enum SyntaxKind {
     AssertStmt,
     /// `CHECK ... .`
     CheckStmt,
+    /// `CONTINUE.`
+    ContinueStmt,
+    /// `EXIT.`
+    ExitStmt,
+    /// `RETURN.`
+    ReturnStmt,
     /// `STOP.`
     StopStmt,
     /// `PERFORM ... .`
@@ -737,6 +743,9 @@ impl SyntaxKind {
             Self::DeleteDbTableStmt => "DeleteDbTableFromTableStmt",
             Self::AssertStmt => "AssertStmt",
             Self::CheckStmt => "CheckStmt",
+            Self::ContinueStmt => "ContinueStmt",
+            Self::ExitStmt => "ExitStmt",
+            Self::ReturnStmt => "ReturnStmt",
             Self::StopStmt => "StopStmt",
             Self::PerformStmt => "PerformStmt",
             Self::SubmitStmt => "SubmitStmt",

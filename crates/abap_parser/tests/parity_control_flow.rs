@@ -20,5 +20,22 @@ fn ports_core_control_flow_shapes() {
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::WhenClause), 2);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::TryStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::LoopStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExitStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ContinueStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::StopStmt), 1);
+}
+
+#[test]
+fn ports_simple_flow_statement_kinds() {
+    let src = concat!(
+        "IF lv_done = abap_true. RETURN. ENDIF.\n",
+        "DO 2 TIMES. CONTINUE. EXIT. ENDDO."
+    );
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReturnStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ContinueStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExitStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
 }

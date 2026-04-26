@@ -191,6 +191,9 @@ impl<'a> Collector<'a> {
                 .stmt_lowering()
                 .collect_selection_screen_stmt(node, scope),
             SyntaxKind::UnparsedStmt
+            | SyntaxKind::ContinueStmt
+            | SyntaxKind::ExitStmt
+            | SyntaxKind::ReturnStmt
             | SyntaxKind::StopStmt
             | SyntaxKind::SetPfStatusStmt
             | SyntaxKind::SetTitlebarStmt

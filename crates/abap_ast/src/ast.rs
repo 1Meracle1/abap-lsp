@@ -692,6 +692,9 @@ ast_node!(
 );
 ast_node!(MessageRaisingClause, SyntaxKind::MessageRaisingClause);
 ast_node!(FindStmt, SyntaxKind::FindStmt);
+ast_node!(ContinueStmt, SyntaxKind::ContinueStmt);
+ast_node!(ExitStmt, SyntaxKind::ExitStmt);
+ast_node!(ReturnStmt, SyntaxKind::ReturnStmt);
 ast_node!(StopStmt, SyntaxKind::StopStmt);
 ast_node!(FindPatternOperand, SyntaxKind::FindPatternOperand);
 ast_node!(FindInOperand, SyntaxKind::FindInOperand);
