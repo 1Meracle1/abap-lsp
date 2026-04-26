@@ -12,11 +12,12 @@ use crate::def_map::{
     FunctionModuleParameterData, FunctionModuleParameterSection, ImplementedInterfaceData,
     IncludeEdge, MemberAliasData, MethodParameterSection, NamedArgumentSection,
     NamedArgumentTarget, PerformArgumentData, PerformCallData, PerformParameterSection,
-    ReferenceData, ReferenceKind, Resolution, SqlNameRefData, SqlNameRefKind, SqlPredicateData,
-    SqlPredicateKind, SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution,
-    SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, TypeFactData,
-    UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData, Visibility,
+    ReferenceData, ReferenceKind, Resolution, SqlDynamicFragmentData, SqlDynamicFragmentKind,
+    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
+    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
+    SqlTargetKind, StructureData, StructureFieldData, SymbolData, SymbolKind,
+    SystemFieldStatementKind, SystemFieldUpdateData, TypeFactData, UnitAnalysis, ValueFlowEdgeData,
+    ValueFlowKind, ValueFlowTargetData, Visibility,
 };
 use crate::ids::{SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -109,6 +110,7 @@ pub struct DossierSummary {
     pub function_module_count: usize,
     pub sql_query_count: usize,
     pub sql_source_count: usize,
+    pub sql_dynamic_fragment_count: usize,
     pub sql_touched_object_count: usize,
     pub include_edge_count: usize,
     pub unresolved_include_count: usize,
@@ -488,6 +490,14 @@ pub struct SqlSourceDossier {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SqlDynamicFragmentDossier {
+    pub scope_id: u32,
+    pub range: ByteRange,
+    pub kind: &'static str,
+    pub verification: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SqlProjectionDossier {
     pub range: ByteRange,
     pub kind: &'static str,
@@ -541,6 +551,7 @@ pub struct SqlQueryDossier {
     pub predicates: Vec<SqlPredicateDossier>,
     pub targets: Vec<SqlTargetDossier>,
     pub name_refs: Vec<SqlNameRefDossier>,
+    pub dynamic_fragments: Vec<SqlDynamicFragmentDossier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -564,6 +575,7 @@ pub struct SqlClauseRangesDossier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SqlSectionDossier {
     pub touched_objects: Vec<String>,
+    pub dynamic_fragments: Vec<SqlDynamicFragmentDossier>,
     pub queries: Vec<SqlQueryDossier>,
 }
 
@@ -692,6 +704,11 @@ pub fn build_semantic_dossier(
         .iter()
         .map(|query| sql_query_dossier(unit, query))
         .collect();
+    let dynamic_fragments: Vec<_> = unit
+        .sql_dynamic_fragments
+        .iter()
+        .map(sql_dynamic_fragment_dossier)
+        .collect();
     let touched_objects: Vec<_> = unit
         .sql_sources
         .iter()
@@ -727,7 +744,7 @@ pub fn build_semantic_dossier(
 
     SemanticDossier {
         schema: "abap.semantic_dossier",
-        schema_version: 4,
+        schema_version: 5,
         target: DossierTarget {
             unit_id: unit.unit_id.0,
             uri: unit.uri.to_string(),
@@ -775,6 +792,7 @@ pub fn build_semantic_dossier(
             function_module_count: function_modules.len(),
             sql_query_count: queries.len(),
             sql_source_count: unit.sql_sources.len(),
+            sql_dynamic_fragment_count: unit.sql_dynamic_fragments.len(),
             sql_touched_object_count: touched_objects.len(),
             include_edge_count: includes.len(),
             unresolved_include_count: unresolved_names.includes.len(),
@@ -796,6 +814,7 @@ pub fn build_semantic_dossier(
         system_field_updates,
         sql: SqlSectionDossier {
             touched_objects,
+            dynamic_fragments,
             queries,
         },
         includes,
@@ -1335,6 +1354,12 @@ fn sql_query_dossier(unit: &UnitAnalysis, query: &SqlQueryData) -> SqlQueryDossi
             .filter(|name_ref| name_ref.query_id == query.id)
             .map(sql_name_ref_dossier)
             .collect(),
+        dynamic_fragments: unit
+            .sql_dynamic_fragments
+            .iter()
+            .filter(|fragment| fragment.query_id == query.id)
+            .map(sql_dynamic_fragment_dossier)
+            .collect(),
     }
 }
 
@@ -1346,6 +1371,15 @@ fn sql_source_dossier(source: &SqlSourceData) -> SqlSourceDossier {
         alias: source.alias.as_ref().map(arc_str_to_string),
         join_kind: source.join_kind.as_ref().map(arc_str_to_string),
         resolution: sql_resolution_name(source.resolution),
+    }
+}
+
+fn sql_dynamic_fragment_dossier(fragment: &SqlDynamicFragmentData) -> SqlDynamicFragmentDossier {
+    SqlDynamicFragmentDossier {
+        scope_id: fragment.scope.0,
+        range: byte_range(&fragment.range),
+        kind: sql_dynamic_fragment_kind_name(fragment.kind),
+        verification: "dynamic_sql_cannot_verify",
     }
 }
 
@@ -1708,6 +1742,14 @@ fn sql_source_kind_name(kind: SqlSourceKind) -> &'static str {
     match kind {
         SqlSourceKind::From => "from",
         SqlSourceKind::Join => "join",
+    }
+}
+
+fn sql_dynamic_fragment_kind_name(kind: SqlDynamicFragmentKind) -> &'static str {
+    match kind {
+        SqlDynamicFragmentKind::Source => "source",
+        SqlDynamicFragmentKind::Projection => "projection",
+        SqlDynamicFragmentKind::Where => "where",
     }
 }
 

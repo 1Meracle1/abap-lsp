@@ -30,10 +30,10 @@ use crate::def_map::{
     FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData, FormRoutineData, FunctionModuleData,
     ImplementedInterfaceData, IncludeEdge, LoopAtFieldContext, LoopWhereFieldContext,
     MemberAliasData, NamedArgumentAccess, PerformCallData, ReferenceData, ReferenceKind,
-    RoutineControlRegionData, RoutineSiteData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
-    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, StructureFieldData, SymbolData,
-    SymbolKind, SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis, ValueFlowEdgeData,
-    ValueStateCheckData,
+    RoutineControlRegionData, RoutineSiteData, SqlDynamicFragmentData, SqlNameRefData,
+    SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureData,
+    StructureFieldData, SymbolData, SymbolKind, SystemFieldUpdateData, TableWorkAreaData,
+    UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -166,6 +166,7 @@ pub struct Collector<'a> {
     routine_control_regions: Vec<RoutineControlRegionData>,
     sql_queries: Vec<SqlQueryData>,
     sql_sources: Vec<SqlSourceData>,
+    sql_dynamic_fragments: Vec<SqlDynamicFragmentData>,
     sql_projections: Vec<SqlProjectionData>,
     sql_name_refs: Vec<SqlNameRefData>,
     sql_predicates: Vec<SqlPredicateData>,
@@ -233,6 +234,7 @@ impl<'a> Collector<'a> {
             routine_control_regions: Vec::new(),
             sql_queries: Vec::new(),
             sql_sources: Vec::new(),
+            sql_dynamic_fragments: Vec::new(),
             sql_projections: Vec::new(),
             sql_name_refs: Vec::new(),
             sql_predicates: Vec::new(),
@@ -309,6 +311,7 @@ impl<'a> Collector<'a> {
             routine_control_regions: self.routine_control_regions,
             sql_queries: self.sql_queries,
             sql_sources: self.sql_sources,
+            sql_dynamic_fragments: self.sql_dynamic_fragments,
             sql_projections: self.sql_projections,
             sql_name_refs: self.sql_name_refs,
             sql_predicates: self.sql_predicates,

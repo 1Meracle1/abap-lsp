@@ -5,8 +5,8 @@ use abap_ast::ast::SyntaxNodeRef;
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ConstructorForBindingData, FieldAccess, FieldTypeRefData,
     FormRoutineData, IncludeEdge, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
-    ReferenceKind, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
-    SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind, TableWorkAreaData,
+    ReferenceKind, SqlDynamicFragmentData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
+    SqlQueryData, SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind, TableWorkAreaData,
     ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
@@ -719,6 +719,10 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
 
     pub(super) fn emit_sql_source(&mut self, source: SqlSourceData) {
         self.collector.emit_sql_source(source);
+    }
+
+    pub(super) fn emit_sql_dynamic_fragment(&mut self, fragment: SqlDynamicFragmentData) {
+        self.collector.emit_sql_dynamic_fragment(fragment);
     }
 
     pub(super) fn emit_sql_target(&mut self, target: SqlTargetData) {

@@ -10,9 +10,10 @@ use abap_ast::ast::{
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    ReferenceKind, SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind,
-    SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData,
-    SqlSourceKind, SqlTargetData, SqlTargetKind, SystemFieldStatementKind,
+    ReferenceKind, SqlDynamicFragmentData, SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind,
+    SqlPredicateData, SqlPredicateKind, SqlProjectionData, SqlProjectionKind, SqlQueryData,
+    SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind,
+    SystemFieldStatementKind,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -49,6 +50,21 @@ impl<'a> Collector<'a> {
 impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
     fn lower_arc(text: &str) -> Arc<str> {
         Arc::<str>::from(text.to_ascii_lowercase())
+    }
+
+    fn emit_dynamic_fragment(
+        &mut self,
+        query_id: usize,
+        scope: ScopeId,
+        range: TextRange,
+        kind: SqlDynamicFragmentKind,
+    ) {
+        self.ctx.emit_sql_dynamic_fragment(SqlDynamicFragmentData {
+            query_id,
+            scope,
+            range,
+            kind,
+        });
     }
 
     fn record_system_field_updates(
@@ -197,15 +213,23 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             }
         }
 
-        let Some((name, name_range)) =
-            head_expr.and_then(|expr| self.simple_sql_source_name_from_expr(expr))
-        else {
+        let static_head = head_expr.and_then(|expr| self.simple_sql_source_name_from_expr(expr));
+        let dynamic_head = if static_head.is_none() {
+            head_expr.and_then(|expr| self.dynamic_parenthesized_operand_tokens_from_node(expr))
+        } else {
+            None
+        };
+        if static_head.is_none() && dynamic_head.is_none() {
             self.ctx.walk_children(node, scope);
             return;
         };
 
         let query_id = self.ctx.sql_queries_len();
         let range = self.ctx.file().range(node);
+        let has_dynamic_where = where_expr.is_some_and(|expr| {
+            let predicate_tokens = self.ctx.syntax_token_nodes(expr);
+            Self::sql_tokens_are_dynamic_where(&predicate_tokens)
+        });
         self.ctx.emit_sql_query(SqlQueryData {
             id: query_id,
             scope,
@@ -230,29 +254,40 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             has_package_size: false,
             has_set_operators: false,
             has_endselect: false,
-            has_dynamic_where: false,
+            has_dynamic_where,
         });
 
         let source_range = head_expr
             .map(|expr| self.ctx.file().range(expr))
             .unwrap_or_else(|| range.clone());
-        self.ctx.emit_sql_source(SqlSourceData {
-            query_id,
-            range: source_range,
-            source_kind: SqlSourceKind::From,
-            name: Arc::clone(&name),
-            alias: None,
-            join_kind: None,
-            resolution: SqlResolution::External,
-        });
-        self.push_sql_name_ref(
-            query_id,
-            scope,
-            name_range,
-            name,
-            None,
-            SqlNameRefKind::Source,
-        );
+        if let Some((name, name_range)) = static_head {
+            self.ctx.emit_sql_source(SqlSourceData {
+                query_id,
+                range: source_range,
+                source_kind: SqlSourceKind::From,
+                name: Arc::clone(&name),
+                alias: None,
+                join_kind: None,
+                resolution: SqlResolution::External,
+            });
+            self.push_sql_name_ref(
+                query_id,
+                scope,
+                name_range,
+                name,
+                None,
+                SqlNameRefKind::Source,
+            );
+        } else if let Some(dynamic_tokens) = dynamic_head {
+            self.ctx
+                .collect_token_expression_refs_infos(&dynamic_tokens, scope, true);
+            self.emit_dynamic_fragment(
+                query_id,
+                scope,
+                source_range,
+                SqlDynamicFragmentKind::Source,
+            );
+        }
 
         if let Some(from_expr) = from_expr {
             self.ctx.walk_node(from_expr, scope);
@@ -270,8 +305,18 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 kind: predicate_kind,
             });
             if predicate_kind == SqlPredicateKind::DynamicWhere {
-                self.ctx
-                    .collect_token_expression_refs_infos(&predicate_tokens, scope, true);
+                self.emit_dynamic_fragment(
+                    query_id,
+                    scope,
+                    self.ctx.file().range(where_expr),
+                    SqlDynamicFragmentKind::Where,
+                );
+                if let Some(dynamic_tokens) =
+                    Self::dynamic_parenthesized_operand_tokens(&predicate_tokens)
+                {
+                    self.ctx
+                        .collect_token_expression_refs_infos(dynamic_tokens, scope, true);
+                }
             } else {
                 self.collect_sql_host_and_name_refs_in_node(query_id, where_expr, scope, true);
             }
@@ -314,9 +359,13 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             }
         }
 
-        let Some((name, name_range)) =
-            head_expr.and_then(|expr| self.simple_sql_source_name_from_expr(expr))
-        else {
+        let static_head = head_expr.and_then(|expr| self.simple_sql_source_name_from_expr(expr));
+        let dynamic_head = if static_head.is_none() {
+            head_expr.and_then(|expr| self.dynamic_parenthesized_operand_tokens_from_node(expr))
+        } else {
+            None
+        };
+        if static_head.is_none() && dynamic_head.is_none() {
             self.ctx.walk_children(node, scope);
             return;
         };
@@ -353,23 +402,34 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let source_range = head_expr
             .map(|expr| self.ctx.file().range(expr))
             .unwrap_or_else(|| range.clone());
-        self.ctx.emit_sql_source(SqlSourceData {
-            query_id,
-            range: source_range,
-            source_kind: SqlSourceKind::From,
-            name: Arc::clone(&name),
-            alias: None,
-            join_kind: None,
-            resolution: SqlResolution::External,
-        });
-        self.push_sql_name_ref(
-            query_id,
-            scope,
-            name_range,
-            name,
-            None,
-            SqlNameRefKind::Source,
-        );
+        if let Some((name, name_range)) = static_head {
+            self.ctx.emit_sql_source(SqlSourceData {
+                query_id,
+                range: source_range,
+                source_kind: SqlSourceKind::From,
+                name: Arc::clone(&name),
+                alias: None,
+                join_kind: None,
+                resolution: SqlResolution::External,
+            });
+            self.push_sql_name_ref(
+                query_id,
+                scope,
+                name_range,
+                name,
+                None,
+                SqlNameRefKind::Source,
+            );
+        } else if let Some(dynamic_tokens) = dynamic_head {
+            self.ctx
+                .collect_token_expression_refs_infos(&dynamic_tokens, scope, true);
+            self.emit_dynamic_fragment(
+                query_id,
+                scope,
+                source_range,
+                SqlDynamicFragmentKind::Source,
+            );
+        }
 
         if let Some(from_expr) = from_expr {
             self.ctx.walk_node(from_expr, scope);
@@ -523,6 +583,12 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 kind: predicate_kind,
             });
             if predicate_kind == SqlPredicateKind::DynamicWhere {
+                self.emit_dynamic_fragment(
+                    query_id,
+                    scope,
+                    stmt_tokens[where_idx + 1].range.start..stmt_tokens[where_end - 1].range.end,
+                    SqlDynamicFragmentKind::Where,
+                );
                 if predicate_tokens.len() > 2 {
                     self.ctx.collect_token_expression_refs_infos(
                         &predicate_tokens[1..predicate_tokens.len() - 1],
@@ -722,6 +788,29 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             })
             .unwrap_or((None, None));
         let syntax_tokens = self.ctx.syntax_token_nodes(node);
+
+        if let Some((dynamic_tokens, dynamic_range)) =
+            self.dynamic_sql_projection_operand_tokens(&syntax_tokens, alias_clause_start)
+        {
+            self.ctx
+                .collect_token_expression_refs_infos(&dynamic_tokens, scope, true);
+            self.emit_dynamic_fragment(
+                query_id,
+                scope,
+                dynamic_range,
+                SqlDynamicFragmentKind::Projection,
+            );
+            self.ctx.emit_sql_projection(SqlProjectionData {
+                query_id,
+                range: self.ctx.file().range(node),
+                kind: SqlProjectionKind::Expression,
+                source_alias: None,
+                name: None,
+                alias: alias.map(|(name, _)| name),
+            });
+            return;
+        }
+
         self.collect_sql_host_refs_from_node(node, scope);
 
         let mut kind = SqlProjectionKind::Expression;
@@ -929,6 +1018,12 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     true,
                 );
             }
+            self.emit_dynamic_fragment(
+                query_id,
+                scope,
+                self.ctx.file().range(node),
+                SqlDynamicFragmentKind::Source,
+            );
             return;
         }
 
@@ -978,6 +1073,12 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         if let Some(dynamic_source_tokens) = self.dynamic_sql_source_operand_tokens(node) {
             self.ctx
                 .collect_token_expression_refs_infos(&dynamic_source_tokens, scope, true);
+            self.emit_dynamic_fragment(
+                query_id,
+                scope,
+                self.ctx.file().range(node),
+                SqlDynamicFragmentKind::Source,
+            );
             if let Some((alias_name, alias_range)) = alias_info {
                 self.push_sql_name_ref(
                     query_id,
@@ -1379,6 +1480,20 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         });
 
         let syntax_tokens = self.ctx.syntax_token_nodes(node);
+        if predicate_kind == SqlPredicateKind::DynamicWhere {
+            self.emit_dynamic_fragment(
+                query_id,
+                scope,
+                self.ctx.file().range(node),
+                SqlDynamicFragmentKind::Where,
+            );
+            if let Some(dynamic_tokens) = self.dynamic_sql_where_operand_tokens(&syntax_tokens) {
+                self.ctx
+                    .collect_token_expression_refs_infos(&dynamic_tokens, scope, true);
+            }
+            return;
+        }
+
         match kind {
             SqlClauseKind::ForAllEntries => {
                 if let Some(in_idx) = syntax_tokens
@@ -1788,11 +1903,72 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         ))
     }
 
+    fn dynamic_sql_projection_operand_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        alias_clause_start: Option<usize>,
+    ) -> Option<(Vec<SyntaxTokenInfo>, TextRange)> {
+        let value_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .filter(|token| alias_clause_start.is_none_or(|start| token.range.end <= start))
+            .cloned()
+            .collect();
+        let fragment_range = value_tokens.first()?.range.start..value_tokens.last()?.range.end;
+        let inner = Self::dynamic_parenthesized_operand_tokens(&value_tokens)?;
+        self.dynamic_sql_operand_is_value_reference(inner)
+            .then(|| (inner.to_vec(), fragment_range))
+    }
+
+    fn dynamic_sql_where_operand_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<Vec<SyntaxTokenInfo>> {
+        let tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .cloned()
+            .collect();
+        let start = tokens.iter().position(|token| token.text.as_ref() == "(")?;
+        Self::dynamic_parenthesized_operand_tokens(&tokens[start..]).map(|tokens| tokens.to_vec())
+    }
+
+    fn dynamic_parenthesized_operand_tokens_from_node(
+        &self,
+        node: NodeId,
+    ) -> Option<Vec<SyntaxTokenInfo>> {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        Self::dynamic_parenthesized_operand_tokens(&tokens).map(|tokens| tokens.to_vec())
+    }
+
+    fn dynamic_sql_operand_is_value_reference(&self, tokens: &[SyntaxTokenInfo]) -> bool {
+        if tokens.len() == 1 {
+            return self.ctx.syntax_token_is_ident_like(&tokens[0]);
+        }
+        self.ctx
+            .consume_selector_access_from_infos(tokens, 0)
+            .is_some_and(
+                |(next_idx, namespace, _base_name, _base_range, _fields, _groups)| {
+                    namespace == Namespace::Value && next_idx == tokens.len()
+                },
+            )
+    }
+
     fn dynamic_sql_source_operand_tokens(&self, node: NodeId) -> Option<Vec<SyntaxTokenInfo>> {
         let alias_clause_range = SqlDataSource::cast(self.ctx.syntax(node))
             .and_then(|source| source.alias_clause())
             .map(|alias| alias.syntax().range());
-        let tokens = self.ctx.syntax_token_nodes(node);
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
         let source_end = tokens
             .iter()
             .position(|token| {

@@ -1,9 +1,10 @@
 use abap_parser::parse;
 
 use abap_symbols::{
-    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId, SqlNameRefKind,
-    SqlPredicateKind, SqlProjectionKind, SqlSourceKind, SqlTargetKind, StructureFieldShape,
-    SymbolHandle, SymbolKind, analyze_project, analyze_project_from_units, analyze_unit,
+    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId,
+    SqlDynamicFragmentKind, SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlSourceKind,
+    SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, analyze_project,
+    analyze_project_from_units, analyze_unit,
 };
 
 #[test]
@@ -2658,6 +2659,9 @@ INSERT INTO (lv_master) VALUES im_pmast.
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     assert!(unit.sql_sources.is_empty(), "{:?}", unit.sql_sources);
+    assert!(unit.sql_dynamic_fragments.iter().any(|fragment| {
+        fragment.query_id == 0 && fragment.kind == SqlDynamicFragmentKind::Source
+    }));
     assert!(!unit.sql_name_refs.iter().any(|reference| {
         reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "(lv_master)"
     }));
@@ -2861,6 +2865,9 @@ WRITE lt_rows.
             .iter()
             .any(|predicate| { predicate.kind == SqlPredicateKind::DynamicWhere })
     );
+    assert!(unit.sql_dynamic_fragments.iter().any(|fragment| {
+        fragment.query_id == 0 && fragment.kind == SqlDynamicFragmentKind::Where
+    }));
     assert!(
         unit.sql_predicates
             .iter()
@@ -2887,6 +2894,11 @@ WRITE lt_rows.
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
             && reference.name.as_ref() == "lt_keys"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lt_cond"
             && matches!(reference.resolution, Some(Resolution::Symbol(_)))
     }));
     assert!(unit.references.iter().any(|reference| {
@@ -3109,6 +3121,16 @@ ENDFORM.
         unit.sql_predicates
             .iter()
             .any(|predicate| { predicate.kind == SqlPredicateKind::DynamicWhere })
+    );
+    assert!(
+        unit.sql_dynamic_fragments
+            .iter()
+            .any(|fragment| { fragment.kind == SqlDynamicFragmentKind::Where })
+    );
+    assert!(
+        unit.sql_dynamic_fragments
+            .iter()
+            .any(|fragment| { fragment.kind == SqlDynamicFragmentKind::Source })
     );
     assert!(
         unit.references.iter().any(|reference| {
@@ -3529,6 +3551,95 @@ SELECT mguid, docref, evt_time
 }
 
 #[test]
+fn verifies_open_sql_join_alias_fields_against_workspace_ddic_types() {
+    let rel_src = r#"
+TYPES: BEGIN OF zattp_reload_ret,
+         objid TYPE i,
+         status TYPE c LENGTH 1,
+       END OF zattp_reload_ret.
+"#;
+    let arch_src = r#"
+TYPES: BEGIN OF zarixis1,
+         objid TYPE i,
+         archivekey TYPE string,
+       END OF zarixis1.
+"#;
+    let ids_src = r#"
+TYPES: BEGIN OF /sttp/dm_obj_ids,
+         objid TYPE i,
+         storage TYPE c LENGTH 1,
+       END OF /sttp/dm_obj_ids.
+"#;
+    let main_src = r#"
+DATA lv_status TYPE c LENGTH 1.
+
+SELECT rel~objid,
+       arch~archivekey,
+       ids~storage
+  FROM zattp_reload_ret AS rel
+  LEFT OUTER JOIN zarixis1 AS arch
+    ON rel~objid = arch~objid
+  INNER JOIN /sttp/dm_obj_ids AS ids
+    ON rel~objid = ids~objid
+  WHERE rel~status = @lv_status
+  INTO TABLE @DATA(lt_rel_data).
+"#;
+    let rel_parse = parse(rel_src);
+    let arch_parse = parse(arch_src);
+    let ids_parse = parse(ids_src);
+    let main_parse = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_zattp_reload_ret.abap",
+            source: rel_src,
+            parse: &rel_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_zarixis1.abap",
+            source: arch_src,
+            parse: &arch_parse,
+        },
+        ProjectInput {
+            uri: "file:///ddic_dm_obj_ids.abap",
+            source: ids_src,
+            parse: &ids_parse,
+        },
+        ProjectInput {
+            uri: "file:///main_join_aliases.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_join_aliases.abap")
+        .expect("main unit");
+
+    assert_eq!(
+        main_unit.sql_sources.len(),
+        3,
+        "{:?}",
+        main_unit.sql_sources
+    );
+    assert!(main_unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "zattp_reload_ret" && source.alias.as_deref() == Some("rel")
+    }));
+    assert!(main_unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "zarixis1" && source.alias.as_deref() == Some("arch")
+    }));
+    assert!(main_unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "/sttp/dm_obj_ids" && source.alias.as_deref() == Some("ids")
+    }));
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            DiagnosticKind::UnverifiedOpenSqlSource | DiagnosticKind::UnknownField
+        )),
+        "unexpected Open SQL diagnostics: {:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_unknown_open_sql_field_for_resolved_workspace_ddic_type() {
     let ddic_src = r#"
 TYPES: BEGIN OF zattp_agg_pro,
@@ -3577,6 +3688,9 @@ SELECT * FROM (lv_idx_tbl) INTO TABLE @DATA(lt_rows).
     let unit = analyze_unit("file:///opensql_dynamic_source.abap", src, &parsed);
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    assert!(unit.sql_dynamic_fragments.iter().any(|fragment| {
+        fragment.query_id == 0 && fragment.kind == SqlDynamicFragmentKind::Source
+    }));
     assert!(!unit.sql_name_refs.iter().any(|reference| {
         reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == "(lv_idx_tbl)"
     }));
@@ -3591,6 +3705,70 @@ SELECT * FROM (lv_idx_tbl) INTO TABLE @DATA(lt_rows).
             .iter()
             .any(|diag| diag.kind == DiagnosticKind::UnverifiedOpenSqlSource),
         "unexpected UnverifiedOpenSqlSource: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn select_dynamic_projection_source_and_where_emit_dynamic_facts_without_column_diags() {
+    let src = r#"
+TYPES: BEGIN OF ty_rule,
+         ztabname TYPE string,
+       END OF ty_rule.
+DATA lv_fields TYPE string.
+DATA lv_where TYPE string.
+DATA lw_arch_rul TYPE ty_rule.
+
+SELECT (lv_fields)
+  FROM (lw_arch_rul-ztabname)
+  INTO TABLE @DATA(lt_rows)
+  WHERE (lv_where).
+
+WRITE lt_rows.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_dynamic_fragments.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
+    for kind in [
+        SqlDynamicFragmentKind::Projection,
+        SqlDynamicFragmentKind::Source,
+        SqlDynamicFragmentKind::Where,
+    ] {
+        assert!(
+            unit.sql_dynamic_fragments
+                .iter()
+                .any(|fragment| fragment.query_id == 0 && fragment.kind == kind),
+            "missing dynamic fragment {kind:?}: {:?}",
+            unit.sql_dynamic_fragments
+        );
+    }
+    assert!(unit.sql_sources.is_empty(), "{:?}", unit.sql_sources);
+    assert!(!unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "lv_fields"
+    }));
+    for name in ["lv_fields", "lw_arch_rul", "lv_where", "lt_rows"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnverifiedOpenSqlSource
+                    | DiagnosticKind::UnknownField
+                    | DiagnosticKind::UnresolvedReference
+            )
+        }),
+        "unexpected dynamic SQL diagnostics: {:?}",
         unit.diagnostics
     );
 }

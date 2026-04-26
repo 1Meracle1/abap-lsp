@@ -133,6 +133,13 @@ pub enum SqlSourceKind {
     Join,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlDynamicFragmentKind {
+    Source,
+    Projection,
+    Where,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlQueryData {
     pub id: usize,
@@ -170,6 +177,14 @@ pub struct SqlSourceData {
     pub alias: Option<Arc<str>>,
     pub join_kind: Option<Arc<str>>,
     pub resolution: SqlResolution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlDynamicFragmentData {
+    pub query_id: usize,
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub kind: SqlDynamicFragmentKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -967,6 +982,7 @@ pub struct UnitAnalysis {
     pub routine_control_regions: Vec<RoutineControlRegionData>,
     pub sql_queries: Vec<SqlQueryData>,
     pub sql_sources: Vec<SqlSourceData>,
+    pub sql_dynamic_fragments: Vec<SqlDynamicFragmentData>,
     pub sql_projections: Vec<SqlProjectionData>,
     pub sql_name_refs: Vec<SqlNameRefData>,
     pub sql_predicates: Vec<SqlPredicateData>,

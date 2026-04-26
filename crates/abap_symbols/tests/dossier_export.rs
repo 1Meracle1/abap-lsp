@@ -168,6 +168,49 @@ SELECT carrid, carrname
 }
 
 #[test]
+fn dossier_exports_dynamic_open_sql_fragments() {
+    let src = r#"
+DATA lv_fields TYPE string.
+DATA lv_table TYPE string.
+DATA lv_where TYPE string.
+
+SELECT (lv_fields)
+  FROM (lv_table)
+  INTO TABLE @DATA(lt_rows)
+  WHERE (lv_where).
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///dynamic_sql.abap", src, &parsed);
+    let dossier = build_semantic_dossier(
+        &unit,
+        SemanticDossierContext {
+            parse_errors: &parsed.errors,
+            project: None,
+            static_analysis: None,
+            target_path: Some("D:\\dynamic_sql.abap"),
+            object_name: None,
+            is_dependency: false,
+            workspace_root_uri: None,
+            manifest_present: false,
+            project_unit_count: None,
+            dependency_unit_count: None,
+        },
+    );
+
+    let query = dossier.sql.queries.first().expect("sql query");
+    assert_eq!(dossier.summary.sql_dynamic_fragment_count, 3);
+    for kind in ["projection", "source", "where"] {
+        assert!(
+            query.dynamic_fragments.iter().any(|fragment| {
+                fragment.kind == kind && fragment.verification == "dynamic_sql_cannot_verify"
+            }),
+            "missing dynamic fragment {kind}: {:?}",
+            query.dynamic_fragments
+        );
+    }
+}
+
+#[test]
 fn dossier_buckets_unresolved_references() {
     let src = "lv_missing = 1.";
     let parsed = parse(src);
@@ -246,7 +289,7 @@ WRITE lt_scarr.
         },
     );
 
-    assert_eq!(dossier.schema_version, 4);
+    assert_eq!(dossier.schema_version, 5);
     assert!(dossier.summary.expression_fact_count > 0);
     assert!(dossier.summary.value_flow_edge_count > 0);
     assert!(dossier.expression_facts.iter().any(|fact| {
@@ -327,7 +370,7 @@ ENDCLASS.
         .static_analysis
         .as_ref()
         .expect("static analysis section");
-    assert_eq!(dossier.schema_version, 4);
+    assert_eq!(dossier.schema_version, 5);
     assert_eq!(dossier.summary.static_analysis_routine_count, 1);
     assert_eq!(static_analysis.routine_count, 1);
     assert_eq!(dossier.summary.static_analysis_finding_count, 1);
@@ -367,7 +410,7 @@ MESSAGE 'ready' TYPE 'S'.
         },
     );
 
-    assert_eq!(dossier.schema_version, 4);
+    assert_eq!(dossier.schema_version, 5);
     assert!(dossier.summary.system_field_update_count >= 2);
     assert!(
         dossier

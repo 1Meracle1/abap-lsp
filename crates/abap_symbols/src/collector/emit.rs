@@ -1,7 +1,8 @@
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ClassMemberData, FieldAccess, FormRoutineData,
-    FunctionModuleData, NamedArgumentAccess, PerformCallData, SqlNameRefData, SqlPredicateData,
-    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, ValueFlowEdgeData,
+    FunctionModuleData, NamedArgumentAccess, PerformCallData, SqlDynamicFragmentData,
+    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
+    SqlTargetData, ValueFlowEdgeData,
 };
 
 use super::Collector;
@@ -28,6 +29,7 @@ pub(super) trait SqlSink {
     fn emit_sql_query(&mut self, query: SqlQueryData);
     fn emit_sql_projection(&mut self, projection: SqlProjectionData);
     fn emit_sql_source(&mut self, source: SqlSourceData);
+    fn emit_sql_dynamic_fragment(&mut self, fragment: SqlDynamicFragmentData);
     fn emit_sql_target(&mut self, target: SqlTargetData);
     fn emit_sql_predicate(&mut self, predicate: SqlPredicateData);
     fn emit_sql_name_ref(&mut self, name_ref: SqlNameRefData);
@@ -86,6 +88,10 @@ impl<'a> SqlSink for Collector<'a> {
 
     fn emit_sql_source(&mut self, source: SqlSourceData) {
         self.sql_sources.push(source);
+    }
+
+    fn emit_sql_dynamic_fragment(&mut self, fragment: SqlDynamicFragmentData) {
+        self.sql_dynamic_fragments.push(fragment);
     }
 
     fn emit_sql_target(&mut self, target: SqlTargetData) {
