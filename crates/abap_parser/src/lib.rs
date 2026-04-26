@@ -19,7 +19,8 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::Token;
 use abap_lexer::TokenKind;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock};
 
 fn prev_non_comment_is_ident(tokens: &[Token], idx: usize) -> bool {
     let mut j = idx;
@@ -43,12 +44,12 @@ type ParseAttempt = fn(
 ) -> Option<(NodeId, usize)>;
 
 #[derive(Clone, Copy)]
-struct GuardedParser {
+struct IdentLeadParserRegistration {
     lead_keywords: &'static [&'static str],
     parser: ParseAttempt,
 }
 
-impl GuardedParser {
+impl IdentLeadParserRegistration {
     const fn new(lead_keywords: &'static [&'static str], parser: ParseAttempt) -> Self {
         Self {
             lead_keywords,
@@ -57,74 +58,111 @@ impl GuardedParser {
     }
 }
 
-const IDENT_LEAD_PARSERS: &[GuardedParser] = &[
-    GuardedParser::new(&["data"], data_decl::try_parse_data_decl),
-    GuardedParser::new(&["tables"], data_decl::try_parse_tables_decl),
-    GuardedParser::new(
+type IdentLeadParserMap = HashMap<String, Vec<ParseAttempt>>;
+
+const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
+    IdentLeadParserRegistration::new(&["data"], data_decl::try_parse_data_decl),
+    IdentLeadParserRegistration::new(&["tables"], data_decl::try_parse_tables_decl),
+    IdentLeadParserRegistration::new(
         &["parameters", "parameter"],
         data_decl::try_parse_parameters_decl,
     ),
-    GuardedParser::new(&["select"], data_decl::try_parse_select_options_decl),
-    GuardedParser::new(&["class"], data_decl::try_parse_class_data_decl),
-    GuardedParser::new(&["if"], if_stmt::try_parse_if_stmt),
-    GuardedParser::new(&["statics"], data_decl::try_parse_statics_decl),
-    GuardedParser::new(&["types"], data_decl::try_parse_types_decl),
-    GuardedParser::new(&["constants"], data_decl::try_parse_constants_decl),
-    GuardedParser::new(&["field"], data_decl::try_parse_field_symbols_decl),
-    GuardedParser::new(&["case"], control_stmt::try_parse_case_stmt),
-    GuardedParser::new(&["while"], control_stmt::try_parse_while_stmt),
-    GuardedParser::new(&["do"], control_stmt::try_parse_do_stmt),
-    GuardedParser::new(&["loop"], control_stmt::try_parse_loop_stmt),
-    GuardedParser::new(&["try"], control_stmt::try_parse_try_stmt),
-    GuardedParser::new(&["report", "program"], surface_stmt::try_parse_report_stmt),
-    GuardedParser::new(&["include"], surface_stmt::try_parse_include_stmt),
-    GuardedParser::new(
+    IdentLeadParserRegistration::new(&["select"], data_decl::try_parse_select_options_decl),
+    IdentLeadParserRegistration::new(&["class"], data_decl::try_parse_class_data_decl),
+    IdentLeadParserRegistration::new(&["if"], if_stmt::try_parse_if_stmt),
+    IdentLeadParserRegistration::new(&["statics"], data_decl::try_parse_statics_decl),
+    IdentLeadParserRegistration::new(&["types"], data_decl::try_parse_types_decl),
+    IdentLeadParserRegistration::new(&["constants"], data_decl::try_parse_constants_decl),
+    IdentLeadParserRegistration::new(&["field"], data_decl::try_parse_field_symbols_decl),
+    IdentLeadParserRegistration::new(&["case"], control_stmt::try_parse_case_stmt),
+    IdentLeadParserRegistration::new(&["while"], control_stmt::try_parse_while_stmt),
+    IdentLeadParserRegistration::new(&["do"], control_stmt::try_parse_do_stmt),
+    IdentLeadParserRegistration::new(&["loop"], control_stmt::try_parse_loop_stmt),
+    IdentLeadParserRegistration::new(&["try"], control_stmt::try_parse_try_stmt),
+    IdentLeadParserRegistration::new(&["report", "program"], surface_stmt::try_parse_report_stmt),
+    IdentLeadParserRegistration::new(&["include"], surface_stmt::try_parse_include_stmt),
+    IdentLeadParserRegistration::new(
         &["selection"],
         surface_stmt::try_parse_selection_screen_stmt,
     ),
-    GuardedParser::new(
+    IdentLeadParserRegistration::new(
         &["at", "initialization", "start", "end", "top"],
         surface_stmt::try_parse_event_block,
     ),
-    GuardedParser::new(&["at"], control_stmt::try_parse_at_stmt),
-    GuardedParser::new(&["form"], surface_stmt::try_parse_form_decl),
-    GuardedParser::new(&["function"], surface_stmt::try_parse_function_decl),
-    GuardedParser::new(&["module"], surface_stmt::try_parse_module_decl),
-    GuardedParser::new(&["class"], surface_stmt::try_parse_class_decl),
-    GuardedParser::new(&["interface"], surface_stmt::try_parse_interface_decl),
-    GuardedParser::new(&["method"], surface_stmt::try_parse_method_decl),
-    GuardedParser::new(&["select"], surface_stmt::try_parse_select_stmt),
-    GuardedParser::new(&["open"], surface_stmt::try_parse_open_cursor_stmt),
-    GuardedParser::new(&["close"], surface_stmt::try_parse_close_cursor_stmt),
-    GuardedParser::new(&["read"], surface_stmt::try_parse_read_table_stmt),
-    GuardedParser::new(&["authority"], surface_stmt::try_parse_authority_check_stmt),
-    GuardedParser::new(&["append"], surface_stmt::try_parse_append_stmt),
-    GuardedParser::new(&["insert"], surface_stmt::try_parse_insert_table_stmt),
-    GuardedParser::new(&["move"], surface_stmt::try_parse_move_stmt),
-    GuardedParser::new(&["sort"], surface_stmt::try_parse_sort_stmt),
-    GuardedParser::new(&["modify"], surface_stmt::try_parse_modify_stmt),
-    GuardedParser::new(&["delete"], surface_stmt::try_parse_delete_stmt),
-    GuardedParser::new(&["update"], surface_stmt::try_parse_update_stmt),
-    GuardedParser::new(&["write"], surface_stmt::try_parse_write_stmt),
-    GuardedParser::new(&["split"], surface_stmt::try_parse_split_stmt),
-    GuardedParser::new(&["concatenate"], surface_stmt::try_parse_concatenate_stmt),
-    GuardedParser::new(&["condense"], surface_stmt::try_parse_condense_stmt),
-    GuardedParser::new(&["raise"], surface_stmt::try_parse_raise_stmt),
-    GuardedParser::new(&["message"], surface_stmt::try_parse_message_stmt),
-    GuardedParser::new(&["submit"], surface_stmt::try_parse_submit_stmt),
-    GuardedParser::new(&["leave"], surface_stmt::try_parse_leave_stmt),
-    GuardedParser::new(&["endat"], surface_stmt::try_parse_endat_stmt),
-    GuardedParser::new(&["find"], surface_stmt::try_parse_find_stmt),
-    GuardedParser::new(&["get"], surface_stmt::try_parse_get_reference_stmt),
-    GuardedParser::new(&["get"], surface_stmt::try_parse_get_bit_stmt),
-    GuardedParser::new(&["get"], surface_stmt::try_parse_get_time_stamp_stmt),
-    GuardedParser::new(&["set"], surface_stmt::try_parse_set_bit_stmt),
-    GuardedParser::new(&["assign"], surface_stmt::try_parse_assign_keyword_stmt),
-    GuardedParser::new(&["call", "create"], surface_stmt::try_parse_call_like_stmt),
+    IdentLeadParserRegistration::new(&["at"], control_stmt::try_parse_at_stmt),
+    IdentLeadParserRegistration::new(&["form"], surface_stmt::try_parse_form_decl),
+    IdentLeadParserRegistration::new(&["function"], surface_stmt::try_parse_function_decl),
+    IdentLeadParserRegistration::new(&["module"], surface_stmt::try_parse_module_decl),
+    IdentLeadParserRegistration::new(&["class"], surface_stmt::try_parse_class_decl),
+    IdentLeadParserRegistration::new(&["interface"], surface_stmt::try_parse_interface_decl),
+    IdentLeadParserRegistration::new(&["method"], surface_stmt::try_parse_method_decl),
+    IdentLeadParserRegistration::new(&["select"], surface_stmt::try_parse_select_stmt),
+    IdentLeadParserRegistration::new(&["open"], surface_stmt::try_parse_open_cursor_stmt),
+    IdentLeadParserRegistration::new(&["close"], surface_stmt::try_parse_close_cursor_stmt),
+    IdentLeadParserRegistration::new(&["read"], surface_stmt::try_parse_read_table_stmt),
+    IdentLeadParserRegistration::new(&["authority"], surface_stmt::try_parse_authority_check_stmt),
+    IdentLeadParserRegistration::new(&["append"], surface_stmt::try_parse_append_stmt),
+    IdentLeadParserRegistration::new(&["insert"], surface_stmt::try_parse_insert_table_stmt),
+    IdentLeadParserRegistration::new(&["move"], surface_stmt::try_parse_move_stmt),
+    IdentLeadParserRegistration::new(&["sort"], surface_stmt::try_parse_sort_stmt),
+    IdentLeadParserRegistration::new(&["modify"], surface_stmt::try_parse_modify_stmt),
+    IdentLeadParserRegistration::new(&["delete"], surface_stmt::try_parse_delete_stmt),
+    IdentLeadParserRegistration::new(&["update"], surface_stmt::try_parse_update_stmt),
+    IdentLeadParserRegistration::new(&["write"], surface_stmt::try_parse_write_stmt),
+    IdentLeadParserRegistration::new(&["split"], surface_stmt::try_parse_split_stmt),
+    IdentLeadParserRegistration::new(&["concatenate"], surface_stmt::try_parse_concatenate_stmt),
+    IdentLeadParserRegistration::new(&["condense"], surface_stmt::try_parse_condense_stmt),
+    IdentLeadParserRegistration::new(&["raise"], surface_stmt::try_parse_raise_stmt),
+    IdentLeadParserRegistration::new(&["message"], surface_stmt::try_parse_message_stmt),
+    IdentLeadParserRegistration::new(&["submit"], surface_stmt::try_parse_submit_stmt),
+    IdentLeadParserRegistration::new(&["leave"], surface_stmt::try_parse_leave_stmt),
+    IdentLeadParserRegistration::new(&["endat"], surface_stmt::try_parse_endat_stmt),
+    IdentLeadParserRegistration::new(&["find"], surface_stmt::try_parse_find_stmt),
+    IdentLeadParserRegistration::new(&["get"], surface_stmt::try_parse_get_reference_stmt),
+    IdentLeadParserRegistration::new(&["get"], surface_stmt::try_parse_get_bit_stmt),
+    IdentLeadParserRegistration::new(&["get"], surface_stmt::try_parse_get_time_stamp_stmt),
+    IdentLeadParserRegistration::new(&["set"], surface_stmt::try_parse_set_bit_stmt),
+    IdentLeadParserRegistration::new(&["assign"], surface_stmt::try_parse_assign_keyword_stmt),
+    IdentLeadParserRegistration::new(&["call", "create"], surface_stmt::try_parse_call_like_stmt),
 ];
 
+static IDENT_LEAD_PARSERS: LazyLock<IdentLeadParserMap> = LazyLock::new(|| {
+    let mut parsers = HashMap::with_capacity(128);
+    for registration in IDENT_LEAD_PARSER_REGISTRATIONS {
+        register_ident_lead_parser(
+            &mut parsers,
+            registration.lead_keywords,
+            registration.parser,
+        );
+    }
+    parsers
+});
+
+fn register_ident_lead_parser(
+    parsers: &mut IdentLeadParserMap,
+    lead_keywords: &[&str],
+    parser: ParseAttempt,
+) {
+    for keyword in lead_keywords {
+        let lower = keyword.to_ascii_lowercase();
+        let upper = keyword.to_ascii_uppercase();
+        let insert_upper = upper != lower;
+        register_ident_lead_parser_case(parsers, lower, parser);
+        if insert_upper {
+            register_ident_lead_parser_case(parsers, upper, parser);
+        }
+    }
+}
+
+fn register_ident_lead_parser_case(
+    parsers: &mut IdentLeadParserMap,
+    keyword: String,
+    parser: ParseAttempt,
+) {
+    parsers.entry(keyword).or_default().push(parser);
+}
+
 fn try_guarded_ident_parsers(
-    parsers: &[GuardedParser],
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
@@ -132,17 +170,39 @@ fn try_guarded_ident_parsers(
     lead_keyword: &str,
     errors: &mut Vec<ParseError>,
 ) -> Option<(NodeId, usize)> {
-    for guarded in parsers {
-        if guarded
-            .lead_keywords
-            .iter()
-            .any(|keyword| lead_keyword.eq_ignore_ascii_case(keyword))
-            && let Some((node, next)) = (guarded.parser)(b, source, tokens, idx, errors)
-        {
+    let parsers = ident_lead_parser_attempts(lead_keyword)?;
+    for &parser in parsers {
+        if let Some((node, next)) = parser(b, source, tokens, idx, errors) {
             return Some((node, next));
         }
     }
     None
+}
+
+fn ident_lead_parser_attempts(lead_keyword: &str) -> Option<&'static [ParseAttempt]> {
+    if let Some(parsers) = IDENT_LEAD_PARSERS.get(lead_keyword) {
+        return Some(parsers.as_slice());
+    }
+
+    if !has_mixed_ascii_case(lead_keyword) {
+        return None;
+    }
+
+    let folded = lead_keyword.to_ascii_lowercase();
+    IDENT_LEAD_PARSERS.get(folded.as_str()).map(Vec::as_slice)
+}
+
+fn has_mixed_ascii_case(value: &str) -> bool {
+    let mut has_lowercase = false;
+    let mut has_uppercase = false;
+    for byte in value.bytes() {
+        has_lowercase |= byte.is_ascii_lowercase();
+        has_uppercase |= byte.is_ascii_uppercase();
+        if has_lowercase && has_uppercase {
+            return true;
+        }
+    }
+    false
 }
 
 fn try_parse_lone_ident_stmt_error(
@@ -261,15 +321,9 @@ pub(crate) fn parse_file_level_item(
         }
         TokenKind::Ident => {
             let lead_keyword = t.lexeme(source);
-            if let Some((node, next)) = try_guarded_ident_parsers(
-                IDENT_LEAD_PARSERS,
-                b,
-                source,
-                tokens,
-                idx,
-                lead_keyword,
-                errors,
-            ) {
+            if let Some((node, next)) =
+                try_guarded_ident_parsers(b, source, tokens, idx, lead_keyword, errors)
+            {
                 return (node, next);
             }
         }
@@ -413,6 +467,49 @@ mod tests {
         );
         assert_eq!(
             parsed.file.count_kind(root, SyntaxKind::GetTimeStampStmt),
+            1
+        );
+    }
+
+    #[test]
+    fn guarded_dispatch_indexes_multiple_attempts_per_lead() {
+        assert_eq!(
+            super::ident_lead_parser_attempts("get")
+                .expect("GET parsers")
+                .len(),
+            3
+        );
+        assert_eq!(
+            super::ident_lead_parser_attempts("GET")
+                .expect("GET parsers")
+                .len(),
+            3
+        );
+        assert_eq!(
+            super::ident_lead_parser_attempts("GeT")
+                .expect("GET parsers")
+                .len(),
+            3
+        );
+        assert!(super::ident_lead_parser_attempts("lv_value").is_none());
+    }
+
+    #[test]
+    fn guarded_dispatch_preserves_mixed_case_keyword_matching() {
+        let parsed = parse(
+            "SeLeCt-OpTiOnS so_bukrs FOR lv_bukrs.\n\
+             ClAsS-DaTa gv_count TYPE i.\n\
+             GeT ReFeReNcE OF gv_count INTO lr_count.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectOptionsDecl),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDecl), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::GetReferenceStmt),
             1
         );
     }
