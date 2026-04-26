@@ -9,8 +9,10 @@ use crate::block_helpers::{
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
     StmtPeriodScan, is_condition_continuation_keyword, is_definite_stmt_lead_keyword,
-    is_inline_decl_continuation, is_named_arg_clause_keyword, scan_until_statement_period,
-    token_begins_line, unterminated_err_end,
+    is_inline_decl_continuation, is_named_arg_clause_keyword,
+    line_start_condition_operand_continues, line_start_table_key_component_continues,
+    scan_until_statement_period, starts_with_table_key_clause, token_begins_line,
+    unterminated_err_end,
 };
 use crate::syntax::token_leaf;
 use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
@@ -2150,6 +2152,8 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                 && (is_keyword(source, t, "when") || is_keyword(source, t, "else"));
             let is_sql_case_end = t.kind == TokenKind::Ident && is_keyword(source, t, "end");
             if i > start {
+                let condition_continuation = allow_line_start_condition_comparison
+                    && line_start_condition_operand_continues(source, tokens, i);
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
@@ -2158,6 +2162,7 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                     && !(is_sql_case_start
                         || is_sql_case_branch && sql_case_depth > 0
                         || is_sql_case_end && sql_case_depth > 0)
+                    && !condition_continuation
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }
@@ -2214,7 +2219,7 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
             }
 
             if t.kind == TokenKind::Ident {
-                if is_keyword(source, t, "with") {
+                if starts_with_table_key_clause(source, tokens, i) {
                     let mut j = skip_trivia(tokens, i + 1);
                     if tokens
                         .get(j)
@@ -2239,8 +2244,10 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
             }
 
             if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                let table_key_continuation =
+                    inside_key_components && line_start_table_key_component_continues(tokens, i);
                 if is_definite_stmt_lead_keyword(source, t) {
-                    if !is_inline_decl_continuation(source, tokens, i) {
+                    if !is_inline_decl_continuation(source, tokens, i) && !table_key_continuation {
                         return StmtPeriodScan::Unterminated { end_exclusive: i };
                     }
                 }
@@ -2275,6 +2282,7 @@ fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
     let mut bracket = 0i32;
     let mut brace = 0i32;
     let mut inside_set_clause = false;
+    let mut allow_line_start_condition_comparison = false;
     let mut i = start;
 
     while i < tokens.len() {
@@ -2300,16 +2308,24 @@ fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                     inside_set_clause = false;
                 }
             }
+            if is_condition_continuation_keyword(source, t) {
+                allow_line_start_condition_comparison = true;
+            }
 
             if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                let condition_continuation = allow_line_start_condition_comparison
+                    && line_start_condition_operand_continues(source, tokens, i);
                 if is_definite_stmt_lead_keyword(source, t)
                     && !is_inline_decl_continuation(source, tokens, i)
+                    && !condition_continuation
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }
                 if !inside_set_clause {
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
-                    if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
+                    if !allow_line_start_condition_comparison
+                        && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
+                    {
                         return StmtPeriodScan::Unterminated { end_exclusive: i };
                     }
                 }
@@ -11055,6 +11071,12 @@ pub fn try_parse_function_decl(
     while matches!(tokens.get(next), Some(token) if token.kind == TokenKind::Comment) {
         next += 1;
     }
+    if matches!(
+        tokens.get(next).map(|token| token.kind),
+        Some(TokenKind::Eq | TokenKind::QuestionEq)
+    ) {
+        return None;
+    }
     let Some(name_tok) = tokens.get(next) else {
         let start_leaf = token_leaf(b, start_tok);
         let node = b.branch(
@@ -11811,6 +11833,16 @@ END OF BLOCK b02.",
                 .count_kind(form.syntax().id(), SyntaxKind::FormParamSection),
             3
         );
+    }
+
+    #[test]
+    fn parses_form_header_with_multiline_tables_using_changing_sections() {
+        let src = "FORM run\n  TABLES it_tab\n  USING iv_row\n  CHANGING cv_text.\nENDFORM.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FormDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]
@@ -12866,6 +12898,17 @@ EXPORT ls_aup_parent_evt\n\
     }
 
     #[test]
+    fn parses_read_table_with_table_key_components_on_continuation_lines() {
+        let parsed = crate::parse(
+            "READ TABLE lt_rows\n  WITH TABLE KEY\n    FUNCTION = lv_function\n    id = lv_id\n  TRANSPORTING NO FIELDS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadTableStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn parses_read_table_into_inline_data_before_with_key() {
         let parsed = crate::parse(
             "READ TABLE lt_t_param INTO DATA(ls_bj2_max) WITH KEY param_name = lc_rs_bj2_max.",
@@ -13340,6 +13383,21 @@ EXPORT ls_aup_parent_evt\n\
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn parses_update_where_comparisons_on_continuation_lines() {
+        let parsed = crate::parse(
+            "UPDATE ekes SET menge = ets-menge\n* ormng = ets-ormng\n  dabmg = ets-menge WHERE\n    ebeln = ets-ebeln AND\n    ebelp = ets-ebelp AND\n    etens = ets-etens.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UpdateStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::UpdateWhereClause),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]
@@ -14386,6 +14444,15 @@ EXPORT ls_aup_parent_evt\n\
         assert!(importing_params[0].has_default_value(src));
         assert!(importing_params[1].is_optional(src));
         assert!(importing_params[1].has_default_value(src));
+    }
+
+    #[test]
+    fn parses_function_named_variable_assignment_as_assignment() {
+        let parsed = crate::parse("function = ucomm = end. EXIT.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FunctionDecl), 0);
     }
 
     #[test]

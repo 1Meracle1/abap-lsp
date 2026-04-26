@@ -236,6 +236,39 @@ fn token_matches_keyword(source: &str, tok: &Token, keyword: &str) -> bool {
     tok.kind == TokenKind::Ident && tok.lexeme(source).eq_ignore_ascii_case(keyword)
 }
 
+fn previous_non_comment_token(tokens: &[Token], before: usize) -> Option<usize> {
+    let mut idx = before.checked_sub(1)?;
+    loop {
+        if tokens
+            .get(idx)
+            .is_some_and(|token| token.kind != TokenKind::Comment)
+        {
+            return Some(idx);
+        }
+        idx = idx.checked_sub(1)?;
+    }
+}
+
+fn skip_comment_tokens(tokens: &[Token], mut idx: usize) -> usize {
+    while tokens
+        .get(idx)
+        .is_some_and(|token| token.kind == TokenKind::Comment)
+    {
+        idx += 1;
+    }
+    idx
+}
+
+#[inline]
+fn statement_lead_matches(source: &str, tokens: &[Token], start: usize, keyword: &str) -> bool {
+    tokens
+        .get(start)
+        .is_some_and(|tok| token_matches_keyword(source, tok, keyword))
+        || previous_non_comment_token(tokens, start)
+            .and_then(|idx| tokens.get(idx))
+            .is_some_and(|tok| token_matches_keyword(source, tok, keyword))
+}
+
 #[inline]
 fn is_perform_if_found_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
     tokens
@@ -250,15 +283,142 @@ fn is_perform_if_found_addition(source: &str, tokens: &[Token], start: usize, id
 }
 
 #[inline]
-fn is_perform_signature_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
-    tokens
-        .get(start)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "perform"))
+fn is_signature_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+    (statement_lead_matches(source, tokens, start, "perform")
+        || statement_lead_matches(source, tokens, start, "form"))
         && tokens.get(idx).is_some_and(|tok| {
             token_matches_keyword(source, tok, "tables")
                 || token_matches_keyword(source, tok, "using")
                 || token_matches_keyword(source, tok, "changing")
         })
+}
+
+#[inline]
+fn is_condition_comparison_keyword(source: &str, tok: &Token) -> bool {
+    tok.kind == TokenKind::Ident
+        && (tok.lexeme(source).eq_ignore_ascii_case("EQ")
+            || tok.lexeme(source).eq_ignore_ascii_case("NE")
+            || tok.lexeme(source).eq_ignore_ascii_case("LT")
+            || tok.lexeme(source).eq_ignore_ascii_case("LE")
+            || tok.lexeme(source).eq_ignore_ascii_case("GT")
+            || tok.lexeme(source).eq_ignore_ascii_case("GE")
+            || tok.lexeme(source).eq_ignore_ascii_case("CP")
+            || tok.lexeme(source).eq_ignore_ascii_case("NP")
+            || tok.lexeme(source).eq_ignore_ascii_case("CO")
+            || tok.lexeme(source).eq_ignore_ascii_case("CN")
+            || tok.lexeme(source).eq_ignore_ascii_case("CA")
+            || tok.lexeme(source).eq_ignore_ascii_case("NA")
+            || tok.lexeme(source).eq_ignore_ascii_case("CS")
+            || tok.lexeme(source).eq_ignore_ascii_case("NS")
+            || tok.lexeme(source).eq_ignore_ascii_case("IS")
+            || tok.lexeme(source).eq_ignore_ascii_case("IN")
+            || tok.lexeme(source).eq_ignore_ascii_case("BETWEEN")
+            || tok.lexeme(source).eq_ignore_ascii_case("LIKE"))
+}
+
+#[inline]
+fn is_condition_comparison_operator(source: &str, tok: &Token) -> bool {
+    matches!(
+        tok.kind,
+        TokenKind::Eq
+            | TokenKind::QuestionEq
+            | TokenKind::Lt
+            | TokenKind::Le
+            | TokenKind::Gt
+            | TokenKind::Ge
+            | TokenKind::Ne
+    ) || is_condition_comparison_keyword(source, tok)
+}
+
+pub(crate) fn line_start_condition_operand_continues(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> bool {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut i = idx + 1;
+    while let Some(tok) = tokens.get(i) {
+        if tok.has_newline_before() || tok.kind == TokenKind::Eof {
+            return false;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if matches!(
+                tok.kind,
+                TokenKind::Period | TokenKind::Comma | TokenKind::Colon
+            ) {
+                return false;
+            }
+            if is_condition_comparison_operator(source, tok) {
+                return true;
+            }
+        }
+        match tok.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen if paren > 0 => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+pub(crate) fn line_start_table_key_component_continues(tokens: &[Token], idx: usize) -> bool {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut i = idx + 1;
+    while let Some(tok) = tokens.get(i) {
+        if tok.has_newline_before() || tok.kind == TokenKind::Eof {
+            return false;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if matches!(
+                tok.kind,
+                TokenKind::Period | TokenKind::Comma | TokenKind::Colon
+            ) {
+                return false;
+            }
+            if matches!(tok.kind, TokenKind::Eq | TokenKind::QuestionEq) {
+                return true;
+            }
+        }
+        match tok.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen if paren > 0 => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+pub(crate) fn starts_with_table_key_clause(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let Some(with_tok) = tokens.get(idx) else {
+        return false;
+    };
+    if !token_matches_keyword(source, with_tok, "with") {
+        return false;
+    }
+    let mut j = skip_comment_tokens(tokens, idx + 1);
+    if tokens
+        .get(j)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "table"))
+    {
+        j = skip_comment_tokens(tokens, j + 1);
+    }
+    tokens
+        .get(j)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "key"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +446,7 @@ pub(crate) fn scan_until_statement_period(
     let mut brace = 0i32;
     let mut allow_line_start_named_args = false;
     let mut allow_line_start_condition_comparison = false;
+    let mut allow_line_start_table_key_components = false;
     let mut i = start;
     while i < tokens.len() {
         let t = &tokens[i];
@@ -302,13 +463,22 @@ pub(crate) fn scan_until_statement_period(
             if is_condition_continuation_keyword(source, t) {
                 allow_line_start_condition_comparison = true;
             }
+            if starts_with_table_key_clause(source, tokens, i) {
+                allow_line_start_table_key_components = true;
+            }
             if i > start {
+                let condition_continuation = allow_line_start_condition_comparison
+                    && line_start_condition_operand_continues(source, tokens, i);
+                let table_key_continuation = allow_line_start_table_key_components
+                    && line_start_table_key_component_continues(tokens, i);
                 if t.kind == TokenKind::Ident
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
                     && !is_perform_if_found_addition(source, tokens, start, i)
-                    && !is_perform_signature_addition(source, tokens, start, i)
+                    && !is_signature_addition(source, tokens, start, i)
                     && !is_inline_decl_continuation(source, tokens, i)
+                    && !condition_continuation
+                    && !table_key_continuation
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }
@@ -316,6 +486,7 @@ pub(crate) fn scan_until_statement_period(
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
                     if !allow_line_start_named_args
                         && !allow_line_start_condition_comparison
+                        && !allow_line_start_table_key_components
                         && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
                     {
                         return StmtPeriodScan::Unterminated { end_exclusive: i };

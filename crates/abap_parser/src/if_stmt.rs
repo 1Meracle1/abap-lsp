@@ -588,6 +588,30 @@ mod tests {
     }
 
     #[test]
+    fn multiline_if_condition_allows_keyword_named_operand_after_and() {
+        let parsed = parse(
+            "IF lv_ok = abap_true AND\n   FUNCTION NE 'DELE' AND FUNCTION NE 'SAVE'.\n  WRITE 'x'.\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn multiline_elseif_condition_allows_keyword_named_operand_after_and() {
+        let parsed = parse(
+            "IF lv_ok = abap_true.\nELSEIF NOT lo_service IS INITIAL AND\n   FUNCTION NE 'DELE' AND FUNCTION NE 'SAVE'.\n  WRITE 'x'.\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn multiline_if_condition_continues_after_not() {
         let parsed = parse("IF NOT\n   iv_flag = abap_true.\n  WRITE 'x'.\nENDIF.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
