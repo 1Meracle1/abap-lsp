@@ -183,6 +183,7 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("ENDWHILE")
         || s.eq_ignore_ascii_case("DO")
         || s.eq_ignore_ascii_case("ENDDO")
+        || s.eq_ignore_ascii_case("DEFINE")
         || s.eq_ignore_ascii_case("CONTINUE")
         || s.eq_ignore_ascii_case("EXIT")
         || s.eq_ignore_ascii_case("RETURN")

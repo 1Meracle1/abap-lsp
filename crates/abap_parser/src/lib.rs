@@ -11,29 +11,13 @@ mod surface_stmt;
 pub mod syntax;
 mod type_ref;
 
-use crate::stmt_period::{
-    StmtPeriodScan, is_definite_stmt_lead_keyword, scan_until_statement_period,
-    unterminated_err_end,
-};
+use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::Token;
 use abap_lexer::TokenKind;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
-
-fn prev_non_comment_is_ident(tokens: &[Token], idx: usize) -> bool {
-    let mut j = idx;
-    while j > 0 {
-        j -= 1;
-        match tokens[j].kind {
-            TokenKind::Comment => continue,
-            TokenKind::Ident => return true,
-            _ => return false,
-        }
-    }
-    false
-}
 
 type ParseAttempt = fn(
     &mut SyntaxTreeBuilder,
@@ -85,6 +69,7 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
         control_stmt::try_parse_catch_system_exceptions_stmt,
     ),
     IdentLeadParserRegistration::new(&["try"], control_stmt::try_parse_try_stmt),
+    IdentLeadParserRegistration::new(&["define"], surface_stmt::try_parse_macro_def),
     IdentLeadParserRegistration::new(&["report", "program"], surface_stmt::try_parse_report_stmt),
     IdentLeadParserRegistration::new(&["include"], surface_stmt::try_parse_include_stmt),
     IdentLeadParserRegistration::new(
@@ -217,37 +202,6 @@ fn has_mixed_ascii_case(value: &str) -> bool {
     false
 }
 
-fn try_parse_lone_ident_stmt_error(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<ParseError>,
-) -> Option<(NodeId, usize)> {
-    let t = tokens.get(idx)?;
-    let period = tokens.get(idx + 1)?;
-    if t.kind != TokenKind::Ident
-        || period.kind != TokenKind::Period
-        || prev_non_comment_is_ident(tokens, idx)
-        || is_definite_stmt_lead_keyword(source, t)
-    {
-        return None;
-    }
-
-    errors.push(ParseError {
-        message: "syntax error: a lone identifier before '.' is not a valid statement".to_string(),
-        range: t.range.start..period.range.end,
-    });
-    let ident = syntax::token_leaf(b, t);
-    let dot = syntax::token_leaf(b, period);
-    let node = b.branch(
-        SyntaxKind::Error,
-        t.range.start..period.range.end,
-        &[ident, dot],
-    );
-    Some((node, idx + 2))
-}
-
 const STRAY_BLOCK_BOUNDARIES: &[(&str, &str)] = &[
     ("ELSEIF", "IF"),
     ("ELSE", "IF"),
@@ -344,9 +298,6 @@ pub(crate) fn parse_file_level_item(
     }
 
     if let Some((node, next)) = assign_stmt::try_parse_assign_stmt(b, source, tokens, idx, errors) {
-        return (node, next);
-    }
-    if let Some((node, next)) = try_parse_lone_ident_stmt_error(b, source, tokens, idx, errors) {
         return (node, next);
     }
     if let Some((node, next)) = try_parse_stray_block_boundary_error(b, source, tokens, idx, errors)
@@ -525,6 +476,47 @@ mod tests {
             parsed.file.count_kind(root, SyntaxKind::GetReferenceStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_macro_definitions_and_invocations() {
+        let parsed = parse(
+            "DEFINE map.\n\
+               is_input_allowed &2.\n\
+               <target> = &3.\n\
+             END-OF-DEFINITION.\n\
+             map lr_cat->data 'WAERS' wa_t001-waers.\n\
+             save.\n\
+             ucomm.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MacroDef), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MacroCallStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn macro_definition_body_does_not_emit_normal_statement_errors() {
+        let parsed = parse(
+            "CLASS lcl IMPLEMENTATION.\n\
+               METHOD run.\n\
+                 DEFINE guard.\n\
+                   IF &1 IS INITIAL.\n\
+                     RETURN.\n\
+                   ENDIF.\n\
+                 END-OF-DEFINITION.\n\
+                 guard lv_value.\n\
+               ENDMETHOD.\n\
+             ENDCLASS.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClassDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MethodDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MacroDef), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MacroCallStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

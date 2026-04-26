@@ -48,6 +48,7 @@ const EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS: &[&str] = &[
 
 const GET_TIME_STAMP_FIELD_LEAD: &[&str] = &["get", "time", "stamp", "field"];
 const GET_REFERENCE_OF_LEAD: &[&str] = &["get", "reference", "of"];
+const MACRO_END_OF_DEFINITION: &[&str] = &["end", "of", "definition"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CallLikeLeadKind {
@@ -5526,6 +5527,20 @@ fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<
     None
 }
 
+fn macro_end_keyword_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
+    match_hyphenated_keyword(source, tokens, idx, MACRO_END_OF_DEFINITION)
+}
+
+fn find_macro_end_keyword(source: &str, tokens: &[Token], mut idx: usize) -> Option<usize> {
+    while idx < tokens.len() {
+        if macro_end_keyword_end(source, tokens, idx).is_some() {
+            return Some(idx);
+        }
+        idx += 1;
+    }
+    None
+}
+
 pub fn try_parse_report_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -10606,6 +10621,85 @@ pub fn try_parse_event_block(
         start_tok.range.start..end,
         &children,
     );
+    Some((node, next))
+}
+
+pub fn try_parse_macro_def(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "define") {
+        return None;
+    }
+
+    let (mut children, next) = parse_header_until_period(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        errors,
+        "syntax error: expected '.' after DEFINE header",
+    );
+
+    let Some(end_idx) = find_macro_end_keyword(source, tokens, next) else {
+        let eof_idx = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::Eof)
+            .unwrap_or(tokens.len());
+        let err_end = unterminated_err_end(tokens, eof_idx, start_tok.range.end);
+        errors.push(crate::ParseError {
+            message: "syntax error: expected END-OF-DEFINITION".to_string(),
+            range: start_tok.range.start..err_end,
+        });
+        children.extend(token_children(b, tokens, next, eof_idx));
+        let node = b.branch(
+            SyntaxKind::MacroDef,
+            start_tok.range.start..err_end,
+            &children,
+        );
+        return Some((node, next_after_unterminated_scan(tokens, eof_idx)));
+    };
+
+    children.extend(token_children(b, tokens, next, end_idx));
+    let end_parts_end = macro_end_keyword_end(source, tokens, end_idx).unwrap_or(end_idx + 1);
+    let period_idx = skip_trivia(tokens, end_parts_end);
+    if let Some(period_tok) = tokens.get(period_idx)
+        && period_tok.kind == TokenKind::Period
+    {
+        children.extend(token_children(b, tokens, end_idx, period_idx + 1));
+        let node = b.branch(
+            SyntaxKind::MacroDef,
+            start_tok.range.start..period_tok.range.end,
+            &children,
+        );
+        return Some((node, period_idx + 1));
+    }
+
+    let end_tok = &tokens[end_parts_end.saturating_sub(1)];
+    let err_end = tokens
+        .get(period_idx)
+        .map(|token| token.range.end)
+        .unwrap_or(end_tok.range.end);
+    errors.push(crate::ParseError {
+        message: "syntax error: expected '.' after END-OF-DEFINITION".to_string(),
+        range: end_tok.range.start..err_end,
+    });
+    children.extend(token_children(b, tokens, end_idx, end_parts_end));
+    let node = b.branch(
+        SyntaxKind::MacroDef,
+        start_tok.range.start..err_end,
+        &children,
+    );
+    let next = if tokens.get(period_idx).map(|token| token.kind) == Some(TokenKind::Eof) {
+        tokens.len()
+    } else {
+        end_parts_end
+    };
     Some((node, next))
 }
 

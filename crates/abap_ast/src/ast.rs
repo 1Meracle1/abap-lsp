@@ -608,6 +608,8 @@ ast_node!(MethodDeclTarget, SyntaxKind::MethodDeclTarget);
 ast_node!(SqlScriptIsland, SyntaxKind::SqlScriptIsland);
 ast_node!(ClassSectionStmt, SyntaxKind::ClassSectionStmt);
 ast_node!(ClassSectionVisibility, SyntaxKind::ClassSectionVisibility);
+ast_node!(MacroDef, SyntaxKind::MacroDef);
+ast_node!(MacroCallStmt, SyntaxKind::MacroCallStmt);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(EventsStmt, SyntaxKind::EventsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);

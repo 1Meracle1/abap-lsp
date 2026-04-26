@@ -201,6 +201,7 @@ impl<'a> Collector<'a> {
                 .stmt_lowering()
                 .collect_selection_screen_stmt(node, scope),
             SyntaxKind::UnparsedStmt
+            | SyntaxKind::MacroCallStmt
             | SyntaxKind::FunctionPoolStmt
             | SyntaxKind::ClassLoadStmt
             | SyntaxKind::ContinueStmt

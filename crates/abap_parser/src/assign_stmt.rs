@@ -501,15 +501,14 @@ mod tests {
     }
 
     #[test]
-    fn lone_identifier_before_dot_is_syntax_error() {
+    fn lone_identifier_before_dot_can_be_macro_call() {
         let parsed = crate::parse("do_something.");
-        assert!(
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
             parsed
-                .errors
-                .iter()
-                .any(|e| e.message.contains("lone identifier")),
-            "{:?}",
-            parsed.errors
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::MacroCallStmt),
+            1
         );
     }
 

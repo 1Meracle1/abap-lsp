@@ -6,8 +6,8 @@ use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
-    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
-    unterminated_err_end,
+    StmtPeriodScan, delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
+    scan_until_statement_period, unterminated_err_end,
 };
 use crate::type_ref::build_type_ref_node;
 
@@ -2048,6 +2048,19 @@ fn classify_commit_or_rollback_work_stmt(
     }
 }
 
+fn classify_macro_call_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let first = *significant.first()?;
+    let last = *significant.last()?;
+    if first.kind != TokenKind::Ident
+        || last.kind != TokenKind::Period
+        || is_definite_stmt_lead_keyword(source, first)
+        || direct_call_statement(source, significant)
+    {
+        return None;
+    }
+    Some(SyntaxKind::MacroCallStmt)
+}
+
 fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     let Some(first) = significant.first() else {
         return SyntaxKind::UnparsedStmt;
@@ -2069,6 +2082,10 @@ fn simple_stmt_kind(source: &str, significant: &[&Token]) -> SyntaxKind {
     }
 
     if let Some(kind) = classify_commit_or_rollback_work_stmt(source, significant) {
+        return kind;
+    }
+
+    if let Some(kind) = classify_macro_call_stmt(source, significant) {
         return kind;
     }
 
@@ -2315,7 +2332,10 @@ pub fn try_parse_simple_stmt(
         StmtPeriodScan::Found(period_i) => {
             let period_tok = &tokens[period_i];
             let significant = significant_stmt_tokens(tokens, idx, period_i);
-            if let Some(delim_error) = delimiter_error(tokens, idx, period_i) {
+            let kind = simple_stmt_kind(source, &significant);
+            if kind != SyntaxKind::MacroCallStmt
+                && let Some(delim_error) = delimiter_error(tokens, idx, period_i)
+            {
                 errors.push(delim_error);
                 let kids = tokens[idx..=period_i]
                     .iter()
@@ -2328,8 +2348,9 @@ pub fn try_parse_simple_stmt(
                 );
                 return Some((node, period_i + 1));
             }
-            validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
-            let kind = simple_stmt_kind(source, &significant);
+            if kind != SyntaxKind::MacroCallStmt {
+                validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
+            }
             if kind == SyntaxKind::StopStmt {
                 validate_stop_stmt(&significant, errors);
             }
