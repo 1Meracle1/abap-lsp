@@ -17091,6 +17091,271 @@ ENDFORM.";
     }
 
     #[test]
+    fn completion_emits_types_begin_template_snippet_inside_types_section() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_types_begin_template.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "REPORT zdemo.\n\nTYPES:\n  beg".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///completion_types_begin_template.abap")
+                            .expect("uri"),
+                    },
+                    position: Position {
+                        line: 3,
+                        character: 5,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "BEGIN OF type_name")
+            .expect("types begin template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        assert_eq!(item.detail.as_deref(), Some("TYPES structure scaffold"));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.new_text,
+            "BEGIN OF ${1:type_name},\n  $0\nEND OF ${1:type_name}."
+        );
+        assert_eq!(
+            edit.range,
+            Range {
+                start: Position {
+                    line: 3,
+                    character: 2,
+                },
+                end: Position {
+                    line: 3,
+                    character: 5,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn completion_emits_types_begin_template_snippet_for_same_line_begin_prefix() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_types_begin_template_same_line.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "TYPES: BEGIN".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_types_begin_template_same_line.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 12,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "BEGIN OF type_name")
+            .expect("types begin template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.range,
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 7,
+                },
+                end: Position {
+                    line: 0,
+                    character: 12,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn completion_emits_types_begin_template_snippet_when_begin_keyword_typing_starts() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///completion_types_begin_template_typing_begin.abap")
+                        .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "TYPES: B".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_types_begin_template_typing_begin.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 8,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "BEGIN OF type_name")
+            .expect("types begin template item");
+        assert_eq!(item.kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.range,
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 7,
+                },
+                end: Position {
+                    line: 0,
+                    character: 8,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn completion_emits_types_begin_template_snippet_after_same_line_begin_prefix_whitespace() {
+        let mut state = ServerState::default();
+        state.client_capabilities.completion_snippet_support = true;
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(
+                        "file:///completion_types_begin_template_same_line_whitespace.abap",
+                    )
+                    .expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: "TYPES: BEGIN ".to_string(),
+                },
+            },
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(
+                            "file:///completion_types_begin_template_same_line_whitespace.abap",
+                        )
+                        .expect("uri"),
+                    },
+                    position: Position {
+                        line: 0,
+                        character: 13,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("completion");
+
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let item = items
+            .into_iter()
+            .find(|item| item.label == "BEGIN OF type_name")
+            .expect("types begin template item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(
+            edit.range,
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 7,
+                },
+                end: Position {
+                    line: 0,
+                    character: 13,
+                },
+            }
+        );
+    }
+
+    #[test]
     fn completion_emits_local_class_definition_template_snippet() {
         let mut state = ServerState::default();
         state.client_capabilities.completion_snippet_support = true;

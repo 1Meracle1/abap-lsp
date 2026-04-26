@@ -424,6 +424,11 @@ struct MethodDefinitionTemplateQuery {
     replace_range: Range<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TypesBeginTemplateQuery {
+    replace_range: Range<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalClassTemplateKind {
     Standard,
@@ -2533,6 +2538,18 @@ impl AnalysisSnapshot {
             });
         }
 
+        if let Some(query) = parse_types_begin_template_query(self, offset) {
+            return Some(CompletionInfo {
+                replace_range: query.replace_range,
+                items: vec![CompletionItem::Template(TemplateCompletionItem {
+                    name: Arc::from("BEGIN OF type_name"),
+                    detail: Some("TYPES structure scaffold".to_string()),
+                    insertion: types_begin_template_completion_insertion(),
+                })],
+                in_type_position: true,
+            });
+        }
+
         let query = parse_method_definition_template_query(self, offset)?;
         Some(CompletionInfo {
             replace_range: query.replace_range,
@@ -3800,6 +3817,13 @@ fn method_definition_template_completion_insertion() -> CompletionInsertion {
         snippet_text: Some(
             "METHODS ${1:method_name}\n  IMPORTING\n    ${2:iv_importing} TYPE ${3:i}\n  EXPORTING\n    ${4:ev_exporting} TYPE ${5:i}\n  CHANGING\n    ${6:cv_changing} TYPE ${7:i}\n  RECEIVING\n    VALUE(${8:rv_receiving}) TYPE ${9:i}\n  RETURNING\n    VALUE(${10:rv_returning}) TYPE ${11:i}.$0".to_string(),
         ),
+    }
+}
+
+fn types_begin_template_completion_insertion() -> CompletionInsertion {
+    CompletionInsertion {
+        plain_text: "BEGIN OF type_name,\nEND OF type_name.".to_string(),
+        snippet_text: Some("BEGIN OF ${1:type_name},\n  $0\nEND OF ${1:type_name}.".to_string()),
     }
 }
 
@@ -9162,6 +9186,69 @@ fn parse_method_definition_template_query(
     }
 
     Some(MethodDefinitionTemplateQuery {
+        replace_range: token.range.start..line_end,
+    })
+}
+
+fn parse_types_begin_template_query(
+    snapshot: &AnalysisSnapshot,
+    offset: usize,
+) -> Option<TypesBeginTemplateQuery> {
+    let statement_range = statement_query_range(&snapshot.parse, offset)?;
+    let significant = significant_statement_tokens(&snapshot.parse, &statement_range)?;
+    let first_idx = *significant.first()?;
+    let first = &snapshot.parse.tokens[first_idx];
+    if first.kind != TokenKind::Ident
+        || !first
+            .lexeme(snapshot.text.as_ref())
+            .eq_ignore_ascii_case("types")
+    {
+        return None;
+    }
+    let colon_pos = significant
+        .iter()
+        .position(|&idx| snapshot.parse.tokens[idx].kind == TokenKind::Colon)?;
+
+    let token_idx = significant.iter().copied().rev().find(|&idx| {
+        let token = &snapshot.parse.tokens[idx];
+        token.kind == TokenKind::Ident
+            && token.range.start <= offset
+            && offset <= line_end_offset(snapshot.text.as_ref(), token.range.start)
+    })?;
+    if significant.iter().position(|&idx| idx == token_idx)? <= colon_pos {
+        return None;
+    }
+
+    let token = &snapshot.parse.tokens[token_idx];
+    let previous_idx = previous_significant_token(&snapshot.parse, first_idx, token_idx)?;
+    if !matches!(
+        snapshot.parse.tokens[previous_idx].kind,
+        TokenKind::Colon | TokenKind::Comma
+    ) {
+        return None;
+    }
+
+    let line_end = line_end_offset(snapshot.text.as_ref(), token.range.start);
+    if significant.iter().copied().any(|idx| {
+        idx != token_idx && {
+            let other = &snapshot.parse.tokens[idx];
+            token.range.start < other.range.start && other.range.start < line_end
+        }
+    }) {
+        return None;
+    }
+
+    let prefix_end = offset.min(token.range.end);
+    let prefix = snapshot.text[token.range.start..prefix_end].trim();
+    if prefix.is_empty() {
+        return None;
+    }
+    let lower = prefix.to_ascii_lowercase();
+    if !"begin".starts_with(lower.as_str()) {
+        return None;
+    }
+
+    Some(TypesBeginTemplateQuery {
         replace_range: token.range.start..line_end,
     })
 }
@@ -17278,6 +17365,151 @@ ENDFORM.";
             item.insertion.plain_text,
             "z_demo_call'\n  EXPORTING\n    iv_name = \n  IMPORTING\n    ev_text = \n  EXCEPTIONS\n    failed = 1."
         );
+    }
+
+    #[test]
+    fn completion_returns_types_begin_template_inside_types_section() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+TYPES:
+  beg";
+        let snapshot = store.publish("file:///types_begin_template.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("types begin template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "beg");
+        assert!(completion.in_type_position);
+        let item = completion
+            .items
+            .iter()
+            .find_map(|item| {
+                if let crate::CompletionItem::Template(item) = item
+                    && item.name.as_ref() == "BEGIN OF type_name"
+                {
+                    Some(item)
+                } else {
+                    None
+                }
+            })
+            .expect("types begin template item");
+        assert_eq!(item.detail.as_deref(), Some("TYPES structure scaffold"));
+        assert_eq!(
+            item.insertion.plain_text,
+            "BEGIN OF type_name,\nEND OF type_name."
+        );
+        assert_eq!(
+            item.insertion.snippet_text.as_deref(),
+            Some("BEGIN OF ${1:type_name},\n  $0\nEND OF ${1:type_name}.")
+        );
+    }
+
+    #[test]
+    fn completion_returns_types_begin_template_for_same_line_begin_prefix() {
+        let store = DocumentStore::default();
+        let src = "TYPES: BEGIN";
+        let snapshot = store.publish("file:///types_begin_template_same_line.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("types begin template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "BEGIN");
+        assert!(completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Template(item)
+                    if item.name.as_ref() == "BEGIN OF type_name"
+            )
+        }));
+    }
+
+    #[test]
+    fn completion_returns_types_begin_template_when_begin_keyword_typing_starts() {
+        let store = DocumentStore::default();
+        let src = "TYPES: B";
+        let snapshot = store.publish("file:///types_begin_template_typing_begin.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("types begin template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "B");
+        assert!(completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Template(item)
+                    if item.name.as_ref() == "BEGIN OF type_name"
+            )
+        }));
+    }
+
+    #[test]
+    fn completion_returns_types_begin_template_after_same_line_begin_prefix_whitespace() {
+        let store = DocumentStore::default();
+        let src = "TYPES: BEGIN ";
+        let snapshot = store.publish(
+            "file:///types_begin_template_same_line_whitespace.abap",
+            1,
+            src,
+        );
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("types begin template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "BEGIN ");
+        assert!(completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Template(item)
+                    if item.name.as_ref() == "BEGIN OF type_name"
+            )
+        }));
+    }
+
+    #[test]
+    fn completion_returns_types_begin_template_after_chained_types_clause() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+TYPES:
+  ty_count TYPE i,
+  beg";
+        let snapshot = store.publish("file:///types_begin_template_after_clause.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("types begin template completion");
+        assert_eq!(&src[completion.replace_range.clone()], "beg");
+        assert!(completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Template(item)
+                    if item.name.as_ref() == "BEGIN OF type_name"
+            )
+        }));
+    }
+
+    #[test]
+    fn completion_does_not_return_types_begin_template_outside_types_section() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdemo.
+
+beg";
+        let snapshot = store.publish("file:///types_begin_template_outside.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("keyword completion");
+        assert!(!completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Template(item)
+                    if item.name.as_ref() == "BEGIN OF type_name"
+            )
+        }));
     }
 
     #[test]
