@@ -4461,6 +4461,7 @@ fn cache_completion_item_name(item: &abap_cache::CompletionItem) -> &str {
     match item {
         abap_cache::CompletionItem::Selector(item) => item.name.as_ref(),
         abap_cache::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+        abap_cache::CompletionItem::Symbol(item) => item.name.as_ref(),
         abap_cache::CompletionItem::Template(item) => item.name.as_ref(),
         abap_cache::CompletionItem::Callable(item) => item.name.as_ref(),
         abap_cache::CompletionItem::Keyword(item) => item.name.as_ref(),
@@ -4502,6 +4503,17 @@ fn completion_item_to_lsp(
             (
                 item.name.to_string(),
                 Some(CompletionItemKind::VARIABLE),
+                detail,
+                documentation,
+                item.insertion.plain_text.clone(),
+                item.insertion.snippet_text.clone(),
+            )
+        }
+        abap_cache::CompletionItem::Symbol(item) => {
+            let (detail, documentation) = symbol_completion_item_metadata(item);
+            (
+                item.name.to_string(),
+                Some(symbol_completion_item_kind(item.kind)),
                 detail,
                 documentation,
                 item.insertion.plain_text.clone(),
@@ -4627,6 +4639,72 @@ fn completion_item_metadata(
         value: lines.join("\n\n"),
     }));
     (detail, documentation)
+}
+
+fn symbol_completion_item_kind(kind: abap_symbols::SymbolKind) -> CompletionItemKind {
+    match kind {
+        abap_symbols::SymbolKind::BuiltinType | abap_symbols::SymbolKind::TypeDef => {
+            CompletionItemKind::TYPE_PARAMETER
+        }
+        abap_symbols::SymbolKind::Class => CompletionItemKind::CLASS,
+        abap_symbols::SymbolKind::Interface => CompletionItemKind::INTERFACE,
+        abap_symbols::SymbolKind::Constant | abap_symbols::SymbolKind::BuiltinConstant => {
+            CompletionItemKind::CONSTANT
+        }
+        abap_symbols::SymbolKind::Form
+        | abap_symbols::SymbolKind::Method
+        | abap_symbols::SymbolKind::Module
+        | abap_symbols::SymbolKind::Event
+        | abap_symbols::SymbolKind::BuiltinRoutine => CompletionItemKind::FUNCTION,
+        _ => CompletionItemKind::VARIABLE,
+    }
+}
+
+fn symbol_completion_kind_label(kind: abap_symbols::SymbolKind) -> &'static str {
+    match kind {
+        abap_symbols::SymbolKind::BuiltinType => "built-in type",
+        abap_symbols::SymbolKind::BuiltinRoutine => "built-in routine",
+        abap_symbols::SymbolKind::BuiltinConstant => "built-in constant",
+        abap_symbols::SymbolKind::BuiltinVariable => "built-in variable",
+        abap_symbols::SymbolKind::Variable => "variable",
+        abap_symbols::SymbolKind::Constant => "constant",
+        abap_symbols::SymbolKind::TypeDef => "type definition",
+        abap_symbols::SymbolKind::FieldSymbol => "field symbol",
+        abap_symbols::SymbolKind::Form => "form",
+        abap_symbols::SymbolKind::Parameter => "parameter",
+        abap_symbols::SymbolKind::Class => "class",
+        abap_symbols::SymbolKind::Interface => "interface",
+        abap_symbols::SymbolKind::Method => "method",
+        abap_symbols::SymbolKind::Field => "field",
+        abap_symbols::SymbolKind::Include => "include program",
+        abap_symbols::SymbolKind::Event => "event",
+        abap_symbols::SymbolKind::Module => "module",
+        abap_symbols::SymbolKind::Control => "control",
+        abap_symbols::SymbolKind::Report => "report",
+    }
+}
+
+fn symbol_completion_item_metadata(
+    item: &abap_cache::SymbolCompletionItem,
+) -> (Option<String>, Option<Documentation>) {
+    let mut lines = vec![
+        format!("`{}`", item.name),
+        symbol_completion_kind_label(item.kind).to_string(),
+    ];
+    if let Some(declaration) = &item.declaration {
+        lines[0] = format!("```abap\n{}\n```", declaration);
+    }
+    if let Some(declared_type) = &item.declared_type {
+        lines.push(format!("declared as `{declared_type}`"));
+    }
+    let documentation = Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: lines.join("\n\n"),
+    }));
+    (
+        item.declaration.clone().or(item.declared_type.clone()),
+        documentation,
+    )
 }
 
 fn named_argument_completion_item_metadata(
@@ -8930,6 +9008,7 @@ ENDFORM.";
             .map(|item| match item {
                 abap_cache::CompletionItem::Selector(item) => item.name.to_string(),
                 abap_cache::CompletionItem::NamedArgument(item) => item.name.to_string(),
+                abap_cache::CompletionItem::Symbol(item) => item.name.to_string(),
                 abap_cache::CompletionItem::Template(item) => item.name.to_string(),
                 abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
                 abap_cache::CompletionItem::Keyword(item) => item.name.to_string(),
@@ -16447,6 +16526,107 @@ ENDCLASS."
     }
 
     #[test]
+    fn completion_returns_global_scope_type_and_variable_items() {
+        let state = ServerState::default();
+        let text = "\
+TYPES: BEGIN OF ts_obj,
+        objid TYPE c LENGTH 50,
+        status_pack TYPE i,
+       END OF ts_obj,
+
+       tt_obj TYPE TABLE OF ts_obj.
+
+TYPES: BEGIN OF ts_obj_ids,
+        objid TYPE c LENGTH 50,
+        serial TYPE c LENGTH 60,
+       END OF ts_obj_ids,
+
+       tt_obj_ids TYPE TABLE OF ts_obj_ids.
+
+TYPES: BEGIN OF ts_loc,
+        locno TYPE c LENGTH 6,
+        gln TYPE c LENGTH 13,
+       END OF ts_loc,
+
+       tt_loc TYPE TABLE OF ts_loc.
+
+DATA: lt_obj TYPE tt_obj,
+      ls_obj TYPE ts_obj,
+      lt_obj_ids TYPE tt_obj_ids,
+      ls_obj_ids TYPE ts_obj_ids,
+      lt_loc TYPE tt_loc,
+      ls_loc TYPE ts_loc.
+
+MOVE-CORRESPONDING ls_loc TO ls_obj.
+
+SORT lt_obj BY objid.
+";
+        let uri = Uri::from_str("file:///completion_global_scope.abap").expect("uri");
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let type_offset =
+            text.find("lt_obj TYPE tt_obj").expect("type usage") + "lt_obj TYPE tt_".len();
+        let type_completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: offset_to_position(text, type_offset).expect("type position"),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("type completion");
+        let CompletionResponse::Array(type_items) = type_completion else {
+            panic!("expected array completion");
+        };
+        let table_type = type_items
+            .iter()
+            .find(|item| item.label == "tt_obj")
+            .expect("tt_obj type completion");
+        assert_eq!(
+            table_type.kind,
+            Some(lsp_types::CompletionItemKind::TYPE_PARAMETER)
+        );
+
+        let value_offset = text.find("MOVE-CORRESPONDING ls_loc").expect("value usage")
+            + "MOVE-CORRESPONDING ls_".len();
+        let value_completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: offset_to_position(text, value_offset).expect("value position"),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: None,
+            },
+        )
+        .expect("value completion");
+        let CompletionResponse::Array(value_items) = value_completion else {
+            panic!("expected array completion");
+        };
+        let variable = value_items
+            .iter()
+            .find(|item| item.label == "ls_loc")
+            .expect("ls_loc variable completion");
+        assert_eq!(variable.kind, Some(lsp_types::CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
     fn completion_filters_already_specified_named_arguments() {
         let state = ServerState::default();
         publish_open_document(
@@ -16591,6 +16771,7 @@ ENDCLASS."
                             abap_cache::CompletionItem::NamedArgument(item) => {
                                 item.name.to_string()
                             }
+                            abap_cache::CompletionItem::Symbol(item) => item.name.to_string(),
                             abap_cache::CompletionItem::Template(item) => item.name.to_string(),
                             abap_cache::CompletionItem::Callable(item) => item.name.to_string(),
                             abap_cache::CompletionItem::Keyword(item) => item.name.to_string(),

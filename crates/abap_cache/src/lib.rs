@@ -312,6 +312,15 @@ pub struct NamedArgumentCompletionItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolCompletionItem {
+    pub name: Arc<str>,
+    pub kind: SymbolKind,
+    pub declared_type: Option<String>,
+    pub declaration: Option<String>,
+    pub insertion: CompletionInsertion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateCompletionItem {
     pub name: Arc<str>,
     pub detail: Option<String>,
@@ -342,6 +351,7 @@ pub struct KeywordCompletionItem {
 pub enum CompletionItem {
     Selector(SelectorCompletionItem),
     NamedArgument(NamedArgumentCompletionItem),
+    Symbol(SymbolCompletionItem),
     Template(TemplateCompletionItem),
     Callable(CallableCompletionItem),
     Keyword(KeywordCompletionItem),
@@ -400,6 +410,13 @@ struct TemplateCompletionQuery {
     replace_range: Range<usize>,
     class_name_hint: Arc<str>,
     kind: LocalClassTemplateKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BareIdentifierCompletionContext {
+    replace_range: Range<usize>,
+    prefix: Arc<str>,
+    in_type_position: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2660,15 +2677,18 @@ impl AnalysisSnapshot {
         {
             return None;
         }
-        let (replace_range, prefix) = self.bare_identifier_completion_context(offset)?;
-        let scope = innermost_scope_at(&self.symbols, replace_range.start);
+        let context = self.bare_identifier_completion_context(offset)?;
+        if context.in_type_position {
+            return None;
+        }
+        let scope = innermost_scope_at(&self.symbols, context.replace_range.start);
         let method_scope = enclosing_method_scope_with_owner(&self.symbols, scope)?;
         let mut items: Vec<_> = self
             .symbols
             .symbols
             .iter()
             .filter(|symbol| symbol.kind == SymbolKind::Parameter && symbol.scope == method_scope)
-            .filter(|symbol| symbol.name.as_ref().starts_with(prefix.as_ref()))
+            .filter(|symbol| symbol.name.as_ref().starts_with(context.prefix.as_ref()))
             .map(|symbol| {
                 CompletionItem::NamedArgument(NamedArgumentCompletionItem {
                     name: Arc::clone(&symbol.name),
@@ -2683,7 +2703,7 @@ impl AnalysisSnapshot {
         }
         items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
         Some(CompletionInfo {
-            replace_range,
+            replace_range: context.replace_range,
             items,
             in_type_position: false,
         })
@@ -2691,47 +2711,79 @@ impl AnalysisSnapshot {
 
     fn bare_identifier_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
         let mut completion = self.method_parameter_completion_at(offset);
-        let Some(keyword_completion) = self.keyword_completion_at(offset) else {
-            return completion;
-        };
-        if let Some(existing_completion) = completion.as_mut() {
-            if existing_completion.replace_range == keyword_completion.replace_range
-                && existing_completion.in_type_position == keyword_completion.in_type_position
-            {
-                let mut seen: HashSet<_> = existing_completion
-                    .items
-                    .iter()
-                    .map(|item| completion_item_name(item).to_ascii_lowercase())
-                    .collect();
-                existing_completion.items.extend(
-                    keyword_completion.items.into_iter().filter(|item| {
-                        seen.insert(completion_item_name(item).to_ascii_lowercase())
-                    }),
-                );
-            }
-            completion
+        merge_completion(&mut completion, self.visible_symbol_completion_at(offset));
+        merge_completion(&mut completion, self.keyword_completion_at(offset));
+        completion
+    }
+
+    fn visible_symbol_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let context = self.bare_identifier_completion_context(offset)?;
+        let scope = innermost_scope_at(&self.symbols, context.replace_range.start);
+        let namespace = if context.in_type_position {
+            Namespace::Type
         } else {
-            Some(keyword_completion)
+            Namespace::Value
+        };
+        let mut items = Vec::new();
+        let mut seen = HashSet::<Arc<str>>::new();
+        let mut current = Some(scope);
+        while let Some(scope_id) = current {
+            if let Some(scope_map) = self.scope_index().get(scope_id.as_usize()) {
+                for ((candidate_namespace, name), symbols) in scope_map {
+                    if *candidate_namespace != namespace
+                        || !name.as_ref().starts_with(context.prefix.as_ref())
+                    {
+                        continue;
+                    }
+                    let Some(symbol_id) = symbols.iter().rev().copied().find(|symbol_id| {
+                        symbol_completion_kind_supported(
+                            self.symbols.symbol(*symbol_id).kind,
+                            namespace,
+                        )
+                    }) else {
+                        continue;
+                    };
+                    if !seen.insert(Arc::clone(name)) {
+                        continue;
+                    }
+                    let symbol = self.symbols.symbol(symbol_id);
+                    items.push(CompletionItem::Symbol(symbol_completion_item(
+                        self,
+                        self.symbols.as_ref(),
+                        symbol,
+                    )));
+                }
+            }
+            current = self.symbols.scope(scope_id).parent;
         }
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
+        Some(CompletionInfo {
+            replace_range: context.replace_range,
+            items,
+            in_type_position: context.in_type_position,
+        })
     }
 
     fn keyword_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
-        let (replace_range, prefix) = self.bare_identifier_completion_context(offset)?;
-        let items = keyword_completion::keyword_completion_items(prefix.as_ref());
+        let context = self.bare_identifier_completion_context(offset)?;
+        let items = keyword_completion::keyword_completion_items(context.prefix.as_ref());
         if items.is_empty() {
             return None;
         }
         Some(CompletionInfo {
-            replace_range,
+            replace_range: context.replace_range,
             items: items.into_iter().map(CompletionItem::Keyword).collect(),
-            in_type_position: false,
+            in_type_position: context.in_type_position,
         })
     }
 
     fn bare_identifier_completion_context(
         &self,
         offset: usize,
-    ) -> Option<(Range<usize>, Arc<str>)> {
+    ) -> Option<BareIdentifierCompletionContext> {
         let range = statement_query_range(&self.parse, offset)?;
         let (token_start, token_end) = token_window_for_range(&self.parse, &range)?;
         let prefix_idx = prefix_token_at_offset(&self.parse, token_start, token_end, offset)?;
@@ -2747,10 +2799,13 @@ impl AnalysisSnapshot {
             return None;
         }
         let prefix_end = offset.min(token.range.end);
-        Some((
-            token.range.start..prefix_end,
-            Arc::<str>::from(self.text[token.range.start..prefix_end].to_ascii_lowercase()),
-        ))
+        let replace_range = token.range.start..prefix_end;
+        Some(BareIdentifierCompletionContext {
+            in_type_position: selector_completion_context(&self.parse, offset)
+                .is_some_and(|context| context.in_type_position),
+            prefix: Arc::<str>::from(self.text[token.range.start..prefix_end].to_ascii_lowercase()),
+            replace_range,
+        })
     }
 
     fn bare_where_field_target_at(&self, offset: usize) -> Option<BareWhereFieldTarget> {
@@ -3870,10 +3925,128 @@ fn format_symbol_completion_declaration(symbol: &SymbolData) -> String {
     }
 }
 
+fn symbol_completion_kind_supported(kind: SymbolKind, namespace: Namespace) -> bool {
+    match namespace {
+        Namespace::Type => matches!(
+            kind,
+            SymbolKind::BuiltinType
+                | SymbolKind::TypeDef
+                | SymbolKind::Class
+                | SymbolKind::Interface
+        ),
+        Namespace::Value => matches!(
+            kind,
+            SymbolKind::BuiltinConstant
+                | SymbolKind::BuiltinVariable
+                | SymbolKind::Variable
+                | SymbolKind::Constant
+                | SymbolKind::FieldSymbol
+                | SymbolKind::Parameter
+                | SymbolKind::Control
+                | SymbolKind::Report
+        ),
+        Namespace::Routine => false,
+    }
+}
+
+fn symbol_completion_declared_type_for_snapshot(
+    snapshot: &AnalysisSnapshot,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> Option<String> {
+    let type_snapshot = (unit.uri == snapshot.uri).then_some(snapshot);
+    symbol_type_presentation(type_snapshot, symbol)
+        .map(|presentation| presentation.rendered_clause)
+        .or_else(|| {
+            symbol
+                .structure
+                .map(|structure_id| format!("TYPE {}", unit.structure(structure_id).name))
+        })
+}
+
+fn symbol_completion_declaration(
+    symbol: &SymbolData,
+    declared_type: Option<&str>,
+) -> Option<String> {
+    let declaration = match symbol.kind {
+        SymbolKind::TypeDef
+            if symbol.declared_type.is_none()
+                && symbol.type_clause_display.is_none()
+                && symbol.structure.is_some() =>
+        {
+            format!("TYPES {}.", symbol.name)
+        }
+        SymbolKind::TypeDef => match declared_type {
+            Some(declared_type) => format!("TYPES {} {}.", symbol.name, declared_type),
+            None => format!("TYPES {}.", symbol.name),
+        },
+        SymbolKind::Variable | SymbolKind::BuiltinVariable => match declared_type {
+            Some(declared_type) => format!("DATA {} {}.", symbol.name, declared_type),
+            None => symbol.name.to_string(),
+        },
+        SymbolKind::Constant | SymbolKind::BuiltinConstant => match declared_type {
+            Some(declared_type) => format!("CONSTANTS {} {}.", symbol.name, declared_type),
+            None => symbol.name.to_string(),
+        },
+        SymbolKind::FieldSymbol => match declared_type {
+            Some(declared_type) => format!("FIELD-SYMBOLS {} {}.", symbol.name, declared_type),
+            None => symbol.name.to_string(),
+        },
+        SymbolKind::Class => format!("CLASS {}.", symbol.name),
+        SymbolKind::Interface => format!("INTERFACE {}.", symbol.name),
+        SymbolKind::Parameter => format_symbol_completion_declaration(symbol),
+        _ => return None,
+    };
+    Some(declaration)
+}
+
+fn symbol_completion_item(
+    snapshot: &AnalysisSnapshot,
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> SymbolCompletionItem {
+    let declared_type = symbol_completion_declared_type_for_snapshot(snapshot, unit, symbol);
+    let declaration = symbol_completion_declaration(symbol, declared_type.as_deref());
+    SymbolCompletionItem {
+        name: Arc::clone(&symbol.name),
+        kind: symbol.kind,
+        declared_type,
+        declaration,
+        insertion: identifier_completion_insertion(symbol.name.as_ref()),
+    }
+}
+
+fn merge_completion(completion: &mut Option<CompletionInfo>, extra: Option<CompletionInfo>) {
+    let Some(extra) = extra else {
+        return;
+    };
+    let Some(existing) = completion.as_mut() else {
+        *completion = Some(extra);
+        return;
+    };
+    if existing.replace_range != extra.replace_range
+        || existing.in_type_position != extra.in_type_position
+    {
+        return;
+    }
+    let mut seen: HashSet<_> = existing
+        .items
+        .iter()
+        .map(|item| completion_item_name(item).to_ascii_lowercase())
+        .collect();
+    existing.items.extend(
+        extra
+            .items
+            .into_iter()
+            .filter(|item| seen.insert(completion_item_name(item).to_ascii_lowercase())),
+    );
+}
+
 fn completion_item_name(item: &CompletionItem) -> &str {
     match item {
         CompletionItem::Selector(item) => item.name.as_ref(),
         CompletionItem::NamedArgument(item) => item.name.as_ref(),
+        CompletionItem::Symbol(item) => item.name.as_ref(),
         CompletionItem::Template(item) => item.name.as_ref(),
         CompletionItem::Callable(item) => item.name.as_ref(),
         CompletionItem::Keyword(item) => item.name.as_ref(),
@@ -16357,6 +16530,7 @@ START-OF-SELECTION.
             .map(|item| match item {
                 crate::CompletionItem::Selector(item) => item.name.as_ref(),
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Symbol(item) => item.name.as_ref(),
                 crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
                 crate::CompletionItem::Keyword(item) => item.name.as_ref(),
@@ -16417,6 +16591,7 @@ ENDCLASS.";
             .map(|item| match item {
                 crate::CompletionItem::Selector(item) => item.name.as_ref(),
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Symbol(item) => item.name.as_ref(),
                 crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
                 crate::CompletionItem::Keyword(item) => item.name.as_ref(),
@@ -16504,6 +16679,112 @@ ENDCLASS.";
         assert!(completion.items.iter().any(|item| {
             matches!(item, crate::CompletionItem::Keyword(item) if item.name.as_ref() == "IF")
         }));
+    }
+
+    #[test]
+    fn completion_returns_global_variables_and_types_in_scope() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF ts_obj,
+        objid TYPE c LENGTH 50,
+        status_pack TYPE i,
+       END OF ts_obj,
+
+       tt_obj TYPE TABLE OF ts_obj.
+
+TYPES: BEGIN OF ts_obj_ids,
+        objid TYPE c LENGTH 50,
+        serial TYPE c LENGTH 60,
+       END OF ts_obj_ids,
+
+       tt_obj_ids TYPE TABLE OF ts_obj_ids.
+
+TYPES: BEGIN OF ts_loc,
+        locno TYPE c LENGTH 6,
+        gln TYPE c LENGTH 13,
+       END OF ts_loc,
+
+       tt_loc TYPE TABLE OF ts_loc.
+
+DATA: lt_obj TYPE tt_obj,
+      ls_obj TYPE ts_obj,
+      lt_obj_ids TYPE tt_obj_ids,
+      ls_obj_ids TYPE ts_obj_ids,
+      lt_loc TYPE tt_loc,
+      ls_loc TYPE ts_loc.
+
+MOVE-CORRESPONDING ls_loc TO ls_obj.
+
+SORT lt_obj BY objid.
+";
+        let snapshot = store.publish("file:///global_completion.abap", 1, src);
+
+        let type_offset =
+            src.find("lt_obj TYPE tt_obj").expect("type usage") + "lt_obj TYPE tt_".len();
+        let type_completion = snapshot
+            .completion_at(type_offset)
+            .expect("type completion");
+        assert!(type_completion.in_type_position);
+        let type_names: Vec<_> = type_completion
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::CompletionItem::Symbol(item) if item.kind == SymbolKind::TypeDef => {
+                    Some(item.name.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            type_names.contains(&"tt_obj")
+                && type_names.contains(&"tt_obj_ids")
+                && type_names.contains(&"tt_loc"),
+            "expected table type names in completion: {type_names:?}"
+        );
+
+        let value_offset = src.find("MOVE-CORRESPONDING ls_loc").expect("value usage")
+            + "MOVE-CORRESPONDING ls_".len();
+        let value_completion = snapshot
+            .completion_at(value_offset)
+            .expect("value completion");
+        assert!(!value_completion.in_type_position);
+        let value_names: Vec<_> = value_completion
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::CompletionItem::Symbol(item) if item.kind == SymbolKind::Variable => {
+                    Some(item.name.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            value_names.contains(&"ls_loc")
+                && value_names.contains(&"ls_obj")
+                && value_names.contains(&"ls_obj_ids"),
+            "expected global variables in completion: {value_names:?}"
+        );
+
+        let sort_offset = src.find("SORT lt_obj").expect("sort usage") + "SORT lt_".len();
+        let sort_completion = snapshot
+            .completion_at(sort_offset)
+            .expect("sort target completion");
+        let sort_names: Vec<_> = sort_completion
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::CompletionItem::Symbol(item) if item.kind == SymbolKind::Variable => {
+                    Some(item.name.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            sort_names.contains(&"lt_obj")
+                && sort_names.contains(&"lt_obj_ids")
+                && sort_names.contains(&"lt_loc"),
+            "expected global table variables in completion: {sort_names:?}"
+        );
     }
 
     #[test]
@@ -16623,6 +16904,7 @@ ENDCLASS.";
             .map(|item| match item {
                 crate::CompletionItem::Selector(item) => item.name.as_ref(),
                 crate::CompletionItem::NamedArgument(item) => item.name.as_ref(),
+                crate::CompletionItem::Symbol(item) => item.name.as_ref(),
                 crate::CompletionItem::Template(item) => item.name.as_ref(),
                 crate::CompletionItem::Callable(item) => item.name.as_ref(),
                 crate::CompletionItem::Keyword(item) => item.name.as_ref(),
