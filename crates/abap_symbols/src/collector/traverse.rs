@@ -19,6 +19,7 @@ impl<'a> Collector<'a> {
     pub(super) fn walk_node(&mut self, node: NodeId, scope: ScopeId) {
         match self.file.kind(node) {
             SyntaxKind::Token => {}
+            SyntaxKind::SqlScriptIsland => {}
             SyntaxKind::Error => {
                 let tokens = self.syntax_token_nodes(node);
                 if !tokens.is_empty() {

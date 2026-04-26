@@ -605,6 +605,7 @@ ast_node!(
 ast_node!(InterfaceDecl, SyntaxKind::InterfaceDecl);
 ast_node!(MethodDecl, SyntaxKind::MethodDecl);
 ast_node!(MethodDeclTarget, SyntaxKind::MethodDeclTarget);
+ast_node!(SqlScriptIsland, SyntaxKind::SqlScriptIsland);
 ast_node!(ClassSectionStmt, SyntaxKind::ClassSectionStmt);
 ast_node!(ClassSectionVisibility, SyntaxKind::ClassSectionVisibility);
 ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
@@ -2137,12 +2138,10 @@ impl<'a> MethodsStmt<'a> {
                 continue;
             }
             if Self::token_text_is(item, source, "default")
-                && items
-                    .get(idx + 1)
-                    .is_some_and(|next| {
-                        Self::token_text_is(*next, source, "ignore")
-                            || Self::token_text_is(*next, source, "fail")
-                    })
+                && items.get(idx + 1).is_some_and(|next| {
+                    Self::token_text_is(*next, source, "ignore")
+                        || Self::token_text_is(*next, source, "fail")
+                })
             {
                 idx += 2;
                 continue;
@@ -2161,7 +2160,8 @@ impl<'a> MethodsStmt<'a> {
         idx += 2;
 
         let event_qualifier = items.get(idx).copied().and_then(|item| {
-            items.get(idx + 1)
+            items
+                .get(idx + 1)
                 .filter(|tilde| Self::token_text_is(**tilde, source, "~"))
                 .and(items.get(idx + 2))
                 .filter(|event_name| Self::is_ident_token(**event_name, source))

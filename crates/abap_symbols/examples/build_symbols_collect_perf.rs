@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 use abap_parser::parse;
 use abap_symbols::perf_api::collect_unit_only;
 
-const DEFAULT_SAMPLE_PATH: &str =
-    r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
+const DEFAULT_SAMPLE_PATH: &str = r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///symbols_collect_perf_sample.abap";
 
 struct Config {

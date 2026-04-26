@@ -1539,7 +1539,8 @@ fn event_handler_method_scope_symbol_specs(
     let mut next_symbol_id = unit.symbols.len() as u32;
 
     for scope_id in method_scopes {
-        let Some((_, member)) = resolve_event_handler_method_context(project, lookup, unit, scope_id)
+        let Some((_, member)) =
+            resolve_event_handler_method_context(project, lookup, unit, scope_id)
         else {
             continue;
         };
@@ -2237,12 +2238,7 @@ fn resolve_class_event_in_hierarchy_inner<'a>(
             direct_superclass_handle(project, lookup, direct_owner_unit, direct_owner.symbol)
     {
         return resolve_class_event_in_hierarchy_inner(
-            project,
-            lookup,
-            superclass,
-            None,
-            event_name,
-            visited,
+            project, lookup, superclass, None, event_name, visited,
         );
     }
 

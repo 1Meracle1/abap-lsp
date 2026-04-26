@@ -1390,10 +1390,12 @@ fn unit_references_object(snapshot: &AnalysisSnapshot, object_name: &str) -> boo
             NamedArgumentTarget::Event {
                 qualifier,
                 event_name,
-            } => qualifier
-                .as_ref()
-                .is_some_and(|qualifier| qualifier.eq_ignore_ascii_case(object_name))
-                || event_name.eq_ignore_ascii_case(object_name),
+            } => {
+                qualifier
+                    .as_ref()
+                    .is_some_and(|qualifier| qualifier.eq_ignore_ascii_case(object_name))
+                    || event_name.eq_ignore_ascii_case(object_name)
+            }
         })
 }
 
@@ -5069,8 +5071,7 @@ mod tests {
     use crate::sem_tokens;
 
     use super::{
-        CodeActionParams, CompletionParams, CompletionResponse,
-        DEPENDENCY_CACHE_REFRESH_REQUESTED,
+        CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_REFRESH_REQUESTED,
         DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, DependencyArtifactPayload,
         GotoDefinitionParams, HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED,
         RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams, ReferenceParams,
@@ -5083,12 +5084,11 @@ mod tests {
         collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
         completion, definition, dependency_document_uri, extract_stored_dependency_symbols,
         handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated, hover,
-        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position,
-        prepare_rename, publish_changed_document, publish_changed_document_mut,
-        publish_open_document, publish_open_document_mut, read_dependency_document, references,
-        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
-        stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
-        workspace_manifest_diagnostics_params,
+        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
+        publish_changed_document, publish_changed_document_mut, publish_open_document,
+        publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
+        semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
+        store_remote_dependency_artifacts, workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {

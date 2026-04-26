@@ -2569,30 +2569,26 @@ impl AnalysisSnapshot {
         self.symbols
             .call_sites
             .iter()
-            .filter_map(|call_site| {
-                match &call_site.target {
-                    NamedArgumentTarget::ImplicitMethod { method_name }
-                    | NamedArgumentTarget::Method { method_name, .. } => {
-                        let range =
-                            call_site_target_name_range(self.text.as_ref(), call_site, method_name)?;
-                        (range.start <= offset && offset < range.end)
-                            .then_some((call_site, range))
-                    }
-                    NamedArgumentTarget::Event {
-                        qualifier,
-                        event_name,
-                    } => {
-                        let range = call_site_event_name_range(
-                            self.text.as_ref(),
-                            call_site,
-                            qualifier.as_ref(),
-                            event_name,
-                        )?;
-                        (range.start <= offset && offset < range.end)
-                            .then_some((call_site, range))
-                    }
-                    _ => None,
+            .filter_map(|call_site| match &call_site.target {
+                NamedArgumentTarget::ImplicitMethod { method_name }
+                | NamedArgumentTarget::Method { method_name, .. } => {
+                    let range =
+                        call_site_target_name_range(self.text.as_ref(), call_site, method_name)?;
+                    (range.start <= offset && offset < range.end).then_some((call_site, range))
                 }
+                NamedArgumentTarget::Event {
+                    qualifier,
+                    event_name,
+                } => {
+                    let range = call_site_event_name_range(
+                        self.text.as_ref(),
+                        call_site,
+                        qualifier.as_ref(),
+                        event_name,
+                    )?;
+                    (range.start <= offset && offset < range.end).then_some((call_site, range))
+                }
+                _ => None,
             })
             .filter_map(|(call_site, range)| {
                 let (member_unit, member) = resolve_call_target_member(self, call_site)?;
@@ -16756,7 +16752,12 @@ ENDCLASS.";
         let target = snapshot
             .definition_at(parameter_offset)
             .expect("event parameter definition");
-        assert_target_slice(&target, "file:///event_completion.abap", &src_with_value, "value");
+        assert_target_slice(
+            &target,
+            "file:///event_completion.abap",
+            &src_with_value,
+            "value",
+        );
         assert_eq!(
             target.range.start,
             src_with_value

@@ -10,7 +10,7 @@ use abap_ast::{
     SyntaxKind,
     ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, FormDecl, IncludeStmt, MethodDecl},
 };
-use abap_lexer::TextRange;
+use abap_lexer::{TextRange, TokenKind};
 
 use super::context::DeclContext;
 use super::{Collector, PendingStructure, SyntaxTokenInfo};
@@ -36,6 +36,60 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
+    fn method_header_tokens(&self, node: abap_ast::arena::NodeId) -> Vec<SyntaxTokenInfo> {
+        self.ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .take_while(|token| token.kind != TokenKind::Period)
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect()
+    }
+
+    fn method_header_has_sequence(tokens: &[SyntaxTokenInfo], sequence: &[&str]) -> bool {
+        tokens.windows(sequence.len()).any(|window| {
+            window
+                .iter()
+                .zip(sequence.iter())
+                .all(|(token, expected)| token.text.eq_ignore_ascii_case(expected))
+        })
+    }
+
+    fn method_header_is_amdp(tokens: &[SyntaxTokenInfo]) -> bool {
+        let has_database_function =
+            Self::method_header_has_sequence(tokens, &["by", "database", "function"]);
+        let has_database_procedure =
+            Self::method_header_has_sequence(tokens, &["by", "database", "procedure"]);
+        let has_sqlscript = Self::method_header_has_sequence(tokens, &["language", "sqlscript"]);
+
+        (has_database_function || has_database_procedure) && has_sqlscript
+    }
+
+    fn collect_amdp_using_dependencies(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {
+        let tokens = self.method_header_tokens(node);
+        if !Self::method_header_is_amdp(&tokens) {
+            return;
+        }
+        let Some(using_idx) = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("using"))
+        else {
+            return;
+        };
+
+        for token in tokens.iter().skip(using_idx + 1) {
+            if token.kind != TokenKind::Ident {
+                continue;
+            }
+            self.ctx.add_reference(
+                scope,
+                Arc::<str>::from(token.text.to_ascii_lowercase()),
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                token.range.clone(),
+            );
+        }
+    }
+
     fn hyphenated_keyword_end(
         tokens: &[super::SyntaxTokenInfo],
         idx: usize,
@@ -398,6 +452,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         let child_scope =
             self.ctx
                 .push_scope(ScopeKind::Method, node_range, Some(scope), Some(owner));
+        self.collect_amdp_using_dependencies(node, child_scope);
         if let Some(class_symbol) = self.ctx.class_lowering().enclosing_class_owner(scope) {
             self.ctx
                 .class_lowering()

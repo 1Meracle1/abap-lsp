@@ -107,3 +107,54 @@ tbtco-jobname = v_op-name.
         }));
     }
 }
+
+#[test]
+fn collects_amdp_method_symbol_and_using_dependencies() {
+    let src = r#"
+CLASS zcl_attp_ua_dep_rl_amdp DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_amdp_marker_hdb.
+    CLASS-METHODS get_rel_rep_evt.
+ENDCLASS.
+
+CLASS zcl_attp_ua_dep_rl_amdp IMPLEMENTATION.
+  METHOD get_rel_rep_evt
+         BY DATABASE PROCEDURE
+         FOR HDB
+         LANGUAGE SQLSCRIPT
+         OPTIONS READ-ONLY
+         USING /sttp/rep_evt zattp_t_mat_prp.
+    et_rep_dep = SELECT rep_evtid, evtid
+                   FROM "/STTP/REP_EVT" AS rep
+                   INNER JOIN :it_ua_dp_rl AS ua
+                   ON rep.rule_type = ua.previousruletype;
+  ENDMETHOD.
+ENDCLASS.
+"#;
+
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///amdp.abap", src, &parsed);
+
+    assert!(unit.symbols.iter().any(|symbol| {
+        symbol.kind == SymbolKind::Method && symbol.name.as_ref() == "get_rel_rep_evt"
+    }));
+    for name in ["/sttp/rep_evt", "zattp_t_mat_prp"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.name.as_ref() == name
+                    && reference.namespace == Namespace::Type
+                    && reference.kind == ReferenceKind::TypeRef
+            }),
+            "missing AMDP USING dependency reference {name}: {:?}",
+            unit.references
+        );
+    }
+    assert!(
+        unit.references
+            .iter()
+            .all(|reference| reference.name.as_ref() != "rep_evtid"),
+        "SQLScript body identifiers should stay opaque: {:?}",
+        unit.references
+    );
+}

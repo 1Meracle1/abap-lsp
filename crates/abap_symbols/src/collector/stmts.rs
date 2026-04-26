@@ -2666,7 +2666,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
         if !trailing_tokens.is_empty() {
             self.collector
-            .collect_token_expression_refs_infos(&trailing_tokens, scope, true);
+                .collect_token_expression_refs_infos(&trailing_tokens, scope, true);
         }
     }
 
@@ -2683,7 +2683,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         let mut qualifier = None;
         let mut event_name = None;
-        if significant.get(3).is_some_and(|token| token.text.as_ref() == "~")
+        if significant
+            .get(3)
+            .is_some_and(|token| token.text.as_ref() == "~")
             && let (Some(qualifier_tok), Some(event_tok)) = (significant.get(2), significant.get(4))
             && self.collector.syntax_token_is_ident_like(qualifier_tok)
             && self.collector.syntax_token_is_ident_like(event_tok)
@@ -3057,7 +3059,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     pub(super) fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let (type_refs, handler_infos) = {
-            let methods_stmt = MethodsStmt::cast(self.collector.syntax(node)).expect("methods stmt");
+            let methods_stmt =
+                MethodsStmt::cast(self.collector.syntax(node)).expect("methods stmt");
             let type_refs = methods_stmt
                 .type_refs()
                 .map(|type_ref| type_ref.syntax().id())
@@ -3102,7 +3105,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .decl_lowering()
                 .collect_type_ref(type_ref, scope);
         }
-        for (qualifier, source_type_name, source_type_range, event_name, event_range) in handler_infos
+        for (qualifier, source_type_name, source_type_range, event_name, event_range) in
+            handler_infos
         {
             if let Some((qualifier_name, qualifier_range)) = qualifier {
                 self.collector.add_reference(
@@ -3170,9 +3174,15 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             else {
                 continue;
             };
-            if !self.collector.implemented_interfaces.iter().any(|implemented| {
-                implemented.owner_symbol == owner_symbol && implemented.interface_name == interface_name
-            }) {
+            if !self
+                .collector
+                .implemented_interfaces
+                .iter()
+                .any(|implemented| {
+                    implemented.owner_symbol == owner_symbol
+                        && implemented.interface_name == interface_name
+                })
+            {
                 self.collector
                     .implemented_interfaces
                     .push(crate::ImplementedInterfaceData {
@@ -3984,13 +3994,17 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 let operand_ids: Vec<_> = children[entry_start..entry_end]
                     .iter()
                     .copied()
-                    .filter(|&child| self.collector.file.kind(child) == SyntaxKind::ConcatenateSourceOperand)
+                    .filter(|&child| {
+                        self.collector.file.kind(child) == SyntaxKind::ConcatenateSourceOperand
+                    })
                     .filter_map(|operand| self.collector.first_non_token_child(operand))
                     .collect();
                 let target_id = children[entry_start..entry_end]
                     .iter()
                     .copied()
-                    .find(|&child| self.collector.file.kind(child) == SyntaxKind::ConcatenateTargetOperand)
+                    .find(|&child| {
+                        self.collector.file.kind(child) == SyntaxKind::ConcatenateTargetOperand
+                    })
                     .and_then(|target| self.collector.first_non_token_child(target));
                 let separator_id = children[entry_start..entry_end]
                     .iter()

@@ -2705,10 +2705,12 @@ fn call_target_matches(target: &NamedArgumentTarget, query: &str) -> bool {
         NamedArgumentTarget::Event {
             qualifier,
             event_name,
-        } => event_name.as_ref().eq_ignore_ascii_case(query)
-            || qualifier
-                .as_ref()
-                .is_some_and(|qualifier| format!("{qualifier}~{event_name}").eq_ignore_ascii_case(query)),
+        } => {
+            event_name.as_ref().eq_ignore_ascii_case(query)
+                || qualifier.as_ref().is_some_and(|qualifier| {
+                    format!("{qualifier}~{event_name}").eq_ignore_ascii_case(query)
+                })
+        }
     }
 }
 

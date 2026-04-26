@@ -5278,6 +5278,106 @@ fn build_method_decl_target_node(
     ))
 }
 
+fn method_header_has_keyword_sequence(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    sequence: &[&str],
+) -> bool {
+    let mut i = start;
+    while i < end {
+        if tokens[i].kind == TokenKind::Comment {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i;
+        let mut matched = true;
+        for expected in sequence {
+            while j < end && tokens[j].kind == TokenKind::Comment {
+                j += 1;
+            }
+            if j >= end || !is_keyword(source, &tokens[j], expected) {
+                matched = false;
+                break;
+            }
+            j += 1;
+        }
+        if matched {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn method_header_is_amdp(source: &str, tokens: &[Token], idx: usize, period_i: usize) -> bool {
+    let has_database_function = method_header_has_keyword_sequence(
+        source,
+        tokens,
+        idx + 1,
+        period_i,
+        &["by", "database", "function"],
+    );
+    let has_database_procedure = method_header_has_keyword_sequence(
+        source,
+        tokens,
+        idx + 1,
+        period_i,
+        &["by", "database", "procedure"],
+    );
+    let has_sqlscript = method_header_has_keyword_sequence(
+        source,
+        tokens,
+        idx + 1,
+        period_i,
+        &["language", "sqlscript"],
+    );
+
+    (has_database_function || has_database_procedure) && has_sqlscript
+}
+
+fn find_sqlscript_island_end(source: &str, tokens: &[Token], mut idx: usize) -> usize {
+    while idx < tokens.len() {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Eof {
+            return idx;
+        }
+        if is_keyword(source, token, "endmethod") {
+            let j = skip_trivia(tokens, idx + 1);
+            if tokens
+                .get(j)
+                .is_some_and(|next| next.kind == TokenKind::Period)
+            {
+                return idx;
+            }
+        }
+        idx += 1;
+    }
+    tokens.len()
+}
+
+fn parse_sqlscript_island_until_endmethod(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> (Vec<NodeId>, usize) {
+    let end = find_sqlscript_island_end(source, tokens, idx);
+    if idx >= end {
+        return (Vec::new(), end);
+    }
+
+    let mut children = Vec::with_capacity(end - idx);
+    for token in &tokens[idx..end] {
+        children.push(token_leaf(b, token));
+    }
+    let range = tokens[idx].range.start..tokens[end - 1].range.end;
+    let island = b.branch(SyntaxKind::SqlScriptIsland, range, &children);
+    (vec![island], end)
+}
+
 fn match_hyphenated_keyword(
     source: &str,
     tokens: &[Token],
@@ -10213,31 +10313,37 @@ pub fn try_parse_method_decl(
     if !is_keyword(source, start_tok, "method") {
         return None;
     }
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => (
-            build_method_header_children(b, source, tokens, idx, period_i),
-            period_i + 1,
-        ),
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after method header".to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                start_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
+    let (mut children, mut next, is_amdp) =
+        match scan_until_statement_period(tokens, source, idx + 1) {
+            StmtPeriodScan::Found(period_i) => (
+                build_method_header_children(b, source, tokens, idx, period_i),
+                period_i + 1,
+                method_header_is_amdp(source, tokens, idx, period_i),
+            ),
+            StmtPeriodScan::Unterminated { end_exclusive } => {
+                let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected '.' after method header".to_string(),
+                    range: start_tok.range.start..err_end,
+                });
+                let err_children = error_token_children(b, tokens, idx, end_exclusive);
+                let header = b.branch(
+                    SyntaxKind::Error,
+                    start_tok.range.start..err_end,
+                    &err_children,
+                );
+                (
+                    vec![header],
+                    next_after_unterminated_scan(tokens, end_exclusive),
+                    false,
+                )
+            }
+        };
+    let (body, after_body) = if is_amdp {
+        parse_sqlscript_island_until_endmethod(b, source, tokens, next)
+    } else {
+        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDMETHOD"])
     };
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDMETHOD"]);
     children.extend(body);
     next = after_body;
     let (end_children, next_after, end_pos) = parse_end_keyword(

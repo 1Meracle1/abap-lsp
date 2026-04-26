@@ -437,7 +437,12 @@ fn methods_stmt_type_ref_ranges(
     ranges
 }
 
-fn events_stmt_type_ref_ranges(source: &str, tokens: &[Token], idx: usize, period_i: usize) -> Vec<(usize, usize)> {
+fn events_stmt_type_ref_ranges(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<(usize, usize)> {
     let significant: Vec<_> = tokens[idx..=period_i]
         .iter()
         .enumerate()

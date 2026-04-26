@@ -1585,7 +1585,9 @@ impl<'a> FactBuilder<'a> {
                 implemented.interface_name.as_ref(),
             )?;
             let interface_unit_idx = self.unit_index(interface_handle.unit)?;
-            if self.units[interface_unit_idx].symbol(interface_handle.symbol).kind
+            if self.units[interface_unit_idx]
+                .symbol(interface_handle.symbol)
+                .kind
                 != crate::SymbolKind::Interface
             {
                 continue;

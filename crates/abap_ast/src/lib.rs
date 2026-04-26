@@ -281,6 +281,8 @@ pub enum SyntaxKind {
     MethodDecl,
     /// Qualified or unqualified implementation target in a `METHOD ... .` header.
     MethodDeclTarget,
+    /// Opaque SQLScript body inside an AMDP `METHOD ... BY DATABASE ... LANGUAGE SQLSCRIPT ...`.
+    SqlScriptIsland,
     /// `SELECT ... .` or `SELECT ... . ... ENDSELECT.`
     SelectStmt,
     /// `OPEN CURSOR ... FOR SELECT ... .`
@@ -675,6 +677,7 @@ impl SyntaxKind {
             Self::InterfaceDecl => "InterfaceDecl",
             Self::MethodDecl => "MethodDecl",
             Self::MethodDeclTarget => "MethodDeclTarget",
+            Self::SqlScriptIsland => "SqlScriptIsland",
             Self::SelectStmt => "SelectStmt",
             Self::OpenCursorStmt => "OpenCursorStmt",
             Self::CloseCursorStmt => "CloseCursorStmt",

@@ -13,8 +13,7 @@ use crate::project::{ProjectAnalysis, analyze_unit};
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
 use crate::validate::validate_project_with_scope_indexes;
 
-const DEFAULT_SAMPLE_PATH: &str =
-    r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
+const DEFAULT_SAMPLE_PATH: &str = r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///perf_sample.abap";
 
 fn perf_sample_path() -> PathBuf {

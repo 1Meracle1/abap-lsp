@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 use abap_lsp::{ServerState, build_semantic_tokens, publish_open_document};
 use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Uri};
 
-const DEFAULT_SAMPLE_PATH: &str =
-    r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
+const DEFAULT_SAMPLE_PATH: &str = r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///semantic_tokens_perf_sample.abap";
 
 struct Config {

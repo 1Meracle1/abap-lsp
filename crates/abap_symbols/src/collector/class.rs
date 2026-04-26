@@ -4,8 +4,7 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, DataLikeDecl,
     DataLikeStorageKind, EventsStmt, EventsStmtEntry, EventsStmtKind, InterfaceDecl,
-    MethodsParamSectionKind, MethodsStmt, MethodsStmtEntry, MethodsStmtKind,
-    MethodsTypeClauseKind,
+    MethodsParamSectionKind, MethodsStmt, MethodsStmtEntry, MethodsStmtKind, MethodsTypeClauseKind,
 };
 use abap_lexer::TextRange;
 
@@ -676,7 +675,11 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         }
 
         for (mut member, mut signature, stmt_range) in pending_methods {
-            self.resolve_event_handler_signature_parameters(class_symbol, class_scope, &mut signature);
+            self.resolve_event_handler_signature_parameters(
+                class_symbol,
+                class_scope,
+                &mut signature,
+            );
             member.parameters = self.class_member_parameters(&signature);
             self.declare_method_signature_parameter_symbols(stmt_range, &signature);
             self.collector
@@ -766,9 +769,15 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             })
             .collect::<Vec<_>>();
         for (interface_name, range) in interfaces {
-            if !self.collector.implemented_interfaces.iter().any(|implemented| {
-                implemented.owner_symbol == owner_symbol && implemented.interface_name == interface_name
-            }) {
+            if !self
+                .collector
+                .implemented_interfaces
+                .iter()
+                .any(|implemented| {
+                    implemented.owner_symbol == owner_symbol
+                        && implemented.interface_name == interface_name
+                })
+            {
                 self.collector
                     .implemented_interfaces
                     .push(crate::ImplementedInterfaceData {
@@ -889,7 +898,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         entry: &EventsStmtEntry<'_>,
         _scope: ScopeId,
     ) -> Vec<crate::def_map::ClassMemberParameterData> {
-        entry.signature(self.collector.source)
+        entry
+            .signature(self.collector.source)
             .parameters()
             .iter()
             .map(|param| {
@@ -900,7 +910,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 crate::def_map::ClassMemberParameterData {
                     section: MethodParameterSection::Exporting,
                     name: Arc::<str>::from(
-                        param.name_token()
+                        param
+                            .name_token()
                             .text(self.collector.source)
                             .unwrap_or_default()
                             .to_ascii_lowercase(),
@@ -1040,7 +1051,8 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         );
         let source_type_name = Arc::<str>::from(source_type_display.to_ascii_lowercase());
         let event_qualifier = handler.event_qualifier().and_then(|token| {
-            token.text(self.collector.source)
+            token
+                .text(self.collector.source)
                 .map(|text| Arc::<str>::from(text.to_ascii_lowercase()))
         });
         let event_name = Arc::<str>::from(
