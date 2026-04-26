@@ -45,6 +45,44 @@ fn classifies_find_match_offset_statement() {
 }
 
 #[test]
+fn classifies_classic_arithmetic_string_and_list_statements() {
+    let src = concat!(
+        "ADD 1 TO lv_cnt.\n",
+        "ADD lv_object_cnt TO lv_objects_deleted.\n",
+        "SUBTRACT 1 FROM lv_cnt.\n",
+        "SUBTRACT lv_used FROM lv_total.\n",
+        "TRANSLATE lv_text TO UPPER CASE.\n",
+        "TRANSLATE lv_text USING ' _'.\n",
+        "shift l_strind left deleting leading space.\n",
+        "SHIFT lv_text RIGHT BY 1 PLACES.\n",
+        "SEARCH lt_lines FOR lv_pattern.\n",
+        "SEARCH lv_text FOR 'ABC' STARTING AT lv_offset.\n",
+        "FORMAT COLOR COL_HEADING INTENSIFIED.\n",
+        "FORMAT RESET.\n",
+        "POSITION e-lopind.\n",
+        "HIDE mara-matnr.\n",
+        "SUPPRESS DIALOG.\n"
+    );
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::AddStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::SubtractStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::TranslateStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ShiftStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::SearchStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::FormatStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::PositionStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::HideStmt), 1);
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::SuppressDialogStmt),
+        1
+    );
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+}
+
+#[test]
 fn program_statement_is_classified_as_report_stmt() {
     let src = "PROGRAM rsnast00 MESSAGE-ID vn.\n";
     let parsed = parse(src);

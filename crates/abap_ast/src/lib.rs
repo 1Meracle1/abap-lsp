@@ -401,6 +401,24 @@ pub enum SyntaxKind {
     MoveCorrespondingStmt,
     /// `MOVE source TO target .`
     MoveStmt,
+    /// Classic arithmetic/list/string statement `ADD ... TO ... .`
+    AddStmt,
+    /// Classic arithmetic statement `SUBTRACT ... FROM ... .`
+    SubtractStmt,
+    /// Classic string statement `TRANSLATE ... .`
+    TranslateStmt,
+    /// Classic string statement `SHIFT ... .`
+    ShiftStmt,
+    /// Classic string/table search statement `SEARCH ... FOR ... .`
+    SearchStmt,
+    /// Classic list formatting statement `FORMAT ... .`
+    FormatStmt,
+    /// Classic list cursor statement `POSITION ... .`
+    PositionStmt,
+    /// Classic interactive list statement `HIDE ... .`
+    HideStmt,
+    /// Dynpro statement `SUPPRESS DIALOG .`
+    SuppressDialogStmt,
     /// `MODIFY ... FROM ... .`
     ModifyStmt,
     /// `UPDATE dbtab ... .`
@@ -779,6 +797,15 @@ impl SyntaxKind {
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::MoveStmt => "MoveStmt",
+            Self::AddStmt => "AddStmt",
+            Self::SubtractStmt => "SubtractStmt",
+            Self::TranslateStmt => "TranslateStmt",
+            Self::ShiftStmt => "ShiftStmt",
+            Self::SearchStmt => "SearchStmt",
+            Self::FormatStmt => "FormatStmt",
+            Self::PositionStmt => "PositionStmt",
+            Self::HideStmt => "HideStmt",
+            Self::SuppressDialogStmt => "SuppressDialogStmt",
             Self::ModifyStmt => "ModifyStmt",
             Self::UpdateStmt => "UpdateStmt",
             Self::UpdateTarget => "UpdateTarget",

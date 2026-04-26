@@ -68,10 +68,12 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
     GuardedSimpleStmtClassifier::new(&["events", "class"], classify_events_stmt),
     GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
+    GuardedSimpleStmtClassifier::new(&["suppress"], classify_suppress_dialog_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
 
 const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
+    ("add", SyntaxKind::AddStmt),
     ("aliases", SyntaxKind::AliasesStmt),
     ("assert", SyntaxKind::AssertStmt),
     ("check", SyntaxKind::CheckStmt),
@@ -80,10 +82,17 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("convert", SyntaxKind::ConvertStmt),
     ("describe", SyntaxKind::DescribeStmt),
     ("exit", SyntaxKind::ExitStmt),
+    ("format", SyntaxKind::FormatStmt),
+    ("hide", SyntaxKind::HideStmt),
     ("perform", SyntaxKind::PerformStmt),
+    ("position", SyntaxKind::PositionStmt),
     ("return", SyntaxKind::ReturnStmt),
+    ("search", SyntaxKind::SearchStmt),
+    ("shift", SyntaxKind::ShiftStmt),
     ("submit", SyntaxKind::SubmitStmt),
     ("stop", SyntaxKind::StopStmt),
+    ("subtract", SyntaxKind::SubtractStmt),
+    ("translate", SyntaxKind::TranslateStmt),
     ("replace", SyntaxKind::ReplaceStmt),
     ("wait", SyntaxKind::WaitStmt),
 ];
@@ -1946,6 +1955,16 @@ fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
     } else {
         None
     }
+}
+
+fn classify_suppress_dialog_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let first = *significant.first()?;
+    let second = *significant.get(1)?;
+    let last = *significant.last()?;
+    (token_matches_keyword(source, first, "suppress")
+        && token_matches_keyword(source, second, "dialog")
+        && last.kind == TokenKind::Period)
+        .then_some(SyntaxKind::SuppressDialogStmt)
 }
 
 fn classify_direct_call_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
