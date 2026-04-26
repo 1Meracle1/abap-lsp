@@ -6316,6 +6316,49 @@ ENDINTERFACE.
 }
 
 #[test]
+fn accepts_local_type_references_after_chained_deferred_declarations() {
+    let src = r#"
+CLASS: c1 DEFINITION DEFERRED,
+       c_unused DEFINITION DEFERRED.
+INTERFACE: i1 DEFERRED,
+           i_unused DEFERRED.
+
+CLASS c2 DEFINITION.
+  PUBLIC SECTION.
+    DATA c1ref TYPE REF TO c1.
+    DATA i1ref TYPE REF TO i1.
+ENDCLASS.
+
+CLASS c1 DEFINITION.
+ENDCLASS.
+
+INTERFACE i1.
+ENDINTERFACE.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///chained_deferred_forward_refs.abap", src, &parsed);
+
+    for name in ["c1", "i1"] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected {name} diagnostic: {:?}",
+            unit.diagnostics
+        );
+    }
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::DuplicateDeclaration),
+        "chained deferred declarations should merge with later definitions: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn collects_public_static_method_metadata_from_class_definition() {
     let src = r#"
 CLASS some_class DEFINITION.

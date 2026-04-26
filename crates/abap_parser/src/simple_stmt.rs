@@ -283,6 +283,12 @@ fn methods_stmt_type_ref_ranges(
         if token.kind == TokenKind::Period {
             break;
         }
+        if token.kind == TokenKind::Comma {
+            saw_parameter_section = false;
+            in_raising = false;
+            i += 1;
+            continue;
+        }
         if let Some(modifier_len) = method_header_modifier_len(source, &significant_tokens, i) {
             if saw_parameter_section {
                 break;
@@ -325,7 +331,16 @@ fn methods_stmt_type_ref_ranges(
             continue;
         }
         if token_matches_keyword(source, token, "exceptions") {
-            break;
+            saw_parameter_section = true;
+            in_raising = false;
+            i += 1;
+            while i < significant_tokens.len()
+                && significant_tokens[i].kind != TokenKind::Comma
+                && significant_tokens[i].kind != TokenKind::Period
+            {
+                i += 1;
+            }
+            continue;
         }
         if method_signature_section(source, token) {
             saw_parameter_section = true;
@@ -607,12 +622,12 @@ fn build_events_stmt_children(
     children
 }
 
-fn interfaces_stmt_type_ref_range(
+fn interfaces_stmt_type_ref_ranges(
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
-) -> Option<(usize, usize)> {
+) -> Vec<(usize, usize)> {
     let significant: Vec<_> = tokens[idx..=period_i]
         .iter()
         .enumerate()
@@ -620,27 +635,59 @@ fn interfaces_stmt_type_ref_range(
         .map(|(offset, token)| (idx + offset, token))
         .collect();
     if significant.len() < 3 {
-        return None;
+        return Vec::new();
     }
     let first = significant[0].1;
-    let last = significant.last()?.1;
+    let Some(last) = significant.last().map(|(_, token)| *token) else {
+        return Vec::new();
+    };
     if last.kind != TokenKind::Period {
-        return None;
+        return Vec::new();
     }
     if token_matches_keyword(source, first, "interfaces") {
-        let start = significant.get(1)?.0;
-        let end = significant.last()?.0;
-        return (start < end).then_some((start, end));
+        let Some(start) = significant.get(1).map(|(idx, _)| *idx) else {
+            return Vec::new();
+        };
+        let Some(end) = significant.last().map(|(idx, _)| *idx) else {
+            return Vec::new();
+        };
+        return (start < end).then_some((start, end)).into_iter().collect();
     }
-    if token_matches_keyword(source, first, "interface")
-        && significant.len() >= 4
-        && token_matches_keyword(source, significant[significant.len() - 2].1, "load")
-    {
-        let start = significant.get(1)?.0;
-        let end = significant.get(significant.len() - 2)?.0;
-        return (start < end).then_some((start, end));
+    if token_matches_keyword(source, first, "interface") {
+        let mut ranges = Vec::new();
+        let mut i = 1usize;
+        loop {
+            while matches!(
+                significant.get(i).map(|(_, token)| token.kind),
+                Some(TokenKind::Colon | TokenKind::Comma)
+            ) {
+                i += 1;
+            }
+            if significant
+                .get(i)
+                .is_some_and(|(_, token)| token.kind == TokenKind::Period)
+            {
+                break;
+            }
+            let Some((start, name_token)) = significant.get(i).copied() else {
+                return Vec::new();
+            };
+            let Some((end, load_token)) = significant.get(i + 1).copied() else {
+                return Vec::new();
+            };
+            if name_token.kind != TokenKind::Ident
+                || !token_matches_keyword(source, load_token, "load")
+            {
+                return Vec::new();
+            }
+            if start < end {
+                ranges.push((start, end));
+            }
+            i += 2;
+        }
+        return ranges;
     }
-    None
+    Vec::new()
 }
 
 fn build_interfaces_stmt_children(
@@ -650,7 +697,8 @@ fn build_interfaces_stmt_children(
     idx: usize,
     period_i: usize,
 ) -> Vec<NodeId> {
-    let Some((start, end)) = interfaces_stmt_type_ref_range(source, tokens, idx, period_i) else {
+    let ranges = interfaces_stmt_type_ref_ranges(source, tokens, idx, period_i);
+    if ranges.is_empty() {
         return tokens[idx..=period_i]
             .iter()
             .map(|t| token_leaf(b, t))
@@ -658,10 +706,14 @@ fn build_interfaces_stmt_children(
     };
     let mut children = Vec::with_capacity(period_i - idx + 1);
     let mut i = idx;
+    let mut range_idx = 0usize;
     while i <= period_i {
-        if i == start {
+        if let Some((start, end)) = ranges.get(range_idx).copied()
+            && i == start
+        {
             children.push(build_type_ref_node(b, source, &tokens[start..end]));
             i = end;
+            range_idx += 1;
             continue;
         }
         children.push(token_leaf(b, &tokens[i]));
@@ -707,16 +759,27 @@ fn build_deferred_type_stmt_children(
     period_i: usize,
 ) -> Vec<NodeId> {
     let mut children = Vec::with_capacity(period_i - idx + 1);
-    let mut wrapped_name = false;
+    let mut expect_name = false;
     for i in idx..=period_i {
-        if !wrapped_name
-            && i > idx
-            && let Some((name, next_i)) = parse_inline_name_local(b, tokens, i)
-            && next_i == i + 1
-        {
-            children.push(name);
-            wrapped_name = true;
+        if i == idx {
+            children.push(token_leaf(b, &tokens[i]));
+            expect_name = true;
             continue;
+        }
+        if matches!(tokens[i].kind, TokenKind::Colon | TokenKind::Comma) {
+            children.push(token_leaf(b, &tokens[i]));
+            expect_name = true;
+            continue;
+        }
+        if expect_name && let Some((name, next_i)) = parse_inline_name_local(b, tokens, i) {
+            children.push(name);
+            expect_name = false;
+            if next_i == i + 1 {
+                continue;
+            }
+        }
+        if tokens[i].kind != TokenKind::Comment {
+            expect_name = false;
         }
         children.push(token_leaf(b, &tokens[i]));
     }
@@ -1859,38 +1922,104 @@ fn classify_class_section_stmt(source: &str, significant: &[&Token]) -> Option<S
 
 fn classify_class_deferred_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     let last = *significant.last()?;
-    if last.kind != TokenKind::Period
-        || significant.len() < 5
-        || significant.len() > 6
-        || !token_matches_keyword(source, significant[0], "class")
-        || significant[1].kind != TokenKind::Ident
-        || !token_matches_keyword(source, significant[2], "definition")
-    {
+    if last.kind != TokenKind::Period || !token_matches_keyword(source, significant[0], "class") {
         return None;
     }
-    if token_matches_keyword(source, significant[3], "deferred") {
-        if significant.len() == 6 && !token_matches_keyword(source, significant[4], "public") {
+
+    let mut idx = 1usize;
+    let mut stmt_kind = None;
+    let mut saw_entry = false;
+    loop {
+        while matches!(
+            significant.get(idx).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            idx += 1;
+        }
+        if significant
+            .get(idx)
+            .is_some_and(|token| token.kind == TokenKind::Period)
+        {
+            break;
+        }
+        if significant.get(idx).map(|token| token.kind) != Some(TokenKind::Ident)
+            || !significant
+                .get(idx + 1)
+                .is_some_and(|token| token_matches_keyword(source, token, "definition"))
+        {
             return None;
         }
-        return Some(SyntaxKind::ClassDeferredStmt);
+        idx += 2;
+
+        let entry_kind = if significant
+            .get(idx)
+            .is_some_and(|token| token_matches_keyword(source, token, "deferred"))
+        {
+            idx += 1;
+            if significant
+                .get(idx)
+                .is_some_and(|token| token_matches_keyword(source, token, "public"))
+            {
+                idx += 1;
+            }
+            SyntaxKind::ClassDeferredStmt
+        } else if significant
+            .get(idx)
+            .is_some_and(|token| token_matches_keyword(source, token, "load"))
+        {
+            idx += 1;
+            SyntaxKind::ClassLoadStmt
+        } else {
+            return None;
+        };
+
+        if let Some(existing) = stmt_kind {
+            if existing != entry_kind {
+                return None;
+            }
+        } else {
+            stmt_kind = Some(entry_kind);
+        }
+        saw_entry = true;
     }
-    if significant.len() == 5 && token_matches_keyword(source, significant[3], "load") {
-        return Some(SyntaxKind::ClassLoadStmt);
-    }
-    None
+
+    saw_entry.then_some(stmt_kind?)
 }
 
 fn classify_interface_deferred_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     let last = *significant.last()?;
-    if last.kind != TokenKind::Period
-        || significant.len() != 4
-        || !token_matches_keyword(source, significant[0], "interface")
-        || significant[1].kind != TokenKind::Ident
-        || !token_matches_keyword(source, significant[2], "deferred")
+    if last.kind != TokenKind::Period || !token_matches_keyword(source, significant[0], "interface")
     {
         return None;
     }
-    Some(SyntaxKind::InterfaceDeferredStmt)
+
+    let mut idx = 1usize;
+    let mut saw_entry = false;
+    loop {
+        while matches!(
+            significant.get(idx).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            idx += 1;
+        }
+        if significant
+            .get(idx)
+            .is_some_and(|token| token.kind == TokenKind::Period)
+        {
+            break;
+        }
+        if significant.get(idx).map(|token| token.kind) != Some(TokenKind::Ident)
+            || !significant
+                .get(idx + 1)
+                .is_some_and(|token| token_matches_keyword(source, token, "deferred"))
+        {
+            return None;
+        }
+        idx += 2;
+        saw_entry = true;
+    }
+
+    saw_entry.then_some(SyntaxKind::InterfaceDeferredStmt)
 }
 
 fn classify_methods_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
@@ -1914,16 +2043,35 @@ fn classify_interfaces_stmt(source: &str, significant: &[&Token]) -> Option<Synt
     {
         return Some(SyntaxKind::InterfacesStmt);
     }
-    if token_matches_keyword(source, first, "interface")
-        && significant.len() >= 4
-        && significant
-            .get(1)
-            .is_some_and(|token| token.kind == TokenKind::Ident)
-        && significant
-            .get(significant.len() - 2)
-            .is_some_and(|token| token_matches_keyword(source, token, "load"))
-    {
-        return Some(SyntaxKind::InterfacesStmt);
+    if token_matches_keyword(source, first, "interface") {
+        let mut idx = 1usize;
+        let mut saw_entry = false;
+        loop {
+            while matches!(
+                significant.get(idx).map(|token| token.kind),
+                Some(TokenKind::Colon | TokenKind::Comma)
+            ) {
+                idx += 1;
+            }
+            if significant
+                .get(idx)
+                .is_some_and(|token| token.kind == TokenKind::Period)
+            {
+                break;
+            }
+            if significant.get(idx).map(|token| token.kind) != Some(TokenKind::Ident)
+                || !significant
+                    .get(idx + 1)
+                    .is_some_and(|token| token_matches_keyword(source, token, "load"))
+            {
+                return None;
+            }
+            idx += 2;
+            saw_entry = true;
+        }
+        if saw_entry {
+            return Some(SyntaxKind::InterfacesStmt);
+        }
     }
     None
 }
@@ -2467,6 +2615,9 @@ pub fn try_parse_simple_stmt(
                 SyntaxKind::InterfaceDeferredStmt => {
                     build_deferred_type_stmt_children(b, tokens, idx, period_i)
                 }
+                SyntaxKind::ClassLoadStmt => {
+                    build_deferred_type_stmt_children(b, tokens, idx, period_i)
+                }
                 SyntaxKind::ClassSectionStmt => {
                     build_class_section_stmt_children(b, source, tokens, idx, period_i)
                 }
@@ -2814,6 +2965,19 @@ ENDCLASS.";
     }
 
     #[test]
+    fn classifies_chained_class_load_statement_specifically() {
+        let parsed = crate::parse(
+            "CLASS: cl_ex_me_cin_mm06efko DEFINITION LOAD,\n  cl_other DEFINITION LOAD.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClassLoadStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ClassDecl), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDeclName), 2);
+    }
+
+    #[test]
     fn classifies_interface_deferred_statement_specifically() {
         let parsed = crate::parse("INTERFACE if_da_stat_wl DEFERRED.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -2827,6 +2991,22 @@ ENDCLASS.";
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::InterfaceDecl), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDeclName), 1);
+    }
+
+    #[test]
+    fn classifies_chained_interface_deferred_statement_specifically() {
+        let parsed = crate::parse("INTERFACE: lif_environment DEFERRED,\n  lif_other DEFERRED.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::InterfaceDeferredStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::InterfaceDecl), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDeclName), 2);
     }
 
     #[test]
@@ -2896,6 +3076,115 @@ ENDCLASS.",
             parsed.file.count_kind(methods, SyntaxKind::TypeRefSimple),
             3
         );
+    }
+
+    #[test]
+    fn chained_methods_legacy_entries_expose_signatures_after_exceptions() {
+        let src = "\
+CLASS cl_any_table_mm DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS:\n\
+      free,\n\
+      get_table\n\
+        EXPORTING\n\
+          ex_fieldcatalog TYPE lvc_t_fcat\n\
+          ex_table TYPE REF TO data,\n\
+      set_table\n\
+        IMPORTING\n\
+          im_fieldcatalog TYPE lvc_t_fcat OPTIONAL\n\
+          im_table TYPE any TABLE,\n\
+      insert\n\
+        IMPORTING\n\
+          im_wa TYPE any\n\
+          im_component TYPE c OPTIONAL\n\
+          im_key TYPE any OPTIONAL\n\
+        EXCEPTIONS\n\
+          duplicate_record,\n\
+      read\n\
+        IMPORTING\n\
+          im_component TYPE c\n\
+          im_key TYPE any\n\
+        EXPORTING\n\
+          ex_wa TYPE any\n\
+        EXCEPTIONS\n\
+          not_found,\n\
+      refresh,\n\
+      delete\n\
+        IMPORTING\n\
+          im_component TYPE c\n\
+          im_key TYPE any\n\
+        EXCEPTIONS\n\
+          not_found.\n\
+ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = MethodsStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+                .expect("methods stmt"),
+        ))
+        .expect("methods stmt");
+        let entries = methods.entries(src);
+        let names = entries
+            .iter()
+            .filter_map(|entry| entry.name_token(src))
+            .filter_map(|name| name.text(src))
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "free".to_string(),
+                "get_table".to_string(),
+                "set_table".to_string(),
+                "insert".to_string(),
+                "read".to_string(),
+                "refresh".to_string(),
+                "delete".to_string()
+            ]
+        );
+        assert_eq!(entries[1].signature(src).parameters().len(), 2);
+        assert_eq!(entries[2].signature(src).parameters().len(), 2);
+        assert_eq!(entries[3].signature(src).parameters().len(), 3);
+        assert_eq!(entries[4].signature(src).parameters().len(), 3);
+        assert_eq!(entries[6].signature(src).parameters().len(), 2);
+        assert!(
+            entries[3]
+                .signature_text(src)
+                .contains("EXCEPTIONS duplicate_record")
+        );
+    }
+
+    #[test]
+    fn chained_methods_parse_modifiers_per_entry() {
+        let src = "\
+CLASS lcl DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS:\n\
+      to_text ABSTRACT RETURNING VALUE(rv_text) TYPE string,\n\
+      normalize FINAL IMPORTING iv_text TYPE string,\n\
+      if_demo~run REDEFINITION.\n\
+ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = MethodsStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+                .expect("methods stmt"),
+        ))
+        .expect("methods stmt");
+        let entries = methods.entries(src);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].signature(src).parameters().len(), 1);
+        assert_eq!(entries[1].signature(src).parameters().len(), 1);
+        assert!(entries[2].signature(src).is_redefinition());
+        assert!(entries[0].signature_text(src).contains("ABSTRACT"));
+        assert!(entries[1].signature_text(src).contains("FINAL"));
+        assert!(entries[2].signature_text(src).contains("REDEFINITION"));
     }
 
     #[test]

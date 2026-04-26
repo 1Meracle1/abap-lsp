@@ -293,6 +293,39 @@ fn is_signature_addition(source: &str, tokens: &[Token], start: usize, idx: usiz
         })
 }
 
+fn statement_starts_chained_methods_decl(source: &str, tokens: &[Token], start: usize) -> bool {
+    if tokens
+        .get(start)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "methods"))
+    {
+        let next = skip_comment_tokens(tokens, start + 1);
+        return tokens
+            .get(next)
+            .is_some_and(|tok| tok.kind == TokenKind::Colon);
+    }
+
+    if !tokens
+        .get(start)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "class"))
+        || tokens.get(start + 1).map(|tok| tok.kind) != Some(TokenKind::Minus)
+        || !tokens
+            .get(start + 2)
+            .is_some_and(|tok| token_matches_keyword(source, tok, "methods"))
+    {
+        return false;
+    }
+    let next = skip_comment_tokens(tokens, start + 3);
+    tokens
+        .get(next)
+        .is_some_and(|tok| tok.kind == TokenKind::Colon)
+}
+
+fn is_chained_methods_entry_after_separator(tokens: &[Token], idx: usize) -> bool {
+    previous_non_comment_token(tokens, idx)
+        .and_then(|prev| tokens.get(prev))
+        .is_some_and(|tok| matches!(tok.kind, TokenKind::Colon | TokenKind::Comma))
+}
+
 #[inline]
 fn is_condition_comparison_keyword(source: &str, tok: &Token) -> bool {
     tok.kind == TokenKind::Ident
@@ -447,6 +480,7 @@ pub(crate) fn scan_until_statement_period(
     let mut allow_line_start_named_args = false;
     let mut allow_line_start_condition_comparison = false;
     let mut allow_line_start_table_key_components = false;
+    let in_chained_methods_decl = statement_starts_chained_methods_decl(source, tokens, start);
     let mut i = start;
     while i < tokens.len() {
         let t = &tokens[i];
@@ -477,6 +511,8 @@ pub(crate) fn scan_until_statement_period(
                     && !is_perform_if_found_addition(source, tokens, start, i)
                     && !is_signature_addition(source, tokens, start, i)
                     && !is_inline_decl_continuation(source, tokens, i)
+                    && !(in_chained_methods_decl
+                        && is_chained_methods_entry_after_separator(tokens, i))
                     && !condition_continuation
                     && !table_key_continuation
                 {

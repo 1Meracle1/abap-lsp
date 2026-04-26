@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
-    AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, DataLikeDecl,
+    AstNode, ClassDecl, ClassSectionStmt, ClassSectionVisibilityKind, DataDeclName, DataLikeDecl,
     DataLikeStorageKind, EventsStmt, EventsStmtEntry, EventsStmtKind, InterfaceDecl,
     MethodsParamSectionKind, MethodsStmt, MethodsStmtEntry, MethodsStmtKind, MethodsTypeClauseKind,
 };
@@ -475,25 +475,49 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     }
 
     pub(super) fn walk_class_deferred_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+        let names = self.deferred_stmt_names(node);
+        if names.is_empty() {
             self.collector.walk_children(node, scope);
             return;
-        };
-        let symbol = self
-            .collector
-            .declare_plain_symbol(scope, name, SymbolKind::Class, range);
-        self.collector.deferred_class_symbols.insert(symbol);
+        }
+        for (name, range) in names {
+            let symbol = self
+                .collector
+                .declare_plain_symbol(scope, name, SymbolKind::Class, range);
+            self.collector.deferred_class_symbols.insert(symbol);
+        }
     }
 
     pub(super) fn walk_interface_deferred_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((name, range)) = self.collector.header_ident_after_keyword(node) else {
+        let names = self.deferred_stmt_names(node);
+        if names.is_empty() {
             self.collector.walk_children(node, scope);
             return;
-        };
-        let symbol = self
+        }
+        for (name, range) in names {
+            let symbol =
+                self.collector
+                    .declare_plain_symbol(scope, name, SymbolKind::Interface, range);
+            self.collector.deferred_interface_symbols.insert(symbol);
+        }
+    }
+
+    fn deferred_stmt_names(&self, node: NodeId) -> Vec<(Arc<str>, TextRange)> {
+        let mut names = self
             .collector
-            .declare_plain_symbol(scope, name, SymbolKind::Interface, range);
-        self.collector.deferred_interface_symbols.insert(symbol);
+            .file
+            .children(node)
+            .filter_map(|child| DataDeclName::cast(self.collector.syntax(child)))
+            .filter_map(|name_node| {
+                Some((name_node.name(self.collector.source)?, name_node.range()))
+            })
+            .collect::<Vec<_>>();
+        if names.is_empty()
+            && let Some((name, range)) = self.collector.header_ident_after_keyword(node)
+        {
+            names.push((name, range));
+        }
+        names
     }
 
     pub(super) fn walk_class_decl(&mut self, node: NodeId, scope: ScopeId) {

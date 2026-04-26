@@ -275,24 +275,39 @@ fn interface_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool
     {
         return true;
     }
-    if significant.len() == 4
-        && significant
-            .get(1)
-            .is_some_and(|token| token.kind == TokenKind::Ident)
-        && significant
-            .get(2)
-            .is_some_and(|token| is_keyword(source, token, "deferred"))
-    {
-        return false;
+
+    let mut i = 1usize;
+    let mut saw_entry = false;
+    let mut saw_deferred_or_load = false;
+    loop {
+        while matches!(
+            significant.get(i).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            i += 1;
+        }
+        if significant
+            .get(i)
+            .is_some_and(|token| token.kind == TokenKind::Period)
+        {
+            break;
+        }
+        if significant.get(i).map(|token| token.kind) != Some(TokenKind::Ident) {
+            return true;
+        }
+        i += 1;
+        let Some(next) = significant.get(i) else {
+            return true;
+        };
+        if is_keyword(source, next, "deferred") || is_keyword(source, next, "load") {
+            saw_deferred_or_load = true;
+            saw_entry = true;
+            i += 1;
+            continue;
+        }
+        return true;
     }
-    if significant.len() >= 4
-        && significant
-            .get(1)
-            .is_some_and(|token| token.kind == TokenKind::Ident)
-        && significant
-            .get(significant.len() - 2)
-            .is_some_and(|token| is_keyword(source, token, "load"))
-    {
+    if saw_entry && saw_deferred_or_load {
         return false;
     }
     true
