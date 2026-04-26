@@ -16,7 +16,7 @@ The VS Code client remains responsible for:
 - SAP credentials,
 - ADT HTTP(S) requests,
 - rate limiting and scheduling,
-- writing fetched source files into the workspace cache,
+- sending fetched source artifacts back to the server for centralized SQLite storage,
 - notifying the server when the workspace view has changed.
 
 ## Notification Surface To Preserve
@@ -24,7 +24,7 @@ The VS Code client remains responsible for:
 - `abapls/resolveRemoteDependencies`
 - `abapls/remoteDependenciesUpdated`
 - `abapls/workspaceManifestUpdated`
-- `abapls/dependencyCacheCleared`
+- `abapls/dependencyCacheRefreshRequested`
 
 ## Migration Requirement
 

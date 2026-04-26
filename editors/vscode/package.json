@@ -18,20 +18,12 @@
         "title": "ABAP LSP: Create Linked ABAP Project"
       },
       {
-        "command": "abap-ls.addLocalWorkspaceObject",
-        "title": "ABAP LSP: Add Local ABAP Source File"
-      },
-      {
         "command": "abap-ls.configureSapConnection",
         "title": "ABAP LSP: Configure SAP Connection"
       },
       {
         "command": "abap-ls.searchRepositoryObjects",
         "title": "ABAP LSP: Search Repository Objects"
-      },
-      {
-        "command": "abap-ls.initializeWorkspaceFromAdtObject",
-        "title": "ABAP LSP: Initialize Workspace From ADT Object"
       },
       {
         "command": "abap-ls.addEditableAdtObjectToWorkspace",

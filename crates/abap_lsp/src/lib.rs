@@ -29,8 +29,8 @@ use abap_dependency_store::{
 };
 use abap_parser::parse;
 use abap_symbols::{
-    DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, SqlResolution, UnitId,
-    analyze_unit,
+    DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution, SqlResolution,
+    UnitId, analyze_unit,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CompletionItem,
@@ -57,7 +57,7 @@ pub use serde;
 pub const RESOLVE_REMOTE_DEPENDENCIES: &str = "abapls/resolveRemoteDependencies";
 pub const REMOTE_DEPENDENCIES_UPDATED: &str = "abapls/remoteDependenciesUpdated";
 pub const WORKSPACE_MANIFEST_UPDATED: &str = "abapls/workspaceManifestUpdated";
-pub const DEPENDENCY_CACHE_CLEARED: &str = "abapls/dependencyCacheCleared";
+pub const DEPENDENCY_CACHE_REFRESH_REQUESTED: &str = "abapls/dependencyCacheRefreshRequested";
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 pub const STORE_REMOTE_DEPENDENCY_ARTIFACTS: &str = "abapls/storeRemoteDependencyArtifacts";
 pub const READ_DEPENDENCY_DOCUMENT: &str = "abapls/readDependencyDocument";
@@ -2115,25 +2115,20 @@ pub fn handle_workspace_manifest_updated_with_progress(
     refresh_workspace_with_progress(state, &params.workspace_uri, progress)
 }
 
-pub fn handle_dependency_cache_cleared(
+pub fn handle_dependency_cache_refresh_requested(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
 ) -> Vec<Arc<AnalysisSnapshot>> {
-    handle_dependency_cache_cleared_with_progress(state, params, None)
+    handle_dependency_cache_refresh_requested_with_progress(state, params, None)
 }
 
-pub fn handle_dependency_cache_cleared_with_progress(
+pub fn handle_dependency_cache_refresh_requested_with_progress(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
-        if let Some(store) = workspace_dependency_store(workspace) {
-            if let Some(profile) = workspace_dependency_profile(workspace) {
-                let _ = store.clear_profile_scope(&profile);
-            }
-        }
         workspace.remote_resolution_seen.clear();
         workspace.remote_lookup_failures.clear();
         workspace.remote_resolution_in_flight = false;
@@ -2464,6 +2459,20 @@ fn collect_remote_dependency_candidates_for_batch(
     collect_remote_dependency_candidates_for_include_component(snapshot)
 }
 
+fn collect_remote_dependency_refresh_candidates_for_batch(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
+    if document_uses_local_exports(workspace, source_uri) {
+        return collect_remote_dependency_refresh_candidates_for_local_export_chain(
+            workspace, source_uri,
+        );
+    }
+
+    collect_remote_dependency_refresh_candidates_for_include_component(workspace, snapshot)
+}
+
 fn collect_remote_dependency_candidates_for_local_export_chain(
     workspace: &WorkspaceState,
     source_uri: &str,
@@ -2521,6 +2530,77 @@ fn collect_remote_dependency_candidates_for_local_export_chain(
                     queue.push_back(dependency_uri);
                 }
                 continue;
+            }
+            insert_remote_candidate(&mut deduped, candidate);
+        }
+    }
+
+    deduped.into_values().collect()
+}
+
+fn collect_remote_dependency_refresh_candidates_for_local_export_chain(
+    workspace: &WorkspaceState,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return workspace
+            .cache
+            .get(source_uri)
+            .map(|snapshot| {
+                collect_remote_dependency_refresh_candidates_for_include_component(
+                    workspace,
+                    snapshot.as_ref(),
+                )
+            })
+            .unwrap_or_default();
+    };
+    let config = local_export_config_for_source(&root_path, source_uri);
+    if !config.uses_local_exports() {
+        return workspace
+            .cache
+            .get(source_uri)
+            .map(|snapshot| {
+                collect_remote_dependency_refresh_candidates_for_include_component(
+                    workspace,
+                    snapshot.as_ref(),
+                )
+            })
+            .unwrap_or_default();
+    }
+
+    let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+    let mut visited_uris = HashSet::from([source_uri.to_string()]);
+    let mut queue = VecDeque::from([source_uri.to_string()]);
+    let mut resolver = LocalExportResolver::default();
+
+    while let Some(current_uri) = queue.pop_front() {
+        let Some(snapshot) = workspace.cache.get(&current_uri) else {
+            continue;
+        };
+
+        enqueue_resolved_local_export_dependency_uris(
+            snapshot.as_ref(),
+            &config.roots,
+            &mut resolver,
+            &mut visited_uris,
+            &mut queue,
+        );
+        for candidate in collect_remote_dependency_refresh_candidates_for_include_component(
+            workspace,
+            snapshot.as_ref(),
+        ) {
+            if let Some(document) = resolve_local_export_dependency_document(
+                &config.roots,
+                &mut resolver,
+                candidate.name.as_str(),
+                candidate.kind.as_str(),
+            ) {
+                let dependency_uri = document.uri.to_string();
+                if visited_uris.insert(dependency_uri.clone())
+                    && workspace.cache.get(&dependency_uri).is_some()
+                {
+                    queue.push_back(dependency_uri);
+                }
             }
             insert_remote_candidate(&mut deduped, candidate);
         }
@@ -2703,6 +2783,144 @@ fn collect_remote_dependency_candidates_for_unit(
     deduped.into_values().collect()
 }
 
+fn collect_remote_dependency_refresh_candidates_for_unit(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+    unit: &abap_symbols::UnitAnalysis,
+) -> Vec<RemoteDependencyCandidate> {
+    let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+
+    for edge in &unit.include_edges {
+        let target_is_dependency = edge
+            .target
+            .and_then(|target| snapshot.project.units.get(target.as_usize()))
+            .is_some_and(|target_unit| {
+                workspace_uri_is_dependency_source(workspace, target_unit.uri.as_ref())
+            });
+        if edge.target.is_some() && !target_is_dependency {
+            continue;
+        }
+        if !is_remote_lookup_candidate(edge.name.as_ref(), "include") {
+            continue;
+        }
+        insert_remote_candidate(
+            &mut deduped,
+            RemoteDependencyCandidate {
+                name: edge.name.to_string(),
+                kind: "include".to_string(),
+            },
+        );
+    }
+
+    for reference in unit.semantic().refs().all() {
+        let Some(candidate) = remote_dependency_candidate_for_reference(reference) else {
+            continue;
+        };
+        let include = match reference.resolution {
+            None | Some(Resolution::External) => true,
+            Some(Resolution::Symbol(handle)) => snapshot
+                .project
+                .units
+                .get(handle.unit.as_usize())
+                .is_some_and(|target_unit| {
+                    workspace_uri_is_dependency_source(workspace, target_unit.uri.as_ref())
+                }),
+            Some(
+                Resolution::BuiltinType
+                | Resolution::BuiltinRoutine
+                | Resolution::InternalTableLine,
+            ) => false,
+        };
+        if include {
+            insert_remote_candidate(&mut deduped, candidate);
+        }
+    }
+
+    for sql_source in &unit.sql_sources {
+        if sql_source.resolution == SqlResolution::External
+            && is_remote_lookup_candidate(sql_source.name.as_ref(), "type")
+        {
+            insert_remote_candidate(
+                &mut deduped,
+                RemoteDependencyCandidate {
+                    name: sql_source.name.to_string(),
+                    kind: "type".to_string(),
+                },
+            );
+        }
+    }
+
+    for call_site in &unit.call_sites {
+        match &call_site.target {
+            abap_symbols::NamedArgumentTarget::Function { function_name } => {
+                if !is_remote_lookup_candidate_after_local_resolution(
+                    function_name.as_ref(),
+                    "function",
+                ) {
+                    continue;
+                }
+                insert_remote_candidate(
+                    &mut deduped,
+                    RemoteDependencyCandidate {
+                        name: function_name.to_string(),
+                        kind: "function".to_string(),
+                    },
+                );
+            }
+            abap_symbols::NamedArgumentTarget::Report { report_name } => {
+                if !is_remote_lookup_candidate_after_local_resolution(
+                    report_name.as_ref(),
+                    "report",
+                ) {
+                    continue;
+                }
+                insert_remote_candidate(
+                    &mut deduped,
+                    RemoteDependencyCandidate {
+                        name: report_name.to_string(),
+                        kind: "report".to_string(),
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    deduped.into_values().collect()
+}
+
+fn remote_dependency_candidate_for_reference(
+    reference: &abap_symbols::ReferenceData,
+) -> Option<RemoteDependencyCandidate> {
+    let kind = match reference.kind {
+        ReferenceKind::Include => return None,
+        ReferenceKind::StaticTarget => "static",
+        ReferenceKind::TypeRef => "type",
+        ReferenceKind::StructuredDeclEnd => return None,
+        ReferenceKind::MessageClass => "message-class",
+        ReferenceKind::RoutineCall if reference.namespace == abap_symbols::Namespace::Routine => {
+            "function"
+        }
+        ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
+    };
+    let is_remote_candidate = match reference.kind {
+        ReferenceKind::StaticTarget | ReferenceKind::TypeRef => {
+            is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
+        }
+        ReferenceKind::RoutineCall if reference.namespace == abap_symbols::Namespace::Routine => {
+            is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
+        }
+        _ => is_remote_lookup_candidate(reference.name.as_ref(), kind),
+    };
+    if !is_remote_candidate {
+        return None;
+    }
+    Some(RemoteDependencyCandidate {
+        name: reference.name.to_string(),
+        kind: kind.to_string(),
+    })
+}
+
 fn collect_remote_dependency_candidates_for_include_component(
     snapshot: &AnalysisSnapshot,
 ) -> Vec<RemoteDependencyCandidate> {
@@ -2712,6 +2930,24 @@ fn collect_remote_dependency_candidates_for_include_component(
             continue;
         };
         for candidate in collect_remote_dependency_candidates_for_unit(unit) {
+            insert_remote_candidate(&mut deduped, candidate);
+        }
+    }
+    deduped.into_values().collect()
+}
+
+fn collect_remote_dependency_refresh_candidates_for_include_component(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+) -> Vec<RemoteDependencyCandidate> {
+    let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+    for unit_id in include_component_unit_ids(snapshot) {
+        let Some(unit) = snapshot.project.units.get(unit_id.as_usize()) else {
+            continue;
+        };
+        for candidate in
+            collect_remote_dependency_refresh_candidates_for_unit(workspace, snapshot, unit)
+        {
             insert_remote_candidate(&mut deduped, candidate);
         }
     }
@@ -2903,6 +3139,7 @@ fn has_cached_remote_dependency_candidate(
 struct RemoteDependencyMemo {
     request_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     batch_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
+    refresh_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     cached_candidate_presence: HashMap<String, bool>,
     negative_candidate_presence: HashMap<String, bool>,
     source_context_uris: HashMap<String, Vec<String>>,
@@ -2914,6 +3151,7 @@ impl RemoteDependencyMemo {
         Self {
             request_candidates: HashMap::new(),
             batch_candidates: HashMap::new(),
+            refresh_candidates: HashMap::new(),
             cached_candidate_presence: HashMap::new(),
             negative_candidate_presence: HashMap::new(),
             source_context_uris: HashMap::new(),
@@ -2945,6 +3183,22 @@ impl RemoteDependencyMemo {
             .entry(source_uri.to_owned())
             .or_insert_with(|| {
                 collect_remote_dependency_candidates_for_batch(workspace, snapshot, source_uri)
+            })
+            .clone()
+    }
+
+    fn candidates_for_refresh_batch(
+        &mut self,
+        workspace: &mut WorkspaceState,
+        snapshot: &AnalysisSnapshot,
+        source_uri: &str,
+    ) -> Vec<RemoteDependencyCandidate> {
+        self.refresh_candidates
+            .entry(source_uri.to_owned())
+            .or_insert_with(|| {
+                collect_remote_dependency_refresh_candidates_for_batch(
+                    workspace, snapshot, source_uri,
+                )
             })
             .clone()
     }
@@ -3019,6 +3273,8 @@ fn has_persisted_negative_remote_dependency_candidate(
 #[derive(Debug, Clone, Copy, Default)]
 struct RemoteDependencyRequestOptions {
     retry_negative_candidates: bool,
+    bypass_cached_candidates: bool,
+    include_resolved_dependencies: bool,
 }
 
 fn build_remote_dependency_request_for_snapshot(
@@ -3031,8 +3287,14 @@ fn build_remote_dependency_request_for_snapshot(
 ) -> Option<RemoteDependencyResolveParams> {
     let mut candidates = Vec::new();
     let source_uses_local_exports = memo.source_uses_local_exports(workspace, source_uri);
-    for candidate in memo.candidates_for_request(workspace, snapshot, source_uri) {
-        if memo.has_cached_candidate(cache_context, &candidate) {
+    let source_candidates = if options.include_resolved_dependencies {
+        memo.candidates_for_refresh_batch(workspace, snapshot, source_uri)
+    } else {
+        memo.candidates_for_request(workspace, snapshot, source_uri)
+    };
+    for candidate in source_candidates {
+        if !options.bypass_cached_candidates && memo.has_cached_candidate(cache_context, &candidate)
+        {
             continue;
         }
         if !options.retry_negative_candidates
@@ -3134,6 +3396,7 @@ pub fn build_remote_dependency_request_retrying_negatives(
         &cache_context,
         RemoteDependencyRequestOptions {
             retry_negative_candidates: true,
+            ..RemoteDependencyRequestOptions::default()
         },
     )
 }
@@ -3145,10 +3408,40 @@ pub fn build_remote_dependency_batch_for_workspace(
     build_remote_dependency_batch_for_workspace_filtered(state, workspace_uri, None)
 }
 
+pub fn build_remote_dependency_refresh_for_workspace(
+    state: &mut ServerState,
+    workspace_uri: &str,
+) -> Option<RemoteDependencyResolveParams> {
+    build_remote_dependency_batch_for_workspace_filtered_with_options(
+        state,
+        workspace_uri,
+        None,
+        RemoteDependencyRequestOptions {
+            retry_negative_candidates: true,
+            bypass_cached_candidates: true,
+            include_resolved_dependencies: true,
+        },
+    )
+}
+
 pub fn build_remote_dependency_batch_for_workspace_filtered(
     state: &mut ServerState,
     workspace_uri: &str,
     source_uri_filter: Option<&HashSet<Arc<str>>>,
+) -> Option<RemoteDependencyResolveParams> {
+    build_remote_dependency_batch_for_workspace_filtered_with_options(
+        state,
+        workspace_uri,
+        source_uri_filter,
+        RemoteDependencyRequestOptions::default(),
+    )
+}
+
+fn build_remote_dependency_batch_for_workspace_filtered_with_options(
+    state: &mut ServerState,
+    workspace_uri: &str,
+    source_uri_filter: Option<&HashSet<Arc<str>>>,
+    options: RemoteDependencyRequestOptions,
 ) -> Option<RemoteDependencyResolveParams> {
     let workspace_uri = normalize_lsp_uri(workspace_uri);
     let workspace = state.workspaces.get_mut(&workspace_uri)?;
@@ -3207,18 +3500,27 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         let mut uri_candidates = Vec::new();
         let mut uri_seen = HashSet::new();
         let source_uses_local_exports = memo.source_uses_local_exports(workspace, uri.as_ref());
-        for candidate in memo.candidates_for_batch(workspace, snapshot.as_ref(), uri.as_ref()) {
-            if memo.has_cached_candidate(&cache_context, &candidate) {
+        let snapshot_candidates = if options.include_resolved_dependencies {
+            memo.candidates_for_refresh_batch(workspace, snapshot.as_ref(), uri.as_ref())
+        } else {
+            memo.candidates_for_batch(workspace, snapshot.as_ref(), uri.as_ref())
+        };
+        for candidate in snapshot_candidates {
+            if !options.bypass_cached_candidates
+                && memo.has_cached_candidate(&cache_context, &candidate)
+            {
                 continue;
             }
-            if !source_uses_local_exports
+            if !options.retry_negative_candidates
+                && !source_uses_local_exports
                 && memo.has_persisted_negative_candidate(&cache_context, &candidate)
             {
                 continue;
             }
             let key = remote_candidate_key(&candidate);
-            if workspace.remote_resolution_seen.contains(&key)
-                || workspace.remote_lookup_failures.contains(&key)
+            if !options.retry_negative_candidates
+                && (workspace.remote_resolution_seen.contains(&key)
+                    || workspace.remote_lookup_failures.contains(&key))
             {
                 continue;
             }
@@ -3262,7 +3564,7 @@ pub fn build_remote_dependency_batch_for_workspace_filtered(
         workspace_uri: workspace.root_uri.clone(),
         source_uri: source_uris.first().cloned().unwrap_or_default(),
         source_uris,
-        retry_negative_candidates: false,
+        retry_negative_candidates: options.retry_negative_candidates,
         remote_request_parallelism,
         remote_requests_per_second,
         source_candidates,
@@ -4767,23 +5069,26 @@ mod tests {
     use crate::sem_tokens;
 
     use super::{
-        CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_CLEARED,
+        CodeActionParams, CompletionParams, CompletionResponse,
+        DEPENDENCY_CACHE_REFRESH_REQUESTED,
         DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, DependencyArtifactPayload,
         GotoDefinitionParams, HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED,
         RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams, ReferenceParams,
         RemoteDependencyCandidate, RenameParams, ServerState, StoreRemoteDependencyArtifactsParams,
         WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_lsp_diagnostics,
         build_lsp_diagnostics_for_workspace, build_remote_dependency_batch_for_workspace,
-        build_remote_dependency_request, build_remote_dependency_request_retrying_negatives,
+        build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
+        build_remote_dependency_request_retrying_negatives,
         build_remote_dependency_requests_for_workspace, code_actions,
         collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
         completion, definition, dependency_document_uri, extract_stored_dependency_symbols,
-        handle_dependency_cache_cleared, handle_remote_dependencies_updated, hover,
-        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
-        publish_changed_document, publish_changed_document_mut, publish_open_document,
-        publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
-        semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
-        store_remote_dependency_artifacts, workspace_manifest_diagnostics_params,
+        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated, hover,
+        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position,
+        prepare_rename, publish_changed_document, publish_changed_document_mut,
+        publish_open_document, publish_open_document_mut, read_dependency_document, references,
+        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
+        stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
+        workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -4799,7 +5104,7 @@ mod tests {
     fn configure_test_dependency_store(state: &mut ServerState, workspace_path: &Path) {
         state.dependency_store_path_override = Some(
             workspace_path
-                .join(".abapls-central")
+                .join("dependency-store")
                 .join("dependency-cache.sqlite3"),
         );
     }
@@ -6765,7 +7070,10 @@ ENDCLASS.";
             WORKSPACE_MANIFEST_UPDATED,
             "abapls/workspaceManifestUpdated"
         );
-        assert_eq!(DEPENDENCY_CACHE_CLEARED, "abapls/dependencyCacheCleared");
+        assert_eq!(
+            DEPENDENCY_CACHE_REFRESH_REQUESTED,
+            "abapls/dependencyCacheRefreshRequested"
+        );
     }
 
     #[test]
@@ -7362,7 +7670,7 @@ version = 1
 
 [resolution]
 dependency_mode = "local-first"
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 "#,
         )
         .expect("manifest");
@@ -8361,7 +8669,7 @@ dependency_mode = "remote-on-demand"
                 .any(|candidate| candidate.name == "zcl_remote_demo")
         );
 
-        let _ = handle_dependency_cache_cleared(
+        let _ = handle_dependency_cache_refresh_requested(
             &mut state,
             &WorkspaceManifestUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
@@ -8369,7 +8677,7 @@ dependency_mode = "remote-on-demand"
         );
         let request =
             build_remote_dependency_request(&mut state, &format!("{workspace_uri}/main.abap"))
-                .expect("remote request after cache clear");
+                .expect("remote request after dependency cache refresh");
         assert!(
             request
                 .candidates
@@ -9042,7 +9350,7 @@ version = 1
 
 [resolution]
 dependency_mode = "local-first"
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 "#,
         )
         .expect("manifest");
@@ -9375,8 +9683,8 @@ root_file = "src/ZCL_HELPER.abap"
     }
 
     #[test]
-    fn dependency_cache_clear_refreshes_workspace_and_reissues_requests() {
-        let workspace_path = temp_workspace_path("dependency_cache_clear_refresh");
+    fn dependency_cache_refresh_reissues_requests() {
+        let workspace_path = temp_workspace_path("dependency_cache_refresh");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::create_dir_all(workspace_path.join("src")).expect("src dir");
         fs::write(
@@ -9447,7 +9755,7 @@ ENDCLASS.
                 .is_none()
         );
 
-        let snapshots = handle_dependency_cache_cleared(
+        let snapshots = handle_dependency_cache_refresh_requested(
             &mut state,
             &WorkspaceManifestUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
@@ -9455,12 +9763,12 @@ ENDCLASS.
         );
         assert!(
             !snapshots.is_empty(),
-            "expected workspace refresh after cache clear"
+            "expected workspace refresh after dependency cache refresh"
         );
 
-        let request =
-            build_remote_dependency_request(&mut state, &format!("{workspace_uri}/src/ZMAIN.abap"))
-                .expect("remote request after cache clear");
+        let request = build_remote_dependency_refresh_for_workspace(&mut state, &workspace_uri)
+            .expect("remote refresh request");
+        assert!(request.retry_negative_candidates);
         assert!(
             request
                 .candidates
@@ -10043,7 +10351,7 @@ dependency_mode = "remote-on-demand"
         let workspace_path = temp_workspace_path("workspace_remote_batch_src_priority");
         let source_dir = workspace_path.join("src");
         let dependency_dir = workspace_path
-            .join(".abapls")
+            .join("legacy-cache-root")
             .join("cache")
             .join("dependencies")
             .join("global-class");
@@ -10074,11 +10382,11 @@ object_name = "ZMAIN"
 [[unit]]
 name = "ZCL_DEP"
 kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+root_file = "legacy-cache/dependencies/global-class/ZCL_DEP.abap"
 
 [[unit.member]]
 role = "dependency"
-file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+file = "legacy-cache/dependencies/global-class/ZCL_DEP.abap"
 object_name = "ZCL_DEP"
 "#,
         )
@@ -10371,7 +10679,7 @@ dependency_mode = "remote-on-demand"
         .expect("sidecar");
 
         let negative_path = workspace_path
-            .join(".abapls")
+            .join("legacy-cache-root")
             .join("cache")
             .join("negative-dependencies")
             .join("type")
@@ -11235,7 +11543,7 @@ dependency_mode = "remote-on-demand"
     fn opening_dependency_function_group_with_unsupported_simple_statements_requests_new_symbols() {
         let workspace_path = temp_workspace_path("dependency_function_group_open_remote");
         let dependency_dir = workspace_path
-            .join(".abapls")
+            .join("legacy-cache-root")
             .join("cache")
             .join("dependencies")
             .join("function-group");
@@ -11255,7 +11563,7 @@ dependency_mode = "remote-on-demand"
 [[unit]]
 name = "/AIF/FILE_PROCESS_DATA"
 kind = "function-group"
-root_file = ".abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+root_file = "legacy-cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
 "#,
         )
         .expect("manifest");
@@ -11292,7 +11600,7 @@ ENDFUNCTION.";
 
         let workspace_uri = path_to_file_uri(&workspace_path);
         let dependency_uri = format!(
-            "{workspace_uri}/.abapls/cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
+            "{workspace_uri}/legacy-cache/dependencies/function-group/%2FAIF%2FFILE_PROCESS_DATA.abap"
         );
         let normalized_dependency_uri = normalize_lsp_uri(&dependency_uri);
         let mut state = ServerState::default();
@@ -11347,7 +11655,7 @@ ENDFUNCTION.";
     fn undeclared_dependency_cache_files_do_not_suppress_remote_requests() {
         let workspace_path = temp_workspace_path("dependency_cache_scan");
         let dependency_dir = workspace_path
-            .join(".abapls")
+            .join("legacy-cache-root")
             .join("cache")
             .join("dependencies")
             .join("ddic-structure");
@@ -18267,7 +18575,7 @@ dependency_mode = "remote-on-demand"
         let mut state = ServerState::default();
         state.dependency_store_path_override = Some(
             workspace_path
-                .join(".abapls-central")
+                .join("dependency-store")
                 .join("dependency-cache.sqlite3"),
         );
         state.register_workspace_folder(workspace_uri.clone());
@@ -18426,7 +18734,7 @@ START-OF-SELECTION.
         let mut state = ServerState::default();
         state.dependency_store_path_override = Some(
             workspace_path
-                .join(".abapls-central")
+                .join("dependency-store")
                 .join("dependency-cache.sqlite3"),
         );
         state.register_workspace_folder(workspace_uri.clone());
@@ -18541,7 +18849,7 @@ START-OF-SELECTION.
         let mut state = ServerState::default();
         state.dependency_store_path_override = Some(
             workspace_path
-                .join(".abapls-central")
+                .join("dependency-store")
                 .join("dependency-cache.sqlite3"),
         );
         state.register_workspace_folder(workspace_uri.clone());
@@ -18657,7 +18965,7 @@ dependency_mode = "remote-on-demand"
         let mut state = ServerState::default();
         state.dependency_store_path_override = Some(
             workspace_path
-                .join(".abapls-central")
+                .join("dependency-store")
                 .join("dependency-cache.sqlite3"),
         );
         state.register_workspace_folder(workspace_uri.clone());

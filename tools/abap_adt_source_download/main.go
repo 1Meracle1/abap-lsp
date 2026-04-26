@@ -46,15 +46,13 @@ func main() {
 		MaxConcurrent:     cfg.MaxConcurrent,
 	})
 	if cfg.ObjectFilter == nil {
-		if cfg.DependencyInput == nil {
-			log.Printf(
-				"exporting %d package(s) to %s with %d requests/min and %d concurrent requests",
-				len(cfg.Packages),
-				cfg.OutputDir,
-				cfg.RequestsPerMinute,
-				cfg.MaxConcurrent,
-			)
-		}
+		log.Printf(
+			"exporting %d package(s) to %s with %d requests/min and %d concurrent requests",
+			len(cfg.Packages),
+			cfg.OutputDir,
+			cfg.RequestsPerMinute,
+			cfg.MaxConcurrent,
+		)
 	} else {
 		log.Printf(
 			"exporting %d package(s) to %s with %d requests/min, %d concurrent requests, and %d filtered object(s) from %s",
@@ -66,18 +64,8 @@ func main() {
 			cfg.ObjectsFile,
 		)
 	}
-	if cfg.DependencyInput != nil {
-		log.Printf(
-			"resolving %d remote dependency candidate(s) into workspace cache under %s with %d requests/min and %d concurrent requests",
-			len(cfg.DependencyInput.Candidates),
-			cfg.OutputDir,
-			cfg.RequestsPerMinute,
-			cfg.MaxConcurrent,
-		)
-	}
-
 	createDirIfNotExists(cfg.OutputDir)
-	if cfg.CleanOutput && cfg.DependencyInput == nil {
+	if cfg.CleanOutput {
 		if err := deleteContents(cfg.OutputDir); err != nil {
 			log.Fatalf("failed to clean output folder %s: %v", cfg.OutputDir, err)
 		}
@@ -92,13 +80,6 @@ func main() {
 	defer func() {
 		log.Printf("program execution took %.2f minutes", time.Since(startExport).Minutes())
 	}()
-
-	if cfg.DependencyInput != nil {
-		if err := exportDependencies(ctx, cfg); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
 
 	ctx.wg = &sync.WaitGroup{}
 	for _, packageName := range cfg.Packages {

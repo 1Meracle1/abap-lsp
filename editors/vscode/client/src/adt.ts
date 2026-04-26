@@ -729,35 +729,6 @@ export class AdtClient {
 		return parseRepositoryNodeStructure(response.body);
 	}
 
-	async cacheRemoteObject(
-		workspaceFolder: vscode.WorkspaceFolder,
-		objectRef: AdtObjectRef,
-		source: string,
-		fileExtension: "abap" | "xml" = "abap",
-	): Promise<void> {
-		const cacheRoot = path.join(workspaceFolder.uri.fsPath, ".abapls", "cache");
-		const objectsDir = path.join(cacheRoot, "objects");
-		await fs.promises.mkdir(objectsDir, { recursive: true });
-
-		const slug = encodeURIComponent(objectRef.name);
-		const metadataPath = path.join(objectsDir, `${slug}.json`);
-
-		await fs.promises.writeFile(
-			metadataPath,
-			JSON.stringify(
-				{
-					...objectRef,
-					fileExtension,
-					size: source.length,
-					fetchedAt: new Date().toISOString(),
-				},
-				null,
-				2,
-			),
-			"utf8",
-		);
-	}
-
 	private async ensureSession(): Promise<void> {
 		this.throwIfCancelled();
 		if (this.csrfToken) {

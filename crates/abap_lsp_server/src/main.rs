@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CodeActionParams, CompletionParams, DEPENDENCY_CACHE_CLEARED,
+    CodeActionParams, CompletionParams, DEPENDENCY_CACHE_REFRESH_REQUESTED,
     DependencyCacheInitializationOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, HoverParams, InlayHintParams, READ_DEPENDENCY_DOCUMENT,
     REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, RenameParams,
@@ -18,9 +18,10 @@ use abap_lsp::{
     WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
     WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
     build_remote_dependency_batch_for_workspace,
-    build_remote_dependency_batch_for_workspace_filtered, build_remote_dependency_request,
+    build_remote_dependency_batch_for_workspace_filtered,
+    build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
     build_remote_dependency_request_retrying_negatives, code_actions, completion, definition,
-    handle_dependency_cache_cleared_with_progress,
+    handle_dependency_cache_refresh_requested_with_progress,
     handle_remote_dependencies_updated_with_progress,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     prepare_rename, prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
@@ -158,7 +159,7 @@ enum AnalysisTaskKind {
     DidOpen(DidOpenTextDocumentParams),
     DidChange(DidChangeTextDocumentParams),
     ManifestUpdated(WorkspaceManifestUpdatedParams),
-    DependencyCacheCleared(WorkspaceManifestUpdatedParams),
+    DependencyCacheRefreshRequested(WorkspaceManifestUpdatedParams),
     RemoteDependenciesUpdated(abap_lsp::RemoteDependenciesUpdatedParams),
     Initialized,
 }
@@ -489,7 +490,7 @@ fn try_schedule_background_analysis(
                 notifications,
             }))
         }
-        DEPENDENCY_CACHE_CLEARED => {
+        DEPENDENCY_CACHE_REFRESH_REQUESTED => {
             let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
                 return Ok(Some(ScheduledBackgroundWork {
                     started_statuses,
@@ -514,7 +515,7 @@ fn try_schedule_background_analysis(
                     generation: next_workspace_generation(generations, &workspace_uri),
                     started,
                     workspace,
-                    kind: AnalysisTaskKind::DependencyCacheCleared(
+                    kind: AnalysisTaskKind::DependencyCacheRefreshRequested(
                         WorkspaceManifestUpdatedParams {
                             workspace_uri: workspace_uri.clone(),
                         },
@@ -625,8 +626,12 @@ fn run_analysis_task(
         AnalysisTaskKind::ManifestUpdated(params) => {
             handle_workspace_manifest_updated_notifications(&mut state, params, progress_sink)?
         }
-        AnalysisTaskKind::DependencyCacheCleared(params) => {
-            handle_dependency_cache_cleared_notifications(&mut state, params, progress_sink)?
+        AnalysisTaskKind::DependencyCacheRefreshRequested(params) => {
+            handle_dependency_cache_refresh_requested_notifications(
+                &mut state,
+                params,
+                progress_sink,
+            )?
         }
         AnalysisTaskKind::RemoteDependenciesUpdated(params) => {
             handle_remote_dependencies_updated_notifications(&mut state, params, progress_sink)?
@@ -1646,7 +1651,7 @@ fn handle_workspace_manifest_updated_notifications(
     Ok(notifications)
 }
 
-fn handle_dependency_cache_cleared_notifications(
+fn handle_dependency_cache_refresh_requested_notifications(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
     progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
@@ -1657,12 +1662,13 @@ fn handle_dependency_cache_cleared_notifications(
             Some(&progress_notifications),
             progress_sink,
             &params.workspace_uri,
-            "dependency-cache-cleared",
+            "dependency-cache-refresh",
             processed,
             total,
         );
     };
-    let snapshots = handle_dependency_cache_cleared_with_progress(state, params, Some(&progress));
+    let snapshots =
+        handle_dependency_cache_refresh_requested_with_progress(state, params, Some(&progress));
     let mut notifications = Vec::new();
     notifications.extend(
         progress_notifications
@@ -1678,7 +1684,8 @@ fn handle_dependency_cache_cleared_notifications(
         let params_value = serde_json::to_value(publish_diagnostics_params(state, snapshot))?;
         notifications.push(("textDocument/publishDiagnostics".to_string(), params_value));
     }
-    if let Some(request) = build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
+    if let Some(request) =
+        build_remote_dependency_refresh_for_workspace(state, &params.workspace_uri)
     {
         notifications.push((
             RESOLVE_REMOTE_DEPENDENCIES.to_string(),
@@ -1990,10 +1997,12 @@ fn handle_message(
                 .transpose()?
                 .unwrap_or_default(),
         }),
-        Some(DEPENDENCY_CACHE_CLEARED) => Ok(HandledMessage {
+        Some(DEPENDENCY_CACHE_REFRESH_REQUESTED) => Ok(HandledMessage {
             response: None,
             notifications: parse_params::<WorkspaceManifestUpdatedParams>(&message)?
-                .map(|params| handle_dependency_cache_cleared_notifications(state, &params, None))
+                .map(|params| {
+                    handle_dependency_cache_refresh_requested_notifications(state, &params, None)
+                })
                 .transpose()?
                 .unwrap_or_default(),
         }),
@@ -2346,14 +2355,14 @@ fn workspace_analysis_status_started(
                 remote_resolution_in_flight: false,
             }
         }
-        DEPENDENCY_CACHE_CLEARED => {
+        DEPENDENCY_CACHE_REFRESH_REQUESTED => {
             let Some(params) = parse_params::<WorkspaceManifestUpdatedParams>(message)? else {
                 return Ok(None);
             };
             WorkspaceAnalysisStatusParams {
                 workspace_uri: abap_lsp::normalize_lsp_uri(&params.workspace_uri),
                 phase: WorkspaceAnalysisPhase::Started,
-                trigger: "dependency-cache-cleared".to_string(),
+                trigger: "dependency-cache-refresh".to_string(),
                 processed_document_count: 0,
                 total_document_count: 0,
                 analyzed_document_count: 0,
@@ -2499,7 +2508,7 @@ mod tests {
     fn configure_test_dependency_store(state: &mut ServerState, workspace_path: &Path) {
         state.dependency_store_path_override = Some(
             workspace_path
-                .join(".abapls-central")
+                .join("dependency-store")
                 .join("dependency-cache.sqlite3"),
         );
     }
@@ -2598,12 +2607,12 @@ mod tests {
             manifest.push_str(&format!("name = \"ZCL_DEP_{idx:04}\"\n"));
             manifest.push_str("kind = \"global-class\"\n");
             manifest.push_str(&format!(
-                "root_file = \".abapls/cache/dependencies/global-class/ZCL_DEP_{idx:04}.abap\"\n\n"
+                "root_file = \"legacy-cache/dependencies/global-class/ZCL_DEP_{idx:04}.abap\"\n\n"
             ));
             manifest.push_str("[[unit.member]]\n");
             manifest.push_str("role = \"dependency\"\n");
             manifest.push_str(&format!(
-                "file = \".abapls/cache/dependencies/global-class/ZCL_DEP_{idx:04}.abap\"\n"
+                "file = \"legacy-cache/dependencies/global-class/ZCL_DEP_{idx:04}.abap\"\n"
             ));
             manifest.push_str(&format!("object_name = \"ZCL_DEP_{idx:04}\"\n\n"));
         }
@@ -2934,12 +2943,12 @@ START-OF-SELECTION.
     fn editor_first_cold_open_skips_incomplete_preview_diagnostics_for_dependency_files() {
         let workspace_path = temp_workspace_path("editor_first_cold_dependency_preview");
         let dependency_class_dir = workspace_path
-            .join(".abapls")
+            .join("legacy-cache-root")
             .join("cache")
             .join("dependencies")
             .join("global-class");
         let dependency_ddic_dir = workspace_path
-            .join(".abapls")
+            .join("legacy-cache-root")
             .join("cache")
             .join("dependencies")
             .join("ddic-data-element");
@@ -2959,11 +2968,11 @@ dependency_mode = "remote-on-demand"
 [[unit]]
 name = "/STTP/CL_DEP"
 kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+root_file = "legacy-cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
 
 [[unit.member]]
 role = "dependency"
-file = ".abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
+file = "legacy-cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
 object_name = "/STTP/CL_DEP"
 "#,
         )
@@ -3000,9 +3009,8 @@ ENDCLASS.",
         .expect("type dependency");
 
         let workspace_uri = file_uri(&workspace_path);
-        let dependency_uri = format!(
-            "{workspace_uri}/.abapls/cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap"
-        );
+        let dependency_uri =
+            format!("{workspace_uri}/legacy-cache/dependencies/global-class/%2FSTTP%2FCL_DEP.abap");
         let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
         let normalized_dependency_uri = abap_lsp::normalize_lsp_uri(&dependency_uri);
 
@@ -4055,7 +4063,7 @@ ENDCLASS.",
         assert!(
             diagnostic_uris
                 .iter()
-                .all(|uri| !uri.contains(".abapls/cache/dependencies"))
+                .all(|uri| !uri.contains("legacy-cache/dependencies"))
         );
     }
 
@@ -6773,7 +6781,7 @@ START-OF-SELECTION.
         let workspace_uri = file_uri(&workspace_path);
         let source_uri = file_uri(&source_path);
         let store_path = workspace_path
-            .join(".abapls-central")
+            .join("dependency-store")
             .join("dependency-cache.sqlite3");
         let position = lsp_position_for_offset(
             source,

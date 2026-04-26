@@ -41,7 +41,6 @@ import {
 	inferManifestUnitSpec,
 	manifestFileName,
 	targetEditableWorkspaceFilePath,
-	targetLocalWorkspaceFilePath,
 	workspaceManifestPath,
 } from "./manifest";
 import {
@@ -66,7 +65,6 @@ const remoteDependencySchedulers = new Map<string, RemoteDependencyScheduler>();
 const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
 const workspaceAnalysisProgress = new Map<string, WorkspaceAnalysisProgressHandle>();
-const customerObjectNamePattern = /^(?:[ZY][A-Z0-9_\/]*|\/[A-Z0-9_]+\/[A-Z0-9_\/]+)$/;
 type UnitDependencySourceMode = "local-first" | "local-only" | "adt-first";
 
 interface RemoteDependencyResolveParams {
@@ -170,13 +168,9 @@ interface WorkspaceAnalysisProgressHandle {
 	latest?: WorkspaceAnalysisStatusParams;
 }
 
-interface LocalWorkspaceObjectTemplate {
-	label: string;
-	kind: string;
-	namePattern: RegExp;
-	namePlaceholder: string;
-	stub: (name: string) => string;
-}
+type EditableAdtObjectTarget =
+	| { kind: "file"; filePath: string }
+	| { kind: "directory"; directoryPath: string };
 
 interface AbapFoldingRangeShape {
 	start: number;
@@ -440,25 +434,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("abap-ls.addLocalWorkspaceObject", async () => {
-			const workspaceFolder = await pickWorkspaceFolder();
-			if (!workspaceFolder) {
-				return;
-			}
-
-			await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: "Adding ABAP source file",
-				},
-				async () => {
-					await promptAndCreateLocalWorkspaceObject(workspaceFolder);
-				},
-			);
-		}),
-	);
-
-	context.subscriptions.push(
 		vscode.commands.registerCommand("abap-ls.configureSapConnection", async () => {
 			const workspaceFolder = await pickWorkspaceFolder();
 			if (!workspaceFolder) {
@@ -492,30 +467,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("abap-ls.initializeWorkspaceFromAdtObject", async () => {
-			const workspaceFolder = await pickWorkspaceFolder();
-			if (!workspaceFolder) {
-				return;
-			}
-
-			const objectRef = await promptForRepositoryObject(context, workspaceFolder);
-			if (!objectRef) {
-				return;
-			}
-
-			await vscode.window.withProgress(
-				{
-					location: vscode.ProgressLocation.Notification,
-					title: `Pulling ${objectRef.name} from SAP`,
-				},
-				async () => {
-					await addEditableAdtObjectToWorkspace(context, workspaceFolder, objectRef);
-				},
-			);
-		}),
-	);
-
-	context.subscriptions.push(
 		vscode.commands.registerCommand("abap-ls.addEditableAdtObjectToWorkspace", async () => {
 			const workspaceFolder = await pickWorkspaceFolder();
 			if (!workspaceFolder) {
@@ -527,13 +478,18 @@ function registerCommands(context: vscode.ExtensionContext): void {
 				return;
 			}
 
+			const target = await promptForEditableAdtObjectTarget(workspaceFolder, objectRef);
+			if (!target) {
+				return;
+			}
+
 			await vscode.window.withProgress(
 				{
 					location: vscode.ProgressLocation.Notification,
 					title: `Adding ${objectRef.name} to workspace`,
 				},
 				async () => {
-					await addEditableAdtObjectToWorkspace(context, workspaceFolder, objectRef);
+					await addEditableAdtObjectToWorkspace(context, workspaceFolder, objectRef, target);
 				},
 			);
 		}),
@@ -558,10 +514,10 @@ function registerCommands(context: vscode.ExtensionContext): void {
 			}
 
 			clearRemoteDependencyCaches(workspaceFolder);
-			await client.sendNotification("abapls/dependencyCacheCleared", {
+			await client.sendNotification("abapls/dependencyCacheRefreshRequested", {
 				workspaceUri: workspaceFolder.uri.toString(),
 			} satisfies WorkspaceManifestUpdatedParams);
-			vscode.window.showInformationMessage("ABAP LSP dependency store cleared.");
+			vscode.window.showInformationMessage("ABAP LSP dependency cache refresh requested.");
 		}),
 	);
 
@@ -818,8 +774,8 @@ function workspaceAnalysisProgressTitle(params: WorkspaceAnalysisStatusParams): 
 	switch (params.trigger) {
 		case "manifest-updated":
 			return `ABAP: refreshing ${workspaceLabel} after manifest change`;
-		case "dependency-cache-cleared":
-			return `ABAP: rebuilding ${workspaceLabel} after cache reset`;
+		case "dependency-cache-refresh":
+			return `ABAP: refreshing ${workspaceLabel} dependency cache`;
 		case "remote-dependencies-updated":
 			return `ABAP: refreshing ${workspaceLabel} after dependency fetch`;
 		default:
@@ -856,8 +812,8 @@ function workspaceAnalysisProgressMessage(params: WorkspaceAnalysisStatusParams)
 	switch (params.trigger) {
 		case "manifest-updated":
 			return "Loading updated manifest and preparing document analysis...";
-		case "dependency-cache-cleared":
-			return "Reloading dependency cache and preparing document analysis...";
+		case "dependency-cache-refresh":
+			return "Refreshing dependency cache and preparing document analysis...";
 		case "remote-dependencies-updated":
 			return "Applying fetched dependencies and preparing follow-up analysis...";
 		default:
@@ -1243,24 +1199,6 @@ async function createLinkedProject(
 	await notifyWorkspaceManifestUpdated(workspaceFolder);
 	dismissedWorkspaceConfigPrompts.add(workspaceFolder.uri.toString());
 
-	const selection = await vscode.window.showQuickPick(
-		[
-			{ label: "Create first source file", createFirstObject: true },
-			{ label: "Manifest only", createFirstObject: false },
-		],
-		{
-			placeHolder: "Create the first local development object now?",
-		},
-	);
-	if (!selection) {
-		return;
-	}
-
-	if (selection.createFirstObject) {
-		await promptAndCreateLocalWorkspaceObject(workspaceFolder);
-		return;
-	}
-
 	void vscode.window.showInformationMessage(
 		`Created linked ABAP project in "${workspaceFolder.name}".`,
 	);
@@ -1270,19 +1208,26 @@ async function addEditableAdtObjectToWorkspace(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
 	objectRef: AdtObjectRef,
+	target: EditableAdtObjectTarget,
 ): Promise<void> {
 	if (!isSupportedEditableWorkspaceObject(objectRef)) {
 		throw new Error(`Unsupported editable object type for ${objectRef.name} (${objectRef.type}).`);
 	}
 	if (objectRef.type.toUpperCase() === "FUGR/F" || isFunctionModuleObject(objectRef)) {
-		await addEditableFunctionGroupToWorkspace(context, workspaceFolder, objectRef);
+		if (target.kind !== "directory") {
+			throw new Error(`Function group objects require a target directory: ${objectRef.name}.`);
+		}
+		await addEditableFunctionGroupToWorkspace(context, workspaceFolder, objectRef, target.directoryPath);
 		return;
 	}
 	if (!isCustomEditableObjectName(objectRef.name)) {
-		throw new Error(`Only customer objects with Z/Y prefixes or customer namespaces can be added to src: ${objectRef.name}.`);
+		throw new Error(`Only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: ${objectRef.name}.`);
 	}
 
-	const filePath = targetEditableWorkspaceFilePath(workspaceFolder, objectRef);
+	if (target.kind !== "file") {
+		throw new Error(`Editable object requires a target ABAP file: ${objectRef.name}.`);
+	}
+	const filePath = target.filePath;
 	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 
 	let source: string;
@@ -1312,7 +1257,9 @@ async function addEditableAdtObjectToWorkspace(
 	await vscode.window.showTextDocument(document, { preview: false });
 
 	if (!fileExisted) {
-		void vscode.window.showInformationMessage(`Added ${objectRef.name} to src/.`);
+		void vscode.window.showInformationMessage(
+			`Added ${objectRef.name} to ${workspaceRelativePath(workspaceFolder, filePath)}.`,
+		);
 	}
 }
 
@@ -1320,11 +1267,12 @@ async function addEditableFunctionGroupToWorkspace(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
 	objectRef: AdtObjectRef,
+	targetDirectoryPath: string,
 ): Promise<void> {
 	const functionGroupRef = editableFunctionGroupObjectRef(objectRef);
 	if (!isCustomEditableObjectName(functionGroupRef.name)) {
 		throw new Error(
-			`Only customer objects with Z/Y prefixes or customer namespaces can be added to src: ${functionGroupRef.name}.`,
+			`Only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: ${functionGroupRef.name}.`,
 		);
 	}
 
@@ -1335,10 +1283,15 @@ async function addEditableFunctionGroupToWorkspace(
 
 	const adtClient = createAdtClient(connection);
 	const groupChildren = await adtClient.listFunctionGroupChildren(functionGroupRef.name);
-	const layout = editableFunctionGroupLayout(workspaceFolder, functionGroupRef, groupChildren, objectRef);
+	const layout = editableFunctionGroupLayout(targetDirectoryPath, functionGroupRef, groupChildren, objectRef);
 	await fs.promises.mkdir(layout.baseDir, { recursive: true });
 
 	const createdFiles: string[] = [];
+	if (!(await fileExists(layout.rootFilePath))) {
+		const source = await adtClient.fetchObjectSource(functionGroupRef.uri);
+		await fs.promises.writeFile(layout.rootFilePath, source, "utf8");
+		createdFiles.push(layout.rootFilePath);
+	}
 	for (const member of layout.members) {
 		if (await fileExists(member.filePath)) {
 			continue;
@@ -1361,7 +1314,7 @@ async function addEditableFunctionGroupToWorkspace(
 
 	if (createdFiles.length > 0) {
 		void vscode.window.showInformationMessage(
-			`Added function group ${functionGroupRef.name} to src/function-groups/.`,
+			`Added function group ${functionGroupRef.name} to ${workspaceRelativePath(workspaceFolder, layout.baseDir)}.`,
 		);
 	}
 }
@@ -1389,7 +1342,7 @@ function editableFunctionGroupObjectRef(objectRef: AdtObjectRef): AdtObjectRef {
 }
 
 function editableFunctionGroupLayout(
-	workspaceFolder: vscode.WorkspaceFolder,
+	baseDir: string,
 	functionGroupRef: AdtObjectRef,
 	groupChildren: readonly AdtRepositoryChild[],
 	selectedObjectRef: AdtObjectRef,
@@ -1400,7 +1353,6 @@ function editableFunctionGroupLayout(
 	members: EditableFunctionGroupMember[];
 } {
 	const encodedGroupName = encodeURIComponent(functionGroupRef.name.trim().toUpperCase());
-	const baseDir = path.join(workspaceFolder.uri.fsPath, "src", "function-groups", encodedGroupName);
 	const rootFilePath = path.join(baseDir, `${encodedGroupName}.abap`);
 
 	const includeChildren = groupChildren
@@ -1830,22 +1782,6 @@ async function promptForRepositoryObject(
 	return selection?.objectRef;
 }
 
-async function promptAndCreateLocalWorkspaceObject(
-	workspaceFolder: vscode.WorkspaceFolder,
-): Promise<void> {
-	const template = await pickLocalWorkspaceObjectTemplate();
-	if (!template) {
-		return;
-	}
-
-	const objectName = await promptForLocalWorkspaceObjectName(template);
-	if (!objectName) {
-		return;
-	}
-
-	await createLocalWorkspaceObject(workspaceFolder, template, objectName);
-}
-
 async function pickWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
 	const folders = vscode.workspace.workspaceFolders ?? [];
 	if (folders.length === 0) {
@@ -1869,62 +1805,123 @@ function workspaceFolderForUri(workspaceUri: string): vscode.WorkspaceFolder | u
 
 function isCustomEditableObjectName(name: string): boolean {
 	const trimmed = name.trim().toUpperCase();
-	return trimmed.startsWith("Z") || trimmed.startsWith("Y");
+	return trimmed.startsWith("Z") || trimmed.startsWith("Y") || /^\/[A-Z0-9_]+\/[A-Z0-9_\/]+$/.test(trimmed);
 }
 
-async function pickLocalWorkspaceObjectTemplate(): Promise<LocalWorkspaceObjectTemplate | undefined> {
-	const selection = await vscode.window.showQuickPick(
-		localWorkspaceObjectTemplates().map((template) => ({
-			label: template.label,
-			description: `${template.kind} -> src/*.abap`,
-			template,
-		})),
-		{
-			placeHolder: "Select the development object type",
-		},
+async function promptForEditableAdtObjectTarget(
+	workspaceFolder: vscode.WorkspaceFolder,
+	objectRef: AdtObjectRef,
+): Promise<EditableAdtObjectTarget | undefined> {
+	if (!isSupportedEditableWorkspaceObject(objectRef)) {
+		throw new Error(`Unsupported editable object type for ${objectRef.name} (${objectRef.type}).`);
+	}
+	if (objectRef.type.toUpperCase() === "FUGR/F" || isFunctionModuleObject(objectRef)) {
+		const functionGroupRef = editableFunctionGroupObjectRef(objectRef);
+		if (!isCustomEditableObjectName(functionGroupRef.name)) {
+			throw new Error(
+				`Only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: ${functionGroupRef.name}.`,
+			);
+		}
+		const defaultDir = path.relative(
+			workspaceFolder.uri.fsPath,
+			path.join(
+				workspaceFolder.uri.fsPath,
+				"src",
+				"function-groups",
+				encodeURIComponent(functionGroupRef.name.trim().toUpperCase()),
+			),
+		);
+		const directoryPath = await promptForWorkspaceRelativePath(workspaceFolder, {
+			prompt: `Target folder for ${functionGroupRef.name}`,
+			value: defaultDir,
+			requireAbapFile: false,
+		});
+		return directoryPath ? { kind: "directory", directoryPath } : undefined;
+	}
+	if (!isCustomEditableObjectName(objectRef.name)) {
+		throw new Error(`Only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: ${objectRef.name}.`);
+	}
+
+	const defaultFile = workspaceRelativePath(
+		workspaceFolder,
+		targetEditableWorkspaceFilePath(workspaceFolder, objectRef),
 	);
-	return selection?.template;
+	const filePath = await promptForWorkspaceRelativePath(workspaceFolder, {
+		prompt: `Target file for ${objectRef.name}`,
+		value: defaultFile,
+		requireAbapFile: true,
+	});
+	return filePath ? { kind: "file", filePath } : undefined;
 }
 
-async function promptForLocalWorkspaceObjectName(
-	template: LocalWorkspaceObjectTemplate,
+async function promptForWorkspaceRelativePath(
+	workspaceFolder: vscode.WorkspaceFolder,
+	options: { prompt: string; value: string; requireAbapFile: boolean },
 ): Promise<string | undefined> {
-	const objectName = (await vscode.window.showInputBox({
-		prompt: `Name for the new ${template.label.toLowerCase()}`,
-		placeHolder: template.namePlaceholder,
+	const value = await vscode.window.showInputBox({
+		prompt: options.prompt,
+		value: options.value,
 		ignoreFocusOut: true,
-		validateInput: (value) => validateLocalWorkspaceObjectName(value, template),
-	}))?.trim().toUpperCase();
-
-	return objectName || undefined;
+		validateInput: (input) =>
+			validateWorkspaceTargetPath(workspaceFolder, input, options.requireAbapFile),
+	});
+	if (!value?.trim()) {
+		return undefined;
+	}
+	return resolveWorkspaceTargetPath(workspaceFolder, value.trim());
 }
 
-function validateLocalWorkspaceObjectName(
+function validateWorkspaceTargetPath(
+	workspaceFolder: vscode.WorkspaceFolder,
 	value: string,
-	template: LocalWorkspaceObjectTemplate,
+	requireAbapFile: boolean,
 ): string | undefined {
-	const normalized = value.trim().toUpperCase();
-	if (!normalized) {
-		return "Enter an ABAP object name.";
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return requireAbapFile ? "Enter a target ABAP file path." : "Enter a target folder path.";
 	}
-	if (!isCustomEditableObjectName(normalized)) {
-		return "Only customer objects with Z/Y prefixes or customer namespaces are supported.";
+	const targetPath = resolveWorkspaceTargetPath(workspaceFolder, trimmed);
+	if (!pathIsInsideWorkspace(workspaceFolder, targetPath)) {
+		return "Target must be inside the selected workspace folder.";
 	}
-	if (!template.namePattern.test(normalized)) {
-		return `Use a name like ${template.namePlaceholder}.`;
+	if (targetPath === workspaceFolder.uri.fsPath) {
+		return requireAbapFile ? "Enter a file path under the workspace." : undefined;
+	}
+	if (requireAbapFile && path.extname(targetPath).toLowerCase() !== ".abap") {
+		return "Target file must use the .abap extension.";
 	}
 	return undefined;
 }
 
-export function validateLocalWorkspaceObjectNameForKind(
+function resolveWorkspaceTargetPath(
+	workspaceFolder: vscode.WorkspaceFolder,
 	value: string,
-	kind: string,
-): string | undefined {
-	const template = localWorkspaceObjectTemplates().find((candidate) => candidate.kind === kind);
-	if (!template) {
-		return `Unsupported local workspace object kind: ${kind}`;
-	}
-	return validateLocalWorkspaceObjectName(value, template);
+): string {
+	return path.resolve(
+		workspaceFolder.uri.fsPath,
+		path.isAbsolute(value) ? value : path.join(workspaceFolder.uri.fsPath, value),
+	);
+}
+
+function pathIsInsideWorkspace(
+	workspaceFolder: vscode.WorkspaceFolder,
+	targetPath: string,
+): boolean {
+	const root = normalizeWorkspaceFsPath(workspaceFolder.uri.fsPath);
+	const target = normalizeWorkspaceFsPath(targetPath);
+	return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
+function normalizeWorkspaceFsPath(value: string): string {
+	const normalized = path.resolve(value);
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function workspaceRelativePath(
+	workspaceFolder: vscode.WorkspaceFolder,
+	filePath: string,
+): string {
+	return path.relative(workspaceFolder.uri.fsPath, filePath) || ".";
 }
 
 export function computeAbapFoldingRanges(text: string): AbapFoldingRangeShape[] {
@@ -2110,38 +2107,6 @@ function pushFoldingRange(
 	}
 }
 
-async function createLocalWorkspaceObject(
-	workspaceFolder: vscode.WorkspaceFolder,
-	template: LocalWorkspaceObjectTemplate,
-	objectName: string,
-): Promise<void> {
-	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeRemoteOnDemand,
-	});
-
-	const filePath = targetLocalWorkspaceFilePath(workspaceFolder, template.kind, objectName);
-	if (await fileExists(filePath)) {
-		const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-		await vscode.window.showTextDocument(document, { preview: false });
-		void vscode.window.showWarningMessage(
-			`ABAP source already exists: ${path.relative(workspaceFolder.uri.fsPath, filePath)}`,
-		);
-		return;
-	}
-
-	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-	await fs.promises.writeFile(filePath, template.stub(objectName), "utf8");
-	dismissedWorkspaceConfigPrompts.add(workspaceFolder.uri.toString());
-
-	await notifyWorkspaceManifestUpdated(workspaceFolder);
-
-	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-	await vscode.window.showTextDocument(document, { preview: false });
-	void vscode.window.showInformationMessage(
-		`Added ${template.label.toLowerCase()} ${objectName} to "${workspaceFolder.name}".`,
-	);
-}
-
 function isSupportedEditableWorkspaceObject(objectRef: AdtObjectRef): boolean {
 	if (objectRef.type.startsWith("CLAS/") || objectRef.type.startsWith("INTF/")) {
 		return true;
@@ -2154,39 +2119,6 @@ function isSupportedEditableWorkspaceObject(objectRef: AdtObjectRef): boolean {
 		loweredUri.includes("/functions/groups/") ||
 		normalizedType === "PROG/I" ||
 		normalizedType === "PROG/P";
-}
-
-function localWorkspaceObjectTemplates(): LocalWorkspaceObjectTemplate[] {
-	return [
-		{
-			label: "Report",
-			kind: "report",
-			namePattern: customerObjectNamePattern,
-			namePlaceholder: "ZMY_NEW_REPORT",
-			stub: (name) => `REPORT ${name}.\n`,
-		},
-		{
-			label: "Include",
-			kind: "include",
-			namePattern: customerObjectNamePattern,
-			namePlaceholder: "ZMY_NEW_INCLUDE",
-			stub: (name) => `* Include ${name}\n`,
-		},
-		{
-			label: "Global Class",
-			kind: "global-class",
-			namePattern: customerObjectNamePattern,
-			namePlaceholder: "ZCL_MY_NEW_CLASS",
-			stub: (name) => `CLASS ${name} DEFINITION PUBLIC FINAL CREATE PUBLIC.\nENDCLASS.\n\nCLASS ${name} IMPLEMENTATION.\nENDCLASS.\n`,
-		},
-		{
-			label: "Global Interface",
-			kind: "global-interface",
-			namePattern: customerObjectNamePattern,
-			namePlaceholder: "ZIF_MY_NEW_INTERFACE",
-			stub: (name) => `INTERFACE ${name} PUBLIC.\nENDINTERFACE.\n`,
-		},
-	];
 }
 
 function remoteDependencyCacheKey(

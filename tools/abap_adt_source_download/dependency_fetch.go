@@ -21,6 +21,11 @@ type AdtObjectRef struct {
 	Description string
 }
 
+type RemoteDependencyCandidate struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
 type AdtDependencyFetchResult struct {
 	Body               string
 	FileExtension      string
@@ -457,6 +462,45 @@ func isMessageClassDependencyObject(objectRef AdtObjectRef) bool {
 	return strings.EqualFold(objectRef.Type, "MSAG/N") || strings.Contains(strings.ToLower(objectRef.URI), "/sap/bc/adt/messageclass/")
 }
 
+func inferManifestKind(objectRef AdtObjectRef) string {
+	loweredURI := strings.ToLower(objectRef.URI)
+	switch {
+	case isDdicDependencyObject(objectRef):
+		return inferDdicManifestKind(objectRef)
+	case isMessageClassDependencyObject(objectRef):
+		return "message-class"
+	case strings.Contains(loweredURI, "/programs/includes/") || strings.EqualFold(objectRef.Type, "PROG/I"):
+		return "include"
+	case isFunctionModuleObject(objectRef):
+		return "function-module"
+	case strings.Contains(loweredURI, "/oo/classes/") || strings.HasPrefix(strings.ToUpper(objectRef.Type), "CLAS/"):
+		return "global-class"
+	case strings.Contains(loweredURI, "/oo/interfaces/") || strings.HasPrefix(strings.ToUpper(objectRef.Type), "INTF/"):
+		return "global-interface"
+	case strings.Contains(loweredURI, "/functions/groups/"):
+		return "function-group"
+	default:
+		return "report"
+	}
+}
+
+func inferDdicManifestKind(objectRef AdtObjectRef) string {
+	switch strings.ToUpper(objectRef.Type) {
+	case "DTEL/DE":
+		return "ddic-data-element"
+	case "TABL/DS":
+		return "ddic-structure"
+	case "TABL/DT":
+		return "ddic-table"
+	case "TABL/DA", "TTYP/DA":
+		return "ddic-table-type"
+	case "VIEW/DV":
+		return "ddic-view"
+	default:
+		return "ddic-structure"
+	}
+}
+
 func buildMessageClassObjectRef(name string) AdtObjectRef {
 	normalizedName := strings.ToUpper(strings.TrimSpace(name))
 	return AdtObjectRef{
@@ -629,6 +673,10 @@ func fileURIToPath(uri string) (string, error) {
 	return filepath.Clean(strings.ReplaceAll(decodedPath, "/", string(filepath.Separator))), nil
 }
 
+func normalizeRelativePath(value string) string {
+	return strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+}
+
 func fetchRaw(ctx *SapContext, rawURL string, method string, accept string, contentType string, body []byte) (string, error) {
 	req, err := http.NewRequest(method, rawURL, bytes.NewReader(body))
 	if err != nil {
@@ -664,4 +712,12 @@ func logDependencyResolution(candidate RemoteDependencyCandidate, objectRef *Adt
 		return
 	}
 	log.Printf("resolved %s (%s) to %s [%s]", candidate.Name, candidate.Kind, objectRef.Name, objectRef.Type)
+}
+
+func normalizeRemoteDependencyName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func normalizeCandidateKind(kind string) string {
+	return strings.ToLower(strings.TrimSpace(kind))
 }

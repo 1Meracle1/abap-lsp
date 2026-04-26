@@ -6,38 +6,9 @@ import {
 	parseUnitSidecarDependencySourceMode,
 	parseUnitSidecarLocalRoots,
 	shouldRetryNegativeRemoteDependencyCandidates,
-	validateLocalWorkspaceObjectNameForKind,
 } from "../extension";
 
-suite("Extension local object validation", () => {
-	test("Accepts customer global class names without ZCL prefix", () => {
-		assert.strictEqual(
-			validateLocalWorkspaceObjectNameForKind("zattp_cl_something", "global-class"),
-			undefined,
-		);
-	});
-
-	test("Accepts customer global interface names without ZIF prefix", () => {
-		assert.strictEqual(
-			validateLocalWorkspaceObjectNameForKind("zattp_if_something", "global-interface"),
-			undefined,
-		);
-	});
-
-	test("Accepts customer namespace object names", () => {
-		assert.strictEqual(
-			validateLocalWorkspaceObjectNameForKind("/sttp/cl_demo", "global-class"),
-			undefined,
-		);
-	});
-
-	test("Rejects non-customer local object names", () => {
-		assert.strictEqual(
-			validateLocalWorkspaceObjectNameForKind("cl_demo", "global-class"),
-			"Only customer objects with Z/Y prefixes or customer namespaces are supported.",
-		);
-	});
-
+suite("Extension helpers", () => {
 	test("Parses local export roots from unit sidecar single-line arrays", () => {
 		const sidecarPath =
 			"D:/dev/abap/prod_rep_check/src/reports/ZATTP_RS_BATCH_JOB2/abapls-unit.toml";

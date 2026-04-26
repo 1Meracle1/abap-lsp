@@ -9,7 +9,7 @@ use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem, Uri};
 use crate::{ServerState, publish_open_document, sem_tokens};
 
 const DEFAULT_SAMPLE_PATH: &str =
-    r"D:\dev\abap\prod_rep_check\.abapls\cache\dependencies\global-class\CL_GUI_ALV_GRID.abap";
+    r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///semantic_tokens_perf_sample.abap";
 
 fn perf_sample_path() -> PathBuf {

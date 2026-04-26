@@ -509,7 +509,7 @@ pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
     manifest
         .map(|manifest| manifest.resolution.cache_dir.as_str())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or(".abapls/cache")
+        .unwrap_or("")
 }
 
 pub fn normalize_dependency_mode(value: &str) -> &'static str {
@@ -801,10 +801,7 @@ fn collect_abap_sources(
             if file_type.is_dir() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name == ".git" || name == "target" {
-                    continue;
-                }
-                if !is_dependency && name == ".abapls" {
+                if should_skip_workspace_dir(&name, is_dependency) {
                     continue;
                 }
                 stack.push(path);
@@ -1110,7 +1107,7 @@ fn collect_workspace_abap_file_paths(dir_path: &Path, output: &mut Vec<PathBuf>)
         if file_type.is_dir() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name == ".git" || name == "target" || name == ".abapls" {
+            if should_skip_workspace_dir(&name, false) {
                 continue;
             }
             collect_workspace_abap_file_paths(&path, output);
@@ -2199,6 +2196,9 @@ fn package_cache_root_prefix(cache_dir: &str) -> String {
 
 fn manifest_path_is_dependency_cache(file: &str, cache_dir: &str) -> bool {
     let normalized = normalize_manifest_path(file);
+    if normalize_manifest_path(cache_dir).is_empty() {
+        return false;
+    }
     normalized.starts_with(&dependency_cache_root_prefix(cache_dir))
         || normalized.starts_with(&package_cache_root_prefix(cache_dir))
 }
@@ -2387,10 +2387,7 @@ fn collect_abap_source_uris(
             if file_type.is_dir() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if name == ".git" || name == "target" {
-                    continue;
-                }
-                if !is_dependency && name == ".abapls" {
+                if should_skip_workspace_dir(&name, is_dependency) {
                     continue;
                 }
                 stack.push(path);
@@ -2405,6 +2402,10 @@ fn collect_abap_source_uris(
             }
         }
     }
+}
+
+fn should_skip_workspace_dir(name: &str, is_dependency: bool) -> bool {
+    name == ".git" || name == "target" || (!is_dependency && name.starts_with('.'))
 }
 
 fn collect_manifest_document_uris(
@@ -2471,9 +2472,6 @@ fn normalize_manifest(manifest: &mut WorkspaceManifest) {
         normalize_dependency_mode(&manifest.resolution.dependency_mode).to_string();
     manifest.performance.mode =
         normalize_workspace_performance_mode(&manifest.performance.mode).to_string();
-    if manifest.resolution.cache_dir.trim().is_empty() {
-        manifest.resolution.cache_dir = default_cache_dir();
-    }
     manifest.resolution.remote_requests_per_second =
         manifest.resolution.remote_requests_per_second.max(1);
     manifest.resolution.legacy_remote_request_parallelism = manifest
@@ -2590,7 +2588,7 @@ fn default_dependency_mode() -> String {
 }
 
 fn default_cache_dir() -> String {
-    ".abapls/cache".to_string()
+    String::new()
 }
 
 fn default_workspace_performance_mode() -> String {
@@ -3233,7 +3231,7 @@ root_file = "src/ZCL_MAIN.abap"
 [[unit]]
 name = "ZCL_DEP"
 kind = "global-class"
-root_file = ".abapls/cache/dependencies/global-class/ZCL_DEP.abap"
+root_file = "legacy-cache/dependencies/global-class/ZCL_DEP.abap"
 "#,
         )
         .expect("manifest");
@@ -3864,7 +3862,7 @@ members = [
         let root = std::env::temp_dir().join("abap-lsp-ignore-legacy-cache-path-dependencies");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("src dir");
-        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+        fs::create_dir_all(root.join("legacy-cache/packages/ZPKG/global-class"))
             .expect("dependency dir");
         fs::write(
             root.join("abapls.toml"),
@@ -3872,7 +3870,7 @@ members = [
 version = 1
 
 [resolution]
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 
 [[unit]]
 name = "ZMAIN"
@@ -3882,7 +3880,7 @@ root_file = "src/ZMAIN.abap"
 [[unit]]
 name = "ZCL_FIRST"
 kind = "global-class"
-root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+root_file = "legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
 dependency_of = [
   "src/ZMAIN.abap"
 ]
@@ -3890,21 +3888,21 @@ dependency_of = [
 [[unit]]
 name = "ZCL_SECOND"
 kind = "global-class"
-root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
+root_file = "legacy-cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
 dependency_of = [
-  ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+  "legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
 ]
 "#,
         )
         .expect("manifest");
         fs::write(root.join("src/ZMAIN.abap"), "REPORT zmain.").expect("main");
         fs::write(
-            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
+            root.join("legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
             "CLASS zcl_first DEFINITION. ENDCLASS.",
         )
         .expect("first");
         fs::write(
-            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"),
+            root.join("legacy-cache/packages/ZPKG/global-class/ZCL_SECOND.abap"),
             "CLASS zcl_second DEFINITION. ENDCLASS.",
         )
         .expect("second");
@@ -3924,7 +3922,7 @@ dependency_of = [
         assert!(
             loaded_uris
                 .iter()
-                .all(|uri| !uri.contains("/.abapls/cache/packages/")),
+                .all(|uri| !uri.contains("/legacy-cache/packages/")),
             "{loaded_uris:?}"
         );
 
@@ -3936,9 +3934,9 @@ dependency_of = [
         let root = std::env::temp_dir().join("abap-lsp-ignore-legacy-cache-side-manifests");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("src dir");
-        fs::create_dir_all(root.join(".abapls/cache/dependency-manifests"))
+        fs::create_dir_all(root.join("legacy-cache/dependency-manifests"))
             .expect("dependency manifest dir");
-        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+        fs::create_dir_all(root.join("legacy-cache/packages/ZPKG/global-class"))
             .expect("package dir");
         fs::write(
             root.join("abapls.toml"),
@@ -3946,7 +3944,7 @@ dependency_of = [
 version = 1
 
 [resolution]
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 
 [[unit]]
 name = "ZMAIN"
@@ -3957,17 +3955,17 @@ root_file = "src/ZMAIN.abap"
         .expect("manifest");
         fs::write(root.join("src/ZMAIN.abap"), "REPORT zmain.").expect("main");
         fs::write(
-            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
+            root.join("legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
             "CLASS zcl_first DEFINITION. ENDCLASS.",
         )
         .expect("first");
         fs::write(
-            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"),
+            root.join("legacy-cache/packages/ZPKG/global-class/ZCL_SECOND.abap"),
             "CLASS zcl_second DEFINITION. ENDCLASS.",
         )
         .expect("second");
         fs::write(
-            root.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
+            root.join("legacy-cache/dependency-manifests/src%2FZMAIN.abap.toml"),
             r#"
 source_file = "src/ZMAIN.abap"
 
@@ -3975,22 +3973,22 @@ source_file = "src/ZMAIN.abap"
 name = "ZCL_FIRST"
 kind = "global-class"
 package_name = "ZPKG"
-root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+root_file = "legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
 "#,
         )
         .expect("root dependency manifest");
         fs::write(
             root.join(
-                ".abapls/cache/dependency-manifests/.abapls%2Fcache%2Fpackages%2FZPKG%2Fglobal-class%2FZCL_FIRST.abap.toml",
+                "legacy-cache/dependency-manifests/legacy-cache%2Fpackages%2FZPKG%2Fglobal-class%2FZCL_FIRST.abap.toml",
             ),
             r#"
-source_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+source_file = "legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
 
 [[unit]]
 name = "ZCL_SECOND"
 kind = "global-class"
 package_name = "ZPKG"
-root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
+root_file = "legacy-cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
 "#,
         )
         .expect("nested dependency manifest");
@@ -4017,7 +4015,7 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
         assert!(
             loaded_uris
                 .iter()
-                .all(|uri| !uri.contains("/.abapls/cache/packages/")),
+                .all(|uri| !uri.contains("/legacy-cache/packages/")),
             "{loaded_uris:?}"
         );
 
@@ -4029,9 +4027,9 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_SECOND.abap"
         let root = std::env::temp_dir().join("abap-lsp-central-dependency-store-startup");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("src dir");
-        fs::create_dir_all(root.join(".abapls/cache/dependency-manifests"))
+        fs::create_dir_all(root.join("legacy-cache/dependency-manifests"))
             .expect("dependency manifest dir");
-        fs::create_dir_all(root.join(".abapls/cache/packages/ZPKG/global-class"))
+        fs::create_dir_all(root.join("legacy-cache/packages/ZPKG/global-class"))
             .expect("package dir");
         fs::write(
             root.join("abapls.toml"),
@@ -4043,7 +4041,7 @@ product_version = "s4-2023"
 default_package_version = "001"
 
 [resolution]
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 
 [[unit]]
 name = "ZMAIN"
@@ -4054,12 +4052,12 @@ root_file = "src/ZMAIN.abap"
         .expect("manifest");
         fs::write(root.join("src/ZMAIN.abap"), "REPORT zmain.").expect("main");
         fs::write(
-            root.join(".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
+            root.join("legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"),
             "CLASS zcl_first DEFINITION. ENDCLASS.",
         )
         .expect("dependency");
         fs::write(
-            root.join(".abapls/cache/dependency-manifests/src%2FZMAIN.abap.toml"),
+            root.join("legacy-cache/dependency-manifests/src%2FZMAIN.abap.toml"),
             r#"
 source_file = "src/ZMAIN.abap"
 
@@ -4067,7 +4065,7 @@ source_file = "src/ZMAIN.abap"
 name = "ZCL_FIRST"
 kind = "global-class"
 package_name = "ZPKG"
-root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
+root_file = "legacy-cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
 "#,
         )
         .expect("dependency manifest");
@@ -4102,7 +4100,7 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
         assert!(
             loaded_uris
                 .iter()
-                .all(|uri| !uri.contains("/.abapls/cache/packages/")),
+                .all(|uri| !uri.contains("/legacy-cache/packages/")),
             "{loaded_uris:?}"
         );
 
@@ -4121,7 +4119,7 @@ root_file = ".abapls/cache/packages/ZPKG/global-class/ZCL_FIRST.abap"
 version = 1
 
 [resolution]
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 
 [[unit]]
 name = "/STTP/SHF_MD"
@@ -4162,7 +4160,7 @@ version = 1
 
 [resolution]
 dependency_mode = "local-first"
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 "#,
         )
         .expect("manifest");
@@ -4249,7 +4247,7 @@ version = 1
 
 [resolution]
 dependency_mode = "local-first"
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 "#,
         )
         .expect("manifest");
@@ -4398,7 +4396,7 @@ version = 1
 
 [resolution]
 dependency_mode = "local-first"
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 "#,
         )
         .expect("manifest");
@@ -4444,7 +4442,7 @@ version = 1
 
 [resolution]
 dependency_mode = "local-first"
-cache_dir = ".abapls/cache"
+cache_dir = "legacy-cache"
 "#,
         )
         .expect("manifest");
