@@ -4574,6 +4574,134 @@ fn parse_end_keyword(
     )
 }
 
+#[derive(Clone, Copy)]
+enum EnhancementEndKind {
+    Section,
+    Enhancement,
+}
+
+fn enhancement_end_keyword_text(kind: EnhancementEndKind) -> &'static str {
+    match kind {
+        EnhancementEndKind::Section => "END-ENHANCEMENT-SECTION",
+        EnhancementEndKind::Enhancement => "ENDENHANCEMENT",
+    }
+}
+
+fn enhancement_end_keyword_end(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    kind: EnhancementEndKind,
+) -> Option<usize> {
+    match kind {
+        EnhancementEndKind::Section => {
+            match_hyphenated_keyword(source, tokens, idx, &["end", "enhancement", "section"])
+        }
+        EnhancementEndKind::Enhancement => tokens
+            .get(idx)
+            .is_some_and(|token| is_keyword(source, token, "endenhancement"))
+            .then_some(idx + 1),
+    }
+}
+
+fn recover_skip_after_enhancement_end(
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    kind: EnhancementEndKind,
+) -> usize {
+    while idx < tokens.len() {
+        if let Some(end) = enhancement_end_keyword_end(source, tokens, idx, kind) {
+            let period_idx = skip_trivia(tokens, end);
+            if tokens.get(period_idx).map(|token| token.kind) == Some(TokenKind::Period) {
+                return period_idx + 1;
+            }
+            return end;
+        }
+        idx += 1;
+    }
+    tokens.len()
+}
+
+fn parse_body_until_enhancement_end(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+    kind: EnhancementEndKind,
+) -> (Vec<NodeId>, usize) {
+    let mut nodes = Vec::new();
+    loop {
+        let boundary_idx = skip_trivia(tokens, idx);
+        if enhancement_end_keyword_end(source, tokens, boundary_idx, kind).is_some() {
+            break;
+        }
+        if idx >= tokens.len() || tokens[idx].kind == TokenKind::Eof {
+            break;
+        }
+        let (node, next) = crate::parse_file_level_item(b, source, tokens, idx, errors);
+        nodes.push(node);
+        idx = crate::block_helpers::ensure_forward_progress(tokens, idx, next);
+    }
+    (nodes, idx)
+}
+
+fn parse_enhancement_end_keyword(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    start_tok: &Token,
+    kind: EnhancementEndKind,
+    errors: &mut Vec<crate::ParseError>,
+) -> (Vec<NodeId>, usize, usize) {
+    let end_text = enhancement_end_keyword_text(kind);
+    let end_idx = skip_trivia(tokens, idx);
+    let Some(end_tok) = tokens.get(end_idx) else {
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected {end_text}"),
+            range: start_tok.range.clone(),
+        });
+        return (Vec::new(), tokens.len(), start_tok.range.end);
+    };
+    let Some(end_parts_end) = enhancement_end_keyword_end(source, tokens, end_idx, kind) else {
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected {end_text}"),
+            range: start_tok.range.start..end_tok.range.end,
+        });
+        let recover = recover_skip_after_enhancement_end(source, tokens, idx, kind);
+        return (Vec::new(), recover, end_tok.range.end);
+    };
+
+    let mut children = token_children(b, tokens, end_idx, end_parts_end);
+    let period_idx = skip_trivia(tokens, end_parts_end);
+    let Some(period_tok) = tokens.get(period_idx) else {
+        let end_pos = children
+            .last()
+            .copied()
+            .map(|node| b.span(node).end)
+            .unwrap_or(end_tok.range.end);
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected '.' after {end_text}"),
+            range: end_tok.range.start..end_pos,
+        });
+        let recover = recover_skip_after_enhancement_end(source, tokens, end_idx, kind);
+        return (children, recover, end_pos);
+    };
+    if period_tok.kind != TokenKind::Period {
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected '.' after {end_text}"),
+            range: end_tok.range.start..period_tok.range.end,
+        });
+        let recover = recover_skip_after_enhancement_end(source, tokens, end_idx, kind);
+        return (children, recover, period_tok.range.end);
+    }
+
+    children.push(token_leaf(b, period_tok));
+    (children, period_idx + 1, period_tok.range.end)
+}
+
 fn try_parse_block_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -10782,6 +10910,132 @@ pub fn try_parse_module_decl(
     )
 }
 
+pub fn try_parse_enhancement_point_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let lead_end = match_hyphenated_keyword(source, tokens, idx, &["enhancement", "point"])?;
+    let start_tok = tokens.get(idx)?;
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        start_tok,
+        "syntax error: expected '.' after ENHANCEMENT-POINT statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let children = token_children(b, tokens, idx, period_i + 1);
+            let node = b.branch(
+                SyntaxKind::EnhancementPointStmt,
+                start_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_enhancement_section_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let lead_end = match_hyphenated_keyword(source, tokens, idx, &["enhancement", "section"])?;
+    let start_tok = tokens.get(idx)?;
+    let (mut children, next) = parse_header_until_period(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        errors,
+        "syntax error: expected '.' after ENHANCEMENT-SECTION header",
+    );
+    let (body, after_body) = parse_body_until_enhancement_end(
+        b,
+        source,
+        tokens,
+        next,
+        errors,
+        EnhancementEndKind::Section,
+    );
+    children.extend(body);
+    let (end_children, next_after, end_pos) = parse_enhancement_end_keyword(
+        b,
+        source,
+        tokens,
+        after_body,
+        start_tok,
+        EnhancementEndKind::Section,
+        errors,
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::EnhancementSectionStmt,
+        start_tok.range.start..end_pos,
+        &children,
+    );
+    Some((node, next_after))
+}
+
+pub fn try_parse_enhancement_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    if starts_hyphenated_keyword(tokens, idx) {
+        return None;
+    }
+    let start_tok = tokens.get(idx)?;
+    if !is_keyword(source, start_tok, "enhancement") {
+        return None;
+    }
+    let (mut children, next) = parse_header_until_period(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        errors,
+        "syntax error: expected '.' after ENHANCEMENT header",
+    );
+    let (body, after_body) = parse_body_until_enhancement_end(
+        b,
+        source,
+        tokens,
+        next,
+        errors,
+        EnhancementEndKind::Enhancement,
+    );
+    children.extend(body);
+    let (end_children, next_after, end_pos) = parse_enhancement_end_keyword(
+        b,
+        source,
+        tokens,
+        after_body,
+        start_tok,
+        EnhancementEndKind::Enhancement,
+        errors,
+    );
+    children.extend(end_children);
+    let node = b.branch(
+        SyntaxKind::EnhancementStmt,
+        start_tok.range.start..end_pos,
+        &children,
+    );
+    Some((node, next_after))
+}
+
 pub fn try_parse_function_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -11326,6 +11580,90 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::FormDecl),
             1
         );
+    }
+
+    #[test]
+    fn parses_enhancement_point_statement() {
+        let parsed = crate::parse(
+            "METHOD run.\n\
+               ENHANCEMENT-POINT z_ep SPOTS es_demo STATIC INCLUDE BOUND.\n\
+             ENDMETHOD.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MethodDecl), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::EnhancementPointStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_enhancement_section_body_until_matching_end() {
+        let parsed = crate::parse(
+            "METHOD run.\n\
+               ENHANCEMENT-SECTION z_sec SPOTS es_demo INCLUDE BOUND.\n\
+                 IF lv_ok = abap_true.\n\
+                   WRITE 'x'.\n\
+                 ENDIF.\n\
+               END-ENHANCEMENT-SECTION.\n\
+               WRITE 'y'.\n\
+             ENDMETHOD.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::EnhancementSectionStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_enhancement_implementation_block() {
+        let parsed = crate::parse(
+            "ENHANCEMENT 1 z_impl SPOTS es_demo.\n\
+               WRITE 'x'.\n\
+             ENDENHANCEMENT.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EnhancementStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn stray_enhancement_ends_recover_at_statement_boundary() {
+        let parsed = crate::parse(
+            "END-ENHANCEMENT-SECTION.\n\
+             ENDENHANCEMENT.\n\
+             WRITE 'x'.",
+        );
+        let messages = parsed
+            .errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            vec![
+                "syntax error: unexpected END-ENHANCEMENT-SECTION without matching ENHANCEMENT-SECTION",
+                "syntax error: unexpected ENDENHANCEMENT without matching ENHANCEMENT",
+            ]
+        );
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
     }
 
     #[test]

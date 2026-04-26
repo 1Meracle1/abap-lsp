@@ -206,6 +206,8 @@ pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
         || s.eq_ignore_ascii_case("ENDFUNCTION")
         || s.eq_ignore_ascii_case("MODULE")
         || s.eq_ignore_ascii_case("ENDMODULE")
+        || s.eq_ignore_ascii_case("ENHANCEMENT")
+        || s.eq_ignore_ascii_case("ENDENHANCEMENT")
 }
 
 #[inline]
@@ -245,6 +247,18 @@ fn is_perform_if_found_addition(source: &str, tokens: &[Token], start: usize, id
         && tokens
             .get(idx + 1)
             .is_some_and(|tok| token_matches_keyword(source, tok, "found"))
+}
+
+#[inline]
+fn is_perform_signature_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+    tokens
+        .get(start)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "perform"))
+        && tokens.get(idx).is_some_and(|tok| {
+            token_matches_keyword(source, tok, "tables")
+                || token_matches_keyword(source, tok, "using")
+                || token_matches_keyword(source, tok, "changing")
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,6 +307,7 @@ pub(crate) fn scan_until_statement_period(
                     && token_begins_line(source, t)
                     && is_definite_stmt_lead_keyword(source, t)
                     && !is_perform_if_found_addition(source, tokens, start, i)
+                    && !is_perform_signature_addition(source, tokens, start, i)
                     && !is_inline_decl_continuation(source, tokens, i)
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };

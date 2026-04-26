@@ -2913,6 +2913,22 @@ ENDCLASS.";
     }
 
     #[test]
+    fn parses_multiline_perform_signature_additions() {
+        let parsed = crate::parse(
+            "PERFORM get_item_services IN PROGRAM saplmepo\n\
+                    TABLES   ex_acc_tab\n\
+                    USING    po_item_number\n\
+                             im_limit\n\
+                    CHANGING ex_comsrv\n\
+                             ch_return.",
+        );
+        let root = parsed.file.root();
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PerformStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn classifies_commit_and_rollback_work_statements_specifically() {
         let parsed = crate::parse("COMMIT WORK. ROLLBACK WORK.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

@@ -269,6 +269,12 @@ pub enum SyntaxKind {
     FunctionParam,
     /// `MODULE ... . ... ENDMODULE.`
     ModuleDecl,
+    /// `ENHANCEMENT-POINT ... .`
+    EnhancementPointStmt,
+    /// `ENHANCEMENT-SECTION ... . ... END-ENHANCEMENT-SECTION.`
+    EnhancementSectionStmt,
+    /// `ENHANCEMENT ... . ... ENDENHANCEMENT.`
+    EnhancementStmt,
     /// Event block such as `START-OF-SELECTION.`.
     EventBlock,
     /// `IF cond. ... [ELSEIF cond. ...]* [ELSE. ...] ENDIF.`
@@ -743,6 +749,9 @@ impl SyntaxKind {
             Self::FunctionParamSection => "FunctionParamSection",
             Self::FunctionParam => "FunctionParam",
             Self::ModuleDecl => "ModuleDecl",
+            Self::EnhancementPointStmt => "EnhancementPointStmt",
+            Self::EnhancementSectionStmt => "EnhancementSectionStmt",
+            Self::EnhancementStmt => "EnhancementStmt",
             Self::EventBlock => "EventBlock",
             Self::IfStmt => "IfStmt",
             Self::ElseifClause => "ElseifClause",

@@ -84,6 +84,15 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
     IdentLeadParserRegistration::new(&["form"], surface_stmt::try_parse_form_decl),
     IdentLeadParserRegistration::new(&["function"], surface_stmt::try_parse_function_decl),
     IdentLeadParserRegistration::new(&["module"], surface_stmt::try_parse_module_decl),
+    IdentLeadParserRegistration::new(
+        &["enhancement"],
+        surface_stmt::try_parse_enhancement_point_stmt,
+    ),
+    IdentLeadParserRegistration::new(
+        &["enhancement"],
+        surface_stmt::try_parse_enhancement_section_stmt,
+    ),
+    IdentLeadParserRegistration::new(&["enhancement"], surface_stmt::try_parse_enhancement_stmt),
     IdentLeadParserRegistration::new(&["class"], surface_stmt::try_parse_class_decl),
     IdentLeadParserRegistration::new(&["interface"], surface_stmt::try_parse_interface_decl),
     IdentLeadParserRegistration::new(&["method"], surface_stmt::try_parse_method_decl),
@@ -221,12 +230,49 @@ const STRAY_BLOCK_BOUNDARIES: &[(&str, &str)] = &[
     ("ENDFORM", "FORM"),
     ("ENDFUNCTION", "FUNCTION"),
     ("ENDMODULE", "MODULE"),
+    ("ENDENHANCEMENT", "ENHANCEMENT"),
     ("ENDSELECT", "SELECT"),
 ];
 
-fn stray_block_boundary(source: &str, token: &Token) -> Option<(&'static str, &'static str)> {
+const STRAY_HYPHENATED_BLOCK_BOUNDARIES: &[(&[&str], &str, &str)] = &[(
+    &["end", "enhancement", "section"],
+    "END-ENHANCEMENT-SECTION",
+    "ENHANCEMENT-SECTION",
+)];
+
+fn match_hyphenated_keyword(source: &str, tokens: &[Token], idx: usize, parts: &[&str]) -> bool {
+    let mut i = idx;
+    for (part_idx, part) in parts.iter().enumerate() {
+        let Some(tok) = tokens.get(i) else {
+            return false;
+        };
+        if tok.kind != TokenKind::Ident || !tok.lexeme(source).eq_ignore_ascii_case(part) {
+            return false;
+        }
+        i += 1;
+        if part_idx + 1 < parts.len() {
+            if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Minus) {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    true
+}
+
+fn stray_block_boundary(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(&'static str, &'static str)> {
+    let token = tokens.get(idx)?;
     if token.kind != TokenKind::Ident {
         return None;
+    }
+    for (parts, boundary, opener) in STRAY_HYPHENATED_BLOCK_BOUNDARIES {
+        if match_hyphenated_keyword(source, tokens, idx, parts) {
+            return Some((*boundary, *opener));
+        }
     }
     let text = token.lexeme(source);
     STRAY_BLOCK_BOUNDARIES
@@ -243,7 +289,7 @@ fn try_parse_stray_block_boundary_error(
     errors: &mut Vec<ParseError>,
 ) -> Option<(NodeId, usize)> {
     let token = tokens.get(idx)?;
-    let (boundary, opener) = stray_block_boundary(source, token)?;
+    let (boundary, opener) = stray_block_boundary(source, tokens, idx)?;
     let (end_exclusive, err_end) = match scan_until_statement_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => (period_i + 1, tokens[period_i].range.end),
         StmtPeriodScan::Unterminated { end_exclusive } => (
