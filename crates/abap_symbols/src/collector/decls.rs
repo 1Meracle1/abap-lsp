@@ -549,10 +549,13 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             self.ctx.walk_children(node, scope);
             return;
         };
-        let is_select_options_decl = self.ctx.file().kind(node) == SyntaxKind::SelectOptionsDecl;
+        let is_select_options_decl = matches!(
+            self.ctx.file().kind(node),
+            SyntaxKind::SelectOptionsDecl | SyntaxKind::RangesDecl
+        );
         let is_selection_screen_decl = matches!(
             self.ctx.file().kind(node),
-            SyntaxKind::ParametersDecl | SyntaxKind::SelectOptionsDecl
+            SyntaxKind::ParametersDecl | SyntaxKind::SelectOptionsDecl | SyntaxKind::RangesDecl
         );
         let children: Vec<_> = decl
             .syntax()

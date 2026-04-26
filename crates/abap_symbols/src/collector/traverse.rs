@@ -28,6 +28,8 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::DataDecl
             | SyntaxKind::TablesDecl
+            | SyntaxKind::RangesDecl
+            | SyntaxKind::ControlsDecl
             | SyntaxKind::ParametersDecl
             | SyntaxKind::SelectOptionsDecl
             | SyntaxKind::StaticsDecl => {
@@ -199,6 +201,8 @@ impl<'a> Collector<'a> {
                 .stmt_lowering()
                 .collect_selection_screen_stmt(node, scope),
             SyntaxKind::UnparsedStmt
+            | SyntaxKind::FunctionPoolStmt
+            | SyntaxKind::ClassLoadStmt
             | SyntaxKind::ContinueStmt
             | SyntaxKind::ExitStmt
             | SyntaxKind::ReturnStmt

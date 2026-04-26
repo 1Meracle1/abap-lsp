@@ -847,6 +847,8 @@ impl<'a> AstNode<'a> for DataLikeDecl<'a> {
             SyntaxKind::DataDecl
                 | SyntaxKind::ParametersDecl
                 | SyntaxKind::TablesDecl
+                | SyntaxKind::RangesDecl
+                | SyntaxKind::ControlsDecl
                 | SyntaxKind::SelectOptionsDecl
                 | SyntaxKind::TypesDecl
                 | SyntaxKind::ConstantsDecl
@@ -1260,9 +1262,11 @@ impl<'a> DataLikeDecl<'a> {
         match self.syntax.kind() {
             SyntaxKind::ConstantsDecl => Some(DataLikeStorageKind::Constant),
             SyntaxKind::StaticsDecl => Some(DataLikeStorageKind::Static),
-            SyntaxKind::ParametersDecl | SyntaxKind::TablesDecl | SyntaxKind::SelectOptionsDecl => {
-                Some(DataLikeStorageKind::Instance)
-            }
+            SyntaxKind::ParametersDecl
+            | SyntaxKind::TablesDecl
+            | SyntaxKind::RangesDecl
+            | SyntaxKind::ControlsDecl
+            | SyntaxKind::SelectOptionsDecl => Some(DataLikeStorageKind::Instance),
             SyntaxKind::DataDecl => {
                 let mut texts = self
                     .syntax

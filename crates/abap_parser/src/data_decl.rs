@@ -5,8 +5,8 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::stmt_period::{
-    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
-    unterminated_err_end,
+    StmtPeriodScan, delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
+    scan_until_statement_period, token_begins_line, unterminated_err_end,
 };
 use crate::type_ref::parse_type_ref_tokens;
 
@@ -85,7 +85,8 @@ const SELECT_OPTIONS_FOR_STOP_KEYWORDS: &[&str] = &[
     "VISIBLE",
 ];
 
-/// If `tokens[idx]` begins `DATA … TYPE … .` (optionally `DATA:` and comma-separated clauses),
+/// If `tokens[idx]` begins a classic `DATA` declaration (optionally `DATA:` and
+/// comma-separated clauses),
 /// returns the structured node and the index after the closing `.`. Otherwise `None`.
 pub fn try_parse_data_decl(
     b: &mut SyntaxTreeBuilder,
@@ -294,6 +295,104 @@ pub fn try_parse_select_options_decl(
     }
 }
 
+pub fn try_parse_ranges_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    _errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let kw_tok = tokens.get(idx)?;
+    if !is_keyword(source, kw_tok, "ranges") {
+        return None;
+    }
+
+    let mut i = idx + 1;
+    let has_colon = match tokens.get(i).map(|t| t.kind) {
+        Some(TokenKind::Colon) => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+
+    let mut clause_nodes = Vec::new();
+    loop {
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            i += 1;
+        }
+        let (clause, next_i) = parse_select_options_clause(b, source, tokens, i)?;
+        clause_nodes.push(clause);
+        i = next_i;
+        let next = tokens.get(i)?;
+        match next.kind {
+            TokenKind::Comma if has_colon => i += 1,
+            TokenKind::Period => {
+                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
+                children.push(token_leaf(b, kw_tok));
+                children.extend(clause_nodes);
+                children.push(token_leaf(b, next));
+                let node = b.branch(
+                    SyntaxKind::RangesDecl,
+                    kw_tok.range.start..next.range.end,
+                    &children,
+                );
+                return Some((node, i + 1));
+            }
+            _ => return None,
+        }
+    }
+}
+
+pub fn try_parse_controls_decl(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    _errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let kw_tok = tokens.get(idx)?;
+    if !is_keyword(source, kw_tok, "controls") {
+        return None;
+    }
+
+    let mut i = idx + 1;
+    let has_colon = match tokens.get(i).map(|t| t.kind) {
+        Some(TokenKind::Colon) => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+
+    let mut clause_nodes = Vec::new();
+    loop {
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            i += 1;
+        }
+        let (clause, next_i) = parse_controls_clause(b, source, tokens, i)?;
+        clause_nodes.push(clause);
+        i = next_i;
+        let next = tokens.get(i)?;
+        match next.kind {
+            TokenKind::Comma if has_colon => i += 1,
+            TokenKind::Period => {
+                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
+                children.push(token_leaf(b, kw_tok));
+                children.extend(clause_nodes);
+                children.push(token_leaf(b, next));
+                let node = b.branch(
+                    SyntaxKind::ControlsDecl,
+                    kw_tok.range.start..next.range.end,
+                    &children,
+                );
+                return Some((node, i + 1));
+            }
+            _ => return None,
+        }
+    }
+}
+
 pub fn try_parse_class_data_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -312,6 +411,7 @@ pub fn try_parse_class_data_decl(
         SyntaxKind::DataTypedClause,
         true,
         true,
+        false,
     )
 }
 
@@ -336,16 +436,7 @@ fn try_parse_structured_data_decl(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) = parse_decl_clause(
-            b,
-            source,
-            tokens,
-            i,
-            SyntaxKind::DataTypedClause,
-            true,
-            true,
-        )
-        .or_else(|| {
+        let (clause, next_i) = {
             parse_begin_of_decl_clause(
                 b,
                 source,
@@ -354,6 +445,18 @@ fn try_parse_structured_data_decl(
                 SyntaxKind::DataTypedClause,
                 true,
                 has_colon,
+            )
+        }
+        .or_else(|| {
+            parse_decl_clause(
+                b,
+                source,
+                tokens,
+                i,
+                SyntaxKind::DataTypedClause,
+                true,
+                true,
+                true,
             )
         })?;
         clause_nodes.push(clause);
@@ -489,17 +592,77 @@ fn parse_data_decl_name(
     Some((b.branch(SyntaxKind::DataDeclName, start..end, &children), i))
 }
 
+fn parse_tables_decl_name(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    if tokens.get(idx).map(|t| t.kind) != Some(TokenKind::Star) {
+        return parse_data_decl_name(b, source, tokens, idx);
+    }
+    let name = tokens.get(idx + 1)?;
+    if name.kind != TokenKind::Ident {
+        return None;
+    }
+    let children = vec![token_leaf(b, tokens.get(idx)?), token_leaf(b, name)];
+    Some((
+        b.branch(
+            SyntaxKind::DataDeclName,
+            tokens[idx].range.start..name.range.end,
+            &children,
+        ),
+        idx + 2,
+    ))
+}
+
 fn parse_tables_clause(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
 ) -> Option<(NodeId, usize)> {
-    let (name, i) = parse_data_decl_name(b, source, tokens, idx)?;
-    let children = vec![name];
+    let (name, mut i) = parse_tables_decl_name(b, source, tokens, idx)?;
+    let mut children = vec![name];
+    i = collect_raw_decl_tail(b, source, tokens, i, &mut children);
 
     let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
     Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
+}
+
+fn collect_raw_decl_tail(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+    children: &mut Vec<NodeId>,
+) -> usize {
+    while let Some(tok) = tokens.get(idx) {
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
+            break;
+        }
+        if token_begins_line(source, tok) {
+            let next_kind = tokens.get(idx + 1).map(|next| next.kind);
+            if is_definite_stmt_lead_keyword(source, tok)
+                || matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
+            {
+                break;
+            }
+        }
+        children.push(token_leaf(b, tok));
+        idx += 1;
+    }
+    idx
+}
+
+fn is_invalid_decl_name_keyword(source: &str, token: &Token) -> bool {
+    is_keyword(source, token, "type")
+        || is_keyword(source, token, "like")
+        || is_keyword(source, token, "value")
+        || is_keyword(source, token, "for")
 }
 
 fn parse_optional_length_spec(
@@ -834,7 +997,13 @@ fn parse_decl_clause(
     node_kind: SyntaxKind,
     allow_like: bool,
     allow_value: bool,
+    allow_untyped: bool,
 ) -> Option<(NodeId, usize)> {
+    let first = tokens.get(idx)?;
+    if node_kind != SyntaxKind::StructuredFieldClause && is_invalid_decl_name_keyword(source, first)
+    {
+        return None;
+    }
     let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
     let mut children = vec![name];
 
@@ -843,34 +1012,43 @@ fn parse_decl_clause(
         i = j;
     }
 
-    if let Some((length, j)) =
+    while let Some((length, j)) =
         parse_optional_length_spec(b, source, tokens, i, &["TYPE", "LIKE", "VALUE"])
     {
         children.push(length);
         i = j;
     }
 
-    let type_kw = tokens.get(i)?;
-    if !is_keyword(source, type_kw, "type") && !(allow_like && is_keyword(source, type_kw, "like"))
+    let mut has_type_or_like = false;
+    if let Some(type_kw) = tokens.get(i)
+        && (is_keyword(source, type_kw, "type")
+            || (allow_like && is_keyword(source, type_kw, "like")))
     {
-        return None;
-    }
-    children.push(token_leaf(b, type_kw));
-    i += 1;
+        has_type_or_like = true;
+        children.push(token_leaf(b, type_kw));
+        i += 1;
 
-    let (typed, j) = parse_type_ref_tokens(b, source, tokens, i, &["VALUE"])?;
-    children.push(typed);
-    i = j;
-
-    while let Some((length, j)) = parse_optional_length_spec(b, source, tokens, i, &["VALUE"]) {
-        children.push(length);
+        let (typed, j) = parse_type_ref_tokens(b, source, tokens, i, &["VALUE"])?;
+        children.push(typed);
         i = j;
+
+        while let Some((length, j)) = parse_optional_length_spec(b, source, tokens, i, &["VALUE"]) {
+            children.push(length);
+            i = j;
+        }
     }
 
     if allow_value && let Some((value, j)) = parse_value_clause(b, source, tokens, i) {
         children.push(value);
         i = j;
     }
+    if !has_type_or_like && !allow_untyped {
+        return None;
+    }
+    if tokens.get(i).is_some_and(|tok| tok.kind == TokenKind::Eq) {
+        return None;
+    }
+    i = collect_raw_decl_tail(b, source, tokens, i, &mut children);
 
     let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
     Some((b.branch(node_kind, range, &children), i))
@@ -979,6 +1157,32 @@ fn parse_select_options_clause(
     Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
 }
 
+fn parse_controls_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(NodeId, usize)> {
+    let first = tokens.get(idx)?;
+    if is_invalid_decl_name_keyword(source, first) {
+        return None;
+    }
+    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
+    let mut children = vec![name];
+
+    if let Some(type_kw) = tokens.get(i)
+        && is_keyword(source, type_kw, "type")
+    {
+        children.push(token_leaf(b, type_kw));
+        i += 1;
+    }
+
+    i = collect_raw_decl_tail(b, source, tokens, i, &mut children);
+
+    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
+    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
+}
+
 fn parse_begin_of_decl_clause(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -1020,6 +1224,16 @@ fn parse_structured_decl(
         token_leaf(b, tokens.get(idx + 2)?),
     ];
     let mut i = idx + 3;
+    while let Some(tok) = tokens.get(i) {
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
+            break;
+        }
+        children.push(token_leaf(b, tok));
+        i += 1;
+    }
     if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comma) {
         children.push(token_leaf(b, tokens.get(i)?));
         i += 1;
@@ -1170,6 +1384,7 @@ fn parse_structured_field_clause(
         SyntaxKind::StructuredFieldClause,
         allow_like,
         allow_value,
+        false,
     )
     .or_else(|| parse_untyped_structured_field_clause(b, source, tokens, idx))
 }
@@ -1219,6 +1434,7 @@ fn try_parse_chained_decl(
     clause_kind: SyntaxKind,
     allow_like: bool,
     allow_value: bool,
+    allow_untyped: bool,
 ) -> Option<(NodeId, usize)> {
     let kw_tok = tokens.get(idx)?;
     if !is_keyword(source, kw_tok, keyword) {
@@ -1234,6 +1450,7 @@ fn try_parse_chained_decl(
         clause_kind,
         allow_like,
         allow_value,
+        allow_untyped,
     )
 }
 
@@ -1247,6 +1464,7 @@ fn try_parse_chained_decl_after_keyword_span(
     clause_kind: SyntaxKind,
     allow_like: bool,
     allow_value: bool,
+    allow_untyped: bool,
 ) -> Option<(NodeId, usize)> {
     let mut i = kw_end;
     let has_colon = match tokens.get(i).map(|t| t.kind) {
@@ -1262,17 +1480,20 @@ fn try_parse_chained_decl_after_keyword_span(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) = parse_decl_clause(
-            b,
-            source,
-            tokens,
-            i,
-            clause_kind,
-            allow_like,
-            allow_value,
-        )
-        .or_else(|| {
+        let (clause, next_i) = {
             parse_begin_of_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
+        }
+        .or_else(|| {
+            parse_decl_clause(
+                b,
+                source,
+                tokens,
+                i,
+                clause_kind,
+                allow_like,
+                allow_value,
+                allow_untyped,
+            )
         })?;
         clause_nodes.push(clause);
         i = next_i;
@@ -1315,6 +1536,7 @@ pub fn try_parse_statics_decl(
         SyntaxKind::DataTypedClause,
         true,
         true,
+        true,
     )
 }
 
@@ -1335,6 +1557,7 @@ pub fn try_parse_types_decl(
             SyntaxKind::TypesDecl,
             SyntaxKind::TypesTypedClause,
             true,
+            false,
             false,
         )
     })
@@ -1526,6 +1749,7 @@ pub fn try_parse_constants_decl(
         SyntaxKind::ConstantClause,
         true,
         true,
+        true,
     )
 }
 
@@ -1547,6 +1771,9 @@ pub fn try_parse_field_symbols_decl(
     };
     let mut clause_nodes = Vec::new();
     loop {
+        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
+            i += 1;
+        }
         let (clause, next_i) = parse_decl_clause(
             b,
             source,
@@ -1555,6 +1782,7 @@ pub fn try_parse_field_symbols_decl(
             SyntaxKind::FieldSymbolClause,
             true,
             false,
+            true,
         )?;
         clause_nodes.push(clause);
         i = next_i;

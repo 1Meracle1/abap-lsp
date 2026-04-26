@@ -65,6 +65,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["interface"], classify_interface_deferred_stmt),
     GuardedSimpleStmtClassifier::new(&["set"], classify_set_gui_stmt),
     GuardedSimpleStmtClassifier::new(&["type"], classify_type_pools_stmt),
+    GuardedSimpleStmtClassifier::new(&["function"], classify_function_pool_stmt),
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
     GuardedSimpleStmtClassifier::new(&["events", "class"], classify_events_stmt),
     GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
@@ -1859,14 +1860,19 @@ fn classify_class_deferred_stmt(source: &str, significant: &[&Token]) -> Option<
         || !token_matches_keyword(source, significant[0], "class")
         || significant[1].kind != TokenKind::Ident
         || !token_matches_keyword(source, significant[2], "definition")
-        || !token_matches_keyword(source, significant[3], "deferred")
     {
         return None;
     }
-    if significant.len() == 6 && !token_matches_keyword(source, significant[4], "public") {
-        return None;
+    if token_matches_keyword(source, significant[3], "deferred") {
+        if significant.len() == 6 && !token_matches_keyword(source, significant[4], "public") {
+            return None;
+        }
+        return Some(SyntaxKind::ClassDeferredStmt);
     }
-    Some(SyntaxKind::ClassDeferredStmt)
+    if significant.len() == 5 && token_matches_keyword(source, significant[3], "load") {
+        return Some(SyntaxKind::ClassLoadStmt);
+    }
+    None
 }
 
 fn classify_interface_deferred_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
@@ -1924,14 +1930,55 @@ fn classify_type_pools_stmt(source: &str, significant: &[&Token]) -> Option<Synt
     let first = significant[0];
     let second = significant[1];
     let third = significant[2];
-    let fourth = significant[3];
     let last = *significant.last()?;
-    (token_matches_keyword(source, first, "type")
-        && second.kind == TokenKind::Minus
-        && token_matches_keyword(source, third, "pools")
-        && fourth.kind == TokenKind::Ident
-        && last.kind == TokenKind::Period)
-        .then_some(SyntaxKind::TypePoolsStmt)
+    if !token_matches_keyword(source, first, "type")
+        || second.kind != TokenKind::Minus
+        || !token_matches_keyword(source, third, "pools")
+        || last.kind != TokenKind::Period
+    {
+        return None;
+    }
+
+    let mut i = 3usize;
+    let has_colon = significant
+        .get(i)
+        .is_some_and(|token| token.kind == TokenKind::Colon);
+    if has_colon {
+        i += 1;
+    }
+    let mut saw_name = false;
+    loop {
+        let Some(token) = significant.get(i) else {
+            return None;
+        };
+        if token.kind == TokenKind::Period {
+            return saw_name.then_some(SyntaxKind::TypePoolsStmt);
+        }
+        if token.kind != TokenKind::Ident {
+            return None;
+        }
+        saw_name = true;
+        i += 1;
+        match significant.get(i).map(|token| token.kind) {
+            Some(TokenKind::Comma) if has_colon => i += 1,
+            Some(TokenKind::Period) => {}
+            _ => return None,
+        }
+    }
+}
+
+fn classify_function_pool_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if significant.len() < 5
+        || last.kind != TokenKind::Period
+        || !token_matches_keyword(source, significant[0], "function")
+        || significant[1].kind != TokenKind::Minus
+        || !token_matches_keyword(source, significant[2], "pool")
+        || significant[3].kind != TokenKind::Ident
+    {
+        return None;
+    }
+    Some(SyntaxKind::FunctionPoolStmt)
 }
 
 fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {

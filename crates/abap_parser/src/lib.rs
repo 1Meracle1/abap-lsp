@@ -63,6 +63,8 @@ type IdentLeadParserMap = HashMap<String, Vec<ParseAttempt>>;
 const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
     IdentLeadParserRegistration::new(&["data"], data_decl::try_parse_data_decl),
     IdentLeadParserRegistration::new(&["tables"], data_decl::try_parse_tables_decl),
+    IdentLeadParserRegistration::new(&["ranges"], data_decl::try_parse_ranges_decl),
+    IdentLeadParserRegistration::new(&["controls"], data_decl::try_parse_controls_decl),
     IdentLeadParserRegistration::new(
         &["parameters", "parameter"],
         data_decl::try_parse_parameters_decl,

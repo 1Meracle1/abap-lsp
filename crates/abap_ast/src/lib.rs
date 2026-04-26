@@ -155,6 +155,10 @@ pub enum SyntaxKind {
     ReportStmt,
     /// `TABLES ... .`
     TablesDecl,
+    /// `RANGES ... FOR ... .`
+    RangesDecl,
+    /// `CONTROLS ... TYPE ... .`
+    ControlsDecl,
     /// `PARAMETERS ... .`
     ParametersDecl,
     /// `SELECT-OPTIONS ... .`
@@ -167,6 +171,10 @@ pub enum SyntaxKind {
     IncludeName,
     /// Deprecated `TYPE-POOLS ... .`
     TypePoolsStmt,
+    /// `FUNCTION-POOL ... .`
+    FunctionPoolStmt,
+    /// `CLASS class DEFINITION LOAD.`
+    ClassLoadStmt,
     /// `ALIASES ... .`
     AliasesStmt,
     /// One alias definition inside `ALIASES`.
@@ -674,12 +682,16 @@ impl SyntaxKind {
             Self::InterfacesStmt => "InterfacesStmt",
             Self::ReportStmt => "ReportStmt",
             Self::TablesDecl => "TablesDecl",
+            Self::RangesDecl => "RangesDecl",
+            Self::ControlsDecl => "ControlsDecl",
             Self::ParametersDecl => "ParametersDecl",
             Self::SelectOptionsDecl => "SelectOptionsDecl",
             Self::SelectionScreenStmt => "SelectionScreenStmt",
             Self::IncludeStmt => "IncludeStmt",
             Self::IncludeName => "IncludeName",
             Self::TypePoolsStmt => "TypePoolsStmt",
+            Self::FunctionPoolStmt => "FunctionPoolStmt",
+            Self::ClassLoadStmt => "ClassLoadStmt",
             Self::AliasesStmt => "AliasesStmt",
             Self::AliasEntry => "AliasEntry",
             Self::AliasName => "AliasName",
