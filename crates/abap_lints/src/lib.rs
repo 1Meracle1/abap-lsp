@@ -163,6 +163,47 @@ pub struct LintDiagnostic {
     pub sap_aliases: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectLintAnalysis {
+    diagnostics_by_uri: BTreeMap<String, Vec<LintDiagnostic>>,
+}
+
+impl ProjectLintAnalysis {
+    pub fn from_diagnostics<I, S>(diagnostics: I) -> Self
+    where
+        I: IntoIterator<Item = (S, LintDiagnostic)>,
+        S: Into<String>,
+    {
+        let mut diagnostics_by_uri = BTreeMap::<String, Vec<LintDiagnostic>>::new();
+        for (uri, diagnostic) in diagnostics {
+            diagnostics_by_uri
+                .entry(uri.into())
+                .or_default()
+                .push(diagnostic);
+        }
+        for diagnostics in diagnostics_by_uri.values_mut() {
+            sort_lint_diagnostics(diagnostics);
+            diagnostics.dedup();
+        }
+        Self { diagnostics_by_uri }
+    }
+
+    pub fn diagnostics_for_uri(&self, uri: &str) -> &[LintDiagnostic] {
+        self.diagnostics_by_uri
+            .get(uri)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn diagnostics_by_uri(&self) -> &BTreeMap<String, Vec<LintDiagnostic>> {
+        &self.diagnostics_by_uri
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.diagnostics_by_uri.values().all(Vec::is_empty)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct LintConfig {
     #[serde(default = "default_lint_profile")]
@@ -384,6 +425,17 @@ fn normalized_key(value: &str) -> String {
 
 fn normalized_lint_id(value: &str) -> String {
     normalized_key(value)
+}
+
+fn sort_lint_diagnostics(diagnostics: &mut [LintDiagnostic]) {
+    diagnostics.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then(left.range.end.cmp(&right.range.end))
+            .then(left.id.cmp(&right.id))
+            .then(left.message.cmp(&right.message))
+    });
 }
 
 fn default_lint_profile() -> String {

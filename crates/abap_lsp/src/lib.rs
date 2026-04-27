@@ -12,10 +12,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use abap_cache::{
-    CallableCompletionKind, DocumentInput, DocumentStore, LocalExportConfig, LocalExportResolver,
-    SnapshotBuildPlan, WorkspaceDocument, WorkspaceManifest, analysis_text_for_document,
-    ddic_xml_to_abap_source, file_uri_to_path, function_module_completion_items_from_source,
-    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
+    CallableCompletionKind, DocumentInput, DocumentStore, LintDiagnostic, LintLevel, LintPolicy,
+    LocalExportConfig, LocalExportResolver, SnapshotBuildPlan, WorkspaceDocument,
+    WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source, file_uri_to_path,
+    function_module_completion_items_from_source, is_remote_lookup_candidate,
+    is_remote_lookup_candidate_after_local_resolution, lint_id_for_diagnostic_kind,
     load_effective_manifest_from_workspace_result, load_workspace_documents_with_progress,
     local_export_config_for_source, manifest_document_metadata,
     manifest_supports_remote_resolution, path_to_file_uri,
@@ -64,6 +65,7 @@ pub const READ_DEPENDENCY_DOCUMENT: &str = "abapls/readDependencyDocument";
 const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
 const DEPENDENCY_DOCUMENT_SCHEME: &str = "abapls-cache";
+const LINT_DIAGNOSTIC_SOURCE: &str = "abap-lsp-lints";
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
@@ -231,6 +233,21 @@ pub struct ReadDependencyDocumentResult {
     pub source_text: String,
 }
 
+fn workspace_lint_policy(workspace: &WorkspaceState) -> LintPolicy {
+    LintPolicy::from_config_opt(
+        workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.lints.as_ref()),
+    )
+}
+
+fn sync_workspace_lint_policy(workspace: &WorkspaceState) {
+    workspace
+        .cache
+        .set_lint_policy(workspace_lint_policy(workspace));
+}
+
 fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
         workspace.dependency_profile = None;
@@ -238,6 +255,7 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
         workspace.manifest_uri.clear();
         workspace.manifest = None;
         workspace.manifest_error = None;
+        sync_workspace_lint_policy(workspace);
         return;
     };
     let manifest_uri = path_to_file_uri(&root_path.join("abapls.toml"));
@@ -271,6 +289,7 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
             workspace.manifest_error = Some(error);
         }
     }
+    sync_workspace_lint_policy(workspace);
 }
 
 impl ServerState {
@@ -868,6 +887,7 @@ fn snapshot_with_version(snapshot: &Arc<AnalysisSnapshot>, version: i32) -> Arc<
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
         routine_analysis: Arc::clone(&snapshot.routine_analysis),
+        lint_analysis: Arc::clone(&snapshot.lint_analysis),
         static_analysis: snapshot.static_analysis.as_ref().map(Arc::clone),
         callable_summaries: Arc::clone(&snapshot.callable_summaries),
         call_graph: Arc::clone(&snapshot.call_graph),
@@ -1471,6 +1491,7 @@ fn refresh_workspace_inputs_with_progress(
     if inputs.is_empty() {
         return Vec::new();
     }
+    sync_workspace_lint_policy(workspace);
     let refreshed_uris: Vec<_> = inputs.iter().map(|input| Arc::clone(&input.uri)).collect();
     let build_plan = workspace_committed_build_plan(workspace);
     let snapshots = workspace
@@ -1598,6 +1619,7 @@ fn rebuild_workspace_cache_with_progress(
     workspace.manifest = loaded.manifest.clone();
     workspace.manifest_uri = loaded.manifest_uri.to_string();
     workspace.manifest_error = loaded.manifest_error.clone();
+    sync_workspace_lint_policy(workspace);
     workspace.dependency_parent_uris.clear();
     workspace.dependency_batch_candidates.clear();
     let documents = loaded.documents;
@@ -1830,6 +1852,7 @@ fn publish_workspace_input_with_dependency_hydration(
     input: DocumentInput,
     build_plan: SnapshotBuildPlan,
 ) -> Arc<AnalysisSnapshot> {
+    sync_workspace_lint_policy(workspace);
     let uri = Arc::clone(&input.uri);
     let snapshot = workspace
         .cache
@@ -3897,9 +3920,12 @@ fn build_lsp_parse_diagnostics(
         .collect()
 }
 
-pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
-    let mut out = build_lsp_parse_diagnostics(snapshot, false);
+fn build_lsp_semantic_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
     for diag_inner in &snapshot.symbols.diagnostics {
+        if lint_id_for_diagnostic_kind(diag_inner.kind).is_some() {
+            continue;
+        }
         let Some(range) = byte_range_to_lsp_range_snapshot(snapshot, diag_inner.range.clone())
         else {
             continue;
@@ -3916,13 +3942,72 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
             data: None,
         });
     }
-    out.sort_by(|a, b| {
+    out
+}
+
+fn lint_diagnostic_severity(level: LintLevel) -> Option<DiagnosticSeverity> {
+    match level {
+        LintLevel::Allow => None,
+        LintLevel::Info => Some(DiagnosticSeverity::INFORMATION),
+        LintLevel::Warn => Some(DiagnosticSeverity::WARNING),
+        LintLevel::Deny => Some(DiagnosticSeverity::ERROR),
+    }
+}
+
+#[derive(Serialize)]
+struct LspLintDiagnosticData<'a> {
+    lint_id: &'a str,
+    group: &'a str,
+    origin: &'a str,
+}
+
+fn build_lsp_lint_diagnostic(
+    snapshot: &AnalysisSnapshot,
+    lint: &LintDiagnostic,
+) -> Option<Diagnostic> {
+    let severity = lint_diagnostic_severity(lint.level)?;
+    let data = serde_json::to_value(LspLintDiagnosticData {
+        lint_id: lint.id.as_str(),
+        group: lint.group.as_str(),
+        origin: lint.origin.as_str(),
+    })
+    .ok();
+    Some(Diagnostic {
+        range: byte_range_to_lsp_range_snapshot(snapshot, lint.range.clone())?,
+        severity: Some(severity),
+        code: Some(NumberOrString::String(lint.id.clone())),
+        code_description: None,
+        source: Some(LINT_DIAGNOSTIC_SOURCE.to_owned()),
+        message: lint.message.clone(),
+        related_information: None,
+        tags: None,
+        data,
+    })
+}
+
+fn build_lsp_lint_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
+    snapshot
+        .lint_diagnostics()
+        .iter()
+        .filter_map(|lint| build_lsp_lint_diagnostic(snapshot, lint))
+        .collect()
+}
+
+fn sort_lsp_diagnostics(diagnostics: &mut [Diagnostic]) {
+    diagnostics.sort_by(|a, b| {
         a.range
             .start
             .line
             .cmp(&b.range.start.line)
             .then(a.range.start.character.cmp(&b.range.start.character))
     });
+}
+
+pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
+    let mut out = build_lsp_parse_diagnostics(snapshot, false);
+    out.extend(build_lsp_semantic_diagnostics(snapshot));
+    out.extend(build_lsp_lint_diagnostics(snapshot));
+    sort_lsp_diagnostics(&mut out);
     out
 }
 
@@ -3967,30 +4052,9 @@ pub fn build_lsp_diagnostics_for_workspace(
 ) -> Vec<Diagnostic> {
     let include_fragment_policy = snapshot_is_workspace_include_fragment(workspace, snapshot);
     let mut diagnostics = build_lsp_parse_diagnostics(snapshot, include_fragment_policy);
-    for diag_inner in &snapshot.symbols.diagnostics {
-        let Some(range) = byte_range_to_lsp_range_snapshot(snapshot, diag_inner.range.clone())
-        else {
-            continue;
-        };
-        diagnostics.push(Diagnostic {
-            range,
-            severity: Some(semantic_diagnostic_severity(diag_inner.kind)),
-            code: semantic_diagnostic_code(diag_inner.kind),
-            code_description: None,
-            source: Some("abap-symbols".to_owned()),
-            message: diag_inner.message.clone(),
-            related_information: None,
-            tags: None,
-            data: None,
-        });
-    }
-    diagnostics.sort_by(|a, b| {
-        a.range
-            .start
-            .line
-            .cmp(&b.range.start.line)
-            .then(a.range.start.character.cmp(&b.range.start.character))
-    });
+    diagnostics.extend(build_lsp_semantic_diagnostics(snapshot));
+    diagnostics.extend(build_lsp_lint_diagnostics(snapshot));
+    sort_lsp_diagnostics(&mut diagnostics);
     let Some(workspace) = workspace else {
         return diagnostics;
     };
@@ -3999,7 +4063,8 @@ pub fn build_lsp_diagnostics_for_workspace(
         let Some(severity) = diagnostic.severity else {
             continue;
         };
-        if diagnostic.source.as_deref() != Some("abap-symbols") {
+        let source = diagnostic.source.as_deref();
+        if source != Some("abap-symbols") && source != Some(LINT_DIAGNOSTIC_SOURCE) {
             continue;
         }
 
@@ -5299,8 +5364,9 @@ fn callable_completion_item_metadata(
 #[cfg(test)]
 mod tests {
     use abap_cache::{
-        DocumentInput, DocumentStore, ManifestPerformance, ManifestResolution, ManifestUnit,
-        ManifestUnitMember, WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
+        ABAP_LSP_UNREACHABLE_CODE, DocumentInput, DocumentStore, ManifestPerformance,
+        ManifestResolution, ManifestUnit, ManifestUnitMember, WorkspaceDocument, WorkspaceManifest,
+        path_to_file_uri,
     };
     use abap_dependency_store::StoredArtifactInput;
     use abap_symbols::DiagnosticKind;
@@ -5324,13 +5390,14 @@ mod tests {
     use super::{
         CodeActionParams, CompletionParams, CompletionResponse, DEPENDENCY_CACHE_REFRESH_REQUESTED,
         DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, DependencyArtifactPayload,
-        GotoDefinitionParams, HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED,
-        RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams, ReferenceParams,
-        RemoteDependencyCandidate, RenameParams, ServerState, StoreRemoteDependencyArtifactsParams,
-        WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, WorkspaceState,
-        build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
-        build_remote_dependency_batch_for_workspace, build_remote_dependency_refresh_for_workspace,
-        build_remote_dependency_request, build_remote_dependency_request_retrying_negatives,
+        GotoDefinitionParams, HoverParams, InlayHintParams, LINT_DIAGNOSTIC_SOURCE,
+        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams,
+        ReferenceParams, RemoteDependencyCandidate, RenameParams, ServerState,
+        StoreRemoteDependencyArtifactsParams, WORKSPACE_MANIFEST_UPDATED,
+        WorkspaceManifestUpdatedParams, WorkspaceState, build_lsp_diagnostics,
+        build_lsp_diagnostics_for_workspace, build_remote_dependency_batch_for_workspace,
+        build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
+        build_remote_dependency_request_retrying_negatives,
         build_remote_dependency_requests_for_workspace, code_actions,
         collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
         completion, definition, dependency_document_input_from_payload_with_kind,
@@ -5458,6 +5525,58 @@ mod tests {
         out
     }
 
+    fn unreachable_lint_source() -> &'static str {
+        "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    RETURN.
+    WRITE 'after'.
+  ENDMETHOD.
+ENDCLASS."
+    }
+
+    fn workspace_diagnostics_with_lints_config(
+        test_name: &str,
+        lints_config: &str,
+        source: &str,
+    ) -> Vec<lsp_types::Diagnostic> {
+        let workspace_path = temp_workspace_path(test_name);
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        let manifest = format!(
+            r#"
+version = 1
+
+{lints_config}
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#
+        );
+        fs::write(workspace_path.join("abapls.toml"), manifest).expect("manifest");
+        let source_path = workspace_path.join("src/ZMAIN.abap");
+        fs::write(&source_path, source).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&path_to_file_uri(&source_path));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace.cache.get(&source_uri).expect("snapshot");
+        build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref())
+    }
+
     #[test]
     fn normalize_lsp_uri_lowercases_windows_file_drive_prefix() {
         assert_eq!(
@@ -5527,6 +5646,7 @@ mod tests {
             dependency_store: None,
             resolution: ManifestResolution::default(),
             performance: ManifestPerformance::default(),
+            lints: None,
             units: vec![ManifestUnit {
                 name: "MEACCTVI".to_string(),
                 kind: "function-group".to_string(),
@@ -5570,6 +5690,97 @@ mod tests {
                 .iter()
                 .any(|diag| diag.message.contains("expected condition after IF")),
             "{workspace_diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_lint_rule_allow_suppresses_lsp_lint_diagnostic() {
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_allow_unreachable",
+            r#"
+[lints.rules]
+"abap-lsp.unreachable-code" = "allow"
+"#,
+            unreachable_lint_source(),
+        );
+
+        assert!(
+            diagnostics.iter().all(|diag| {
+                diag.code
+                    != Some(NumberOrString::String(
+                        ABAP_LSP_UNREACHABLE_CODE.to_string(),
+                    ))
+            }),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| diag.source.as_deref() != Some(LINT_DIAGNOSTIC_SOURCE)),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("unreachable code")),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn workspace_lint_rule_deny_publishes_lsp_error_with_lint_metadata() {
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_deny_unreachable",
+            r#"
+[lints.rules]
+"abap-lsp.unreachable-code" = "deny"
+"#,
+            unreachable_lint_source(),
+        );
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diag| {
+                diag.code
+                    == Some(NumberOrString::String(
+                        ABAP_LSP_UNREACHABLE_CODE.to_string(),
+                    ))
+            })
+            .expect("unreachable-code lint diagnostic");
+        assert_eq!(diagnostic.source.as_deref(), Some(LINT_DIAGNOSTIC_SOURCE));
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        let data = diagnostic.data.as_ref().expect("lint diagnostic data");
+        assert_eq!(
+            data.get("lint_id").and_then(serde_json::Value::as_str),
+            Some(ABAP_LSP_UNREACHABLE_CODE)
+        );
+        assert_eq!(
+            data.get("group").and_then(serde_json::Value::as_str),
+            Some("correctness")
+        );
+        assert_eq!(
+            data.get("origin").and_then(serde_json::Value::as_str),
+            Some("abap-lsp")
+        );
+    }
+
+    #[test]
+    fn workspace_lint_policy_does_not_suppress_parse_errors() {
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_policy_parse_error",
+            r#"
+[lints]
+profile = "none"
+"#,
+            "IF .",
+        );
+
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag.source.as_deref() == Some("abap-parser")
+                    && diag.severity == Some(DiagnosticSeverity::ERROR)
+            }),
+            "{diagnostics:#?}"
         );
     }
 

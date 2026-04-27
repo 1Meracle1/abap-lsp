@@ -8,17 +8,24 @@ use abap_ast::ast::{
     AstNode, ConstructorCorrespondingMappingAssignment, ConstructorExpr, SyntaxNodeRef,
 };
 use abap_lexer::{TokenKind, tokenize};
+pub use abap_lints::{
+    ABAP_LSP_DEAD_STORE, ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL, ABAP_LSP_UNREACHABLE_CODE,
+    ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH, ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT,
+    EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_MISSING_TABLES_DECLARATION,
+    EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup, LintId, LintLevel, LintMetadata,
+    LintOrigin, LintPolicy, ProjectLintAnalysis,
+};
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
     CallArgumentData, CallSiteData, ClassMemberData, ClassMemberKind, ClassMemberParameterData,
-    FieldTypeRefData, FormParameterData, FormParameterPassingKind, FormParameterSection,
-    FormRoutineData, FunctionModuleData, FunctionModuleExceptionData, FunctionModuleParameterData,
-    FunctionModuleParameterSection, MethodParameterSection, NamedArgumentAccess,
-    NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData, PerformCallData,
-    PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis, ProjectStaticAnalysisSummary,
-    ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData, SqlNameRefKind,
-    StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId, SymbolData,
-    SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
+    Diagnostic, DiagnosticKind, FieldTypeRefData, FormParameterData, FormParameterPassingKind,
+    FormParameterSection, FormRoutineData, FunctionModuleData, FunctionModuleExceptionData,
+    FunctionModuleParameterData, FunctionModuleParameterSection, MethodParameterSection,
+    NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
+    PerformCallData, PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis,
+    ProjectStaticAnalysisSummary, ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData,
+    SqlNameRefKind, StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId,
+    SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
     build_project_routine_analysis, build_project_static_analysis_summary, builtin_routine_spec,
     call_section_matches_parameter, parameter_is_required,
     perf_api::{
@@ -87,6 +94,7 @@ pub struct AnalysisSnapshot {
     pub symbols: Arc<UnitAnalysis>,
     pub project: Arc<ProjectAnalysis>,
     pub routine_analysis: Arc<ProjectRoutineAnalysis>,
+    pub lint_analysis: Arc<ProjectLintAnalysis>,
     pub static_analysis: Option<Arc<ProjectStaticAnalysisSummary>>,
     pub callable_summaries: Arc<ProjectCallableSummaryAnalysis>,
     pub call_graph: Arc<ProjectCallGraph>,
@@ -590,6 +598,14 @@ impl AnalysisSnapshot {
 
     pub fn routine_analysis(&self) -> &ProjectRoutineAnalysis {
         self.routine_analysis.as_ref()
+    }
+
+    pub fn lint_analysis(&self) -> &ProjectLintAnalysis {
+        self.lint_analysis.as_ref()
+    }
+
+    pub fn lint_diagnostics(&self) -> &[LintDiagnostic] {
+        self.lint_analysis.diagnostics_for_uri(self.uri.as_ref())
     }
 
     pub fn static_analysis(&self) -> Option<&ProjectStaticAnalysisSummary> {
@@ -10456,6 +10472,7 @@ pub struct DocumentStore {
     documents: RwLock<HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     analysis: RwLock<Option<CachedWorkspaceAnalysis>>,
     preview_metrics: RwLock<Option<PreviewMetrics>>,
+    lint_policy: RwLock<Arc<LintPolicy>>,
 }
 
 impl Clone for DocumentStore {
@@ -10464,6 +10481,7 @@ impl Clone for DocumentStore {
             documents: RwLock::new(self.documents.read().clone()),
             analysis: RwLock::new(self.analysis.read().clone()),
             preview_metrics: RwLock::new(self.preview_metrics.read().clone()),
+            lint_policy: RwLock::new(Arc::clone(&self.lint_policy.read())),
         }
     }
 }
@@ -10477,8 +10495,12 @@ fn snapshot_matches_input(snapshot: &AnalysisSnapshot, input: &DocumentInput) ->
 fn build_plan_matches_cached_analysis(
     analysis: Option<&CachedWorkspaceAnalysis>,
     build_plan: SnapshotBuildPlan,
+    lint_policy: &LintPolicy,
 ) -> bool {
-    analysis.is_some_and(|analysis| analysis.build_plan == build_plan.normalized())
+    analysis.is_some_and(|analysis| {
+        analysis.build_plan == build_plan.normalized()
+            && analysis.lint_policy.as_ref() == lint_policy
+    })
 }
 
 fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc<AnalysisSnapshot> {
@@ -10495,6 +10517,7 @@ fn clone_snapshot_with_version(snapshot: &AnalysisSnapshot, version: i32) -> Arc
         symbols: Arc::clone(&snapshot.symbols),
         project: Arc::clone(&snapshot.project),
         routine_analysis: Arc::clone(&snapshot.routine_analysis),
+        lint_analysis: Arc::clone(&snapshot.lint_analysis),
         static_analysis: snapshot.static_analysis.as_ref().map(Arc::clone),
         callable_summaries: Arc::clone(&snapshot.callable_summaries),
         call_graph: Arc::clone(&snapshot.call_graph),
@@ -10604,6 +10627,7 @@ struct CachedWorkspaceAnalysis {
     dirty_uris: HashSet<Arc<str>>,
     metrics: AnalysisMetrics,
     build_plan: SnapshotBuildPlan,
+    lint_policy: Arc<LintPolicy>,
 }
 
 #[derive(Debug, Clone)]
@@ -10801,6 +10825,7 @@ fn materialize_snapshots(
     prepared: Vec<PreparedDocument>,
     update: IncrementalProjectUpdate,
     build_plan: SnapshotBuildPlan,
+    lint_policy: Arc<LintPolicy>,
 ) -> (
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     CachedWorkspaceAnalysis,
@@ -10872,6 +10897,7 @@ fn materialize_snapshots(
             .collect::<HashMap<_, _>>(),
     );
 
+    let mut prepared_units = Vec::with_capacity(prepared.len());
     for prepared in prepared {
         let unit = project
             .unit_by_uri(prepared.uri.as_ref())
@@ -10882,6 +10908,14 @@ fn materialize_snapshots(
         } else {
             unit
         };
+        prepared_units.push((prepared, unit));
+    }
+    let lint_analysis = Arc::new(build_project_lint_analysis(
+        prepared_units.iter().map(|(_, unit)| unit),
+        lint_policy.as_ref(),
+    ));
+
+    for (prepared, unit) in prepared_units {
         let scope_index = Arc::new(prepared.local.scope_index.clone());
         locals.insert(Arc::clone(&prepared.uri), prepared.local);
         uri_order.push(Arc::clone(&prepared.uri));
@@ -10900,6 +10934,7 @@ fn materialize_snapshots(
                 symbols: Arc::new(unit),
                 project: Arc::clone(&project),
                 routine_analysis: Arc::clone(&routine_analysis),
+                lint_analysis: Arc::clone(&lint_analysis),
                 static_analysis: static_analysis.as_ref().map(Arc::clone),
                 callable_summaries: Arc::clone(&callable_summaries),
                 call_graph: Arc::clone(&call_graph),
@@ -10931,6 +10966,7 @@ fn materialize_snapshots(
             dirty_uris: update.dirty_uris,
             metrics,
             build_plan,
+            lint_policy,
         },
     )
 }
@@ -10955,6 +10991,67 @@ fn augment_unit_with_routine_diagnostics(
     unit
 }
 
+pub fn lint_metadata_for_diagnostic_kind(kind: DiagnosticKind) -> Option<&'static LintMetadata> {
+    let id = match kind {
+        DiagnosticKind::UnreachableCode => ABAP_LSP_UNREACHABLE_CODE,
+        DiagnosticKind::UseBeforeDefiniteAssignment => ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT,
+        DiagnosticKind::PossiblyUnboundFieldSymbol => ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL,
+        DiagnosticKind::DeadStore => ABAP_LSP_DEAD_STORE,
+        DiagnosticKind::UnsortedReadTableBinarySearch => ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH,
+        DiagnosticKind::UnverifiedOpenSqlSource => EPC_UNVERIFIED_OPEN_SQL_SOURCE,
+        DiagnosticKind::InvalidOpenSqlIntoTarget => EPC_INVALID_OPEN_SQL_INTO_TARGET,
+        DiagnosticKind::MissingTablesDeclaration => EPC_MISSING_TABLES_DECLARATION,
+        _ => return None,
+    };
+    abap_lints::metadata_for(id)
+}
+
+pub fn lint_id_for_diagnostic_kind(kind: DiagnosticKind) -> Option<LintId> {
+    lint_metadata_for_diagnostic_kind(kind).map(|metadata| metadata.id)
+}
+
+fn build_project_lint_analysis<'a>(
+    units: impl IntoIterator<Item = &'a UnitAnalysis>,
+    lint_policy: &LintPolicy,
+) -> ProjectLintAnalysis {
+    let mut diagnostics = Vec::new();
+    for unit in units {
+        for diagnostic in &unit.diagnostics {
+            if let Some(lint_diagnostic) =
+                lint_diagnostic_from_symbol_diagnostic(diagnostic, lint_policy)
+            {
+                diagnostics.push((unit.uri.to_string(), lint_diagnostic));
+            }
+        }
+    }
+    ProjectLintAnalysis::from_diagnostics(diagnostics)
+}
+
+fn lint_diagnostic_from_symbol_diagnostic(
+    diagnostic: &Diagnostic,
+    lint_policy: &LintPolicy,
+) -> Option<LintDiagnostic> {
+    let metadata = lint_metadata_for_diagnostic_kind(diagnostic.kind)?;
+    let level = lint_policy.level_for(metadata.id);
+    if !level.is_enabled() && !lint_policy.report_suppressed() {
+        return None;
+    }
+    Some(LintDiagnostic {
+        id: metadata.id.to_string(),
+        range: diagnostic.range.clone(),
+        message: diagnostic.message.clone(),
+        level,
+        origin: metadata.origin,
+        group: metadata.group,
+        tags: metadata.tags.iter().map(|tag| (*tag).to_string()).collect(),
+        sap_aliases: metadata
+            .sap_aliases
+            .iter()
+            .map(|alias| (*alias).to_string())
+            .collect(),
+    })
+}
+
 fn analyze_inputs_with_progress(
     inputs: &[DocumentInput],
     existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
@@ -10963,6 +11060,7 @@ fn analyze_inputs_with_progress(
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
     build_plan: SnapshotBuildPlan,
+    lint_policy: Arc<LintPolicy>,
 ) -> (
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     CachedWorkspaceAnalysis,
@@ -10999,7 +11097,8 @@ fn analyze_inputs_with_progress(
     metrics.rebuild_semantic_index_micros = update.rebuild_semantic_index_micros;
     metrics.validate_micros = update.validate_micros;
     metrics.collect_project_diagnostics_micros = update.collect_project_diagnostics_micros;
-    let (snapshots, mut analysis) = materialize_snapshots(prepared, update, build_plan);
+    let (snapshots, mut analysis) =
+        materialize_snapshots(prepared, update, build_plan, lint_policy);
     analysis.metrics.parse_count = metrics.parse_count;
     analysis.metrics.local_phase_count = metrics.local_phase_count;
     analysis.metrics.parse_micros = metrics.parse_micros;
@@ -11461,6 +11560,14 @@ fn blank_range_preserving_layout(text: &mut [u8], range: Range<usize>) {
 }
 
 impl DocumentStore {
+    pub fn set_lint_policy(&self, lint_policy: LintPolicy) {
+        *self.lint_policy.write() = Arc::new(lint_policy);
+    }
+
+    pub fn lint_policy(&self) -> Arc<LintPolicy> {
+        Arc::clone(&self.lint_policy.read())
+    }
+
     pub fn replace_all(
         &self,
         inputs: Vec<DocumentInput>,
@@ -11492,6 +11599,7 @@ impl DocumentStore {
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         let existing = self.documents.read();
         let analysis = self.analysis.read();
+        let lint_policy = self.lint_policy();
         let changed_uris = changed_uris_for_inputs(&inputs, Some(&existing));
         let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
             &inputs,
@@ -11501,6 +11609,7 @@ impl DocumentStore {
             &changed_uris,
             true,
             build_plan,
+            Arc::clone(&lint_policy),
         );
         drop(analysis);
         drop(existing);
@@ -11535,11 +11644,16 @@ impl DocumentStore {
     ) -> Arc<AnalysisSnapshot> {
         let existing = self.documents.read();
         let analysis = self.analysis.read();
+        let lint_policy = self.lint_policy();
         if let Some(current) = existing.get(input.uri.as_ref())
             && current.text.as_ref() == input.text.as_ref()
             && current.is_dependency == input.is_dependency
             && current.object_name == input.object_name
-            && build_plan_matches_cached_analysis(analysis.as_ref(), build_plan)
+            && build_plan_matches_cached_analysis(
+                analysis.as_ref(),
+                build_plan,
+                lint_policy.as_ref(),
+            )
         {
             let snapshot = clone_snapshot_with_version(current, input.version);
             drop(existing);
@@ -11560,6 +11674,7 @@ impl DocumentStore {
             &changed_uris,
             force_full,
             build_plan,
+            Arc::clone(&lint_policy),
         );
         drop(analysis);
         drop(existing);
@@ -11606,6 +11721,7 @@ impl DocumentStore {
 
         let existing = self.documents.read();
         let analysis = self.analysis.read();
+        let lint_policy = self.lint_policy();
         let changed_uris: HashSet<_> = inputs
             .iter()
             .filter(|input| {
@@ -11616,7 +11732,11 @@ impl DocumentStore {
             .map(|input| Arc::clone(&input.uri))
             .collect();
         if changed_uris.is_empty()
-            && build_plan_matches_cached_analysis(analysis.as_ref(), build_plan)
+            && build_plan_matches_cached_analysis(
+                analysis.as_ref(),
+                build_plan,
+                lint_policy.as_ref(),
+            )
         {
             let mut updated = existing.clone();
             for input in &inputs {
@@ -11644,6 +11764,7 @@ impl DocumentStore {
             &changed_uris,
             force_full,
             build_plan,
+            Arc::clone(&lint_policy),
         );
         drop(analysis);
         drop(existing);
@@ -11656,6 +11777,7 @@ impl DocumentStore {
         let started = std::time::Instant::now();
         let existing = self.documents.read();
         let analysis = self.analysis.read();
+        let lint_policy = self.lint_policy();
         if let Some(current) = existing.get(input.uri.as_ref())
             && current.text.as_ref() == input.text.as_ref()
             && current.is_dependency == input.is_dependency
@@ -11686,6 +11808,7 @@ impl DocumentStore {
             &changed_uris,
             force_full,
             build_plan,
+            lint_policy,
         );
         let snapshot = rebuilt
             .get(input.uri.as_ref())
