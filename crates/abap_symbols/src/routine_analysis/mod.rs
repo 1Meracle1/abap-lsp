@@ -4246,6 +4246,10 @@ fn read_table_binary_search_has_prior_order(
     unit.internal_table_orders
         .iter()
         .any(|order| internal_table_order_is_prior_match(unit, scope_map, routine_id, read, order))
+        || unit
+            .sql_queries
+            .iter()
+            .any(|query| sql_query_order_is_prior_match(unit, scope_map, routine_id, read, query))
 }
 
 fn internal_table_order_is_prior_match(
@@ -4269,12 +4273,46 @@ fn internal_table_order_is_prior_match(
         && table_order_fields_match_read_key(&order.key_fields, &read.key_fields)
 }
 
+fn sql_query_order_is_prior_match(
+    unit: &UnitAnalysis,
+    scope_map: &[Option<RoutineId>],
+    routine_id: RoutineId,
+    read: &ReadTableBinarySearchData,
+    query: &crate::SqlQueryData,
+) -> bool {
+    !query.order_by_fields.is_empty()
+        && query.range.end <= read.range.start
+        && scope_map
+            .get(query.scope.as_usize())
+            .copied()
+            .flatten()
+            .is_some_and(|order_routine| order_routine == routine_id)
+        && scope_descends_from(unit, read.scope, query.scope)
+        && unit.sql_targets.iter().any(|target| {
+            target.query_id == query.id
+                && target.kind == crate::SqlTargetKind::Into
+                && target.is_table
+                && target.target_name.as_ref().is_some_and(|table_name| {
+                    table_name.as_ref().eq_ignore_ascii_case(&read.table_name)
+                })
+        })
+        && table_order_fields_match_read_key(&query.order_by_fields, &read.key_fields)
+}
+
 fn table_order_fields_match_read_key(order_fields: &[Arc<str>], key_fields: &[Arc<str>]) -> bool {
-    order_fields.len() >= key_fields.len()
-        && order_fields
-            .iter()
+    let effective_order_fields = order_fields
+        .iter()
+        .skip_while(|field| is_client_column_name(field.as_ref()))
+        .collect::<Vec<_>>();
+    effective_order_fields.len() >= key_fields.len()
+        && effective_order_fields
+            .into_iter()
             .zip(key_fields)
             .all(|(ordered, key)| ordered.as_ref().eq_ignore_ascii_case(key.as_ref()))
+}
+
+fn is_client_column_name(field_name: &str) -> bool {
+    field_name.eq_ignore_ascii_case("mandt") || field_name.eq_ignore_ascii_case("client")
 }
 
 fn read_table_binary_search_key_label(key_fields: &[Arc<str>]) -> String {

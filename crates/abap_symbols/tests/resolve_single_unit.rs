@@ -2382,6 +2382,8 @@ WRITE lt_flights.
     assert!(query.into_clause.is_some());
     assert!(query.where_clause.is_some());
     assert!(query.order_by_clause.is_some());
+    assert!(query.order_by_primary_key);
+    assert!(query.order_by_fields.is_empty());
 
     assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
     let source = &unit.sql_sources[0];
@@ -3547,6 +3549,136 @@ SELECT mguid, docref, evt_time
         )),
         "unexpected Open SQL diagnostics: {:?}",
         main_unit.diagnostics
+    );
+}
+
+#[test]
+fn resolves_order_by_primary_key_fields_against_workspace_ddic_type() {
+    let ddic_src = r#"
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, " key; client
+         carrid TYPE c LENGTH 3, " key; carrier
+         connid TYPE c LENGTH 4, " key; connection
+         fldate TYPE d,
+       END OF zflight.
+"#;
+    let main_src = r#"
+SELECT carrid, connid
+  FROM zflight
+  INTO TABLE @DATA(lt_rows)
+  ORDER BY PRIMARY KEY.
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///packages/z/ddic-table/zflight.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_order_by_primary_key.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_order_by_primary_key.abap")
+        .expect("main unit");
+    let query = main_unit.sql_queries.first().expect("query");
+
+    assert!(query.order_by_primary_key);
+    assert_eq!(
+        query
+            .order_by_fields
+            .iter()
+            .map(|field| field.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["mandt", "carrid", "connid"]
+    );
+    assert!(
+        !main_unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::InvalidOpenSqlSyntax),
+        "unexpected Open SQL syntax diagnostics: {:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_for_all_entries_order_by_primary_key_missing_selected_key_field() {
+    let ddic_src = r#"
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, " key; client
+         carrid TYPE c LENGTH 3, " key; carrier
+         connid TYPE c LENGTH 4, " key; connection
+       END OF zflight.
+"#;
+    let main_src = r#"
+TYPES: BEGIN OF ty_key,
+         carrid TYPE c LENGTH 3,
+       END OF ty_key.
+DATA lt_keys TYPE STANDARD TABLE OF ty_key WITH EMPTY KEY.
+
+SELECT carrid
+  FROM zflight
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE carrid = @lt_keys-carrid
+  INTO TABLE @DATA(lt_rows)
+  ORDER BY PRIMARY KEY.
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///packages/z/ddic-table/zflight.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_fae_order_by_primary_key.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_fae_order_by_primary_key.abap")
+        .expect("main unit");
+
+    assert!(
+        main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlSyntax
+                && diag
+                    .message
+                    .contains("requires all non-client primary-key fields")
+        }),
+        "{:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_order_by_primary_key_for_join_source() {
+    let src = r#"
+SELECT a~carrid
+  FROM zflight AS a
+  JOIN zflight2 AS b ON b~carrid = a~carrid
+  INTO TABLE @DATA(lt_rows)
+  ORDER BY PRIMARY KEY.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///join_order_by_primary_key.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlSyntax
+                && diag
+                    .message
+                    .contains("requires a single static data source")
+        }),
+        "{:?}",
+        unit.diagnostics
     );
 }
 

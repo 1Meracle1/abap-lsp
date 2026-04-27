@@ -84,3 +84,28 @@ fn accepts_binary_search_after_select_into_table_order_by_same_fields() {
     let warnings = binary_search_order_warnings(&src);
     assert!(warnings.is_empty(), "{warnings:#?}");
 }
+
+#[test]
+fn accepts_binary_search_after_select_into_table_order_by_primary_key() {
+    let src = r#"
+TYPES: BEGIN OF zflights,
+         carrid TYPE string, " key; carrier
+         connid TYPE string, " key; connection
+       END OF zflights.
+
+FORM run.
+  TYPES ty_row TYPE zflights.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  DATA ls_row TYPE ty_row.
+
+  SELECT carrid, connid
+    FROM zflights
+    INTO TABLE @lt_rows
+    ORDER BY PRIMARY KEY.
+  READ TABLE lt_rows INTO ls_row WITH KEY carrid = 'AA' connid = '001' BINARY SEARCH.
+ENDFORM.
+"#;
+
+    let warnings = binary_search_order_warnings(src);
+    assert!(warnings.is_empty(), "{warnings:#?}");
+}

@@ -198,6 +198,7 @@ impl<'a> Collector<'a> {
                                 })
                             }),
                         type_ref: field.type_ref,
+                        is_key: field.is_key,
                         value_clause_display: field.value_clause_display,
                     });
                 }
@@ -235,6 +236,7 @@ impl<'a> Collector<'a> {
                 decl_unit: self.unit_id,
                 structure: resolved_structure,
                 type_ref: Some(include.type_ref.clone()),
+                is_key: false,
                 value_clause_display: None,
             });
         }
@@ -267,6 +269,7 @@ impl<'a> Collector<'a> {
                         decl_unit: unit_id,
                         structure: field_structure,
                         type_ref,
+                        is_key: false,
                         value_clause_display: None,
                     }
                 }),

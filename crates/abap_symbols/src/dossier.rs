@@ -546,6 +546,8 @@ pub struct SqlQueryDossier {
     pub has_set_operators: bool,
     pub has_endselect: bool,
     pub has_dynamic_where: bool,
+    pub order_by_primary_key: bool,
+    pub order_by_fields: Vec<String>,
     pub sources: Vec<SqlSourceDossier>,
     pub projections: Vec<SqlProjectionDossier>,
     pub predicates: Vec<SqlPredicateDossier>,
@@ -1324,6 +1326,12 @@ fn sql_query_dossier(unit: &UnitAnalysis, query: &SqlQueryData) -> SqlQueryDossi
         has_set_operators: query.has_set_operators,
         has_endselect: query.has_endselect,
         has_dynamic_where: query.has_dynamic_where,
+        order_by_primary_key: query.order_by_primary_key,
+        order_by_fields: query
+            .order_by_fields
+            .iter()
+            .map(|field| field.to_string())
+            .collect(),
         sources: unit
             .sql_sources
             .iter()

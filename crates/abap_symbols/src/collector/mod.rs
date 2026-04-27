@@ -52,6 +52,7 @@ struct PendingStructureField {
     decl_range: TextRange,
     structure: Option<PendingStructure>,
     type_ref: Option<FieldTypeRefData>,
+    is_key: bool,
     value_clause_display: Option<Arc<str>>,
 }
 
@@ -1375,6 +1376,7 @@ impl<'a> Collector<'a> {
                         decl_range,
                         structure: Some(nested),
                         type_ref: None,
+                        is_key: false,
                         value_clause_display: None,
                     }));
                 }
@@ -1406,6 +1408,7 @@ impl<'a> Collector<'a> {
             decl_range,
             structure: None,
             type_ref: self.type_ref_from_typed_clause(node),
+            is_key: self.structured_field_clause_has_key_comment(node),
             value_clause_display: self.value_clause_display_from_typed_clause(node),
         })
     }
@@ -1456,6 +1459,7 @@ impl<'a> Collector<'a> {
                     decl_unit: self.unit_id,
                     structure: self.resolve_field_type_ref(scope, &sign_type),
                     type_ref: Some(sign_type),
+                    is_key: false,
                     value_clause_display: None,
                 },
                 StructureFieldData {
@@ -1464,6 +1468,7 @@ impl<'a> Collector<'a> {
                     decl_unit: self.unit_id,
                     structure: self.resolve_field_type_ref(scope, &option_type),
                     type_ref: Some(option_type),
+                    is_key: false,
                     value_clause_display: None,
                 },
                 StructureFieldData {
@@ -1472,6 +1477,7 @@ impl<'a> Collector<'a> {
                     decl_unit: self.unit_id,
                     structure: self.resolve_field_type_ref(scope, &low_high_type),
                     type_ref: Some(low_high_type.clone()),
+                    is_key: false,
                     value_clause_display: None,
                 },
                 StructureFieldData {
@@ -1480,6 +1486,7 @@ impl<'a> Collector<'a> {
                     decl_unit: self.unit_id,
                     structure: self.resolve_field_type_ref(scope, &low_high_type),
                     type_ref: Some(low_high_type),
+                    is_key: false,
                     value_clause_display: None,
                 },
             ],
@@ -1557,6 +1564,25 @@ impl<'a> Collector<'a> {
                 .as_slice(),
         );
         (!rendered.is_empty()).then(|| Arc::from(rendered))
+    }
+
+    fn structured_field_clause_has_key_comment(&self, node: NodeId) -> bool {
+        let range = self.file.range(node);
+        let Some(after_clause) = self.source.get(range.end..) else {
+            return false;
+        };
+        let line_tail = after_clause
+            .split_once('\n')
+            .map(|(line, _)| line)
+            .unwrap_or(after_clause);
+        let Some((_, comment)) = line_tail.split_once('"') else {
+            return false;
+        };
+        let comment = comment.trim_start();
+        comment.eq_ignore_ascii_case("key")
+            || comment
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("key;"))
     }
 
     fn typed_clause_type_ref_node(&self, node: NodeId) -> Option<(NodeId, Namespace)> {

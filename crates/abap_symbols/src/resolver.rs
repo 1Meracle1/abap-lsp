@@ -946,6 +946,7 @@ fn import_structure(
                 )
             }),
             type_ref: field.type_ref.clone(),
+            is_key: field.is_key,
             value_clause_display: field.value_clause_display.clone(),
         })
         .collect();

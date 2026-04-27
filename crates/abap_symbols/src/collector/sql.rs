@@ -29,6 +29,12 @@ pub(super) struct SqlLowering<'ctx, 'a> {
     ctx: SqlContext<'ctx, 'a>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct SelectOrderByInfo {
+    primary_key: bool,
+    fields: Vec<Arc<str>>,
+}
+
 impl<'a> Collector<'a> {
     pub(super) fn sql_lowering(&mut self) -> SqlLowering<'_, 'a> {
         SqlLowering {
@@ -126,6 +132,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             group_by_clause: None,
             having_clause: None,
             order_by_clause: None,
+            order_by_primary_key: false,
+            order_by_fields: Vec::new(),
             for_all_entries_clause: None,
             for_update_clause: None,
             up_to_clause: None,
@@ -241,6 +249,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             group_by_clause: None,
             having_clause: None,
             order_by_clause: None,
+            order_by_primary_key: false,
+            order_by_fields: Vec::new(),
             for_all_entries_clause: None,
             for_update_clause: None,
             up_to_clause: None,
@@ -383,6 +393,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             group_by_clause: None,
             having_clause: None,
             order_by_clause: None,
+            order_by_primary_key: false,
+            order_by_fields: Vec::new(),
             for_all_entries_clause: None,
             for_update_clause: None,
             up_to_clause: None,
@@ -521,6 +533,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             group_by_clause: None,
             having_clause: None,
             order_by_clause: None,
+            order_by_primary_key: false,
+            order_by_fields: Vec::new(),
             for_all_entries_clause: None,
             for_update_clause: None,
             up_to_clause: None,
@@ -743,9 +757,10 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
 
         let query_range = self.ctx.file().range(node);
-        if let Some(order_by_node) = order_by_clause_node
-            && let Some(key_fields) = self.select_order_by_key_fields(order_by_node)
-        {
+        let order_by_info = order_by_clause_node
+            .map(|order_by_node| self.select_order_by_info(order_by_node))
+            .unwrap_or_default();
+        if !order_by_info.primary_key && !order_by_info.fields.is_empty() {
             for target in self.ctx.sql_targets_for_query(query_id) {
                 if target.kind == SqlTargetKind::Into
                     && target.is_table
@@ -755,7 +770,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                         scope,
                         query_range.clone(),
                         table_name,
-                        key_fields.clone(),
+                        order_by_info.fields.clone(),
                     );
                 }
             }
@@ -772,6 +787,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             group_by_clause,
             having_clause,
             order_by_clause,
+            order_by_primary_key: order_by_info.primary_key,
+            order_by_fields: order_by_info.fields,
             for_all_entries_clause,
             for_update_clause,
             up_to_clause,
@@ -916,16 +933,28 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         (columns.len() > 1).then(|| columns[1].clone())
     }
 
-    fn select_order_by_key_fields(&self, node: NodeId) -> Option<Vec<Arc<str>>> {
+    fn select_order_by_info(&self, node: NodeId) -> SelectOrderByInfo {
         let tokens: Vec<_> = self
             .ctx
             .syntax_token_nodes(node)
             .into_iter()
             .filter(|token| !self.ctx.syntax_token_is_comment(token))
             .collect();
-        let by_idx = tokens
+        let Some(by_idx) = tokens
             .iter()
-            .position(|token| token.text.eq_ignore_ascii_case("by"))?;
+            .position(|token| token.text.eq_ignore_ascii_case("by"))
+        else {
+            return SelectOrderByInfo::default();
+        };
+        if tokens.get(by_idx + 1..by_idx + 3).is_some_and(|window| {
+            window[0].text.eq_ignore_ascii_case("primary")
+                && window[1].text.eq_ignore_ascii_case("key")
+        }) {
+            return SelectOrderByInfo {
+                primary_key: true,
+                fields: Vec::new(),
+            };
+        }
         let mut fields = Vec::new();
         let mut idx = by_idx + 1;
         while idx < tokens.len() {
@@ -934,7 +963,11 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 idx += 1;
                 continue;
             }
-            if token.text.eq_ignore_ascii_case("ascending") {
+            if token.text.eq_ignore_ascii_case("ascending")
+                || token.text.eq_ignore_ascii_case("nulls")
+                || token.text.eq_ignore_ascii_case("first")
+                || token.text.eq_ignore_ascii_case("last")
+            {
                 idx += 1;
                 continue;
             }
@@ -942,15 +975,18 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 || token.text.eq_ignore_ascii_case("primary")
                 || token.text.eq_ignore_ascii_case("key")
             {
-                return None;
+                return SelectOrderByInfo::default();
             }
             let Some((field, next_idx)) = self.select_order_field_from_tokens(&tokens, idx) else {
-                return None;
+                return SelectOrderByInfo::default();
             };
             fields.push(field);
             idx = next_idx;
         }
-        (!fields.is_empty()).then_some(fields)
+        SelectOrderByInfo {
+            primary_key: false,
+            fields,
+        }
     }
 
     fn select_order_field_from_tokens(
@@ -2260,6 +2296,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 decl_range: projection.range.clone(),
                 structure: None,
                 type_ref,
+                is_key: false,
                 value_clause_display: None,
             }));
         }
@@ -2412,6 +2449,9 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 | "between"
                 | "is"
                 | "null"
+                | "nulls"
+                | "first"
+                | "last"
                 | "table"
                 | "corresponding"
                 | "fields"

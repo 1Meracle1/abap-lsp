@@ -29,6 +29,12 @@ struct ValidationLookup<'a> {
     include_order: IncludeOrderIndex,
 }
 
+#[derive(Default)]
+struct OpenSqlOrderByValidation {
+    diagnostics: Vec<Diagnostic>,
+    resolved_primary_key_fields: Vec<(usize, Vec<Arc<str>>)>,
+}
+
 #[derive(Clone, Copy)]
 struct LoopFieldContextView<'a> {
     scope: ScopeId,
@@ -2469,6 +2475,179 @@ fn validate_open_sql_fields(
     out
 }
 
+fn validate_open_sql_order_by(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+) -> OpenSqlOrderByValidation {
+    let mut out = OpenSqlOrderByValidation::default();
+    for query in &unit.sql_queries {
+        let Some(order_by_range) = query.order_by_clause.as_ref() else {
+            continue;
+        };
+        if query.is_single {
+            out.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                range: order_by_range.clone(),
+                message: "Open SQL ORDER BY cannot be used with SELECT SINGLE".to_string(),
+            });
+        }
+        if query.for_all_entries_clause.is_some() && !query.order_by_primary_key {
+            out.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                range: order_by_range.clone(),
+                message: "Open SQL FOR ALL ENTRIES only permits ORDER BY PRIMARY KEY".to_string(),
+            });
+        }
+        if !query.order_by_primary_key {
+            continue;
+        }
+        if query.has_set_operators {
+            out.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                range: order_by_range.clone(),
+                message:
+                    "Open SQL ORDER BY PRIMARY KEY cannot be used with UNION, INTERSECT, or EXCEPT"
+                        .to_string(),
+            });
+        }
+
+        let sources = open_sql_query_sources(unit, query.id);
+        let single_source = sources
+            .as_slice()
+            .first()
+            .copied()
+            .filter(|_| sources.len() == 1)
+            .filter(|source| source.source_kind == crate::SqlSourceKind::From);
+        let Some(source) = single_source else {
+            out.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                range: order_by_range.clone(),
+                message: "Open SQL ORDER BY PRIMARY KEY requires a single static data source"
+                    .to_string(),
+            });
+            continue;
+        };
+
+        let Some(primary_key_fields) = open_sql_primary_key_fields_for_source(
+            project,
+            lookup,
+            unit,
+            scope_indexes,
+            scope_index,
+            query.scope,
+            source,
+        ) else {
+            continue;
+        };
+        out.resolved_primary_key_fields
+            .push((query.id, primary_key_fields.clone()));
+
+        if query.for_all_entries_clause.is_some()
+            && !open_sql_projection_covers_primary_key_except_client(
+                unit,
+                query.id,
+                source,
+                &primary_key_fields,
+            )
+        {
+            out.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                range: order_by_range.clone(),
+                message: "Open SQL ORDER BY PRIMARY KEY with FOR ALL ENTRIES requires all non-client primary-key fields in the SELECT list".to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn open_sql_query_sources(unit: &crate::UnitAnalysis, query_id: usize) -> Vec<&SqlSourceData> {
+    unit.sql_sources
+        .iter()
+        .filter(|source| source.query_id == query_id)
+        .collect()
+}
+
+fn open_sql_primary_key_fields_for_source(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
+    query_scope: ScopeId,
+    source: &SqlSourceData,
+) -> Option<Vec<Arc<str>>> {
+    let (source_unit, structure_id) = open_sql_source_structure_for_name(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        scope_index,
+        query_scope,
+        &source.name,
+    )?;
+    let fields = structure_field_infos_project(
+        project,
+        lookup,
+        scope_indexes,
+        source_unit,
+        scope_for_unit(source_unit, query_scope),
+        structure_id,
+    )
+    .into_iter()
+    .filter(|field| field.is_key)
+    .map(|field| field.name)
+    .collect::<Vec<_>>();
+    (!fields.is_empty()).then_some(fields)
+}
+
+fn open_sql_projection_covers_primary_key_except_client(
+    unit: &crate::UnitAnalysis,
+    query_id: usize,
+    source: &SqlSourceData,
+    primary_key_fields: &[Arc<str>],
+) -> bool {
+    primary_key_fields
+        .iter()
+        .filter(|field| !is_client_column_name(field.as_ref()))
+        .all(|field| open_sql_projection_covers_field(unit, query_id, source, field.as_ref()))
+}
+
+fn open_sql_projection_covers_field(
+    unit: &crate::UnitAnalysis,
+    query_id: usize,
+    source: &SqlSourceData,
+    field_name: &str,
+) -> bool {
+    unit.sql_projections
+        .iter()
+        .filter(|projection| projection.query_id == query_id)
+        .any(|projection| match projection.kind {
+            crate::SqlProjectionKind::Star => true,
+            crate::SqlProjectionKind::QualifiedStar => projection
+                .source_alias
+                .as_ref()
+                .is_some_and(|alias| sql_source_matches_qualifier(source, alias)),
+            crate::SqlProjectionKind::Column => {
+                projection
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.as_ref().eq_ignore_ascii_case(field_name))
+                    && projection
+                        .source_alias
+                        .as_ref()
+                        .is_none_or(|alias| sql_source_matches_qualifier(source, alias))
+            }
+            crate::SqlProjectionKind::Aggregate | crate::SqlProjectionKind::Expression => false,
+        })
+}
+
+fn is_client_column_name(field_name: &str) -> bool {
+    field_name.eq_ignore_ascii_case("mandt") || field_name.eq_ignore_ascii_case("client")
+}
+
 fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> bool {
     let Some(display) = symbol.type_clause_display.as_deref() else {
         return false;
@@ -3682,6 +3861,33 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             })
             .collect();
 
+        let order_by_validation = validate_open_sql_order_by(
+            project,
+            &lookup,
+            &project.units[unit_idx],
+            scope_indexes,
+            &scope_index,
+        );
+        {
+            let unit = &mut project.units[unit_idx];
+            for query in unit
+                .sql_queries
+                .iter_mut()
+                .filter(|query| query.order_by_primary_key)
+            {
+                query.order_by_fields.clear();
+            }
+            for (query_id, fields) in &order_by_validation.resolved_primary_key_fields {
+                if let Some(query) = unit
+                    .sql_queries
+                    .iter_mut()
+                    .find(|query| query.id == *query_id)
+                {
+                    query.order_by_fields = fields.clone();
+                }
+            }
+        }
+
         let unit = &project.units[unit_idx];
         let retained: Vec<_> = unit
             .diagnostics
@@ -4620,6 +4826,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             scope_indexes,
             &scope_index,
         ));
+        unit_diagnostics.extend(order_by_validation.diagnostics);
         unit_diagnostics.extend(validate_open_sql_into_targets(
             project,
             &lookup,
@@ -4714,6 +4921,7 @@ mod tests {
             decl_unit,
             shape: StructureFieldShape::Scalar,
             type_ref: None,
+            is_key: false,
             value_clause_display: None,
         }
     }

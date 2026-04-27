@@ -2896,6 +2896,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         decl_unit: self.ctx.unit_id(),
                         structure: None,
                         type_ref: None,
+                        is_key: false,
                         value_clause_display: None,
                     });
                     continue;

@@ -152,6 +152,8 @@ pub struct SqlQueryData {
     pub group_by_clause: Option<TextRange>,
     pub having_clause: Option<TextRange>,
     pub order_by_clause: Option<TextRange>,
+    pub order_by_primary_key: bool,
+    pub order_by_fields: Vec<Arc<str>>,
     pub for_all_entries_clause: Option<TextRange>,
     pub for_update_clause: Option<TextRange>,
     pub up_to_clause: Option<TextRange>,
@@ -431,6 +433,7 @@ pub struct StructureFieldData {
     pub decl_unit: UnitId,
     pub structure: Option<StructureId>,
     pub type_ref: Option<FieldTypeRefData>,
+    pub is_key: bool,
     pub value_clause_display: Option<Arc<str>>,
 }
 
@@ -449,6 +452,7 @@ pub struct StructureFieldInfo {
     pub decl_unit: UnitId,
     pub shape: StructureFieldShape,
     pub type_ref: Option<FieldTypeRefData>,
+    pub is_key: bool,
     pub value_clause_display: Option<Arc<str>>,
 }
 
@@ -1213,6 +1217,7 @@ impl UnitAnalysis {
                 None => StructureFieldShape::Scalar,
             },
             type_ref: field.type_ref.clone(),
+            is_key: field.is_key,
             value_clause_display: field.value_clause_display.clone(),
         })
     }
@@ -1232,6 +1237,7 @@ impl UnitAnalysis {
                     None => StructureFieldShape::Scalar,
                 },
                 type_ref: field.type_ref.clone(),
+                is_key: field.is_key,
                 value_clause_display: field.value_clause_display.clone(),
             })
             .collect()
