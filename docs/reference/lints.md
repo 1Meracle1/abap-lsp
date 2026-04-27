@@ -4,7 +4,15 @@ The language server emits native lint diagnostics with stable IDs. Configure the
 `abapls.toml` with `[lints.rules]` and suppress individual statements with
 `abap-lsp:allow(<lint-id>)`.
 
+Lint IDs are stable, lowercase ASCII strings. They are documented as part of the CLI and LSP
+surface and should not be renamed; add a new ID instead when a rule's meaning changes
+incompatibly.
+
 SAP pragma and pseudo-comment suppressions only work when the lint exposes the listed alias.
+
+The `epc.*` entries represent semantic hard errors surfaced through lint metadata. Lint profiles,
+group overrides, and rule overrides do not lower those IDs below `deny`, so parser and semantic hard
+errors stay visible even when a project uses `profile = "none"`.
 
 ## CLI Usage
 
@@ -38,16 +46,75 @@ least one unsuppressed `deny` finding is emitted.
 | `abap-lsp.unreachable-code` | `warn` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.use-before-definite-assignment` | `warn` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.possibly-unbound-field-symbol` | `warn` | `correctness` | `abap-lsp` | none |
-| `abap-lsp.dead-store` | `warn` | `style` | `abap-lsp` | `##NEEDED` |
-| `abap-lsp.unsorted-read-table-binary-search` | `warn` | `correctness` | `abap-lsp` | none |
+| `abap-lsp.dead-store` | `info` | `style` | `abap-lsp` | `##NEEDED` |
+| `abap-lsp.unsorted-read-table-binary-search` | `info` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.select-star` | `info` | `performance` | `sap-code-inspector` | `"#EC CI_ALL_FIELDS_NEEDED` |
-| `abap-lsp.select-in-loop` | `warn` | `performance` | `sap-code-inspector` | `"#EC CI_SEL_NESTED` |
-| `abap-lsp.for-all-entries-without-guard` | `warn` | `correctness` | `sap-code-inspector` | `"#EC CI_FAE_LINES_ENSURED` |
+| `abap-lsp.select-in-loop` | `info` | `performance` | `sap-code-inspector` | `"#EC CI_SEL_NESTED` |
+| `abap-lsp.for-all-entries-without-guard` | `info` | `correctness` | `sap-code-inspector` | `"#EC CI_FAE_LINES_ENSURED` |
 | `abap-lsp.dynamic-open-sql` | `info` | `security` | `sap-code-inspector` | none |
-| `abap-lsp.ignored-authority-check` | `warn` | `security` | `sap-atc` | none |
+| `abap-lsp.ignored-authority-check` | `info` | `security` | `sap-atc` | none |
 | `epc.unverified-open-sql-source` | `deny` | `correctness` | `sap-extended-program-check` | `"#EC extended-program-check` |
 | `epc.invalid-open-sql-into-target` | `deny` | `correctness` | `sap-extended-program-check` | `"#EC extended-program-check` |
 | `epc.missing-tables-declaration` | `deny` | `correctness` | `sap-extended-program-check` | `"#EC extended-program-check` |
+
+## Rule Details
+
+### `abap-lsp.unreachable-code`
+
+Flags statements after control-flow terminators such as `RETURN`, `RAISE`, `LEAVE`, and `STOP`.
+
+### `abap-lsp.use-before-definite-assignment`
+
+Flags reads that routine dataflow cannot prove are preceded by an assignment on every path.
+
+### `abap-lsp.possibly-unbound-field-symbol`
+
+Flags field-symbol reads that may occur before a successful assignment or binding.
+
+### `abap-lsp.dead-store`
+
+Flags writes whose value is overwritten or never read. Defaults to `info` because unused writes can
+be intentional in generated, tracing, or framework callback code.
+
+### `abap-lsp.unsorted-read-table-binary-search`
+
+Flags `READ TABLE ... BINARY SEARCH` when the analyzer cannot prove the table is sorted. Defaults to
+`info` because sorting may happen through dynamic or framework-controlled paths.
+
+### `abap-lsp.select-star`
+
+Flags `SELECT *` and qualified star projections such as `alias~*`.
+
+### `abap-lsp.select-in-loop`
+
+Flags Open SQL `SELECT` statements inside `LOOP`, `DO`, or `WHILE` bodies. Defaults to `info`
+because small lookup tables and buffered reads may be acceptable.
+
+### `abap-lsp.for-all-entries-without-guard`
+
+Flags `FOR ALL ENTRIES` without a visible non-empty-table guard. Defaults to `info` because guard
+patterns can be hidden behind helper routines or generated control flow.
+
+### `abap-lsp.dynamic-open-sql`
+
+Flags dynamic Open SQL source, projection, and `WHERE` fragments that cannot be statically checked.
+
+### `abap-lsp.ignored-authority-check`
+
+Flags `AUTHORITY-CHECK` when the result in `sy-subrc` is not observed before another `sy-subrc`
+write. Defaults to `info` because legacy authorization wrappers can obscure the check.
+
+### `epc.unverified-open-sql-source`
+
+Reports Open SQL sources that cannot be verified against local or repository metadata.
+
+### `epc.invalid-open-sql-into-target`
+
+Reports incompatible Open SQL `INTO` or `APPENDING` targets.
+
+### `epc.missing-tables-declaration`
+
+Reports classic table work-area usage that requires a top-level `TABLES` declaration.
 
 ## Local SAP-Inspired Pack
 

@@ -34,15 +34,15 @@ use abap_symbols::{
     UnitId, analyze_unit,
 };
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CompletionItem,
-    CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity, DiagnosticTag,
-    Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
-    InitializeResult, InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities,
-    InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
-    PrepareRenameResponse, PublishDiagnosticsParams, Range, RenameOptions, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CodeDescription,
+    CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
+    DiagnosticTag, Documentation, GotoDefinitionResponse, Hover, HoverContents,
+    HoverProviderCapability, InitializeResult, InlayHint, InlayHintKind, InlayHintOptions,
+    InlayHintServerCapabilities, InsertTextFormat, Location, MarkupContent, MarkupKind,
+    NumberOrString, OneOf, Position, PrepareRenameResponse, PublishDiagnosticsParams, Range,
+    RenameOptions, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +68,8 @@ const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
 const DEPENDENCY_DOCUMENT_SCHEME: &str = "abapls-cache";
 const LINT_DIAGNOSTIC_SOURCE: &str = "abap-lsp-lints";
+const LINT_REFERENCE_DOCS_URL: &str =
+    "https://github.com/1Meracle1/abap-lsp/blob/main/docs/reference/lints.md";
 const SAP_ATC_DIAGNOSTIC_SOURCE: &str = "sap-atc";
 
 #[derive(Debug, Clone)]
@@ -4112,6 +4114,34 @@ fn lint_diagnostic_severity(level: LintLevel) -> Option<DiagnosticSeverity> {
     }
 }
 
+fn lint_diagnostic_code_description(id: &str) -> Option<CodeDescription> {
+    let anchor = lint_docs_anchor(id);
+    let href = if anchor.is_empty() {
+        LINT_REFERENCE_DOCS_URL.to_string()
+    } else {
+        format!("{LINT_REFERENCE_DOCS_URL}#{anchor}")
+    };
+    Uri::from_str(&href)
+        .ok()
+        .map(|href| CodeDescription { href })
+}
+
+fn lint_docs_anchor(id: &str) -> String {
+    id.trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                Some(ch)
+            } else if ch == '_' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct LspLintDiagnosticData<'a> {
     lint_id: &'a str,
@@ -4152,7 +4182,7 @@ fn build_lsp_lint_diagnostic(
         range: byte_range_to_lsp_range_snapshot(snapshot, lint.range.clone())?,
         severity: Some(severity),
         code: Some(NumberOrString::String(lint.id.clone())),
-        code_description: None,
+        code_description: lint_diagnostic_code_description(lint.id.as_str()),
         source: Some(LINT_DIAGNOSTIC_SOURCE.to_owned()),
         message: lint.message.clone(),
         related_information: None,
@@ -6360,6 +6390,12 @@ check_variant = "DEFAULT""#,
             .expect("unreachable-code lint diagnostic");
         assert_eq!(diagnostic.source.as_deref(), Some(LINT_DIAGNOSTIC_SOURCE));
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+        let docs_href = diagnostic
+            .code_description
+            .as_ref()
+            .map(|description| description.href.as_str())
+            .expect("lint diagnostic docs href");
+        assert!(docs_href.contains("docs/reference/lints.md#abap-lspunreachable-code"));
         let data = diagnostic.data.as_ref().expect("lint diagnostic data");
         assert_eq!(
             data.get("lint_id").and_then(serde_json::Value::as_str),
@@ -6454,6 +6490,37 @@ profile = "none"
             }),
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn workspace_lint_policy_does_not_suppress_semantic_hard_errors() {
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_policy_semantic_error",
+            r#"
+[lints]
+profile = "none"
+
+[lints.rules]
+"epc.invalid-open-sql-into-target" = "allow"
+"#,
+            r#"
+TYPES ty_row TYPE i.
+DATA wa TYPE ty_row.
+SELECT * FROM ty_row INTO TABLE wa.
+"#,
+        );
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diag| {
+                diag.code
+                    == Some(NumberOrString::String(
+                        "epc.invalid-open-sql-into-target".to_string(),
+                    ))
+            })
+            .expect("invalid Open SQL target diagnostic");
+        assert_eq!(diagnostic.source.as_deref(), Some(LINT_DIAGNOSTIC_SOURCE));
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
     }
 
     #[test]

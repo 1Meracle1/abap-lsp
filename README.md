@@ -119,6 +119,35 @@ documents are opened through the `abapls-cache:` URI scheme.
 
 See [docs/workspace-layout.md](docs/workspace-layout.md).
 
+### Native Lints
+
+Native lints are configured from `abapls.toml` and emitted through both LSP diagnostics and
+`abap-cli lint`:
+
+```toml
+[lints]
+profile = "recommended"
+report_suppressed = false
+
+[lints.rules]
+"abap-lsp.select-star" = "warn"
+"abap-lsp.dead-store" = "info"
+```
+
+`recommended` keeps parser and semantic hard errors visible while leaving noisier SAP-inspired
+heuristics at `info`. Raise individual rules to `warn` or `deny` once they are useful for a
+workspace; use `profile = "strict"` only after expected informational findings are handled.
+
+Suppress one statement with an explicit native ID or a supported SAP alias:
+
+```abap
+DATA lv_unused TYPE i. " abap-lsp:allow(abap-lsp.dead-store)
+gv_unused = 1 ##NEEDED.
+SELECT * FROM mara INTO TABLE @DATA(lt_mara). "#EC CI_ALL_FIELDS_NEEDED
+```
+
+See [docs/reference/lints.md](docs/reference/lints.md) for stable IDs, defaults, groups, and aliases.
+
 ## Project Goals
 
 The long-term goal is a practical ABAP language server and analysis toolkit

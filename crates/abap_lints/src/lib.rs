@@ -714,13 +714,19 @@ impl LintPolicy {
             if let Some(group_level) = group_overrides.get(&metadata.group) {
                 level = *group_level;
             }
-            levels.insert(metadata.id.to_string(), level);
+            levels.insert(
+                metadata.id.to_string(),
+                enforce_hard_error_level(metadata, level),
+            );
         }
 
         for (id, level) in &config.rules {
             let id = normalized_lint_id(id);
             if !id.is_empty() {
-                levels.insert(id, *level);
+                let level = metadata_for(id.as_str())
+                    .map(|metadata| enforce_hard_error_level(metadata, *level))
+                    .unwrap_or(*level);
+                levels.insert(id, level);
             }
         }
 
@@ -805,7 +811,7 @@ const REGISTRY: &[LintMetadata] = &[
         id: ABAP_LSP_DEAD_STORE,
         group: LintGroup::Style,
         origin: LintOrigin::AbapLsp,
-        default_level: LintLevel::Warn,
+        default_level: LintLevel::Info,
         summary: "assigned value is overwritten or unused before it is read",
         tags: &["data-flow", "unused"],
         sap_aliases: &["NEEDED"],
@@ -814,7 +820,7 @@ const REGISTRY: &[LintMetadata] = &[
         id: ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH,
         group: LintGroup::Correctness,
         origin: LintOrigin::AbapLsp,
-        default_level: LintLevel::Warn,
+        default_level: LintLevel::Info,
         summary: "READ TABLE ... BINARY SEARCH is used on a table not known to be sorted",
         tags: &["internal-table"],
         sap_aliases: &[],
@@ -832,7 +838,7 @@ const REGISTRY: &[LintMetadata] = &[
         id: ABAP_LSP_SELECT_IN_LOOP,
         group: LintGroup::Performance,
         origin: LintOrigin::SapCodeInspector,
-        default_level: LintLevel::Warn,
+        default_level: LintLevel::Info,
         summary: "Open SQL SELECT runs inside a LOOP, DO, or WHILE body",
         tags: &["open-sql", "loop"],
         sap_aliases: &["CI_SEL_NESTED"],
@@ -841,7 +847,7 @@ const REGISTRY: &[LintMetadata] = &[
         id: ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
         group: LintGroup::Correctness,
         origin: LintOrigin::SapCodeInspector,
-        default_level: LintLevel::Warn,
+        default_level: LintLevel::Info,
         summary: "FOR ALL ENTRIES is used without an enclosing initial-table guard",
         tags: &["open-sql", "for-all-entries"],
         sap_aliases: &["CI_FAE_LINES_ENSURED"],
@@ -859,7 +865,7 @@ const REGISTRY: &[LintMetadata] = &[
         id: ABAP_LSP_IGNORED_AUTHORITY_CHECK,
         group: LintGroup::Security,
         origin: LintOrigin::SapAtc,
-        default_level: LintLevel::Warn,
+        default_level: LintLevel::Info,
         summary: "AUTHORITY-CHECK result is not checked before sy-subrc is overwritten",
         tags: &["authorization", "sy-subrc"],
         sap_aliases: &[],
@@ -900,6 +906,14 @@ fn profile_level(profile: &str, metadata: &LintMetadata) -> LintLevel {
         LINT_PROFILE_ALL => all_level(metadata.default_level),
         _ if metadata.group == LintGroup::Experimental => LintLevel::Allow,
         _ => metadata.default_level,
+    }
+}
+
+fn enforce_hard_error_level(metadata: &LintMetadata, level: LintLevel) -> LintLevel {
+    if metadata.default_level == LintLevel::Deny {
+        LintLevel::Deny
+    } else {
+        level
     }
 }
 
@@ -978,7 +992,7 @@ mod tests {
         let dead_store = metadata_for(ABAP_LSP_DEAD_STORE).expect("dead store metadata");
         assert_eq!(dead_store.group, LintGroup::Style);
         assert_eq!(dead_store.origin, LintOrigin::AbapLsp);
-        assert_eq!(dead_store.default_level, LintLevel::Warn);
+        assert_eq!(dead_store.default_level, LintLevel::Info);
 
         let open_sql = metadata_for(EPC_UNVERIFIED_OPEN_SQL_SOURCE).expect("open sql metadata");
         assert_eq!(open_sql.group, LintGroup::Correctness);
@@ -993,7 +1007,7 @@ mod tests {
 
         let select_in_loop =
             metadata_for(ABAP_LSP_SELECT_IN_LOOP).expect("select in loop metadata");
-        assert_eq!(select_in_loop.default_level, LintLevel::Warn);
+        assert_eq!(select_in_loop.default_level, LintLevel::Info);
         assert_eq!(select_in_loop.sap_aliases, &["CI_SEL_NESTED"]);
 
         let for_all_entries =
@@ -1005,6 +1019,7 @@ mod tests {
             metadata_for(ABAP_LSP_IGNORED_AUTHORITY_CHECK).expect("authority check metadata");
         assert_eq!(authority_check.group, LintGroup::Security);
         assert_eq!(authority_check.origin, LintOrigin::SapAtc);
+        assert_eq!(authority_check.default_level, LintLevel::Info);
     }
 
     #[test]
@@ -1013,6 +1028,7 @@ mod tests {
 
         assert_eq!(policy.profile(), LINT_PROFILE_RECOMMENDED);
         assert_eq!(policy.level_for(ABAP_LSP_UNREACHABLE_CODE), LintLevel::Warn);
+        assert_eq!(policy.level_for(ABAP_LSP_DEAD_STORE), LintLevel::Info);
         assert_eq!(
             policy.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
             LintLevel::Deny
@@ -1054,6 +1070,30 @@ mod tests {
         assert_eq!(policy.level_for(ABAP_LSP_DEAD_STORE), LintLevel::Deny);
         assert_eq!(
             policy.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
+            LintLevel::Deny
+        );
+    }
+
+    #[test]
+    fn hard_error_lints_are_not_muted_by_lint_profile_or_rule_overrides() {
+        let none = LintPolicy::from_config(&LintConfig {
+            profile: LINT_PROFILE_NONE.to_string(),
+            ..LintConfig::default()
+        });
+        assert_eq!(
+            none.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
+            LintLevel::Deny
+        );
+
+        let explicit_allow = LintPolicy::from_config(&LintConfig {
+            rules: BTreeMap::from([(
+                EPC_INVALID_OPEN_SQL_INTO_TARGET.to_string(),
+                LintLevel::Allow,
+            )]),
+            ..LintConfig::default()
+        });
+        assert_eq!(
+            explicit_allow.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
             LintLevel::Deny
         );
     }

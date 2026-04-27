@@ -32,7 +32,8 @@ profile = "recommended"
 report_suppressed = false
 
 [lints.rules]
-"abap-lsp.dead-store" = "warn"
+"abap-lsp.dead-store" = "info"
+"abap-lsp.select-in-loop" = "info"
 ```
 
 The root manifest does not need explicit `[[unit]]` entries for normal `src` content.
@@ -57,6 +58,19 @@ Supported override tables:
   or `deny`.
 - `[lints.sap_atc]`: configures imported remote SAP ATC findings. `mode` is `off`, `manual`, or
   `on-save`; `check_variant` defaults to `DEFAULT`; `configuration` is optional.
+
+`recommended` keeps parser and semantic hard errors as errors while keeping noisy SAP-inspired
+heuristics at `info`. Use targeted rule overrides when a team is ready to make one rule stricter:
+
+```toml
+[lints.rules]
+"abap-lsp.select-star" = "warn"
+"abap-lsp.for-all-entries-without-guard" = "warn"
+```
+
+Use `profile = "strict"` only when the workspace has already resolved or suppressed expected
+informational findings. The `epc.*` semantic hard-error IDs remain `deny` under profiles and
+rule/group config.
 
 The implemented lint registry, default levels, groups, origins, and SAP suppression aliases are
 listed in [`docs/reference/lints.md`](reference/lints.md).
