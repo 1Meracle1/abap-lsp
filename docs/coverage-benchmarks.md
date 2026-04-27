@@ -34,6 +34,11 @@ Measure at least:
 - full workspace refresh time,
 - parallel batch analysis scaling across cores.
 
+The portable committed baseline runner lives in `crates/abap_cli/examples/perf_baseline.rs` and
+uses `examples/perf_corpus` to cover parser, symbol analysis, semantic tokens, workspace loading,
+call graph export, and call-dataflow export. See [Performance baselines](performance-baselines.md)
+for the workflow and JSON output shape.
+
 ## Regression Gates
 
 - no significant correctness regressions relative to documented expectations,

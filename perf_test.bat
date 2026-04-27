@@ -24,6 +24,13 @@ if /I "%MODE%"=="release" (
   echo [debug mode]
 )
 
+echo perf_baseline_json
+if /I "%MODE%"=="release" (
+  cargo run -p abap_cli --example perf_baseline --release --%CARGO_ARGS%
+) else (
+  cargo run -p abap_cli --example perf_baseline --%CARGO_ARGS%
+)
+
 if defined ABAP_PERF_SAMPLE (
   if exist "%ABAP_PERF_SAMPLE%" (
     echo large_file_phase_breakdown

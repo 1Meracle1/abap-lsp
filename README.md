@@ -229,6 +229,8 @@ Run performance checks:
 ```bat
 .\perf_test.bat
 .\perf_test.bat release
+set ABAP_PERF_BASELINE=target\perf-baselines\baseline.json
+.\perf_test.bat release
 set ABAP_PERF_SAMPLE=D:\path\to\large.abap
 .\perf_test.bat release
 ```
@@ -253,6 +255,7 @@ Then configure the VS Code extension setting `abap-ls.serverTransport` to
 - [Concurrency model](docs/architecture/concurrency.md)
 - [Static analysis artifacts](docs/architecture/static-analysis.md)
 - [Coverage and benchmark checklist](docs/coverage-benchmarks.md)
+- [Performance baselines](docs/performance-baselines.md)
 
 ## Security And Configuration
 

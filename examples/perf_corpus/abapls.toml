@@ -1,0 +1,33 @@
+version = 1
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+cache_dir = ".abapls/cache"
+
+[[unit]]
+name = "ZPERF_DRIVER"
+kind = "report"
+root_file = "src/reports/ZPERF_DRIVER/ZPERF_DRIVER.abap"
+members = [
+  "src/reports/ZPERF_DRIVER/ZPERF_DRIVER_TOP.abap",
+  "src/reports/ZPERF_DRIVER/ZPERF_DRIVER_F01.abap",
+  "src/reports/ZPERF_DRIVER/ZPERF_DRIVER_PAI.abap",
+]
+
+[[unit]]
+name = "ZCL_PERF_SERVICE"
+kind = "global-class"
+root_file = "src/classes/ZCL_PERF_SERVICE.abap"
+
+[[unit]]
+name = "BAPI_PO_CREATE1"
+kind = "function-module"
+root_file = "dependencies/BAPI_PO_CREATE1.abap"
+dependency_of = [
+  "src/reports/ZPERF_DRIVER/ZPERF_DRIVER.abap",
+]
+members = [
+  { role = "dependency", file = "dependencies/BAPI_PO_CREATE1.abap", object_name = "BAPI_PO_CREATE1" },
+]
