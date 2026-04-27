@@ -2612,6 +2612,32 @@ struct DdicField {
     include_part_of: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DdicStructuredKind {
+    Table,
+    View,
+    Structure,
+    Other,
+}
+
+impl DdicStructuredKind {
+    fn from_kind_hint(kind_hint: &str) -> Self {
+        match kind_hint.trim().to_ascii_lowercase().as_str() {
+            "ddic-table" => Self::Table,
+            "ddic-view" => Self::View,
+            "ddic-structure" => Self::Structure,
+            _ => Self::Other,
+        }
+    }
+
+    fn field_key_label(self) -> &'static str {
+        match self {
+            Self::Table => "primary key",
+            Self::View | Self::Structure | Self::Other => "key field",
+        }
+    }
+}
+
 pub fn ddic_xml_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) -> Option<String> {
     let kind = kind_hint.trim().to_ascii_lowercase();
     if kind == "message-class" {
@@ -2626,7 +2652,11 @@ pub fn ddic_xml_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) ->
     if kind == "ddic-table-type" {
         return Some(table_type_to_abap_source(object_name, xml));
     }
-    Some(structured_ddic_to_abap_source(object_name, xml))
+    Some(structured_ddic_to_abap_source(
+        object_name,
+        kind.as_str(),
+        xml,
+    ))
 }
 
 fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
@@ -2785,7 +2815,8 @@ fn table_type_line_type(xml: &str) -> Option<String> {
     None
 }
 
-fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
+fn structured_ddic_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) -> String {
+    let kind = DdicStructuredKind::from_kind_hint(kind_hint);
     let fields = collect_ddic_fields(xml);
     if fields.is_empty() {
         let mut out = format!(
@@ -2804,6 +2835,7 @@ fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
     ));
     append_inline_comment(&mut out, ddic_short_text(xml).as_deref());
     out.push('\n');
+    append_ddic_key_summary(&mut out, kind, &fields);
     for (idx, field) in fields.iter().enumerate() {
         let suffix = if idx + 1 == fields.len() { "" } else { "," };
         let ty = ddic_field_type_clause(field);
@@ -2818,7 +2850,7 @@ fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
                 field_name = field.name.to_ascii_lowercase(),
             ));
         }
-        let comment = ddic_field_comment(field);
+        let comment = ddic_field_comment(field, kind);
         append_inline_comment(&mut out, comment.as_deref());
         out.push('\n');
     }
@@ -2827,6 +2859,33 @@ fn structured_ddic_to_abap_source(object_name: &str, xml: &str) -> String {
         name = object_name.to_ascii_lowercase()
     ));
     out
+}
+
+fn append_ddic_key_summary(out: &mut String, kind: DdicStructuredKind, fields: &[DdicField]) {
+    let key_fields = fields
+        .iter()
+        .filter(|field| field.is_key)
+        .map(|field| field.name.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    match kind {
+        DdicStructuredKind::Table => {
+            out.push_str("\" PRIMARY KEY: ");
+            if key_fields.is_empty() {
+                out.push_str("not reported by ADT");
+            } else {
+                out.push_str(&key_fields.join(", "));
+            }
+            out.push('\n');
+        }
+        DdicStructuredKind::View | DdicStructuredKind::Structure | DdicStructuredKind::Other
+            if !key_fields.is_empty() =>
+        {
+            out.push_str("\" KEY FIELDS: ");
+            out.push_str(&key_fields.join(", "));
+            out.push('\n');
+        }
+        _ => {}
+    }
 }
 
 fn ddic_field_type_clause(field: &DdicField) -> String {
@@ -2843,10 +2902,11 @@ fn ddic_field_type_clause(field: &DdicField) -> String {
     "string".to_string()
 }
 
-fn ddic_field_comment(field: &DdicField) -> Option<String> {
+fn ddic_field_comment(field: &DdicField, kind: DdicStructuredKind) -> Option<String> {
+    let key_label = kind.field_key_label();
     match (field.is_key, field.short_text.as_deref()) {
-        (true, Some(text)) if !text.trim().is_empty() => Some(format!("key; {text}")),
-        (true, _) => Some("key".to_string()),
+        (true, Some(text)) if !text.trim().is_empty() => Some(format!("{key_label}; {text}")),
+        (true, _) => Some(key_label.to_string()),
         (false, Some(text)) if !text.trim().is_empty() => Some(text.to_string()),
         _ => None,
     }
@@ -2975,7 +3035,8 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                             }
                             continue;
                         }
-                        "ddiciskey" => {
+                        "ddiciskey" | "iskey" | "key" | "keyfield" | "primarykey"
+                        | "isprimarykey" | "ddicisprimarykey" | "keyflag" | "ddickeyflag" => {
                             current.is_key = ddic_bool(&value);
                             continue;
                         }
@@ -3018,6 +3079,21 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                     && current.decimals.is_none()
                 {
                     current.decimals = Some(value);
+                } else if matches_local_name(
+                    name,
+                    &[
+                        b"ddiciskey",
+                        b"iskey",
+                        b"key",
+                        b"keyfield",
+                        b"primarykey",
+                        b"isprimarykey",
+                        b"ddicisprimarykey",
+                        b"keyflag",
+                        b"ddickeyflag",
+                    ],
+                ) {
+                    current.is_key = ddic_bool(&value);
                 }
             }
             Ok(Event::End(end)) => {
@@ -3041,28 +3117,50 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
         }
     }
 
-    let mut deduped = BTreeMap::<String, DdicField>::new();
+    let mut seen = HashSet::<String>::new();
+    let mut deduped = Vec::<DdicField>::new();
     for field in fields {
-        deduped
-            .entry(field.name.to_ascii_lowercase())
-            .or_insert(field);
+        if seen.insert(field.name.to_ascii_lowercase()) {
+            deduped.push(field);
+        }
     }
-    deduped.into_values().collect()
+    deduped
 }
 
 fn ddic_field_from_start(start: &BytesStart<'_>) -> DdicField {
     DdicField {
-        name: attr_local_text(start, b"name").unwrap_or_default(),
-        data_element: attr_local_text(start, b"rollname")
-            .or_else(|| attr_local_text(start, b"refname")),
-        builtin_type: attr_local_text(start, b"datatype"),
-        length: attr_local_text(start, b"length")
-            .or_else(|| attr_local_text(start, b"leng"))
-            .or_else(|| attr_local_text(start, b"ddicLength")),
-        decimals: attr_local_text(start, b"decimals")
-            .or_else(|| attr_local_text(start, b"ddicDecimals")),
+        name: attr_local_text_any(start, &[b"name", b"fieldname"]).unwrap_or_default(),
+        data_element: attr_local_text_any(
+            start,
+            &[b"rollname", b"refname", b"comptype", b"ddicDataElement"],
+        ),
+        builtin_type: attr_local_text_any(
+            start,
+            &[
+                b"datatype",
+                b"builtintype",
+                b"ddicDataType",
+                b"datatypekind",
+            ],
+        ),
+        length: attr_local_text_any(start, &[b"length", b"leng", b"ddicLength"]),
+        decimals: attr_local_text_any(start, &[b"decimals", b"ddicDecimals"]),
         short_text: None,
-        is_key: attr_local_text(start, b"ddicIsKey").is_some_and(|value| ddic_bool(&value)),
+        is_key: attr_local_text_any(
+            start,
+            &[
+                b"ddicIsKey",
+                b"isKey",
+                b"key",
+                b"keyField",
+                b"primaryKey",
+                b"isPrimaryKey",
+                b"ddicIsPrimaryKey",
+                b"keyFlag",
+                b"ddicKeyFlag",
+            ],
+        )
+        .is_some_and(|value| ddic_bool(&value)),
         is_table: attr_local_text(start, b"isTableType").is_some_and(|value| ddic_bool(&value)),
         include_part_of: None,
     }
@@ -3085,6 +3183,10 @@ fn attr_local_text(start: &BytesStart<'_>, key: &[u8]) -> Option<String> {
         .flatten()
         .find(|attr| local_name_eq(attr.key.as_ref(), key))
         .and_then(|attr| String::from_utf8(attr.value.into_owned()).ok())
+}
+
+fn attr_local_text_any(start: &BytesStart<'_>, keys: &[&[u8]]) -> Option<String> {
+    keys.iter().find_map(|key| attr_local_text(start, key))
 }
 
 fn first_attr_text(xml: &str, key: &[u8]) -> Option<String> {
@@ -3542,9 +3644,29 @@ mode = "full-workspace"
         let source = ddic_xml_to_abap_source("ZATTP_AGG_PRO", "ddic-table", xml).expect("source");
         let lowered = source.to_ascii_lowercase();
         assert!(lowered.contains("types: begin of zattp_agg_pro, \" aggregate table"));
+        assert!(lowered.contains("\" primary key: mguid"));
         assert!(lowered.contains("mguid type guid_32"));
-        assert!(lowered.contains("\" key; guid"));
+        assert!(lowered.contains("\" primary key; guid"));
         assert!(lowered.contains("evt_time type p length 21 decimals 7"));
+    }
+
+    #[test]
+    fn converts_ddic_table_keyflag_metadata_to_primary_key_comments() {
+        let xml = r#"
+<root>
+  <field fieldname="MANDT" rollname="MANDT">
+    <KEYFLAG>X</KEYFLAG>
+  </field>
+  <field fieldname="LOCID" rollname="/STTP/E_LOCID" keyFlag="X" />
+  <field fieldname="LOCNO" rollname="/STTP/E_LOCNO" />
+</root>
+"#;
+        let source = ddic_xml_to_abap_source("/STTP/LOC", "ddic-table", xml).expect("source");
+        let lowered = source.to_ascii_lowercase();
+        assert!(lowered.contains("\" primary key: mandt, locid"));
+        assert!(lowered.contains("mandt type mandt, \" primary key"));
+        assert!(lowered.contains("locid type /sttp/e_locid, \" primary key"));
+        assert!(lowered.contains("locno type /sttp/e_locno"));
     }
 
     #[test]

@@ -1579,10 +1579,11 @@ impl<'a> Collector<'a> {
             return false;
         };
         let comment = comment.trim_start();
-        comment.eq_ignore_ascii_case("key")
-            || comment
-                .get(..4)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("key;"))
+        let lowered = comment.to_ascii_lowercase();
+        matches!(lowered.as_str(), "key" | "key field" | "primary key")
+            || lowered.starts_with("key;")
+            || lowered.starts_with("key field;")
+            || lowered.starts_with("primary key;")
     }
 
     fn typed_clause_type_ref_node(&self, node: NodeId) -> Option<(NodeId, Namespace)> {

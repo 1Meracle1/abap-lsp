@@ -3556,9 +3556,9 @@ SELECT mguid, docref, evt_time
 fn resolves_order_by_primary_key_fields_against_workspace_ddic_type() {
     let ddic_src = r#"
 TYPES: BEGIN OF zflight,
-         mandt  TYPE c LENGTH 3, " key; client
-         carrid TYPE c LENGTH 3, " key; carrier
-         connid TYPE c LENGTH 4, " key; connection
+         mandt  TYPE c LENGTH 3, " primary key; client
+         carrid TYPE c LENGTH 3, " primary key; carrier
+         connid TYPE c LENGTH 4, " primary key; connection
          fldate TYPE d,
        END OF zflight.
 "#;

@@ -2933,7 +2933,7 @@ fn collect_remote_dependency_candidates_for_include_component(
             insert_remote_candidate(&mut deduped, candidate);
         }
     }
-    if let Some(candidate) = stale_ddic_data_element_alias_refresh_candidate(snapshot) {
+    if let Some(candidate) = stale_dependency_refresh_candidate(snapshot) {
         insert_remote_candidate(&mut deduped, candidate);
     }
     deduped.into_values().collect()
@@ -2954,7 +2954,7 @@ fn collect_remote_dependency_refresh_candidates_for_include_component(
             insert_remote_candidate(&mut deduped, candidate);
         }
     }
-    if let Some(candidate) = stale_ddic_data_element_alias_refresh_candidate(snapshot) {
+    if let Some(candidate) = stale_dependency_refresh_candidate(snapshot) {
         insert_remote_candidate(&mut deduped, candidate);
     }
     deduped.into_values().collect()
@@ -3013,10 +3013,17 @@ fn collect_remote_dependency_candidates_for_workspace_batch(
     for candidate in collect_remote_dependency_candidates(full_snapshot.as_ref()) {
         insert_remote_candidate(&mut deduped, candidate);
     }
-    if let Some(candidate) = stale_ddic_data_element_alias_refresh_candidate(snapshot) {
+    if let Some(candidate) = stale_dependency_refresh_candidate(snapshot) {
         insert_remote_candidate(&mut deduped, candidate);
     }
     deduped.into_values().collect()
+}
+
+fn stale_dependency_refresh_candidate(
+    snapshot: &AnalysisSnapshot,
+) -> Option<RemoteDependencyCandidate> {
+    stale_ddic_data_element_alias_refresh_candidate(snapshot)
+        .or_else(|| stale_ddic_table_key_metadata_refresh_candidate(snapshot))
 }
 
 fn stale_ddic_data_element_alias_refresh_candidate(
@@ -3042,6 +3049,66 @@ fn ddic_data_element_alias_refresh_candidate(
     Some(RemoteDependencyCandidate {
         name: object_name.to_string(),
         kind: "type".to_string(),
+    })
+}
+
+fn stale_ddic_table_key_metadata_refresh_candidate(
+    snapshot: &AnalysisSnapshot,
+) -> Option<RemoteDependencyCandidate> {
+    if dependency_document_query_param(snapshot.uri.as_ref(), "kind").as_deref()
+        != Some("ddic-table")
+    {
+        return None;
+    }
+    let object_name = snapshot.object_name.as_deref()?;
+    ddic_table_key_metadata_refresh_candidate(object_name, snapshot.text.as_ref())
+}
+
+fn ddic_table_key_metadata_refresh_candidate(
+    object_name: &str,
+    source_text: &str,
+) -> Option<RemoteDependencyCandidate> {
+    if !source_text_looks_like_ddic_structure_stub(source_text, object_name)
+        || ddic_structure_stub_has_key_metadata(source_text)
+    {
+        return None;
+    }
+    Some(RemoteDependencyCandidate {
+        name: object_name.to_string(),
+        kind: "type".to_string(),
+    })
+}
+
+fn source_text_looks_like_ddic_structure_stub(source_text: &str, object_name: &str) -> bool {
+    let Some(first_code_line) = source_text
+        .lines()
+        .map(|line| line.split_once('"').map_or(line, |(code, _)| code).trim())
+        .find(|line| !line.is_empty())
+    else {
+        return false;
+    };
+    let parts = first_code_line.split_whitespace().collect::<Vec<_>>();
+    parts.len() >= 4
+        && parts[0].trim_end_matches(':').eq_ignore_ascii_case("types")
+        && parts[1].eq_ignore_ascii_case("begin")
+        && parts[2].eq_ignore_ascii_case("of")
+        && parts[3]
+            .trim_end_matches(',')
+            .eq_ignore_ascii_case(object_name)
+}
+
+fn ddic_structure_stub_has_key_metadata(source_text: &str) -> bool {
+    source_text.lines().any(|line| {
+        let Some((_, comment)) = line.split_once('"') else {
+            return false;
+        };
+        let comment = comment.trim_start().to_ascii_lowercase();
+        matches!(comment.as_str(), "key" | "key field" | "primary key")
+            || comment.starts_with("key;")
+            || comment.starts_with("key field;")
+            || comment.starts_with("key fields:")
+            || comment.starts_with("primary key;")
+            || comment.starts_with("primary key:")
     })
 }
 
@@ -3328,7 +3395,7 @@ fn has_persisted_negative_remote_dependency_candidate(
         .is_some_and(|status| matches!(status, CandidateCacheStatus::Negative))
 }
 
-fn stale_cached_ddic_data_element_alias_refresh_sources(
+fn stale_cached_dependency_refresh_sources(
     workspace: &WorkspaceState,
 ) -> Vec<(String, RemoteDependencyCandidate)> {
     let Some(profile) = workspace_dependency_profile(workspace) else {
@@ -3337,13 +3404,10 @@ fn stale_cached_ddic_data_element_alias_refresh_sources(
     let Some(store) = workspace_dependency_store(workspace) else {
         return Vec::new();
     };
-    let Ok(records) = store.list_artifacts_by_kind(&profile, "ddic-data-element") else {
-        return Vec::new();
-    };
+    let mut out = Vec::new();
 
-    records
-        .into_iter()
-        .filter_map(|record| {
+    if let Ok(records) = store.list_artifacts_by_kind(&profile, "ddic-data-element") {
+        out.extend(records.into_iter().filter_map(|record| {
             let candidate = ddic_data_element_alias_refresh_candidate(
                 record.object_name.as_str(),
                 record.source_text.as_str(),
@@ -3355,8 +3419,26 @@ fn stale_cached_ddic_data_element_alias_refresh_sources(
                 Some(record.object_kind.as_str()),
             );
             Some((uri, candidate))
-        })
-        .collect()
+        }));
+    }
+
+    if let Ok(records) = store.list_artifacts_by_kind(&profile, "ddic-table") {
+        out.extend(records.into_iter().filter_map(|record| {
+            let candidate = ddic_table_key_metadata_refresh_candidate(
+                record.object_name.as_str(),
+                record.source_text.as_str(),
+            )?;
+            let uri = dependency_document_uri_with_kind(
+                &workspace.root_uri,
+                record.artifact_id,
+                record.object_name.as_str(),
+                Some(record.object_kind.as_str()),
+            );
+            Some((uri, candidate))
+        }));
+    }
+
+    out
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3381,7 +3463,7 @@ fn build_remote_dependency_request_for_snapshot(
     } else {
         memo.candidates_for_request(workspace, snapshot, source_uri)
     };
-    let stale_refresh_key = stale_ddic_data_element_alias_refresh_candidate(snapshot)
+    let stale_refresh_key = stale_dependency_refresh_candidate(snapshot)
         .map(|candidate| remote_candidate_key(&candidate));
     for candidate in source_candidates {
         let key = remote_candidate_key(&candidate);
@@ -3599,7 +3681,7 @@ fn build_remote_dependency_batch_for_workspace_filtered_with_options(
         } else {
             memo.candidates_for_batch(workspace, snapshot.as_ref(), uri.as_ref())
         };
-        let stale_refresh_key = stale_ddic_data_element_alias_refresh_candidate(snapshot.as_ref())
+        let stale_refresh_key = stale_dependency_refresh_candidate(snapshot.as_ref())
             .map(|candidate| remote_candidate_key(&candidate));
         for candidate in snapshot_candidates {
             let key = remote_candidate_key(&candidate);
@@ -3648,9 +3730,7 @@ fn build_remote_dependency_batch_for_workspace_filtered_with_options(
     }
 
     if options.include_resolved_dependencies && options.bypass_cached_candidates {
-        for (source_uri, candidate) in
-            stale_cached_ddic_data_element_alias_refresh_sources(workspace)
-        {
+        for (source_uri, candidate) in stale_cached_dependency_refresh_sources(workspace) {
             let key = remote_candidate_key(&candidate);
             if !batch_seen.insert(key) {
                 continue;
@@ -5253,14 +5333,15 @@ mod tests {
         build_remote_dependency_request, build_remote_dependency_request_retrying_negatives,
         build_remote_dependency_requests_for_workspace, code_actions,
         collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
-        completion, definition, dependency_document_uri, extract_stored_dependency_symbols,
+        completion, definition, dependency_document_input_from_payload_with_kind,
+        dependency_document_uri, extract_stored_dependency_symbols,
         handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated, hover,
         initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
         publish_changed_document, publish_changed_document_mut, publish_open_document,
         publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
         semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
-        store_remote_dependency_artifacts, workspace_dependency_store,
-        workspace_manifest_diagnostics_params,
+        store_remote_dependency_artifacts, workspace_committed_build_plan,
+        workspace_dependency_store, workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -12900,6 +12981,107 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn opened_stale_ddic_table_without_key_metadata_requests_table_refresh() {
+        let workspace_path = temp_workspace_path("opened_stale_ddic_table_key_metadata");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let stale_table_source = r#"
+TYPES: BEGIN OF /sttp/loc, " Location
+  locid TYPE /sttp/e_locid, " Location Identifier
+  mandt TYPE mandt " Client
+END OF /sttp/loc.
+"#;
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let artifact = StoredArtifactInput {
+            package_name: "/STTP/BASIS".to_string(),
+            object_kind: "ddic-table".to_string(),
+            object_name: "/STTP/LOC".to_string(),
+            object_uri: "/sap/bc/adt/ddic/elementinfo?path=%2FSTTP%2FLOC".to_string(),
+            object_type: "TABL/DT".to_string(),
+            description: "Location".to_string(),
+            file_extension: "abap".to_string(),
+            source_text: stale_table_source.to_string(),
+            fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            symbols: extract_stored_dependency_symbols(
+                "/sap/bc/adt/ddic/elementinfo?path=%2FSTTP%2FLOC",
+                stale_table_source,
+            ),
+        };
+        let artifact_id = {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            store.put_artifact(&profile, &artifact).expect("put table")
+        };
+        let input = dependency_document_input_from_payload_with_kind(
+            &workspace_uri,
+            artifact_id,
+            &artifact,
+        );
+        {
+            let workspace = state
+                .workspaces
+                .get_mut(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let build_plan = workspace_committed_build_plan(workspace);
+            workspace
+                .cache
+                .publish_inputs_with_build_plan(vec![input], build_plan);
+        }
+
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "/STTP/LOC");
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
+        let _opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text,
+                },
+            },
+        );
+
+        let request =
+            build_remote_dependency_request_retrying_negatives(&mut state, &dependency_uri)
+                .expect("opened stale table refresh request");
+        assert!(
+            request.candidates.iter().any(|candidate| {
+                candidate.kind == "type" && candidate.name.eq_ignore_ascii_case("/sttp/loc")
+            }),
+            "{request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn workspace_dependency_batch_requests_stale_cached_data_element_alias_refresh() {
         let workspace_path = temp_workspace_path("batch_stale_ddic_data_element_alias");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -13036,6 +13218,85 @@ dependency_mode = "remote-on-demand"
                 candidates.iter().any(|candidate| {
                     candidate.kind == "type"
                         && candidate.name.eq_ignore_ascii_case("/sttp/e_gs1_gln")
+                })
+            }),
+            "{request:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn dependency_cache_refresh_requests_stale_cached_ddic_table_key_metadata() {
+        let workspace_path = temp_workspace_path("refresh_stale_cached_ddic_table_keys");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let (profile, store) = {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            (
+                workspace.dependency_profile.clone().expect("profile"),
+                workspace_dependency_store(workspace).expect("store"),
+            )
+        };
+        store
+            .put_artifact(
+                &profile,
+                &StoredArtifactInput {
+                    package_name: "/STTP/BASIS".to_string(),
+                    object_kind: "ddic-table".to_string(),
+                    object_name: "/STTP/LOC".to_string(),
+                    object_uri: "/sap/bc/adt/ddic/elementinfo?path=%2FSTTP%2FLOC".to_string(),
+                    object_type: "TABL/DT".to_string(),
+                    description: "Location".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+TYPES: BEGIN OF /sttp/loc, \" Location
+  locid TYPE /sttp/e_locid, \" Location Identifier
+  mandt TYPE mandt \" Client
+END OF /sttp/loc.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    symbols: Vec::new(),
+                },
+            )
+            .expect("store stale table artifact");
+
+        let request = build_remote_dependency_refresh_for_workspace(&mut state, &workspace_uri)
+            .expect("refresh request");
+        assert!(
+            request.candidates.iter().any(|candidate| {
+                candidate.kind == "type" && candidate.name.eq_ignore_ascii_case("/sttp/loc")
+            }),
+            "{request:#?}"
+        );
+        assert!(
+            request.source_candidates.values().any(|candidates| {
+                candidates.iter().any(|candidate| {
+                    candidate.kind == "type" && candidate.name.eq_ignore_ascii_case("/sttp/loc")
                 })
             }),
             "{request:#?}"
