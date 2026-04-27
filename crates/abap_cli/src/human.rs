@@ -13,6 +13,8 @@ pub struct LintDiagnostic<'a> {
     pub code: &'a str,
     pub message: &'a str,
     pub range: Range<usize>,
+    pub suppressed: bool,
+    pub suppression_kind: Option<&'a str>,
 }
 
 struct DiagnosticBlock<'a> {
@@ -20,6 +22,8 @@ struct DiagnosticBlock<'a> {
     code: Option<&'a str>,
     message: &'a str,
     range: Range<usize>,
+    suppressed: bool,
+    suppression_kind: Option<&'a str>,
 }
 
 struct LineSpan {
@@ -93,6 +97,8 @@ pub fn write_diagnostics(
             code: None,
             message: diagnostic.message,
             range: diagnostic.range.clone(),
+            suppressed: false,
+            suppression_kind: None,
         })
         .collect();
     write_diagnostic_blocks(&blocks, source, file_label)
@@ -110,6 +116,8 @@ pub fn write_lint_diagnostics(
             code: Some(diagnostic.code),
             message: diagnostic.message,
             range: diagnostic.range.clone(),
+            suppressed: diagnostic.suppressed,
+            suppression_kind: diagnostic.suppression_kind,
         })
         .collect();
     write_diagnostic_blocks(&blocks, source, file_label)
@@ -135,7 +143,12 @@ fn write_diagnostic_blocks(
             None => d.severity.to_string(),
         };
         let label = color_stderr(color, color_for_severity(d.severity), &label);
-        writeln!(stderr, "{label}: {}", d.message)?;
+        let message = match (d.suppressed, d.suppression_kind) {
+            (true, Some(kind)) => format!("{} (suppressed by {kind})", d.message),
+            (true, None) => format!("{} (suppressed)", d.message),
+            (false, _) => d.message.to_string(),
+        };
+        writeln!(stderr, "{label}: {message}")?;
 
         let (line, col) = line_col_for_byte(source, d.range.start);
         writeln!(

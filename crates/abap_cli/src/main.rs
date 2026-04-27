@@ -5,7 +5,7 @@
 //! abap-cli parse [--json] [--ast] [--errors-only] [FILE]
 //! abap-cli symbols [--json] [--unknown-only] [FILE]
 //! abap-cli check [--json] [FILE]
-//! abap-cli lint [--json] [--with-project] [--pretty] [FILE]
+//! abap-cli lint [--json] [--with-project] [--all-files] [--show-suppressed] [--fail-on-warnings] [--pretty] [FILE|PATH]
 //! abap-cli analyze --json [--with-project] [--pretty] [FILE]
 //! abap-cli expand [--json] [--pretty] [FILE]
 //! abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
@@ -95,6 +95,12 @@ struct Cli {
     unknown_only: bool,
     /// Analyze/lint: load workspace peers for cross-unit resolution.
     analyze_with_project: bool,
+    /// Lint: report config-disabled and source-suppressed diagnostics.
+    lint_show_suppressed: bool,
+    /// Lint: report every editable workspace file rooted at FILE/PATH.
+    lint_all_files: bool,
+    /// Lint: return a failing exit code when unsuppressed warnings exist.
+    lint_fail_on_warnings: bool,
     /// Analyze/lint/expand/call-graph/remote-candidates: pretty-print JSON instead of compact output.
     pretty: bool,
     /// Call graph: focus queries on a matching callable name/id.
@@ -119,7 +125,7 @@ Usage:
   abap-cli [--json] parse [--ast] [--errors-only] [FILE]
   abap-cli [--json] symbols [--unknown-only] [FILE]
   abap-cli [--json] check [FILE]
-  abap-cli lint [--json] [--with-project] [--pretty] [FILE]
+  abap-cli lint [--json] [--with-project] [--all-files] [--show-suppressed] [--fail-on-warnings] [--pretty] [FILE|PATH]
   abap-cli analyze --json [--with-project] [--pretty] [FILE]
   abap-cli expand [--json] [--pretty] [FILE]
   abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
@@ -127,6 +133,7 @@ Usage:
   abap-cli remote-candidates [--json] [--pretty] [PATH]
 
 If FILE is omitted or `-`, read source from stdin.
+For `lint --all-files`, PATH may be a file or directory anchor and defaults to the current directory.
 For `remote-candidates`, PATH may be a file or directory and defaults to the current directory.
 
 Commands:
@@ -134,7 +141,7 @@ Commands:
   parse     Parser diagnostics (silent human run when clean); `--json --ast` for a syntax tree
   symbols   `--json` for identifier index; human is silent when clean, otherwise diagnostics and a symbol table
   check     Front-end diagnostics only (human silent when clean)
-  lint      Configurable lint diagnostics (human silent when clean; warnings do not fail)
+  lint      Configurable lint diagnostics (human silent when clean; warnings do not fail unless --fail-on-warnings is set)
   analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
   expand    Effective source expansion with include source maps
   call-graph  Project-scale call graph export and caller/callee queries (`--json` required)
@@ -147,6 +154,11 @@ Options:
   --errors-only   Lex: only errors. Parse (JSON): same as default without --ast
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
   --with-project  Analyze/lint: load workspace peers around FILE for cross-unit resolution
+  --all-files     Lint: load workspace context and report every editable file rooted at FILE/PATH
+  --show-suppressed
+                  Lint: include config-disabled and source-suppressed diagnostics
+  --fail-on-warnings
+                  Lint: make unsuppressed warnings return exit code 1
   --symbol NAME   Call graph: focus on callable nodes matching NAME / qualified name / node id
   --target NAME   Call dataflow: target function module or method name
   --caller NAME   Call dataflow: optional caller filter
@@ -195,6 +207,9 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
     let mut parse_show_ast = false;
     let mut unknown_only = false;
     let mut analyze_with_project = false;
+    let mut lint_show_suppressed = false;
+    let mut lint_all_files = false;
+    let mut lint_fail_on_warnings = false;
     let mut pretty = false;
     let mut call_graph_symbol = None;
     let mut call_dataflow_target = None;
@@ -213,6 +228,9 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             "--errors-only" => errors_only = true,
             "--unknown-only" => unknown_only = true,
             "--with-project" => analyze_with_project = true,
+            "--show-suppressed" => lint_show_suppressed = true,
+            "--all-files" => lint_all_files = true,
+            "--fail-on-warnings" => lint_fail_on_warnings = true,
             "--pretty" => pretty = true,
             "--json" => json_output = true,
             "--symbol" => {
@@ -303,6 +321,24 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             usage()
         ));
     }
+    if lint_show_suppressed && command != Command::Lint {
+        return Err(format!(
+            "--show-suppressed only applies to lint\n{}",
+            usage()
+        ));
+    }
+    if lint_all_files && command != Command::Lint {
+        return Err(format!("--all-files only applies to lint\n{}", usage()));
+    }
+    if lint_fail_on_warnings && command != Command::Lint {
+        return Err(format!(
+            "--fail-on-warnings only applies to lint\n{}",
+            usage()
+        ));
+    }
+    if lint_all_files && path.as_deref() == Some("-") {
+        return Err(format!("--all-files does not support stdin\n{}", usage()));
+    }
     if pretty
         && !matches!(
             command,
@@ -366,6 +402,9 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         parse_show_ast,
         unknown_only,
         analyze_with_project,
+        lint_show_suppressed,
+        lint_all_files,
+        lint_fail_on_warnings,
         pretty,
         call_graph_symbol,
         call_dataflow_target,
@@ -784,6 +823,23 @@ struct LintSnapshot {
     dependency_unit_count: Option<usize>,
 }
 
+struct LintFileReport {
+    snapshot: Arc<AnalysisSnapshot>,
+    target_path: Option<String>,
+    findings: Vec<LintDiagnostic>,
+    hard_errors: Vec<LintHardError>,
+}
+
+struct LintWorkspaceReport {
+    target_uri: String,
+    target_path: Option<String>,
+    workspace_root_uri: String,
+    manifest_present: bool,
+    project_unit_count: usize,
+    dependency_unit_count: usize,
+    files: Vec<LintFileReport>,
+}
+
 struct LintHardError {
     phase: &'static str,
     message: String,
@@ -802,6 +858,25 @@ struct LintReportContext<'a> {
     dependency_unit_count: Option<usize>,
 }
 
+struct LintFileReportContext<'a> {
+    uri: &'a str,
+    path: Option<&'a str>,
+    object_name: Option<&'a str>,
+    is_dependency: bool,
+    findings: &'a [LintDiagnostic],
+    hard_errors: &'a [LintHardError],
+}
+
+struct LintWorkspaceReportContext<'a> {
+    target_uri: &'a str,
+    target_path: Option<&'a str>,
+    workspace_root_uri: &'a str,
+    manifest_present: bool,
+    project_unit_count: usize,
+    dependency_unit_count: usize,
+    files: &'a [LintFileReportContext<'a>],
+}
+
 struct ExpandSnapshotSet {
     root: Arc<AnalysisSnapshot>,
     snapshots: HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
@@ -816,10 +891,14 @@ struct RemoteCandidateWorkspace {
 }
 
 fn run_lint(cli: &Cli) -> Result<i32, String> {
+    if cli.lint_all_files {
+        return run_lint_all_files(cli);
+    }
+
     let snapshot = if cli.analyze_with_project {
-        load_project_lint_snapshot(cli.path.as_deref())?
+        load_project_lint_snapshot(cli.path.as_deref(), cli.lint_show_suppressed)?
     } else {
-        load_single_file_lint_snapshot(cli.path.as_deref())?
+        load_single_file_lint_snapshot(cli.path.as_deref(), cli.lint_show_suppressed)?
     };
     let hard_errors = lint_hard_errors(snapshot.snapshot.as_ref());
     let findings = if hard_errors.is_empty() {
@@ -827,10 +906,7 @@ fn run_lint(cli: &Cli) -> Result<i32, String> {
     } else {
         Vec::new()
     };
-    let has_deny = findings
-        .iter()
-        .any(|finding| !finding.suppressed && finding.level == LintLevel::Deny);
-    let should_fail = !hard_errors.is_empty() || has_deny;
+    let should_fail = lint_should_fail(&findings, &hard_errors, cli.lint_fail_on_warnings);
 
     if cli.json_output {
         let output = lint_report_json(&snapshot, &findings, &hard_errors);
@@ -850,19 +926,73 @@ fn run_lint(cli: &Cli) -> Result<i32, String> {
         let diags = parse_errors_to_diags(&snapshot.snapshot.parse.errors);
         human::write_diagnostics(&diags, source, &file_label).map_err(|e| e.to_string())?;
     } else {
-        let diags: Vec<_> = findings
-            .iter()
-            .map(|finding| human::LintDiagnostic {
-                severity: lint_severity_label(finding.level),
-                code: finding.id.as_str(),
-                message: finding.message.as_str(),
-                range: finding.range.clone(),
-            })
-            .collect();
+        let diags: Vec<_> = findings.iter().map(human_lint_diagnostic).collect();
         human::write_lint_diagnostics(&diags, source, &file_label).map_err(|e| e.to_string())?;
     }
 
     Ok(if should_fail { 1 } else { 0 })
+}
+
+fn run_lint_all_files(cli: &Cli) -> Result<i32, String> {
+    let report = load_all_files_lint_report(cli.path.as_deref(), cli.lint_show_suppressed)?;
+    let should_fail = report
+        .files
+        .iter()
+        .any(|file| lint_should_fail(&file.findings, &file.hard_errors, cli.lint_fail_on_warnings));
+
+    if cli.json_output {
+        let output = lint_all_files_report_json(&report);
+        let json = if cli.pretty {
+            serde_json::to_string_pretty(&output)
+        } else {
+            serde_json::to_string(&output)
+        }
+        .map_err(|e| e.to_string())?;
+        println!("{json}");
+        return Ok(if should_fail { 1 } else { 0 });
+    }
+
+    for file in &report.files {
+        let source = file.snapshot.text.as_ref();
+        let file_label = lint_file_report_label(file);
+        if !file.hard_errors.is_empty() {
+            let diags = parse_errors_to_diags(&file.snapshot.parse.errors);
+            human::write_diagnostics(&diags, source, &file_label).map_err(|e| e.to_string())?;
+        } else {
+            let diags: Vec<_> = file.findings.iter().map(human_lint_diagnostic).collect();
+            human::write_lint_diagnostics(&diags, source, &file_label)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(if should_fail { 1 } else { 0 })
+}
+
+fn lint_should_fail(
+    findings: &[LintDiagnostic],
+    hard_errors: &[LintHardError],
+    fail_on_warnings: bool,
+) -> bool {
+    !hard_errors.is_empty()
+        || findings.iter().any(|finding| {
+            !finding.suppressed
+                && (finding.level == LintLevel::Deny
+                    || (fail_on_warnings && finding.level == LintLevel::Warn))
+        })
+}
+
+fn human_lint_diagnostic(finding: &LintDiagnostic) -> human::LintDiagnostic<'_> {
+    human::LintDiagnostic {
+        severity: lint_severity_label(finding.level),
+        code: finding.id.as_str(),
+        message: finding.message.as_str(),
+        range: finding.range.clone(),
+        suppressed: finding.suppressed,
+        suppression_kind: finding
+            .suppression
+            .as_ref()
+            .map(|suppression| suppression.kind.as_str()),
+    }
 }
 
 fn lint_hard_errors(snapshot: &AnalysisSnapshot) -> Vec<LintHardError> {
@@ -894,6 +1024,12 @@ fn lint_file_label(snapshot: &LintSnapshot) -> String {
             snapshot.snapshot.uri.to_string()
         }
     })
+}
+
+fn lint_file_report_label(file: &LintFileReport) -> String {
+    file.target_path
+        .clone()
+        .unwrap_or_else(|| file.snapshot.uri.to_string())
 }
 
 fn lint_report_json(
@@ -943,6 +1079,99 @@ fn lint_report_json_from_context(
     })
 }
 
+fn lint_all_files_report_json(report: &LintWorkspaceReport) -> Value {
+    let file_contexts: Vec<_> = report
+        .files
+        .iter()
+        .map(|file| LintFileReportContext {
+            uri: file.snapshot.uri.as_ref(),
+            path: file.target_path.as_deref(),
+            object_name: file.snapshot.object_name.as_deref(),
+            is_dependency: file.snapshot.is_dependency,
+            findings: &file.findings,
+            hard_errors: &file.hard_errors,
+        })
+        .collect();
+    let context = LintWorkspaceReportContext {
+        target_uri: report.target_uri.as_str(),
+        target_path: report.target_path.as_deref(),
+        workspace_root_uri: report.workspace_root_uri.as_str(),
+        manifest_present: report.manifest_present,
+        project_unit_count: report.project_unit_count,
+        dependency_unit_count: report.dependency_unit_count,
+        files: &file_contexts,
+    };
+    lint_all_files_report_json_from_context(&context)
+}
+
+fn lint_all_files_report_json_from_context(context: &LintWorkspaceReportContext<'_>) -> Value {
+    let findings: Vec<Value> = context
+        .files
+        .iter()
+        .flat_map(|file| {
+            file.findings
+                .iter()
+                .map(|finding| lint_finding_json(file.uri, finding))
+        })
+        .collect();
+    let hard_errors: Vec<Value> = context
+        .files
+        .iter()
+        .flat_map(|file| {
+            file.hard_errors
+                .iter()
+                .map(|error| lint_file_hard_error_json(file.uri, file.path, error))
+        })
+        .collect();
+    let all_findings: Vec<LintDiagnostic> = context
+        .files
+        .iter()
+        .flat_map(|file| file.findings.iter().cloned())
+        .collect();
+    let mut summary = lint_summary_json(&all_findings);
+    if let Value::Object(summary) = &mut summary {
+        summary.insert("file_count".to_string(), json!(context.files.len()));
+        summary.insert("hard_error_count".to_string(), json!(hard_errors.len()));
+    }
+
+    json!({
+        "schema": "abap-lsp.lint",
+        "version": 1,
+        "phase": "lint",
+        "target": {
+            "uri": context.target_uri,
+            "path": context.target_path,
+            "object_name": null,
+            "is_dependency": false,
+        },
+        "workspace": {
+            "with_project": true,
+            "all_files": true,
+            "root_uri": context.workspace_root_uri,
+            "manifest_present": context.manifest_present,
+            "project_unit_count": context.project_unit_count,
+            "dependency_unit_count": context.dependency_unit_count,
+            "editable_file_count": context.files.len(),
+        },
+        "files": context.files.iter().map(lint_file_report_json).collect::<Vec<_>>(),
+        "findings": findings,
+        "hard_errors": hard_errors,
+        "summary": summary,
+    })
+}
+
+fn lint_file_report_json(file: &LintFileReportContext<'_>) -> Value {
+    json!({
+        "uri": file.uri,
+        "path": file.path,
+        "object_name": file.object_name,
+        "is_dependency": file.is_dependency,
+        "finding_count": file.findings.len(),
+        "hard_error_count": file.hard_errors.len(),
+        "summary": lint_summary_json(file.findings),
+    })
+}
+
 fn lint_finding_json(uri: &str, finding: &LintDiagnostic) -> Value {
     json!({
         "uri": uri,
@@ -963,6 +1192,16 @@ fn lint_finding_json(uri: &str, finding: &LintDiagnostic) -> Value {
 
 fn lint_hard_error_json(error: &LintHardError) -> Value {
     json!({
+        "phase": error.phase,
+        "message": error.message.as_str(),
+        "range": [error.range.start, error.range.end],
+    })
+}
+
+fn lint_file_hard_error_json(uri: &str, path: Option<&str>, error: &LintHardError) -> Value {
+    json!({
+        "uri": uri,
+        "path": path,
         "phase": error.phase,
         "message": error.message.as_str(),
         "range": [error.range.start, error.range.end],
@@ -3386,7 +3625,10 @@ fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapsh
     })
 }
 
-fn load_single_file_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, String> {
+fn load_single_file_lint_snapshot(
+    path: Option<&str>,
+    show_suppressed: bool,
+) -> Result<LintSnapshot, String> {
     let source = read_source(path)?;
     let target_path = resolve_target_path(path)?;
     let target_uri = target_path
@@ -3394,6 +3636,9 @@ fn load_single_file_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, St
         .map(|path| path_to_file_uri(path))
         .unwrap_or_else(|| "file:///stdin.abap".to_string());
     let store = DocumentStore::default();
+    if show_suppressed {
+        store.set_lint_policy(LintPolicy::default().with_report_suppressed(true));
+    }
     let snapshots = store.replace_all_with_build_plan(
         vec![DocumentInput {
             uri: Arc::from(target_uri.as_str()),
@@ -3422,6 +3667,74 @@ fn load_single_file_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, St
         manifest_present: false,
         project_unit_count: Some(1),
         dependency_unit_count: Some(0),
+    })
+}
+
+fn load_all_files_lint_report(
+    path: Option<&str>,
+    show_suppressed: bool,
+) -> Result<LintWorkspaceReport, String> {
+    let anchor_path = resolve_workspace_anchor_path_for_command(path, "lint --all-files")?;
+    let target_uri = path_to_file_uri(&anchor_path);
+    let workspace_root = find_all_files_lint_root(&anchor_path)?;
+    let workspace_root_uri = path_to_file_uri(&workspace_root);
+    let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let manifest_present = workspace.manifest.is_some();
+
+    let store = DocumentStore::default();
+    store.set_lint_policy(lint_workspace_policy(&workspace, show_suppressed));
+    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
+        &store,
+        &workspace.root_path,
+        &workspace.documents,
+        SnapshotBuildPlan::SEMANTIC_DOSSIER,
+        None,
+    );
+
+    let dependency_unit_count = snapshots
+        .values()
+        .filter(|snapshot| snapshot.is_dependency)
+        .count();
+    let project_unit_count = snapshots
+        .values()
+        .next()
+        .map(|snapshot| snapshot.project.units.len())
+        .unwrap_or(0);
+
+    let mut files = Vec::new();
+    for document in workspace
+        .documents
+        .iter()
+        .filter(|document| !document.is_dependency)
+    {
+        let snapshot = snapshots
+            .get(document.uri.as_ref())
+            .cloned()
+            .ok_or_else(|| format!("workspace lint analysis did not include {}", document.uri))?;
+        let hard_errors = lint_hard_errors(snapshot.as_ref());
+        let findings = if hard_errors.is_empty() {
+            snapshot.lint_diagnostics().to_vec()
+        } else {
+            Vec::new()
+        };
+        files.push(LintFileReport {
+            target_path: lint_target_path_from_uri(document.uri.as_ref()),
+            snapshot,
+            findings,
+            hard_errors,
+        });
+    }
+
+    files.sort_by(|left, right| left.snapshot.uri.cmp(&right.snapshot.uri));
+
+    Ok(LintWorkspaceReport {
+        target_uri,
+        target_path: Some(anchor_path.display().to_string()),
+        workspace_root_uri,
+        manifest_present,
+        project_unit_count,
+        dependency_unit_count,
+        files,
     })
 }
 
@@ -3568,7 +3881,10 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
     })
 }
 
-fn load_project_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, String> {
+fn load_project_lint_snapshot(
+    path: Option<&str>,
+    show_suppressed: bool,
+) -> Result<LintSnapshot, String> {
     let target_path = resolve_target_path(path)?
         .ok_or_else(|| "--with-project requires a file path".to_string())?;
     let target_uri = path_to_file_uri(&target_path);
@@ -3606,12 +3922,7 @@ fn load_project_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, String
     }
 
     let store = DocumentStore::default();
-    store.set_lint_policy(LintPolicy::from_config_opt(
-        workspace
-            .manifest
-            .as_ref()
-            .and_then(|manifest| manifest.lints.as_ref()),
-    ));
+    store.set_lint_policy(lint_workspace_policy(&workspace, show_suppressed));
     let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
         &store,
         &workspace.root_path,
@@ -3640,6 +3951,27 @@ fn load_project_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, String
         project_unit_count: Some(project_unit_count),
         dependency_unit_count: Some(dependency_unit_count),
     })
+}
+
+fn lint_workspace_policy(
+    workspace: &abap_cache::WorkspaceLoadResult,
+    show_suppressed: bool,
+) -> LintPolicy {
+    let policy = LintPolicy::from_config_opt(
+        workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.lints.as_ref()),
+    );
+    if show_suppressed {
+        policy.with_report_suppressed(true)
+    } else {
+        policy
+    }
+}
+
+fn lint_target_path_from_uri(uri: &str) -> Option<String> {
+    file_uri_to_path(uri).map(|path| path.display().to_string())
 }
 
 fn build_single_file_static_analysis(
@@ -3842,13 +4174,20 @@ fn resolve_target_path(path: Option<&str>) -> Result<Option<PathBuf>, String> {
 }
 
 fn resolve_workspace_anchor_path(path: Option<&str>) -> Result<PathBuf, String> {
+    resolve_workspace_anchor_path_for_command(path, "remote-candidates")
+}
+
+fn resolve_workspace_anchor_path_for_command(
+    path: Option<&str>,
+    command_name: &str,
+) -> Result<PathBuf, String> {
     match path {
         None => std::env::current_dir()
             .map_err(|e| format!("current dir: {e}"))?
             .canonicalize()
             .map(normalize_windows_path)
             .map_err(|e| format!("current dir: {e}")),
-        Some("-") => Err("remote-candidates does not support stdin".to_string()),
+        Some("-") => Err(format!("{command_name} does not support stdin")),
         Some(path) => {
             let path = PathBuf::from(path);
             let absolute = if path.is_absolute() {
@@ -3896,6 +4235,22 @@ fn find_workspace_root_for_anchor(anchor_path: &Path) -> Result<PathBuf, String>
     Ok(start.to_path_buf())
 }
 
+fn find_all_files_lint_root(anchor_path: &Path) -> Result<PathBuf, String> {
+    let start = if anchor_path.is_dir() {
+        anchor_path
+    } else {
+        anchor_path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", anchor_path.display()))?
+    };
+    for ancestor in start.ancestors() {
+        if ancestor.join("abapls.toml").is_file() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    Ok(start.to_path_buf())
+}
+
 fn normalize_windows_path(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(stripped) = text.strip_prefix(r"\\?\") {
@@ -3907,10 +4262,11 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallDataflowDiagramFormat, LintReportContext, lint_finding_json,
-        lint_report_json_from_context, lint_summary_json, load_remote_candidate_workspace,
-        parse_cli_args, path_to_file_uri, render_call_dataflow_diagram_block,
-        render_call_dataflow_parameter_provenance_mermaid,
+        CallDataflowDiagramFormat, LintFileReportContext, LintHardError, LintReportContext,
+        LintWorkspaceReportContext, lint_all_files_report_json_from_context, lint_finding_json,
+        lint_report_json_from_context, lint_should_fail, lint_summary_json,
+        load_remote_candidate_workspace, parse_cli_args, path_to_file_uri,
+        render_call_dataflow_diagram_block, render_call_dataflow_parameter_provenance_mermaid,
         render_call_dataflow_parameter_rich_mermaid, render_call_dataflow_report,
     };
     use abap_cache::{
@@ -3918,7 +4274,7 @@ mod tests {
         CallDataflowLifecycleNode, CallDataflowParameterTrace, CallDataflowProvenanceEdge,
         CallDataflowProvenanceGraph, CallDataflowProvenanceNode, CallDataflowQuery,
         CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace, LintDiagnostic,
-        LintGroup, LintLevel, LintOrigin,
+        LintGroup, LintLevel, LintOrigin, LintSuppression, LintSuppressionKind,
     };
     use serde_json::json;
     use std::fs;
@@ -3937,6 +4293,61 @@ mod tests {
         assert!(cli.analyze_with_project);
         assert!(cli.pretty);
         assert_eq!(cli.path.as_deref(), Some("main.abap"));
+    }
+
+    #[test]
+    fn parses_lint_all_files_surface_flags() {
+        let cli = parse_cli_args(
+            [
+                "lint",
+                "--json",
+                "--all-files",
+                "--show-suppressed",
+                "--fail-on-warnings",
+                "--pretty",
+                ".",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .expect("cli");
+
+        assert_eq!(cli.command, super::Command::Lint);
+        assert!(cli.json_output);
+        assert!(cli.lint_all_files);
+        assert!(cli.lint_show_suppressed);
+        assert!(cli.lint_fail_on_warnings);
+        assert!(cli.pretty);
+        assert_eq!(cli.path.as_deref(), Some("."));
+    }
+
+    #[test]
+    fn rejects_lint_only_flags_on_other_commands() {
+        let err = parse_cli_args(["check", "--all-files"].into_iter().map(str::to_string))
+            .expect_err("all-files should be lint-only");
+        assert!(err.contains("--all-files only applies to lint"), "{err}");
+
+        let err = parse_cli_args(
+            ["check", "--show-suppressed"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .expect_err("show-suppressed should be lint-only");
+        assert!(
+            err.contains("--show-suppressed only applies to lint"),
+            "{err}"
+        );
+
+        let err = parse_cli_args(
+            ["check", "--fail-on-warnings"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .expect_err("fail-on-warnings should be lint-only");
+        assert!(
+            err.contains("--fail-on-warnings only applies to lint"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -3997,6 +4408,146 @@ mod tests {
         assert_eq!(report["workspace"]["root_uri"], "file:///workspace");
         assert_eq!(report["findings"][0]["lint_id"], "abap-lsp.dead-store");
         assert_eq!(report["hard_errors"], json!([]));
+    }
+
+    #[test]
+    fn lint_json_shape_includes_suppression_metadata() {
+        let finding = LintDiagnostic {
+            id: "abap-lsp.select-star".to_string(),
+            range: 10..18,
+            message: "Open SQL SELECT * reads all columns".to_string(),
+            level: LintLevel::Info,
+            origin: LintOrigin::AbapLsp,
+            group: LintGroup::Performance,
+            tags: vec!["suppressed".to_string()],
+            sap_aliases: Vec::new(),
+            suppressed: true,
+            suppression: Some(LintSuppression {
+                kind: LintSuppressionKind::Config,
+                range: 10..10,
+                token: "config".to_string(),
+            }),
+        };
+
+        let value = lint_finding_json("file:///zlint.abap", &finding);
+        assert_eq!(value["suppressed"], true);
+        assert_eq!(value["suppression"]["kind"], "config");
+        assert_eq!(value["suppression"]["range"], json!([10, 10]));
+        assert_eq!(value["suppression"]["token"], "config");
+    }
+
+    #[test]
+    fn lint_exit_rules_keep_default_warning_behavior() {
+        let warning = LintDiagnostic {
+            id: "abap-lsp.dead-store".to_string(),
+            range: 5..13,
+            message: "assigned value is never read".to_string(),
+            level: LintLevel::Warn,
+            origin: LintOrigin::AbapLsp,
+            group: LintGroup::Style,
+            tags: Vec::new(),
+            sap_aliases: Vec::new(),
+            suppressed: false,
+            suppression: None,
+        };
+        let mut deny = warning.clone();
+        deny.level = LintLevel::Deny;
+        let mut suppressed_warning = warning.clone();
+        suppressed_warning.suppressed = true;
+        let hard_error = LintHardError {
+            phase: "parse",
+            message: "expected statement terminator".to_string(),
+            range: 20..21,
+        };
+
+        assert!(!lint_should_fail(
+            std::slice::from_ref(&warning),
+            &[],
+            false
+        ));
+        assert!(lint_should_fail(std::slice::from_ref(&warning), &[], true));
+        assert!(lint_should_fail(std::slice::from_ref(&deny), &[], false));
+        assert!(!lint_should_fail(
+            std::slice::from_ref(&suppressed_warning),
+            &[],
+            true
+        ));
+        assert!(lint_should_fail(
+            &[],
+            std::slice::from_ref(&hard_error),
+            false
+        ));
+    }
+
+    #[test]
+    fn lint_all_files_json_shape_is_stable() {
+        let finding = LintDiagnostic {
+            id: "abap-lsp.dead-store".to_string(),
+            range: 5..13,
+            message: "assigned value is never read".to_string(),
+            level: LintLevel::Warn,
+            origin: LintOrigin::AbapLsp,
+            group: LintGroup::Style,
+            tags: Vec::new(),
+            sap_aliases: Vec::new(),
+            suppressed: false,
+            suppression: None,
+        };
+        let hard_error = LintHardError {
+            phase: "parse",
+            message: "expected statement terminator".to_string(),
+            range: 20..21,
+        };
+        let files = [
+            LintFileReportContext {
+                uri: "file:///workspace/src/zclean.abap",
+                path: Some("src/zclean.abap"),
+                object_name: Some("ZCLEAN"),
+                is_dependency: false,
+                findings: std::slice::from_ref(&finding),
+                hard_errors: &[],
+            },
+            LintFileReportContext {
+                uri: "file:///workspace/src/zbroken.abap",
+                path: Some("src/zbroken.abap"),
+                object_name: Some("ZBROKEN"),
+                is_dependency: false,
+                findings: &[],
+                hard_errors: std::slice::from_ref(&hard_error),
+            },
+        ];
+
+        let report = lint_all_files_report_json_from_context(&LintWorkspaceReportContext {
+            target_uri: "file:///workspace",
+            target_path: Some("."),
+            workspace_root_uri: "file:///workspace",
+            manifest_present: true,
+            project_unit_count: 3,
+            dependency_unit_count: 1,
+            files: &files,
+        });
+
+        assert_eq!(report["schema"], "abap-lsp.lint");
+        assert_eq!(report["workspace"]["with_project"], true);
+        assert_eq!(report["workspace"]["all_files"], true);
+        assert_eq!(report["workspace"]["editable_file_count"], 2);
+        assert_eq!(
+            report["files"][0]["uri"],
+            "file:///workspace/src/zclean.abap"
+        );
+        assert_eq!(report["files"][0]["finding_count"], 1);
+        assert_eq!(
+            report["findings"][0]["uri"],
+            "file:///workspace/src/zclean.abap"
+        );
+        assert_eq!(
+            report["hard_errors"][0]["uri"],
+            "file:///workspace/src/zbroken.abap"
+        );
+        assert_eq!(report["hard_errors"][0]["path"], "src/zbroken.abap");
+        assert_eq!(report["summary"]["total"], 1);
+        assert_eq!(report["summary"]["file_count"], 2);
+        assert_eq!(report["summary"]["hard_error_count"], 1);
     }
 
     #[test]

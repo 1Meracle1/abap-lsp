@@ -766,6 +766,11 @@ impl LintPolicy {
         self.report_suppressed
     }
 
+    pub fn with_report_suppressed(mut self, report_suppressed: bool) -> Self {
+        self.report_suppressed = report_suppressed;
+        self
+    }
+
     pub fn level_for(&self, id: &str) -> LintLevel {
         self.levels
             .get(&normalized_lint_id(id))
