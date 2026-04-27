@@ -292,7 +292,7 @@ pub struct ReferenceData {
     pub resolution: Option<Resolution>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticKind {
     DuplicateDeclaration,
     ShadowedSymbol,

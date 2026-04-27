@@ -821,9 +821,15 @@ pub(crate) fn link_class_member_implementations(units: &mut [UnitAnalysis]) {
 
 pub(crate) fn collect_project_diagnostics(project: &mut ProjectAnalysis) {
     project.diagnostics.clear();
+    let mut seen = HashSet::new();
     for unit in &project.units {
         for diagnostic in &unit.diagnostics {
-            if !project.diagnostics.contains(diagnostic) {
+            if seen.insert((
+                diagnostic.kind,
+                diagnostic.range.start,
+                diagnostic.range.end,
+                diagnostic.message.as_str(),
+            )) {
                 project.diagnostics.push(diagnostic.clone());
             }
         }
@@ -1179,7 +1185,6 @@ pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult)
         diagnostics: Vec::new(),
     };
     validate_project_with_scope_indexes(&mut project, &[scope_index]);
-    collect_project_diagnostics(&mut project);
     project.units.pop().expect("single unit analysis")
 }
 

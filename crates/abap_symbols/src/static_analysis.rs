@@ -226,10 +226,8 @@ pub fn build_project_static_analysis_summary(
     let index_timer = std::time::Instant::now();
     for unit in &project.units {
         let unit_idx = unit.unit_id.as_usize();
-        for scope in &unit.scopes {
-            out.scope_to_routine[unit_idx][scope.id.as_usize()] =
-                enclosing_routine_id(unit, &exact_routine_scopes[unit_idx], scope.id);
-        }
+        out.scope_to_routine[unit_idx] =
+            build_scope_to_routine_map(unit, &exact_routine_scopes[unit_idx]);
     }
     out.metrics.index_micros = index_timer.elapsed().as_micros();
     out.metrics.total_micros = total_timer.elapsed().as_micros();
@@ -277,24 +275,25 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
     })
 }
 
-fn enclosing_routine_id(
+fn build_scope_to_routine_map(
     unit: &UnitAnalysis,
     exact_routine_scopes: &[Option<RoutineId>],
-    scope: ScopeId,
-) -> Option<RoutineId> {
-    let mut current = Some(scope);
-    while let Some(scope_id) = current {
-        if let Some(routine_id) = exact_routine_scopes
-            .get(scope_id.as_usize())
+) -> Vec<Option<RoutineId>> {
+    let mut scope_to_routine = vec![None; unit.scopes.len()];
+    for scope in &unit.scopes {
+        let idx = scope.id.as_usize();
+        scope_to_routine[idx] = exact_routine_scopes
+            .get(idx)
             .copied()
             .flatten()
-        {
-            return Some(routine_id);
-        }
-        current = unit
-            .scopes
-            .get(scope_id.as_usize())
-            .and_then(|scope_data| scope_data.parent);
+            .or_else(|| {
+                scope.parent.and_then(|parent| {
+                    let parent_idx = parent.as_usize();
+                    (parent_idx < idx)
+                        .then(|| scope_to_routine.get(parent_idx).copied().flatten())
+                        .flatten()
+                })
+            });
     }
-    None
+    scope_to_routine
 }

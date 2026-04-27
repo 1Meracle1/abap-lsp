@@ -167,18 +167,15 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
 
     for unit in &project.units {
         let unit_idx = unit.unit_id.as_usize();
-        for scope in &unit.scopes {
-            let routine_id = enclosing_routine_id(unit, &exact_routine_scopes[unit_idx], scope.id);
-            if let Some(scope_entry) = out.scope_to_routine[unit_idx].get_mut(scope.id.as_usize()) {
-                *scope_entry = routine_id;
-            }
-        }
+        out.scope_to_routine[unit_idx] =
+            build_scope_to_routine_map(unit, &exact_routine_scopes[unit_idx]);
     }
     out.metrics.index_micros = index_timer.elapsed().as_micros();
 
     let ir_timer = std::time::Instant::now();
     for unit in &project.units {
         let scope_map = &out.scope_to_routine[unit.unit_id.as_usize()];
+        let call_range_index = RangeContainmentIndex::from_call_sites(unit);
 
         for reference in unit.references.iter().filter(|reference| {
             reference.namespace == Namespace::Value
@@ -187,10 +184,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                     crate::ReferenceKind::TypeRef | crate::ReferenceKind::StructuredDeclEnd
                 )
                 // Structured instruction sites already model execution of nested references.
-                && !unit.call_sites.iter().any(|call_site| {
-                    call_site.scope == reference.scope
-                        && range_contains(&call_site.range, &reference.range)
-                })
+                && !call_range_index.contains(reference.scope, &reference.range)
         }) {
             let Some(routine_id) = scope_map.get(reference.scope.as_usize()).copied().flatten()
             else {
@@ -418,17 +412,29 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
     }
     out.metrics.ir_micros = ir_timer.elapsed().as_micros();
 
+    let control_region_indexes: Vec<_> = project
+        .units
+        .iter()
+        .map(|unit| {
+            build_routine_control_region_index(unit, &out.scope_to_routine[unit.unit_id.as_usize()])
+        })
+        .collect();
+
     let cfg_timer = std::time::Instant::now();
     for routine_idx in 0..out.routines.len() {
         let descriptor = out.routines[routine_idx].descriptor.clone();
         let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
             continue;
         };
-        let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
-            continue;
-        };
-        let (cfg, diagnostics) =
-            build_routine_cfg_and_diagnostics(unit, scope_map, &out.routines[routine_idx]);
+        let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
+            .get(&descriptor.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let (cfg, diagnostics) = build_routine_cfg_and_diagnostics(
+            unit,
+            routine_control_regions,
+            &out.routines[routine_idx],
+        );
         out.unit_diagnostics[descriptor.unit.as_usize()].extend(diagnostics.iter().cloned());
         out.routines[routine_idx].cfg = cfg;
         out.routines[routine_idx].diagnostics = diagnostics;
@@ -446,6 +452,13 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
     let dataflow_timer = std::time::Instant::now();
+    let tracked_symbols_by_routine =
+        build_tracked_symbols_by_routine(project, &out.scope_to_routine, out.routines.len());
+    let call_argument_effects_by_unit: Vec<_> = project
+        .units
+        .iter()
+        .map(|unit| build_call_argument_effects(project, unit))
+        .collect();
     let has_perform_calls = project
         .units
         .iter()
@@ -477,15 +490,18 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
                 continue;
             };
-            let Some(scope_map) = out.scope_to_routine.get(descriptor.unit.as_usize()) else {
-                continue;
-            };
+            let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
+                .get(&descriptor.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             out.metrics.dataflow_routine_runs += 1;
             let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
                 project,
                 unit,
-                scope_map,
+                routine_control_regions,
                 &out.routines[routine_id],
+                &tracked_symbols_by_routine[routine_id],
+                &call_argument_effects_by_unit[descriptor.unit.as_usize()],
                 &form_parameter_effects,
             );
             out.metrics.dead_store_micros += dead_store_micros;
@@ -651,6 +667,8 @@ struct FormParameterEffectSummary {
     may_write: bool,
 }
 
+type CallArgumentEffectMap = HashMap<(usize, usize, usize, usize), CallArgumentEffect>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DenseBitSet {
     words: Vec<u64>,
@@ -737,6 +755,17 @@ struct RoutineBuildIndex<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct RangeContainmentEntry {
+    start: usize,
+    prefix_max_end: usize,
+}
+
+#[derive(Debug, Default)]
+struct RangeContainmentIndex {
+    by_scope: Vec<Vec<RangeContainmentEntry>>,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ScopeExit {
     block: RoutineBlockId,
     reachable: bool,
@@ -768,7 +797,7 @@ struct CfgBuilder<'a> {
 impl<'a> RoutineBuildIndex<'a> {
     fn new(
         unit: &'a UnitAnalysis,
-        scope_to_routine: &[Option<RoutineId>],
+        control_regions: &[&'a RoutineControlRegionData],
         routine: &RoutineAnalysis,
     ) -> Self {
         let mut instructions_by_scope = vec![Vec::new(); unit.scopes.len()];
@@ -783,15 +812,7 @@ impl<'a> RoutineBuildIndex<'a> {
         let mut at_regions = HashMap::new();
         let mut try_regions = HashMap::new();
         let mut loop_regions = HashMap::new();
-        for region in &unit.routine_control_regions {
-            if scope_to_routine
-                .get(region.scope().as_usize())
-                .copied()
-                .flatten()
-                != Some(routine.descriptor.id)
-            {
-                continue;
-            }
+        for &region in control_regions {
             match region {
                 RoutineControlRegionData::If(data) => {
                     if_regions.insert(control_key(data.scope, &data.range, 0), data);
@@ -1402,12 +1423,47 @@ impl<'a> CfgBuilder<'a> {
     }
 }
 
+impl RangeContainmentIndex {
+    fn from_call_sites(unit: &UnitAnalysis) -> Self {
+        let mut by_scope = vec![Vec::new(); unit.scopes.len()];
+        for call_site in &unit.call_sites {
+            if let Some(entries) = by_scope.get_mut(call_site.scope.as_usize()) {
+                entries.push(RangeContainmentEntry {
+                    start: call_site.range.start,
+                    prefix_max_end: call_site.range.end,
+                });
+            }
+        }
+        for entries in &mut by_scope {
+            entries.sort_by(|left, right| {
+                left.start
+                    .cmp(&right.start)
+                    .then(left.prefix_max_end.cmp(&right.prefix_max_end))
+            });
+            let mut max_end = 0;
+            for entry in entries {
+                max_end = max_end.max(entry.prefix_max_end);
+                entry.prefix_max_end = max_end;
+            }
+        }
+        Self { by_scope }
+    }
+
+    fn contains(&self, scope: ScopeId, inner: &TextRange) -> bool {
+        let Some(entries) = self.by_scope.get(scope.as_usize()) else {
+            return false;
+        };
+        let end_idx = entries.partition_point(|entry| entry.start <= inner.start);
+        end_idx > 0 && entries[end_idx - 1].prefix_max_end >= inner.end
+    }
+}
+
 fn build_routine_cfg_and_diagnostics(
     unit: &UnitAnalysis,
-    scope_to_routine: &[Option<RoutineId>],
+    control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
 ) -> (RoutineCfg, Vec<Diagnostic>) {
-    let index = RoutineBuildIndex::new(unit, scope_to_routine, routine);
+    let index = RoutineBuildIndex::new(unit, control_regions, routine);
     let cfg = CfgBuilder::new(unit, routine, index).build();
     let diagnostics = unreachable_diagnostics_for_cfg(routine, &cfg);
     (cfg, diagnostics)
@@ -1455,8 +1511,10 @@ fn unreachable_diagnostics_for_cfg(routine: &RoutineAnalysis, cfg: &RoutineCfg) 
 fn build_routine_dataflow(
     project: &ProjectAnalysis,
     unit: &UnitAnalysis,
-    scope_to_routine: &[Option<RoutineId>],
+    control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
+    tracked_symbols: &[&SymbolData],
+    call_argument_effects: &CallArgumentEffectMap,
     form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
 ) -> (
     RoutineDataflowInputs,
@@ -1464,27 +1522,7 @@ fn build_routine_dataflow(
     Vec<Diagnostic>,
     u128,
 ) {
-    let routine_index = RoutineBuildIndex::new(unit, scope_to_routine, routine);
-    let mut tracked_symbols: Vec<&SymbolData> = unit
-        .symbols
-        .iter()
-        .filter(|symbol| trackable_symbol_kind(symbol.kind))
-        .filter(|symbol| {
-            scope_to_routine
-                .get(symbol.scope.as_usize())
-                .copied()
-                .flatten()
-                == Some(routine.descriptor.id)
-        })
-        .collect();
-    tracked_symbols.sort_by(|left, right| {
-        left.decl_range
-            .start
-            .cmp(&right.decl_range.start)
-            .then(left.decl_range.end.cmp(&right.decl_range.end))
-            .then((left.kind as u8).cmp(&(right.kind as u8)))
-            .then(left.name.cmp(&right.name))
-    });
+    let routine_index = RoutineBuildIndex::new(unit, control_regions, routine);
 
     let mut values = Vec::with_capacity(tracked_symbols.len());
     let mut value_ids_by_symbol = HashMap::with_capacity(tracked_symbols.len());
@@ -1535,7 +1573,6 @@ fn build_routine_dataflow(
             .then(left.value.as_usize().cmp(&right.value.as_usize()))
     });
 
-    let call_argument_effects = build_call_argument_effects(project, unit);
     let safe_field_symbol_checks =
         resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
     let safe_value_state_checks =
@@ -1662,65 +1699,79 @@ fn build_routine_dataflow(
     let mut safe_read_refs = safe_field_symbol_checks.clone();
     safe_read_refs.extend(safe_value_state_checks);
     safe_read_refs.extend(safe_loop_field_refs);
-    let mut suppressed_refs = std::collections::HashSet::new();
+    let mut suppressed_refs = vec![false; unit.references.len()];
     for instruction in &routine.ir.instructions {
         match instruction.site {
             RoutineInstructionSite::Assignment { index } => {
                 if let Some(assignment) = unit.assignment_sites.get(index as usize) {
-                    suppressed_refs.extend(reference_ids_in_range(
+                    mark_reference_ids_in_range(
+                        &mut suppressed_refs,
                         &reference_uses,
                         &assignment.lhs_range,
-                    ));
-                    suppressed_refs.extend(reference_ids_in_range(
+                    );
+                    mark_reference_ids_in_range(
+                        &mut suppressed_refs,
                         &reference_uses,
                         &assignment.rhs_range,
-                    ));
+                    );
                 }
             }
             RoutineInstructionSite::Call { index } => {
                 if let Some(call_site) = unit.call_sites.get(index as usize) {
-                    suppressed_refs
-                        .extend(reference_ids_in_range(&reference_uses, &call_site.range));
+                    mark_reference_ids_in_range(
+                        &mut suppressed_refs,
+                        &reference_uses,
+                        &call_site.range,
+                    );
                 }
             }
             RoutineInstructionSite::Clear { index } => {
                 if let Some(site) = unit.routine_sites.get(index as usize) {
-                    suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
+                    mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, &site.range);
                 }
             }
             RoutineInstructionSite::Delete { index } => {
                 if let Some(site) = unit.routine_sites.get(index as usize) {
-                    suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
+                    mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, &site.range);
                 }
             }
             RoutineInstructionSite::ReadTable { index } => {
                 if let Some(site) = unit.routine_sites.get(index as usize) {
-                    suppressed_refs.extend(reference_ids_in_range(&reference_uses, &site.range));
+                    mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, &site.range);
                 }
             }
             RoutineInstructionSite::Find { index } => {
                 if let Some(site) = unit.find_sites.get(index as usize) {
                     for range in &site.read_ranges {
-                        suppressed_refs.extend(reference_ids_in_range(&reference_uses, range));
+                        mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, range);
                     }
                     for target in &site.write_targets {
-                        suppressed_refs
-                            .extend(reference_ids_in_range(&reference_uses, &target.range));
+                        mark_reference_ids_in_range(
+                            &mut suppressed_refs,
+                            &reference_uses,
+                            &target.range,
+                        );
                     }
                 }
             }
             RoutineInstructionSite::Perform { index } => {
                 if let Some(perform_call) = unit.perform_calls.get(index as usize) {
-                    suppressed_refs
-                        .extend(reference_ids_in_range(&reference_uses, &perform_call.range));
+                    mark_reference_ids_in_range(
+                        &mut suppressed_refs,
+                        &reference_uses,
+                        &perform_call.range,
+                    );
                 }
             }
             RoutineInstructionSite::FieldSymbolBind { index } => {
                 if let Some(edge) = unit.value_flow_edges.get(index as usize) {
-                    suppressed_refs
-                        .extend(reference_ids_in_range(&reference_uses, &edge.source_range));
+                    mark_reference_ids_in_range(
+                        &mut suppressed_refs,
+                        &reference_uses,
+                        &edge.source_range,
+                    );
                     if let ValueFlowTargetData::FieldSymbol { range, .. } = &edge.target {
-                        suppressed_refs.extend(reference_ids_in_range(&reference_uses, range));
+                        mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, range);
                     }
                 }
             }
@@ -1730,10 +1781,11 @@ fn build_routine_dataflow(
                     .iter()
                     .filter(|target| target.query_id == index as usize)
                 {
-                    suppressed_refs.extend(reference_ids_in_range(
+                    mark_reference_ids_in_range(
+                        &mut suppressed_refs,
                         &reference_uses,
                         sql_target_effective_range(target),
-                    ));
+                    );
                 }
             }
             RoutineInstructionSite::ValueRead { .. }
@@ -1758,7 +1810,7 @@ fn build_routine_dataflow(
         };
         match instruction.site {
             RoutineInstructionSite::ValueRead { reference } => {
-                if !suppressed_refs.contains(&reference)
+                if !reference_is_marked(&suppressed_refs, reference)
                     && let Some(value) =
                         resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
                 {
@@ -2576,7 +2628,7 @@ fn build_dead_store_diagnostics(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     instruction_summaries: &[InstructionDataflowSummary],
-    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+    call_argument_effects: &CallArgumentEffectMap,
 ) -> Vec<Diagnostic> {
     if values.is_empty() || routine.cfg.blocks.is_empty() {
         return Vec::new();
@@ -2671,7 +2723,7 @@ fn build_dead_store_tracked_values(
     values: &[RoutineDataflowValue],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
-    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+    call_argument_effects: &CallArgumentEffectMap,
 ) -> DenseBitSet {
     let mut tracked = DenseBitSet::new(values.len());
     for value in values {
@@ -2761,7 +2813,7 @@ fn build_dead_store_tracked_values(
 }
 
 fn call_argument_effect_for_call_argument(
-    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+    call_argument_effects: &CallArgumentEffectMap,
     call_site: &crate::CallSiteData,
     argument: &crate::CallArgumentData,
 ) -> CallArgumentEffect {
@@ -2977,7 +3029,7 @@ fn build_dead_store_instruction_summaries(
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     instruction_summaries: &[InstructionDataflowSummary],
     tracked_values: &DenseBitSet,
-    call_argument_effects: &HashMap<(usize, usize, usize, usize), CallArgumentEffect>,
+    call_argument_effects: &CallArgumentEffectMap,
     value_state_check_refs: &std::collections::HashSet<crate::ReferenceId>,
 ) -> Vec<DeadStoreInstructionSummary> {
     let mut out = Vec::with_capacity(routine.ir.instructions.len());
@@ -3192,7 +3244,7 @@ fn resolved_value_id_for_reference(
 fn build_call_argument_effects(
     project: &ProjectAnalysis,
     unit: &UnitAnalysis,
-) -> HashMap<(usize, usize, usize, usize), CallArgumentEffect> {
+) -> CallArgumentEffectMap {
     let mut effects = HashMap::new();
     for edge in &unit.value_flow_edges {
         if edge.kind != ValueFlowKind::CallArgument {
@@ -4210,42 +4262,41 @@ fn inherited_non_initial_field_scope_refinements(
     out
 }
 
-fn reference_uses_in_range(
-    reference_uses: &[ReferenceUse],
-    range: &TextRange,
-) -> Vec<ReferenceUse> {
+fn reference_uses_in_range<'a>(
+    reference_uses: &'a [ReferenceUse],
+    range: &'a TextRange,
+) -> impl Iterator<Item = &'a ReferenceUse> + 'a {
     let start_idx = reference_uses.partition_point(|use_site| use_site.range.start < range.start);
-    let mut uses = Vec::new();
-    for use_site in &reference_uses[start_idx..] {
-        if use_site.range.start >= range.end {
-            break;
-        }
-        if use_site.range.end <= range.end {
-            uses.push(use_site.clone());
-        }
-    }
-    uses
+    reference_uses[start_idx..]
+        .iter()
+        .take_while(move |use_site| use_site.range.start < range.end)
+        .filter(move |use_site| use_site.range.end <= range.end)
 }
 
-fn reference_ids_in_range(
+fn mark_reference_ids_in_range(
+    marked: &mut [bool],
     reference_uses: &[ReferenceUse],
     range: &TextRange,
-) -> Vec<crate::ReferenceId> {
-    reference_uses_in_range(reference_uses, range)
-        .into_iter()
-        .map(|use_site| use_site.reference)
-        .collect()
+) {
+    for use_site in reference_uses_in_range(reference_uses, range) {
+        if let Some(slot) = marked.get_mut(use_site.reference.as_usize()) {
+            *slot = true;
+        }
+    }
+}
+
+fn reference_is_marked(marked: &[bool], reference: crate::ReferenceId) -> bool {
+    marked.get(reference.as_usize()).copied().unwrap_or(false)
 }
 
 fn exact_reference_use_in_range(
     reference_uses: &[ReferenceUse],
     range: &TextRange,
 ) -> Option<ReferenceUse> {
-    let mut matches = reference_uses_in_range(reference_uses, range)
-        .into_iter()
-        .filter(|use_site| use_site.range == *range);
+    let mut matches =
+        reference_uses_in_range(reference_uses, range).filter(|use_site| use_site.range == *range);
     let first = matches.next()?;
-    matches.next().is_none().then_some(first)
+    matches.next().is_none().then(|| first.clone())
 }
 
 fn read_occurrences_in_range(
@@ -4255,11 +4306,10 @@ fn read_occurrences_in_range(
     suppress_definite_assignment: bool,
 ) -> Vec<ReadOccurrence> {
     reference_uses_in_range(reference_uses, range)
-        .into_iter()
         .filter(|use_site| !safe_field_symbol_checks.contains(&use_site.reference))
         .map(|use_site| ReadOccurrence {
             reference: use_site.reference,
-            range: use_site.range,
+            range: use_site.range.clone(),
             value: use_site.value,
             suppress_definite_assignment,
         })
@@ -5190,26 +5240,82 @@ fn sorted_unique_value_ids(
     values
 }
 
-fn enclosing_routine_id(
+fn build_scope_to_routine_map(
     unit: &UnitAnalysis,
     exact_routine_scopes: &[Option<RoutineId>],
-    scope: ScopeId,
-) -> Option<RoutineId> {
-    let mut current = Some(scope);
-    while let Some(scope_id) = current {
-        if let Some(routine_id) = exact_routine_scopes
-            .get(scope_id.as_usize())
+) -> Vec<Option<RoutineId>> {
+    let mut scope_to_routine = vec![None; unit.scopes.len()];
+    for scope in &unit.scopes {
+        let idx = scope.id.as_usize();
+        scope_to_routine[idx] = exact_routine_scopes
+            .get(idx)
             .copied()
             .flatten()
-        {
-            return Some(routine_id);
-        }
-        current = unit
-            .scopes
-            .get(scope_id.as_usize())
-            .and_then(|scope_data| scope_data.parent);
+            .or_else(|| {
+                scope.parent.and_then(|parent| {
+                    let parent_idx = parent.as_usize();
+                    (parent_idx < idx)
+                        .then(|| scope_to_routine.get(parent_idx).copied().flatten())
+                        .flatten()
+                })
+            });
     }
-    None
+    scope_to_routine
+}
+
+fn build_routine_control_region_index<'a>(
+    unit: &'a UnitAnalysis,
+    scope_to_routine: &[Option<RoutineId>],
+) -> HashMap<RoutineId, Vec<&'a RoutineControlRegionData>> {
+    let mut out: HashMap<RoutineId, Vec<&RoutineControlRegionData>> = HashMap::new();
+    for region in &unit.routine_control_regions {
+        let Some(routine_id) = scope_to_routine
+            .get(region.scope().as_usize())
+            .copied()
+            .flatten()
+        else {
+            continue;
+        };
+        out.entry(routine_id).or_default().push(region);
+    }
+    out
+}
+
+fn build_tracked_symbols_by_routine<'a>(
+    project: &'a ProjectAnalysis,
+    scope_to_routine: &[Vec<Option<RoutineId>>],
+    routine_count: usize,
+) -> Vec<Vec<&'a SymbolData>> {
+    let mut out = vec![Vec::new(); routine_count];
+    for unit in &project.units {
+        let unit_idx = unit.unit_id.as_usize();
+        let Some(scope_map) = scope_to_routine.get(unit_idx) else {
+            continue;
+        };
+        for symbol in unit
+            .symbols
+            .iter()
+            .filter(|symbol| trackable_symbol_kind(symbol.kind))
+        {
+            let Some(routine_id) = scope_map.get(symbol.scope.as_usize()).copied().flatten() else {
+                continue;
+            };
+            if let Some(symbols) = out.get_mut(routine_id.as_usize()) {
+                symbols.push(symbol);
+            }
+        }
+    }
+    for symbols in &mut out {
+        symbols.sort_by(|left, right| {
+            left.decl_range
+                .start
+                .cmp(&right.decl_range.start)
+                .then(left.decl_range.end.cmp(&right.decl_range.end))
+                .then((left.kind as u8).cmp(&(right.kind as u8)))
+                .then(left.name.cmp(&right.name))
+        });
+    }
+    out
 }
 
 fn instruction_kind_sort_key(kind: RoutineInstructionKind) -> u8 {
@@ -5537,8 +5643,4 @@ fn push_unique(values: &mut Vec<RoutineBlockId>, value: RoutineBlockId) {
 
 fn zero_range(offset: usize) -> TextRange {
     offset..offset
-}
-
-fn range_contains(outer: &TextRange, inner: &TextRange) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
 }

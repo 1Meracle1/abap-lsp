@@ -1065,12 +1065,23 @@ fn send_notification(
     method: &str,
     params: Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let serialize_start = Instant::now();
     let payload = serde_json::to_vec(&json!({
         "jsonrpc": JSON_RPC_VERSION,
         "method": method,
         "params": params,
     }))?;
+    let serialize_elapsed = serialize_start.elapsed();
+    let write_start = Instant::now();
     write_frame(writer, &payload)?;
+    let write_elapsed = write_start.elapsed();
+    debug!(
+        method,
+        payload_bytes = payload.len(),
+        serialize_elapsed = ?serialize_elapsed,
+        write_elapsed = ?write_elapsed,
+        "sent LSP notification"
+    );
     Ok(())
 }
 
@@ -1079,10 +1090,24 @@ fn push_publish_diagnostics_notification(
     snapshot: &abap_lsp::AnalysisSnapshot,
     notifications: &mut Vec<(String, Value)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    notifications.push((
-        "textDocument/publishDiagnostics".to_owned(),
-        serde_json::to_value(publish_diagnostics_params(state, snapshot))?,
-    ));
+    let params_start = Instant::now();
+    let params = publish_diagnostics_params(state, snapshot);
+    let params_elapsed = params_start.elapsed();
+    let diagnostic_count = params.diagnostics.len();
+    let value_start = Instant::now();
+    let params_value = serde_json::to_value(params)?;
+    let value_elapsed = value_start.elapsed();
+    debug!(
+        uri = %snapshot.uri,
+        diagnostic_count,
+        text_bytes = snapshot.text.len(),
+        parse_diagnostic_count = snapshot.parse.errors.len(),
+        semantic_diagnostic_count = snapshot.symbols.diagnostics.len(),
+        build_params_elapsed = ?params_elapsed,
+        to_value_elapsed = ?value_elapsed,
+        "built publishDiagnostics notification"
+    );
+    notifications.push(("textDocument/publishDiagnostics".to_owned(), params_value));
     Ok(())
 }
 
@@ -1457,15 +1482,22 @@ fn handle_did_open_notifications(
     params: &DidOpenTextDocumentParams,
     progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
+    let line_count = params.text_document.text.lines().count();
+    let initial_workspace_uri = state
+        .workspace_for_uri(normalized_uri.as_str())
+        .map(|workspace| workspace.root_uri.clone());
     let progress_workspace_uri = state
         .workspace_for_uri(normalized_uri.as_str())
         .map(|workspace| workspace.root_uri.clone());
+    let unchanged_start = Instant::now();
     let unchanged_workspace_open = state
         .workspace_for_uri(&normalized_uri)
         .and_then(|workspace| workspace.cache.get(&normalized_uri))
         .is_some_and(|snapshot| snapshot.text.as_ref() == params.text_document.text.as_str());
+    let unchanged_elapsed = unchanged_start.elapsed();
     let progress_notifications = Mutex::new(Vec::new());
     let progress = |processed: usize, total: usize| {
         if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
@@ -1479,16 +1511,59 @@ fn handle_did_open_notifications(
             );
         }
     };
+    let publish_start = Instant::now();
     let snapshot = publish_open_document_mut_with_progress(state, params, Some(&progress));
+    let publish_elapsed = publish_start.elapsed();
     notifications.extend(
         progress_notifications
             .into_inner()
             .expect("progress notification collection should not be poisoned"),
     );
+    let workspace_lookup_start = Instant::now();
     let workspace_uri = workspace_uri_for_cached_snapshot(state, snapshot.uri.as_ref());
+    let workspace_lookup_elapsed = workspace_lookup_start.elapsed();
+    let dirty_start = Instant::now();
     let dirty_uris = workspace_uri
         .as_deref()
         .map(|workspace_uri| workspace_dirty_uris(state, workspace_uri));
+    let dirty_elapsed = dirty_start.elapsed();
+    let metrics = workspace_uri
+        .as_deref()
+        .and_then(|workspace_uri| state.workspaces.get(workspace_uri))
+        .and_then(|workspace| workspace.cache.last_analysis_metrics_snapshot());
+    if let Some(metrics) = metrics.as_ref() {
+        debug!(
+            uri = %snapshot.uri,
+            workspace_uri = workspace_uri.as_deref().unwrap_or("<none>"),
+            parse_count = metrics.parse_count,
+            local_phase_count = metrics.local_phase_count,
+            dirty_uri_count = metrics.dirty_uri_count,
+            full_rebuild = metrics.full_rebuild,
+            unit_count = metrics.unit_count,
+            dirty_unit_count = metrics.dirty_unit_count,
+            parse_micros = metrics.parse_micros,
+            parse_work_micros = metrics.parse_work_micros,
+            local_phase_micros = metrics.local_phase_micros,
+            local_phase_work_micros = metrics.local_phase_work_micros,
+            project_update_micros = metrics.project_update_micros,
+            snapshot_build_micros = metrics.snapshot_build_micros,
+            routine_analysis_micros = metrics.routine_analysis_micros,
+            routine_analysis_index_micros = metrics.routine_analysis_index_micros,
+            routine_analysis_ir_micros = metrics.routine_analysis_ir_micros,
+            routine_analysis_cfg_micros = metrics.routine_analysis_cfg_micros,
+            routine_analysis_dataflow_micros = metrics.routine_analysis_dataflow_micros,
+            routine_analysis_dead_store_micros = metrics.routine_analysis_dead_store_micros,
+            routine_analysis_perform_routine_count = metrics.routine_analysis_perform_routine_count,
+            routine_analysis_dataflow_pass_count = metrics.routine_analysis_dataflow_pass_count,
+            routine_analysis_dataflow_routine_runs = metrics
+                .routine_analysis_dataflow_routine_runs,
+            resolve_cross_unit_micros = metrics.resolve_cross_unit_micros,
+            validate_micros = metrics.validate_micros,
+            collect_project_diagnostics_micros = metrics.collect_project_diagnostics_micros,
+            "workspace analysis metrics after didOpen publish"
+        );
+    }
+    let diagnostics_start = Instant::now();
     push_document_update_diagnostics(
         state,
         workspace_uri.as_deref(),
@@ -1498,9 +1573,13 @@ fn handle_did_open_notifications(
         "open",
         &mut notifications,
     )?;
+    let diagnostics_elapsed = diagnostics_start.elapsed();
+    let manifest_start = Instant::now();
     if let Some(workspace_uri) = workspace_uri.as_deref() {
         push_workspace_manifest_diagnostics_notification(state, &workspace_uri, &mut notifications);
     }
+    let manifest_elapsed = manifest_start.elapsed();
+    let dependency_source_start = Instant::now();
     let opened_dependency_source = workspace_uri.as_deref().is_some_and(|workspace_uri| {
         state
             .workspaces
@@ -1509,10 +1588,12 @@ fn handle_did_open_notifications(
                 workspace_uri_is_dependency_source(workspace, snapshot.uri.as_ref())
             })
     });
+    let dependency_source_elapsed = dependency_source_start.elapsed();
     if opened_dependency_source {
         queue_open_dependency_request(state, snapshot.uri.as_ref());
     }
-    if let Some(request) = if opened_dependency_source {
+    let remote_request_start = Instant::now();
+    let remote_request = if opened_dependency_source {
         build_pending_open_dependency_request(state, workspace_uri.as_deref())
     } else if unchanged_workspace_open && snapshot.is_dependency {
         build_remote_dependency_request(state, snapshot.uri.as_ref())
@@ -1524,12 +1605,52 @@ fn handle_did_open_notifications(
             Some(snapshot.uri.as_ref()),
             "open",
         )
-    } {
-        notifications.push((
-            RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
-            serde_json::to_value(request)?,
-        ));
+    };
+    let remote_request_elapsed = remote_request_start.elapsed();
+    let remote_request_candidate_count = remote_request
+        .as_ref()
+        .map(|request| request.candidates.len())
+        .unwrap_or(0);
+    let remote_request_source_uri_count = remote_request
+        .as_ref()
+        .map(|request| request.source_uris.len())
+        .unwrap_or(0);
+    if let Some(request) = remote_request {
+        let request_value_start = Instant::now();
+        let request_value = serde_json::to_value(request)?;
+        let request_value_elapsed = request_value_start.elapsed();
+        debug!(
+            uri = %snapshot.uri,
+            candidate_count = remote_request_candidate_count,
+            source_uri_count = remote_request_source_uri_count,
+            to_value_elapsed = ?request_value_elapsed,
+            "built remote dependency request notification"
+        );
+        notifications.push((RESOLVE_REMOTE_DEPENDENCIES.to_owned(), request_value));
     }
+    debug!(
+        uri = %snapshot.uri,
+        initial_workspace_uri = initial_workspace_uri.as_deref().unwrap_or("<none>"),
+        workspace_uri = workspace_uri.as_deref().unwrap_or("<none>"),
+        text_bytes = params.text_document.text.len(),
+        line_count,
+        unchanged_workspace_open,
+        opened_dependency_source,
+        dirty_uri_count = dirty_uris.as_ref().map(HashSet::len).unwrap_or(0),
+        notification_count = notifications.len(),
+        remote_request_candidate_count,
+        remote_request_source_uri_count,
+        unchanged_elapsed = ?unchanged_elapsed,
+        publish_elapsed = ?publish_elapsed,
+        workspace_lookup_elapsed = ?workspace_lookup_elapsed,
+        dirty_elapsed = ?dirty_elapsed,
+        diagnostics_elapsed = ?diagnostics_elapsed,
+        manifest_elapsed = ?manifest_elapsed,
+        dependency_source_elapsed = ?dependency_source_elapsed,
+        remote_request_elapsed = ?remote_request_elapsed,
+        total_elapsed = ?total_start.elapsed(),
+        "handled textDocument/didOpen publish path"
+    );
     Ok(notifications)
 }
 
