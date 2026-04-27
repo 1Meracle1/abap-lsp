@@ -1672,6 +1672,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::UseBeforeDefiniteAssignment => "use_before_definite_assignment",
         DiagnosticKind::PossiblyUnboundFieldSymbol => "possibly_unbound_field_symbol",
         DiagnosticKind::DeadStore => "dead_store",
+        DiagnosticKind::UnsortedReadTableBinarySearch => "unsorted_read_table_binary_search",
     }
 }
 

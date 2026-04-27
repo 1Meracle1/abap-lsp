@@ -323,6 +323,7 @@ pub enum DiagnosticKind {
     UseBeforeDefiniteAssignment,
     PossiblyUnboundFieldSymbol,
     DeadStore,
+    UnsortedReadTableBinarySearch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -782,6 +783,22 @@ pub struct RoutineSiteData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InternalTableOrderData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub table_name: Arc<str>,
+    pub key_fields: Vec<Arc<str>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadTableBinarySearchData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub table_name: Arc<str>,
+    pub key_fields: Vec<Arc<str>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindWriteTargetData {
     pub range: TextRange,
     pub definitely_assigned: bool,
@@ -977,6 +994,8 @@ pub struct UnitAnalysis {
     pub find_sites: Vec<FindSiteData>,
     pub system_field_updates: Vec<SystemFieldUpdateData>,
     pub routine_sites: Vec<RoutineSiteData>,
+    pub internal_table_orders: Vec<InternalTableOrderData>,
+    pub read_table_binary_searches: Vec<ReadTableBinarySearchData>,
     pub field_symbol_state_checks: Vec<FieldSymbolStateCheckData>,
     pub value_state_checks: Vec<ValueStateCheckData>,
     pub routine_control_regions: Vec<RoutineControlRegionData>,

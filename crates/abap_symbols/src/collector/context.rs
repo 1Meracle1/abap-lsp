@@ -770,6 +770,26 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
             .collect()
     }
 
+    pub(super) fn sql_targets_for_query(&self, query_id: usize) -> Vec<SqlTargetData> {
+        self.collector
+            .sql_targets
+            .iter()
+            .filter(|target| target.query_id == query_id)
+            .cloned()
+            .collect()
+    }
+
+    pub(super) fn record_internal_table_order(
+        &mut self,
+        scope: ScopeId,
+        range: abap_lexer::TextRange,
+        table_name: std::sync::Arc<str>,
+        key_fields: Vec<std::sync::Arc<str>>,
+    ) {
+        self.collector
+            .record_internal_table_order(scope, range, table_name, key_fields);
+    }
+
     pub(super) fn structure_field(
         &self,
         structure_id: StructureId,

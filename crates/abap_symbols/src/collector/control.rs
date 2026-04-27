@@ -1279,6 +1279,19 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             .map(|source| self.sort_operand_expr_node(source))
             .unwrap_or(node);
         let itab_base = source.and_then(|_| self.collector.sql_target_name_from_expr(source_expr));
+        let order_table_name = source
+            .and_then(|_| self.collector.value_access_from_node(source_expr, scope))
+            .map(|access| self.collector.table_order_name_from_access(&access));
+        let order_key_fields = self.sort_order_key_fields(node);
+
+        if let (Some(table_name), Some(key_fields)) = (order_table_name, order_key_fields) {
+            self.collector.record_internal_table_order(
+                scope,
+                self.collector.file.range(node),
+                table_name,
+                key_fields,
+            );
+        }
 
         if let Some(source) = source {
             self.collector.walk_node(source, scope);
@@ -1313,6 +1326,66 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         } else {
             node
         }
+    }
+
+    fn sort_order_key_fields(&self, node: NodeId) -> Option<Vec<Arc<str>>> {
+        let tokens: Vec<_> = self
+            .collector
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.collector.syntax_token_is_comment(token))
+            .collect();
+        let by_idx = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("by"))?;
+        let mut fields = Vec::new();
+        let mut idx = by_idx + 1;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." || token.text.as_ref() == "," {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("ascending")
+                || token.text.eq_ignore_ascii_case("text")
+            {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("descending")
+                || token.text.eq_ignore_ascii_case("as")
+            {
+                return None;
+            }
+            let Some((field, next_idx)) = self.sort_order_field_from_tokens(&tokens, idx) else {
+                return None;
+            };
+            fields.push(field);
+            idx = next_idx;
+        }
+        (!fields.is_empty()).then_some(fields)
+    }
+
+    fn sort_order_field_from_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+    ) -> Option<(Arc<str>, usize)> {
+        let token = tokens.get(start)?;
+        if token.kind != abap_lexer::TokenKind::Ident {
+            return None;
+        }
+        let mut field = token.text.to_ascii_lowercase();
+        let mut idx = start + 1;
+        while idx + 1 < tokens.len()
+            && tokens[idx].text.as_ref() == "-"
+            && tokens[idx + 1].kind == abap_lexer::TokenKind::Ident
+        {
+            field.push('-');
+            field.push_str(&tokens[idx + 1].text.to_ascii_lowercase());
+            idx += 2;
+        }
+        Some((Arc::from(field), idx))
     }
 
     fn sort_by_field_segments_from_expr(&self, inner: NodeId) -> Option<Vec<FieldAccessSegment>> {

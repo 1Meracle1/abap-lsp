@@ -5,9 +5,10 @@ use crate::builtins::{
     BUILTIN_STRUCTURES, BUILTIN_SYMBOLS, BuiltinTypeKind, builtin_structure_field_type,
 };
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, FieldSymbolStateCheckData, FieldTypeRefData, ReferenceData,
-    ReferenceKind, RoutineControlRegionData, RoutineSiteData, StructureData, StructureFieldData,
-    SymbolData, SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, ValueStateCheckData,
+    Diagnostic, DiagnosticKind, FieldSymbolStateCheckData, FieldTypeRefData,
+    InternalTableOrderData, ReadTableBinarySearchData, ReferenceData, ReferenceKind,
+    RoutineControlRegionData, RoutineSiteData, StructureData, StructureFieldData, SymbolData,
+    SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, ValueStateCheckData,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -18,6 +19,52 @@ use super::{
 use abap_lexer::TextRange;
 
 impl<'a> Collector<'a> {
+    pub(super) fn record_internal_table_order(
+        &mut self,
+        scope: ScopeId,
+        range: TextRange,
+        table_name: Arc<str>,
+        key_fields: Vec<Arc<str>>,
+    ) {
+        if key_fields.is_empty() {
+            return;
+        }
+        self.internal_table_orders.push(InternalTableOrderData {
+            scope,
+            range,
+            table_name,
+            key_fields,
+        });
+    }
+
+    pub(super) fn record_read_table_binary_search(
+        &mut self,
+        scope: ScopeId,
+        range: TextRange,
+        table_name: Arc<str>,
+        key_fields: Vec<Arc<str>>,
+    ) {
+        self.read_table_binary_searches
+            .push(ReadTableBinarySearchData {
+                scope,
+                range,
+                table_name,
+                key_fields,
+            });
+    }
+
+    pub(super) fn table_order_name_from_access(&self, access: &crate::FieldAccess) -> Arc<str> {
+        if access.field_path.is_empty() {
+            return Arc::clone(&access.base_name);
+        }
+        let mut name = access.base_name.to_string();
+        for segment in &access.field_path {
+            name.push('-');
+            name.push_str(segment.name.as_ref());
+        }
+        Arc::from(name)
+    }
+
     pub(super) fn push_scope(
         &mut self,
         kind: ScopeKind,

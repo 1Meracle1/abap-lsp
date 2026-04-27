@@ -24,10 +24,11 @@ pub use metrics::ProjectRoutineAnalysisMetrics;
 use crate::builtin_routine_spec;
 use crate::def_map::{
     AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
-    FormParameterSection, FunctionModuleParameterSection, IfRegionData, LoopRegionData,
-    MethodParameterSection, NamedArgumentSection, PerformParameterSection, Resolution,
-    RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind,
-    TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
+    FormParameterSection, FunctionModuleParameterSection, IfRegionData, InternalTableOrderData,
+    LoopRegionData, MethodParameterSection, NamedArgumentSection, PerformParameterSection,
+    ReadTableBinarySearchData, Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData,
+    SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis, ValueFlowKind,
+    ValueFlowTargetData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
@@ -547,6 +548,35 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         diagnostics.dedup();
     }
     out.metrics.dataflow_micros = dataflow_timer.elapsed().as_micros();
+
+    for (routine_id, diagnostic) in
+        build_read_table_binary_search_order_diagnostics(project, &out.scope_to_routine)
+    {
+        let Some(routine) = out.routines.get_mut(routine_id.as_usize()) else {
+            continue;
+        };
+        let unit_idx = routine.descriptor.unit.as_usize();
+        routine.diagnostics.push(diagnostic.clone());
+        routine.diagnostics.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+                .then(left.message.cmp(&right.message))
+        });
+        routine.diagnostics.dedup();
+        out.unit_diagnostics[unit_idx].push(diagnostic);
+    }
+    for diagnostics in &mut out.unit_diagnostics {
+        diagnostics.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+                .then(left.message.cmp(&right.message))
+        });
+        diagnostics.dedup();
+    }
 
     out.metrics.routine_count = out.routines.len();
     out.metrics.instruction_count = out
@@ -4169,6 +4199,96 @@ fn scope_descends_from(unit: &UnitAnalysis, scope: ScopeId, ancestor: ScopeId) -
 
 fn sql_target_effective_range(target: &crate::SqlTargetData) -> &TextRange {
     target.target_range.as_ref().unwrap_or(&target.range)
+}
+
+fn build_read_table_binary_search_order_diagnostics(
+    project: &ProjectAnalysis,
+    scope_to_routine: &[Vec<Option<RoutineId>>],
+) -> Vec<(RoutineId, Diagnostic)> {
+    let mut out = Vec::new();
+    for unit in &project.units {
+        let Some(scope_map) = scope_to_routine.get(unit.unit_id.as_usize()) else {
+            continue;
+        };
+        for read in &unit.read_table_binary_searches {
+            let Some(routine_id) = scope_map.get(read.scope.as_usize()).copied().flatten() else {
+                continue;
+            };
+            if read_table_binary_search_has_prior_order(unit, scope_map, routine_id, read) {
+                continue;
+            }
+            out.push((
+                routine_id,
+                Diagnostic {
+                    kind: DiagnosticKind::UnsortedReadTableBinarySearch,
+                    range: read.range.clone(),
+                    message: format!(
+                        "READ TABLE with BINARY SEARCH on '{}' has no prior SORT or SELECT ORDER BY on {}",
+                        read.table_name,
+                        read_table_binary_search_key_label(&read.key_fields)
+                    ),
+                },
+            ));
+        }
+    }
+    out
+}
+
+fn read_table_binary_search_has_prior_order(
+    unit: &UnitAnalysis,
+    scope_map: &[Option<RoutineId>],
+    routine_id: RoutineId,
+    read: &ReadTableBinarySearchData,
+) -> bool {
+    if read.key_fields.is_empty() {
+        return false;
+    }
+    unit.internal_table_orders
+        .iter()
+        .any(|order| internal_table_order_is_prior_match(unit, scope_map, routine_id, read, order))
+}
+
+fn internal_table_order_is_prior_match(
+    unit: &UnitAnalysis,
+    scope_map: &[Option<RoutineId>],
+    routine_id: RoutineId,
+    read: &ReadTableBinarySearchData,
+    order: &InternalTableOrderData,
+) -> bool {
+    order.range.end <= read.range.start
+        && order
+            .table_name
+            .as_ref()
+            .eq_ignore_ascii_case(&read.table_name)
+        && scope_map
+            .get(order.scope.as_usize())
+            .copied()
+            .flatten()
+            .is_some_and(|order_routine| order_routine == routine_id)
+        && scope_descends_from(unit, read.scope, order.scope)
+        && table_order_fields_match_read_key(&order.key_fields, &read.key_fields)
+}
+
+fn table_order_fields_match_read_key(order_fields: &[Arc<str>], key_fields: &[Arc<str>]) -> bool {
+    order_fields.len() >= key_fields.len()
+        && order_fields
+            .iter()
+            .zip(key_fields)
+            .all(|(ordered, key)| ordered.as_ref().eq_ignore_ascii_case(key.as_ref()))
+}
+
+fn read_table_binary_search_key_label(key_fields: &[Arc<str>]) -> String {
+    if key_fields.is_empty() {
+        return "the READ TABLE key fields".to_string();
+    }
+    format!(
+        "key field(s) {}",
+        key_fields
+            .iter()
+            .map(|field| field.as_ref())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn conditional_assignment_target_for_range(

@@ -3744,7 +3744,8 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::UseBeforeDefiniteAssignment
         | DiagnosticKind::PossiblyUnboundFieldSymbol
         | DiagnosticKind::UnreachableCode
-        | DiagnosticKind::DeadStore => DiagnosticSeverity::WARNING,
+        | DiagnosticKind::DeadStore
+        | DiagnosticKind::UnsortedReadTableBinarySearch => DiagnosticSeverity::WARNING,
         DiagnosticKind::IncompatibleAssignmentType
         | DiagnosticKind::MissingMethodImplementation => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,

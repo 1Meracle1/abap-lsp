@@ -8,6 +8,7 @@ use abap_ast::ast::{
     EventsStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt,
     SplitStmt, SubmitStmt, WaitStmt, WriteStmt,
 };
+use abap_lexer::TextRange;
 
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
@@ -440,6 +441,60 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn read_table_binary_search_range_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<TextRange> {
+        tokens.windows(2).find_map(|window| {
+            if Self::tokens_match_keyword_sequence(window, &["binary", "search"]) {
+                Some(window[0].range.start..window[1].range.end)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn read_table_key_fields_from_infos(&self, tokens: &[SyntaxTokenInfo]) -> Vec<Arc<str>> {
+        let Some(with_idx) = tokens.windows(2).position(|window| {
+            Self::tokens_match_keyword_sequence(window, &["with", "key"])
+                || Self::tokens_match_keyword_sequence(window, &["table", "key"])
+        }) else {
+            return Vec::new();
+        };
+
+        let mut fields = Vec::new();
+        let mut idx = with_idx + 2;
+        while idx < tokens.len() {
+            if self.read_table_clause_starts_infos(tokens, idx) || tokens[idx].text.as_ref() == "."
+            {
+                break;
+            }
+            let Some((segments, eq_idx)) =
+                self.read_table_key_field_segments_from_infos(tokens, idx)
+            else {
+                idx += 1;
+                continue;
+            };
+            if tokens.get(eq_idx).map(|token| token.text.as_ref()) != Some("=") {
+                idx += 1;
+                continue;
+            }
+            fields.push(Self::read_table_key_name_from_segments(&segments));
+            idx = self.scan_read_table_key_value_end_infos(tokens, eq_idx + 1);
+        }
+        fields
+    }
+
+    fn read_table_key_name_from_segments(segments: &[FieldAccessSegment]) -> Arc<str> {
+        Arc::from(
+            segments
+                .iter()
+                .map(|segment| segment.name.as_ref())
+                .collect::<Vec<_>>()
+                .join("-"),
+        )
+    }
+
     fn significant_infos_from_children(&self, children: &[NodeId]) -> Vec<SyntaxTokenInfo> {
         let mut tokens = Vec::new();
         for &child in children {
@@ -544,6 +599,18 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             });
             if let Some(source_access) = self.collector.value_access_from_node(source_expr, scope) {
                 let significant = self.significant_infos_from_children(entry_children);
+                if let Some(binary_search_range) =
+                    self.read_table_binary_search_range_infos(&significant)
+                {
+                    let key_fields = self.read_table_key_fields_from_infos(&significant);
+                    let table_name = self.collector.table_order_name_from_access(&source_access);
+                    self.collector.record_read_table_binary_search(
+                        scope,
+                        binary_search_range,
+                        table_name,
+                        key_fields,
+                    );
+                }
                 self.collect_read_table_with_key_field_accesses(
                     &significant,
                     scope,

@@ -630,6 +630,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let mut group_by_clause = None;
         let mut having_clause = None;
         let mut order_by_clause = None;
+        let mut order_by_clause_node = None;
         let mut for_all_entries_clause = None;
         let mut for_update_clause = None;
         let mut up_to_clause = None;
@@ -687,6 +688,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::SelectOrderByClause => {
                     order_by_clause = Some(child_range);
+                    order_by_clause_node = Some(child_id);
                     self.collect_sql_host_and_name_refs_in_node(query_id, child_id, scope, false);
                 }
                 SyntaxKind::SelectForAllEntriesClause => {
@@ -739,6 +741,24 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         }
 
         let query_range = self.ctx.file().range(node);
+        if let Some(order_by_node) = order_by_clause_node
+            && let Some(key_fields) = self.select_order_by_key_fields(order_by_node)
+        {
+            for target in self.ctx.sql_targets_for_query(query_id) {
+                if target.kind == SqlTargetKind::Into
+                    && target.is_table
+                    && let Some(table_name) = target.target_name
+                {
+                    self.ctx.record_internal_table_order(
+                        scope,
+                        query_range.clone(),
+                        table_name,
+                        key_fields.clone(),
+                    );
+                }
+            }
+        }
+
         self.ctx.emit_sql_query(SqlQueryData {
             id: query_id,
             scope,
@@ -765,6 +785,65 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             has_endselect,
             has_dynamic_where,
         });
+    }
+
+    fn select_order_by_key_fields(&self, node: NodeId) -> Option<Vec<Arc<str>>> {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        let by_idx = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("by"))?;
+        let mut fields = Vec::new();
+        let mut idx = by_idx + 1;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            if token.text.as_ref() == "." || token.text.as_ref() == "," {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("ascending") {
+                idx += 1;
+                continue;
+            }
+            if token.text.eq_ignore_ascii_case("descending")
+                || token.text.eq_ignore_ascii_case("primary")
+                || token.text.eq_ignore_ascii_case("key")
+            {
+                return None;
+            }
+            let Some((field, next_idx)) = self.select_order_field_from_tokens(&tokens, idx) else {
+                return None;
+            };
+            fields.push(field);
+            idx = next_idx;
+        }
+        (!fields.is_empty()).then_some(fields)
+    }
+
+    fn select_order_field_from_tokens(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+    ) -> Option<(Arc<str>, usize)> {
+        let token = tokens.get(start)?;
+        if token.kind != abap_lexer::TokenKind::Ident {
+            return None;
+        }
+        if tokens
+            .get(start + 1)
+            .is_some_and(|next| next.text.as_ref() == "~")
+        {
+            let field = tokens.get(start + 2)?;
+            if field.kind != abap_lexer::TokenKind::Ident {
+                return None;
+            }
+            return Some((Self::lower_arc(field.text.as_ref()), start + 3));
+        }
+        Some((Self::lower_arc(token.text.as_ref()), start + 1))
     }
 
     fn collect_select_projection_list(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
