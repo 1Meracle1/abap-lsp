@@ -272,6 +272,14 @@ impl DependencyStore {
             .find_artifact_for_candidate(profile, candidate_name, candidate_kind)
     }
 
+    pub fn list_artifacts_by_kind(
+        &self,
+        profile: &DependencyProfile,
+        object_kind: &str,
+    ) -> Result<Vec<StoredArtifactRecord>, DependencyStoreError> {
+        self.reader()?.list_artifacts_by_kind(profile, object_kind)
+    }
+
     pub fn record_negative_lookup(
         &self,
         profile: &DependencyProfile,
@@ -649,6 +657,63 @@ WHERE product_version = ?
         });
         Ok(candidates.into_iter().next())
     }
+
+    pub fn list_artifacts_by_kind(
+        &self,
+        profile: &DependencyProfile,
+        object_kind: &str,
+    ) -> Result<Vec<StoredArtifactRecord>, DependencyStoreError> {
+        let normalized_kind = normalize_name(object_kind);
+        if normalized_kind.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let package_versions = profile.package_version_set();
+        let mut sql = String::from(
+            r#"
+SELECT
+    id,
+    package_name,
+    package_version,
+    object_kind,
+    object_name,
+    object_uri,
+    object_type,
+    description,
+    file_extension,
+    source_text
+FROM dependency_artifacts
+WHERE product_version = ?
+  AND object_kind = ?
+  AND package_version IN ("#,
+        );
+        append_placeholders(&mut sql, package_versions.len());
+        sql.push_str(") ORDER BY package_name ASC, object_name ASC");
+
+        let mut params = Vec::with_capacity(2 + package_versions.len());
+        params.push(Value::from(profile.normalized_product_version()));
+        params.push(Value::from(normalized_kind));
+        params.extend(package_versions.into_iter().map(Value::from));
+
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(params), |row| {
+            Ok(StoredArtifactRecord {
+                artifact_id: row.get(0)?,
+                package_name: row.get(1)?,
+                package_version: row.get(2)?,
+                object_kind: row.get(3)?,
+                object_name: row.get(4)?,
+                object_uri: row.get(5)?,
+                object_type: row.get(6)?,
+                description: row.get(7)?,
+                file_extension: row.get(8)?,
+                source_text: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DependencyStoreError::from)
+    }
 }
 
 pub fn resolve_dependency_store_path(override_path: Option<&Path>) -> Option<PathBuf> {
@@ -846,6 +911,7 @@ fn candidate_artifact_kinds(candidate_kind: &str) -> Vec<String> {
             "global-interface".to_string(),
             "report".to_string(),
             "ddic-data-element".to_string(),
+            "ddic-domain".to_string(),
             "ddic-structure".to_string(),
             "ddic-table".to_string(),
             "ddic-table-type".to_string(),
@@ -993,6 +1059,40 @@ mod tests {
         assert_eq!(stored.object_name, "cl_abap_typedescr");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn lists_artifacts_by_kind_in_profile_scope() {
+        let path = temp_store_path("lists_artifacts_by_kind_in_profile_scope");
+        let store = DependencyStore::from_override_path(Some(&path)).expect("store");
+        let profile = sample_profile();
+        let mut data_element = sample_artifact();
+        data_element.object_kind = "ddic-data-element".to_string();
+        data_element.object_name = "ZDEMO".to_string();
+        data_element.object_uri = "/sap/bc/adt/ddic/dataelements/ZDEMO".to_string();
+        data_element.object_type = "DTEL/DE".to_string();
+        data_element.source_text = "TYPES zdemo TYPE c LENGTH 10.".to_string();
+        data_element.symbols = Vec::new();
+        store
+            .put_artifacts(&profile, &[sample_artifact(), data_element])
+            .expect("put");
+
+        let records = store
+            .list_artifacts_by_kind(&profile, "ddic-data-element")
+            .expect("list");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].object_name, "zdemo");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn type_candidates_include_ddic_domains() {
+        assert!(
+            super::candidate_artifact_kinds("type")
+                .iter()
+                .any(|kind| kind == "ddic-domain")
+        );
     }
 
     #[test]

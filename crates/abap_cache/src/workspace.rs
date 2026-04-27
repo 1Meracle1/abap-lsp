@@ -2620,6 +2620,9 @@ pub fn ddic_xml_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) ->
     if kind == "ddic-data-element" {
         return Some(data_element_to_abap_source(object_name, xml));
     }
+    if kind == "ddic-domain" {
+        return Some(domain_to_abap_source(object_name, xml));
+    }
     if kind == "ddic-table-type" {
         return Some(table_type_to_abap_source(object_name, xml));
     }
@@ -2627,12 +2630,12 @@ pub fn ddic_xml_to_abap_source(object_name: &str, kind_hint: &str, xml: &str) ->
 }
 
 fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
-    let referenced = first_tag_text(xml, &["DATATYPE", "dataType"])
+    let referenced = ddic_primitive_type_clause(xml)
         .map(|value| {
             ddic_builtin_type_clause(
-                &value,
-                first_tag_text(xml, &["LENG", "OUTPUTLEN", "dataTypeLength"]).as_deref(),
-                first_tag_text(xml, &["DECIMALS", "dataTypeDecimals"]).as_deref(),
+                value.kind.as_str(),
+                value.length.as_deref(),
+                value.decimals.as_deref(),
             )
         })
         .or_else(|| {
@@ -2660,6 +2663,39 @@ fn data_element_to_abap_source(object_name: &str, xml: &str) -> String {
             first_tag_text(
                 xml,
                 &["shortFieldLabel", "mediumFieldLabel", "longFieldLabel"],
+            )
+        })
+        .or_else(|| first_attr_text(xml, b"description"));
+    append_inline_comment(&mut out, short_text.as_deref());
+    out.push('\n');
+    out
+}
+
+fn domain_to_abap_source(object_name: &str, xml: &str) -> String {
+    let referenced = ddic_primitive_type_clause(xml)
+        .map(|value| {
+            ddic_builtin_type_clause(
+                value.kind.as_str(),
+                value.length.as_deref(),
+                value.decimals.as_deref(),
+            )
+        })
+        .unwrap_or_else(|| "string".to_string());
+    let mut out = format!(
+        "TYPES {name} TYPE {ty}.",
+        name = object_name.to_ascii_lowercase(),
+        ty = referenced
+    );
+    let short_text = ddic_short_text(xml)
+        .or_else(|| {
+            first_tag_text(
+                xml,
+                &[
+                    "shortText",
+                    "shortFieldLabel",
+                    "mediumFieldLabel",
+                    "longFieldLabel",
+                ],
             )
         })
         .or_else(|| first_attr_text(xml, b"description"));
@@ -3125,6 +3161,44 @@ fn append_inline_comment(out: &mut String, text: Option<&str>) {
     out.push_str(text);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DdicPrimitiveType {
+    kind: String,
+    length: Option<String>,
+    decimals: Option<String>,
+}
+
+fn ddic_primitive_type_clause(xml: &str) -> Option<DdicPrimitiveType> {
+    let kind = first_tag_text(
+        xml,
+        &["DATATYPE", "dataType", "DD01V-DATATYPE", "DD04V-DATATYPE"],
+    )?;
+    Some(DdicPrimitiveType {
+        kind,
+        length: first_tag_text(
+            xml,
+            &[
+                "LENG",
+                "OUTPUTLEN",
+                "dataTypeLength",
+                "DD01V-LENG",
+                "DD04V-LENG",
+                "DD01V-OUTPUTLEN",
+                "DD04V-OUTPUTLEN",
+            ],
+        ),
+        decimals: first_tag_text(
+            xml,
+            &[
+                "DECIMALS",
+                "dataTypeDecimals",
+                "DD01V-DECIMALS",
+                "DD04V-DECIMALS",
+            ],
+        ),
+    })
+}
+
 fn first_tag_text(xml: &str, tags: &[&str]) -> Option<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -3396,6 +3470,28 @@ mode = "full-workspace"
             source
                 .to_ascii_lowercase()
                 .contains("types /sttp/e_action_file type n length 10")
+        );
+    }
+
+    #[test]
+    fn converts_ddic_domain_xml_to_primitive_alias() {
+        let xml = r#"
+<blue:wbobj adtcore:description="GS1 GLN"
+    xmlns:blue="http://www.sap.com/wbobj/dictionary/doma"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <doma:domain xmlns:doma="http://www.sap.com/adt/dictionary/domains">
+    <doma:dataType>CHAR</doma:dataType>
+    <doma:dataTypeLength>000018</doma:dataTypeLength>
+    <doma:dataTypeDecimals>000000</doma:dataTypeDecimals>
+  </doma:domain>
+</blue:wbobj>
+"#;
+        let source =
+            ddic_xml_to_abap_source("/STTP/D_GS1_GLN", "ddic-domain", xml).expect("source");
+        assert!(
+            source
+                .to_ascii_lowercase()
+                .contains("types /sttp/d_gs1_gln type c length 18")
         );
     }
 

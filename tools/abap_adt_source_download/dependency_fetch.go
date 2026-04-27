@@ -50,9 +50,6 @@ func resolveDependencyObjects(ctx *SapContext, candidate RemoteDependencyCandida
 	if err != nil {
 		return nil, false, err
 	}
-	if hasOnlyUnsupportedExactDomainMatches(candidate.Name, objects) {
-		return nil, true, nil
-	}
 
 	selected := selectDependencyObjects(candidate.Name, objects, candidate.Kind)
 	if len(selected) == 0 {
@@ -74,7 +71,7 @@ func fetchDependencyObject(ctx *SapContext, objectRef AdtObjectRef) (AdtDependen
 		}, nil
 	}
 
-	if isDdicDependencyObject(objectRef) {
+	if isFetchableDdicDependencyObject(objectRef) {
 		body, err := fetchDdicDependency(ctx, objectRef)
 		if err != nil {
 			return AdtDependencyFetchResult{}, err
@@ -240,7 +237,7 @@ func isSupportedDependencyObject(objectRef AdtObjectRef, kindHint string) bool {
 			strings.HasPrefix(loweredType, "CLAS/") ||
 			strings.HasPrefix(loweredType, "INTF/")
 	case "type":
-		return isDdicDependencyObject(objectRef) ||
+		return isFetchableDdicDependencyObject(objectRef) ||
 			strings.Contains(loweredURI, "/oo/classes/") ||
 			strings.Contains(loweredURI, "/oo/interfaces/") ||
 			strings.HasPrefix(loweredType, "CLAS/") ||
@@ -253,38 +250,19 @@ func isSupportedDependencyObject(objectRef AdtObjectRef, kindHint string) bool {
 		strings.Contains(loweredURI, "/oo/interfaces/") ||
 		strings.Contains(loweredURI, "/functions/groups/") ||
 		isMessageClassDependencyObject(objectRef) ||
-		isDdicDependencyObject(objectRef) ||
+		isFetchableDdicDependencyObject(objectRef) ||
 		loweredType == "PROG/I" ||
 		loweredType == "PROG/P" ||
 		strings.HasPrefix(loweredType, "CLAS/") ||
 		strings.HasPrefix(loweredType, "INTF/")
 }
 
-func isUnsupportedDomainDependencyObject(objectRef AdtObjectRef) bool {
+func isDdicDomainObject(objectRef AdtObjectRef) bool {
 	return strings.HasPrefix(strings.ToUpper(objectRef.Type), "DOMA/")
 }
 
-func hasOnlyUnsupportedExactDomainMatches(query string, objects []AdtObjectRef) bool {
-	normalizedQuery := normalizeRemoteDependencyName(query)
-	if normalizedQuery == "" {
-		return false
-	}
-
-	var exactMatches []AdtObjectRef
-	for _, objectRef := range objects {
-		if normalizeRemoteDependencyName(objectRef.Name) == normalizedQuery {
-			exactMatches = append(exactMatches, objectRef)
-		}
-	}
-	if len(exactMatches) == 0 {
-		return false
-	}
-	for _, objectRef := range exactMatches {
-		if !isUnsupportedDomainDependencyObject(objectRef) {
-			return false
-		}
-	}
-	return true
+func isFetchableDdicDependencyObject(objectRef AdtObjectRef) bool {
+	return isDdicDependencyObject(objectRef) && !isDdicDomainObject(objectRef)
 }
 
 func selectDependencyObjects(query string, objects []AdtObjectRef, kindHint string) []AdtObjectRef {
@@ -301,7 +279,7 @@ func selectDependencyObjects(query string, objects []AdtObjectRef, kindHint stri
 		}
 	}
 	if len(supportedExact) > 0 {
-		return dedupeAndSortDependencyObjects(supportedExact)
+		return dropShadowedDdicDomainObjects(dedupeAndSortDependencyObjects(supportedExact))
 	}
 
 	var supportedByHint []AdtObjectRef
@@ -346,6 +324,27 @@ func dedupeAndSortDependencyObjects(objects []AdtObjectRef) []AdtObjectRef {
 		}
 		return strings.ToLower(out[i].URI) < strings.ToLower(out[j].URI)
 	})
+	return out
+}
+
+func dropShadowedDdicDomainObjects(objects []AdtObjectRef) []AdtObjectRef {
+	hasConcreteDdicObject := false
+	for _, objectRef := range objects {
+		if isDdicDependencyObject(objectRef) && !isDdicDomainObject(objectRef) {
+			hasConcreteDdicObject = true
+			break
+		}
+	}
+	if !hasConcreteDdicObject {
+		return objects
+	}
+
+	out := make([]AdtObjectRef, 0, len(objects))
+	for _, objectRef := range objects {
+		if !isDdicDomainObject(objectRef) {
+			out = append(out, objectRef)
+		}
+	}
 	return out
 }
 
@@ -427,7 +426,13 @@ func pickPreferredDependencyObject(objects []AdtObjectRef, kindHint string) *Adt
 		}
 	case "type":
 		for _, objectRef := range objects {
-			if isDdicDependencyObject(objectRef) {
+			if isDdicDependencyObject(objectRef) && !isDdicDomainObject(objectRef) {
+				ref := objectRef
+				return &ref
+			}
+		}
+		for _, objectRef := range objects {
+			if isDdicDomainObject(objectRef) {
 				ref := objectRef
 				return &ref
 			}
@@ -454,7 +459,7 @@ func isDdicDependencyObject(objectRef AdtObjectRef) bool {
 	case "DTEL/DE", "TABL/DS", "TABL/DT", "TABL/DA", "TTYP/DA", "VIEW/DV":
 		return true
 	default:
-		return false
+		return isDdicDomainObject(objectRef)
 	}
 }
 
@@ -485,16 +490,19 @@ func inferManifestKind(objectRef AdtObjectRef) string {
 }
 
 func inferDdicManifestKind(objectRef AdtObjectRef) string {
-	switch strings.ToUpper(objectRef.Type) {
-	case "DTEL/DE":
+	upperType := strings.ToUpper(objectRef.Type)
+	switch {
+	case upperType == "DTEL/DE":
 		return "ddic-data-element"
-	case "TABL/DS":
+	case isDdicDomainObject(objectRef):
+		return "ddic-domain"
+	case upperType == "TABL/DS":
 		return "ddic-structure"
-	case "TABL/DT":
+	case upperType == "TABL/DT":
 		return "ddic-table"
-	case "TABL/DA", "TTYP/DA":
+	case upperType == "TABL/DA" || upperType == "TTYP/DA":
 		return "ddic-table-type"
-	case "VIEW/DV":
+	case upperType == "VIEW/DV":
 		return "ddic-view"
 	default:
 		return "ddic-structure"

@@ -6,14 +6,12 @@ import {
 	buildMessageClassObjectRef,
 	extractActiveTopLevelIncludeNames,
 	formatDdicXml,
-	hasOnlyUnsupportedExactDomainMatches,
 	inferFunctionGroupUri,
 	inferLocalExportObjectRef,
 	inferDdicManifestKind,
 	isDdicDependencyObject,
 	isMessageClassDependencyObject,
 	isSupportedDependencyObject,
-	isUnsupportedDomainDependencyObject,
 	parseLocalDdicExportObjectRef,
 	parseDotenvContents,
 	pickBestDependencyObject,
@@ -37,6 +35,20 @@ suite("ADT dependency helpers", () => {
 		assert.strictEqual(isDdicDependencyObject(objectRef), true);
 		assert.strictEqual(isSupportedDependencyObject(objectRef, "type"), true);
 		assert.strictEqual(inferDdicManifestKind(objectRef), "ddic-data-element");
+	});
+
+	test("Recognizes DDIC domain dependency objects", () => {
+		const objectRef: AdtObjectRef = {
+			uri: "/sap/bc/adt/ddic/domains/boolean",
+			type: "DOMA/DD",
+			name: "BOOLEAN",
+			packageName: "SABAPDEMOS",
+			description: "Boolean domain",
+		};
+
+		assert.strictEqual(isDdicDependencyObject(objectRef), true);
+		assert.strictEqual(isSupportedDependencyObject(objectRef, "type"), false);
+		assert.strictEqual(inferDdicManifestKind(objectRef), "ddic-domain");
 	});
 
 	test("Builds DDIC dependency paths with xml extension", () => {
@@ -69,6 +81,23 @@ suite("ADT dependency helpers", () => {
 			objectRef?.uri,
 			"/sap/bc/adt/vit/wb/object_type/tabldt/object_name/ZATTP_RS_LEG_CTR",
 		);
+	});
+
+	test("Infers local domain exports from ADT domain XML", () => {
+		const objectRef = parseLocalDdicExportObjectRef(
+			[
+				'<?xml version="1.0" encoding="utf-8"?>',
+				'<blue:wbobj adtcore:description="Boolean domain" xmlns:blue="http://www.sap.com/wbobj/dictionary/doma" xmlns:adtcore="http://www.sap.com/adt/core">',
+				'<doma:domain xmlns:doma="http://www.sap.com/adt/dictionary/domains" />',
+				"</blue:wbobj>",
+			].join(""),
+			"boolean",
+		);
+
+		assert.ok(objectRef);
+		assert.strictEqual(objectRef?.type, "DOMA/DD");
+		assert.strictEqual(objectRef?.name, "BOOLEAN");
+		assert.strictEqual(objectRef?.uri, "/sap/bc/adt/ddic/domains/BOOLEAN");
 	});
 
 	test("Infers global classes from local ABAP exports", () => {
@@ -182,11 +211,11 @@ suite("ADT dependency helpers", () => {
 		);
 	});
 
-	test("Prefers a fetchable data element over unsupported exact matches", () => {
+	test("Prefers a data element over a domain exact match", () => {
 		const objects: AdtObjectRef[] = [
 			{
 				uri: "/sap/bc/adt/ddic/domains/boolean",
-				type: "DOMA/DT",
+				type: "DOMA/DD",
 				name: "BOOLEAN",
 				packageName: "SABAPDEMOS",
 				description: "Boolean domain",
@@ -201,10 +230,12 @@ suite("ADT dependency helpers", () => {
 		];
 
 		const selected = pickBestDependencyObject("BOOLEAN", objects, "type");
+		const exactMatches = selectDependencyObjects("BOOLEAN", objects, "type");
 
 		assert.ok(selected);
 		assert.strictEqual(selected?.type, "DTEL/DE");
 		assert.strictEqual(selected?.name, "BOOLEAN");
+		assert.deepStrictEqual(exactMatches.map((objectRef) => objectRef.type), ["DTEL/DE"]);
 	});
 
 	test("Treats interfaces and exception classes as supported type dependencies", () => {
@@ -374,13 +405,13 @@ suite("ADT dependency helpers", () => {
 		assert.ok(!composite.includes("DATA gv_counter TYPE i."));
 	});
 
-	test("Returns no dependency object when ADT search only finds unsupported exact matches", () => {
+	test("Returns no dependency object when ADT search only finds exact domain matches", () => {
 		const selected = pickBestDependencyObject(
 			"BOOLEAN",
 			[
 				{
 					uri: "/sap/bc/adt/ddic/domains/boolean",
-					type: "DOMA/DT",
+					type: "DOMA/DD",
 					name: "BOOLEAN",
 					packageName: "SABAPDEMOS",
 					description: "Boolean domain",
@@ -390,32 +421,6 @@ suite("ADT dependency helpers", () => {
 		);
 
 		assert.strictEqual(selected, undefined);
-	});
-
-	test("Recognizes domain-only exact matches as permanently unsupported", () => {
-		const domainRef: AdtObjectRef = {
-			uri: "/sap/bc/adt/ddic/domains/boolean",
-			type: "DOMA/DT",
-			name: "BOOLEAN",
-			packageName: "SABAPDEMOS",
-			description: "Boolean domain",
-		};
-
-		assert.strictEqual(isUnsupportedDomainDependencyObject(domainRef), true);
-		assert.strictEqual(hasOnlyUnsupportedExactDomainMatches("BOOLEAN", [domainRef]), true);
-		assert.strictEqual(
-			hasOnlyUnsupportedExactDomainMatches("BOOLEAN", [
-				domainRef,
-				{
-					uri: "/sap/bc/adt/ddic/dataelements/boolean",
-					type: "DTEL/DE",
-					name: "BOOLEAN",
-					packageName: "SABAPDEMOS",
-					description: "Boolean data element",
-				},
-			]),
-			false,
-		);
 	});
 
 	test("Formats DDIC XML bodies before saving", () => {

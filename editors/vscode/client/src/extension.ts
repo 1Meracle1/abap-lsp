@@ -31,7 +31,6 @@ import {
 	isFunctionModuleObject,
 	isMessageClassDependencyObject,
 	getSapConnectionConfig,
-	hasOnlyUnsupportedExactDomainMatches,
 	parseLocalDdicExportObjectRef,
 	selectDependencyObjects,
 } from "./adt";
@@ -1580,18 +1579,6 @@ async function resolveRemoteDependencyCandidate(
 			}
 
 			const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
-			if (hasOnlyUnsupportedExactDomainMatches(candidate.name, objects)) {
-				await recordNegativeRemoteDependencyCandidate(
-					workspaceFolder,
-					batchContext,
-					candidate,
-					"exact-match-domain-only",
-				);
-				const localResult = dependencySourceMode === "adt-first"
-					? await persistLocalDependency()
-					: undefined;
-				return localResult ?? { candidate, failed: true };
-			}
 			const objectRefs = selectDependencyObjects(candidate.name, objects, candidate.kind);
 			if (objectRefs.length === 0) {
 				await recordNegativeRemoteDependencyCandidate(

@@ -319,7 +319,7 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 				loweredType.startsWith("CLAS/") ||
 				loweredType.startsWith("INTF/");
 		case "type":
-			return isDdicDependencyObject(objectRef) ||
+			return isFetchableDdicDependencyObject(objectRef) ||
 				loweredUri.includes("/oo/classes/") ||
 				loweredUri.includes("/oo/interfaces/") ||
 				loweredType.startsWith("CLAS/") ||
@@ -332,31 +332,11 @@ export function isSupportedDependencyObject(objectRef: AdtObjectRef, kindHint?: 
 		loweredUri.includes("/oo/interfaces/") ||
 		loweredUri.includes("/functions/groups/") ||
 		isMessageClassDependencyObject(objectRef) ||
-		isDdicDependencyObject(objectRef) ||
+		isFetchableDdicDependencyObject(objectRef) ||
 		loweredType === "PROG/I" ||
 		loweredType === "PROG/P" ||
 		loweredType.startsWith("CLAS/") ||
 		loweredType.startsWith("INTF/");
-}
-
-export function isUnsupportedDomainDependencyObject(objectRef: AdtObjectRef): boolean {
-	return objectRef.type.toUpperCase().startsWith("DOMA/");
-}
-
-export function hasOnlyUnsupportedExactDomainMatches(
-	query: string,
-	objects: AdtObjectRef[],
-): boolean {
-	const normalizedQuery = query.trim().toLowerCase();
-	if (!normalizedQuery) {
-		return false;
-	}
-
-	const exactMatches = objects.filter(
-		(objectRef) => objectRef.name.trim().toLowerCase() === normalizedQuery,
-	);
-	return exactMatches.length > 0 &&
-		exactMatches.every((objectRef) => isUnsupportedDomainDependencyObject(objectRef));
 }
 
 export function selectDependencyObjects(
@@ -376,7 +356,7 @@ export function selectDependencyObjects(
 		),
 	);
 	if (supportedExact.length > 0) {
-		return supportedExact;
+		return dropShadowedDdicDomainObjects(supportedExact);
 	}
 
 	const supportedByHint = objects.filter((objectRef) => isSupportedDependencyObject(objectRef, kindHint));
@@ -432,7 +412,8 @@ function pickPreferredDependencyObject(
 			return objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("CLAS/")) ??
 				objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("INTF/"));
 		case "type":
-			return objects.find((objectRef) => isDdicDependencyObject(objectRef)) ??
+			return objects.find((objectRef) => isDdicDependencyObject(objectRef) && !isDdicDomainObject(objectRef)) ??
+				objects.find((objectRef) => isDdicDomainObject(objectRef)) ??
 				objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("CLAS/")) ??
 				objects.find((objectRef) => objectRef.type.toUpperCase().startsWith("INTF/"));
 		default:
@@ -451,6 +432,15 @@ function dedupeDependencyObjects(objects: AdtObjectRef[]): AdtObjectRef[] {
 	return [...deduped.values()].sort((left, right) =>
 		left.type.localeCompare(right.type) || left.uri.localeCompare(right.uri),
 	);
+}
+
+function dropShadowedDdicDomainObjects(objects: AdtObjectRef[]): AdtObjectRef[] {
+	const hasConcreteDdicObject = objects.some((objectRef) =>
+		isDdicDependencyObject(objectRef) && !isDdicDomainObject(objectRef),
+	);
+	return hasConcreteDdicObject
+		? objects.filter((objectRef) => !isDdicDomainObject(objectRef))
+		: objects;
 }
 
 export async function configureSapConnection(
@@ -590,8 +580,11 @@ export class AdtClient {
 				manifestKind: "message-class",
 			};
 		}
-		if (isDdicDependencyObject(objectRef)) {
+		if (isFetchableDdicDependencyObject(objectRef)) {
 			const ddicKind = inferDdicManifestKind(objectRef);
+			if (ddicKind === "ddic-domain") {
+				throw new Error(`DDIC domain ${objectRef.name} is not fetchable through ADT`);
+			}
 			const body = await this.fetchDdicObject(ddicKind, objectRef.name);
 			return {
 				body,
@@ -861,11 +854,20 @@ export class AdtClient {
 export function isDdicDependencyObject(objectRef: AdtObjectRef): boolean {
 	const type = objectRef.type.toUpperCase();
 	return type === "DTEL/DE" ||
+		isDdicDomainObject(objectRef) ||
 		type === "TABL/DS" ||
 		type === "TABL/DT" ||
 		type === "TABL/DA" ||
 		type === "TTYP/DA" ||
 		type === "VIEW/DV";
+}
+
+function isDdicDomainObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase().startsWith("DOMA/");
+}
+
+function isFetchableDdicDependencyObject(objectRef: AdtObjectRef): boolean {
+	return isDdicDependencyObject(objectRef) && !isDdicDomainObject(objectRef);
 }
 
 export function isMessageClassDependencyObject(objectRef: AdtObjectRef): boolean {
@@ -1041,8 +1043,12 @@ ${trimTrailingWhitespace(normalizeAbapSource(functionModuleSource))}
 
 export function inferDdicManifestKind(
 	objectRef: AdtObjectRef,
-): "ddic-data-element" | "ddic-structure" | "ddic-table" | "ddic-table-type" | "ddic-view" {
-	switch (objectRef.type.toUpperCase()) {
+): "ddic-data-element" | "ddic-domain" | "ddic-structure" | "ddic-table" | "ddic-table-type" | "ddic-view" {
+	const type = objectRef.type.toUpperCase();
+	if (type.startsWith("DOMA/")) {
+		return "ddic-domain";
+	}
+	switch (type) {
 		case "DTEL/DE":
 			return "ddic-data-element";
 		case "TABL/DS":
@@ -1252,7 +1258,7 @@ export function parseLocalDdicExportObjectRef(xml: string, fallbackName: string)
 
 	const rootMatch = trimmed.match(/<abapsource:elementInfo\b([^>]*)>/i);
 	if (!rootMatch) {
-		return undefined;
+		return parseLocalDdicWbObjectRef(trimmed, fallbackName);
 	}
 
 	const attributes = rootMatch[1] ?? "";
@@ -1277,6 +1283,38 @@ export function parseLocalDdicExportObjectRef(xml: string, fallbackName: string)
 		description: "",
 	};
 	return isDdicDependencyObject(objectRef) ? objectRef : undefined;
+}
+
+function parseLocalDdicWbObjectRef(xml: string, fallbackName: string): AdtObjectRef | undefined {
+	const normalizedFallbackName = fallbackName.trim().toUpperCase();
+	if (!normalizedFallbackName) {
+		return undefined;
+	}
+
+	let objectType: string;
+	let uriPath: string;
+	let description = "";
+	if (/<(?:[a-z0-9_]+:)?dataElement\b/i.test(xml)) {
+		objectType = "DTEL/DE";
+		uriPath = "dataelements";
+	} else if (/<(?:[a-z0-9_]+:)?domain\b/i.test(xml)) {
+		objectType = "DOMA/DD";
+		uriPath = "domains";
+	} else {
+		return undefined;
+	}
+
+	const rootMatch = xml.match(/<[^!?][^\s>]*\b([^>]*)>/);
+	if (rootMatch) {
+		description = decodeXmlEntity(readAttribute(rootMatch[1] ?? "", "adtcore:description")).trim();
+	}
+	return {
+		uri: `/sap/bc/adt/ddic/${uriPath}/${encodeURIComponent(normalizedFallbackName)}`,
+		type: objectType,
+		name: normalizedFallbackName,
+		packageName: "",
+		description,
+	};
 }
 
 export function inferLocalExportObjectRef(

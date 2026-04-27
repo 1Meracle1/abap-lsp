@@ -52,3 +52,48 @@ func TestSelectDependencyObjectsPrefersReportsForReportCandidates(t *testing.T) 
 		t.Fatalf("expected at least one report object in %#v", selected)
 	}
 }
+
+func TestDomainsAreRecognizedButNotRemoteFetchable(t *testing.T) {
+	domain := AdtObjectRef{
+		URI:         "/sap/bc/adt/ddic/domains/boolean",
+		Type:        "DOMA/DD",
+		Name:        "BOOLEAN",
+		PackageName: "SABAPDEMOS",
+		Description: "Boolean domain",
+	}
+
+	if !isDdicDependencyObject(domain) {
+		t.Fatalf("expected domain to be DDIC dependency")
+	}
+	if inferDdicManifestKind(domain) != "ddic-domain" {
+		t.Fatalf("expected ddic-domain kind, got %q", inferDdicManifestKind(domain))
+	}
+	selected := selectDependencyObjects("boolean", []AdtObjectRef{domain}, "type")
+	if len(selected) != 0 {
+		t.Fatalf("expected remote domain selection to be unsupported, got %#v", selected)
+	}
+}
+
+func TestDataElementExactMatchShadowsDomainExactMatch(t *testing.T) {
+	objects := []AdtObjectRef{
+		{
+			URI:         "/sap/bc/adt/ddic/domains/boolean",
+			Type:        "DOMA/DD",
+			Name:        "BOOLEAN",
+			PackageName: "SABAPDEMOS",
+			Description: "Boolean domain",
+		},
+		{
+			URI:         "/sap/bc/adt/ddic/dataelements/boolean",
+			Type:        "DTEL/DE",
+			Name:        "BOOLEAN",
+			PackageName: "SABAPDEMOS",
+			Description: "Boolean data element",
+		},
+	}
+
+	selected := selectDependencyObjects("boolean", objects, "type")
+	if len(selected) != 1 || selected[0].Type != "DTEL/DE" {
+		t.Fatalf("expected data element to shadow exact domain, got %#v", selected)
+	}
+}

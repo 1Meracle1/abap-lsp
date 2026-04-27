@@ -1,12 +1,14 @@
 package main
 
+const dataElementAccept = "application/vnd.sap.adt.dataelements.v1+xml, application/vnd.sap.adt.dataelements.v2+xml"
+
 func fetchDictDataElement(ctx *SapContext, encodedName string) (src string, err error) {
-	return fetchDictionary(ctx, "/ddic/dataelements/", encodedName)
+	return fetchDictionary(ctx, "/ddic/dataelements/", encodedName, dataElementAccept)
 }
 
-func fetchDictionary(ctx *SapContext, pathType string, encodedName string) (src string, err error) {
+func fetchDictionary(ctx *SapContext, pathType string, encodedName string, accept string) (src string, err error) {
 	headers := map[string]string{
-		"Accept":              "application/vnd.sap.adt.dataelements.v1+xml, application/vnd.sap.adt.dataelements.v2+xml",
+		"Accept":              accept,
 		"X-sap-adt-profiling": "server-time",
 		"Cache-Control":       "no-cache",
 		"x-csrf-token":        ctx.csrfToken,
