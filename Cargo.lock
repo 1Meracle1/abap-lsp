@@ -24,6 +24,7 @@ dependencies = [
  "abap_ast",
  "abap_dependency_store",
  "abap_lexer",
+ "abap_lints",
  "abap_parser",
  "abap_symbols",
  "parking_lot",
@@ -71,6 +72,13 @@ name = "abap_lexer"
 version = "0.1.0"
 dependencies = [
  "unicode-general-category",
+]
+
+[[package]]
+name = "abap_lints"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use abap_dependency_store::DependencyProfile;
+use abap_lints::LintConfig;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde::Deserialize;
@@ -37,6 +38,8 @@ pub struct WorkspaceManifest {
     pub resolution: ManifestResolution,
     #[serde(default)]
     pub performance: ManifestPerformance,
+    #[serde(default)]
+    pub lints: Option<LintConfig>,
     #[serde(default, rename = "unit")]
     pub units: Vec<ManifestUnit>,
 }
@@ -3418,6 +3421,11 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
+    use abap_lints::{
+        ABAP_LSP_DEAD_STORE, ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
+        LINT_PROFILE_STRICT, LintLevel, LintPolicy,
+    };
+
     use super::{
         DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalDependencySourceMode, LocalExportResolver,
         WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
@@ -3434,12 +3442,49 @@ mod tests {
     fn parses_manifest_defaults() {
         let manifest: WorkspaceManifest = toml::from_str("version = 1\n").expect("manifest");
         assert_eq!(manifest.dependency_store, None);
+        assert_eq!(manifest.lints, None);
         assert_eq!(
             manifest.resolution.remote_requests_per_second,
             DEFAULT_REMOTE_REQUESTS_PER_SECOND
         );
         assert_eq!(manifest.resolution.remote_request_parallelism(), None);
         assert_eq!(manifest.performance.mode, WORKSPACE_PERFORMANCE_MODE_AUTO);
+    }
+
+    #[test]
+    fn parses_manifest_lints_config() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[lints]
+profile = "strict"
+report_suppressed = true
+
+[lints.groups]
+correctness = "deny"
+style = "allow"
+
+[lints.rules]
+"abap-lsp.dead-store" = "info"
+"#,
+        )
+        .expect("manifest");
+
+        let lints = manifest.lints.expect("lint config");
+        assert_eq!(lints.profile, LINT_PROFILE_STRICT);
+        assert!(lints.report_suppressed);
+        assert_eq!(lints.groups.get("correctness"), Some(&LintLevel::Deny));
+        assert_eq!(lints.groups.get("style"), Some(&LintLevel::Allow));
+        assert_eq!(lints.rules.get(ABAP_LSP_DEAD_STORE), Some(&LintLevel::Info));
+
+        let policy = LintPolicy::from_config(&lints);
+        assert_eq!(policy.level_for(ABAP_LSP_UNREACHABLE_CODE), LintLevel::Deny);
+        assert_eq!(policy.level_for(ABAP_LSP_DEAD_STORE), LintLevel::Info);
+        assert_eq!(
+            policy.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
+            LintLevel::Deny
+        );
     }
 
     #[test]
