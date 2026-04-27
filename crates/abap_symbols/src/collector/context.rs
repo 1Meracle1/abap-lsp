@@ -737,6 +737,10 @@ impl<'ctx, 'a> SqlContext<'ctx, 'a> {
         self.collector.emit_sql_name_ref(name_ref);
     }
 
+    pub(super) fn add_diagnostic(&mut self, diagnostic: crate::def_map::Diagnostic) {
+        self.collector.diagnostics.push(diagnostic);
+    }
+
     pub(super) fn add_system_field_update(
         &mut self,
         scope: ScopeId,

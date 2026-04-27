@@ -3693,6 +3693,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         | DiagnosticKind::ShadowedSymbol
                         | DiagnosticKind::MismatchedStructuredDeclaration
                         | DiagnosticKind::UnresolvedInclude
+                        | DiagnosticKind::InvalidOpenSqlSyntax
                 )
             })
             .cloned()

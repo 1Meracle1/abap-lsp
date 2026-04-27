@@ -3679,6 +3679,97 @@ SELECT ztb~missing
 }
 
 #[test]
+fn reports_unknown_open_sql_field_for_unqualified_projection() {
+    let ddic_src = r#"
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE c LENGTH 10,
+       END OF /sttp/loc.
+"#;
+    let main_src = r#"
+SELECT locno, gln
+  FROM /sttp/loc
+  INTO TABLE @DATA(lt_loc).
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_sttp_loc.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_sttp_loc.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_sttp_loc.abap")
+        .expect("main unit");
+
+    assert!(
+        main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("gln")
+        }),
+        "expected UnknownField for SQL column, got {:?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_strict_open_sql_projection_without_commas() {
+    let src = r#"
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE c LENGTH 10,
+         gln TYPE c LENGTH 13,
+       END OF /sttp/loc.
+
+SELECT locno gln
+  FROM /sttp/loc
+  INTO TABLE @DATA(lt_loc)
+  WHERE locno = 'PL'.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_strict_projection.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlSyntax
+                && diag.message.contains("commas between projection fields")
+        }),
+        "expected InvalidOpenSqlSyntax for missing projection comma, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_open_sql_inline_target_without_host_escape() {
+    let src = r#"
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE c LENGTH 10,
+         gln TYPE c LENGTH 13,
+       END OF /sttp/loc.
+
+SELECT locno gln
+  FROM /sttp/loc
+  INTO TABLE DATA(lt_loc)
+  WHERE locno = 'PL'.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///opensql_inline_target_escape.abap", src, &parsed);
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlSyntax
+                && diag.message.contains("escaped with '@'")
+        }),
+        "expected InvalidOpenSqlSyntax for DATA target without @, got {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn select_from_dynamic_dbtab_resolves_operand_without_sql_source_diag() {
     let src = r#"
 DATA lv_idx_tbl TYPE string.

@@ -10,10 +10,10 @@ use abap_ast::ast::{
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    ReferenceKind, SqlDynamicFragmentData, SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind,
-    SqlPredicateData, SqlPredicateKind, SqlProjectionData, SqlProjectionKind, SqlQueryData,
-    SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData, SqlTargetKind,
-    SystemFieldStatementKind,
+    Diagnostic, DiagnosticKind, ReferenceKind, SqlDynamicFragmentData, SqlDynamicFragmentKind,
+    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
+    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
+    SqlTargetKind, SystemFieldStatementKind,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -645,6 +645,8 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let mut has_set_operators = false;
         let mut has_dynamic_where = false;
 
+        self.validate_select_syntax(node);
+
         for (child_id, child_kind, child_range) in children {
             match child_kind {
                 SyntaxKind::Token => {
@@ -785,6 +787,133 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             has_endselect,
             has_dynamic_where,
         });
+    }
+
+    fn validate_select_syntax(&mut self, query_node: NodeId) {
+        self.validate_unescaped_inline_select_targets(query_node);
+        if self.select_query_uses_strict_open_sql(query_node) {
+            self.validate_strict_projection_commas(query_node);
+        }
+    }
+
+    fn select_query_uses_strict_open_sql(&self, query_node: NodeId) -> bool {
+        self.ctx
+            .syntax_token_nodes(query_node)
+            .iter()
+            .any(|token| token.text.as_ref() == "@")
+    }
+
+    fn validate_unescaped_inline_select_targets(&mut self, query_node: NodeId) {
+        let into_clauses = self.descendants_by_kind(query_node, SyntaxKind::SelectIntoClause);
+        for into_clause in into_clauses {
+            let clause_tokens = self.ctx.syntax_token_nodes(into_clause);
+            let inline_targets = self.descendants_matching(into_clause, |node| {
+                matches!(
+                    self.ctx.file().kind(node),
+                    SyntaxKind::DataInlineDecl | SyntaxKind::FieldSymbolInlineDecl
+                )
+            });
+            for inline_target in inline_targets {
+                let range = self.ctx.file().range(inline_target);
+                let escaped = clause_tokens
+                    .iter()
+                    .rev()
+                    .find(|token| {
+                        token.range.end <= range.start && !self.ctx.syntax_token_is_comment(token)
+                    })
+                    .is_some_and(|token| token.text.as_ref() == "@");
+                if escaped {
+                    continue;
+                }
+                self.ctx.add_diagnostic(Diagnostic {
+                    kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                    range,
+                    message: "Open SQL inline target declarations must be escaped with '@'"
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    fn descendants_by_kind(&self, node: NodeId, kind: SyntaxKind) -> Vec<NodeId> {
+        self.descendants_matching(node, |child| self.ctx.file().kind(child) == kind)
+    }
+
+    fn descendants_matching<F>(&self, node: NodeId, mut predicate: F) -> Vec<NodeId>
+    where
+        F: FnMut(NodeId) -> bool,
+    {
+        let mut out = Vec::new();
+        let mut stack: Vec<_> = self.ctx.file().children(node).rev().collect();
+        while let Some(child) = stack.pop() {
+            if predicate(child) {
+                out.push(child);
+            }
+            for grandchild in self.ctx.file().children(child).rev() {
+                stack.push(grandchild);
+            }
+        }
+        out
+    }
+
+    fn validate_strict_projection_commas(&mut self, query_node: NodeId) {
+        let projection_items = self.descendants_by_kind(query_node, SyntaxKind::SqlProjectionItem);
+        for item in projection_items {
+            if let Some((range, name)) = self.strict_projection_missing_comma(item) {
+                self.ctx.add_diagnostic(Diagnostic {
+                    kind: DiagnosticKind::InvalidOpenSqlSyntax,
+                    range,
+                    message: format!(
+                        "Open SQL strict mode requires commas between projection fields; insert ',' before '{}'",
+                        name
+                    ),
+                });
+            }
+        }
+    }
+
+    fn strict_projection_missing_comma(&self, item: NodeId) -> Option<(TextRange, Arc<str>)> {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(item)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        let mut columns = Vec::<(TextRange, Arc<str>)>::new();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            let text = token.text.as_ref();
+            if self.sql_token_is_keyword_text(text) || self.ctx.syntax_token_is_literal_like(token)
+            {
+                return None;
+            }
+            if !self.ctx.syntax_token_is_ident_like(token) {
+                return None;
+            }
+            if tokens.get(idx + 1).map(|next| next.text.as_ref()) == Some("~") {
+                let field = tokens.get(idx + 2)?;
+                if field.text.as_ref() == "*" {
+                    return None;
+                }
+                if !self.ctx.syntax_token_is_ident_like(field)
+                    || self.sql_token_is_keyword_text(field.text.as_ref())
+                    || self.ctx.syntax_token_is_literal_like(field)
+                {
+                    return None;
+                }
+                columns.push((
+                    token.range.start..field.range.end,
+                    Self::lower_arc(field.text.as_ref()),
+                ));
+                idx += 3;
+                continue;
+            }
+
+            columns.push((token.range.clone(), Self::lower_arc(text)));
+            idx += 1;
+        }
+        (columns.len() > 1).then(|| columns[1].clone())
     }
 
     fn select_order_by_key_fields(&self, node: NodeId) -> Option<Vec<Arc<str>>> {

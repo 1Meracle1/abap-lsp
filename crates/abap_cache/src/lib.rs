@@ -383,6 +383,21 @@ struct SelectorCompletionQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenSqlFieldCompletionQuery {
+    scope: ScopeId,
+    source_name: Arc<str>,
+    replace_range: Range<usize>,
+    prefix: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenSqlSourceCompletionQuery {
+    scope: ScopeId,
+    replace_range: Range<usize>,
+    prefix: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SelectorCursorContext {
     range: Range<usize>,
     in_type_position: bool,
@@ -990,6 +1005,9 @@ impl AnalysisSnapshot {
                     .collect(),
                 in_type_position: completion.in_type_position,
             });
+        }
+        if let Some(completion) = self.open_sql_source_completion_at(offset) {
+            return Some(completion);
         }
         if let Some(completion) = self.callable_statement_completion_at(offset) {
             return Some(completion);
@@ -2238,7 +2256,9 @@ impl AnalysisSnapshot {
 
     pub fn selector_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
         let Some(query) = self.selector_completion_query_at(offset) else {
-            return self.bare_where_field_completion_at(offset);
+            return self
+                .bare_where_field_completion_at(offset)
+                .or_else(|| self.open_sql_field_completion_at(offset));
         };
         if query.component_path.is_empty()
             && let Some((unit, class_symbol_id, requires_static)) =
@@ -2289,14 +2309,16 @@ impl AnalysisSnapshot {
                 in_type_position: query.in_type_position,
             });
         }
-        let (unit, symbol_id) = resolve_symbol_from_context(
+        let Some((unit, symbol_id)) = resolve_symbol_from_context(
             self,
             query.scope,
             query.base_namespace,
             &query.base_name,
             query.in_type_position,
-        )?;
-        let (structure_unit, structure_id) =
+        ) else {
+            return self.open_sql_field_completion_at(offset);
+        };
+        let Some((structure_unit, structure_id)) =
             resolve_selector_component_path_structure_with_scope_index(
                 self,
                 self.scope_index(),
@@ -2307,7 +2329,10 @@ impl AnalysisSnapshot {
                 unit,
                 symbol_id,
                 &query.component_path,
-            )?;
+            )
+        else {
+            return self.open_sql_field_completion_at(offset);
+        };
 
         let mut items: Vec<_> = structure_unit
             .semantic()
@@ -2402,6 +2427,107 @@ impl AnalysisSnapshot {
             replace_range: query.replace_range,
             items,
             in_type_position: false,
+        })
+    }
+
+    fn open_sql_field_completion_at(&self, offset: usize) -> Option<SelectorCompletionInfo> {
+        let query = self.open_sql_field_query_at(offset)?;
+        let (structure_unit, structure_id) =
+            self.sql_source_structure_for_name(query.scope, &query.source_name)?;
+        let mut items: Vec<_> = structure_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
+            .into_iter()
+            .filter(|field| field.name.as_ref().starts_with(query.prefix.as_ref()))
+            .map(|field| SelectorCompletionItem {
+                name: Arc::clone(&field.name),
+                declared_type: field.type_ref.as_ref().map(format_field_type_ref),
+                declaration: None,
+                kind: match field.shape {
+                    StructureFieldShape::Scalar => HoveredComponentKind::Scalar,
+                    StructureFieldShape::Structured { structure } => {
+                        HoveredComponentKind::Structured {
+                            structure_name: Arc::clone(&structure_unit.structure(structure).name),
+                        }
+                    }
+                },
+                field_owner_structure_name: Some(Arc::clone(
+                    &structure_unit.structure(field.owner).name,
+                )),
+                insertion: identifier_completion_insertion(field.name.as_ref()),
+            })
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| left.name.cmp(&right.name));
+        Some(SelectorCompletionInfo {
+            replace_range: query.replace_range,
+            items,
+            in_type_position: false,
+        })
+    }
+
+    fn open_sql_source_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let query = self.open_sql_source_completion_query_at(offset)?;
+        let mut items = Vec::new();
+        let mut seen = HashSet::<Arc<str>>::new();
+
+        let mut current = Some(query.scope);
+        while let Some(scope_id) = current {
+            if let Some(scope_map) = self.scope_index().get(scope_id.as_usize()) {
+                for ((namespace, name), symbols) in scope_map {
+                    if *namespace != Namespace::Type
+                        || !name.as_ref().starts_with(query.prefix.as_ref())
+                        || !seen.insert(Arc::clone(name))
+                    {
+                        continue;
+                    }
+                    let Some(symbol_id) = symbols.iter().rev().copied().find(|symbol_id| {
+                        self.symbols.symbol(*symbol_id).structure.is_some()
+                            && self
+                                .symbols
+                                .symbol(*symbol_id)
+                                .kind
+                                .occupies(Namespace::Type)
+                    }) else {
+                        continue;
+                    };
+                    items.push(CompletionItem::Symbol(symbol_completion_item(
+                        self,
+                        self.symbols.as_ref(),
+                        self.symbols.symbol(symbol_id),
+                    )));
+                }
+            }
+            current = self.symbols.scope(scope_id).parent;
+        }
+
+        for unit in &self.project.units {
+            for symbol in &unit.symbols {
+                if symbol.scope != unit.root_scope
+                    || symbol.structure.is_none()
+                    || !symbol.kind.occupies(Namespace::Type)
+                    || !symbol.name.as_ref().starts_with(query.prefix.as_ref())
+                    || !seen.insert(Arc::clone(&symbol.name))
+                {
+                    continue;
+                }
+                items.push(CompletionItem::Symbol(symbol_completion_item(
+                    self, unit, symbol,
+                )));
+            }
+        }
+
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
+        Some(CompletionInfo {
+            replace_range: query.replace_range,
+            items,
+            in_type_position: true,
         })
     }
 
@@ -2884,6 +3010,37 @@ impl AnalysisSnapshot {
             replace_range: parsed.replace_range,
             prefix: parsed.prefix,
         })
+    }
+
+    fn open_sql_field_query_at(&self, offset: usize) -> Option<OpenSqlFieldCompletionQuery> {
+        let statement_range = statement_query_range(&self.parse, offset)?;
+        let (token_start, token_end) = token_window_for_range(&self.parse, &statement_range)?;
+        let mut query = parse_open_sql_field_completion_query(
+            self.text.as_ref(),
+            &self.parse,
+            token_start,
+            token_end,
+            offset,
+        )?;
+        query.scope = innermost_scope_at(&self.symbols, statement_range.start);
+        Some(query)
+    }
+
+    fn open_sql_source_completion_query_at(
+        &self,
+        offset: usize,
+    ) -> Option<OpenSqlSourceCompletionQuery> {
+        let statement_range = statement_query_range(&self.parse, offset)?;
+        let (token_start, token_end) = token_window_for_range(&self.parse, &statement_range)?;
+        let mut query = parse_open_sql_source_completion_query(
+            self.text.as_ref(),
+            &self.parse,
+            token_start,
+            token_end,
+            offset,
+        )?;
+        query.scope = innermost_scope_at(&self.symbols, statement_range.start);
+        Some(query)
     }
 
     fn callable_completion_units(&self) -> Vec<&UnitAnalysis> {
@@ -9476,6 +9633,364 @@ fn parse_selector_completion_query(
             });
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedOpenSqlSource {
+    name: Arc<str>,
+    alias: Option<Arc<str>>,
+}
+
+fn open_sql_token_is_keyword(text: &str, parse: &ParseResult, idx: usize, keyword: &str) -> bool {
+    parse.tokens[idx].kind.as_str() == "Ident"
+        && parse.tokens[idx].lexeme(text).eq_ignore_ascii_case(keyword)
+}
+
+fn open_sql_clause_keyword(text: &str, parse: &ParseResult, idx: usize) -> bool {
+    if parse.tokens[idx].kind.as_str() != "Ident" {
+        return false;
+    }
+    matches!(
+        parse.tokens[idx].lexeme(text).to_ascii_lowercase().as_str(),
+        "fields"
+            | "where"
+            | "into"
+            | "appending"
+            | "group"
+            | "having"
+            | "order"
+            | "for"
+            | "up"
+            | "package"
+            | "offset"
+            | "bypassing"
+            | "connection"
+            | "client"
+            | "union"
+            | "intersect"
+            | "except"
+    )
+}
+
+fn open_sql_join_starts(text: &str, parse: &ParseResult, idx: usize) -> bool {
+    open_sql_token_is_keyword(text, parse, idx, "join")
+}
+
+fn open_sql_source_end(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+    start_sig: usize,
+) -> usize {
+    significant
+        .iter()
+        .enumerate()
+        .skip(start_sig)
+        .find_map(|(pos, &idx)| {
+            (open_sql_clause_keyword(text, parse, idx)
+                || open_sql_join_starts(text, parse, idx)
+                || open_sql_token_is_keyword(text, parse, idx, "on"))
+            .then_some(pos)
+        })
+        .unwrap_or(significant.len())
+}
+
+fn parse_open_sql_sources(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+) -> Vec<ParsedOpenSqlSource> {
+    let mut sources = Vec::new();
+    let mut sig = 0usize;
+    while sig < significant.len() {
+        let idx = significant[sig];
+        let source_start_sig = if open_sql_token_is_keyword(text, parse, idx, "from")
+            || open_sql_token_is_keyword(text, parse, idx, "join")
+        {
+            Some(sig + 1)
+        } else {
+            None
+        };
+        let Some(source_start_sig) = source_start_sig else {
+            sig += 1;
+            continue;
+        };
+        let Some(&source_idx) = significant.get(source_start_sig) else {
+            break;
+        };
+        if parse.tokens[source_idx].kind.as_str() != "Ident" {
+            sig = source_start_sig + 1;
+            continue;
+        }
+        let source_end_sig = open_sql_source_end(text, parse, significant, source_start_sig + 1);
+        let mut alias = None;
+        if source_start_sig + 2 < source_end_sig {
+            let maybe_as_idx = significant[source_start_sig + 1];
+            let maybe_alias_idx = significant[source_start_sig + 2];
+            if open_sql_token_is_keyword(text, parse, maybe_as_idx, "as")
+                && parse.tokens[maybe_alias_idx].kind.as_str() == "Ident"
+            {
+                alias = Some(Arc::<str>::from(
+                    parse.tokens[maybe_alias_idx]
+                        .lexeme(text)
+                        .to_ascii_lowercase(),
+                ));
+            }
+        } else if source_start_sig + 1 < source_end_sig {
+            let maybe_alias_idx = significant[source_start_sig + 1];
+            if parse.tokens[maybe_alias_idx].kind.as_str() == "Ident"
+                && !open_sql_clause_keyword(text, parse, maybe_alias_idx)
+            {
+                alias = Some(Arc::<str>::from(
+                    parse.tokens[maybe_alias_idx]
+                        .lexeme(text)
+                        .to_ascii_lowercase(),
+                ));
+            }
+        }
+        sources.push(ParsedOpenSqlSource {
+            name: Arc::<str>::from(parse.tokens[source_idx].lexeme(text).to_ascii_lowercase()),
+            alias,
+        });
+        sig = source_end_sig.max(source_start_sig + 1);
+    }
+    sources
+}
+
+fn open_sql_significant_tokens(
+    parse: &ParseResult,
+    token_start: usize,
+    token_end: usize,
+) -> Vec<usize> {
+    (token_start..token_end)
+        .filter(|&idx| !matches!(parse.tokens[idx].kind.as_str(), "Comment" | "Eof"))
+        .collect()
+}
+
+fn open_sql_first_select_sig(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+) -> Option<usize> {
+    significant
+        .iter()
+        .position(|&idx| open_sql_token_is_keyword(text, parse, idx, "select"))
+}
+
+fn open_sql_sig_at_or_after_offset(
+    parse: &ParseResult,
+    significant: &[usize],
+    offset: usize,
+) -> usize {
+    significant
+        .iter()
+        .position(|&idx| parse.tokens[idx].range.start >= offset)
+        .unwrap_or(significant.len())
+}
+
+fn open_sql_prefix_at_offset(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+    offset: usize,
+) -> (Range<usize>, Arc<str>, usize) {
+    let prefix_sig = significant.iter().position(|&idx| {
+        let token = &parse.tokens[idx];
+        token.kind.as_str() == "Ident" && token.range.start <= offset && offset <= token.range.end
+    });
+    if let Some(prefix_sig) = prefix_sig {
+        let token = &parse.tokens[significant[prefix_sig]];
+        let prefix_end = offset.min(token.range.end);
+        return (
+            token.range.start..prefix_end,
+            Arc::<str>::from(text[token.range.start..prefix_end].to_ascii_lowercase()),
+            prefix_sig,
+        );
+    }
+    let insertion_sig = open_sql_sig_at_or_after_offset(parse, significant, offset);
+    (offset..offset, Arc::<str>::from(""), insertion_sig)
+}
+
+fn open_sql_field_source_name(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+    prefix_sig: usize,
+    sources: &[ParsedOpenSqlSource],
+) -> Option<Arc<str>> {
+    if prefix_sig >= 2 {
+        let prev_idx = significant[prefix_sig - 1];
+        let qualifier_idx = significant[prefix_sig - 2];
+        if parse.tokens[prev_idx].kind.as_str() == "Tilde"
+            && parse.tokens[qualifier_idx].kind.as_str() == "Ident"
+        {
+            let qualifier = parse.tokens[qualifier_idx]
+                .lexeme(text)
+                .to_ascii_lowercase();
+            return sources
+                .iter()
+                .find(|source| {
+                    source.name.as_ref() == qualifier
+                        || source
+                            .alias
+                            .as_ref()
+                            .is_some_and(|alias| alias.as_ref() == qualifier)
+                })
+                .map(|source| Arc::clone(&source.name));
+        }
+    }
+
+    (sources.len() == 1).then(|| Arc::clone(&sources[0].name))
+}
+
+fn open_sql_offset_in_source_position(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+    offset: usize,
+) -> bool {
+    let (_, _, sig_at_offset) = open_sql_prefix_at_offset(text, parse, significant, offset);
+    let prev_sig = sig_at_offset.checked_sub(1);
+    if let Some(prev_sig) = prev_sig {
+        let prev_idx = significant[prev_sig];
+        if open_sql_token_is_keyword(text, parse, prev_idx, "from")
+            || open_sql_token_is_keyword(text, parse, prev_idx, "join")
+        {
+            return true;
+        }
+    }
+    if sig_at_offset < significant.len() {
+        let token_idx = significant[sig_at_offset];
+        if parse.tokens[token_idx].kind.as_str() == "Ident"
+            && let Some(prev_sig) = sig_at_offset.checked_sub(1)
+        {
+            let prev_idx = significant[prev_sig];
+            return open_sql_token_is_keyword(text, parse, prev_idx, "from")
+                || open_sql_token_is_keyword(text, parse, prev_idx, "join");
+        }
+    }
+    false
+}
+
+fn open_sql_offset_in_field_position(
+    text: &str,
+    parse: &ParseResult,
+    significant: &[usize],
+    select_sig: usize,
+    offset: usize,
+) -> bool {
+    if open_sql_offset_in_source_position(text, parse, significant, offset) {
+        return false;
+    }
+    let before_or_at_offset = significant
+        .iter()
+        .enumerate()
+        .take_while(|(_, idx)| parse.tokens[**idx].range.start <= offset)
+        .map(|(sig, _)| sig)
+        .last()
+        .unwrap_or(select_sig);
+
+    let from_sig = significant
+        .iter()
+        .position(|&idx| open_sql_token_is_keyword(text, parse, idx, "from"));
+    if let Some(from_sig) = from_sig {
+        if select_sig < before_or_at_offset && before_or_at_offset < from_sig {
+            return true;
+        }
+    }
+
+    let mut active_clause = None;
+    for (sig, &idx) in significant.iter().enumerate().skip(select_sig + 1) {
+        if parse.tokens[idx].range.start > offset {
+            break;
+        }
+        if open_sql_token_is_keyword(text, parse, idx, "fields")
+            || open_sql_token_is_keyword(text, parse, idx, "where")
+            || open_sql_token_is_keyword(text, parse, idx, "having")
+            || open_sql_token_is_keyword(text, parse, idx, "on")
+            || open_sql_token_is_keyword(text, parse, idx, "order")
+            || open_sql_token_is_keyword(text, parse, idx, "group")
+        {
+            active_clause = Some(sig);
+            continue;
+        }
+        if open_sql_clause_keyword(text, parse, idx) || open_sql_join_starts(text, parse, idx) {
+            active_clause = None;
+        }
+    }
+
+    active_clause.is_some_and(|sig| {
+        let keyword = parse.tokens[significant[sig]].lexeme(text);
+        matches!(
+            keyword.to_ascii_lowercase().as_str(),
+            "fields" | "where" | "having" | "on" | "order" | "group"
+        ) && offset >= parse.tokens[significant[sig]].range.end
+    })
+}
+
+fn parse_open_sql_field_completion_query(
+    text: &str,
+    parse: &ParseResult,
+    token_start: usize,
+    token_end: usize,
+    offset: usize,
+) -> Option<OpenSqlFieldCompletionQuery> {
+    let significant = open_sql_significant_tokens(parse, token_start, token_end);
+    let select_sig = open_sql_first_select_sig(text, parse, &significant)?;
+    if !open_sql_offset_in_field_position(text, parse, &significant, select_sig, offset) {
+        return None;
+    }
+    let sources = parse_open_sql_sources(text, parse, &significant);
+    if sources.is_empty() {
+        return None;
+    }
+    let (replace_range, prefix, prefix_sig) =
+        open_sql_prefix_at_offset(text, parse, &significant, offset);
+    if prefix_sig > 0 {
+        let prev_idx = significant[prefix_sig - 1];
+        if matches!(
+            parse.tokens[prev_idx].kind.as_str(),
+            "At" | "Minus" | "Arrow" | "FatArrow"
+        ) {
+            return None;
+        }
+    }
+    let source_name = open_sql_field_source_name(text, parse, &significant, prefix_sig, &sources)?;
+    Some(OpenSqlFieldCompletionQuery {
+        scope: ScopeId(0),
+        source_name,
+        replace_range,
+        prefix,
+    })
+}
+
+fn parse_open_sql_source_completion_query(
+    text: &str,
+    parse: &ParseResult,
+    token_start: usize,
+    token_end: usize,
+    offset: usize,
+) -> Option<OpenSqlSourceCompletionQuery> {
+    let significant = open_sql_significant_tokens(parse, token_start, token_end);
+    open_sql_first_select_sig(text, parse, &significant)?;
+    if !open_sql_offset_in_source_position(text, parse, &significant, offset) {
+        return None;
+    }
+    let (replace_range, prefix, prefix_sig) =
+        open_sql_prefix_at_offset(text, parse, &significant, offset);
+    if prefix_sig > 0 {
+        let prev_idx = significant[prefix_sig - 1];
+        if !(open_sql_token_is_keyword(text, parse, prev_idx, "from")
+            || open_sql_token_is_keyword(text, parse, prev_idx, "join"))
+        {
+            return None;
+        }
+    }
+    Some(OpenSqlSourceCompletionQuery {
+        scope: ScopeId(0),
+        replace_range,
+        prefix,
+    })
 }
 
 fn parse_bare_where_field_query(
@@ -19504,6 +20019,110 @@ DELETE lt_trans_del WHERE sta";
         assert_eq!(completion.items.len(), 1);
         assert_eq!(completion.items[0].name.as_ref(), "status_trn");
         assert_eq!(&src[completion.replace_range], "sta");
+    }
+
+    #[test]
+    fn lists_open_sql_source_completion_items_after_from_keyword() {
+        let store = DocumentStore::default();
+        let dep_src = "\
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE string,
+       END OF /sttp/loc.
+";
+        let main_src = "SELECT * FROM /sttp/l";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/STTP_LOC.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/sttp/loc")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+
+        let completion = snapshot
+            .completion_at(main_src.len())
+            .expect("Open SQL source completion");
+        assert!(
+            completion.items.iter().any(|item| {
+                matches!(item, crate::CompletionItem::Symbol(item) if item.name.as_ref() == "/sttp/loc")
+            }),
+            "expected /sttp/loc source completion: {:?}",
+            completion.items
+        );
+        assert_eq!(&main_src[completion.replace_range], "/sttp/l");
+    }
+
+    #[test]
+    fn lists_open_sql_projection_field_completion_items() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE string,
+         gln TYPE string,
+       END OF /sttp/loc.
+SELECT lo FROM /sttp/loc INTO TABLE @DATA(lt_loc).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let offset = src.find("SELECT lo").expect("projection") + "SELECT lo".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("Open SQL projection completion");
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].name.as_ref(), "locno");
+        assert_eq!(&src[completion.replace_range], "lo");
+    }
+
+    #[test]
+    fn lists_open_sql_where_field_completion_items() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE string,
+         gln TYPE string,
+       END OF /sttp/loc.
+SELECT * FROM /sttp/loc INTO TABLE @DATA(lt_loc) WHERE gl";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("Open SQL WHERE field completion");
+        assert_eq!(completion.items.len(), 1);
+        assert_eq!(completion.items[0].name.as_ref(), "gln");
+        assert_eq!(&src[completion.replace_range], "gl");
+    }
+
+    #[test]
+    fn lists_open_sql_qualified_field_completion_items_after_alias_tilde() {
+        let store = DocumentStore::default();
+        let src = "\
+TYPES: BEGIN OF /sttp/loc,
+         locno TYPE string,
+         gln TYPE string,
+       END OF /sttp/loc.
+SELECT * FROM /sttp/loc AS loc INTO TABLE @DATA(lt_loc) WHERE loc~";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("Open SQL qualified field completion");
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["gln", "locno"]
+        );
+        assert!(completion.replace_range.is_empty());
     }
 
     #[test]

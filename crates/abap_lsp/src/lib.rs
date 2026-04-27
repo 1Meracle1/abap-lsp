@@ -1831,13 +1831,9 @@ fn publish_workspace_input_with_dependency_hydration(
     build_plan: SnapshotBuildPlan,
 ) -> Arc<AnalysisSnapshot> {
     let uri = Arc::clone(&input.uri);
-    let hydrate_dependencies = is_dependency_document_uri(uri.as_ref());
     let snapshot = workspace
         .cache
         .publish_input_with_build_plan(input, build_plan);
-    if !hydrate_dependencies {
-        return snapshot;
-    }
 
     let _ = hydrate_workspace_dependency_documents(workspace);
     workspace.cache.get(uri.as_ref()).unwrap_or(snapshot)
@@ -3764,6 +3760,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::InvalidOpenSqlIntoTarget
+        | DiagnosticKind::InvalidOpenSqlSyntax
         | DiagnosticKind::InvalidConstructorForIteratorReuse
         | DiagnosticKind::MissingTablesDeclaration => DiagnosticSeverity::ERROR,
     }
@@ -12098,6 +12095,133 @@ dependency_mode = "remote-on-demand"
                 .iter()
                 .any(|candidate| candidate.kind == "type"
                     && candidate.name == "zattp_s_eu_notif_32_json")
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn changed_source_hydrates_new_type_from_central_dependency_store() {
+        let workspace_path = temp_workspace_path("changed_source_hydrates_cached_type");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let initial_text = "REPORT zmain.\nDATA lv_text TYPE string.\n";
+        fs::write(workspace_path.join("main.abap"), initial_text).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/main.abap");
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            let source_text = "TYPES zcached_type TYPE string.";
+            store
+                .put_artifact(
+                    &profile,
+                    &StoredArtifactInput {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "ddic-data-element".to_string(),
+                        object_name: "ZCACHED_TYPE".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/dataelements/zcached_type".to_string(),
+                        object_type: "DTEL/DE".to_string(),
+                        description: "Cached test type".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: source_text.to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                        symbols: extract_stored_dependency_symbols(
+                            "/sap/bc/adt/ddic/dataelements/zcached_type",
+                            source_text,
+                        ),
+                    },
+                )
+                .expect("store cached artifact");
+        }
+
+        publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: initial_text.to_string(),
+                },
+            },
+        );
+
+        let changed_text =
+            "REPORT zmain.\nDATA lv_text TYPE string.\nDATA lv_cached TYPE zcached_type.\n";
+        let snapshot = publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&source_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: changed_text.to_string(),
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        assert!(
+            workspace.cache.uris().into_iter().any(|uri| {
+                workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                    snapshot
+                        .object_name
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("zcached_type"))
+                })
+            }),
+            "cached type should be hydrated into the workspace after the edit"
+        );
+
+        let refreshed = workspace
+            .cache
+            .get(&normalize_lsp_uri(&source_uri))
+            .expect("refreshed source snapshot");
+        assert_eq!(snapshot.uri, refreshed.uri);
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), refreshed.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("zcached_type")),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            build_remote_dependency_request(&mut state, &source_uri).is_none(),
+            "hydrated cached type should not be re-requested remotely"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);

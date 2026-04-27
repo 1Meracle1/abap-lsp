@@ -317,6 +317,8 @@ pub enum DiagnosticKind {
     UnverifiedOpenSqlSource,
     /// `INTO` / `APPENDING` target is incompatible with the clause (for example `INTO TABLE` on a non-table variable).
     InvalidOpenSqlIntoTarget,
+    /// Open SQL statement mixes legacy and strict/new syntax forms.
+    InvalidOpenSqlSyntax,
     InvalidConstructorForIteratorReuse,
     MissingTablesDeclaration,
     UnreachableCode,
