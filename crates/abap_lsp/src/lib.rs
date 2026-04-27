@@ -27,7 +27,7 @@ use abap_dependency_store::{
     CandidateCacheStatus, DependencyProfile, DependencyStore, DependencyStoreReader,
     StoredArtifactInput, StoredArtifactRecord, StoredSymbolInput,
 };
-use abap_parser::parse;
+use abap_parser::{parse, parse_error_is_include_fragment_boundary};
 use abap_symbols::{
     DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution, SqlResolution,
     UnitId, analyze_unit,
@@ -1087,6 +1087,7 @@ fn document_uses_local_exports(workspace: &WorkspaceState, uri: &str) -> bool {
 struct WorkspaceManifestDocumentInfo {
     unit_name: String,
     unit_kind: String,
+    is_member: bool,
     is_dependency: bool,
     object_name: Option<Arc<str>>,
 }
@@ -1125,6 +1126,7 @@ fn workspace_manifest_document_info(
         (root_uri.as_deref() == Some(uri) || member_match).then(|| WorkspaceManifestDocumentInfo {
             unit_name: unit.name.clone(),
             unit_kind: unit.kind.clone(),
+            is_member: member_match,
             is_dependency,
             object_name: object_name.clone(),
         })
@@ -3658,11 +3660,32 @@ fn semantic_diagnostic_code(kind: DiagnosticKind) -> Option<NumberOrString> {
     }
 }
 
-pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
-    let mut out: Vec<Diagnostic> = snapshot
+fn snapshot_is_workspace_include_fragment(
+    workspace: Option<&WorkspaceState>,
+    snapshot: &AnalysisSnapshot,
+) -> bool {
+    if dependency_document_query_param(snapshot.uri.as_ref(), "kind")
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("include"))
+    {
+        return true;
+    }
+
+    let Some(workspace) = workspace else {
+        return false;
+    };
+    workspace_manifest_document_info(workspace, snapshot.uri.as_ref())
+        .is_some_and(|info| info.is_member || info.unit_kind.trim().eq_ignore_ascii_case("include"))
+}
+
+fn build_lsp_parse_diagnostics(
+    snapshot: &AnalysisSnapshot,
+    include_fragment_policy: bool,
+) -> Vec<Diagnostic> {
+    snapshot
         .parse
         .errors
         .iter()
+        .filter(|err| !(include_fragment_policy && parse_error_is_include_fragment_boundary(err)))
         .filter_map(|err| {
             Some(Diagnostic {
                 range: byte_range_to_lsp_range_snapshot(snapshot, err.range.clone())?,
@@ -3676,7 +3699,11 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
                 data: None,
             })
         })
-        .collect();
+        .collect()
+}
+
+pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
+    let mut out = build_lsp_parse_diagnostics(snapshot, false);
     for diag_inner in &snapshot.symbols.diagnostics {
         let Some(range) = byte_range_to_lsp_range_snapshot(snapshot, diag_inner.range.clone())
         else {
@@ -3743,7 +3770,32 @@ pub fn build_lsp_diagnostics_for_workspace(
     workspace: Option<&WorkspaceState>,
     snapshot: &AnalysisSnapshot,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = build_lsp_diagnostics(snapshot);
+    let include_fragment_policy = snapshot_is_workspace_include_fragment(workspace, snapshot);
+    let mut diagnostics = build_lsp_parse_diagnostics(snapshot, include_fragment_policy);
+    for diag_inner in &snapshot.symbols.diagnostics {
+        let Some(range) = byte_range_to_lsp_range_snapshot(snapshot, diag_inner.range.clone())
+        else {
+            continue;
+        };
+        diagnostics.push(Diagnostic {
+            range,
+            severity: Some(semantic_diagnostic_severity(diag_inner.kind)),
+            code: semantic_diagnostic_code(diag_inner.kind),
+            code_description: None,
+            source: Some("abap-symbols".to_owned()),
+            message: diag_inner.message.clone(),
+            related_information: None,
+            tags: None,
+            data: None,
+        });
+    }
+    diagnostics.sort_by(|a, b| {
+        a.range
+            .start
+            .line
+            .cmp(&b.range.start.line)
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
     let Some(workspace) = workspace else {
         return diagnostics;
     };
@@ -5051,7 +5103,10 @@ fn callable_completion_item_metadata(
 
 #[cfg(test)]
 mod tests {
-    use abap_cache::{DocumentStore, WorkspaceDocument, path_to_file_uri};
+    use abap_cache::{
+        DocumentInput, DocumentStore, ManifestPerformance, ManifestResolution, ManifestUnit,
+        ManifestUnitMember, WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
+    };
     use abap_symbols::DiagnosticKind;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -5076,10 +5131,10 @@ mod tests {
         GotoDefinitionParams, HoverParams, InlayHintParams, REMOTE_DEPENDENCIES_UPDATED,
         RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams, ReferenceParams,
         RemoteDependencyCandidate, RenameParams, ServerState, StoreRemoteDependencyArtifactsParams,
-        WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, build_lsp_diagnostics,
-        build_lsp_diagnostics_for_workspace, build_remote_dependency_batch_for_workspace,
-        build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
-        build_remote_dependency_request_retrying_negatives,
+        WORKSPACE_MANIFEST_UPDATED, WorkspaceManifestUpdatedParams, WorkspaceState,
+        build_lsp_diagnostics, build_lsp_diagnostics_for_workspace,
+        build_remote_dependency_batch_for_workspace, build_remote_dependency_refresh_for_workspace,
+        build_remote_dependency_request, build_remote_dependency_request_retrying_negatives,
         build_remote_dependency_requests_for_workspace, code_actions,
         collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
         completion, definition, dependency_document_uri, extract_stored_dependency_symbols,
@@ -5258,6 +5313,66 @@ mod tests {
             Some(lsp_types::CodeActionProviderCapability::Simple(true))
         ));
         assert!(result.server_info.is_some());
+    }
+
+    #[test]
+    fn workspace_include_fragment_diagnostics_suppress_block_boundaries_only() {
+        let root_path = temp_workspace_path("include_fragment_diagnostics");
+        let root_uri = path_to_file_uri(&root_path);
+        let include_path =
+            root_path.join("src/function-groups/MEACCTVI/includes/IFRE_END_OF_RE_EA_FIN.abap");
+        let include_uri = path_to_file_uri(&include_path);
+        let mut workspace = WorkspaceState::new(root_uri);
+        workspace.manifest = Some(WorkspaceManifest {
+            version: 1,
+            connection: String::new(),
+            dependency_store: None,
+            resolution: ManifestResolution::default(),
+            performance: ManifestPerformance::default(),
+            units: vec![ManifestUnit {
+                name: "MEACCTVI".to_string(),
+                kind: "function-group".to_string(),
+                package_name: String::new(),
+                root_file: "src/function-groups/MEACCTVI/MEACCTVI.abap".to_string(),
+                dependency_of: Vec::new(),
+                members: vec![ManifestUnitMember {
+                    role: String::new(),
+                    file: "src/function-groups/MEACCTVI/includes/IFRE_END_OF_RE_EA_FIN.abap"
+                        .to_string(),
+                    object_name: "IFRE_END_OF_RE_EA_FIN".to_string(),
+                }],
+            }],
+        });
+
+        let snapshot = DocumentStore::default().publish_input(DocumentInput {
+            uri: Arc::from(include_uri),
+            version: 1,
+            text: Arc::from("ENDIF.\nIF ."),
+            is_dependency: false,
+            object_name: Some(Arc::from("ifre_end_of_re_ea_fin")),
+        });
+        let strict = build_lsp_diagnostics(snapshot.as_ref());
+        assert!(
+            strict.iter().any(|diag| diag
+                .message
+                .contains("unexpected ENDIF without matching IF")),
+            "{strict:?}"
+        );
+
+        let workspace_diagnostics =
+            build_lsp_diagnostics_for_workspace(Some(&workspace), snapshot.as_ref());
+        assert!(
+            workspace_diagnostics.iter().all(|diag| !diag
+                .message
+                .contains("unexpected ENDIF without matching IF")),
+            "{workspace_diagnostics:?}"
+        );
+        assert!(
+            workspace_diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("expected condition after IF")),
+            "{workspace_diagnostics:?}"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use abap_ast::SyntaxKind;
-use abap_parser::parse;
+use abap_parser::{ParseDiagnosticPolicy, parse, parse_with_diagnostic_policy};
 
 fn assert_error_contains(src: &str, needle: &str) {
     let parsed = parse(src);
@@ -41,6 +41,51 @@ fn unmatched_block_boundaries_are_errors_and_recover_to_next_statement() {
             .file
             .count_kind(parsed.file.root(), SyntaxKind::Error)
             >= 2
+    );
+}
+
+#[test]
+fn strict_mode_reports_standalone_include_fragment_boundaries() {
+    let opening = parse("IF lv_ok = abap_true.\n  lv_value = 1.");
+    assert!(
+        opening
+            .errors
+            .iter()
+            .any(|err| err.message.contains("expected ENDIF")),
+        "{:?}",
+        opening.errors
+    );
+
+    let closing = parse("ENDIF.");
+    assert!(
+        closing
+            .errors
+            .iter()
+            .any(|err| err.message.contains("unexpected ENDIF without matching IF")),
+        "{:?}",
+        closing.errors
+    );
+}
+
+#[test]
+fn include_fragment_policy_suppresses_only_block_boundary_errors() {
+    let opening = parse_with_diagnostic_policy(
+        "IF lv_ok = abap_true.\n  lv_value = 1.",
+        ParseDiagnosticPolicy::IncludeFragment,
+    );
+    assert!(opening.errors.is_empty(), "{:?}", opening.errors);
+
+    let closing = parse_with_diagnostic_policy("ENDIF.", ParseDiagnosticPolicy::IncludeFragment);
+    assert!(closing.errors.is_empty(), "{:?}", closing.errors);
+
+    let malformed = parse_with_diagnostic_policy("IF .", ParseDiagnosticPolicy::IncludeFragment);
+    assert!(
+        malformed
+            .errors
+            .iter()
+            .any(|err| err.message.contains("expected condition after IF")),
+        "{:?}",
+        malformed.errors
     );
 }
 

@@ -381,7 +381,50 @@ pub struct ParseResult {
     pub errors: Vec<ParseError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseDiagnosticPolicy {
+    Strict,
+    IncludeFragment,
+}
+
+const MISSING_FRAGMENT_BOUNDARIES: &[&str] = &[
+    "ENDAT",
+    "ENDCASE",
+    "ENDCATCH",
+    "ENDCLASS",
+    "ENDDO",
+    "ENDENHANCEMENT",
+    "END-ENHANCEMENT-SECTION",
+    "ENDFORM",
+    "ENDFUNCTION",
+    "ENDIF",
+    "ENDINTERFACE",
+    "ENDLOOP",
+    "ENDMETHOD",
+    "ENDMODULE",
+    "ENDSELECT",
+    "ENDTRY",
+    "ENDWHILE",
+];
+
+pub fn parse_error_is_include_fragment_boundary(error: &ParseError) -> bool {
+    let message = error.message.as_str();
+    if message.starts_with("syntax error: unexpected ") && message.contains(" without matching ") {
+        return true;
+    }
+    MISSING_FRAGMENT_BOUNDARIES
+        .iter()
+        .any(|boundary| message == format!("syntax error: expected {boundary}"))
+}
+
 pub fn parse(source: &str) -> ParseResult {
+    parse_with_diagnostic_policy(source, ParseDiagnosticPolicy::Strict)
+}
+
+pub fn parse_with_diagnostic_policy(
+    source: &str,
+    diagnostic_policy: ParseDiagnosticPolicy,
+) -> ParseResult {
     let TokenizeResult {
         lexed,
         tokens,
@@ -405,6 +448,9 @@ pub fn parse(source: &str) -> ParseResult {
         .collect();
     let end = source.len();
     let file = syntax::build_file_tree(source, &tokens, end, &mut errors);
+    if diagnostic_policy == ParseDiagnosticPolicy::IncludeFragment {
+        errors.retain(|error| !parse_error_is_include_fragment_boundary(error));
+    }
 
     ParseResult {
         file,
