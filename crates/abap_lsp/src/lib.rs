@@ -16,10 +16,11 @@ use abap_cache::{
     LocalExportConfig, LocalExportResolver, ManifestDiagnostic, SnapshotBuildPlan,
     WorkspaceDocument, WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source,
     file_uri_to_path, function_module_completion_items_from_source, is_remote_lookup_candidate,
-    is_remote_lookup_candidate_after_local_resolution, lint_id_for_diagnostic_kind,
-    load_effective_manifest_from_workspace_result, load_manifest_diagnostics_from_workspace,
-    load_workspace_documents_with_progress, local_export_config_for_source,
-    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri, registry,
+    is_remote_lookup_candidate_after_local_resolution, lint_docs_anchor,
+    lint_id_for_diagnostic_kind, load_effective_manifest_from_workspace_result,
+    load_manifest_diagnostics_from_workspace, load_workspace_documents_with_progress,
+    local_export_config_for_source, manifest_document_metadata,
+    manifest_supports_remote_resolution, path_to_file_uri, registry,
     resolve_local_export_dependency_document,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
@@ -4157,22 +4158,6 @@ fn lint_diagnostic_code_description(id: &str) -> Option<CodeDescription> {
     Uri::from_str(&href)
         .ok()
         .map(|href| CodeDescription { href })
-}
-
-fn lint_docs_anchor(id: &str) -> String {
-    id.trim()
-        .to_ascii_lowercase()
-        .chars()
-        .filter_map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' {
-                Some(ch)
-            } else if ch == '_' {
-                Some('-')
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 #[derive(Serialize)]

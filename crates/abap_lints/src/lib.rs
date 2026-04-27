@@ -792,6 +792,22 @@ pub fn metadata_for(id: &str) -> Option<&'static LintMetadata> {
     registry().iter().find(|metadata| metadata.id == id)
 }
 
+pub fn lint_docs_anchor(id: &str) -> String {
+    id.trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                Some(ch)
+            } else if ch == '_' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 pub fn lint_config_diagnostics(config: &LintConfig) -> Vec<LintConfigDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -1088,10 +1104,20 @@ mod tests {
         EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE, LINT_PROFILE_RECOMMENDED,
         LINT_PROFILE_STRICT, LintConfig, LintConfigDiagnosticKind, LintDiagnostic, LintGroup,
         LintLevel, LintOrigin, LintPolicy, LintSuppressionKind, SuppressionIndex,
-        lint_config_diagnostics, metadata_for, registry,
+        lint_config_diagnostics, lint_docs_anchor, metadata_for, registry,
     };
     use abap_lexer::tokenize;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const LINT_REFERENCE_DOCS: &str = include_str!("../../../docs/reference/lints.md");
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DocumentedLintRow {
+        default_level: String,
+        group: String,
+        origin: String,
+        sap_aliases: Vec<String>,
+    }
 
     #[test]
     fn registry_contains_initial_lints() {
@@ -1128,6 +1154,170 @@ mod tests {
         assert_eq!(authority_check.group, LintGroup::Security);
         assert_eq!(authority_check.origin, LintOrigin::SapAtc);
         assert_eq!(authority_check.default_level, LintLevel::Info);
+    }
+
+    #[test]
+    fn lint_reference_docs_table_matches_registry() {
+        let rows = documented_lint_rows();
+        assert_eq!(
+            rows.len(),
+            registry().len(),
+            "docs/reference/lints.md table must document exactly the native lint registry"
+        );
+
+        for metadata in registry() {
+            let row = rows
+                .get(metadata.id)
+                .unwrap_or_else(|| panic!("missing docs table row for {}", metadata.id));
+            assert_eq!(
+                row.default_level,
+                metadata.default_level.as_str(),
+                "default level mismatch for {}",
+                metadata.id
+            );
+            assert_eq!(
+                row.group,
+                metadata.group.as_str(),
+                "group mismatch for {}",
+                metadata.id
+            );
+            assert_eq!(
+                row.origin,
+                metadata.origin.as_str(),
+                "origin mismatch for {}",
+                metadata.id
+            );
+            let expected_aliases = metadata
+                .sap_aliases
+                .iter()
+                .map(|alias| (*alias).to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                row.sap_aliases, expected_aliases,
+                "SAP aliases mismatch for {}",
+                metadata.id
+            );
+        }
+    }
+
+    #[test]
+    fn lint_reference_docs_headings_cover_lsp_code_description_anchors() {
+        let heading_ids = documented_lint_heading_ids();
+        assert_eq!(
+            heading_ids.len(),
+            registry().len(),
+            "docs/reference/lints.md rule headings must match the native lint registry"
+        );
+        let heading_anchors = heading_ids
+            .iter()
+            .map(|id| lint_docs_anchor(id))
+            .collect::<BTreeSet<_>>();
+
+        for metadata in registry() {
+            assert!(
+                heading_ids.contains(metadata.id),
+                "missing docs heading for {}",
+                metadata.id
+            );
+            let anchor = lint_docs_anchor(metadata.id);
+            assert!(!anchor.is_empty(), "empty docs anchor for {}", metadata.id);
+            assert!(
+                heading_anchors.contains(&anchor),
+                "LSP codeDescription anchor #{anchor} for {} has no docs heading",
+                metadata.id
+            );
+        }
+    }
+
+    fn documented_lint_rows() -> BTreeMap<String, DocumentedLintRow> {
+        let mut rows = BTreeMap::new();
+        let mut in_table = false;
+
+        for line in LINT_REFERENCE_DOCS.lines() {
+            let trimmed = line.trim();
+            if trimmed == "| ID | Default | Group | Origin | SAP suppression aliases |" {
+                in_table = true;
+                continue;
+            }
+            if !in_table {
+                continue;
+            }
+            if trimmed.starts_with("| ---") {
+                continue;
+            }
+            if !trimmed.starts_with('|') {
+                break;
+            }
+
+            let cells = markdown_table_cells(trimmed);
+            assert_eq!(cells.len(), 5, "lint docs row must have 5 cells: {line}");
+            let id = markdown_code_value(&cells[0]);
+            let previous = rows.insert(
+                id.clone(),
+                DocumentedLintRow {
+                    default_level: markdown_code_value(&cells[1]),
+                    group: markdown_code_value(&cells[2]),
+                    origin: markdown_code_value(&cells[3]),
+                    sap_aliases: markdown_alias_values(&cells[4]),
+                },
+            );
+            assert!(
+                previous.is_none(),
+                "duplicate docs table row for lint ID {id}"
+            );
+        }
+
+        assert!(
+            !rows.is_empty(),
+            "docs/reference/lints.md lint table was not found"
+        );
+        rows
+    }
+
+    fn documented_lint_heading_ids() -> BTreeSet<String> {
+        let mut ids = BTreeSet::new();
+
+        for line in LINT_REFERENCE_DOCS.lines() {
+            let Some(heading) = line.trim().strip_prefix("### ") else {
+                continue;
+            };
+            let id = markdown_code_value(heading);
+            if id.starts_with("abap-lsp.") || id.starts_with("epc.") {
+                let inserted = ids.insert(id.clone());
+                assert!(inserted, "duplicate docs heading for lint ID {id}");
+            }
+        }
+
+        ids
+    }
+
+    fn markdown_table_cells(line: &str) -> Vec<String> {
+        line.trim()
+            .trim_matches('|')
+            .split('|')
+            .map(|cell| cell.trim().to_string())
+            .collect()
+    }
+
+    fn markdown_alias_values(cell: &str) -> Vec<String> {
+        if cell.trim().eq_ignore_ascii_case("none") {
+            return Vec::new();
+        }
+
+        cell.replace("<br>", ",")
+            .split(',')
+            .map(markdown_code_value)
+            .filter(|alias| !alias.is_empty())
+            .collect()
+    }
+
+    fn markdown_code_value(value: &str) -> String {
+        let trimmed = value.trim();
+        if let Some(inner) = trimmed.strip_prefix('`').and_then(|v| v.strip_suffix('`')) {
+            inner.trim().to_string()
+        } else {
+            trimmed.to_string()
+        }
     }
 
     #[test]

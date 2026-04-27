@@ -8,7 +8,9 @@ Lint IDs are stable, lowercase ASCII strings. They are documented as part of the
 surface and should not be renamed; add a new ID instead when a rule's meaning changes
 incompatibly.
 
-SAP pragma and pseudo-comment suppressions only work when the lint exposes the listed alias.
+SAP pragma and pseudo-comment suppressions only work when the lint exposes the listed alias. The
+table lists canonical alias values; use them in SAP pragma or pseudo-comment syntax such as
+`##NEEDED` or `"#EC CI_SEL_NESTED`.
 
 The `epc.*` entries represent semantic hard errors surfaced through lint metadata. Lint profiles,
 group overrides, and rule overrides do not lower those IDs below `deny`, so parser and semantic hard
@@ -50,16 +52,16 @@ least one unsuppressed `deny` finding is emitted.
 | `abap-lsp.unreachable-code` | `warn` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.use-before-definite-assignment` | `warn` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.possibly-unbound-field-symbol` | `warn` | `correctness` | `abap-lsp` | none |
-| `abap-lsp.dead-store` | `info` | `style` | `abap-lsp` | `##NEEDED` |
+| `abap-lsp.dead-store` | `info` | `style` | `abap-lsp` | `NEEDED` |
 | `abap-lsp.unsorted-read-table-binary-search` | `info` | `correctness` | `abap-lsp` | none |
-| `abap-lsp.select-star` | `info` | `performance` | `sap-code-inspector` | `"#EC CI_ALL_FIELDS_NEEDED` |
-| `abap-lsp.select-in-loop` | `info` | `performance` | `sap-code-inspector` | `"#EC CI_SEL_NESTED` |
-| `abap-lsp.for-all-entries-without-guard` | `info` | `correctness` | `sap-code-inspector` | `"#EC CI_FAE_LINES_ENSURED` |
+| `abap-lsp.select-star` | `info` | `performance` | `sap-code-inspector` | `CI_ALL_FIELDS_NEEDED` |
+| `abap-lsp.select-in-loop` | `info` | `performance` | `sap-code-inspector` | `CI_SEL_NESTED` |
+| `abap-lsp.for-all-entries-without-guard` | `info` | `correctness` | `sap-code-inspector` | `CI_FAE_LINES_ENSURED` |
 | `abap-lsp.dynamic-open-sql` | `info` | `security` | `sap-code-inspector` | none |
 | `abap-lsp.ignored-authority-check` | `info` | `security` | `sap-atc` | none |
-| `epc.unverified-open-sql-source` | `deny` | `correctness` | `sap-extended-program-check` | `"#EC extended-program-check` |
-| `epc.invalid-open-sql-into-target` | `deny` | `correctness` | `sap-extended-program-check` | `"#EC extended-program-check` |
-| `epc.missing-tables-declaration` | `deny` | `correctness` | `sap-extended-program-check` | `"#EC extended-program-check` |
+| `epc.unverified-open-sql-source` | `deny` | `correctness` | `sap-extended-program-check` | `extended-program-check` |
+| `epc.invalid-open-sql-into-target` | `deny` | `correctness` | `sap-extended-program-check` | `extended-program-check` |
+| `epc.missing-tables-declaration` | `deny` | `correctness` | `sap-extended-program-check` | `extended-program-check` |
 
 ## Rule Details
 
