@@ -623,6 +623,8 @@ pub struct LintConfig {
     #[serde(default)]
     pub report_suppressed: bool,
     #[serde(default)]
+    pub sap_atc: SapAtcLintConfig,
+    #[serde(default)]
     pub groups: BTreeMap<String, LintLevel>,
     #[serde(default)]
     pub rules: BTreeMap<String, LintLevel>,
@@ -633,8 +635,57 @@ impl Default for LintConfig {
         Self {
             profile: default_lint_profile(),
             report_suppressed: false,
+            sap_atc: SapAtcLintConfig::default(),
             groups: BTreeMap::new(),
             rules: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SapAtcLintMode {
+    Off,
+    Manual,
+    OnSave,
+}
+
+impl Default for SapAtcLintMode {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+impl SapAtcLintMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Manual => "manual",
+            Self::OnSave => "on-save",
+        }
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SapAtcLintConfig {
+    #[serde(default)]
+    pub mode: SapAtcLintMode,
+    #[serde(default = "default_sap_atc_check_variant")]
+    pub check_variant: String,
+    #[serde(default)]
+    pub configuration: Option<String>,
+}
+
+impl Default for SapAtcLintConfig {
+    fn default() -> Self {
+        Self {
+            mode: SapAtcLintMode::Off,
+            check_variant: default_sap_atc_check_variant(),
+            configuration: None,
         }
     }
 }
@@ -903,6 +954,10 @@ fn default_lint_profile() -> String {
     LINT_PROFILE_RECOMMENDED.to_string()
 }
 
+fn default_sap_atc_check_variant() -> String {
+    "DEFAULT".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -975,6 +1030,7 @@ mod tests {
                 (ABAP_LSP_DEAD_STORE.to_string(), LintLevel::Deny),
                 ("custom.future-lint".to_string(), LintLevel::Info),
             ]),
+            ..LintConfig::default()
         };
 
         let policy = LintPolicy::from_config(&config);

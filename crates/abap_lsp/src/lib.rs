@@ -19,7 +19,7 @@ use abap_cache::{
     is_remote_lookup_candidate_after_local_resolution, lint_id_for_diagnostic_kind,
     load_effective_manifest_from_workspace_result, load_workspace_documents_with_progress,
     local_export_config_for_source, manifest_document_metadata,
-    manifest_supports_remote_resolution, path_to_file_uri,
+    manifest_supports_remote_resolution, path_to_file_uri, registry,
     resolve_local_export_dependency_document,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
@@ -63,10 +63,12 @@ pub const DEPENDENCY_CACHE_REFRESH_REQUESTED: &str = "abapls/dependencyCacheRefr
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 pub const STORE_REMOTE_DEPENDENCY_ARTIFACTS: &str = "abapls/storeRemoteDependencyArtifacts";
 pub const READ_DEPENDENCY_DOCUMENT: &str = "abapls/readDependencyDocument";
+pub const SAP_ATC_RESULTS_UPDATED: &str = "abapls/sapAtcResultsUpdated";
 const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
 const DEPENDENCY_DOCUMENT_SCHEME: &str = "abapls-cache";
 const LINT_DIAGNOSTIC_SOURCE: &str = "abap-lsp-lints";
+const SAP_ATC_DIAGNOSTIC_SOURCE: &str = "sap-atc";
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
@@ -103,6 +105,7 @@ pub struct WorkspaceState {
     pub performance_mode: WorkspacePerformanceMode,
     pub dependency_profile: Option<DependencyProfile>,
     pub dependency_store_path_override: Option<PathBuf>,
+    pub sap_atc_results: HashMap<SapAtcCacheKey, SapAtcCachedResult>,
 }
 
 impl Default for ServerState {
@@ -179,6 +182,7 @@ impl WorkspaceState {
             performance_mode: WorkspacePerformanceMode::FullWorkspace,
             dependency_profile: None,
             dependency_store_path_override: None,
+            sap_atc_results: HashMap::new(),
         }
     }
 }
@@ -430,6 +434,92 @@ pub struct RemoteDependenciesUpdatedParams {
     pub fetched: Vec<String>,
     #[serde(default)]
     pub failed: Vec<RemoteDependencyCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SapAtcResultsUpdatedParams {
+    #[serde(rename = "workspaceUri")]
+    pub workspace_uri: String,
+    #[serde(rename = "sourceUri")]
+    pub source_uri: String,
+    #[serde(rename = "documentVersion")]
+    pub document_version: i32,
+    #[serde(rename = "objectName", default)]
+    pub object_name: String,
+    #[serde(rename = "checkVariant", default = "default_sap_atc_check_variant")]
+    pub check_variant: String,
+    #[serde(default)]
+    pub configuration: Option<String>,
+    #[serde(rename = "fetchedAt", default)]
+    pub fetched_at: String,
+    #[serde(default)]
+    pub findings: Vec<SapAtcFindingPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SapAtcFindingPayload {
+    #[serde(rename = "sapCheckId", alias = "checkId", default)]
+    pub sap_check_id: String,
+    #[serde(rename = "sapMessageId", alias = "messageId", default)]
+    pub sap_message_id: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default = "default_sap_atc_severity")]
+    pub severity: String,
+    #[serde(rename = "mappedLocalLintId", default)]
+    pub mapped_local_lint_id: Option<String>,
+    #[serde(rename = "exemptionState", default)]
+    pub exemption_state: Option<String>,
+    #[serde(rename = "suppressionState", default)]
+    pub suppression_state: Option<String>,
+    #[serde(default)]
+    pub location: SapAtcSourceLocationPayload,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SapAtcSourceLocationPayload {
+    #[serde(default)]
+    pub uri: String,
+    #[serde(rename = "objectName", default)]
+    pub object_name: String,
+    #[serde(rename = "includeName", default)]
+    pub include_name: String,
+    #[serde(rename = "startLine", default)]
+    pub start_line: Option<u32>,
+    #[serde(rename = "startColumn", default)]
+    pub start_column: Option<u32>,
+    #[serde(rename = "endLine", default)]
+    pub end_line: Option<u32>,
+    #[serde(rename = "endColumn", default)]
+    pub end_column: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SapAtcCachedResult {
+    pub source_uri: String,
+    pub document_version: i32,
+    pub object_name: String,
+    pub check_variant: String,
+    pub configuration: Option<String>,
+    pub fetched_at: String,
+    pub findings: Vec<SapAtcFindingPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SapAtcCacheKey {
+    pub source_uri: String,
+    pub document_version: i32,
+    pub object_name: String,
+    pub check_variant: String,
+    pub configuration: Option<String>,
+}
+
+fn default_sap_atc_check_variant() -> String {
+    "DEFAULT".to_string()
+}
+
+fn default_sap_atc_severity() -> String {
+    "warning".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2447,6 +2537,73 @@ pub fn handle_remote_dependencies_updated_with_progress(
         .unwrap_or_else(|| refresh_workspace_with_progress(state, &params.workspace_uri, progress))
 }
 
+pub fn handle_sap_atc_results_updated(
+    state: &mut ServerState,
+    params: &SapAtcResultsUpdatedParams,
+) -> Vec<Arc<AnalysisSnapshot>> {
+    let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
+    let source_uri = normalize_lsp_uri(&params.source_uri);
+    let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
+        return Vec::new();
+    };
+
+    let snapshot = workspace.cache.get(&source_uri);
+    let object_name = normalized_sap_atc_object_name(
+        &params.object_name,
+        snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.object_name.as_deref()),
+    );
+    let check_variant = normalized_sap_atc_check_variant(&params.check_variant);
+    let configuration = normalized_sap_atc_configuration(params.configuration.as_deref());
+    let key = SapAtcCacheKey {
+        source_uri: source_uri.clone(),
+        document_version: params.document_version,
+        object_name: object_name.clone(),
+        check_variant: check_variant.clone(),
+        configuration: configuration.clone(),
+    };
+    workspace.sap_atc_results.insert(
+        key,
+        SapAtcCachedResult {
+            source_uri,
+            document_version: params.document_version,
+            object_name,
+            check_variant,
+            configuration,
+            fetched_at: params.fetched_at.trim().to_string(),
+            findings: params.findings.clone(),
+        },
+    );
+
+    snapshot.into_iter().collect()
+}
+
+fn normalized_sap_atc_object_name(value: &str, fallback: Option<&str>) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        fallback.unwrap_or_default().trim().to_ascii_uppercase()
+    } else {
+        value.to_ascii_uppercase()
+    }
+}
+
+fn normalized_sap_atc_check_variant(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        default_sap_atc_check_variant()
+    } else {
+        trimmed.to_ascii_uppercase()
+    }
+}
+
+fn normalized_sap_atc_configuration(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 pub fn collect_remote_dependency_candidates(
     snapshot: &AnalysisSnapshot,
 ) -> Vec<RemoteDependencyCandidate> {
@@ -4012,6 +4169,249 @@ fn build_lsp_lint_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
         .collect()
 }
 
+#[derive(Serialize)]
+struct LspSapAtcDiagnosticData<'a> {
+    kind: &'static str,
+    #[serde(rename = "sapCheckId")]
+    sap_check_id: &'a str,
+    #[serde(rename = "sapMessageId")]
+    sap_message_id: &'a str,
+    #[serde(rename = "objectName")]
+    object_name: &'a str,
+    #[serde(rename = "includeName")]
+    include_name: &'a str,
+    #[serde(rename = "checkVariant")]
+    check_variant: &'a str,
+    configuration: Option<&'a str>,
+    #[serde(rename = "fetchedAt")]
+    fetched_at: &'a str,
+    #[serde(rename = "mappedLocalLintId")]
+    mapped_local_lint_id: Option<&'a str>,
+    #[serde(rename = "exemptionState")]
+    exemption_state: Option<&'a str>,
+    #[serde(rename = "suppressionState")]
+    suppression_state: Option<&'a str>,
+}
+
+fn build_lsp_sap_atc_diagnostics(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+) -> Vec<Diagnostic> {
+    let Some(lints) = workspace
+        .manifest
+        .as_ref()
+        .and_then(|manifest| manifest.lints.as_ref())
+    else {
+        return Vec::new();
+    };
+    if !lints.sap_atc.mode.is_enabled() {
+        return Vec::new();
+    }
+
+    let check_variant = normalized_sap_atc_check_variant(&lints.sap_atc.check_variant);
+    let configuration = normalized_sap_atc_configuration(lints.sap_atc.configuration.as_deref());
+    let object_name = snapshot.object_name.as_deref().unwrap_or_default();
+    let mut diagnostics = Vec::new();
+    for result in workspace.sap_atc_results.values() {
+        if result.source_uri != snapshot.uri.as_ref()
+            || result.document_version != snapshot.version
+            || result.check_variant != check_variant
+            || result.configuration != configuration
+            || !sap_atc_object_names_match(object_name, &result.object_name)
+        {
+            continue;
+        }
+
+        for finding in &result.findings {
+            if !sap_atc_finding_targets_snapshot(snapshot, finding) {
+                continue;
+            }
+            let Some(range) = sap_atc_finding_lsp_range(snapshot, &finding.location) else {
+                continue;
+            };
+            let mapped_lint_id = sap_atc_mapped_lint_id(finding);
+            let data = serde_json::to_value(LspSapAtcDiagnosticData {
+                kind: "sap_atc_lint",
+                sap_check_id: finding.sap_check_id.as_str(),
+                sap_message_id: finding.sap_message_id.as_str(),
+                object_name: result.object_name.as_str(),
+                include_name: finding.location.include_name.as_str(),
+                check_variant: result.check_variant.as_str(),
+                configuration: result.configuration.as_deref(),
+                fetched_at: result.fetched_at.as_str(),
+                mapped_local_lint_id: mapped_lint_id.as_deref(),
+                exemption_state: finding.exemption_state.as_deref(),
+                suppression_state: finding.suppression_state.as_deref(),
+            })
+            .ok();
+            diagnostics.push(Diagnostic {
+                range,
+                severity: Some(sap_atc_diagnostic_severity(&finding.severity)),
+                code: Some(NumberOrString::String(sap_atc_diagnostic_code(
+                    finding,
+                    mapped_lint_id.as_deref(),
+                ))),
+                code_description: None,
+                source: Some(SAP_ATC_DIAGNOSTIC_SOURCE.to_owned()),
+                message: sap_atc_diagnostic_message(finding),
+                related_information: None,
+                tags: sap_atc_diagnostic_tags(finding),
+                data,
+            });
+        }
+    }
+    diagnostics
+}
+
+fn sap_atc_object_names_match(snapshot_object_name: &str, result_object_name: &str) -> bool {
+    snapshot_object_name.is_empty()
+        || result_object_name.is_empty()
+        || snapshot_object_name.eq_ignore_ascii_case(result_object_name)
+}
+
+fn sap_atc_finding_targets_snapshot(
+    snapshot: &AnalysisSnapshot,
+    finding: &SapAtcFindingPayload,
+) -> bool {
+    let uri = finding.location.uri.trim();
+    uri.is_empty() || normalize_lsp_uri(uri) == snapshot.uri.as_ref()
+}
+
+fn sap_atc_finding_lsp_range(
+    snapshot: &AnalysisSnapshot,
+    location: &SapAtcSourceLocationPayload,
+) -> Option<Range> {
+    let start_line = location.start_line.unwrap_or(1).saturating_sub(1);
+    let start_column = location.start_column.unwrap_or(1).saturating_sub(1);
+    let start = Position {
+        line: start_line,
+        character: start_column,
+    };
+    position_to_offset_snapshot(snapshot, start)?;
+
+    let end_line = location
+        .end_line
+        .or(location.start_line)
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let end_column = location
+        .end_column
+        .or_else(|| location.start_column.map(|column| column.saturating_add(1)))
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let mut end = Position {
+        line: end_line,
+        character: end_column,
+    };
+    let end_valid = position_to_offset_snapshot(snapshot, end).is_some();
+    if !end_valid
+        || end.line < start.line
+        || (end.line == start.line && end.character < start.character)
+    {
+        end = start;
+    }
+
+    Some(Range { start, end })
+}
+
+fn sap_atc_diagnostic_severity(value: &str) -> DiagnosticSeverity {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "error" | "err" | "fatal" | "priority-1" => DiagnosticSeverity::ERROR,
+        "3" | "info" | "information" | "note" | "priority-3" => DiagnosticSeverity::INFORMATION,
+        "4" | "hint" | "priority-4" => DiagnosticSeverity::HINT,
+        _ => DiagnosticSeverity::WARNING,
+    }
+}
+
+fn sap_atc_diagnostic_message(finding: &SapAtcFindingPayload) -> String {
+    let message = finding.message.trim();
+    if !message.is_empty() {
+        return message.to_string();
+    }
+    format!(
+        "SAP ATC finding {}",
+        sap_atc_external_code(&finding.sap_check_id, &finding.sap_message_id)
+    )
+}
+
+fn sap_atc_diagnostic_code(finding: &SapAtcFindingPayload, mapped_lint_id: Option<&str>) -> String {
+    mapped_lint_id
+        .map(str::to_string)
+        .unwrap_or_else(|| sap_atc_external_code(&finding.sap_check_id, &finding.sap_message_id))
+}
+
+fn sap_atc_external_code(check_id: &str, message_id: &str) -> String {
+    let check = stable_sap_atc_code_part(check_id);
+    let message = stable_sap_atc_code_part(message_id);
+    if message.is_empty() {
+        format!(
+            "sap-atc:{}",
+            if check.is_empty() { "unknown" } else { &check }
+        )
+    } else {
+        format!(
+            "sap-atc:{}/{}",
+            if check.is_empty() { "unknown" } else { &check },
+            message
+        )
+    }
+}
+
+fn stable_sap_atc_code_part(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|ch| {
+            let ch = ch.to_ascii_lowercase();
+            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn sap_atc_mapped_lint_id(finding: &SapAtcFindingPayload) -> Option<String> {
+    if let Some(id) = finding
+        .mapped_local_lint_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return Some(id.to_string());
+    }
+
+    let check_id = finding.sap_check_id.trim();
+    let message_id = finding.sap_message_id.trim();
+    registry().iter().find_map(|metadata| {
+        metadata
+            .sap_aliases
+            .iter()
+            .any(|alias| {
+                alias.eq_ignore_ascii_case(check_id) || alias.eq_ignore_ascii_case(message_id)
+            })
+            .then(|| metadata.id.to_string())
+    })
+}
+
+fn sap_atc_diagnostic_tags(finding: &SapAtcFindingPayload) -> Option<Vec<DiagnosticTag>> {
+    let exempted = finding
+        .exemption_state
+        .as_deref()
+        .is_some_and(sap_atc_state_is_suppressed);
+    let suppressed = finding
+        .suppression_state
+        .as_deref()
+        .is_some_and(sap_atc_state_is_suppressed);
+    (exempted || suppressed).then(|| vec![DiagnosticTag::UNNECESSARY])
+}
+
+fn sap_atc_state_is_suppressed(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.contains("exempt") || value.contains("suppress")
+}
+
 fn sort_lsp_diagnostics(diagnostics: &mut [Diagnostic]) {
     diagnostics.sort_by(|a, b| {
         a.range
@@ -4073,10 +4473,12 @@ pub fn build_lsp_diagnostics_for_workspace(
     let mut diagnostics = build_lsp_parse_diagnostics(snapshot, include_fragment_policy);
     diagnostics.extend(build_lsp_semantic_diagnostics(snapshot));
     diagnostics.extend(build_lsp_lint_diagnostics(snapshot));
-    sort_lsp_diagnostics(&mut diagnostics);
     let Some(workspace) = workspace else {
+        sort_lsp_diagnostics(&mut diagnostics);
         return diagnostics;
     };
+    diagnostics.extend(build_lsp_sap_atc_diagnostics(workspace, snapshot));
+    sort_lsp_diagnostics(&mut diagnostics);
 
     for diagnostic in &mut diagnostics {
         let Some(severity) = diagnostic.severity else {
@@ -5411,7 +5813,8 @@ mod tests {
         DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION, DependencyArtifactPayload,
         GotoDefinitionParams, HoverParams, InlayHintParams, LINT_DIAGNOSTIC_SOURCE,
         REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReadDependencyDocumentParams,
-        ReferenceParams, RemoteDependencyCandidate, RenameParams, ServerState,
+        ReferenceParams, RemoteDependencyCandidate, RenameParams, SAP_ATC_DIAGNOSTIC_SOURCE,
+        SapAtcFindingPayload, SapAtcResultsUpdatedParams, SapAtcSourceLocationPayload, ServerState,
         StoreRemoteDependencyArtifactsParams, WORKSPACE_MANIFEST_UPDATED,
         WorkspaceManifestUpdatedParams, WorkspaceState, build_lsp_diagnostics,
         build_lsp_diagnostics_for_workspace, build_remote_dependency_batch_for_workspace,
@@ -5421,13 +5824,14 @@ mod tests {
         collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
         completion, definition, dependency_document_input_from_payload_with_kind,
         dependency_document_uri, extract_stored_dependency_symbols,
-        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated, hover,
-        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
-        publish_changed_document, publish_changed_document_mut, publish_open_document,
-        publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
-        semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
-        store_remote_dependency_artifacts, workspace_committed_build_plan,
-        workspace_dependency_store, workspace_manifest_diagnostics_params,
+        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated,
+        handle_sap_atc_results_updated, hover, initialize_result, inlay_hints, normalize_lsp_uri,
+        offset_to_position, prepare_rename, publish_changed_document, publish_changed_document_mut,
+        publish_open_document, publish_open_document_mut, read_dependency_document, references,
+        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
+        stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
+        workspace_committed_build_plan, workspace_dependency_store,
+        workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -5594,6 +5998,175 @@ root_file = "src/ZMAIN.abap"
             .expect("workspace");
         let snapshot = workspace.cache.get(&source_uri).expect("snapshot");
         build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref())
+    }
+
+    fn build_sap_atc_test_workspace(
+        test_name: &str,
+        sap_atc_config: &str,
+    ) -> (PathBuf, ServerState, String, String, i32) {
+        let workspace_path = temp_workspace_path(test_name);
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        let manifest = format!(
+            r#"
+version = 1
+
+[lints.sap_atc]
+{sap_atc_config}
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#
+        );
+        fs::write(workspace_path.join("abapls.toml"), manifest).expect("manifest");
+        let source_path = workspace_path.join("src/ZMAIN.abap");
+        fs::write(&source_path, "REPORT zmain.\nWRITE 'x'.\n").expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&path_to_file_uri(&source_path));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        let snapshot_version = state
+            .workspace_for_uri(&source_uri)
+            .and_then(|workspace| workspace.cache.get(&source_uri))
+            .expect("snapshot")
+            .version;
+
+        (
+            workspace_path,
+            state,
+            normalize_lsp_uri(&workspace_uri),
+            source_uri,
+            snapshot_version,
+        )
+    }
+
+    fn import_sap_atc_finding(
+        state: &mut ServerState,
+        workspace_uri: &str,
+        source_uri: &str,
+        document_version: i32,
+    ) {
+        handle_sap_atc_results_updated(
+            state,
+            &SapAtcResultsUpdatedParams {
+                workspace_uri: workspace_uri.to_string(),
+                source_uri: source_uri.to_string(),
+                document_version,
+                object_name: "ZMAIN".to_string(),
+                check_variant: "DEFAULT".to_string(),
+                configuration: None,
+                fetched_at: "2026-04-27T00:00:00Z".to_string(),
+                findings: vec![SapAtcFindingPayload {
+                    sap_check_id: "CI_ALL_FIELDS_NEEDED".to_string(),
+                    sap_message_id: "MSG001".to_string(),
+                    message: "ATC asks for an explicit field list".to_string(),
+                    severity: "warning".to_string(),
+                    mapped_local_lint_id: None,
+                    exemption_state: Some("none".to_string()),
+                    suppression_state: None,
+                    location: SapAtcSourceLocationPayload {
+                        uri: source_uri.to_string(),
+                        object_name: "ZMAIN".to_string(),
+                        include_name: "ZMAIN".to_string(),
+                        start_line: Some(2),
+                        start_column: Some(1),
+                        end_line: Some(2),
+                        end_column: Some(6),
+                    },
+                }],
+            },
+        );
+    }
+
+    #[test]
+    fn imported_sap_atc_findings_publish_as_lsp_diagnostics() {
+        let (workspace_path, mut state, workspace_uri, source_uri, version) =
+            build_sap_atc_test_workspace(
+                "sap_atc_imported_diagnostic",
+                r#"mode = "manual"
+check_variant = "DEFAULT""#,
+            );
+
+        import_sap_atc_finding(&mut state, &workspace_uri, &source_uri, version);
+
+        let workspace = state.workspace_for_uri(&source_uri).expect("workspace");
+        let snapshot = workspace.cache.get(&source_uri).expect("snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.source.as_deref() == Some(SAP_ATC_DIAGNOSTIC_SOURCE))
+            .expect("sap-atc diagnostic");
+
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(
+            diagnostic.code,
+            Some(NumberOrString::String(ABAP_LSP_SELECT_STAR.to_string()))
+        );
+        assert_eq!(diagnostic.range.start.line, 1);
+        assert_eq!(diagnostic.range.start.character, 0);
+        assert_eq!(diagnostic.message, "ATC asks for an explicit field list");
+        let data = diagnostic.data.as_ref().expect("diagnostic data");
+        assert_eq!(
+            data.get("kind").and_then(|value| value.as_str()),
+            Some("sap_atc_lint")
+        );
+        assert_eq!(
+            data.get("sapCheckId").and_then(|value| value.as_str()),
+            Some("CI_ALL_FIELDS_NEEDED")
+        );
+        assert_eq!(
+            data.get("mappedLocalLintId")
+                .and_then(|value| value.as_str()),
+            Some(ABAP_LSP_SELECT_STAR)
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn sap_atc_diagnostics_ignore_stale_versions_and_off_mode() {
+        let (workspace_path, mut state, workspace_uri, source_uri, version) =
+            build_sap_atc_test_workspace(
+                "sap_atc_stale_version",
+                r#"mode = "manual"
+check_variant = "DEFAULT""#,
+            );
+
+        import_sap_atc_finding(&mut state, &workspace_uri, &source_uri, version + 1);
+
+        let workspace = state.workspace_for_uri(&source_uri).expect("workspace");
+        let snapshot = workspace.cache.get(&source_uri).expect("snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.source.as_deref() != Some(SAP_ATC_DIAGNOSTIC_SOURCE)),
+            "{diagnostics:#?}"
+        );
+        let _ = fs::remove_dir_all(&workspace_path);
+
+        let (workspace_path, mut state, workspace_uri, source_uri, version) =
+            build_sap_atc_test_workspace(
+                "sap_atc_off_mode",
+                r#"mode = "off"
+check_variant = "DEFAULT""#,
+            );
+
+        import_sap_atc_finding(&mut state, &workspace_uri, &source_uri, version);
+
+        let workspace = state.workspace_for_uri(&source_uri).expect("workspace");
+        let snapshot = workspace.cache.get(&source_uri).expect("snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.source.as_deref() != Some(SAP_ATC_DIAGNOSTIC_SOURCE)),
+            "{diagnostics:#?}"
+        );
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

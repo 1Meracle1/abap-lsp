@@ -13,16 +13,16 @@ use abap_lsp::{
     DependencyCacheInitializationOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, HoverParams, InlayHintParams, READ_DEPENDENCY_DOCUMENT,
     REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, RenameParams,
-    STORE_REMOTE_DEPENDENCY_ARTIFACTS, SemanticTokensParams, ServerConfig, ServerState,
-    StoreRemoteDependencyArtifactsParams, TextDocumentPositionParams, WORKSPACE_ANALYSIS_STATUS,
-    WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
-    WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
-    build_remote_dependency_batch_for_workspace,
+    SAP_ATC_RESULTS_UPDATED, STORE_REMOTE_DEPENDENCY_ARTIFACTS, SapAtcResultsUpdatedParams,
+    SemanticTokensParams, ServerConfig, ServerState, StoreRemoteDependencyArtifactsParams,
+    TextDocumentPositionParams, WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED,
+    WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams,
+    WorkspacePerformanceMode, WorkspaceState, build_remote_dependency_batch_for_workspace,
     build_remote_dependency_batch_for_workspace_filtered,
     build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
     build_remote_dependency_request_retrying_negatives, code_actions, completion, definition,
     handle_dependency_cache_refresh_requested_with_progress,
-    handle_remote_dependencies_updated_with_progress,
+    handle_remote_dependencies_updated_with_progress, handle_sap_atc_results_updated,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     prepare_rename, prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
     publish_diagnostics_params, publish_open_document_mut_with_progress, read_dependency_document,
@@ -2136,6 +2136,23 @@ fn handle_message(
                 .transpose()?
                 .unwrap_or_default(),
         }),
+        Some(SAP_ATC_RESULTS_UPDATED) => {
+            let mut notifications = Vec::new();
+            if let Some(params) = parse_params::<SapAtcResultsUpdatedParams>(&message)? {
+                let snapshots = handle_sap_atc_results_updated(state, &params);
+                for snapshot in snapshots {
+                    push_publish_diagnostics_notification(
+                        state,
+                        snapshot.as_ref(),
+                        &mut notifications,
+                    )?;
+                }
+            }
+            Ok(HandledMessage {
+                response: None,
+                notifications,
+            })
+        }
         Some("initialized") => {
             let mut notifications = Vec::new();
             let workspace_uris: Vec<_> = state.workspaces.keys().cloned().collect();
@@ -2588,9 +2605,9 @@ mod tests {
         workspace_analysis_status_started,
     };
     use abap_lsp::{
-        DependencyArtifactPayload, DidChangeTextDocumentParams, ServerConfig, ServerState,
-        StoreRemoteDependencyArtifactsParams, WorkspacePerformanceMode, normalize_lsp_uri,
-        refresh_workspace, store_remote_dependency_artifacts,
+        DependencyArtifactPayload, DidChangeTextDocumentParams, SAP_ATC_RESULTS_UPDATED,
+        ServerConfig, ServerState, StoreRemoteDependencyArtifactsParams, WorkspacePerformanceMode,
+        normalize_lsp_uri, refresh_workspace, store_remote_dependency_artifacts,
     };
     use serde_json::{Value, json};
 
@@ -6770,6 +6787,85 @@ object_name = "ZCL_TWO"
                 .iter()
                 .any(|uri| uri.ends_with("/abapls.toml"))
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn handles_sap_atc_results_updated_notification() {
+        let workspace_path = temp_workspace_path("sap_atc_results_notification");
+        let source_dir = workspace_path.join("src/reports/ZMAIN");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[lints.sap_atc]
+mode = "manual"
+check_variant = "DEFAULT"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/reports/ZMAIN/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        let source_path = source_dir.join("ZMAIN.abap");
+        fs::write(&source_path, "REPORT zmain.\nWRITE 'x'.\n").expect("source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = file_uri(&source_path);
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let handled = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": SAP_ATC_RESULTS_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": source_uri,
+                    "documentVersion": 0,
+                    "objectName": "ZMAIN",
+                    "checkVariant": "DEFAULT",
+                    "fetchedAt": "2026-04-27T00:00:00Z",
+                    "findings": [{
+                        "sapCheckId": "ZCHECK",
+                        "sapMessageId": "ZMSG",
+                        "message": "Remote ATC finding",
+                        "severity": "error",
+                        "location": {
+                            "uri": file_uri(&source_path),
+                            "objectName": "ZMAIN",
+                            "includeName": "ZMAIN",
+                            "startLine": 2,
+                            "startColumn": 1
+                        }
+                    }]
+                }
+            }),
+        )
+        .expect("sap atc update");
+
+        assert!(handled.response.is_none());
+        let diagnostics = handled
+            .notifications
+            .iter()
+            .find(|(method, _)| method == "textDocument/publishDiagnostics")
+            .and_then(|(_, payload)| payload.get("diagnostics"))
+            .and_then(Value::as_array)
+            .expect("diagnostics");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.get("source").and_then(Value::as_str) == Some("sap-atc")
+                && diagnostic.get("message").and_then(Value::as_str) == Some("Remote ATC finding")
+                && diagnostic.get("code").and_then(Value::as_str) == Some("sap-atc:zcheck/zmsg")
+        }));
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

@@ -16,7 +16,7 @@ pub use abap_lints::{
     EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_MISSING_TABLES_DECLARATION,
     EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup, LintId, LintLevel, LintMetadata,
     LintOrigin, LintPolicy, LintSuppression, LintSuppressionKind, ProjectLintAnalysis,
-    SuppressionIndex,
+    SapAtcLintConfig, SapAtcLintMode, SuppressionIndex, metadata_for, registry,
 };
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{

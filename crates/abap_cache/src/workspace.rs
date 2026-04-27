@@ -2482,6 +2482,7 @@ fn normalize_manifest(manifest: &mut WorkspaceManifest) {
         .legacy_remote_request_parallelism
         .map(|value| value.max(1));
     normalize_manifest_dependency_store(&mut manifest.dependency_store);
+    normalize_manifest_lints(&mut manifest.lints);
     normalize_manifest_units(&mut manifest.units);
 }
 
@@ -2508,6 +2509,26 @@ fn normalize_manifest_dependency_store(profile: &mut Option<DependencyProfile>) 
     if current.product_version.is_empty() || current.default_package_version.is_empty() {
         *profile = None;
     }
+}
+
+fn normalize_manifest_lints(lints: &mut Option<LintConfig>) {
+    let Some(lints) = lints.as_mut() else {
+        return;
+    };
+
+    let check_variant = lints.sap_atc.check_variant.trim();
+    lints.sap_atc.check_variant = if check_variant.is_empty() {
+        "DEFAULT".to_string()
+    } else {
+        check_variant.to_string()
+    };
+    lints.sap_atc.configuration = lints
+        .sap_atc
+        .configuration
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 }
 
 fn normalize_manifest_units(units: &mut [ManifestUnit]) {
@@ -3423,7 +3444,7 @@ mod tests {
 
     use abap_lints::{
         ABAP_LSP_DEAD_STORE, ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
-        LINT_PROFILE_STRICT, LintLevel, LintPolicy,
+        LINT_PROFILE_STRICT, LintLevel, LintPolicy, SapAtcLintMode,
     };
 
     use super::{
@@ -3485,6 +3506,26 @@ style = "allow"
             policy.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
             LintLevel::Deny
         );
+    }
+
+    #[test]
+    fn parses_manifest_sap_atc_lints_config() {
+        let manifest: WorkspaceManifest = toml::from_str(
+            r#"
+version = 1
+
+[lints.sap_atc]
+mode = "on-save"
+check_variant = "ABAP_CLOUD_DEVELOPMENT_DEFAULT"
+configuration = "CLOUD_READINESS"
+"#,
+        )
+        .expect("manifest");
+
+        let sap_atc = manifest.lints.expect("lint config").sap_atc;
+        assert_eq!(sap_atc.mode, SapAtcLintMode::OnSave);
+        assert_eq!(sap_atc.check_variant, "ABAP_CLOUD_DEVELOPMENT_DEFAULT");
+        assert_eq!(sap_atc.configuration.as_deref(), Some("CLOUD_READINESS"));
     }
 
     #[test]

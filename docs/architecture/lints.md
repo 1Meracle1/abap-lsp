@@ -301,12 +301,9 @@ unsorted_read_table_binary_search = "warn"
 unverified_open_sql_source = "info"
 
 [lints.sap_atc]
-enabled = false
-provider = "none"
-profile = ""
-include_unmapped_remote_findings = false
-unmapped_remote_level = "warn"
-cache_results = true
+mode = "off" # "off" | "manual" | "on-save"
+check_variant = "DEFAULT"
+configuration = ""
 ```
 
 Serde model:
@@ -342,16 +339,18 @@ Normalization in `normalize_manifest` should:
 - retain unknown IDs as manifest errors or warnings so users see typos
 - clamp future numeric SAP ATC settings if added
 
-`[lints.sap_atc]` is configuration-compatible with the future provider but has no remote behavior in
-the first native implementation.
+`[lints.sap_atc]` now controls imported remote SAP ATC findings. The first implementation accepts
+client- or CLI-provided results over the `abapls/sapAtcResultsUpdated` protocol and renders them as
+`source = "sap-atc"` diagnostics. Live SAP ATC HTTP execution still belongs in the VS Code client or
+`abap_adt_cli` until the ADT ATC API is validated against a configured SAP system.
 
 Future remote provider fields can extend this table without changing the native lint schema:
 
 ```toml
 [lints.sap_atc]
-enabled = true
-provider = "remote"
-profile = "ABAP_CLOUD_DEVELOPMENT_DEFAULT"
+mode = "on-save"
+check_variant = "ABAP_CLOUD_DEVELOPMENT_DEFAULT"
+configuration = "CLOUD_READINESS"
 object_set = "workspace"
 timeout_ms = 30000
 include_unmapped_remote_findings = true
@@ -625,14 +624,15 @@ Initial priority:
 Do not hard-code broad SAP names that are not verified by local fixtures. Add aliases incrementally
 with tests that show the suppression syntax actually appears in ABAP code seen by the parser.
 
-For future remote ATC:
+For remote ATC:
 
 1. Run native lint analysis first.
-2. Fetch remote findings as a separate provider.
+2. Fetch or import remote findings as a separate provider.
 3. Map remote findings to native IDs when an alias exists.
 4. Deduplicate by `(uri/object, range, native lint ID, message fingerprint)`.
-5. Emit unmapped remote findings only when `[lints.sap_atc].include_unmapped_remote_findings = true`.
-6. Cache remote results by object name, source hash, ATC profile, SAP system, and provider version.
+5. Emit imported findings with stable external IDs when no native mapping exists.
+6. Cache remote results by object/version/check variant and, for live execution, SAP system and
+   provider version.
 
 ## Initial Rule Inventory
 

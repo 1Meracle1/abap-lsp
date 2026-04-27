@@ -55,6 +55,8 @@ Supported override tables:
   `allow`, `info`, `warn`, or `deny`.
 - `[lints.rules]`: maps exact lint IDs such as `"abap-lsp.dead-store"` to `allow`, `info`, `warn`,
   or `deny`.
+- `[lints.sap_atc]`: configures imported remote SAP ATC findings. `mode` is `off`, `manual`, or
+  `on-save`; `check_variant` defaults to `DEFAULT`; `configuration` is optional.
 
 The implemented lint registry, default levels, groups, origins, and SAP suppression aliases are
 listed in [`docs/reference/lints.md`](reference/lints.md).
