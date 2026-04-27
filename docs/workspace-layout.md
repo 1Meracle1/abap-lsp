@@ -56,6 +56,9 @@ Supported override tables:
 - `[lints.rules]`: maps exact lint IDs such as `"abap-lsp.dead-store"` to `allow`, `info`, `warn`,
   or `deny`.
 
+The implemented lint registry, default levels, groups, origins, and SAP suppression aliases are
+listed in [`docs/reference/lints.md`](reference/lints.md).
+
 Source suppressions are statement-scoped unless explicitly file-scoped:
 
 ```abap

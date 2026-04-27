@@ -20,6 +20,11 @@ pub const ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL: LintId = "abap-lsp.possibly-un
 pub const ABAP_LSP_DEAD_STORE: LintId = "abap-lsp.dead-store";
 pub const ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH: LintId =
     "abap-lsp.unsorted-read-table-binary-search";
+pub const ABAP_LSP_SELECT_STAR: LintId = "abap-lsp.select-star";
+pub const ABAP_LSP_SELECT_IN_LOOP: LintId = "abap-lsp.select-in-loop";
+pub const ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD: LintId = "abap-lsp.for-all-entries-without-guard";
+pub const ABAP_LSP_DYNAMIC_OPEN_SQL: LintId = "abap-lsp.dynamic-open-sql";
+pub const ABAP_LSP_IGNORED_AUTHORITY_CHECK: LintId = "abap-lsp.ignored-authority-check";
 pub const EPC_UNVERIFIED_OPEN_SQL_SOURCE: LintId = "epc.unverified-open-sql-source";
 pub const EPC_INVALID_OPEN_SQL_INTO_TARGET: LintId = "epc.invalid-open-sql-into-target";
 pub const EPC_MISSING_TABLES_DECLARATION: LintId = "epc.missing-tables-declaration";
@@ -764,6 +769,51 @@ const REGISTRY: &[LintMetadata] = &[
         sap_aliases: &[],
     },
     LintMetadata {
+        id: ABAP_LSP_SELECT_STAR,
+        group: LintGroup::Performance,
+        origin: LintOrigin::SapCodeInspector,
+        default_level: LintLevel::Info,
+        summary: "Open SQL SELECT * reads all columns instead of an explicit projection",
+        tags: &["open-sql", "projection"],
+        sap_aliases: &["CI_ALL_FIELDS_NEEDED"],
+    },
+    LintMetadata {
+        id: ABAP_LSP_SELECT_IN_LOOP,
+        group: LintGroup::Performance,
+        origin: LintOrigin::SapCodeInspector,
+        default_level: LintLevel::Warn,
+        summary: "Open SQL SELECT runs inside a LOOP, DO, or WHILE body",
+        tags: &["open-sql", "loop"],
+        sap_aliases: &["CI_SEL_NESTED"],
+    },
+    LintMetadata {
+        id: ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
+        group: LintGroup::Correctness,
+        origin: LintOrigin::SapCodeInspector,
+        default_level: LintLevel::Warn,
+        summary: "FOR ALL ENTRIES is used without an enclosing initial-table guard",
+        tags: &["open-sql", "for-all-entries"],
+        sap_aliases: &["CI_FAE_LINES_ENSURED"],
+    },
+    LintMetadata {
+        id: ABAP_LSP_DYNAMIC_OPEN_SQL,
+        group: LintGroup::Security,
+        origin: LintOrigin::SapCodeInspector,
+        default_level: LintLevel::Info,
+        summary: "Open SQL contains a dynamic source, projection, or WHERE fragment",
+        tags: &["open-sql", "dynamic", "experimental"],
+        sap_aliases: &[],
+    },
+    LintMetadata {
+        id: ABAP_LSP_IGNORED_AUTHORITY_CHECK,
+        group: LintGroup::Security,
+        origin: LintOrigin::SapAtc,
+        default_level: LintLevel::Warn,
+        summary: "AUTHORITY-CHECK result is not checked before sy-subrc is overwritten",
+        tags: &["authorization", "sy-subrc"],
+        sap_aliases: &[],
+    },
+    LintMetadata {
         id: EPC_UNVERIFIED_OPEN_SQL_SOURCE,
         group: LintGroup::Correctness,
         origin: LintOrigin::SapExtendedProgramCheck,
@@ -856,7 +906,9 @@ fn default_lint_profile() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ABAP_LSP_DEAD_STORE, ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
+        ABAP_LSP_DEAD_STORE, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
+        ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
+        ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
         EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE, LINT_PROFILE_RECOMMENDED,
         LINT_PROFILE_STRICT, LintConfig, LintDiagnostic, LintGroup, LintLevel, LintOrigin,
         LintPolicy, LintSuppressionKind, SuppressionIndex, metadata_for, registry,
@@ -866,7 +918,7 @@ mod tests {
 
     #[test]
     fn registry_contains_initial_lints() {
-        assert_eq!(registry().len(), 8);
+        assert_eq!(registry().len(), 13);
 
         let dead_store = metadata_for(ABAP_LSP_DEAD_STORE).expect("dead store metadata");
         assert_eq!(dead_store.group, LintGroup::Style);
@@ -877,6 +929,27 @@ mod tests {
         assert_eq!(open_sql.group, LintGroup::Correctness);
         assert_eq!(open_sql.origin, LintOrigin::SapExtendedProgramCheck);
         assert_eq!(open_sql.default_level, LintLevel::Deny);
+
+        let select_star = metadata_for(ABAP_LSP_SELECT_STAR).expect("select star metadata");
+        assert_eq!(select_star.group, LintGroup::Performance);
+        assert_eq!(select_star.origin, LintOrigin::SapCodeInspector);
+        assert_eq!(select_star.default_level, LintLevel::Info);
+        assert_eq!(select_star.sap_aliases, &["CI_ALL_FIELDS_NEEDED"]);
+
+        let select_in_loop =
+            metadata_for(ABAP_LSP_SELECT_IN_LOOP).expect("select in loop metadata");
+        assert_eq!(select_in_loop.default_level, LintLevel::Warn);
+        assert_eq!(select_in_loop.sap_aliases, &["CI_SEL_NESTED"]);
+
+        let for_all_entries =
+            metadata_for(ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD).expect("fae metadata");
+        assert_eq!(for_all_entries.group, LintGroup::Correctness);
+        assert_eq!(for_all_entries.sap_aliases, &["CI_FAE_LINES_ENSURED"]);
+
+        let authority_check =
+            metadata_for(ABAP_LSP_IGNORED_AUTHORITY_CHECK).expect("authority check metadata");
+        assert_eq!(authority_check.group, LintGroup::Security);
+        assert_eq!(authority_check.origin, LintOrigin::SapAtc);
     }
 
     #[test]

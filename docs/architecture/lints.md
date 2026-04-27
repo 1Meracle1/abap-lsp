@@ -675,14 +675,16 @@ Priority 3: project/include/Open SQL findings
 
 Priority 4: new SAP-inspired native lints after the framework lands
 
-- dynamic SQL without whitelist
-- `SELECT *` outside explicitly allowed contexts
-- database access in loops
-- missing `ORDER BY` before order-dependent reads
+- dynamic SQL without whitelist (first local pack: `abap-lsp.dynamic-open-sql`)
+- `SELECT *` outside explicitly allowed contexts (first local pack: `abap-lsp.select-star`)
+- database access in loops (first local pack: `abap-lsp.select-in-loop`)
+- `FOR ALL ENTRIES` without an initial-table guard (first local pack:
+  `abap-lsp.for-all-entries-without-guard`)
+- missing `ORDER BY` before order-dependent reads (covered by `abap-lsp.unsorted-read-table-binary-search`)
 - obsolete statements and syntax forms
 - hard-coded text literals without text symbol or pragma
 - `CALL 'SYSTEM'` or kernel C calls without approved pseudo comment
-- authority-check result ignored
+- authority-check result ignored (first local pack: `abap-lsp.ignored-authority-check`)
 - broad `CATCH cx_root` without handling
 - empty `CATCH` or swallowed exceptions
 - missing `sy-subrc` check after statements where it matters

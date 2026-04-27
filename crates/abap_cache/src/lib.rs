@@ -9,7 +9,9 @@ use abap_ast::ast::{
 };
 use abap_lexer::{TokenKind, tokenize};
 pub use abap_lints::{
-    ABAP_LSP_DEAD_STORE, ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL, ABAP_LSP_UNREACHABLE_CODE,
+    ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
+    ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL,
+    ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
     ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH, ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT,
     EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_MISSING_TABLES_DECLARATION,
     EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup, LintId, LintLevel, LintMetadata,
@@ -24,11 +26,14 @@ use abap_symbols::{
     FunctionModuleParameterData, FunctionModuleParameterSection, MethodParameterSection,
     NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget, Namespace, PerformArgumentData,
     PerformCallData, PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis,
-    ProjectStaticAnalysisSummary, ReferenceKind, Resolution, ScopeId, ScopeKind, SqlNameRefData,
-    SqlNameRefKind, StructureFieldData, StructureFieldInfo, StructureFieldShape, StructureId,
-    SymbolData, SymbolHandle, SymbolId, SymbolKind, UnitAnalysis, UnitId, Visibility,
-    build_project_routine_analysis, build_project_static_analysis_summary, builtin_routine_spec,
-    call_section_matches_parameter, parameter_is_required,
+    ProjectStaticAnalysisSummary, ReferenceData, ReferenceKind, Resolution,
+    RoutineControlRegionData, RoutineLoopKind, RoutineSiteKind, ScopeId, ScopeKind,
+    SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind, SqlProjectionKind, StructureFieldData,
+    StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId,
+    SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, UnitAnalysis, UnitId,
+    ValueStateCheckData, ValueStateCheckKind, Visibility, build_project_routine_analysis,
+    build_project_static_analysis_summary, builtin_routine_spec, call_section_matches_parameter,
+    parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
         analyze_unit_local_state_for_project_build, incremental_project_update,
@@ -11027,19 +11032,458 @@ fn build_project_lint_analysis<'a>(
             if let Some(mut lint_diagnostic) =
                 lint_diagnostic_from_symbol_diagnostic(diagnostic, lint_policy)
             {
-                if !lint_diagnostic.suppressed {
-                    if let Some(suppression) = suppression_index.suppression_for(&lint_diagnostic) {
-                        if !lint_policy.report_suppressed() {
-                            continue;
-                        }
-                        mark_lint_suppressed(&mut lint_diagnostic, suppression);
-                    }
-                }
-                diagnostics.push((unit.uri.to_string(), lint_diagnostic));
+                push_filtered_lint_diagnostic(
+                    &mut diagnostics,
+                    unit.uri.as_ref(),
+                    &suppression_index,
+                    lint_policy,
+                    &mut lint_diagnostic,
+                );
             }
+        }
+        for mut lint_diagnostic in build_local_lint_diagnostics(unit, lint_policy) {
+            push_filtered_lint_diagnostic(
+                &mut diagnostics,
+                unit.uri.as_ref(),
+                &suppression_index,
+                lint_policy,
+                &mut lint_diagnostic,
+            );
         }
     }
     ProjectLintAnalysis::from_diagnostics(diagnostics)
+}
+
+fn push_filtered_lint_diagnostic(
+    diagnostics: &mut Vec<(String, LintDiagnostic)>,
+    uri: &str,
+    suppression_index: &SuppressionIndex,
+    lint_policy: &LintPolicy,
+    lint_diagnostic: &mut LintDiagnostic,
+) {
+    if !lint_diagnostic.suppressed
+        && let Some(suppression) = suppression_index.suppression_for(lint_diagnostic)
+    {
+        if !lint_policy.report_suppressed() {
+            return;
+        }
+        mark_lint_suppressed(lint_diagnostic, suppression);
+    }
+    diagnostics.push((uri.to_string(), lint_diagnostic.clone()));
+}
+
+fn build_local_lint_diagnostics(
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+) -> Vec<LintDiagnostic> {
+    let mut diagnostics = Vec::new();
+    lint_select_star(unit, lint_policy, &mut diagnostics);
+    lint_select_in_loop(unit, lint_policy, &mut diagnostics);
+    lint_for_all_entries_without_guard(unit, lint_policy, &mut diagnostics);
+    lint_dynamic_open_sql(unit, lint_policy, &mut diagnostics);
+    lint_ignored_authority_check(unit, lint_policy, &mut diagnostics);
+    diagnostics
+}
+
+fn lint_select_star(
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_SELECT_STAR) else {
+        return;
+    };
+    for projection in &unit.sql_projections {
+        if !matches!(
+            projection.kind,
+            SqlProjectionKind::Star | SqlProjectionKind::QualifiedStar
+        ) {
+            continue;
+        }
+        let message = match projection.source_alias.as_ref() {
+            Some(alias) => format!(
+                "Open SQL SELECT uses '{}~*'; list the required columns explicitly",
+                alias
+            ),
+            None => "Open SQL SELECT * reads all columns; list the required columns explicitly"
+                .to_string(),
+        };
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            projection.range.clone(),
+            message,
+            lint_policy,
+        );
+    }
+}
+
+fn lint_select_in_loop(
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_SELECT_IN_LOOP) else {
+        return;
+    };
+    for query in &unit.sql_queries {
+        let Some(loop_kind) = enclosing_loop_kind_for_scope(unit, query.scope) else {
+            continue;
+        };
+        let loop_name = match loop_kind {
+            RoutineLoopKind::Do => "DO",
+            RoutineLoopKind::While => "WHILE",
+            RoutineLoopKind::Loop => "LOOP",
+        };
+        let range = query
+            .from_clause
+            .clone()
+            .unwrap_or_else(|| query.range.clone());
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            range,
+            format!(
+                "Open SQL SELECT runs inside a {loop_name} body; prefer bulk selection before the loop"
+            ),
+            lint_policy,
+        );
+    }
+}
+
+fn lint_for_all_entries_without_guard(
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD) else {
+        return;
+    };
+    for query in &unit.sql_queries {
+        let Some(clause_range) = query.for_all_entries_clause.as_ref() else {
+            continue;
+        };
+        let Some(table_ref) = for_all_entries_table_reference(unit, clause_range) else {
+            continue;
+        };
+        if has_for_all_entries_guard(unit, query.scope, query.range.start, table_ref) {
+            continue;
+        }
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            clause_range.clone(),
+            format!(
+                "FOR ALL ENTRIES on '{}' is not guarded by an initial-table check",
+                table_ref.name
+            ),
+            lint_policy,
+        );
+    }
+}
+
+fn lint_dynamic_open_sql(
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_DYNAMIC_OPEN_SQL) else {
+        return;
+    };
+    for fragment in &unit.sql_dynamic_fragments {
+        let fragment_kind = match fragment.kind {
+            SqlDynamicFragmentKind::Source => "source",
+            SqlDynamicFragmentKind::Projection => "projection",
+            SqlDynamicFragmentKind::Where => "WHERE",
+        };
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            fragment.range.clone(),
+            format!(
+                "Open SQL uses a dynamic {fragment_kind} fragment that cannot be statically verified"
+            ),
+            lint_policy,
+        );
+    }
+}
+
+fn lint_ignored_authority_check(
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_IGNORED_AUTHORITY_CHECK) else {
+        return;
+    };
+    for update in &unit.system_field_updates {
+        if update.statement != SystemFieldStatementKind::AuthorityCheck
+            || !update.field_name.eq_ignore_ascii_case("subrc")
+        {
+            continue;
+        }
+        if authority_check_result_is_observed(unit, update) {
+            continue;
+        }
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            update.range.clone(),
+            "AUTHORITY-CHECK result is not checked via sy-subrc before it is overwritten"
+                .to_string(),
+            lint_policy,
+        );
+    }
+}
+
+fn emit_lint_diagnostic(
+    diagnostics: &mut Vec<LintDiagnostic>,
+    metadata: &'static LintMetadata,
+    range: Range<usize>,
+    message: String,
+    lint_policy: &LintPolicy,
+) {
+    if let Some(diagnostic) = lint_diagnostic_from_metadata(metadata, range, message, lint_policy) {
+        diagnostics.push(diagnostic);
+    }
+}
+
+fn lint_diagnostic_from_metadata(
+    metadata: &'static LintMetadata,
+    range: Range<usize>,
+    message: String,
+    lint_policy: &LintPolicy,
+) -> Option<LintDiagnostic> {
+    let level = lint_policy.level_for(metadata.id);
+    let is_config_suppressed = !level.is_enabled();
+    if is_config_suppressed && !lint_policy.report_suppressed() {
+        return None;
+    }
+    let mut lint = LintDiagnostic {
+        id: metadata.id.to_string(),
+        range: range.clone(),
+        message,
+        level: if is_config_suppressed {
+            LintLevel::Info
+        } else {
+            level
+        },
+        origin: metadata.origin,
+        group: metadata.group,
+        tags: metadata.tags.iter().map(|tag| (*tag).to_string()).collect(),
+        sap_aliases: metadata
+            .sap_aliases
+            .iter()
+            .map(|alias| (*alias).to_string())
+            .collect(),
+        suppressed: false,
+        suppression: None,
+    };
+    if is_config_suppressed {
+        mark_lint_suppressed(
+            &mut lint,
+            LintSuppression {
+                kind: LintSuppressionKind::Config,
+                range: range.start..range.start,
+                token: "config".to_string(),
+            },
+        );
+    }
+    Some(lint)
+}
+
+fn enclosing_loop_kind_for_scope(unit: &UnitAnalysis, scope: ScopeId) -> Option<RoutineLoopKind> {
+    unit.routine_control_regions.iter().find_map(|region| {
+        let RoutineControlRegionData::Loop(loop_region) = region else {
+            return None;
+        };
+        scope_descends_from(unit, scope, loop_region.body_scope).then_some(loop_region.kind)
+    })
+}
+
+fn for_all_entries_table_reference<'a>(
+    unit: &'a UnitAnalysis,
+    clause_range: &Range<usize>,
+) -> Option<&'a ReferenceData> {
+    unit.references
+        .iter()
+        .filter(|reference| {
+            reference.namespace == Namespace::Value
+                && range_contains(clause_range, &reference.range)
+                && !reference.name.as_ref().is_empty()
+        })
+        .min_by_key(|reference| (reference.range.start, reference.range.end))
+}
+
+fn has_for_all_entries_guard(
+    unit: &UnitAnalysis,
+    query_scope: ScopeId,
+    query_start: usize,
+    table_ref: &ReferenceData,
+) -> bool {
+    unit.value_state_checks.iter().any(|check| {
+        if check.range.start > query_start
+            || check.field_name.is_some()
+            || !value_state_check_matches_reference(unit, check, table_ref)
+        {
+            return false;
+        }
+        non_initial_guard_scope_for_check(unit, check)
+            .is_some_and(|guard_scope| scope_descends_from(unit, query_scope, guard_scope))
+            || initial_exit_guard_scope_for_check(unit, check).is_some_and(
+                |(guard_scope, guard_end)| {
+                    guard_end <= query_start && scope_descends_from(unit, query_scope, guard_scope)
+                },
+            )
+    })
+}
+
+fn value_state_check_matches_reference(
+    unit: &UnitAnalysis,
+    check: &ValueStateCheckData,
+    reference: &ReferenceData,
+) -> bool {
+    if !check
+        .symbol_name
+        .eq_ignore_ascii_case(reference.name.as_ref())
+    {
+        return false;
+    }
+    let Some(check_reference) = reference_for_value_state_check(unit, check) else {
+        return true;
+    };
+    match (check_reference.resolution, reference.resolution) {
+        (Some(Resolution::Symbol(left)), Some(Resolution::Symbol(right))) => left == right,
+        _ => true,
+    }
+}
+
+fn reference_for_value_state_check<'a>(
+    unit: &'a UnitAnalysis,
+    check: &ValueStateCheckData,
+) -> Option<&'a ReferenceData> {
+    unit.references.iter().find(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.scope == check.scope
+            && reference.range == check.symbol_range
+            && reference.name == check.symbol_name
+    })
+}
+
+fn non_initial_guard_scope_for_check(
+    unit: &UnitAnalysis,
+    check: &ValueStateCheckData,
+) -> Option<ScopeId> {
+    match check.kind {
+        ValueStateCheckKind::IsNotInitial => Some(check.scope),
+        ValueStateCheckKind::IsInitial => explicit_else_scope_for_then_scope(unit, check.scope),
+        ValueStateCheckKind::EqualsZero
+        | ValueStateCheckKind::NotEqualsZero
+        | ValueStateCheckKind::ConditionProbe => None,
+    }
+}
+
+fn explicit_else_scope_for_then_scope(unit: &UnitAnalysis, then_scope: ScopeId) -> Option<ScopeId> {
+    unit.routine_control_regions.iter().find_map(|region| {
+        let RoutineControlRegionData::If(if_region) = region else {
+            return None;
+        };
+        (if_region.then_scope == then_scope)
+            .then_some(if_region.else_scope)
+            .flatten()
+    })
+}
+
+fn initial_exit_guard_scope_for_check(
+    unit: &UnitAnalysis,
+    check: &ValueStateCheckData,
+) -> Option<(ScopeId, usize)> {
+    if check.kind != ValueStateCheckKind::IsInitial {
+        return None;
+    }
+    unit.routine_control_regions.iter().find_map(|region| {
+        let RoutineControlRegionData::If(if_region) = region else {
+            return None;
+        };
+        if if_region.then_scope != check.scope
+            || !scope_has_direct_terminating_site(unit, if_region.then_scope)
+        {
+            return None;
+        }
+        Some((if_region.scope, if_region.range.end))
+    })
+}
+
+fn scope_has_direct_terminating_site(unit: &UnitAnalysis, scope: ScopeId) -> bool {
+    unit.routine_sites.iter().any(|site| {
+        site.scope == scope
+            && matches!(
+                site.kind,
+                RoutineSiteKind::Return
+                    | RoutineSiteKind::Raise
+                    | RoutineSiteKind::Leave
+                    | RoutineSiteKind::LeaveListProcessing
+                    | RoutineSiteKind::Stop
+            )
+    })
+}
+
+fn authority_check_result_is_observed(unit: &UnitAnalysis, update: &SystemFieldUpdateData) -> bool {
+    unit.value_state_checks
+        .iter()
+        .filter(|check| is_sy_subrc_check(check))
+        .filter_map(|check| latest_subrc_update_before_check(unit, check))
+        .any(|latest| same_system_field_update(latest, update))
+}
+
+fn latest_subrc_update_before_check<'a>(
+    unit: &'a UnitAnalysis,
+    check: &ValueStateCheckData,
+) -> Option<&'a SystemFieldUpdateData> {
+    unit.system_field_updates
+        .iter()
+        .filter(|update| {
+            update.field_name.eq_ignore_ascii_case("subrc")
+                && update.range.end <= check.range.start
+                && scope_descends_from(unit, check.scope, update.scope)
+        })
+        .max_by_key(|update| (update.range.end, update.range.start))
+}
+
+fn is_sy_subrc_check(check: &ValueStateCheckData) -> bool {
+    check
+        .field_name
+        .as_ref()
+        .is_some_and(|field_name| field_name.eq_ignore_ascii_case("subrc"))
+        && (check.symbol_name.eq_ignore_ascii_case("sy")
+            || check.symbol_name.eq_ignore_ascii_case("syst"))
+}
+
+fn same_system_field_update(left: &SystemFieldUpdateData, right: &SystemFieldUpdateData) -> bool {
+    left.scope == right.scope
+        && left.range == right.range
+        && left.statement == right.statement
+        && left
+            .field_name
+            .eq_ignore_ascii_case(right.field_name.as_ref())
+}
+
+fn scope_descends_from(unit: &UnitAnalysis, scope: ScopeId, ancestor: ScopeId) -> bool {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        if scope_id == ancestor {
+            return true;
+        }
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
+    }
+    false
+}
+
+fn range_contains(outer: &Range<usize>, inner: &Range<usize>) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
 }
 
 fn lint_diagnostic_from_symbol_diagnostic(
@@ -12051,10 +12495,11 @@ impl DocumentStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        ABAP_LSP_DEAD_STORE, AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput,
-        DocumentStore, HoveredComponentKind, ReferenceTarget, SnapshotBuildPlan,
-        ddic_xml_to_abap_source, dependency_surface_text,
-        opened_function_module_dependency_analysis_text,
+        ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
+        ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
+        AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
+        HoveredComponentKind, ReferenceTarget, SnapshotBuildPlan, ddic_xml_to_abap_source,
+        dependency_surface_text, opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
@@ -12178,6 +12623,15 @@ mod tests {
         diagnostics
             .iter()
             .filter(|diag| diag.kind == kind)
+            .map(|diag| src[diag.range.clone()].to_string())
+            .collect()
+    }
+
+    fn lint_slices(src: &str, snapshot: &AnalysisSnapshot, id: &str) -> Vec<String> {
+        snapshot
+            .lint_diagnostics()
+            .iter()
+            .filter(|diag| diag.id == id)
             .map(|diag| src[diag.range.clone()].to_string())
             .collect()
     }
@@ -14570,6 +15024,177 @@ gv_unused = 1 ##NEEDED.";
             "{:#?}",
             snapshot.lint_diagnostics()
         );
+    }
+
+    #[test]
+    fn local_lint_pack_flags_select_star() {
+        let store = DocumentStore::default();
+        let src = "SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).";
+
+        let snapshot = store.publish("file:///lint_select_star.abap", 1, src);
+        let select_star = lint_slices(src, &snapshot, ABAP_LSP_SELECT_STAR);
+
+        assert_eq!(select_star, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn local_lint_pack_honors_select_star_code_inspector_alias() {
+        let store = DocumentStore::default();
+        let src = "SELECT * FROM scarr INTO TABLE @DATA(lt_scarr). \"#EC CI_ALL_FIELDS_NEEDED";
+
+        let snapshot = store.publish("file:///lint_select_star_suppressed.abap", 1, src);
+
+        assert!(
+            snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|diag| diag.id != ABAP_LSP_SELECT_STAR),
+            "{:#?}",
+            snapshot.lint_diagnostics()
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_flags_select_inside_loop() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_ids TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+LOOP AT lt_ids INTO DATA(lv_id).
+  SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
+ENDLOOP.";
+
+        let snapshot = store.publish("file:///lint_select_in_loop.abap", 1, src);
+        let select_in_loop = lint_slices(src, &snapshot, ABAP_LSP_SELECT_IN_LOOP);
+
+        assert!(
+            select_in_loop
+                .iter()
+                .any(|slice| slice.contains("FROM scarr")),
+            "{select_in_loop:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_flags_for_all_entries_without_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_keys TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+SELECT carrid
+  FROM scarr
+  INTO TABLE @DATA(lt_scarr)
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE carrid = @lt_keys.";
+
+        let snapshot = store.publish("file:///lint_fae_unguarded.abap", 1, src);
+        let fae = lint_slices(src, &snapshot, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD);
+
+        assert_eq!(
+            fae,
+            vec!["FOR ALL ENTRIES IN @lt_keys".to_string()],
+            "{fae:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_accepts_enclosing_for_all_entries_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_keys TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+IF lt_keys IS NOT INITIAL.
+  SELECT carrid
+    FROM scarr
+    INTO TABLE @DATA(lt_scarr)
+    FOR ALL ENTRIES IN @lt_keys
+    WHERE carrid = @lt_keys.
+ENDIF.";
+
+        let snapshot = store.publish("file:///lint_fae_guarded.abap", 1, src);
+        let fae = lint_slices(src, &snapshot, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD);
+
+        assert!(fae.is_empty(), "{fae:?}");
+    }
+
+    #[test]
+    fn local_lint_pack_accepts_for_all_entries_initial_return_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_keys TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+IF lt_keys IS INITIAL.
+  RETURN.
+ENDIF.
+
+SELECT carrid
+  FROM scarr
+  INTO TABLE @DATA(lt_scarr)
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE carrid = @lt_keys.";
+
+        let snapshot = store.publish("file:///lint_fae_return_guarded.abap", 1, src);
+        let fae = lint_slices(src, &snapshot, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD);
+
+        assert!(fae.is_empty(), "{fae:?}");
+    }
+
+    #[test]
+    fn local_lint_pack_flags_dynamic_open_sql_fragments() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lv_fields TYPE string.
+DATA lv_table TYPE string.
+DATA lv_where TYPE string.
+
+SELECT (lv_fields)
+  FROM (lv_table)
+  INTO TABLE @DATA(lt_rows)
+  WHERE (lv_where).";
+
+        let snapshot = store.publish("file:///lint_dynamic_open_sql.abap", 1, src);
+        let dynamic_sql = lint_slices(src, &snapshot, ABAP_LSP_DYNAMIC_OPEN_SQL);
+
+        assert!(
+            dynamic_sql.iter().any(|slice| slice == "(lv_fields)")
+                && dynamic_sql.iter().any(|slice| slice == "(lv_table)")
+                && dynamic_sql.iter().any(|slice| slice == "WHERE (lv_where)"),
+            "{dynamic_sql:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_flags_ignored_authority_check_result() {
+        let store = DocumentStore::default();
+        let src = "\
+AUTHORITY-CHECK OBJECT 'S_CARRID'
+  ID 'ACTVT' FIELD '03'.
+WRITE 'ok'.";
+
+        let snapshot = store.publish("file:///lint_ignored_authority_check.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_AUTHORITY_CHECK);
+
+        assert_eq!(
+            ignored,
+            vec!["AUTHORITY-CHECK OBJECT 'S_CARRID'\n  ID 'ACTVT' FIELD '03'.".to_string()],
+            "{ignored:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_accepts_authority_check_subrc_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+AUTHORITY-CHECK OBJECT 'S_CARRID'
+  ID 'ACTVT' FIELD '03'.
+IF sy-subrc <> 0.
+  RETURN.
+ENDIF.";
+
+        let snapshot = store.publish("file:///lint_authority_check_guarded.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_AUTHORITY_CHECK);
+
+        assert!(ignored.is_empty(), "{ignored:?}");
     }
 
     #[test]

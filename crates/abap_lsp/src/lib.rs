@@ -5383,9 +5383,9 @@ fn callable_completion_item_metadata(
 #[cfg(test)]
 mod tests {
     use abap_cache::{
-        ABAP_LSP_UNREACHABLE_CODE, DocumentInput, DocumentStore, ManifestPerformance,
-        ManifestResolution, ManifestUnit, ManifestUnitMember, WorkspaceDocument, WorkspaceManifest,
-        path_to_file_uri,
+        ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE, DocumentInput, DocumentStore,
+        ManifestPerformance, ManifestResolution, ManifestUnit, ManifestUnitMember,
+        WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
     };
     use abap_dependency_store::StoredArtifactInput;
     use abap_symbols::DiagnosticKind;
@@ -5742,6 +5742,25 @@ root_file = "src/ZMAIN.abap"
             diagnostics
                 .iter()
                 .all(|diag| !diag.message.contains("unreachable code")),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn workspace_lint_rule_allow_suppresses_local_lint_diagnostic() {
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_allow_select_star",
+            r#"
+[lints.rules]
+"abap-lsp.select-star" = "allow"
+"#,
+            "SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).",
+        );
+
+        assert!(
+            diagnostics.iter().all(|diag| {
+                diag.code != Some(NumberOrString::String(ABAP_LSP_SELECT_STAR.to_string()))
+            }),
             "{diagnostics:#?}"
         );
     }
