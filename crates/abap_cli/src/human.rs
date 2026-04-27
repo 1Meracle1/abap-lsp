@@ -8,6 +8,20 @@ pub struct Diagnostic<'a> {
     pub range: Range<usize>,
 }
 
+pub struct LintDiagnostic<'a> {
+    pub severity: &'a str,
+    pub code: &'a str,
+    pub message: &'a str,
+    pub range: Range<usize>,
+}
+
+struct DiagnosticBlock<'a> {
+    severity: &'a str,
+    code: Option<&'a str>,
+    message: &'a str,
+    range: Range<usize>,
+}
+
 struct LineSpan {
     /// 1-based line number.
     line_nr: usize,
@@ -53,6 +67,15 @@ fn color_stderr(color: bool, code: &str, s: &str) -> String {
     }
 }
 
+fn color_for_severity(severity: &str) -> &'static str {
+    match severity {
+        "error" => "1;31",
+        "warning" => "1;33",
+        "info" | "note" => "1;36",
+        _ => "1",
+    }
+}
+
 fn stderr_color_enabled() -> bool {
     io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
@@ -63,18 +86,56 @@ pub fn write_diagnostics(
     source: &str,
     file_label: &str,
 ) -> io::Result<bool> {
+    let blocks: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| DiagnosticBlock {
+            severity: "error",
+            code: None,
+            message: diagnostic.message,
+            range: diagnostic.range.clone(),
+        })
+        .collect();
+    write_diagnostic_blocks(&blocks, source, file_label)
+}
+
+pub fn write_lint_diagnostics(
+    diagnostics: &[LintDiagnostic<'_>],
+    source: &str,
+    file_label: &str,
+) -> io::Result<bool> {
+    let blocks: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| DiagnosticBlock {
+            severity: diagnostic.severity,
+            code: Some(diagnostic.code),
+            message: diagnostic.message,
+            range: diagnostic.range.clone(),
+        })
+        .collect();
+    write_diagnostic_blocks(&blocks, source, file_label)
+}
+
+fn write_diagnostic_blocks(
+    diagnostics: &[DiagnosticBlock<'_>],
+    source: &str,
+    file_label: &str,
+) -> io::Result<bool> {
     if diagnostics.is_empty() {
         return Ok(false);
     }
 
     let color = stderr_color_enabled();
-    let err_lbl = color_stderr(color, "1;31", "error");
     let lines = collect_lines(source);
     let width = gutter_width(lines.last().map(|l| l.line_nr).unwrap_or(1));
 
     let mut stderr = io::stderr().lock();
     for d in diagnostics {
-        writeln!(stderr, "{err_lbl}: {}", d.message, err_lbl = err_lbl)?;
+        let label = match d.code {
+            Some(code) => format!("{}[{}]", d.severity, code),
+            None => d.severity.to_string(),
+        };
+        let label = color_stderr(color, color_for_severity(d.severity), &label);
+        writeln!(stderr, "{label}: {}", d.message)?;
 
         let (line, col) = line_col_for_byte(source, d.range.start);
         writeln!(

@@ -5,6 +5,7 @@
 //! abap-cli parse [--json] [--ast] [--errors-only] [FILE]
 //! abap-cli symbols [--json] [--unknown-only] [FILE]
 //! abap-cli check [--json] [FILE]
+//! abap-cli lint [--json] [--with-project] [--pretty] [FILE]
 //! abap-cli analyze --json [--with-project] [--pretty] [FILE]
 //! abap-cli expand [--json] [--pretty] [FILE]
 //! abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
@@ -29,10 +30,10 @@ use abap_ast::arena::NodeId;
 use abap_cache::{
     AnalysisSnapshot, CallDataflowLifecycle, CallDataflowMatch, CallDataflowParameterTrace,
     CallDataflowProvenanceGraph, CallDataflowQuery, CallDataflowSelectedCall, CallDataflowTrace,
-    CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource,
-    LocalExportResolver, SnapshotBuildPlan, build_call_dataflow_trace, build_effective_source,
-    file_uri_to_path, load_workspace_documents, manifest_document_metadata, path_to_file_uri,
-    resolve_local_export_dependency_document,
+    CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource, LintDiagnostic,
+    LintLevel, LintPolicy, LocalExportResolver, SnapshotBuildPlan, build_call_dataflow_trace,
+    build_effective_source, file_uri_to_path, load_workspace_documents, manifest_document_metadata,
+    path_to_file_uri, resolve_local_export_dependency_document,
 };
 use abap_lexer::tokenize;
 use abap_lsp::{
@@ -54,6 +55,7 @@ enum Command {
     Parse,
     Symbols,
     Check,
+    Lint,
     Analyze,
     Expand,
     CallGraph,
@@ -91,9 +93,9 @@ struct Cli {
     parse_show_ast: bool,
     /// Only emit unresolved names (placeholder until resolution exists).
     unknown_only: bool,
-    /// Analyze: load workspace peers for cross-unit resolution.
+    /// Analyze/lint: load workspace peers for cross-unit resolution.
     analyze_with_project: bool,
-    /// Analyze/expand/call-graph/remote-candidates: pretty-print JSON instead of compact output.
+    /// Analyze/lint/expand/call-graph/remote-candidates: pretty-print JSON instead of compact output.
     pretty: bool,
     /// Call graph: focus queries on a matching callable name/id.
     call_graph_symbol: Option<String>,
@@ -117,6 +119,7 @@ Usage:
   abap-cli [--json] parse [--ast] [--errors-only] [FILE]
   abap-cli [--json] symbols [--unknown-only] [FILE]
   abap-cli [--json] check [FILE]
+  abap-cli lint [--json] [--with-project] [--pretty] [FILE]
   abap-cli analyze --json [--with-project] [--pretty] [FILE]
   abap-cli expand [--json] [--pretty] [FILE]
   abap-cli call-graph --json [--symbol NAME] [--pretty] [FILE]
@@ -131,6 +134,7 @@ Commands:
   parse     Parser diagnostics (silent human run when clean); `--json --ast` for a syntax tree
   symbols   `--json` for identifier index; human is silent when clean, otherwise diagnostics and a symbol table
   check     Front-end diagnostics only (human silent when clean)
+  lint      Configurable lint diagnostics (human silent when clean; warnings do not fail)
   analyze   Semantic dossier export for AI/tooling consumption (`--json` required for structured output)
   expand    Effective source expansion with include source maps
   call-graph  Project-scale call graph export and caller/callee queries (`--json` required)
@@ -142,13 +146,13 @@ Options:
   --ast           Parse: include `ast` in JSON output (ignored in human mode; use `--json --ast`)
   --errors-only   Lex: only errors. Parse (JSON): same as default without --ast
   --unknown-only  Symbols: only unknown / unresolved identifiers (empty until wired)
-  --with-project  Analyze: load workspace peers around FILE for cross-unit resolution
+  --with-project  Analyze/lint: load workspace peers around FILE for cross-unit resolution
   --symbol NAME   Call graph: focus on callable nodes matching NAME / qualified name / node id
   --target NAME   Call dataflow: target function module or method name
   --caller NAME   Call dataflow: optional caller filter
   --occurrence N  Call dataflow: select one deterministic match occurrence
   --diagram KIND  Call dataflow: human diagram renderer (`ascii` default; `svg`, `mermaid`, and `rich-mermaid` available)
-  --pretty        Analyze/expand/call-graph/call-dataflow/remote-candidates: pretty-print JSON
+  --pretty        Analyze/lint/expand/call-graph/call-dataflow/remote-candidates: pretty-print JSON
 
   -h, --help      Show this help
 "#
@@ -178,6 +182,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         "parse" => Command::Parse,
         "symbols" => Command::Symbols,
         "check" => Command::Check,
+        "lint" => Command::Lint,
         "analyze" => Command::Analyze,
         "expand" => Command::Expand,
         "call-graph" => Command::CallGraph,
@@ -292,9 +297,9 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             usage()
         ));
     }
-    if analyze_with_project && command != Command::Analyze {
+    if analyze_with_project && !matches!(command, Command::Analyze | Command::Lint) {
         return Err(format!(
-            "--with-project only applies to analyze\n{}",
+            "--with-project only applies to analyze and lint\n{}",
             usage()
         ));
     }
@@ -302,6 +307,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         && !matches!(
             command,
             Command::Analyze
+                | Command::Lint
                 | Command::Expand
                 | Command::CallGraph
                 | Command::CallDataflow
@@ -309,7 +315,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         )
     {
         return Err(format!(
-            "--pretty only applies to analyze, expand, call-graph, call-dataflow, and remote-candidates\n{}",
+            "--pretty only applies to analyze, lint, expand, call-graph, call-dataflow, and remote-candidates\n{}",
             usage()
         ));
     }
@@ -464,6 +470,9 @@ fn run() -> Result<i32, String> {
 
     if cli.command == Command::Analyze {
         return run_analyze(&cli);
+    }
+    if cli.command == Command::Lint {
+        return run_lint(&cli);
     }
     if cli.command == Command::Expand {
         return run_expand(&cli);
@@ -741,6 +750,7 @@ fn run() -> Result<i32, String> {
             Ok(human_exit(cli.json_output, !parsed.errors.is_empty()))
         }
         Command::Analyze
+        | Command::Lint
         | Command::Expand
         | Command::CallGraph
         | Command::CallDataflow
@@ -764,6 +774,34 @@ struct AnalyzeSnapshot {
     dependency_unit_count: Option<usize>,
 }
 
+struct LintSnapshot {
+    snapshot: Arc<AnalysisSnapshot>,
+    target_path: Option<String>,
+    with_project: bool,
+    workspace_root_uri: Option<String>,
+    manifest_present: bool,
+    project_unit_count: Option<usize>,
+    dependency_unit_count: Option<usize>,
+}
+
+struct LintHardError {
+    phase: &'static str,
+    message: String,
+    range: Range<usize>,
+}
+
+struct LintReportContext<'a> {
+    target_uri: &'a str,
+    target_path: Option<&'a str>,
+    object_name: Option<&'a str>,
+    is_dependency: bool,
+    with_project: bool,
+    workspace_root_uri: Option<&'a str>,
+    manifest_present: bool,
+    project_unit_count: Option<usize>,
+    dependency_unit_count: Option<usize>,
+}
+
 struct ExpandSnapshotSet {
     root: Arc<AnalysisSnapshot>,
     snapshots: HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
@@ -775,6 +813,194 @@ struct RemoteCandidateWorkspace {
     source_uris: Vec<String>,
     source_candidates: BTreeMap<String, Vec<RemoteDependencyCandidate>>,
     candidates: Vec<RemoteDependencyCandidate>,
+}
+
+fn run_lint(cli: &Cli) -> Result<i32, String> {
+    let snapshot = if cli.analyze_with_project {
+        load_project_lint_snapshot(cli.path.as_deref())?
+    } else {
+        load_single_file_lint_snapshot(cli.path.as_deref())?
+    };
+    let hard_errors = lint_hard_errors(snapshot.snapshot.as_ref());
+    let findings = if hard_errors.is_empty() {
+        snapshot.snapshot.lint_diagnostics().to_vec()
+    } else {
+        Vec::new()
+    };
+    let has_deny = findings
+        .iter()
+        .any(|finding| !finding.suppressed && finding.level == LintLevel::Deny);
+    let should_fail = !hard_errors.is_empty() || has_deny;
+
+    if cli.json_output {
+        let output = lint_report_json(&snapshot, &findings, &hard_errors);
+        let json = if cli.pretty {
+            serde_json::to_string_pretty(&output)
+        } else {
+            serde_json::to_string(&output)
+        }
+        .map_err(|e| e.to_string())?;
+        println!("{json}");
+        return Ok(if should_fail { 1 } else { 0 });
+    }
+
+    let source = snapshot.snapshot.text.as_ref();
+    let file_label = lint_file_label(&snapshot);
+    if !hard_errors.is_empty() {
+        let diags = parse_errors_to_diags(&snapshot.snapshot.parse.errors);
+        human::write_diagnostics(&diags, source, &file_label).map_err(|e| e.to_string())?;
+    } else {
+        let diags: Vec<_> = findings
+            .iter()
+            .map(|finding| human::LintDiagnostic {
+                severity: lint_severity_label(finding.level),
+                code: finding.id.as_str(),
+                message: finding.message.as_str(),
+                range: finding.range.clone(),
+            })
+            .collect();
+        human::write_lint_diagnostics(&diags, source, &file_label).map_err(|e| e.to_string())?;
+    }
+
+    Ok(if should_fail { 1 } else { 0 })
+}
+
+fn lint_hard_errors(snapshot: &AnalysisSnapshot) -> Vec<LintHardError> {
+    snapshot
+        .parse
+        .errors
+        .iter()
+        .map(|error| LintHardError {
+            phase: "parse",
+            message: error.message.clone(),
+            range: error.range.clone(),
+        })
+        .collect()
+}
+
+fn lint_severity_label(level: LintLevel) -> &'static str {
+    match level {
+        LintLevel::Allow | LintLevel::Info => "info",
+        LintLevel::Warn => "warning",
+        LintLevel::Deny => "error",
+    }
+}
+
+fn lint_file_label(snapshot: &LintSnapshot) -> String {
+    snapshot.target_path.clone().unwrap_or_else(|| {
+        if snapshot.snapshot.uri.as_ref() == "file:///stdin.abap" {
+            "<stdin>".to_string()
+        } else {
+            snapshot.snapshot.uri.to_string()
+        }
+    })
+}
+
+fn lint_report_json(
+    snapshot: &LintSnapshot,
+    findings: &[LintDiagnostic],
+    hard_errors: &[LintHardError],
+) -> Value {
+    let context = LintReportContext {
+        target_uri: snapshot.snapshot.uri.as_ref(),
+        target_path: snapshot.target_path.as_deref(),
+        object_name: snapshot.snapshot.object_name.as_deref(),
+        is_dependency: snapshot.snapshot.is_dependency,
+        with_project: snapshot.with_project,
+        workspace_root_uri: snapshot.workspace_root_uri.as_deref(),
+        manifest_present: snapshot.manifest_present,
+        project_unit_count: snapshot.project_unit_count,
+        dependency_unit_count: snapshot.dependency_unit_count,
+    };
+    lint_report_json_from_context(&context, findings, hard_errors)
+}
+
+fn lint_report_json_from_context(
+    context: &LintReportContext<'_>,
+    findings: &[LintDiagnostic],
+    hard_errors: &[LintHardError],
+) -> Value {
+    json!({
+        "schema": "abap-lsp.lint",
+        "version": 1,
+        "phase": "lint",
+        "target": {
+            "uri": context.target_uri,
+            "path": context.target_path,
+            "object_name": context.object_name,
+            "is_dependency": context.is_dependency,
+        },
+        "workspace": {
+            "with_project": context.with_project,
+            "root_uri": context.workspace_root_uri,
+            "manifest_present": context.manifest_present,
+            "project_unit_count": context.project_unit_count,
+            "dependency_unit_count": context.dependency_unit_count,
+        },
+        "findings": findings.iter().map(|finding| lint_finding_json(context.target_uri, finding)).collect::<Vec<_>>(),
+        "hard_errors": hard_errors.iter().map(lint_hard_error_json).collect::<Vec<_>>(),
+        "summary": lint_summary_json(findings),
+    })
+}
+
+fn lint_finding_json(uri: &str, finding: &LintDiagnostic) -> Value {
+    json!({
+        "uri": uri,
+        "lint_id": finding.id.as_str(),
+        "level": finding.level.as_str(),
+        "group": finding.group.as_str(),
+        "origin": finding.origin.as_str(),
+        "message": finding.message.as_str(),
+        "range": [finding.range.start, finding.range.end],
+        "suppressed": finding.suppressed,
+        "suppression": finding.suppression.as_ref().map(|suppression| json!({
+            "kind": suppression.kind.as_str(),
+            "range": [suppression.range.start, suppression.range.end],
+            "token": suppression.token.as_str(),
+        })),
+    })
+}
+
+fn lint_hard_error_json(error: &LintHardError) -> Value {
+    json!({
+        "phase": error.phase,
+        "message": error.message.as_str(),
+        "range": [error.range.start, error.range.end],
+    })
+}
+
+fn lint_summary_json(findings: &[LintDiagnostic]) -> Value {
+    let mut by_level = BTreeMap::from([
+        ("allow", 0usize),
+        ("info", 0usize),
+        ("warn", 0usize),
+        ("deny", 0usize),
+    ]);
+    let mut by_group = BTreeMap::from([
+        ("correctness", 0usize),
+        ("performance", 0usize),
+        ("security", 0usize),
+        ("style", 0usize),
+        ("modernization", 0usize),
+        ("package", 0usize),
+        ("experimental", 0usize),
+    ]);
+    let mut suppressed = 0usize;
+
+    for finding in findings {
+        *by_level.entry(finding.level.as_str()).or_insert(0) += 1;
+        *by_group.entry(finding.group.as_str()).or_insert(0) += 1;
+        if finding.suppressed {
+            suppressed += 1;
+        }
+    }
+
+    json!({
+        "total": findings.len(),
+        "suppressed": suppressed,
+        "by_level": by_level,
+        "by_group": by_group,
+    })
 }
 
 fn run_analyze(cli: &Cli) -> Result<i32, String> {
@@ -3160,6 +3386,45 @@ fn load_single_file_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapsh
     })
 }
 
+fn load_single_file_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, String> {
+    let source = read_source(path)?;
+    let target_path = resolve_target_path(path)?;
+    let target_uri = target_path
+        .as_ref()
+        .map(|path| path_to_file_uri(path))
+        .unwrap_or_else(|| "file:///stdin.abap".to_string());
+    let store = DocumentStore::default();
+    let snapshots = store.replace_all_with_build_plan(
+        vec![DocumentInput {
+            uri: Arc::from(target_uri.as_str()),
+            version: 1,
+            text: Arc::from(source),
+            is_dependency: false,
+            object_name: None,
+        }],
+        SnapshotBuildPlan::SEMANTIC_DOSSIER,
+    );
+    let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
+        format!(
+            "single-file lint analysis did not include {}",
+            target_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| target_uri.clone())
+        )
+    })?;
+
+    Ok(LintSnapshot {
+        snapshot,
+        target_path: target_path.map(|path| path.display().to_string()),
+        with_project: false,
+        workspace_root_uri: None,
+        manifest_present: false,
+        project_unit_count: Some(1),
+        dependency_unit_count: Some(0),
+    })
+}
+
 fn load_call_graph_snapshot(
     path: Option<&str>,
     build_plan: SnapshotBuildPlan,
@@ -3299,6 +3564,80 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
         workspace_root_uri: Some(workspace_root_uri),
         manifest_present,
         project_unit_count: Some(snapshot.project.units.len()),
+        dependency_unit_count: Some(dependency_unit_count),
+    })
+}
+
+fn load_project_lint_snapshot(path: Option<&str>) -> Result<LintSnapshot, String> {
+    let target_path = resolve_target_path(path)?
+        .ok_or_else(|| "--with-project requires a file path".to_string())?;
+    let target_uri = path_to_file_uri(&target_path);
+    let workspace_root = find_workspace_root(&target_path)?;
+    let workspace_root_uri = path_to_file_uri(&workspace_root);
+    let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
+    let manifest_present = workspace.manifest.is_some();
+    let mut documents = workspace.documents.clone();
+
+    if !documents
+        .iter()
+        .any(|document| document.uri.as_ref() == target_uri)
+    {
+        let source = std::fs::read_to_string(&target_path)
+            .map_err(|e| format!("{}: {e}", target_path.display()))?;
+        let (is_dependency, object_name) = workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| {
+                manifest_document_metadata(
+                    &workspace.root_path,
+                    &workspace.root_uri,
+                    manifest,
+                    &target_uri,
+                )
+            })
+            .unwrap_or((false, None));
+        documents.push(abap_cache::WorkspaceDocument {
+            uri: Arc::from(target_uri.as_str()),
+            version: 1,
+            text: source,
+            is_dependency,
+            object_name,
+        });
+    }
+
+    let store = DocumentStore::default();
+    store.set_lint_policy(LintPolicy::from_config_opt(
+        workspace
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.lints.as_ref()),
+    ));
+    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
+        &store,
+        &workspace.root_path,
+        &documents,
+        SnapshotBuildPlan::SEMANTIC_DOSSIER,
+        None,
+    );
+    let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
+        format!(
+            "workspace lint analysis did not include {}",
+            target_path.display()
+        )
+    })?;
+    let dependency_unit_count = snapshots
+        .values()
+        .filter(|snapshot| snapshot.is_dependency)
+        .count();
+    let project_unit_count = snapshot.project.units.len();
+
+    Ok(LintSnapshot {
+        snapshot,
+        target_path: Some(target_path.display().to_string()),
+        with_project: true,
+        workspace_root_uri: Some(workspace_root_uri),
+        manifest_present,
+        project_unit_count: Some(project_unit_count),
         dependency_unit_count: Some(dependency_unit_count),
     })
 }
@@ -3568,8 +3907,9 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallDataflowDiagramFormat, load_remote_candidate_workspace, parse_cli_args,
-        path_to_file_uri, render_call_dataflow_diagram_block,
+        CallDataflowDiagramFormat, LintReportContext, lint_finding_json,
+        lint_report_json_from_context, lint_summary_json, load_remote_candidate_workspace,
+        parse_cli_args, path_to_file_uri, render_call_dataflow_diagram_block,
         render_call_dataflow_parameter_provenance_mermaid,
         render_call_dataflow_parameter_rich_mermaid, render_call_dataflow_report,
     };
@@ -3577,9 +3917,87 @@ mod tests {
         CallDataflowByteRange, CallDataflowLifecycle, CallDataflowLifecycleEdge,
         CallDataflowLifecycleNode, CallDataflowParameterTrace, CallDataflowProvenanceEdge,
         CallDataflowProvenanceGraph, CallDataflowProvenanceNode, CallDataflowQuery,
-        CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace,
+        CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace, LintDiagnostic,
+        LintGroup, LintLevel, LintOrigin,
     };
+    use serde_json::json;
     use std::fs;
+
+    #[test]
+    fn parses_lint_command_with_project_and_pretty_json() {
+        let cli = parse_cli_args(
+            ["lint", "--json", "--with-project", "--pretty", "main.abap"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .expect("cli");
+
+        assert_eq!(cli.command, super::Command::Lint);
+        assert!(cli.json_output);
+        assert!(cli.analyze_with_project);
+        assert!(cli.pretty);
+        assert_eq!(cli.path.as_deref(), Some("main.abap"));
+    }
+
+    #[test]
+    fn lint_json_finding_and_summary_shape_are_stable() {
+        let finding = LintDiagnostic {
+            id: "abap-lsp.dead-store".to_string(),
+            range: 5..13,
+            message: "assigned value is never read".to_string(),
+            level: LintLevel::Warn,
+            origin: LintOrigin::AbapLsp,
+            group: LintGroup::Style,
+            tags: Vec::new(),
+            sap_aliases: Vec::new(),
+            suppressed: false,
+            suppression: None,
+        };
+
+        let value = lint_finding_json("file:///zlint.abap", &finding);
+        assert_eq!(value["uri"], "file:///zlint.abap");
+        assert_eq!(value["lint_id"], "abap-lsp.dead-store");
+        assert_eq!(value["level"], "warn");
+        assert_eq!(value["group"], "style");
+        assert_eq!(value["origin"], "abap-lsp");
+        assert_eq!(value["message"], "assigned value is never read");
+        assert_eq!(value["range"], json!([5, 13]));
+        assert_eq!(value["suppressed"], false);
+        assert!(value["suppression"].is_null());
+
+        let summary = lint_summary_json(std::slice::from_ref(&finding));
+        assert_eq!(summary["total"], 1);
+        assert_eq!(summary["suppressed"], 0);
+        assert_eq!(summary["by_level"]["warn"], 1);
+        assert_eq!(summary["by_level"]["deny"], 0);
+        assert_eq!(summary["by_group"]["style"], 1);
+        assert_eq!(summary["by_group"]["correctness"], 0);
+
+        let report = lint_report_json_from_context(
+            &LintReportContext {
+                target_uri: "file:///zlint.abap",
+                target_path: Some("zlint.abap"),
+                object_name: None,
+                is_dependency: false,
+                with_project: true,
+                workspace_root_uri: Some("file:///workspace"),
+                manifest_present: true,
+                project_unit_count: Some(3),
+                dependency_unit_count: Some(1),
+            },
+            &[finding],
+            &[],
+        );
+        assert_eq!(report["schema"], "abap-lsp.lint");
+        assert_eq!(report["version"], 1);
+        assert_eq!(report["phase"], "lint");
+        assert_eq!(report["target"]["uri"], "file:///zlint.abap");
+        assert_eq!(report["target"]["path"], "zlint.abap");
+        assert_eq!(report["workspace"]["with_project"], true);
+        assert_eq!(report["workspace"]["root_uri"], "file:///workspace");
+        assert_eq!(report["findings"][0]["lint_id"], "abap-lsp.dead-store");
+        assert_eq!(report["hard_errors"], json!([]));
+    }
 
     #[test]
     fn parses_remote_candidates_command() {

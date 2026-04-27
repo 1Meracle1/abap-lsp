@@ -6,6 +6,33 @@ The language server emits native lint diagnostics with stable IDs. Configure the
 
 SAP pragma and pseudo-comment suppressions only work when the lint exposes the listed alias.
 
+## CLI Usage
+
+Run native lints for a single file:
+
+```bat
+cargo run -p abap_cli -- lint path\to\zreport.abap
+```
+
+Human output is silent when no findings are emitted. When findings exist, diagnostics are rendered
+to stderr in a rustc-style format such as `warning[abap-lsp.dead-store]: ...`.
+
+Use JSON for CI or downstream tooling:
+
+```bat
+cargo run -p abap_cli -- lint --json --pretty path\to\zreport.abap
+cargo run -p abap_cli -- lint --json --with-project path\to\zreport.abap
+```
+
+`--with-project` discovers the workspace around `FILE`, applies `[lints]` from `abapls.toml`, and
+uses the same project-loading conventions as `abap-cli analyze --json --with-project`. Without
+`--with-project`, the command uses a single-file snapshot and the default lint profile.
+
+JSON output uses top-level `schema = "abap-lsp.lint"` and `version = 1`, includes target/workspace
+metadata, `findings`, `hard_errors`, and `summary` counts by level and group. Warn-only findings do
+not fail the process. The exit status is nonzero when parse hard errors prevent linting or when at
+least one unsuppressed `deny` finding is emitted.
+
 | ID | Default | Group | Origin | SAP suppression aliases |
 | --- | --- | --- | --- | --- |
 | `abap-lsp.unreachable-code` | `warn` | `correctness` | `abap-lsp` | none |

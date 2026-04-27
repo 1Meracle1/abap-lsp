@@ -54,21 +54,25 @@ Use this for local source analysis and exports:
 ```bat
 cargo run -p abap_cli -- check examples\report_minimal.abap
 cargo run -p abap_cli -- parse --json --ast examples\data_typed.abap
+cargo run -p abap_cli -- lint --json --with-project path\to\zcl_demo.abap
 cargo run -p abap_cli -- analyze --json --with-project path\to\zcl_demo.abap
 cargo run -p abap_cli -- call-graph --json --symbol zcl_demo~run path\to\zcl_demo.abap
 cargo run -p abap_cli -- call-dataflow --target BAPI_PO_CREATE1 path\to\report.abap
 cargo run -p abap_cli -- remote-candidates --json path\to\workspace
 ```
 
-The two most important machine-readable exports are:
+Key machine-readable exports are:
 
 - semantic dossier: symbols, references, scopes, classes, function modules,
   SQL facts, include edges, unresolved names, static-analysis summaries, and
   stable counts,
+- lint: stable native lint findings with levels, groups, origins,
+  suppression state, and summary counts,
 - call graph and call-dataflow: project-scale caller/callee graphs and
   selected-call parameter provenance.
 
 See [docs/semantic-dossier.md](docs/semantic-dossier.md),
+[docs/reference/lints.md](docs/reference/lints.md),
 [docs/call-graph.md](docs/call-graph.md), and
 [docs/call-dataflow.md](docs/call-dataflow.md).
 
