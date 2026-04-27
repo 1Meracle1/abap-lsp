@@ -2434,6 +2434,39 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .collect_token_expression_refs_infos(&handle_tokens, scope, true);
     }
 
+    pub(super) fn collect_fetch_cursor_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        let children: Vec<_> = self
+            .collector
+            .file
+            .children(node)
+            .map(|child| (child, self.collector.file.kind(child)))
+            .collect();
+        for (child, kind) in children {
+            match kind {
+                SyntaxKind::CursorHandleOperand => {
+                    let tokens = self.collector.syntax_token_nodes(child);
+                    self.collector
+                        .collect_token_expression_refs_infos(&tokens, scope, true);
+                }
+                SyntaxKind::SelectPackageSizeClause => {
+                    let tokens = self.collector.syntax_token_nodes(child);
+                    if let Some(size_idx) = tokens
+                        .iter()
+                        .position(|token| token.text.eq_ignore_ascii_case("size"))
+                    {
+                        self.collector.collect_token_expression_refs_infos(
+                            &tokens[size_idx + 1..],
+                            scope,
+                            true,
+                        );
+                    }
+                }
+                _ => self.collector.walk_node(child, scope),
+            }
+        }
+    }
+
     pub(super) fn collect_wait_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         if let Some(stmt) = WaitStmt::cast(self.collector.syntax(node))

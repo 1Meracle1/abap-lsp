@@ -197,6 +197,9 @@ impl<'a> Collector<'a> {
             SyntaxKind::CloseCursorStmt => {
                 self.stmt_lowering().collect_close_cursor_stmt(node, scope)
             }
+            SyntaxKind::FetchCursorStmt => {
+                self.stmt_lowering().collect_fetch_cursor_stmt(node, scope)
+            }
             SyntaxKind::SelectionScreenStmt => self
                 .stmt_lowering()
                 .collect_selection_screen_stmt(node, scope),

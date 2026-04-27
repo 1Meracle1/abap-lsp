@@ -7478,6 +7478,32 @@ CLOSE CURSOR @lv_cursor.";
 }
 
 #[test]
+fn resolves_fetch_cursor_host_operands() {
+    let src = "\
+DATA lv_cursor TYPE cursor.\n\
+DATA lt_lot_items TYPE STANDARD TABLE OF i WITH EMPTY KEY.\n\
+DATA iv_size_lot_items TYPE i.\n\
+FETCH NEXT CURSOR @lv_cursor INTO TABLE @lt_lot_items PACKAGE SIZE @iv_size_lot_items.";
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///fetch_cursor.abap", src, &parsed);
+
+    for name in ["lv_cursor", "lt_lot_items", "iv_size_lot_items"] {
+        let refs: Vec<_> = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Value && reference.name.as_ref() == name
+            })
+            .collect();
+        assert_eq!(refs.len(), 1, "expected one {name} reference, got {refs:?}");
+        assert!(
+            refs[0].resolution.is_some(),
+            "expected FETCH operand {name} to resolve, got {refs:?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_unknown_sy_field_access() {
     let src = "IF sy-nope = 0. ENDIF. DATA lv_bad TYPE sy-nope.";
     let parsed = parse(src);

@@ -1054,6 +1054,43 @@ fn find_top_level_keyword(
     None
 }
 
+fn find_top_level_keyword_in(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keywords: &[&str],
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && token.kind == TokenKind::Ident
+            && keywords
+                .iter()
+                .any(|keyword| is_keyword(source, token, keyword))
+        {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
 fn find_top_level_alias_as(
     source: &str,
     tokens: &[Token],
@@ -1834,7 +1871,7 @@ fn build_select_projection_list(
         return None;
     }
     let mut children = Vec::new();
-    let mut item_start = start;
+    let mut item_start = skip_trivia(tokens, start);
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
@@ -1853,16 +1890,20 @@ fn build_select_projection_list(
                 sql_case_depth -= 1
             }
             TokenKind::Comma if paren == 0 && bracket == 0 && brace == 0 && sql_case_depth == 0 => {
-                if let Some(item) = build_sql_projection_item(b, source, tokens, item_start, idx) {
+                let item_end = trim_trailing_comment_tokens(tokens, item_start, idx);
+                if let Some(item) =
+                    build_sql_projection_item(b, source, tokens, item_start, item_end)
+                {
                     children.push(item);
                 }
-                item_start = idx + 1;
+                item_start = skip_trivia(tokens, idx + 1);
             }
             _ => {}
         }
         idx += 1;
     }
-    if let Some(item) = build_sql_projection_item(b, source, tokens, item_start, end_exclusive) {
+    let item_end = trim_trailing_comment_tokens(tokens, item_start, end_exclusive);
+    if let Some(item) = build_sql_projection_item(b, source, tokens, item_start, item_end) {
         children.push(item);
     }
     let range = tokens[start].range.start..tokens[end_exclusive - 1].range.end;
@@ -11760,6 +11801,123 @@ pub fn try_parse_open_cursor_stmt(
     Some((node, next))
 }
 
+fn fetch_cursor_tail_clause_kind(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<SelectClauseKind> {
+    let kind = select_clause_start_kind(source, tokens, idx)?;
+    match kind {
+        SelectClauseKind::Into | SelectClauseKind::Appending | SelectClauseKind::PackageSize => {
+            Some(kind)
+        }
+        _ => None,
+    }
+}
+
+pub fn try_parse_fetch_cursor_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let fetch_tok = tokens.get(idx)?;
+    if !is_keyword(source, fetch_tok, "fetch") {
+        return None;
+    }
+
+    let next_idx = skip_trivia(tokens, idx + 1);
+    let next_tok = tokens.get(next_idx)?;
+    if !is_keyword(source, next_tok, "next") {
+        return None;
+    }
+
+    let cursor_idx = skip_trivia(tokens, next_idx + 1);
+    let cursor_tok = tokens.get(cursor_idx)?;
+    if !is_keyword(source, cursor_tok, "cursor") {
+        return None;
+    }
+
+    let Some(period_i) = scan_until_top_level_period(tokens, cursor_idx + 1) else {
+        let eof_idx = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::Eof)
+            .unwrap_or(tokens.len());
+        let err_end = tokens
+            .get(eof_idx.saturating_sub(1))
+            .map(|token| token.range.end)
+            .unwrap_or(fetch_tok.range.end);
+        errors.push(crate::ParseError {
+            message: "syntax error: expected '.' after FETCH NEXT CURSOR statement".to_string(),
+            range: fetch_tok.range.start..err_end,
+        });
+        let err_children = error_token_children(b, tokens, idx, eof_idx);
+        let node = b.branch(
+            SyntaxKind::Error,
+            fetch_tok.range.start..err_end,
+            &err_children,
+        );
+        return Some((node, tokens.len()));
+    };
+
+    let handle_start = skip_trivia(tokens, cursor_idx + 1);
+    let tail_start = find_top_level_keyword_in(
+        source,
+        tokens,
+        handle_start,
+        period_i,
+        &["into", "appending"],
+    )?;
+    if handle_start >= tail_start {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, handle_start);
+    if let Some(handle) = build_token_branch(
+        b,
+        SyntaxKind::CursorHandleOperand,
+        tokens,
+        handle_start,
+        tail_start,
+    ) {
+        children.push(handle);
+    }
+
+    let mut cursor = tail_start;
+    while cursor < period_i {
+        if let Some(kind) = fetch_cursor_tail_clause_kind(source, tokens, cursor) {
+            let clause_end = scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
+                fetch_cursor_tail_clause_kind(source, tokens, idx).is_some()
+            });
+            if let Some(clause) = build_select_clause(b, source, tokens, kind, cursor, clause_end) {
+                children.push(clause);
+            }
+            cursor = clause_end;
+        } else {
+            let next_clause = scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
+                fetch_cursor_tail_clause_kind(source, tokens, idx).is_some()
+            });
+            push_token_children(b, &mut children, tokens, cursor, next_clause);
+            cursor = next_clause;
+        }
+    }
+    push_token_children(b, &mut children, tokens, period_i, period_i + 1);
+
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(fetch_tok.range.end);
+    let node = b.branch(
+        SyntaxKind::FetchCursorStmt,
+        fetch_tok.range.start..end,
+        &children,
+    );
+    Some((node, period_i + 1))
+}
+
 pub fn try_parse_close_cursor_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -11836,9 +11994,9 @@ mod tests {
     use abap_ast::SyntaxKind;
     use abap_ast::ast::{
         AstNode, CallStmt, CallStmtKind, ClassDecl, CloseCursorStmt, DataLikeDecl,
-        DataLikeStorageKind, FormDecl, FormParamPassingKind, FormParamSectionKind, FunctionDecl,
-        FunctionParamSectionKind, IncludeStmt, MethodDecl, OpenCursorStmt, SelectIntoClause,
-        SelectStmt, SubmitStmt, SyntaxNodeRef, WriteStmt,
+        DataLikeStorageKind, FetchCursorStmt, FormDecl, FormParamPassingKind, FormParamSectionKind,
+        FunctionDecl, FunctionParamSectionKind, IncludeStmt, MethodDecl, OpenCursorStmt,
+        SelectIntoClause, SelectStmt, SubmitStmt, SyntaxNodeRef, WriteStmt,
     };
 
     #[test]
@@ -14162,6 +14320,44 @@ ENDFORM.",
     }
 
     #[test]
+    fn parses_select_projection_comments_and_old_tail_order() {
+        let parsed = crate::parse(
+            "SELECT rep_evtid,                                                   \"Reporting Event id\n         evtid,\n*        rule_type,\n         status_response\n  APPENDING CORRESPONDING FIELDS OF TABLE et_rep_dep\n  FROM /sttp/rep_dep\n  FOR ALL ENTRIES IN lt_keys\n  WHERE rep_evtid = lt_keys-rep_evtid.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectProjectionList),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem),
+            3
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectForAllEntriesClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+    }
+
+    #[test]
     fn parses_open_cursor_with_hold_and_for_all_entries_query() {
         let parsed = crate::parse(
             "OPEN CURSOR WITH HOLD @lv_cursor\n  FOR\n  SELECT a~objid,\n         c~gtin\n  FROM /sttp/dm_obj AS a\n  JOIN /sttp/dm_obj_ids AS b ON a~objid = b~objid\n  LEFT JOIN /sttp/dm_obj_itm AS c ON a~objid = c~objid\n  FOR ALL ENTRIES IN @lt_event_rel\n  WHERE a~objid = @lt_event_rel-objid\n    AND ( b~storage = @/sttp/cl_constants=>gcs_storage-active_hot\n       OR b~storage = @/sttp/cl_constants=>gcs_storage-active_cold ).",
@@ -14214,6 +14410,72 @@ ENDFORM.",
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::MethodDecl), 2);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::OpenCursorStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_fetch_next_cursor_into_table_package_size() {
+        let parsed = crate::parse(
+            "FETCH NEXT CURSOR @lv_cursor INTO TABLE @lt_lot_items PACKAGE SIZE @iv_size_lot_items.\nIF sy-subrc <> 0.\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FetchCursorStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CursorHandleOperand),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectPackageSizeClause),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        let stmt = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::FetchCursorStmt)
+            .and_then(|node| FetchCursorStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("fetch cursor stmt");
+        assert!(stmt.handle().is_some());
+    }
+
+    #[test]
+    fn parses_fetch_next_cursor_appending_corresponding_package_size() {
+        let parsed = crate::parse(
+            "FETCH NEXT CURSOR s_cursor\n  APPENDING CORRESPONDING FIELDS OF TABLE lt_mcex_cnf_s_maa\n  PACKAGE SIZE s_maximum_size.\nIF sy-subrc EQ 0.\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FetchCursorStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::CursorHandleOperand),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectPackageSizeClause),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        let stmt = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::FetchCursorStmt)
+            .and_then(|node| FetchCursorStmt::cast(SyntaxNodeRef::new(&parsed.file, node)))
+            .expect("fetch cursor stmt");
+        assert!(stmt.handle().is_some());
     }
 
     #[test]

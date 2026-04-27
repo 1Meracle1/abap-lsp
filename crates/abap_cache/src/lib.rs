@@ -9382,6 +9382,7 @@ fn is_selector_query_container(kind: &str) -> bool {
             | "ReplaceStmt"
             | "SortStmt"
             | "CloseCursorStmt"
+            | "FetchCursorStmt"
             | "SetPfStatusStmt"
             | "SetTitlebarStmt"
             | "AssertStmt"

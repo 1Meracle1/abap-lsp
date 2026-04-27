@@ -343,6 +343,8 @@ pub enum SyntaxKind {
     SelectStmt,
     /// `OPEN CURSOR ... FOR SELECT ... .`
     OpenCursorStmt,
+    /// `FETCH NEXT CURSOR ... INTO ... .`
+    FetchCursorStmt,
     /// `CLOSE CURSOR cursor .`
     CloseCursorStmt,
     /// `OPEN DATASET ... .`
@@ -814,6 +816,7 @@ impl SyntaxKind {
             Self::SqlScriptIsland => "SqlScriptIsland",
             Self::SelectStmt => "SelectStmt",
             Self::OpenCursorStmt => "OpenCursorStmt",
+            Self::FetchCursorStmt => "FetchCursorStmt",
             Self::CloseCursorStmt => "CloseCursorStmt",
             Self::OpenDatasetStmt => "OpenDatasetStmt",
             Self::CloseDatasetStmt => "CloseDatasetStmt",
