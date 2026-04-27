@@ -630,6 +630,21 @@ pub struct LintConfig {
     pub rules: BTreeMap<String, LintLevel>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintConfigDiagnosticKind {
+    UnknownGroup,
+    UnknownNativeRule,
+    UnknownRule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LintConfigDiagnostic {
+    pub kind: LintConfigDiagnosticKind,
+    pub section: &'static str,
+    pub key: String,
+    pub message: String,
+}
+
 impl Default for LintConfig {
     fn default() -> Self {
         Self {
@@ -722,11 +737,13 @@ impl LintPolicy {
 
         for (id, level) in &config.rules {
             let id = normalized_lint_id(id);
-            if !id.is_empty() {
-                let level = metadata_for(id.as_str())
-                    .map(|metadata| enforce_hard_error_level(metadata, *level))
-                    .unwrap_or(*level);
-                levels.insert(id, level);
+            if id.is_empty() {
+                continue;
+            }
+            if let Some(metadata) = metadata_for(id.as_str()) {
+                levels.insert(id, enforce_hard_error_level(metadata, *level));
+            } else if is_external_provider_lint_id(id.as_str()) {
+                levels.insert(id, *level);
             }
         }
 
@@ -768,6 +785,58 @@ pub fn registry() -> &'static [LintMetadata] {
 pub fn metadata_for(id: &str) -> Option<&'static LintMetadata> {
     let id = normalized_lint_id(id);
     registry().iter().find(|metadata| metadata.id == id)
+}
+
+pub fn lint_config_diagnostics(config: &LintConfig) -> Vec<LintConfigDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for group in config.groups.keys() {
+        if LintGroup::from_key(group).is_none() {
+            diagnostics.push(LintConfigDiagnostic {
+                kind: LintConfigDiagnosticKind::UnknownGroup,
+                section: "lints.groups",
+                key: group.clone(),
+                message: format!(
+                    "unknown lint group '{group}'; expected one of: {}",
+                    known_lint_groups().join(", ")
+                ),
+            });
+        }
+    }
+
+    for id in config.rules.keys() {
+        let normalized_id = normalized_lint_id(id);
+        if normalized_id.is_empty()
+            || metadata_for(normalized_id.as_str()).is_some()
+            || is_external_provider_lint_id(normalized_id.as_str())
+        {
+            continue;
+        }
+
+        let (kind, message) = if is_native_lint_namespace(normalized_id.as_str()) {
+            (
+                LintConfigDiagnosticKind::UnknownNativeRule,
+                format!(
+                    "unknown native lint rule '{id}'; check docs/reference/lints.md for supported native lint IDs"
+                ),
+            )
+        } else {
+            (
+                LintConfigDiagnosticKind::UnknownRule,
+                format!(
+                    "unknown lint rule '{id}'; external/provider lint IDs must use '<provider>:<id>' such as 'sap-atc:<check>/<message>'"
+                ),
+            )
+        };
+        diagnostics.push(LintConfigDiagnostic {
+            kind,
+            section: "lints.rules",
+            key: id.clone(),
+            message,
+        });
+    }
+
+    diagnostics
 }
 
 pub fn normalize_lint_profile(value: &str) -> &'static str {
@@ -941,6 +1010,39 @@ fn normalized_group_overrides(
         .collect()
 }
 
+fn known_lint_groups() -> Vec<&'static str> {
+    [
+        LintGroup::Correctness,
+        LintGroup::Performance,
+        LintGroup::Security,
+        LintGroup::Style,
+        LintGroup::Modernization,
+        LintGroup::Package,
+        LintGroup::Experimental,
+    ]
+    .into_iter()
+    .map(LintGroup::as_str)
+    .collect()
+}
+
+fn is_native_lint_namespace(id: &str) -> bool {
+    id.starts_with("abap-lsp.") || id.starts_with("epc.")
+}
+
+fn is_external_provider_lint_id(id: &str) -> bool {
+    let Some((provider, provider_id)) = id.split_once(':') else {
+        return false;
+    };
+    !provider.is_empty()
+        && !provider_id.trim().is_empty()
+        && !matches!(provider, "abap-lsp" | "epc")
+        && provider.chars().all(is_provider_namespace_char)
+}
+
+fn is_provider_namespace_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')
+}
+
 fn normalized_key(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
 }
@@ -979,8 +1081,9 @@ mod tests {
         ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
         ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
         EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE, LINT_PROFILE_RECOMMENDED,
-        LINT_PROFILE_STRICT, LintConfig, LintDiagnostic, LintGroup, LintLevel, LintOrigin,
-        LintPolicy, LintSuppressionKind, SuppressionIndex, metadata_for, registry,
+        LINT_PROFILE_STRICT, LintConfig, LintConfigDiagnosticKind, LintDiagnostic, LintGroup,
+        LintLevel, LintOrigin, LintPolicy, LintSuppressionKind, SuppressionIndex,
+        lint_config_diagnostics, metadata_for, registry,
     };
     use abap_lexer::tokenize;
     use std::collections::BTreeMap;
@@ -1044,7 +1147,7 @@ mod tests {
             groups: BTreeMap::from([("correctness".to_string(), LintLevel::Warn)]),
             rules: BTreeMap::from([
                 (ABAP_LSP_DEAD_STORE.to_string(), LintLevel::Deny),
-                ("custom.future-lint".to_string(), LintLevel::Info),
+                ("sap-atc:zcheck/zmsg".to_string(), LintLevel::Info),
             ]),
             ..LintConfig::default()
         };
@@ -1055,7 +1158,46 @@ mod tests {
         assert!(policy.report_suppressed());
         assert_eq!(policy.level_for(ABAP_LSP_UNREACHABLE_CODE), LintLevel::Warn);
         assert_eq!(policy.level_for(ABAP_LSP_DEAD_STORE), LintLevel::Deny);
-        assert_eq!(policy.level_for("custom.future-lint"), LintLevel::Info);
+        assert_eq!(policy.level_for("sap-atc:zcheck/zmsg"), LintLevel::Info);
+    }
+
+    #[test]
+    fn config_diagnostics_report_unknown_groups_and_rules() {
+        let config = LintConfig {
+            groups: BTreeMap::from([("suspicious".to_string(), LintLevel::Warn)]),
+            rules: BTreeMap::from([
+                ("abap-lsp.missing-rule".to_string(), LintLevel::Warn),
+                ("epc.missing-rule".to_string(), LintLevel::Deny),
+                ("custom.future-lint".to_string(), LintLevel::Info),
+                ("sap-atc:zcheck/zmsg".to_string(), LintLevel::Info),
+            ]),
+            ..LintConfig::default()
+        };
+
+        let diagnostics = lint_config_diagnostics(&config);
+
+        assert_eq!(diagnostics.len(), 4);
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == LintConfigDiagnosticKind::UnknownGroup
+                && diagnostic.key == "suspicious"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == LintConfigDiagnosticKind::UnknownNativeRule
+                && diagnostic.key == "abap-lsp.missing-rule"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == LintConfigDiagnosticKind::UnknownNativeRule
+                && diagnostic.key == "epc.missing-rule"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == LintConfigDiagnosticKind::UnknownRule
+                && diagnostic.key == "custom.future-lint"
+        }));
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.key != "sap-atc:zcheck/zmsg")
+        );
     }
 
     #[test]

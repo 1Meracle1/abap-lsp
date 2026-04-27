@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use abap_dependency_store::DependencyProfile;
-use abap_lints::LintConfig;
+use abap_lints::{LintConfig, lint_config_diagnostics};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde::Deserialize;
@@ -288,7 +288,22 @@ pub struct WorkspaceLoadResult {
     pub manifest_len_bytes: usize,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_error: Option<String>,
+    pub manifest_diagnostics: Vec<ManifestDiagnostic>,
     pub documents: Vec<WorkspaceDocument>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManifestTextRange {
+    pub start_line: u32,
+    pub start_character: u32,
+    pub end_line: u32,
+    pub end_character: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestDiagnostic {
+    pub range: ManifestTextRange,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +423,8 @@ pub fn load_workspace_documents_with_progress(
         Ok(manifest) => (manifest, None),
         Err(error) => (None, Some(error)),
     };
+    let manifest_diagnostics =
+        load_manifest_diagnostics_from_workspace(&root_path, manifest.as_ref());
     let cache_dir = manifest_cache_dir(manifest.as_ref()).to_string();
     let manifest_for_loading = manifest
         .as_ref()
@@ -482,8 +499,180 @@ pub fn load_workspace_documents_with_progress(
         manifest_len_bytes,
         manifest: effective_manifest,
         manifest_error,
+        manifest_diagnostics,
         documents,
     }
+}
+
+pub fn load_manifest_diagnostics_from_workspace(
+    root_path: &Path,
+    manifest: Option<&WorkspaceManifest>,
+) -> Vec<ManifestDiagnostic> {
+    let Some(manifest) = manifest else {
+        return Vec::new();
+    };
+    let manifest_path = root_path.join("abapls.toml");
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return Vec::new();
+    };
+    manifest_diagnostics_for_manifest_text(&text, manifest)
+}
+
+pub fn manifest_diagnostics_for_manifest_text(
+    text: &str,
+    manifest: &WorkspaceManifest,
+) -> Vec<ManifestDiagnostic> {
+    let Some(lints) = manifest.lints.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut diagnostics: Vec<_> = lint_config_diagnostics(lints)
+        .into_iter()
+        .map(|diagnostic| ManifestDiagnostic {
+            range: find_manifest_lint_key_range(text, diagnostic.section, &diagnostic.key)
+                .unwrap_or_else(default_manifest_text_range),
+            message: diagnostic.message,
+        })
+        .collect();
+    diagnostics.sort_by(|left, right| {
+        left.range
+            .start_line
+            .cmp(&right.range.start_line)
+            .then(left.range.start_character.cmp(&right.range.start_character))
+            .then(left.message.cmp(&right.message))
+    });
+    diagnostics
+}
+
+fn default_manifest_text_range() -> ManifestTextRange {
+    ManifestTextRange {
+        start_line: 0,
+        start_character: 0,
+        end_line: 0,
+        end_character: 1,
+    }
+}
+
+fn find_manifest_lint_key_range(text: &str, section: &str, key: &str) -> Option<ManifestTextRange> {
+    let mut in_section = false;
+    for (line_idx, line_with_ending) in text.split_inclusive('\n').enumerate() {
+        let line = line_with_ending
+            .strip_suffix('\n')
+            .unwrap_or(line_with_ending);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let trimmed = line.trim();
+        if let Some(current_section) = manifest_table_header(trimmed) {
+            in_section = current_section == section;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+
+        let Some(separator_idx) = toml_key_value_separator(line) else {
+            continue;
+        };
+        let key_prefix = &line[..separator_idx];
+        let start = key_prefix.find(|ch: char| !ch.is_whitespace())?;
+        let end = key_prefix.trim_end().len();
+        let key_text = &line[start..end];
+        if toml_key_matches(key_text, key) {
+            return Some(manifest_text_range_for_line(line_idx, line, start, end));
+        }
+    }
+    None
+}
+
+fn manifest_table_header(trimmed_line: &str) -> Option<&str> {
+    if !trimmed_line.starts_with('[') {
+        return None;
+    }
+    if trimmed_line.starts_with("[[") {
+        return Some("");
+    }
+    let end = trimmed_line.find(']')?;
+    Some(trimmed_line[1..end].trim())
+}
+
+fn toml_key_value_separator(line: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (idx, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('"') if ch == '\\' => escaped = true,
+            Some(current) if ch == current => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '=' => return Some(idx),
+            None => {}
+        }
+    }
+    None
+}
+
+fn toml_key_matches(key_text: &str, key: &str) -> bool {
+    let trimmed = key_text.trim();
+    trimmed == key || decode_quoted_toml_key(trimmed).as_deref() == Some(key)
+}
+
+fn decode_quoted_toml_key(value: &str) -> Option<String> {
+    let quote = value.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    if !value.ends_with(quote) || value.len() < 2 {
+        return None;
+    }
+    let inner = &value[quote.len_utf8()..value.len() - quote.len_utf8()];
+    if quote == '\'' {
+        return Some(inner.to_string());
+    }
+
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('b') => out.push('\u{0008}'),
+            Some('f') => out.push('\u{000c}'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some(other) => out.push(other),
+            None => return None,
+        }
+    }
+    Some(out)
+}
+
+fn manifest_text_range_for_line(
+    line_idx: usize,
+    line: &str,
+    start_byte: usize,
+    end_byte: usize,
+) -> ManifestTextRange {
+    ManifestTextRange {
+        start_line: line_idx as u32,
+        start_character: utf16_character_for_byte(line, start_byte),
+        end_line: line_idx as u32,
+        end_character: utf16_character_for_byte(line, end_byte),
+    }
+}
+
+fn utf16_character_for_byte(line: &str, byte: usize) -> u32 {
+    line[..byte.min(line.len())]
+        .chars()
+        .map(|ch| ch.len_utf16() as u32)
+        .sum()
 }
 
 fn manifest_with_discovered_units(
@@ -3506,6 +3695,60 @@ style = "allow"
             policy.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
             LintLevel::Deny
         );
+    }
+
+    #[test]
+    fn load_workspace_reports_manifest_lints_config_diagnostics() {
+        let root = std::env::temp_dir().join("abap-lsp-lint-config-diagnostics");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[lints.groups]
+suspicious = "warn"
+
+[lints.rules]
+"abap-lsp.missing-rule" = "warn"
+"sap-atc:zcheck/zmsg" = "allow"
+"#,
+        )
+        .expect("manifest");
+
+        let loaded = load_workspace_documents(&path_to_file_uri(&root), &HashMap::new());
+        assert!(loaded.manifest.is_some());
+        assert!(loaded.manifest_error.is_none());
+
+        let messages: Vec<_> = loaded
+            .manifest_diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unknown lint group 'suspicious'")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unknown native lint rule 'abap-lsp.missing-rule'")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .all(|message| !message.contains("sap-atc:zcheck/zmsg")),
+            "{messages:?}"
+        );
+        assert_eq!(loaded.manifest_diagnostics[0].range.start_line, 4);
+        assert_eq!(loaded.manifest_diagnostics[1].range.start_line, 7);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

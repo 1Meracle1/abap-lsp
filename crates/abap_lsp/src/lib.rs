@@ -13,13 +13,13 @@ use std::sync::{Arc, Mutex};
 
 use abap_cache::{
     CallableCompletionKind, DocumentInput, DocumentStore, LintDiagnostic, LintLevel, LintPolicy,
-    LocalExportConfig, LocalExportResolver, SnapshotBuildPlan, WorkspaceDocument,
-    WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source, file_uri_to_path,
-    function_module_completion_items_from_source, is_remote_lookup_candidate,
+    LocalExportConfig, LocalExportResolver, ManifestDiagnostic, SnapshotBuildPlan,
+    WorkspaceDocument, WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source,
+    file_uri_to_path, function_module_completion_items_from_source, is_remote_lookup_candidate,
     is_remote_lookup_candidate_after_local_resolution, lint_id_for_diagnostic_kind,
-    load_effective_manifest_from_workspace_result, load_workspace_documents_with_progress,
-    local_export_config_for_source, manifest_document_metadata,
-    manifest_supports_remote_resolution, path_to_file_uri, registry,
+    load_effective_manifest_from_workspace_result, load_manifest_diagnostics_from_workspace,
+    load_workspace_documents_with_progress, local_export_config_for_source,
+    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri, registry,
     resolve_local_export_dependency_document,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
@@ -99,6 +99,7 @@ pub struct WorkspaceState {
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_uri: String,
     pub manifest_error: Option<String>,
+    pub manifest_diagnostics: Vec<ManifestDiagnostic>,
     pub open_documents: HashMap<String, OpenDocumentOverlay>,
     pub pending_open_dependency_requests: HashSet<String>,
     pub remote_resolution_seen: HashSet<String>,
@@ -176,6 +177,7 @@ impl WorkspaceState {
             manifest: None,
             manifest_uri: String::new(),
             manifest_error: None,
+            manifest_diagnostics: Vec::new(),
             open_documents: HashMap::new(),
             pending_open_dependency_requests: HashSet::new(),
             remote_resolution_seen: HashSet::new(),
@@ -262,6 +264,7 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
         workspace.manifest_uri.clear();
         workspace.manifest = None;
         workspace.manifest_error = None;
+        workspace.manifest_diagnostics.clear();
         sync_workspace_lint_policy(workspace);
         return;
     };
@@ -285,6 +288,8 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
                 .as_ref()
                 .map(|_| manifest_uri.clone())
                 .unwrap_or_default();
+            workspace.manifest_diagnostics =
+                load_manifest_diagnostics_from_workspace(&root_path, manifest.as_ref());
             workspace.manifest = manifest;
             workspace.manifest_error = None;
         }
@@ -294,6 +299,7 @@ fn prime_workspace_manifest_state(workspace: &mut WorkspaceState) {
             workspace.manifest_uri = manifest_uri;
             workspace.manifest = None;
             workspace.manifest_error = Some(error);
+            workspace.manifest_diagnostics.clear();
         }
     }
     sync_workspace_lint_policy(workspace);
@@ -1712,6 +1718,7 @@ fn rebuild_workspace_cache_with_progress(
     workspace.manifest = loaded.manifest.clone();
     workspace.manifest_uri = loaded.manifest_uri.to_string();
     workspace.manifest_error = loaded.manifest_error.clone();
+    workspace.manifest_diagnostics = loaded.manifest_diagnostics.clone();
     sync_workspace_lint_policy(workspace);
     workspace.dependency_parent_uris.clear();
     workspace.dependency_batch_candidates.clear();
@@ -1885,8 +1892,9 @@ pub fn workspace_manifest_diagnostics_params(
         return None;
     }
 
-    let diagnostics = if let Some(message) = workspace.manifest_error.as_ref() {
-        vec![Diagnostic {
+    let mut diagnostics = Vec::new();
+    if let Some(message) = workspace.manifest_error.as_ref() {
+        diagnostics.push(Diagnostic {
             range: Range {
                 start: Position::new(0, 0),
                 end: Position::new(0, 1),
@@ -1901,16 +1909,41 @@ pub fn workspace_manifest_diagnostics_params(
             related_information: None,
             tags: None,
             data: None,
-        }]
+        });
     } else {
-        Vec::new()
-    };
+        diagnostics.extend(
+            workspace
+                .manifest_diagnostics
+                .iter()
+                .map(manifest_config_diagnostic_to_lsp),
+        );
+    }
 
     Some(PublishDiagnosticsParams {
         uri: Uri::from_str(&workspace.manifest_uri).ok()?,
         diagnostics,
         version: None,
     })
+}
+
+fn manifest_config_diagnostic_to_lsp(diagnostic: &ManifestDiagnostic) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: Position::new(
+                diagnostic.range.start_line,
+                diagnostic.range.start_character,
+            ),
+            end: Position::new(diagnostic.range.end_line, diagnostic.range.end_character),
+        },
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("lint-config".to_string())),
+        code_description: None,
+        source: Some("abap-lsp".to_string()),
+        message: diagnostic.message.clone(),
+        related_information: None,
+        tags: None,
+        data: None,
+    }
 }
 
 fn remote_candidate_key(candidate: &RemoteDependencyCandidate) -> String {
@@ -6479,6 +6512,9 @@ report_suppressed = true
             r#"
 [lints]
 profile = "none"
+
+[lints.groups]
+suspicious = "allow"
 "#,
             "IF .",
         );
@@ -6502,6 +6538,8 @@ profile = "none"
 
 [lints.rules]
 "epc.invalid-open-sql-into-target" = "allow"
+"epc.invalid-open-sql-target" = "allow"
+"abap-lsp.missing-rule" = "allow"
 "#,
             r#"
 TYPES ty_row TYPE i.
@@ -6521,6 +6559,68 @@ SELECT * FROM ty_row INTO TABLE wa.
             .expect("invalid Open SQL target diagnostic");
         assert_eq!(diagnostic.source.as_deref(), Some(LINT_DIAGNOSTIC_SOURCE));
         assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+    }
+
+    #[test]
+    fn workspace_manifest_diagnostics_report_invalid_lint_config() {
+        let workspace_path = temp_workspace_path("manifest_invalid_lint_config");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[lints.groups]
+suspicious = "warn"
+
+[lints.rules]
+"abap-lsp.missing-rule" = "warn"
+"sap-atc:zcheck/zmsg" = "allow"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(workspace_path.join("src/ZMAIN.abap"), "REPORT zmain.").expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let manifest_diagnostics = workspace_manifest_diagnostics_params(&state, &workspace_uri)
+            .expect("manifest diagnostics");
+        assert!(manifest_diagnostics.uri.as_str().ends_with("/abapls.toml"));
+
+        let messages: Vec<_> = manifest_diagnostics
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unknown lint group 'suspicious'"))
+        );
+        assert!(messages.iter().any(|message| {
+            message.contains("unknown native lint rule 'abap-lsp.missing-rule'")
+        }));
+        assert!(
+            manifest_diagnostics.diagnostics.iter().all(|diagnostic| {
+                diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+                    && diagnostic.code == Some(NumberOrString::String("lint-config".to_string()))
+            }),
+            "{:#?}",
+            manifest_diagnostics.diagnostics
+        );
+        assert_eq!(manifest_diagnostics.diagnostics[0].range.start.line, 4);
+        assert_eq!(manifest_diagnostics.diagnostics[1].range.start.line, 7);
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

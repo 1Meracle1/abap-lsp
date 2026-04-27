@@ -59,6 +59,11 @@ Supported override tables:
 - `[lints.sap_atc]`: configures imported remote SAP ATC findings. `mode` is `off`, `manual`, or
   `on-save`; `check_variant` defaults to `DEFAULT`; `configuration` is optional.
 
+Unknown built-in groups and unknown native rule IDs in the `abap-lsp.*` and `epc.*` namespaces are
+reported as `abapls.toml` manifest diagnostics and ignored by the effective lint policy. Other
+unknown rule IDs are also diagnosed unless they use an external provider namespace of the form
+`<provider>:<id>`, for example `"sap-atc:check/message"`.
+
 `recommended` keeps parser and semantic hard errors as errors while keeping noisy SAP-inspired
 heuristics at `info`. Use targeted rule overrides when a team is ready to make one rule stricter:
 

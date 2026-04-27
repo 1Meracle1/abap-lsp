@@ -14,6 +14,10 @@ The `epc.*` entries represent semantic hard errors surfaced through lint metadat
 group overrides, and rule overrides do not lower those IDs below `deny`, so parser and semantic hard
 errors stay visible even when a project uses `profile = "none"`.
 
+Unknown groups and unknown native rule IDs in `abapls.toml` produce manifest diagnostics and are
+ignored by the effective policy. Other unknown rule IDs are also diagnosed unless they use an
+external provider namespace such as `sap-atc:<check>/<message>`.
+
 ## CLI Usage
 
 Run native lints for a single file:
