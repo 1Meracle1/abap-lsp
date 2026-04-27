@@ -1,8 +1,8 @@
-# Parity And Benchmark Checklist
+# Coverage And Benchmark Checklist
 
-## Feature Parity
+## Feature Coverage
 
-Track each area against the expected Rust server behavior and existing regression coverage:
+Track each area against expected server behavior and existing regression coverage:
 
 - JSON-RPC transport and shutdown behavior
 - document open/change lifecycle
@@ -16,7 +16,7 @@ Track each area against the expected Rust server behavior and existing regressio
 - cache invalidation and republish behavior
 - workspace initialization and multi-folder handling
 
-## Test Parity
+## Test Coverage
 
 - Expand parser tests in batches and note coverage status.
 - Expand symbol-resolution tests after parser output stabilizes.
@@ -36,7 +36,7 @@ Measure at least:
 
 ## Regression Gates
 
-- no significant correctness regressions relative to current regression expectations,
+- no significant correctness regressions relative to documented expectations,
 - no accidental quadratic behavior on large files,
 - no material slowdown in hot paths without a documented reason,
 - deterministic outputs across repeated parallel runs.

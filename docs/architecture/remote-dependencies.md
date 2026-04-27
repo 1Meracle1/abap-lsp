@@ -2,7 +2,7 @@
 
 ## Current Decision
 
-The Rust rewrite keeps SAP communication client-mediated first.
+ABAP LSP keeps SAP communication client-mediated first.
 
 The server remains responsible for:
 
@@ -26,13 +26,13 @@ The VS Code client remains responsible for:
 - `abapls/workspaceManifestUpdated`
 - `abapls/dependencyCacheRefreshRequested`
 
-## Migration Requirement
+## Protocol Compatibility
 
-The Rust server must keep these notification names and payloads stable enough that `editors/vscode/` continues to function during migration. If direct SAP access is ever introduced later, it should sit behind a transport abstraction and must not leak into parser, symbols, or cache crates.
+The server must keep these notification names and payloads stable enough that `editors/vscode/` continues to function across releases. If direct SAP access is ever introduced later, it should sit behind a transport abstraction and must not leak into parser, symbols, or cache crates.
 
 ## Why Keep It Client-Mediated First
 
 - credentials and trust stores already live naturally in the editor,
 - the current product behavior already depends on client-side cache writes,
-- it avoids mixing SAP transport complexity into the first Rust milestones,
-- parity can be measured sooner because the protocol boundary already exists.
+- it avoids mixing SAP transport complexity into core source-analysis crates,
+- coverage can be measured cleanly because the protocol boundary is explicit.

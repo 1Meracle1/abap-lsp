@@ -1,6 +1,6 @@
-# Front-End Porting Strategy
+# Front-End Architecture
 
-## Port Order
+## Layer Order
 
 1. `abap_jsonrpc`
 2. `abap_lexer`
@@ -13,20 +13,20 @@
 
 This preserves the intended layering and keeps syntax-only code separate from semantic and protocol-facing logic.
 
-## Parser Migration Rules
+## Parser Rules
 
 - Keep parser code syntax-only. Name resolution and validation stay out of `abap_parser`.
-- Add or expand parser tests in focused batches rather than a giant one-shot move.
+- Add or expand parser tests in focused batches.
 - Prefer golden fixtures and narrow behavior assertions over restating implementation details.
 - Keep AST shape decisions explicit and versioned. Churn here multiplies into symbols, cache, and LSP layers.
 
-## Initial Rust Scaffolding Goals
+## Core Parser Goals
 
 - `abap_lexer` owns ranges and tokenization primitives.
 - `abap_ast` owns a stable syntax tree surface that later semantic layers can consume.
 - `abap_parser` produces a file node, raw token stream, and parse diagnostics/errors.
 
-## Test Porting Sequence
+## Test Expansion Sequence
 
 1. High-signal lexer tests.
 2. Broad parser smoke cases.

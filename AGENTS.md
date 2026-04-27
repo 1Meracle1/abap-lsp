@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository is a Rust workspace rooted at `Cargo.toml`. Core crates live under `crates/`, with `abap_lsp_server` as the default binary and supporting libraries such as `abap_parser`, `abap_symbols`, and `abap_lsp` split by responsibility. Shared examples live in `examples/*.abap`, design and migration notes in `docs/`, and the editor client in `editors/vscode/`. Keep dependency flow one-way: lower layers (`abap_jsonrpc`, `abap_lexer`, `abap_ast`) must not depend on higher layers such as `abap_cache`, `abap_lsp`, or `abap_lsp_server`.
+This repository is a Rust workspace rooted at `Cargo.toml`. Core crates live under `crates/`, with `abap_lsp_server` as the default binary and supporting libraries such as `abap_parser`, `abap_symbols`, and `abap_lsp` split by responsibility. Shared examples live in `examples/*.abap`, design and architecture notes in `docs/`, and the editor client in `editors/vscode/`. Keep dependency flow one-way: lower layers (`abap_jsonrpc`, `abap_lexer`, `abap_ast`) must not depend on higher layers such as `abap_cache`, `abap_lsp`, or `abap_lsp_server`.
 
 ## Build, Test, and Development Commands
 Use the wrapper scripts on Windows, or run Cargo directly.
