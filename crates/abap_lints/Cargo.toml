@@ -6,4 +6,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+abap_lexer = { path = "../abap_lexer" }
 serde.workspace = true

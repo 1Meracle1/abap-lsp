@@ -26,10 +26,47 @@ default_package_version = "7.50"
 [resolution]
 dependency_mode = "remote-on-demand"
 remote_requests_per_second = 24
+
+[lints]
+profile = "recommended"
+report_suppressed = false
+
+[lints.rules]
+"abap-lsp.dead-store" = "warn"
 ```
 
 The root manifest does not need explicit `[[unit]]` entries for normal `src` content.
 The optional `[dependency_store]` section enables centralized remote dependency resolution and versions cached ABAP/DDIC artifacts by SAP product/package version.
+
+### Lint Configuration
+
+The optional `[lints]` section controls the native lint diagnostic surface used by the language
+server and cache-backed tooling.
+
+Supported top-level fields:
+
+- `profile`: `recommended` (default), `strict`, `all`, or `none`.
+- `report_suppressed`: when `true`, diagnostics disabled by config or source suppressions remain as
+  informational suppressed diagnostics with suppression metadata; when `false`, they are dropped.
+
+Supported override tables:
+
+- `[lints.groups]`: maps built-in group names such as `correctness`, `performance`, and `style` to
+  `allow`, `info`, `warn`, or `deny`.
+- `[lints.rules]`: maps exact lint IDs such as `"abap-lsp.dead-store"` to `allow`, `info`, `warn`,
+  or `deny`.
+
+Source suppressions are statement-scoped unless explicitly file-scoped:
+
+```abap
+DATA lv_unused TYPE i. " abap-lsp:allow(abap-lsp.dead-store)
+gv_unused = 1 ##NEEDED.
+SELECT * FROM mara INTO TABLE @DATA(lt_mara). "#EC CI_BUFFJOIN
+```
+
+SAP pragmas and pseudo comments only suppress lints that list the corresponding SAP alias in lint
+metadata. Broad forms such as `#EC *`, `all`, and `group:<name>` are intentionally ignored by the
+current scanner.
 
 ## `src/` Discovery
 

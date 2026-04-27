@@ -35,13 +35,14 @@ use abap_symbols::{
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CompletionItem,
-    CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity, Documentation,
-    GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability, InitializeResult,
-    InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities, InsertTextFormat,
-    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse,
-    PublishDiagnosticsParams, Range, RenameOptions, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity, DiagnosticTag,
+    Documentation, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
+    InitializeResult, InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities,
+    InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
+    PrepareRenameResponse, PublishDiagnosticsParams, Range, RenameOptions, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkspaceEdit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -3959,6 +3960,15 @@ struct LspLintDiagnosticData<'a> {
     lint_id: &'a str,
     group: &'a str,
     origin: &'a str,
+    suppressed: bool,
+    suppression: Option<LspLintSuppressionData<'a>>,
+}
+
+#[derive(Serialize)]
+struct LspLintSuppressionData<'a> {
+    kind: &'a str,
+    token: &'a str,
+    range: [usize; 2],
 }
 
 fn build_lsp_lint_diagnostic(
@@ -3970,6 +3980,15 @@ fn build_lsp_lint_diagnostic(
         lint_id: lint.id.as_str(),
         group: lint.group.as_str(),
         origin: lint.origin.as_str(),
+        suppressed: lint.suppressed,
+        suppression: lint
+            .suppression
+            .as_ref()
+            .map(|suppression| LspLintSuppressionData {
+                kind: suppression.kind.as_str(),
+                token: suppression.token.as_str(),
+                range: [suppression.range.start, suppression.range.end],
+            }),
     })
     .ok();
     Some(Diagnostic {
@@ -3980,7 +3999,7 @@ fn build_lsp_lint_diagnostic(
         source: Some(LINT_DIAGNOSTIC_SOURCE.to_owned()),
         message: lint.message.clone(),
         related_information: None,
-        tags: None,
+        tags: lint.suppressed.then(|| vec![DiagnosticTag::UNNECESSARY]),
         data,
     })
 }
@@ -5761,6 +5780,67 @@ root_file = "src/ZMAIN.abap"
         assert_eq!(
             data.get("origin").and_then(serde_json::Value::as_str),
             Some("abap-lsp")
+        );
+    }
+
+    #[test]
+    fn workspace_lint_source_suppression_hides_lsp_lint_diagnostic() {
+        let source = unreachable_lint_source().replace(
+            "    WRITE 'after'.",
+            "    WRITE 'after'. \" abap-lsp:allow(abap-lsp.unreachable-code)",
+        );
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_source_suppressed_unreachable",
+            "",
+            &source,
+        );
+
+        assert!(
+            diagnostics.iter().all(|diag| {
+                diag.code
+                    != Some(NumberOrString::String(
+                        ABAP_LSP_UNREACHABLE_CODE.to_string(),
+                    ))
+            }),
+            "{diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn workspace_lint_report_suppressed_keeps_lsp_hint_with_marker() {
+        let source = unreachable_lint_source().replace(
+            "    WRITE 'after'.",
+            "    WRITE 'after'. \" abap-lsp:allow(abap-lsp.unreachable-code)",
+        );
+        let diagnostics = workspace_diagnostics_with_lints_config(
+            "lint_report_suppressed_unreachable",
+            r#"
+[lints]
+report_suppressed = true
+"#,
+            &source,
+        );
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diag| {
+                diag.code
+                    == Some(NumberOrString::String(
+                        ABAP_LSP_UNREACHABLE_CODE.to_string(),
+                    ))
+            })
+            .expect("suppressed unreachable-code lint diagnostic");
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::INFORMATION));
+        let data = diagnostic.data.as_ref().expect("lint diagnostic data");
+        assert_eq!(
+            data.get("suppressed").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            data.get("suppression")
+                .and_then(|value| value.get("kind"))
+                .and_then(serde_json::Value::as_str),
+            Some("abap-lsp-allow")
         );
     }
 

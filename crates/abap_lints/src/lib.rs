@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use abap_lexer::{LexedSource, Token, TokenKind, TriviaKind, TriviaPiece};
 use serde::Deserialize;
 use serde::de::{self, Visitor};
 
@@ -151,6 +152,32 @@ pub struct LintMetadata {
     pub sap_aliases: &'static [&'static str],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LintSuppressionKind {
+    Pragma,
+    PseudoComment,
+    AbapLspAllow,
+    Config,
+}
+
+impl LintSuppressionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pragma => "pragma",
+            Self::PseudoComment => "pseudo-comment",
+            Self::AbapLspAllow => "abap-lsp-allow",
+            Self::Config => "config",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LintSuppression {
+    pub kind: LintSuppressionKind,
+    pub range: LintRange,
+    pub token: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintDiagnostic {
     pub id: String,
@@ -161,6 +188,8 @@ pub struct LintDiagnostic {
     pub group: LintGroup,
     pub tags: Vec<String>,
     pub sap_aliases: Vec<String>,
+    pub suppressed: bool,
+    pub suppression: Option<LintSuppression>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -202,6 +231,384 @@ impl ProjectLintAnalysis {
     pub fn is_empty(&self) -> bool {
         self.diagnostics_by_uri.values().all(Vec::is_empty)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppressionIndex {
+    entries: Vec<SuppressionEntry>,
+}
+
+impl SuppressionIndex {
+    pub fn new(source: &str, lexed: &LexedSource) -> Self {
+        let statements = StatementRanges::new(lexed.tokens.as_ref());
+        if statements.statements.is_empty() {
+            return Self {
+                entries: Vec::new(),
+            };
+        }
+
+        let mut entries = Vec::new();
+        for statement in &statements.statements {
+            let first_token = &lexed.tokens[statement.first_token];
+            for piece in lexed.leading_trivia(first_token) {
+                match piece.kind {
+                    TriviaKind::Pragma
+                        if same_physical_line(source, piece.range.end, first_token.range.start) =>
+                    {
+                        push_pragma_entry(source, piece, statement.range.clone(), &mut entries);
+                    }
+                    TriviaKind::Comment => {
+                        if let Some(action) = parse_abap_lsp_allow_comment(source, piece) {
+                            match action {
+                                AbapLspAllowAction::NextStatement(selectors)
+                                    if !selectors.is_empty() =>
+                                {
+                                    entries.push(SuppressionEntry {
+                                        target: SuppressionTarget::Statement(
+                                            statement.range.clone(),
+                                        ),
+                                        selectors,
+                                        kind: LintSuppressionKind::AbapLspAllow,
+                                        range: piece.range.clone(),
+                                        token: piece.lexeme(source).trim().to_string(),
+                                    });
+                                }
+                                AbapLspAllowAction::File(selectors) if !selectors.is_empty() => {
+                                    entries.push(SuppressionEntry {
+                                        target: SuppressionTarget::File,
+                                        selectors,
+                                        kind: LintSuppressionKind::AbapLspAllow,
+                                        range: piece.range.clone(),
+                                        token: piece.lexeme(source).trim().to_string(),
+                                    });
+                                }
+                                AbapLspAllowAction::CurrentStatement(_) => {}
+                                AbapLspAllowAction::NextStatement(_)
+                                | AbapLspAllowAction::File(_) => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            for token_idx in statement.first_token..=statement.last_token {
+                let token = &lexed.tokens[token_idx];
+                for piece in lexed.trailing_trivia(token) {
+                    match piece.kind {
+                        TriviaKind::Pragma => {
+                            push_pragma_entry(source, piece, statement.range.clone(), &mut entries);
+                        }
+                        TriviaKind::Comment => {
+                            push_pseudo_comment_entries(
+                                source,
+                                piece,
+                                statement.range.clone(),
+                                &mut entries,
+                            );
+                            if let Some(AbapLspAllowAction::CurrentStatement(selectors)) =
+                                parse_abap_lsp_allow_comment(source, piece)
+                            {
+                                if !selectors.is_empty() {
+                                    entries.push(SuppressionEntry {
+                                        target: SuppressionTarget::Statement(
+                                            statement.range.clone(),
+                                        ),
+                                        selectors,
+                                        kind: LintSuppressionKind::AbapLspAllow,
+                                        range: piece.range.clone(),
+                                        token: piece.lexeme(source).trim().to_string(),
+                                    });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        entries.sort_by(|left, right| {
+            left.range
+                .start
+                .cmp(&right.range.start)
+                .then(left.range.end.cmp(&right.range.end))
+                .then(left.kind.as_str().cmp(right.kind.as_str()))
+                .then(left.token.cmp(&right.token))
+        });
+        entries.dedup();
+        Self { entries }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn suppression_for(&self, diagnostic: &LintDiagnostic) -> Option<LintSuppression> {
+        let lint_id = normalized_lint_id(&diagnostic.id);
+        let aliases: Vec<_> = diagnostic
+            .sap_aliases
+            .iter()
+            .map(|alias| normalized_lint_alias(alias))
+            .collect();
+
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.applies_to(diagnostic.range.start)
+                    && entry.matches(lint_id.as_str(), aliases.as_slice())
+            })
+            .map(|entry| LintSuppression {
+                kind: entry.kind,
+                range: entry.range.clone(),
+                token: entry.token.clone(),
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SuppressionEntry {
+    target: SuppressionTarget,
+    selectors: Vec<SuppressionSelector>,
+    kind: LintSuppressionKind,
+    range: LintRange,
+    token: String,
+}
+
+impl SuppressionEntry {
+    fn applies_to(&self, offset: usize) -> bool {
+        match &self.target {
+            SuppressionTarget::File => true,
+            SuppressionTarget::Statement(range) => range.start <= offset && offset < range.end,
+        }
+    }
+
+    fn matches(&self, lint_id: &str, aliases: &[String]) -> bool {
+        self.selectors.iter().any(|selector| match selector {
+            SuppressionSelector::LintId(id) => id == lint_id,
+            SuppressionSelector::SapAlias(alias) => {
+                aliases.iter().any(|candidate| candidate == alias)
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SuppressionTarget {
+    File,
+    Statement(LintRange),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum SuppressionSelector {
+    LintId(String),
+    SapAlias(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatementRange {
+    first_token: usize,
+    last_token: usize,
+    range: LintRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatementRanges {
+    statements: Vec<StatementRange>,
+}
+
+impl StatementRanges {
+    fn new(tokens: &[Token]) -> Self {
+        let significant_len = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::Eof)
+            .unwrap_or(tokens.len());
+        let mut statements = Vec::new();
+        let mut first_token = None;
+
+        for idx in 0..significant_len {
+            if first_token.is_none() {
+                first_token = Some(idx);
+            }
+            if tokens[idx].kind == TokenKind::Period {
+                let start = first_token.expect("statement start should be set");
+                statements.push(StatementRange {
+                    first_token: start,
+                    last_token: idx,
+                    range: tokens[start].range.start..tokens[idx].range.end,
+                });
+                first_token = None;
+            }
+        }
+
+        if let Some(start) = first_token {
+            let last = significant_len.saturating_sub(1);
+            if start <= last {
+                statements.push(StatementRange {
+                    first_token: start,
+                    last_token: last,
+                    range: tokens[start].range.start..tokens[last].range.end,
+                });
+            }
+        }
+
+        Self { statements }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AbapLspAllowAction {
+    CurrentStatement(Vec<SuppressionSelector>),
+    NextStatement(Vec<SuppressionSelector>),
+    File(Vec<SuppressionSelector>),
+}
+
+fn push_pragma_entry(
+    source: &str,
+    piece: &TriviaPiece,
+    statement_range: LintRange,
+    entries: &mut Vec<SuppressionEntry>,
+) {
+    let token = piece.lexeme(source).trim();
+    let Some(alias) = token.strip_prefix("##") else {
+        return;
+    };
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return;
+    }
+    entries.push(SuppressionEntry {
+        target: SuppressionTarget::Statement(statement_range),
+        selectors: vec![SuppressionSelector::SapAlias(normalized_lint_alias(alias))],
+        kind: LintSuppressionKind::Pragma,
+        range: piece.range.clone(),
+        token: token.to_string(),
+    });
+}
+
+fn push_pseudo_comment_entries(
+    source: &str,
+    piece: &TriviaPiece,
+    statement_range: LintRange,
+    entries: &mut Vec<SuppressionEntry>,
+) {
+    for alias in pseudo_comment_aliases(piece.lexeme(source)) {
+        entries.push(SuppressionEntry {
+            target: SuppressionTarget::Statement(statement_range.clone()),
+            selectors: vec![SuppressionSelector::SapAlias(normalized_lint_alias(
+                alias.as_str(),
+            ))],
+            kind: LintSuppressionKind::PseudoComment,
+            range: piece.range.clone(),
+            token: alias,
+        });
+    }
+}
+
+fn pseudo_comment_aliases(comment: &str) -> Vec<String> {
+    let Some(ec_pos) = find_ascii_case_insensitive(comment, "#EC") else {
+        return Vec::new();
+    };
+    let tail = &comment[ec_pos + 3..];
+    let mut out = Vec::new();
+    for part in tail.split_whitespace() {
+        let alias = part.trim_matches(|ch: char| !is_selector_char(ch));
+        if alias.is_empty() || alias == "*" {
+            continue;
+        }
+        if alias.chars().all(is_selector_char) {
+            out.push(alias.to_string());
+        }
+    }
+    out
+}
+
+fn parse_abap_lsp_allow_comment(source: &str, piece: &TriviaPiece) -> Option<AbapLspAllowAction> {
+    let mut text = piece.lexeme(source).trim_start();
+    text = text
+        .strip_prefix('"')
+        .or_else(|| text.strip_prefix('*'))
+        .unwrap_or(text)
+        .trim_start();
+    let marker_pos = find_ascii_case_insensitive(text, "abap-lsp:")?;
+    let mut rest = text[marker_pos + "abap-lsp:".len()..].trim_start();
+    let action = if let Some(after) = strip_ascii_case_prefix(rest, "allow-next-line") {
+        rest = after.trim_start();
+        AllowActionName::NextStatement
+    } else if let Some(after) = strip_ascii_case_prefix(rest, "allow-file") {
+        rest = after.trim_start();
+        AllowActionName::File
+    } else if let Some(after) = strip_ascii_case_prefix(rest, "allow") {
+        rest = after.trim_start();
+        AllowActionName::CurrentStatement
+    } else {
+        return None;
+    };
+    let inner = rest.strip_prefix('(')?.split_once(')')?.0;
+    let selectors = parse_lint_id_selectors(inner);
+    Some(match action {
+        AllowActionName::CurrentStatement => AbapLspAllowAction::CurrentStatement(selectors),
+        AllowActionName::NextStatement => AbapLspAllowAction::NextStatement(selectors),
+        AllowActionName::File => AbapLspAllowAction::File(selectors),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllowActionName {
+    CurrentStatement,
+    NextStatement,
+    File,
+}
+
+fn parse_lint_id_selectors(value: &str) -> Vec<SuppressionSelector> {
+    let mut selectors = value
+        .split(',')
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() || part.contains(':') {
+                return None;
+            }
+            if !part.chars().all(is_selector_char) {
+                return None;
+            }
+            let id = normalized_lint_id(part);
+            (!id.is_empty()).then_some(SuppressionSelector::LintId(id))
+        })
+        .collect::<Vec<_>>();
+    selectors.sort();
+    selectors.dedup();
+    selectors
+}
+
+fn same_physical_line(source: &str, left_end: usize, right_start: usize) -> bool {
+    source.get(left_end..right_start).is_some_and(|gap| {
+        !gap.as_bytes()
+            .iter()
+            .any(|byte| *byte == b'\n' || *byte == b'\r')
+    })
+}
+
+fn strip_ascii_case_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    let candidate = value.get(..prefix.len())?;
+    candidate
+        .eq_ignore_ascii_case(prefix)
+        .then(|| &value[prefix.len()..])
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let needle_len = needle.len();
+    if needle_len == 0 || haystack.len() < needle_len {
+        return None;
+    }
+    (0..=haystack.len() - needle_len).find(|start| {
+        haystack
+            .get(*start..*start + needle_len)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle))
+    })
+}
+
+fn is_selector_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -345,7 +752,7 @@ const REGISTRY: &[LintMetadata] = &[
         default_level: LintLevel::Warn,
         summary: "assigned value is overwritten or unused before it is read",
         tags: &["data-flow", "unused"],
-        sap_aliases: &[],
+        sap_aliases: &["NEEDED"],
     },
     LintMetadata {
         id: ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH,
@@ -427,6 +834,10 @@ fn normalized_lint_id(value: &str) -> String {
     normalized_key(value)
 }
 
+fn normalized_lint_alias(value: &str) -> String {
+    normalized_key(value)
+}
+
 fn sort_lint_diagnostics(diagnostics: &mut [LintDiagnostic]) {
     diagnostics.sort_by(|left, right| {
         left.range
@@ -447,9 +858,10 @@ mod tests {
     use super::{
         ABAP_LSP_DEAD_STORE, ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
         EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE, LINT_PROFILE_RECOMMENDED,
-        LINT_PROFILE_STRICT, LintConfig, LintGroup, LintLevel, LintOrigin, LintPolicy,
-        metadata_for, registry,
+        LINT_PROFILE_STRICT, LintConfig, LintDiagnostic, LintGroup, LintLevel, LintOrigin,
+        LintPolicy, LintSuppressionKind, SuppressionIndex, metadata_for, registry,
     };
+    use abap_lexer::tokenize;
     use std::collections::BTreeMap;
 
     #[test]
@@ -514,6 +926,140 @@ mod tests {
         assert_eq!(
             policy.level_for(EPC_INVALID_OPEN_SQL_INTO_TARGET),
             LintLevel::Deny
+        );
+    }
+
+    fn lint(id: &str, range: std::ops::Range<usize>, aliases: &[&str]) -> LintDiagnostic {
+        LintDiagnostic {
+            id: id.to_string(),
+            range,
+            message: "test lint".to_string(),
+            level: LintLevel::Warn,
+            origin: LintOrigin::AbapLsp,
+            group: LintGroup::Correctness,
+            tags: Vec::new(),
+            sap_aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+            suppressed: false,
+            suppression: None,
+        }
+    }
+
+    #[test]
+    fn pseudo_comment_suppresses_matching_sap_alias() {
+        let source = "\
+REPORT ztest.
+SELECT * FROM mara INTO TABLE @DATA(lt_mara). \"#EC CI_BUFFJOIN";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let offset = source.find("SELECT").expect("SELECT");
+        let suppressed = index
+            .suppression_for(&lint(
+                "sap.buffered-join",
+                offset..offset + "SELECT".len(),
+                &["CI_BUFFJOIN"],
+            ))
+            .expect("matching CI alias suppression");
+
+        assert_eq!(suppressed.kind, LintSuppressionKind::PseudoComment);
+        assert_eq!(suppressed.token, "CI_BUFFJOIN");
+    }
+
+    #[test]
+    fn pragma_suppresses_matching_sap_alias() {
+        let source = "\
+REPORT ztest.
+READ TABLE lt_data INDEX 1 INTO DATA(ls_row) ##subrc_read.";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let offset = source.find("READ").expect("READ");
+        let suppressed = index
+            .suppression_for(&lint(
+                "sap.subrc-read",
+                offset..offset + "READ".len(),
+                &["SUBRC_READ"],
+            ))
+            .expect("matching pragma alias suppression");
+
+        assert_eq!(suppressed.kind, LintSuppressionKind::Pragma);
+        assert_eq!(suppressed.token, "##subrc_read");
+    }
+
+    #[test]
+    fn unrelated_suppression_does_not_hide_diagnostic() {
+        let source = "\
+REPORT ztest.
+SELECT * FROM mara INTO TABLE @DATA(lt_mara). \"#EC CI_BUFFJOIN";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let offset = source.find("SELECT").expect("SELECT");
+
+        assert!(
+            index
+                .suppression_for(&lint(
+                    "sap.where-clause",
+                    offset..offset + "SELECT".len(),
+                    &["CI_NOWHERE"],
+                ))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn abap_lsp_allow_suppresses_only_intended_lint_and_statement() {
+        let source = "\
+REPORT ztest.
+DATA lv_first TYPE i. \" abap-lsp:allow(abap-lsp.dead-store)
+DATA lv_second TYPE i.";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let first = source.find("lv_first").expect("lv_first");
+        let second = source.find("lv_second").expect("lv_second");
+        let suppressed = index
+            .suppression_for(&lint(
+                ABAP_LSP_DEAD_STORE,
+                first..first + "lv_first".len(),
+                &[],
+            ))
+            .expect("matching abap-lsp allow");
+
+        assert_eq!(suppressed.kind, LintSuppressionKind::AbapLspAllow);
+        assert!(
+            index
+                .suppression_for(&lint(
+                    ABAP_LSP_UNREACHABLE_CODE,
+                    first..first + "lv_first".len(),
+                    &[],
+                ))
+                .is_none()
+        );
+        assert!(
+            index
+                .suppression_for(&lint(
+                    ABAP_LSP_DEAD_STORE,
+                    second..second + "lv_second".len(),
+                    &[],
+                ))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn broad_group_allow_comment_does_not_suppress() {
+        let source = "\
+REPORT ztest.
+DATA lv_first TYPE i. \" abap-lsp:allow(group:style, all)";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let first = source.find("lv_first").expect("lv_first");
+
+        assert!(
+            index
+                .suppression_for(&lint(
+                    ABAP_LSP_DEAD_STORE,
+                    first..first + "lv_first".len(),
+                    &[],
+                ))
+                .is_none()
         );
     }
 }

@@ -78,6 +78,7 @@ dependencies = [
 name = "abap_lints"
 version = "0.1.0"
 dependencies = [
+ "abap_lexer",
  "serde",
 ]
 

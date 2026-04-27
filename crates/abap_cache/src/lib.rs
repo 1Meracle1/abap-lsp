@@ -13,7 +13,8 @@ pub use abap_lints::{
     ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH, ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT,
     EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_MISSING_TABLES_DECLARATION,
     EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup, LintId, LintLevel, LintMetadata,
-    LintOrigin, LintPolicy, ProjectLintAnalysis,
+    LintOrigin, LintPolicy, LintSuppression, LintSuppressionKind, ProjectLintAnalysis,
+    SuppressionIndex,
 };
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
@@ -10635,6 +10636,7 @@ struct PreparedDocument {
     uri: Arc<str>,
     version: i32,
     text: Arc<str>,
+    analysis_text: Arc<str>,
     is_dependency: bool,
     object_name: Option<Arc<str>>,
     parse: Arc<ParseResult>,
@@ -10801,6 +10803,7 @@ fn prepare_documents(
                 uri: Arc::clone(&entry.uri),
                 version: entry.version,
                 text: Arc::clone(&entry.text),
+                analysis_text,
                 is_dependency: entry.is_dependency,
                 object_name: entry.object_name.clone(),
                 parse,
@@ -10911,7 +10914,9 @@ fn materialize_snapshots(
         prepared_units.push((prepared, unit));
     }
     let lint_analysis = Arc::new(build_project_lint_analysis(
-        prepared_units.iter().map(|(_, unit)| unit),
+        prepared_units
+            .iter()
+            .map(|(prepared, unit)| (prepared, unit)),
         lint_policy.as_ref(),
     ));
 
@@ -11011,15 +11016,25 @@ pub fn lint_id_for_diagnostic_kind(kind: DiagnosticKind) -> Option<LintId> {
 }
 
 fn build_project_lint_analysis<'a>(
-    units: impl IntoIterator<Item = &'a UnitAnalysis>,
+    units: impl IntoIterator<Item = (&'a PreparedDocument, &'a UnitAnalysis)>,
     lint_policy: &LintPolicy,
 ) -> ProjectLintAnalysis {
     let mut diagnostics = Vec::new();
-    for unit in units {
+    for (prepared, unit) in units {
+        let suppression_index =
+            SuppressionIndex::new(prepared.analysis_text.as_ref(), &prepared.parse.lexed);
         for diagnostic in &unit.diagnostics {
-            if let Some(lint_diagnostic) =
+            if let Some(mut lint_diagnostic) =
                 lint_diagnostic_from_symbol_diagnostic(diagnostic, lint_policy)
             {
+                if !lint_diagnostic.suppressed {
+                    if let Some(suppression) = suppression_index.suppression_for(&lint_diagnostic) {
+                        if !lint_policy.report_suppressed() {
+                            continue;
+                        }
+                        mark_lint_suppressed(&mut lint_diagnostic, suppression);
+                    }
+                }
                 diagnostics.push((unit.uri.to_string(), lint_diagnostic));
             }
         }
@@ -11033,14 +11048,19 @@ fn lint_diagnostic_from_symbol_diagnostic(
 ) -> Option<LintDiagnostic> {
     let metadata = lint_metadata_for_diagnostic_kind(diagnostic.kind)?;
     let level = lint_policy.level_for(metadata.id);
-    if !level.is_enabled() && !lint_policy.report_suppressed() {
+    let is_config_suppressed = !level.is_enabled();
+    if is_config_suppressed && !lint_policy.report_suppressed() {
         return None;
     }
-    Some(LintDiagnostic {
+    let mut lint = LintDiagnostic {
         id: metadata.id.to_string(),
         range: diagnostic.range.clone(),
         message: diagnostic.message.clone(),
-        level,
+        level: if is_config_suppressed {
+            LintLevel::Info
+        } else {
+            level
+        },
         origin: metadata.origin,
         group: metadata.group,
         tags: metadata.tags.iter().map(|tag| (*tag).to_string()).collect(),
@@ -11049,7 +11069,29 @@ fn lint_diagnostic_from_symbol_diagnostic(
             .iter()
             .map(|alias| (*alias).to_string())
             .collect(),
-    })
+        suppressed: false,
+        suppression: None,
+    };
+    if is_config_suppressed {
+        mark_lint_suppressed(
+            &mut lint,
+            LintSuppression {
+                kind: LintSuppressionKind::Config,
+                range: diagnostic.range.start..diagnostic.range.start,
+                token: "config".to_string(),
+            },
+        );
+    }
+    Some(lint)
+}
+
+fn mark_lint_suppressed(lint: &mut LintDiagnostic, suppression: LintSuppression) {
+    lint.suppressed = true;
+    lint.suppression = Some(suppression);
+    lint.level = LintLevel::Info;
+    if !lint.tags.iter().any(|tag| tag == "suppressed") {
+        lint.tags.push("suppressed".to_string());
+    }
 }
 
 fn analyze_inputs_with_progress(
@@ -12009,9 +12051,10 @@ impl DocumentStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
-        HoveredComponentKind, ReferenceTarget, SnapshotBuildPlan, ddic_xml_to_abap_source,
-        dependency_surface_text, opened_function_module_dependency_analysis_text,
+        ABAP_LSP_DEAD_STORE, AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput,
+        DocumentStore, HoveredComponentKind, ReferenceTarget, SnapshotBuildPlan,
+        ddic_xml_to_abap_source, dependency_surface_text,
+        opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
@@ -14497,6 +14540,35 @@ gv_unused = 1.";
                     == "write to global variable 'gv_unused' is never read in global declarations"
             }),
             "{dead_store_messages:?}"
+        );
+    }
+
+    #[test]
+    fn lint_suppression_pragma_alias_hides_dead_store_lint() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zdead_store.
+
+DATA gv_unused TYPE i.
+gv_unused = 1 ##NEEDED.";
+
+        let snapshot = store.publish("file:///global_dead_store_needed.abap", 1, src);
+
+        assert!(
+            snapshot
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::DeadStore),
+            "raw diagnostics should still retain the routine finding"
+        );
+        assert!(
+            snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|diag| diag.id != ABAP_LSP_DEAD_STORE),
+            "{:#?}",
+            snapshot.lint_diagnostics()
         );
     }
 

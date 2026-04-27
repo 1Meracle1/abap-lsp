@@ -368,6 +368,21 @@ the effective level. A suppression only hides diagnostics whose effective level 
 project later adds a `forbid`-like level. In the first implementation, all emitted native lints can
 be suppressed.
 
+Current implementation notes:
+
+- The suppression scanner lives in `abap_lints` and consumes the source text plus
+  `abap_lexer::LexedSource`.
+- Lint IDs use the current registry IDs such as `abap-lsp.dead-store` and
+  `epc.unverified-open-sql-source`. The scanner normalizes case and `_` versus `-`, but it does not
+  infer short IDs such as `dead-store` for `abap-lsp.dead-store`.
+- SAP pragmas and pseudo comments match only `LintMetadata.sap_aliases`; an arbitrary SAP-looking
+  code never suppresses a native lint unless the registry exposes that alias.
+- abap-lsp allow comments match exact lint IDs only. Group-level, `all`, and block suppressions are
+  intentionally not implemented yet.
+- When `[lints].report_suppressed = true`, source-suppressed and config-disabled lint diagnostics
+  remain in the lint surface at `info` level with `suppressed = true` plus suppression metadata.
+  Otherwise they are dropped before LSP publishing and cache consumers see only unsuppressed lints.
+
 ### Statement Association
 
 Associate a lint diagnostic with the statement containing `diagnostic.range.start`.
@@ -390,10 +405,10 @@ ABAP pragmas are already tokenized as `TriviaKind::Pragma` when the text starts 
 Rules:
 
 - `##...` suppressions apply to the statement they are attached to.
-- Match pragma names case-insensitively against `LintSpec.sap_aliases.pragmas`.
+- Match pragma names case-insensitively against `LintMetadata.sap_aliases`.
 - Do not treat an arbitrary `##FOO` as an abap-lsp suppression.
-- Examples to recognize only through registry aliases: `##NEEDED`, `##NO_TEXT`, `##NO_HANDLER`,
-  `##EC_NO_CHECK`.
+- Examples are recognized only through registry aliases, for example `##NEEDED` for
+  `abap-lsp.dead-store`.
 
 ### EPC and Code Inspector Pseudo Comments
 
@@ -402,8 +417,7 @@ Pseudo comments are quote comments containing `#EC`.
 Rules:
 
 - `"#EC <code>` suppressions apply to the statement carrying the trailing comment.
-- Match `<code>` case-insensitively against `LintSpec.sap_aliases.pseudo_comments`,
-  `code_inspector_checks`, and `extended_program_check`.
+- Match `<code>` case-insensitively against `LintMetadata.sap_aliases`.
 - Support multiple whitespace-separated pseudo-comment codes on the same comment.
 - Do not make `#EC *` suppress all lints unless a future compatibility mode explicitly enables it.
 
@@ -416,26 +430,25 @@ DATA lv_text TYPE string VALUE 'x'. "#EC NOTEXT
 
 ### abap-lsp Allow Comments
 
-Use explicit abap-lsp comments for native lint IDs and groups. These comments should not conflict
-with SAP syntax and should be easy to search.
+Use explicit abap-lsp comments for native lint IDs. These comments should not conflict with SAP
+syntax and should be easy to search.
 
 Supported first-pass forms:
 
 ```abap
-" abap-lsp: allow(dead_store)
-" abap-lsp: allow(dead_store, group:performance)
-" abap-lsp: allow-next-line(use_before_definite_assignment)
-* abap-lsp: allow-file(unresolved_reference, unknown_field)
+DATA lv_unused TYPE i. " abap-lsp:allow(abap-lsp.dead-store)
+" abap-lsp:allow-next-line(abap-lsp.use-before-definite-assignment)
+lv_value = lv_other.
+* abap-lsp:allow-file(epc.unverified-open-sql-source)
 ```
 
 Rules:
 
 - `allow(...)` in trailing trivia suppresses the current statement.
 - `allow-next-line(...)` in a full-line comment suppresses the next non-comment statement.
-- `allow-file(...)` suppresses the listed lint IDs or groups for the whole file.
-- Accepted items are native lint IDs, `group:<name>`, and `all`.
-- Unknown items produce a manifest-like lint warning in CLI output and an LSP diagnostic sourced
-  from `abap-lsp` if practical. They must not suppress anything silently.
+- `allow-file(...)` suppresses the listed lint IDs for the whole file.
+- Accepted items are exact lint IDs only. `group:<name>`, `all`, malformed items, and unknown future
+  syntax do not suppress anything.
 - Keep a small `SuppressionInfo` on suppressed diagnostics for `--show-suppressed` and future code
   actions.
 
