@@ -482,9 +482,13 @@ fn push_pragma_entry(
     if alias.is_empty() {
         return;
     }
+    let alias = normalized_lint_alias(alias);
+    if alias == "all" {
+        return;
+    }
     entries.push(SuppressionEntry {
         target: SuppressionTarget::Statement(statement_range),
-        selectors: vec![SuppressionSelector::SapAlias(normalized_lint_alias(alias))],
+        selectors: vec![SuppressionSelector::SapAlias(alias)],
         kind: LintSuppressionKind::Pragma,
         range: piece.range.clone(),
         token: token.to_string(),
@@ -518,7 +522,7 @@ fn pseudo_comment_aliases(comment: &str) -> Vec<String> {
     let mut out = Vec::new();
     for part in tail.split_whitespace() {
         let alias = part.trim_matches(|ch: char| !is_selector_char(ch));
-        if alias.is_empty() || alias == "*" {
+        if alias.is_empty() || alias == "*" || alias.eq_ignore_ascii_case("all") {
             continue;
         }
         if alias.chars().all(is_selector_char) {
@@ -577,6 +581,9 @@ fn parse_lint_id_selectors(value: &str) -> Vec<SuppressionSelector> {
                 return None;
             }
             let id = normalized_lint_id(part);
+            if id == "all" {
+                return None;
+            }
             (!id.is_empty()).then_some(SuppressionSelector::LintId(id))
         })
         .collect::<Vec<_>>();
@@ -1450,6 +1457,26 @@ mod tests {
         }
     }
 
+    fn registry_lint(id: &str, range: std::ops::Range<usize>) -> LintDiagnostic {
+        let metadata = metadata_for(id).unwrap_or_else(|| panic!("metadata for {id}"));
+        LintDiagnostic {
+            id: metadata.id.to_string(),
+            range,
+            message: "test lint".to_string(),
+            level: metadata.default_level,
+            origin: metadata.origin,
+            group: metadata.group,
+            tags: metadata.tags.iter().map(|tag| (*tag).to_string()).collect(),
+            sap_aliases: metadata
+                .sap_aliases
+                .iter()
+                .map(|alias| (*alias).to_string())
+                .collect(),
+            suppressed: false,
+            suppression: None,
+        }
+    }
+
     #[test]
     fn pseudo_comment_suppresses_matching_sap_alias() {
         let source = "\
@@ -1511,6 +1538,88 @@ SELECT * FROM mara INTO TABLE @DATA(lt_mara). \"#EC CI_BUFFJOIN";
     }
 
     #[test]
+    fn sap_broad_all_tokens_do_not_suppress() {
+        let source = "\
+REPORT ztest.
+DATA lv_pragma TYPE i ##all.
+DATA lv_pseudo TYPE i. \"#EC all";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+
+        for name in ["lv_pragma", "lv_pseudo"] {
+            let offset = source.find(name).expect(name);
+            assert!(
+                index
+                    .suppression_for(&lint(
+                        "custom.sap-rule",
+                        offset..offset + name.len(),
+                        &["ALL"]
+                    ))
+                    .is_none(),
+                "broad SAP all token must not suppress {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn pseudo_comment_matches_only_registered_alias_for_lint() {
+        let source = "\
+REPORT ztest.
+SELECT * FROM mara INTO TABLE @DATA(lt_mara). \"#EC abap-lsp.select-star CI_SEL_NESTED";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let offset = source.find("SELECT").expect("SELECT");
+
+        assert!(
+            index
+                .suppression_for(&registry_lint(
+                    ABAP_LSP_SELECT_STAR,
+                    offset..offset + "SELECT".len(),
+                ))
+                .is_none(),
+            "SAP pseudo comments must not match native lint IDs or aliases registered to other lints"
+        );
+
+        let suppressed = index
+            .suppression_for(&registry_lint(
+                ABAP_LSP_SELECT_IN_LOOP,
+                offset..offset + "SELECT".len(),
+            ))
+            .expect("matching registered CI alias suppression");
+        assert_eq!(suppressed.kind, LintSuppressionKind::PseudoComment);
+        assert_eq!(suppressed.token, "CI_SEL_NESTED");
+    }
+
+    #[test]
+    fn pragma_matches_only_registered_alias_for_lint() {
+        let source = "\
+REPORT ztest.
+SELECT * FROM mara INTO TABLE @DATA(lt_mara) ##CI_SEL_NESTED.";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let offset = source.find("SELECT").expect("SELECT");
+
+        assert!(
+            index
+                .suppression_for(&registry_lint(
+                    ABAP_LSP_SELECT_STAR,
+                    offset..offset + "SELECT".len(),
+                ))
+                .is_none(),
+            "SAP pragmas must not match aliases registered to other lints"
+        );
+
+        let suppressed = index
+            .suppression_for(&registry_lint(
+                ABAP_LSP_SELECT_IN_LOOP,
+                offset..offset + "SELECT".len(),
+            ))
+            .expect("matching registered pragma alias suppression");
+        assert_eq!(suppressed.kind, LintSuppressionKind::Pragma);
+        assert_eq!(suppressed.token, "##CI_SEL_NESTED");
+    }
+
+    #[test]
     fn abap_lsp_allow_suppresses_only_intended_lint_and_statement() {
         let source = "\
 REPORT ztest.
@@ -1550,6 +1659,72 @@ DATA lv_second TYPE i.";
     }
 
     #[test]
+    fn abap_lsp_allow_next_line_suppresses_next_non_comment_statement() {
+        let source = "\
+REPORT ztest.
+\" explain the generated declaration below
+\" abap-lsp:allow-next-line(abap-lsp.dead-store)
+* generated declaration follows
+DATA lv_suppressed TYPE i.
+
+DATA lv_visible TYPE i.";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+        let suppressed_offset = source.find("lv_suppressed").expect("lv_suppressed");
+        let visible_offset = source.find("lv_visible").expect("lv_visible");
+
+        let suppressed = index
+            .suppression_for(&lint(
+                ABAP_LSP_DEAD_STORE,
+                suppressed_offset..suppressed_offset + "lv_suppressed".len(),
+                &[],
+            ))
+            .expect("allow-next-line should target next non-comment statement");
+        assert_eq!(suppressed.kind, LintSuppressionKind::AbapLspAllow);
+        assert_eq!(
+            suppressed.token,
+            "\" abap-lsp:allow-next-line(abap-lsp.dead-store)"
+        );
+
+        assert!(
+            index
+                .suppression_for(&lint(
+                    ABAP_LSP_DEAD_STORE,
+                    visible_offset..visible_offset + "lv_visible".len(),
+                    &[],
+                ))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn abap_lsp_allow_file_suppresses_lint_across_file_header_layout() {
+        let source = "\
+*----------------------------------------------------------------------*
+* generated report shell
+* abap-lsp:allow-file(abap-lsp.dead-store)
+*----------------------------------------------------------------------*
+REPORT ztest.
+
+DATA lv_first TYPE i.
+DATA lv_second TYPE i.";
+        let lexed = tokenize(source).lexed;
+        let index = SuppressionIndex::new(source, &lexed);
+
+        for name in ["lv_first", "lv_second"] {
+            let offset = source.find(name).expect(name);
+            let suppressed = index
+                .suppression_for(&lint(ABAP_LSP_DEAD_STORE, offset..offset + name.len(), &[]))
+                .unwrap_or_else(|| panic!("allow-file should suppress {name}"));
+            assert_eq!(suppressed.kind, LintSuppressionKind::AbapLspAllow);
+            assert_eq!(
+                suppressed.token,
+                "* abap-lsp:allow-file(abap-lsp.dead-store)"
+            );
+        }
+    }
+
+    #[test]
     fn broad_group_allow_comment_does_not_suppress() {
         let source = "\
 REPORT ztest.
@@ -1565,6 +1740,11 @@ DATA lv_first TYPE i. \" abap-lsp:allow(group:style, all)";
                     first..first + "lv_first".len(),
                     &[],
                 ))
+                .is_none()
+        );
+        assert!(
+            index
+                .suppression_for(&lint("all", first..first + "lv_first".len(), &[]))
                 .is_none()
         );
     }

@@ -4264,17 +4264,18 @@ mod tests {
     use super::{
         CallDataflowDiagramFormat, LintFileReportContext, LintHardError, LintReportContext,
         LintWorkspaceReportContext, lint_all_files_report_json_from_context, lint_finding_json,
-        lint_report_json_from_context, lint_should_fail, lint_summary_json,
-        load_remote_candidate_workspace, parse_cli_args, path_to_file_uri,
-        render_call_dataflow_diagram_block, render_call_dataflow_parameter_provenance_mermaid,
+        lint_report_json, lint_report_json_from_context, lint_should_fail, lint_summary_json,
+        load_remote_candidate_workspace, load_single_file_lint_snapshot, parse_cli_args,
+        path_to_file_uri, render_call_dataflow_diagram_block,
+        render_call_dataflow_parameter_provenance_mermaid,
         render_call_dataflow_parameter_rich_mermaid, render_call_dataflow_report,
     };
     use abap_cache::{
-        CallDataflowByteRange, CallDataflowLifecycle, CallDataflowLifecycleEdge,
-        CallDataflowLifecycleNode, CallDataflowParameterTrace, CallDataflowProvenanceEdge,
-        CallDataflowProvenanceGraph, CallDataflowProvenanceNode, CallDataflowQuery,
-        CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace, LintDiagnostic,
-        LintGroup, LintLevel, LintOrigin, LintSuppression, LintSuppressionKind,
+        ABAP_LSP_SELECT_STAR, CallDataflowByteRange, CallDataflowLifecycle,
+        CallDataflowLifecycleEdge, CallDataflowLifecycleNode, CallDataflowParameterTrace,
+        CallDataflowProvenanceEdge, CallDataflowProvenanceGraph, CallDataflowProvenanceNode,
+        CallDataflowQuery, CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace,
+        LintDiagnostic, LintGroup, LintLevel, LintOrigin, LintSuppression, LintSuppressionKind,
     };
     use serde_json::json;
     use std::fs;
@@ -4434,6 +4435,55 @@ mod tests {
         assert_eq!(value["suppression"]["kind"], "config");
         assert_eq!(value["suppression"]["range"], json!([10, 10]));
         assert_eq!(value["suppression"]["token"], "config");
+    }
+
+    #[test]
+    fn lint_json_show_suppressed_source_suppression_includes_kind_and_token() {
+        let root = std::env::temp_dir().join("abap-cli-lint-show-suppressed-source");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("temp root");
+        let path = root.join("zlint.abap");
+        fs::write(
+            &path,
+            "\
+REPORT zlint.
+\" abap-lsp:allow-next-line(abap-lsp.select-star)
+SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).",
+        )
+        .expect("lint source");
+
+        let hidden = load_single_file_lint_snapshot(Some(path.to_string_lossy().as_ref()), false)
+            .expect("hidden lint snapshot");
+        assert!(
+            hidden
+                .snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|finding| finding.id != ABAP_LSP_SELECT_STAR),
+            "{:#?}",
+            hidden.snapshot.lint_diagnostics()
+        );
+
+        let shown = load_single_file_lint_snapshot(Some(path.to_string_lossy().as_ref()), true)
+            .expect("shown lint snapshot");
+        let findings = shown.snapshot.lint_diagnostics().to_vec();
+        let report = lint_report_json(&shown, &findings, &[]);
+        let finding = report["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .find(|finding| finding["lint_id"] == ABAP_LSP_SELECT_STAR)
+            .expect("suppressed select-star finding");
+
+        assert_eq!(finding["suppressed"], true);
+        assert_eq!(finding["suppression"]["kind"], "abap-lsp-allow");
+        assert_eq!(
+            finding["suppression"]["token"],
+            "\" abap-lsp:allow-next-line(abap-lsp.select-star)"
+        );
+        assert_eq!(report["summary"]["suppressed"], 1);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

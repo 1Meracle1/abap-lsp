@@ -12500,8 +12500,9 @@ mod tests {
         ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
         ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
         AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
-        HoveredComponentKind, ReferenceTarget, SnapshotBuildPlan, ddic_xml_to_abap_source,
-        dependency_surface_text, opened_function_module_dependency_analysis_text,
+        HoveredComponentKind, LintPolicy, LintSuppressionKind, ReferenceTarget, SnapshotBuildPlan,
+        ddic_xml_to_abap_source, dependency_surface_text,
+        opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
@@ -15053,6 +15054,78 @@ gv_unused = 1 ##NEEDED.";
                 .all(|diag| diag.id != ABAP_LSP_SELECT_STAR),
             "{:#?}",
             snapshot.lint_diagnostics()
+        );
+    }
+
+    #[test]
+    fn lint_allow_next_line_comment_layout_suppresses_only_next_select_star() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zlint.
+\" generated compatibility query
+\" abap-lsp:allow-next-line(abap-lsp.select-star)
+* keep this comment between suppression and statement
+SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).
+
+SELECT * FROM spfli INTO TABLE @DATA(lt_spfli).";
+
+        let snapshot = store.publish("file:///lint_allow_next_line_select_star.abap", 1, src);
+        let select_star = lint_slices(src, &snapshot, ABAP_LSP_SELECT_STAR);
+
+        assert_eq!(select_star, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn lint_allow_file_header_comment_layout_suppresses_all_select_star() {
+        let store = DocumentStore::default();
+        let src = "\
+*----------------------------------------------------------------------*
+* generated extractor
+* abap-lsp:allow-file(abap-lsp.select-star)
+*----------------------------------------------------------------------*
+REPORT zlint.
+
+SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).
+SELECT * FROM spfli INTO TABLE @DATA(lt_spfli).";
+
+        let snapshot = store.publish("file:///lint_allow_file_select_star.abap", 1, src);
+
+        assert!(
+            snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|diag| diag.id != ABAP_LSP_SELECT_STAR),
+            "{:#?}",
+            snapshot.lint_diagnostics()
+        );
+    }
+
+    #[test]
+    fn lint_report_suppressed_keeps_source_suppression_metadata() {
+        let store = DocumentStore::default();
+        store.set_lint_policy(LintPolicy::default().with_report_suppressed(true));
+        let src = "\
+REPORT zlint.
+\" abap-lsp:allow-next-line(abap-lsp.select-star)
+SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).";
+
+        let snapshot = store.publish("file:///lint_report_suppressed_select_star.abap", 1, src);
+        let diagnostic = snapshot
+            .lint_diagnostics()
+            .iter()
+            .find(|diag| diag.id == ABAP_LSP_SELECT_STAR)
+            .expect("suppressed select-star lint");
+        let suppression = diagnostic
+            .suppression
+            .as_ref()
+            .expect("source suppression metadata");
+
+        assert!(diagnostic.suppressed);
+        assert_eq!(diagnostic.level, super::LintLevel::Info);
+        assert_eq!(suppression.kind, LintSuppressionKind::AbapLspAllow);
+        assert_eq!(
+            suppression.token,
+            "\" abap-lsp:allow-next-line(abap-lsp.select-star)"
         );
     }
 
