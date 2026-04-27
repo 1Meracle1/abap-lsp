@@ -2579,6 +2579,42 @@ fn parse_simple_keyword_stmt(
     ))
 }
 
+fn parse_raw_stmt_until_top_level_period(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+    kind: SyntaxKind,
+    start_tok: &Token,
+    missing_period_message: &str,
+    errors: &mut Vec<crate::ParseError>,
+) -> (NodeId, usize) {
+    let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) else {
+        let eof_idx = tokens
+            .iter()
+            .position(|token| token.kind == TokenKind::Eof)
+            .unwrap_or(tokens.len());
+        let err_end = tokens
+            .get(eof_idx.saturating_sub(1))
+            .map(|token| token.range.end)
+            .unwrap_or(start_tok.range.end);
+        errors.push(crate::ParseError {
+            message: missing_period_message.to_string(),
+            range: start_tok.range.start..err_end,
+        });
+        let children = error_token_children(b, tokens, idx, eof_idx);
+        let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
+        return (node, tokens.len());
+    };
+
+    let children = token_children(b, tokens, idx, period_i + 1);
+    let node = b.branch(
+        kind,
+        start_tok.range.start..tokens[period_i].range.end,
+        &children,
+    );
+    (node, period_i + 1)
+}
+
 fn build_include_stmt_children(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
@@ -8957,7 +8993,13 @@ pub fn try_parse_insert_table_stmt(
                 let Some(_from_idx) =
                     find_top_level_keyword_index(source, tokens, idx + 1, period_i, "from")
                 else {
-                    return None;
+                    let children = token_children(b, tokens, idx, period_i + 1);
+                    let node = b.branch(
+                        SyntaxKind::InsertExtractStmt,
+                        insert_tok.range.start..tokens[period_i].range.end,
+                        &children,
+                    );
+                    return Some((node, period_i + 1));
                 };
                 let target_clause =
                     |tokens: &[Token], i: usize| insert_db_table_clause_starts(source, tokens, i);
@@ -9682,6 +9724,17 @@ pub fn try_parse_modify_stmt(
     if !is_keyword(source, modify_tok, "modify") {
         return None;
     }
+    if modify_line_stmt_lead(source, tokens, idx) {
+        return Some(parse_raw_stmt_until_top_level_period(
+            b,
+            tokens,
+            idx,
+            SyntaxKind::ModifyLineStmt,
+            modify_tok,
+            "syntax error: expected '.' after MODIFY LINE statement",
+            errors,
+        ));
+    }
     Some(parse_stmt_with_period_scan(
         b,
         source,
@@ -9802,6 +9855,23 @@ pub fn try_parse_modify_stmt(
             (node, period_i + 1)
         },
     ))
+}
+
+fn modify_line_stmt_lead(source: &str, tokens: &[Token], idx: usize) -> bool {
+    let next = skip_trivia(tokens, idx + 1);
+    if tokens
+        .get(next)
+        .is_some_and(|token| is_keyword(source, token, "line"))
+    {
+        return true;
+    }
+
+    tokens
+        .get(next)
+        .is_some_and(|token| is_keyword(source, token, "current"))
+        && tokens
+            .get(skip_trivia(tokens, next + 1))
+            .is_some_and(|token| is_keyword(source, token, "line"))
 }
 
 pub fn try_parse_delete_stmt(

@@ -218,11 +218,16 @@ impl<'a> Collector<'a> {
             | SyntaxKind::SetHandlerStmt
             | SyntaxKind::GetBadiStmt
             | SyntaxKind::GetCursorStmt
+            | SyntaxKind::ReadLineStmt
             | SyntaxKind::ReadDatasetStmt
             | SyntaxKind::ReadTextpoolStmt
             | SyntaxKind::OpenDatasetStmt
             | SyntaxKind::CloseDatasetStmt
             | SyntaxKind::DeleteDatasetStmt
+            | SyntaxKind::ModifyLineStmt
+            | SyntaxKind::FieldStmt
+            | SyntaxKind::FieldGroupsStmt
+            | SyntaxKind::InsertExtractStmt
             | SyntaxKind::TransferStmt
             | SyntaxKind::GenerateSubroutinePoolStmt
             | SyntaxKind::GenerateDynproStmt

@@ -83,6 +83,44 @@ fn classifies_classic_arithmetic_string_and_list_statements() {
 }
 
 #[test]
+fn classifies_classic_list_dynpro_and_extract_dataset_corpus_statements() {
+    let src = concat!(
+        "READ LINE BAN-SZEIL OF PAGE BAN-PAGE INDEX LSIND.\n",
+        "MODIFY LINE sy-index\n",
+        "            FIELD FORMAT info COLOR = color_positive.\n",
+        "AUTHORITY-CHECK OBJECT lc_auth_obj ID lc_bukrs\n",
+        "  FIELD lw_mat_info-bukrs ID lc_actvt FIELD lc_display.\n",
+        "FIELD-GROUPS: HEADER, KOPF, POS.\n",
+        "INSERT DUMMY\n",
+        "       EKKO-EKORG EKKO-LIFNR EKKO-EKGRP.\n",
+        "FIELD screen_field MODULE check_input.\n",
+    );
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadLineStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ModifyLineStmt), 1);
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::AuthorityCheckStmt),
+        1
+    );
+    assert_eq!(
+        parsed
+            .file
+            .count_kind(root, SyntaxKind::AuthorityCheckIdClause),
+        2
+    );
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::FieldGroupsStmt), 1);
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::InsertExtractStmt),
+        1
+    );
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::FieldStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+}
+
+#[test]
 fn classifies_runtime_generated_and_dynpro_statements() {
     let src = concat!(
         "CALL TRANSACTION u_tcode WITH AUTHORITY-CHECK      \"#EC CI_CALLTA\n",

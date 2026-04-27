@@ -326,6 +326,40 @@ fn is_chained_methods_entry_after_separator(tokens: &[Token], idx: usize) -> boo
         .is_some_and(|tok| matches!(tok.kind, TokenKind::Colon | TokenKind::Comma))
 }
 
+fn statement_starts_authority_check(source: &str, tokens: &[Token], start: usize) -> bool {
+    let Some(check_idx) = previous_non_comment_token(tokens, start) else {
+        return false;
+    };
+    let Some(minus_idx) = previous_non_comment_token(tokens, check_idx) else {
+        return false;
+    };
+    let Some(authority_idx) = previous_non_comment_token(tokens, minus_idx) else {
+        return false;
+    };
+
+    tokens
+        .get(authority_idx)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "authority"))
+        && tokens
+            .get(minus_idx)
+            .is_some_and(|tok| tok.kind == TokenKind::Minus)
+        && tokens
+            .get(check_idx)
+            .is_some_and(|tok| token_matches_keyword(source, tok, "check"))
+}
+
+fn is_authority_check_field_continuation(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    idx: usize,
+) -> bool {
+    tokens
+        .get(idx)
+        .is_some_and(|tok| token_matches_keyword(source, tok, "field"))
+        && statement_starts_authority_check(source, tokens, start)
+}
+
 #[inline]
 fn is_condition_comparison_keyword(source: &str, tok: &Token) -> bool {
     tok.kind == TokenKind::Ident
@@ -532,6 +566,7 @@ pub(crate) fn scan_until_statement_period_with_named_args(
                     && !is_inline_decl_continuation(source, tokens, i)
                     && !(in_chained_methods_decl
                         && is_chained_methods_entry_after_separator(tokens, i))
+                    && !is_authority_check_field_continuation(source, tokens, start, i)
                     && !named_arg_continuation
                     && !condition_continuation
                     && !table_key_continuation

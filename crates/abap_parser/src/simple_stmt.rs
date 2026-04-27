@@ -73,6 +73,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["methods", "class"], classify_methods_stmt),
     GuardedSimpleStmtClassifier::new(&["events", "class"], classify_events_stmt),
     GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
+    GuardedSimpleStmtClassifier::new(&["field"], classify_field_stmt),
     GuardedSimpleStmtClassifier::new(&["suppress"], classify_suppress_dialog_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
@@ -2167,6 +2168,8 @@ fn classify_read_runtime_stmt(source: &str, significant: &[&Token]) -> Option<Sy
         Some(SyntaxKind::ReadDatasetStmt)
     } else if token_matches_keyword(source, significant[1], "textpool") {
         Some(SyntaxKind::ReadTextpoolStmt)
+    } else if token_matches_keyword(source, significant[1], "line") {
+        Some(SyntaxKind::ReadLineStmt)
     } else {
         None
     }
@@ -2277,6 +2280,44 @@ fn classify_suppress_dialog_stmt(source: &str, significant: &[&Token]) -> Option
         && token_matches_keyword(source, second, "dialog")
         && last.kind == TokenKind::Period)
         .then_some(SyntaxKind::SuppressDialogStmt)
+}
+
+fn significant_starts_hyphenated_keyword(
+    source: &str,
+    significant: &[&Token],
+    parts: &[&str],
+) -> bool {
+    let mut i = 0usize;
+    for (part_idx, part) in parts.iter().enumerate() {
+        let Some(token) = significant.get(i) else {
+            return false;
+        };
+        if !token_matches_keyword(source, token, part) {
+            return false;
+        }
+        i += 1;
+        if part_idx + 1 < parts.len() {
+            if significant.get(i).map(|token| token.kind) != Some(TokenKind::Minus) {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    true
+}
+
+fn classify_field_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let first = *significant.first()?;
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period || !token_matches_keyword(source, first, "field") {
+        return None;
+    }
+
+    if significant_starts_hyphenated_keyword(source, significant, &["field", "groups"]) {
+        Some(SyntaxKind::FieldGroupsStmt)
+    } else {
+        Some(SyntaxKind::FieldStmt)
+    }
 }
 
 fn classify_direct_call_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {

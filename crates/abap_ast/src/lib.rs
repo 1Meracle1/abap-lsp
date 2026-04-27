@@ -445,8 +445,18 @@ pub enum SyntaxKind {
     PositionStmt,
     /// Classic interactive list statement `HIDE ... .`
     HideStmt,
+    /// Classic list statement `READ LINE ... .`
+    ReadLineStmt,
+    /// Classic list statement `MODIFY LINE ... .`
+    ModifyLineStmt,
+    /// Dynpro statement `FIELD ... .`
+    FieldStmt,
     /// Dynpro statement `SUPPRESS DIALOG .`
     SuppressDialogStmt,
+    /// Extract dataset declaration `FIELD-GROUPS ... .`
+    FieldGroupsStmt,
+    /// Extract dataset insertion `INSERT ... .`
+    InsertExtractStmt,
     /// `MODIFY ... FROM ... .`
     ModifyStmt,
     /// `UPDATE dbtab ... .`
@@ -867,7 +877,12 @@ impl SyntaxKind {
             Self::FormatStmt => "FormatStmt",
             Self::PositionStmt => "PositionStmt",
             Self::HideStmt => "HideStmt",
+            Self::ReadLineStmt => "ReadLineStmt",
+            Self::ModifyLineStmt => "ModifyLineStmt",
+            Self::FieldStmt => "FieldStmt",
             Self::SuppressDialogStmt => "SuppressDialogStmt",
+            Self::FieldGroupsStmt => "FieldGroupsStmt",
+            Self::InsertExtractStmt => "InsertExtractStmt",
             Self::ModifyStmt => "ModifyStmt",
             Self::UpdateStmt => "UpdateStmt",
             Self::UpdateTarget => "UpdateTarget",
