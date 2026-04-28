@@ -1132,8 +1132,8 @@ impl<'a> Collector<'a> {
             }
             let op = tokens.get(op_idx)?;
             let field = tokens.get(op_idx + 1)?;
-            if !self.syntax_token_is_ident_like(field)
-                && !(op.text.as_ref() == "->" && field.text.as_ref() == "*")
+            if !(self.syntax_token_is_ident_like(field)
+                || (op.text.as_ref() == "->" && field.text.as_ref() == "*"))
             {
                 break;
             }

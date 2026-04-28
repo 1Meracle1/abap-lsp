@@ -292,13 +292,11 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
         let mut before_period = true;
 
         for child in self.collector.file.children(node) {
-            if before_period {
-                if self.collector.file.kind(child) == SyntaxKind::Token {
-                    let tokens = self.collector.syntax_token_nodes(child);
-                    before_period = !tokens.iter().any(|token| token.text.as_ref() == ".");
-                    header_tokens.extend(tokens);
-                    continue;
-                }
+            if before_period && self.collector.file.kind(child) == SyntaxKind::Token {
+                let tokens = self.collector.syntax_token_nodes(child);
+                before_period = !tokens.iter().any(|token| token.text.as_ref() == ".");
+                header_tokens.extend(tokens);
+                continue;
             }
             self.collector.walk_node(child, child_scope);
         }
@@ -1357,9 +1355,7 @@ impl<'ctx, 'a> ControlLowering<'ctx, 'a> {
             {
                 return None;
             }
-            let Some((field, next_idx)) = self.sort_order_field_from_tokens(&tokens, idx) else {
-                return None;
-            };
+            let (field, next_idx) = self.sort_order_field_from_tokens(&tokens, idx)?;
             fields.push(field);
             idx = next_idx;
         }

@@ -68,12 +68,6 @@ pub(crate) struct DirtySet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) struct ValidatedUnitResult {
-    pub(crate) unit: UnitAnalysis,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IncrementalProjectAnalysisResult {
     pub(crate) project: ProjectAnalysis,
     pub(crate) dirty_set: DirtySet,

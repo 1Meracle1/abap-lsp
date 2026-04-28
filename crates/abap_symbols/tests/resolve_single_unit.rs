@@ -9498,7 +9498,7 @@ CREATE OBJECT lo_instance TYPE some_class
             abap_symbols::NamedArgumentTarget::Constructor { type_name }
                 if type_name.as_ref() == "some_class"
         ) && site.arguments.len() == 1
-            && site.arguments[0].name.as_deref().map(|name| name.as_ref()) == Some("iv_text")
+            && site.arguments[0].name.as_deref() == Some("iv_text")
             && site.arguments[0].section == Some(abap_symbols::NamedArgumentSection::Exporting)
     }));
     assert!(unit.named_arguments.iter().any(|access| {
@@ -10110,7 +10110,7 @@ ENDCLASS.
             abap_symbols::NamedArgumentTarget::Constructor { type_name }
                 if type_name.as_ref() == "cx_demo"
         ) && site.arguments.len() == 1
-            && site.arguments[0].name.as_deref().map(|name| name.as_ref()) == Some("iv_text")
+            && site.arguments[0].name.as_deref() == Some("iv_text")
             && site.arguments[0].section == Some(abap_symbols::NamedArgumentSection::Exporting)
     }));
     assert!(unit.named_arguments.iter().any(|access| {

@@ -505,7 +505,7 @@ fn main() {
 }
 
 fn run() -> Result<i32, String> {
-    let cli = parse_cli_args(std::env::args().skip(1)).map_err(|e| e)?;
+    let cli = parse_cli_args(std::env::args().skip(1))?;
 
     if cli.command == Command::Analyze {
         return run_analyze(&cli);
@@ -1486,7 +1486,7 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
             &roots,
             &mut local_export_resolver,
         );
-        for candidate in per_source.values().cloned() {
+        for candidate in per_source.values() {
             insert_remote_candidate(&mut deduped, candidate.clone());
         }
         if !per_source.is_empty() {
@@ -2956,7 +2956,7 @@ fn build_call_dataflow_lifecycle_index<'a>(
             .filter(|node| outbound.contains_key(node.id.as_str()))
             .collect();
     }
-    roots.sort_by(|left, right| ascii_node_sort_key(left).cmp(&ascii_node_sort_key(right)));
+    roots.sort_by_key(|left| ascii_node_sort_key(left));
 
     CallDataflowLifecycleIndex {
         node_by_id,

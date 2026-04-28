@@ -116,7 +116,7 @@ impl<'a> Lexer<'a> {
             return Token::new(TokenKind::Ident, start..self.pos);
         }
 
-        if ('0'..='9').contains(&ch) {
+        if ch.is_ascii_digit() {
             self.scan_number();
             return Token::new(TokenKind::Number, start..self.pos);
         }

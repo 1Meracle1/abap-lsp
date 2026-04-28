@@ -173,13 +173,17 @@ fn split_interpolation_body(
             TokenKind::RBracket => bracket -= 1,
             TokenKind::LBrace => brace += 1,
             TokenKind::RBrace => brace -= 1,
-            TokenKind::Ident if paren == 0 && bracket == 0 && brace == 0 => {
-                if idx + 1 < body.len() && body[idx + 1].kind == TokenKind::Eq {
-                    let name = body[idx].lexeme(source);
-                    if is_template_format_name(name) {
-                        expr_end = idx;
-                        break;
-                    }
+            TokenKind::Ident
+                if paren == 0
+                    && bracket == 0
+                    && brace == 0
+                    && idx + 1 < body.len()
+                    && body[idx + 1].kind == TokenKind::Eq =>
+            {
+                let name = body[idx].lexeme(source);
+                if is_template_format_name(name) {
+                    expr_end = idx;
+                    break;
                 }
             }
             _ => {}

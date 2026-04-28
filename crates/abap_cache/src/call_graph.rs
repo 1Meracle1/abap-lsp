@@ -894,10 +894,10 @@ fn resolve_type_symbol(
     )
 }
 
-fn resolve_method_reference_target<'a>(
-    project: &'a ProjectAnalysis,
+fn resolve_method_reference_target(
+    project: &ProjectAnalysis,
     handle: SymbolHandle,
-) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+) -> Option<(&UnitAnalysis, &ClassMemberData)> {
     let target_unit = &project.units[handle.unit.as_usize()];
     let target_symbol = target_unit.symbol(handle.symbol);
     if target_symbol.kind != SymbolKind::Method {

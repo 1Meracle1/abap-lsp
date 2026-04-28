@@ -289,7 +289,7 @@ pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &Sco
             )
         };
         let resolution = if let Some(symbol) =
-            lookup_reference_scope_chain(unit, &scope_index, scope, namespace, kind, &name)
+            lookup_reference_scope_chain(unit, scope_index, scope, namespace, kind, &name)
         {
             Some(Resolution::Symbol(SymbolHandle {
                 unit: unit_id,
@@ -303,7 +303,7 @@ pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &Sco
                 symbol,
             }))
         } else if namespace == Namespace::Value && name.as_ref() == "super" {
-            resolve_super_reference_in_unit(unit, &scope_index, scope).map(|symbol| {
+            resolve_super_reference_in_unit(unit, scope_index, scope).map(|symbol| {
                 Resolution::Symbol(SymbolHandle {
                     unit: unit_id,
                     symbol,
@@ -324,12 +324,6 @@ pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &Sco
         };
         unit.references[idx].resolution = resolution;
     }
-}
-
-#[allow(dead_code)]
-pub fn resolve_unit(unit: &mut UnitAnalysis) {
-    let scope_index = build_scope_index(unit);
-    resolve_unit_with_index(unit, &scope_index);
 }
 
 fn resolve_project_cross_unit_with_filter(
@@ -542,11 +536,7 @@ fn resolve_project_cross_unit_with_filter(
             });
             symbol_structures.push(structure);
         }
-        for (symbol, structure) in units[unit_idx]
-            .symbols
-            .iter_mut()
-            .zip(symbol_structures.into_iter())
-        {
+        for (symbol, structure) in units[unit_idx].symbols.iter_mut().zip(symbol_structures) {
             symbol.structure = structure;
         }
 
@@ -578,7 +568,7 @@ fn resolve_project_cross_unit_with_filter(
             for (field, resolved_structure) in units[unit_idx].structures[structure_idx]
                 .fields
                 .iter_mut()
-                .zip(resolved_fields.into_iter())
+                .zip(resolved_fields)
             {
                 field.structure = resolved_structure;
             }
@@ -607,11 +597,7 @@ fn resolve_project_cross_unit_with_filter(
                 )
             }));
         }
-        for (symbol, normalized) in units[unit_idx]
-            .symbols
-            .iter_mut()
-            .zip(normalized_symbols.into_iter())
-        {
+        for (symbol, normalized) in units[unit_idx].symbols.iter_mut().zip(normalized_symbols) {
             if let Some((structure, declared_type)) = normalized {
                 symbol.structure = structure;
                 symbol.declared_type = Some(declared_type);

@@ -866,9 +866,7 @@ fn select_clause_start_kind(
                             || is_keyword(source, token, "for")))
                     .then_some(prev_idx)
                 });
-        let Some(prev_keyword_idx) = prev_keyword_idx else {
-            return None;
-        };
+        let prev_keyword_idx = prev_keyword_idx?;
         let prev = &tokens[prev_keyword_idx];
         if is_keyword(source, prev, "corresponding") {
             return None;
@@ -1267,8 +1265,10 @@ fn sql_host_expr_end_tokens(
     let mut idx = start;
     while idx < end_exclusive {
         let token = &tokens[idx];
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if matches!(
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && (matches!(
                 token.kind,
                 TokenKind::Comma
                     | TokenKind::Period
@@ -1280,10 +1280,9 @@ fn sql_host_expr_end_tokens(
                     | TokenKind::Ne
                     | TokenKind::QuestionEq
             ) || token.kind == TokenKind::RParen
-                || sql_token_is_keyword(source, token)
-            {
-                break;
-            }
+                || sql_token_is_keyword(source, token))
+        {
+            break;
         }
         match token.kind {
             TokenKind::LParen => paren += 1,
@@ -2467,10 +2466,11 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
             if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
                 let table_key_continuation =
                     inside_key_components && line_start_table_key_component_continues(tokens, i);
-                if is_definite_stmt_lead_keyword(source, t) {
-                    if !is_inline_decl_continuation(source, tokens, i) && !table_key_continuation {
-                        return StmtPeriodScan::Unterminated { end_exclusive: i };
-                    }
+                if is_definite_stmt_lead_keyword(source, t)
+                    && !is_inline_decl_continuation(source, tokens, i)
+                    && !table_key_continuation
+                {
+                    return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }
                 if !inside_key_components {
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
@@ -3876,10 +3876,12 @@ fn find_top_level_hyphenated_keyword_index(
     let mut brace = 0i32;
     let mut idx = start;
     while idx < end_exclusive {
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if match_hyphenated_keyword(source, tokens, idx, parts).is_some() {
-                return Some(idx);
-            }
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && match_hyphenated_keyword(source, tokens, idx, parts).is_some()
+        {
+            return Some(idx);
         }
         match tokens[idx].kind {
             TokenKind::LParen => paren += 1,
@@ -4249,7 +4251,7 @@ fn push_read_table_entry_children(
         if is_keyword(source, token, "into") {
             children.push(token_leaf(b, token));
             let target_start = skip_trivia(tokens, i + 1);
-            let target_end = scan_until_clause(tokens, target_start, entry_end, &clause_starts);
+            let target_end = scan_until_clause(tokens, target_start, entry_end, clause_starts);
             if let Some((inline_decl, next_idx)) =
                 try_parse_data_inline_decl(b, source, tokens, target_start)
                 && skip_trivia(tokens, next_idx) == target_end
@@ -9106,23 +9108,13 @@ pub fn try_parse_call_like_stmt(
                         if tokens
                             .get(cursor - 1)
                             .is_some_and(|token| is_keyword(source, token, "like"))
-                        {
-                            push_expr_child(
-                                b,
-                                &mut children,
-                                source,
-                                tokens,
-                                cursor,
-                                period_i,
-                                Some(&tokens[cursor - 1]),
-                            );
-                        } else if tokens.get(cursor).map(|token| token.kind)
-                            == Some(TokenKind::LParen)
-                            && scan_until_clause(tokens, cursor + 1, period_i, |tokens, at| {
-                                tokens
-                                    .get(at)
-                                    .is_some_and(|token| token.kind == TokenKind::RParen)
-                            }) < period_i
+                            || (tokens.get(cursor).map(|token| token.kind)
+                                == Some(TokenKind::LParen)
+                                && scan_until_clause(tokens, cursor + 1, period_i, |tokens, at| {
+                                    tokens
+                                        .get(at)
+                                        .is_some_and(|token| token.kind == TokenKind::RParen)
+                                }) < period_i)
                         {
                             push_expr_child(
                                 b,
@@ -9390,7 +9382,7 @@ pub fn try_parse_authority_check_stmt(
                 let object_tok = &tokens[i];
                 children.push(token_leaf(b, object_tok));
                 let object_start = i + 1;
-                i = scan_until_clause(tokens, object_start, period_i, &stmt_clause_starts);
+                i = scan_until_clause(tokens, object_start, period_i, stmt_clause_starts);
                 push_wrapped_expr_child(
                     b,
                     &mut children,
@@ -9414,7 +9406,7 @@ pub fn try_parse_authority_check_stmt(
                 children.push(token_leaf(b, &tokens[i]));
                 children.push(token_leaf(b, user_tok));
                 let user_start = i + 2;
-                i = scan_until_clause(tokens, user_start, period_i, &stmt_clause_starts);
+                i = scan_until_clause(tokens, user_start, period_i, stmt_clause_starts);
                 push_wrapped_expr_child(
                     b,
                     &mut children,
@@ -9434,7 +9426,7 @@ pub fn try_parse_authority_check_stmt(
                     let clause_start = token.range.start;
                     let id_start = i + 1;
                     let id_end =
-                        scan_until_clause(tokens, id_start, period_i, &id_clause_part_starts);
+                        scan_until_clause(tokens, id_start, period_i, id_clause_part_starts);
                     push_wrapped_expr_child(
                         b,
                         &mut clause_children,
@@ -9455,7 +9447,7 @@ pub fn try_parse_authority_check_stmt(
                         clause_children.push(token_leaf(b, field_tok));
                         let field_start = i + 1;
                         let field_end =
-                            scan_until_clause(tokens, field_start, period_i, &field_clause_starts);
+                            scan_until_clause(tokens, field_start, period_i, field_clause_starts);
                         push_wrapped_expr_child(
                             b,
                             &mut clause_children,
@@ -9691,7 +9683,7 @@ pub fn try_parse_insert_table_stmt(
                 };
                 let target_clause =
                     |tokens: &[Token], i: usize| insert_db_table_clause_starts(source, tokens, i);
-                let target_end = scan_until_clause(tokens, idx + 1, period_i, &target_clause);
+                let target_end = scan_until_clause(tokens, idx + 1, period_i, target_clause);
                 let node = build_insert_db_table_stmt(
                     b,
                     source,
@@ -9726,7 +9718,7 @@ pub fn try_parse_insert_table_stmt(
                 let itab_start = into_idx + 1;
                 let bare_clause =
                     |t: &[Token], i: usize| insert_into_bare_itab_clause_starts(source, t, i);
-                let itab_end = scan_until_clause(tokens, itab_start, period_i, &bare_clause);
+                let itab_end = scan_until_clause(tokens, itab_start, period_i, bare_clause);
                 if itab_end < period_i {
                     let head = &tokens[itab_end];
                     if is_keyword(source, head, "values") || is_keyword(source, head, "set") {
@@ -10334,10 +10326,8 @@ pub fn try_parse_sort_stmt(
 
                     while tail < period_i {
                         let token = &tokens[tail];
-                        if matches!(token.kind, TokenKind::Comment) {
-                            children.push(token_leaf(b, token));
-                            tail += 1;
-                        } else if is_keyword(source, token, "ascending")
+                        if matches!(token.kind, TokenKind::Comment)
+                            || is_keyword(source, token, "ascending")
                             || is_keyword(source, token, "descending")
                         {
                             children.push(token_leaf(b, token));
@@ -12578,10 +12568,7 @@ pub fn try_parse_open_cursor_stmt(
         return Some((node, tokens.len()));
     };
 
-    let Some(for_idx) = find_top_level_keyword(source, tokens, handle_start, period_i, "for")
-    else {
-        return None;
-    };
+    let for_idx = find_top_level_keyword(source, tokens, handle_start, period_i, "for")?;
     let select_idx = skip_trivia(tokens, for_idx + 1);
     if !tokens
         .get(select_idx)
@@ -16224,29 +16211,28 @@ ENDFORM.",
 
     #[test]
     fn rejects_call_method_inline_args_without_opening_padding() {
-        for src in ["CALL METHOD lo_handler->run(iv_mode = lv_mode )."] {
-            let parsed = crate::parse(src);
-            assert!(
-                parsed
-                    .errors
-                    .iter()
-                    .any(|err| err.message.contains("method call arguments")),
-                "{src}: {:?}",
-                parsed.errors
-            );
-            assert_eq!(
-                parsed
-                    .file
-                    .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
-                0
-            );
-            assert!(
-                parsed
-                    .file
-                    .count_kind(parsed.file.root(), SyntaxKind::Error)
-                    >= 1
-            );
-        }
+        let src = "CALL METHOD lo_handler->run(iv_mode = lv_mode ).";
+        let parsed = crate::parse(src);
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|err| err.message.contains("method call arguments")),
+            "{src}: {:?}",
+            parsed.errors
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallMethodStmt),
+            0
+        );
+        assert!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                >= 1
+        );
     }
 
     #[test]

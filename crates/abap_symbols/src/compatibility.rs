@@ -356,126 +356,6 @@ fn trim_internal_table_line_display(display: &str) -> &str {
     display.trim()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        InternalTableDisplayKind, ScalarCompatibilityKind, named_type_refs_match,
-        normalized_internal_table_displays_match, parse_internal_table_display,
-        scalar_kinds_compatible,
-    };
-    use crate::def_map::{FieldTypeRefData, TypeFactData};
-    use crate::scope::Namespace;
-    use std::sync::Arc;
-
-    #[test]
-    fn matches_plain_named_type_and_like_references_with_same_base_name() {
-        let like_ref = FieldTypeRefData {
-            namespace: Namespace::Value,
-            is_ref: false,
-            base_name: Arc::from("ltap_conf"),
-            field_path: Vec::new(),
-        };
-        let type_ref = FieldTypeRefData {
-            namespace: Namespace::Type,
-            is_ref: false,
-            base_name: Arc::from("ltap_conf"),
-            field_path: Vec::new(),
-        };
-
-        assert!(named_type_refs_match(Some(&like_ref), Some(&type_ref)));
-    }
-
-    #[test]
-    fn parses_bare_table_of_as_standard_table_display() {
-        let parsed = parse_internal_table_display("TABLE OF tline").expect("table display");
-        assert_eq!(parsed.kind, InternalTableDisplayKind::Standard);
-        assert_eq!(parsed.line_display, Some("tline"));
-    }
-
-    #[test]
-    fn strips_table_key_additions_from_internal_table_display() {
-        let parsed =
-            parse_internal_table_display("TABLE OF tline WITH EMPTY KEY").expect("table display");
-        assert_eq!(parsed.line_display, Some("tline"));
-    }
-
-    #[test]
-    fn parses_generic_standard_table_display_without_line_type() {
-        let parsed = parse_internal_table_display("STANDARD TABLE").expect("table display");
-        assert_eq!(parsed.kind, InternalTableDisplayKind::Standard);
-        assert_eq!(parsed.line_display, None);
-    }
-
-    #[test]
-    fn matches_standard_and_bare_table_displays_case_insensitively() {
-        let expected = TypeFactData {
-            structure: None,
-            declared_type: None,
-            type_clause_display: Some(Arc::from("STANDARD TABLE OF TLINE")),
-            table_line: None,
-        };
-        let actual = TypeFactData {
-            structure: None,
-            declared_type: None,
-            type_clause_display: Some(Arc::from("TABLE OF tline")),
-            table_line: None,
-        };
-
-        assert!(normalized_internal_table_displays_match(&expected, &actual));
-    }
-
-    #[test]
-    fn matches_generic_and_specific_standard_table_displays() {
-        let expected = TypeFactData {
-            structure: None,
-            declared_type: None,
-            type_clause_display: Some(Arc::from("STANDARD TABLE")),
-            table_line: None,
-        };
-        let actual = TypeFactData {
-            structure: None,
-            declared_type: None,
-            type_clause_display: Some(Arc::from("STANDARD TABLE OF tline")),
-            table_line: None,
-        };
-
-        assert!(normalized_internal_table_displays_match(&expected, &actual));
-    }
-
-    #[test]
-    fn allows_elementary_scalar_conversions_except_between_date_and_time() {
-        assert_eq!(
-            scalar_kinds_compatible(
-                ScalarCompatibilityKind::Elementary,
-                ScalarCompatibilityKind::Elementary,
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            scalar_kinds_compatible(
-                ScalarCompatibilityKind::Date,
-                ScalarCompatibilityKind::Elementary,
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            scalar_kinds_compatible(
-                ScalarCompatibilityKind::Time,
-                ScalarCompatibilityKind::Elementary,
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            scalar_kinds_compatible(ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Time),
-            Some(false)
-        );
-        assert_eq!(
-            scalar_kinds_compatible(ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date),
-            Some(false)
-        );
-    }
-}
-
 fn normalize_type_fact<'a>(
     project: &'a ProjectAnalysis,
     unit: &'a UnitAnalysis,
@@ -647,4 +527,124 @@ fn is_builtin_scalar_name(name: &str) -> bool {
             | "flag"
             | "xfeld"
     ) || (name.starts_with("char") && name[4..].chars().all(|ch| ch.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        InternalTableDisplayKind, ScalarCompatibilityKind, named_type_refs_match,
+        normalized_internal_table_displays_match, parse_internal_table_display,
+        scalar_kinds_compatible,
+    };
+    use crate::def_map::{FieldTypeRefData, TypeFactData};
+    use crate::scope::Namespace;
+    use std::sync::Arc;
+
+    #[test]
+    fn matches_plain_named_type_and_like_references_with_same_base_name() {
+        let like_ref = FieldTypeRefData {
+            namespace: Namespace::Value,
+            is_ref: false,
+            base_name: Arc::from("ltap_conf"),
+            field_path: Vec::new(),
+        };
+        let type_ref = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from("ltap_conf"),
+            field_path: Vec::new(),
+        };
+
+        assert!(named_type_refs_match(Some(&like_ref), Some(&type_ref)));
+    }
+
+    #[test]
+    fn parses_bare_table_of_as_standard_table_display() {
+        let parsed = parse_internal_table_display("TABLE OF tline").expect("table display");
+        assert_eq!(parsed.kind, InternalTableDisplayKind::Standard);
+        assert_eq!(parsed.line_display, Some("tline"));
+    }
+
+    #[test]
+    fn strips_table_key_additions_from_internal_table_display() {
+        let parsed =
+            parse_internal_table_display("TABLE OF tline WITH EMPTY KEY").expect("table display");
+        assert_eq!(parsed.line_display, Some("tline"));
+    }
+
+    #[test]
+    fn parses_generic_standard_table_display_without_line_type() {
+        let parsed = parse_internal_table_display("STANDARD TABLE").expect("table display");
+        assert_eq!(parsed.kind, InternalTableDisplayKind::Standard);
+        assert_eq!(parsed.line_display, None);
+    }
+
+    #[test]
+    fn matches_standard_and_bare_table_displays_case_insensitively() {
+        let expected = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("STANDARD TABLE OF TLINE")),
+            table_line: None,
+        };
+        let actual = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("TABLE OF tline")),
+            table_line: None,
+        };
+
+        assert!(normalized_internal_table_displays_match(&expected, &actual));
+    }
+
+    #[test]
+    fn matches_generic_and_specific_standard_table_displays() {
+        let expected = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("STANDARD TABLE")),
+            table_line: None,
+        };
+        let actual = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("STANDARD TABLE OF tline")),
+            table_line: None,
+        };
+
+        assert!(normalized_internal_table_displays_match(&expected, &actual));
+    }
+
+    #[test]
+    fn allows_elementary_scalar_conversions_except_between_date_and_time() {
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::Elementary,
+                ScalarCompatibilityKind::Elementary,
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::Date,
+                ScalarCompatibilityKind::Elementary,
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(
+                ScalarCompatibilityKind::Time,
+                ScalarCompatibilityKind::Elementary,
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Time),
+            Some(false)
+        );
+        assert_eq!(
+            scalar_kinds_compatible(ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date),
+            Some(false)
+        );
+    }
 }

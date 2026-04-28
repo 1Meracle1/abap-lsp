@@ -2359,7 +2359,7 @@ impl<'a> TraceBuilder<'a> {
             occurrence: matched.occurrence,
             target_kind: matched.target_kind.clone(),
             target_name: matched.target_name.clone(),
-            caller_kind: matched.caller.map(|caller| routine_kind_name(caller)),
+            caller_kind: matched.caller.map(routine_kind_name),
             caller_name: matched
                 .caller
                 .map(|caller| caller.descriptor.name.to_string()),
@@ -2381,7 +2381,7 @@ impl<'a> TraceBuilder<'a> {
             unit_uri: matched.unit.uri.to_string(),
             call_range: byte_range(&matched.call.range),
             caller_node_id: matched.caller_node_id.as_ref().map(|id| id.to_string()),
-            caller_kind: matched.caller.map(|caller| routine_kind_name(caller)),
+            caller_kind: matched.caller.map(routine_kind_name),
             caller_name: matched
                 .caller
                 .map(|caller| caller.descriptor.name.to_string()),
@@ -2894,10 +2894,7 @@ fn parse_read_table_key_fields(statement: &str) -> Vec<String> {
     let Some(key_clause) = read_table_key_clause(statement) else {
         return Vec::new();
     };
-    let normalized = key_clause
-        .replace('=', " = ")
-        .replace('.', " ")
-        .replace(',', " ");
+    let normalized = key_clause.replace('=', " = ").replace(['.', ','], " ");
     let tokens: Vec<_> = normalized.split_whitespace().collect();
     let mut fields = Vec::new();
     for index in 1..tokens.len() {
@@ -3106,7 +3103,7 @@ fn sql_query_projection_labels(
         .iter()
         .filter(|projection| projection.query_id == query_id)
         .collect();
-    projections.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    projections.sort_by_key(|left| left.range.start);
     projections
         .into_iter()
         .map(|projection| sql_projection_label(projection, source_text))
@@ -3179,7 +3176,7 @@ fn sql_relevant_query_projections<'a>(
         .iter()
         .filter(|projection| projection.query_id == query_id)
         .collect();
-    projections.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    projections.sort_by_key(|left| left.range.start);
     if projections.is_empty() {
         return Vec::new();
     }
@@ -3318,7 +3315,7 @@ fn sql_query_source_clause(unit: &UnitAnalysis, query_id: usize) -> Option<Strin
         .iter()
         .filter(|source| source.query_id == query_id)
         .collect();
-    sources.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    sources.sort_by_key(|left| left.range.start);
     if sources.is_empty() {
         return None;
     }

@@ -345,10 +345,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             end += 1;
         }
 
-        loop {
-            let Some(next) = tokens.get(end) else {
-                break;
-            };
+        while let Some(next) = tokens.get(end) {
             match next.text.as_ref() {
                 "-" | "->" | "=>" | "~" if end + 1 < tokens.len() => {
                     end += 2;
@@ -1113,7 +1110,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .iter()
             .map(|&node| self.collector.file.range(node))
             .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end))
-            .unwrap_or_else(|| range.start..range.start);
+            .unwrap_or(range.start..range.start);
         let lhs_fact = lhs_fact.unwrap_or_else(|| self.type_fact_from_assignment_node(lhs, scope));
         let rhs_fact = rhs_fact.unwrap_or_default();
 
@@ -2507,16 +2504,15 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             into_clause_id,
             display_clause_id,
             raising_clause_id,
-        )) = (match MessageStmt::cast(self.collector.syntax(node)) {
-            Some(stmt) => Some((
+        )) = MessageStmt::cast(self.collector.syntax(node)).map(|stmt| {
+            (
                 stmt.head_clause().map(|clause| clause.syntax().id()),
                 stmt.with_clause().map(|clause| clause.syntax().id()),
                 stmt.into_clause().map(|clause| clause.syntax().id()),
                 stmt.display_like_clause()
                     .map(|clause| clause.syntax().id()),
                 stmt.raising_clause().map(|clause| clause.syntax().id()),
-            )),
-            None => None,
+            )
         })
         else {
             return;
@@ -2922,16 +2918,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             3
         };
 
-        if Self::tokens_match_keyword_sequence(&tokens[body_start..], &["begin", "of", "block"]) {
-            if let Some(with_idx) =
+        if Self::tokens_match_keyword_sequence(&tokens[body_start..], &["begin", "of", "block"])
+            && let Some(with_idx) =
                 self.find_top_level_keyword_infos(&tokens, body_start + 3, &["WITH"])
-                && Self::tokens_match_keyword_sequence(
-                    &tokens[with_idx..],
-                    &["with", "frame", "title"],
-                )
-            {
-                self.collect_selection_screen_title_refs(&tokens, with_idx + 3, scope);
-            }
+            && Self::tokens_match_keyword_sequence(&tokens[with_idx..], &["with", "frame", "title"])
+        {
+            self.collect_selection_screen_title_refs(&tokens, with_idx + 3, scope);
         }
     }
 
@@ -3283,8 +3275,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             &["subrc"],
         );
         let Some((operands, time_zone, target, date_target, time_target, daylight_saving_target)) =
-            (match ConvertStmt::cast(self.collector.syntax(node)) {
-                Some(stmt) => Some((
+            ConvertStmt::cast(self.collector.syntax(node)).map(|stmt| {
+                (
                     stmt.operands()
                         .filter_map(|operand| operand.value())
                         .map(|value| value.id())
@@ -3304,8 +3296,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     stmt.daylight_saving_target()
                         .and_then(|target| target.value())
                         .map(|value| value.id()),
-                )),
-                None => None,
+                )
             })
         else {
             return;
@@ -4725,7 +4716,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     _ => self.collector.walk_node(child, scope),
                 }
             }
-            return;
         }
     }
 
@@ -4812,7 +4802,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
                 entry_start = entry_end.saturating_add(1);
             }
-            return;
         }
     }
 

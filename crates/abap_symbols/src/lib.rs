@@ -431,7 +431,7 @@ ENDFORM.\n";
                 .iter()
                 .all(|diagnostic| {
                     diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
-                        || !header_ranges.iter().any(|range| diagnostic.range == *range)
+                        || !header_ranges.contains(&diagnostic.range)
                 }),
             "{:#?}",
             routine_analysis.diagnostics_for_unit(unit.unit_id)

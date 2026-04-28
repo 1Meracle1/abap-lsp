@@ -1227,57 +1227,48 @@ pub fn try_parse_case_stmt(
         }
     };
 
-    loop {
-        match scan_boundary_keywords(source, tokens, next, &["WHEN", "ENDCASE"]) {
-            Some(Boundary::Keyword("WHEN")) => {
-                let when_idx = skip_trivia(tokens, next);
-                let when_tok = &tokens[when_idx];
-                if let StmtPeriodScan::Found(period_i) =
-                    scan_until_statement_period(tokens, source, when_idx + 1)
-                {
-                    if let Some(delim_error) = delimiter_error(tokens, when_idx + 1, period_i) {
-                        errors.push(delim_error);
-                    }
-                    if !has_non_comment_tokens(tokens, when_idx + 1, period_i) {
-                        errors.push(crate::ParseError {
-                            message: "syntax error: expected expression after WHEN".to_string(),
-                            range: when_tok.range.start..tokens[period_i].range.end,
-                        });
-                    }
-                }
-                let (mut when_children, body_start) = parse_header_until_period(
-                    b,
-                    source,
-                    tokens,
-                    when_idx,
-                    when_idx + 1,
-                    errors,
-                    "syntax error: expected '.' after WHEN branch",
-                );
-                let (body, after_body) = parse_body_until_keywords(
-                    b,
-                    source,
-                    tokens,
-                    body_start,
-                    errors,
-                    &["WHEN", "ENDCASE"],
-                );
-                when_children.extend(body);
-                let end = when_children
-                    .last()
-                    .copied()
-                    .map(|id| b.span(id).end)
-                    .unwrap_or(when_tok.range.end);
-                let clause = b.branch(
-                    SyntaxKind::WhenClause,
-                    when_tok.range.start..end,
-                    &when_children,
-                );
-                children.push(clause);
-                next = after_body;
+    while let Some(Boundary::Keyword("WHEN")) =
+        scan_boundary_keywords(source, tokens, next, &["WHEN", "ENDCASE"])
+    {
+        let when_idx = skip_trivia(tokens, next);
+        let when_tok = &tokens[when_idx];
+        if let StmtPeriodScan::Found(period_i) =
+            scan_until_statement_period(tokens, source, when_idx + 1)
+        {
+            if let Some(delim_error) = delimiter_error(tokens, when_idx + 1, period_i) {
+                errors.push(delim_error);
             }
-            _ => break,
+            if !has_non_comment_tokens(tokens, when_idx + 1, period_i) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected expression after WHEN".to_string(),
+                    range: when_tok.range.start..tokens[period_i].range.end,
+                });
+            }
         }
+        let (mut when_children, body_start) = parse_header_until_period(
+            b,
+            source,
+            tokens,
+            when_idx,
+            when_idx + 1,
+            errors,
+            "syntax error: expected '.' after WHEN branch",
+        );
+        let (body, after_body) =
+            parse_body_until_keywords(b, source, tokens, body_start, errors, &["WHEN", "ENDCASE"]);
+        when_children.extend(body);
+        let end = when_children
+            .last()
+            .copied()
+            .map(|id| b.span(id).end)
+            .unwrap_or(when_tok.range.end);
+        let clause = b.branch(
+            SyntaxKind::WhenClause,
+            when_tok.range.start..end,
+            &when_children,
+        );
+        children.push(clause);
+        next = after_body;
     }
 
     let (end_children, next_after, end_pos) = parse_end_keyword(

@@ -725,15 +725,14 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
 
         for (child_id, child_kind, child_range) in children {
             match child_kind {
-                SyntaxKind::Token => {
+                SyntaxKind::Token
                     if self
                         .ctx
                         .syntax(child_id)
                         .text(self.ctx.source())
-                        .is_some_and(|text| text.eq_ignore_ascii_case("single"))
-                    {
-                        is_single = true;
-                    }
+                        .is_some_and(|text| text.eq_ignore_ascii_case("single")) =>
+                {
+                    is_single = true;
                 }
                 SyntaxKind::SelectDistinctClause => {
                     is_distinct = true;

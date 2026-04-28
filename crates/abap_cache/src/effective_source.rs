@@ -411,7 +411,7 @@ fn include_statements(snapshot: &AnalysisSnapshot) -> Vec<IncludeStmtEntry> {
         });
     }
 
-    statements.sort_by(|left, right| left.range.start.cmp(&right.range.start));
+    statements.sort_by_key(|left| left.range.start);
     statements
 }
 

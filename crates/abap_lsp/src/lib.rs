@@ -2802,11 +2802,17 @@ fn open_dependency_document_inputs(workspace: &WorkspaceState) -> Vec<DocumentIn
         .open_documents
         .iter()
         .filter_map(|(uri, overlay)| {
-            is_dependency_document_uri(uri).then(|| {
-                dependency_document_input(workspace, uri, overlay.version, overlay.text.as_ref())
-            })
+            is_dependency_document_uri(uri)
+                .then(|| {
+                    dependency_document_input(
+                        workspace,
+                        uri,
+                        overlay.version,
+                        overlay.text.as_ref(),
+                    )
+                })
+                .flatten()
         })
-        .flatten()
         .collect()
 }
 
@@ -4085,7 +4091,7 @@ fn collect_remote_dependency_candidates_for_local_export_chain_uncached(
                 dependency_uri_by_name.get(&candidate.name.trim().to_ascii_lowercase())
             {
                 if visited_uris.insert(dependency_uri.clone())
-                    && workspace.cache.get(&dependency_uri).is_some()
+                    && workspace.cache.get(dependency_uri).is_some()
                 {
                     queue.push_back(dependency_uri.clone());
                 }
@@ -4201,7 +4207,7 @@ fn collect_remote_dependency_refresh_candidates_for_local_export_chain_uncached(
                 dependency_uri_by_name.get(&candidate.name.trim().to_ascii_lowercase())
             {
                 if visited_uris.insert(dependency_uri.clone())
-                    && workspace.cache.get(&dependency_uri).is_some()
+                    && workspace.cache.get(dependency_uri).is_some()
                 {
                     queue.push_back(dependency_uri.clone());
                 }
@@ -5979,7 +5985,7 @@ pub fn build_lsp_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Diagnostic> {
 }
 
 fn candidate_key_for_open_sql_source(snapshot: &AnalysisSnapshot, range: &Range) -> Option<String> {
-    let byte_range = range_to_byte_range_snapshot(snapshot, range.clone())?;
+    let byte_range = range_to_byte_range_snapshot(snapshot, *range)?;
     let name = snapshot
         .symbols
         .sql_sources
@@ -6868,7 +6874,7 @@ pub fn semantic_tokens(
 pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<InlayHint>> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
-    let byte_range = range_to_byte_range_snapshot(snapshot.as_ref(), params.range.clone())?;
+    let byte_range = range_to_byte_range_snapshot(snapshot.as_ref(), params.range)?;
     let mut hint_infos = snapshot.perform_parameter_inlay_hints_in_range(byte_range.clone());
     hint_infos.extend(snapshot.function_module_parameter_inlay_hints_in_range(byte_range.clone()));
     hint_infos.extend(snapshot.method_parameter_inlay_hints_in_range(byte_range.clone()));
@@ -20094,7 +20100,7 @@ CREATE OBJECT lo_instance.";
                 },
             },
         );
-        let line_6_start = text.rmatch_indices('\n').nth(0).expect("last newline").0 + 1;
+        let line_6_start = text.rmatch_indices('\n').next().expect("last newline").0 + 1;
         let lo_instance_use_col =
             (text.rfind("lo_instance").expect("lo_instance use") - line_6_start) as u32;
 
@@ -23183,11 +23189,7 @@ dependency_mode = "remote-on-demand"
             &workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
         ));
         let mut state = ServerState::default();
-        state.dependency_store_path_override = Some(
-            workspace_path
-                .join("dependency-store")
-                .join("dependency-cache.sqlite3"),
-        );
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
@@ -23342,11 +23344,7 @@ START-OF-SELECTION.
             &workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
         ));
         let mut state = ServerState::default();
-        state.dependency_store_path_override = Some(
-            workspace_path
-                .join("dependency-store")
-                .join("dependency-cache.sqlite3"),
-        );
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
@@ -23457,11 +23455,7 @@ START-OF-SELECTION.
             &workspace_path.join("src/reports/ZMAIN/ZMAIN.abap"),
         ));
         let mut state = ServerState::default();
-        state.dependency_store_path_override = Some(
-            workspace_path
-                .join("dependency-store")
-                .join("dependency-cache.sqlite3"),
-        );
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 
@@ -23573,11 +23567,7 @@ dependency_mode = "remote-on-demand"
 
         let workspace_uri = path_to_file_uri(&workspace_path);
         let mut state = ServerState::default();
-        state.dependency_store_path_override = Some(
-            workspace_path
-                .join("dependency-store")
-                .join("dependency-cache.sqlite3"),
-        );
+        configure_test_dependency_store(&mut state, &workspace_path);
         state.register_workspace_folder(workspace_uri.clone());
         refresh_workspace(&mut state, &workspace_uri);
 

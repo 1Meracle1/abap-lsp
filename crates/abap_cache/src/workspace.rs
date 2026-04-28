@@ -473,18 +473,17 @@ pub fn load_workspace_documents_with_progress(
     let manifest_for_loading = manifest
         .as_ref()
         .map(|manifest| manifest_with_discovered_units(manifest, &root_path));
-    let total_document_count = progress
-        .is_some()
-        .then(|| {
-            planned_workspace_document_count(
-                &root_path,
-                root_uri,
-                manifest_for_loading.as_ref(),
-                &cache_dir,
-                overlays,
-            )
-        })
-        .unwrap_or(0);
+    let total_document_count = if progress.is_some() {
+        planned_workspace_document_count(
+            &root_path,
+            root_uri,
+            manifest_for_loading.as_ref(),
+            &cache_dir,
+            overlays,
+        )
+    } else {
+        0
+    };
     let mut load_progress = WorkspaceLoadProgress {
         callback: progress,
         loaded_document_count: 0,
@@ -1544,10 +1543,10 @@ fn build_local_export_config_from_sidecar_paths(sidecar_paths: &[PathBuf]) -> Lo
     let mut saw_adt_first = false;
 
     for sidecar_path in sidecar_paths {
-        let Some(sidecar) = load_unit_sidecar_manifest(&sidecar_path) else {
+        let Some(sidecar) = load_unit_sidecar_manifest(sidecar_path) else {
             continue;
         };
-        for root in resolve_unit_sidecar_local_roots(&sidecar_path, &sidecar) {
+        for root in resolve_unit_sidecar_local_roots(sidecar_path, &sidecar) {
             let key = normalized_local_export_path_key(&root);
             if seen_roots.insert(key) {
                 roots.push(root);
@@ -1610,7 +1609,7 @@ fn local_export_index_for_root_profiled(
 
     let index_start = Instant::now();
     let index = Arc::new(build_local_export_index(root));
-    if let Some(profile) = profile.as_deref_mut() {
+    if let Some(profile) = profile {
         profile.index_build_count += 1;
         profile.index_build_time += index_start.elapsed();
     }
@@ -1630,12 +1629,12 @@ fn refresh_local_export_index_for_root(
 fn refresh_local_export_index_for_root_profiled(
     root: &Path,
     resolver: &mut LocalExportResolver,
-    mut profile: Option<&mut LocalExportResolveProfile>,
+    profile: Option<&mut LocalExportResolveProfile>,
 ) -> Arc<LocalExportIndex> {
     let key = normalized_local_export_path_key(root);
     let index_start = Instant::now();
     let index = Arc::new(build_local_export_index(root));
-    if let Some(profile) = profile.as_deref_mut() {
+    if let Some(profile) = profile {
         profile.index_refresh_count += 1;
         profile.index_refresh_time += index_start.elapsed();
     }
@@ -1741,7 +1740,7 @@ fn read_local_export_artifact_source(
 
     let read_start = Instant::now();
     let result = fs::read_to_string(path);
-    if let Some(profile) = profile.as_deref_mut() {
+    if let Some(profile) = profile {
         profile.document_read_count += 1;
         profile.document_read_time += read_start.elapsed();
         if let Ok(source_text) = result.as_ref() {
@@ -1824,7 +1823,7 @@ fn resolve_local_export_dependency_document_in_root_profiled(
         file_names,
         candidate_name,
         candidate_kind,
-        profile.as_deref_mut(),
+        profile,
     )
 }
 
@@ -2064,7 +2063,6 @@ fn first_abap_function_module_name(text: &str) -> Option<&str> {
         }
         let rest = abap_keyword_rest(trimmed, "function")?;
         return rest
-            .trim_start()
             .split_whitespace()
             .next()
             .map(|name| name.trim_end_matches('.'));
@@ -2601,7 +2599,7 @@ fn manifest_member_role<'a>(member: &'a ManifestUnitMember, cache_dir: &'a str) 
     "root"
 }
 
-fn manifest_member_explicit_object_name<'a>(member: &'a ManifestUnitMember) -> Option<&'a str> {
+fn manifest_member_explicit_object_name(member: &ManifestUnitMember) -> Option<&str> {
     let name = member.object_name.trim();
     (!name.is_empty()).then_some(name)
 }
@@ -3256,14 +3254,13 @@ fn table_type_line_type(xml: &str) -> Option<String> {
                 }
                 tag_stack.push(start.name().as_ref().to_vec());
             }
-            Ok(Event::Text(text)) => {
+            Ok(Event::Text(text))
                 if current_property_key
                     .as_deref()
-                    .is_some_and(|key| key.eq_ignore_ascii_case("ddicRowType"))
-                {
-                    let value = text.decode().ok().map(Cow::into_owned).unwrap_or_default();
-                    current_is_row_type = ddic_bool(&value);
-                }
+                    .is_some_and(|key| key.eq_ignore_ascii_case("ddicRowType")) =>
+            {
+                let value = text.decode().ok().map(Cow::into_owned).unwrap_or_default();
+                current_is_row_type = ddic_bool(&value);
             }
             Ok(Event::End(end)) => {
                 if is_field_end(end.name().as_ref()) && tag_stack.len() == 2 {
@@ -3278,10 +3275,8 @@ fn table_type_line_type(xml: &str) -> Option<String> {
                 }
                 let _ = tag_stack.pop();
             }
-            Ok(Event::Empty(start)) => {
-                if is_field_start(&start) && tag_stack.len() == 1 {
-                    return attr_local_text(&start, b"name");
-                }
+            Ok(Event::Empty(start)) if is_field_start(&start) && tag_stack.len() == 1 => {
+                return attr_local_text(&start, b"name");
             }
             Ok(Event::Eof) => break,
             Err(_) => break,
@@ -3404,7 +3399,7 @@ fn message_class_to_abap_source(object_name: &str, xml: &str) -> String {
         out.push_str(&format!(
             "\" MESSAGE {msgno}: {msgtext}\n",
             msgno = msgno,
-            msgtext = msgtext.replace('\r', " ").replace('\n', " ")
+            msgtext = msgtext.replace(['\r', '\n'], " ")
         ));
     }
     out
@@ -3459,12 +3454,10 @@ fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {
                 }
                 tag_stack.push(start.name().as_ref().to_vec());
             }
-            Ok(Event::Empty(start)) => {
-                if is_field_start(&start) && !tag_stack.is_empty() {
-                    let field = ddic_field_from_start(&start);
-                    if !field.name.is_empty() {
-                        fields.push(field);
-                    }
+            Ok(Event::Empty(start)) if is_field_start(&start) && !tag_stack.is_empty() => {
+                let field = ddic_field_from_start(&start);
+                if !field.name.is_empty() {
+                    fields.push(field);
                 }
             }
             Ok(Event::Text(text)) => {
@@ -3695,18 +3688,17 @@ fn ddic_short_text(xml: &str) -> Option<String> {
                 }
                 tag_stack.push(start.name().as_ref().to_vec());
             }
-            Ok(Event::Text(text)) => {
+            Ok(Event::Text(text))
                 if tag_stack.len() == 2
                     && tag_stack
                         .last()
                         .is_some_and(|name| local_name_eq(name.as_slice(), b"documentation"))
                     && current_documentation_rel
                         .as_deref()
-                        .is_some_and(|rel| rel.eq_ignore_ascii_case("shorttext"))
-                {
-                    let value = text.decode().ok().map(Cow::into_owned)?;
-                    return Some(normalize_ddic_comment_text(&value));
-                }
+                        .is_some_and(|rel| rel.eq_ignore_ascii_case("shorttext")) =>
+            {
+                let value = text.decode().ok().map(Cow::into_owned)?;
+                return Some(normalize_ddic_comment_text(&value));
             }
             Ok(Event::End(end)) => {
                 if local_name_eq(end.name().as_ref(), b"documentation") {

@@ -122,9 +122,7 @@ pub fn try_parse_data_decl(
             }
         }
     };
-    let Some(message) = malformed else {
-        return None;
-    };
+    let message = malformed?;
 
     let (end_exclusive, err_end) = match scan {
         StmtPeriodScan::Found(period_i) => (period_i + 1, tokens[period_i].range.end),
@@ -574,11 +572,7 @@ fn parse_data_decl_name(
     }
     let mut children = vec![token_leaf(b, first)];
     let mut i = idx + 1;
-    loop {
-        let op = match tokens.get(i) {
-            Some(t) => t,
-            None => break,
-        };
+    while let Some(op) = tokens.get(i) {
         if op.kind != TokenKind::Minus {
             break;
         }

@@ -125,10 +125,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_concat_expr(&mut self) -> Option<NodeId> {
         let mut expr = self.parse_additive_expr()?;
 
-        loop {
-            let Some(op_tok) = self.curr() else {
-                break;
-            };
+        while let Some(op_tok) = self.curr() {
             if op_tok.kind != TokenKind::Ampersand {
                 break;
             }
@@ -161,11 +158,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_additive_expr(&mut self) -> Option<NodeId> {
         let mut expr = self.parse_multiplicative_expr()?;
 
-        loop {
-            let Some(curr) = self.curr() else {
-                break;
-            };
-
+        while let Some(curr) = self.curr() {
             let is_plus = curr.kind == TokenKind::Plus;
             let is_minus_binary =
                 curr.kind == TokenKind::Minus && have_space_between(self.prev, curr);
@@ -187,11 +180,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn parse_multiplicative_expr(&mut self) -> Option<NodeId> {
         let mut expr = self.parse_unary_expr()?;
 
-        loop {
-            let Some(curr) = self.curr() else {
-                break;
-            };
-
+        while let Some(curr) = self.curr() {
             let is_star_slash = curr.kind == TokenKind::Star || curr.kind == TokenKind::Slash;
             let is_mod_div = curr.kind == TokenKind::Ident
                 && (curr.lexeme(self.source).eq_ignore_ascii_case("mod")
@@ -226,11 +215,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn parse_atom_expr(&mut self, mut value: NodeId) -> Option<NodeId> {
-        loop {
-            let Some(curr) = self.curr() else {
-                break;
-            };
-
+        while let Some(curr) = self.curr() {
             if curr.kind == TokenKind::LBracket {
                 let end_idx = self.find_matching_group_from(
                     self.idx,
@@ -1091,8 +1076,10 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut brace = 0i32;
         for idx in 0..tokens.len() {
             let token = &tokens[idx];
-            if paren == 0 && bracket == 0 && brace == 0 {
-                if ident_eq(self.source, token, "BASE")
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && (ident_eq(self.source, token, "BASE")
                     || ident_eq(self.source, token, "FOR")
                     || ident_eq(self.source, token, "LET")
                     || (ident_eq(self.source, token, "LINES")
@@ -1100,10 +1087,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                             .get(idx + 1)
                             .is_some_and(|next| ident_eq(self.source, next, "OF")))
                     || (token.kind == TokenKind::Ident
-                        && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq))
-                {
-                    return true;
-                }
+                        && tokens.get(idx + 1).map(|next| next.kind) == Some(TokenKind::Eq)))
+            {
+                return true;
             }
             match token.kind {
                 TokenKind::LParen => paren += 1,
@@ -1554,14 +1540,15 @@ impl<'a, 'b> Parser<'a, 'b> {
                 let mut brace = 0i32;
                 while end_idx < tokens.len() {
                     let end_token = &tokens[end_idx];
-                    if paren == 0 && bracket == 0 && brace == 0 {
-                        if end_token.kind == TokenKind::LParen
+                    if paren == 0
+                        && bracket == 0
+                        && brace == 0
+                        && (end_token.kind == TokenKind::LParen
                             || (end_token.kind == TokenKind::Ident
                                 && tokens.get(end_idx + 1).map(|next| next.kind)
-                                    == Some(TokenKind::Eq))
-                        {
-                            break;
-                        }
+                                    == Some(TokenKind::Eq)))
+                    {
+                        break;
                     }
                     match end_token.kind {
                         TokenKind::LParen => paren += 1,
@@ -2441,10 +2428,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn parse_or_expr(&mut self) -> Option<NodeId> {
         let mut left = self.parse_and_expr()?;
-        loop {
-            let Some(curr) = self.curr() else {
-                break;
-            };
+        while let Some(curr) = self.curr() {
             if !ident_eq(self.source, curr, "OR") {
                 break;
             }
@@ -2459,10 +2443,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn parse_and_expr(&mut self) -> Option<NodeId> {
         let mut left = self.parse_not_expr()?;
-        loop {
-            let Some(curr) = self.curr() else {
-                break;
-            };
+        while let Some(curr) = self.curr() {
             if !ident_eq(self.source, curr, "AND") {
                 break;
             }

@@ -2853,9 +2853,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         scope: ScopeId,
     ) -> Option<StructureId> {
         let node = self.simple_wrapped_expr_node(node).unwrap_or(node);
-        let Some(constructor) = ConstructorExpr::cast(self.ctx.syntax(node)) else {
-            return None;
-        };
+        let constructor = ConstructorExpr::cast(self.ctx.syntax(node))?;
         let arg_list = constructor.arg_list()?;
         if let Some(base_value) = self
             .ctx

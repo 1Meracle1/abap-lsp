@@ -17,7 +17,7 @@ use crate::def_map::{
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
-use crate::resolver::{ScopeIndex, build_scope_index};
+use crate::resolver::ScopeIndex;
 use crate::scope::{Namespace, ScopeKind};
 use crate::{ClassMemberKind, SymbolKind, Visibility};
 
@@ -228,7 +228,7 @@ where
 
     lookup.root_index.get(&key).and_then(|handles| {
         handles.iter().copied().find(|handle| {
-            (*handle).unit != preferred_unit.unit_id
+            handle.unit != preferred_unit.unit_id
                 && predicate(project.units[handle.unit.as_usize()].symbol(handle.symbol))
         })
     })
@@ -1782,9 +1782,7 @@ fn resolve_class_selector_base<'a>(
     Some((class_unit, class_handle.symbol, false))
 }
 
-fn split_leading_deref<'a>(
-    access: &'a crate::FieldAccess,
-) -> (bool, &'a [crate::FieldAccessSegment]) {
+fn split_leading_deref(access: &crate::FieldAccess) -> (bool, &[crate::FieldAccessSegment]) {
     if access
         .field_path
         .first()
@@ -3678,12 +3676,6 @@ fn validate_object_type_references(
     }
 
     diagnostics
-}
-
-#[allow(dead_code)]
-pub fn validate_project(project: &mut ProjectAnalysis) {
-    let scope_indexes: Vec<_> = project.units.iter().map(build_scope_index).collect();
-    validate_project_with_scope_indexes(project, &scope_indexes);
 }
 
 pub(crate) fn validate_project_with_scope_indexes(

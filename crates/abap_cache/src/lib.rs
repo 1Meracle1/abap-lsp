@@ -4944,12 +4944,7 @@ fn markdown_lines_for_builtin_routine(name: &Arc<str>) -> Vec<String> {
     let Some(spec) = builtin_routine_spec(name.as_ref()) else {
         return vec![format!("`{name}`"), "Built-in ABAP routine".to_string()];
     };
-    let rendered_params = spec
-        .hover_params
-        .iter()
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ");
+    let rendered_params = spec.hover_params.to_vec().join(", ");
     vec![
         format!("```abap\n{}( {} )\n```", spec.name, rendered_params),
         "Built-in ABAP routine".to_string(),
@@ -6781,15 +6776,15 @@ fn named_argument_completion_context(
     Some((offset..offset, Arc::from(""), section))
 }
 
-fn resolve_named_argument_parameter<'a>(
-    snapshot: &'a AnalysisSnapshot,
+fn resolve_named_argument_parameter(
+    snapshot: &AnalysisSnapshot,
     access: &NamedArgumentAccess,
 ) -> Option<NamedArgumentParameterInfo> {
     resolve_named_argument_parameter_with_scope_index(snapshot, snapshot.scope_index(), access)
 }
 
-fn resolve_named_argument_parameter_with_scope_index<'a>(
-    snapshot: &'a AnalysisSnapshot,
+fn resolve_named_argument_parameter_with_scope_index(
+    snapshot: &AnalysisSnapshot,
     scope_index: &ScopeIndex,
     access: &NamedArgumentAccess,
 ) -> Option<NamedArgumentParameterInfo> {
@@ -7407,7 +7402,7 @@ fn resolve_symbol_from_context_with_scope_index<'a>(
             continue;
         };
         if let Some(symbol_id) =
-            lookup_scope_chain(current_unit, &scope_index, scope, namespace, name)
+            lookup_scope_chain(current_unit, scope_index, scope, namespace, name)
         {
             if namespace == Namespace::Type
                 && current_unit.symbol(symbol_id).kind == SymbolKind::Class
@@ -7702,10 +7697,10 @@ fn method_implementation_signature_member<'a>(
     (member_unit, member)
 }
 
-fn method_implementation_signature_member_at_offset<'a>(
-    snapshot: &'a AnalysisSnapshot,
+fn method_implementation_signature_member_at_offset(
+    snapshot: &AnalysisSnapshot,
     offset: usize,
-) -> Option<(&'a UnitAnalysis, &'a ClassMemberData, &'a ClassMemberData)> {
+) -> Option<(&UnitAnalysis, &ClassMemberData, &ClassMemberData)> {
     for unit in &snapshot.project.units {
         for member in &unit.class_members {
             if member.kind != ClassMemberKind::Method {
@@ -7806,11 +7801,7 @@ fn resolve_class_type_symbol_in_hierarchy<'a>(
         if let Some(symbol) = class_scoped_type_symbol_for_owner(unit, current.1, type_name) {
             return Some((unit, symbol));
         }
-        let Some((next_unit, next_symbol)) =
-            direct_superclass_from_class(snapshot, unit, current.1)
-        else {
-            return None;
-        };
+        let (next_unit, next_symbol) = direct_superclass_from_class(snapshot, unit, current.1)?;
         current = (next_unit.unit_id, next_symbol);
     }
 }
@@ -8727,10 +8718,7 @@ fn selector_completion_context(
     let path = if root_range.start <= offset && offset <= root_range.end {
         let mut path = vec![root];
         let mut current = root;
-        loop {
-            let Some(next) = child_at_offset_prefer_left_boundary(parse, current, offset) else {
-                break;
-            };
+        while let Some(next) = child_at_offset_prefer_left_boundary(parse, current, offset) {
             path.push(next);
             current = next;
         }
@@ -8771,10 +8759,7 @@ fn node_path_at_offset(parse: &ParseResult, offset: usize) -> Vec<abap_ast::aren
 
     let mut path = vec![root];
     let mut current = root;
-    loop {
-        let Some(next) = child_at_offset_prefer_left_boundary(parse, current, offset) else {
-            break;
-        };
+    while let Some(next) = child_at_offset_prefer_left_boundary(parse, current, offset) {
         path.push(next);
         current = next;
     }
@@ -15739,10 +15724,7 @@ ENDCLASS.";
         let call_entry = &routine.dataflow_result.block_entry[call_block_idx];
 
         assert!(
-            call_entry
-                .definitely_assigned_values
-                .iter()
-                .any(|value| *value == lo_obj),
+            call_entry.definitely_assigned_values.contains(&lo_obj),
             "{:?}",
             call_entry.definitely_assigned_values
         );

@@ -669,16 +669,12 @@ impl Default for LintConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum SapAtcLintMode {
+    #[default]
     Off,
     Manual,
     OnSave,
-}
-
-impl Default for SapAtcLintMode {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 impl SapAtcLintMode {

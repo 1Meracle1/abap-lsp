@@ -72,7 +72,7 @@ pub fn semantic_tokens_legend() -> lsp_types::SemanticTokensLegend {
     semantic_tokens_legend_static().clone()
 }
 
-fn lookup_symbol<'a>(project: &'a ProjectAnalysis, handle: SymbolHandle) -> Option<&'a SymbolData> {
+fn lookup_symbol(project: &ProjectAnalysis, handle: SymbolHandle) -> Option<&SymbolData> {
     let unit = project.units.get(handle.unit.as_usize())?;
     Some(unit.symbol(handle.symbol))
 }

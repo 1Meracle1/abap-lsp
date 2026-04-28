@@ -133,7 +133,7 @@ impl<'a> MethodsStmtParameter<'a> {
         if let Some(cutoff) = trimmed.match_indices('\n').find_map(|(idx, _)| {
             let continuation = trimmed
                 .get(idx + 1..)?
-                .trim_start_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+                .trim_start_matches([' ', '\t', '\r']);
             continuation.starts_with('!').then_some(idx)
         }) {
             trimmed = trimmed.get(..cutoff)?.trim_end();
@@ -1982,16 +1982,17 @@ impl<'a> ConstructorCorrespondingMappingAssignment<'a> {
         let mut seen_suffix = false;
         for child in self.syntax.children() {
             match child.kind() {
-                SyntaxKind::Token => {
+                SyntaxKind::Token
                     if child.text(source).is_some_and(|text| {
                         matches!(
                             text.to_ascii_uppercase().as_str(),
                             "DEFAULT" | "MAPPING" | "EXCEPT"
                         )
-                    }) {
-                        seen_suffix = true;
-                    }
+                    }) =>
+                {
+                    seen_suffix = true;
                 }
+                SyntaxKind::Token => {}
                 _ if !seen_suffix => return Some(child),
                 _ => {}
             }
@@ -4347,7 +4348,7 @@ mod tests {
         assert!(ExprIdent::cast(call.callee().expect("callee")).is_some());
         assert_eq!(
             call.arg_list()
-                .and_then(|arg_list| Some(CallArgList::items(arg_list).count())),
+                .map(|arg_list| CallArgList::items(arg_list).count()),
             Some(1)
         );
     }
@@ -4429,8 +4430,7 @@ mod tests {
         assert_eq!(
             methods_stmt
                 .name_token(source)
-                .and_then(|token| token.text(source))
-                .as_deref(),
+                .and_then(|token| token.text(source)),
             Some("run")
         );
         assert_eq!(
@@ -4450,10 +4450,7 @@ mod tests {
             MethodsTypeClauseKind::Type
         );
         assert_eq!(
-            signature.parameters()[0]
-                .name_token()
-                .text(source)
-                .as_deref(),
+            signature.parameters()[0].name_token().text(source),
             Some("iv_x")
         );
         assert_eq!(signature.parameters()[0].name_token().range(), iv_x_range);
@@ -4467,10 +4464,7 @@ mod tests {
             MethodsTypeClauseKind::Like
         );
         assert_eq!(
-            signature.parameters()[1]
-                .name_token()
-                .text(source)
-                .as_deref(),
+            signature.parameters()[1].name_token().text(source),
             Some("rv_y")
         );
         assert_eq!(signature.parameters()[1].name_token().range(), rv_y_range);
@@ -4700,8 +4694,7 @@ CLASS-METHODS read_char_value
         assert_eq!(
             entries[0]
                 .name_token(source)
-                .and_then(|token| token.text(source))
-                .as_deref(),
+                .and_then(|token| token.text(source)),
             Some("get_response")
         );
         assert_eq!(
@@ -4712,8 +4705,7 @@ CLASS-METHODS read_char_value
         assert_eq!(
             entries[1]
                 .name_token(source)
-                .and_then(|token| token.text(source))
-                .as_deref(),
+                .and_then(|token| token.text(source)),
             Some("get_data")
         );
         assert_eq!(entries[1].signature_text(source), "METHODS get_data");

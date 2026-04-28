@@ -193,9 +193,8 @@ fn write_diagnostic_blocks(
                 .unwrap_or(1)
                 .max(1);
 
-            let underline: String = std::iter::repeat(' ')
-                .take(pad.saturating_sub(1))
-                .chain(std::iter::repeat('^').take(tick_chars))
+            let underline: String = std::iter::repeat_n(' ', pad.saturating_sub(1))
+                .chain(std::iter::repeat_n('^', tick_chars))
                 .collect();
             let line_mark = color_stderr(color, "1;32", &underline);
             writeln!(stderr, "{:>width$} | {}", "", line_mark, width = width)?;

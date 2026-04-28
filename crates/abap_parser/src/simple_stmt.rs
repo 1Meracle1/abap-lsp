@@ -993,14 +993,15 @@ fn scan_expr_end(
             idx += 1;
             continue;
         }
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if stop_token_kinds.contains(&token.kind)
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && (stop_token_kinds.contains(&token.kind)
                 || stop_keywords
                     .iter()
-                    .any(|keyword| token_matches_keyword(source, token, keyword))
-            {
-                break;
-            }
+                    .any(|keyword| token_matches_keyword(source, token, keyword)))
+        {
+            break;
         }
         match token.kind {
             TokenKind::LParen => paren += 1,
@@ -2005,7 +2006,6 @@ fn build_classic_arithmetic_entry_children(
         find_top_level_keyword_index(source, tokens, operator_idx + 1, entry_end, "giving");
     let after_operator_end = giving_idx.unwrap_or(entry_end);
     let operator_is_by = token_matches_keyword(source, &tokens[operator_idx], "by");
-    let operator_is_into = token_matches_keyword(source, &tokens[operator_idx], "into");
 
     let first_operand_kind =
         if kind == SyntaxKind::DivideStmt && operator_is_by && giving_idx.is_none() {
@@ -2028,8 +2028,6 @@ fn build_classic_arithmetic_entry_children(
     let second_operand_kind =
         if giving_idx.is_some() || (kind == SyntaxKind::DivideStmt && operator_is_by) {
             SyntaxKind::ArithmeticSourceOperand
-        } else if kind == SyntaxKind::DivideStmt && operator_is_into {
-            SyntaxKind::ArithmeticTargetOperand
         } else {
             SyntaxKind::ArithmeticTargetOperand
         };
@@ -2743,12 +2741,13 @@ fn scan_list_control_operand_end(
             idx += 1;
             continue;
         }
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if token.kind == TokenKind::Comma
-                || list_control_new_page_clause_start(source, tokens, idx, end)
-            {
-                break;
-            }
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && (token.kind == TokenKind::Comma
+                || list_control_new_page_clause_start(source, tokens, idx, end))
+        {
+            break;
         }
         match token.kind {
             TokenKind::LParen => paren += 1,
@@ -2919,13 +2918,15 @@ fn consume_uline_operand(tokens: &[Token], start: usize, end: usize) -> usize {
             idx += 1;
             continue;
         }
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if matches!(
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && matches!(
                 token.kind,
                 TokenKind::LParen | TokenKind::Slash | TokenKind::Comma
-            ) {
-                break;
-            }
+            )
+        {
+            break;
         }
         match token.kind {
             TokenKind::LParen => paren += 1,
@@ -3405,9 +3406,7 @@ fn classify_type_pools_stmt(source: &str, significant: &[&Token]) -> Option<Synt
     }
     let mut saw_name = false;
     loop {
-        let Some(token) = significant.get(i) else {
-            return None;
-        };
+        let token = significant.get(i)?;
         if token.kind == TokenKind::Period {
             return saw_name.then_some(SyntaxKind::TypePoolsStmt);
         }
@@ -5179,29 +5178,28 @@ DESCRIBE TABLE: lt_aux_bup_adr    LINES lv_n_customers,
 
     #[test]
     fn rejects_instance_method_calls_without_opening_padding() {
-        for src in ["lo_prog->add_statement(lo_assign )."] {
-            let parsed = crate::parse(src);
-            assert!(
-                parsed
-                    .errors
-                    .iter()
-                    .any(|err| err.message.contains("method call arguments")),
-                "{src}: {:?}",
-                parsed.errors
-            );
-            assert_eq!(
-                parsed
-                    .file
-                    .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
-                0
-            );
-            assert!(
-                parsed
-                    .file
-                    .count_kind(parsed.file.root(), SyntaxKind::Error)
-                    >= 1
-            );
-        }
+        let src = "lo_prog->add_statement(lo_assign ).";
+        let parsed = crate::parse(src);
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|err| err.message.contains("method call arguments")),
+            "{src}: {:?}",
+            parsed.errors
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::CallStmt),
+            0
+        );
+        assert!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                >= 1
+        );
     }
 
     #[test]

@@ -188,10 +188,11 @@ fn scan_assign_rhs(tokens: &[Token], source: &str, start: usize) -> AssignRhsSca
             TokenKind::RBracket if bracket > 0 => bracket -= 1,
             TokenKind::LBrace => brace += 1,
             TokenKind::RBrace if brace > 0 => brace -= 1,
-            TokenKind::Eq | TokenKind::QuestionEq if non_call_paren_depth > 0 => {
-                if !paren_stack.iter().rev().any(|is_call| *is_call) {
-                    nested_eq = true;
-                }
+            TokenKind::Eq | TokenKind::QuestionEq
+                if non_call_paren_depth > 0
+                    && !paren_stack.iter().rev().any(|is_call| *is_call) =>
+            {
+                nested_eq = true;
             }
             _ => {}
         }

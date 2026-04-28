@@ -1843,16 +1843,14 @@ fn build_routine_dataflow(
                 if !reference_is_marked(&suppressed_refs, reference)
                     && let Some(value) =
                         resolved_value_id_for_reference(unit, reference, &value_ids_by_symbol)
+                    && !safe_read_refs.contains(&reference)
                 {
-                    if !safe_read_refs.contains(&reference) {
-                        transfer.reads.push(ReadOccurrence {
-                            reference,
-                            range: instruction.range.clone(),
-                            value,
-                            suppress_definite_assignment: condition_probe_reads
-                                .contains(&reference),
-                        });
-                    }
+                    transfer.reads.push(ReadOccurrence {
+                        reference,
+                        range: instruction.range.clone(),
+                        value,
+                        suppress_definite_assignment: condition_probe_reads.contains(&reference),
+                    });
                 }
             }
             RoutineInstructionSite::Assignment { index } => {
@@ -1923,7 +1921,7 @@ fn build_routine_dataflow(
                     }
                     for argument in &call_site.arguments {
                         let effect = call_argument_effect_for_call_argument(
-                            &call_argument_effects,
+                            call_argument_effects,
                             call_site,
                             argument,
                         );
@@ -2381,9 +2379,8 @@ fn build_routine_dataflow(
                 &mut next_entry_structure_fields,
                 &block_assigned_field_entry_refinements[block_idx],
             );
-            let mut next_entry_bound = if !block.reachable {
-                DenseBitSet::new(values.len())
-            } else if block.kind == RoutineBlockKind::Entry {
+            let mut next_entry_bound = if !block.reachable || block.kind == RoutineBlockKind::Entry
+            {
                 DenseBitSet::new(values.len())
             } else {
                 intersect_predecessor_bits(&block.predecessors, &block_exit_bound, values.len())
@@ -2581,7 +2578,7 @@ fn build_routine_dataflow(
         &reference_uses,
         &value_ids_by_symbol,
         &instruction_summaries,
-        &call_argument_effects,
+        call_argument_effects,
     ));
     diagnostics.sort_by(|left, right| {
         left.range
@@ -3666,10 +3663,10 @@ fn if_region_for_instruction<'a>(
     })
 }
 
-fn single_negative_sy_subrc_guard_check_for_scope<'a>(
-    unit: &'a UnitAnalysis,
+fn single_negative_sy_subrc_guard_check_for_scope(
+    unit: &UnitAnalysis,
     scope: ScopeId,
-) -> Option<&'a crate::ValueStateCheckData> {
+) -> Option<&crate::ValueStateCheckData> {
     let mut check = None;
     for candidate in unit
         .value_state_checks
@@ -4637,11 +4634,8 @@ fn resolve_value_access_structure_project<'a>(
             .fields
             .iter()
             .find(|field| field.name == segment.name)?;
-        let Some((next_unit, next_structure)) =
-            resolve_structure_from_field_project(project, current_unit, unit, access.scope, field)
-        else {
-            return None;
-        };
+        let (next_unit, next_structure) =
+            resolve_structure_from_field_project(project, current_unit, unit, access.scope, field)?;
         current_unit = next_unit;
         current_structure = next_structure;
     }
@@ -4888,7 +4882,6 @@ fn direct_write_value_id_for_assignment(
             return Some(direct.value);
         }
         let mut direct_values = reference_uses_in_range(reference_uses, &assignment.lhs_range)
-            .into_iter()
             .filter_map(|use_site| {
                 (values[use_site.value.as_usize()].kind != DataflowValueKind::FieldSymbol)
                     .then_some(use_site.value)
@@ -4903,7 +4896,6 @@ fn direct_write_value_id_for_assignment(
     }
     if assignment.lhs_target_access.is_none() {
         let direct_values = reference_uses_in_range(reference_uses, &assignment.lhs_range)
-            .into_iter()
             .filter(|use_site| {
                 values[use_site.value.as_usize()].kind != DataflowValueKind::FieldSymbol
             })
@@ -4974,7 +4966,6 @@ fn selector_structure_write_for_assignment(
         return None;
     }
     let base_use = reference_uses_in_range(reference_uses, &assignment.lhs_range)
-        .into_iter()
         .filter(|use_site| {
             unit.references
                 .get(use_site.reference.as_usize())
@@ -5020,7 +5011,6 @@ fn selector_structure_write_for_range(
         access.base_range.start == range.start && last_segment.range.end == range.end
     })?;
     let base_use = reference_uses_in_range(reference_uses, range)
-        .into_iter()
         .filter(|use_site| {
             unit.references
                 .get(use_site.reference.as_usize())
@@ -5117,7 +5107,6 @@ fn direct_field_symbol_values_in_range(
     values: &[RoutineDataflowValue],
 ) -> Vec<DataflowValueId> {
     reference_uses_in_range(reference_uses, range)
-        .into_iter()
         .filter(|use_site| use_site.range == *range)
         .map(|use_site| use_site.value)
         .filter(|value| values[value.as_usize()].kind == DataflowValueKind::FieldSymbol)
@@ -5131,7 +5120,6 @@ fn direct_non_field_symbol_values_in_range(
 ) -> Vec<DataflowValueId> {
     sorted_unique_value_ids(
         reference_uses_in_range(reference_uses, range)
-            .into_iter()
             .map(|use_site| use_site.value)
             .filter(|value| values[value.as_usize()].kind != DataflowValueKind::FieldSymbol),
     )

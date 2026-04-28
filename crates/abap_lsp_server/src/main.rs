@@ -1576,7 +1576,7 @@ fn handle_did_open_notifications(
     let diagnostics_elapsed = diagnostics_start.elapsed();
     let manifest_start = Instant::now();
     if let Some(workspace_uri) = workspace_uri.as_deref() {
-        push_workspace_manifest_diagnostics_notification(state, &workspace_uri, &mut notifications);
+        push_workspace_manifest_diagnostics_notification(state, workspace_uri, &mut notifications);
     }
     let manifest_elapsed = manifest_start.elapsed();
     let dependency_source_start = Instant::now();
@@ -1708,7 +1708,7 @@ fn handle_did_change_notifications(
         if let Some(workspace_uri) = workspace_uri.as_deref() {
             push_workspace_manifest_diagnostics_notification(
                 state,
-                &workspace_uri,
+                workspace_uri,
                 &mut notifications,
             );
         }
@@ -1932,7 +1932,7 @@ fn handle_remote_dependencies_updated_notifications(
             build_remote_dependency_batch_for_workspace_filtered(
                 state,
                 &params.workspace_uri,
-                Some(&source_filter),
+                Some(source_filter),
             )
         } else {
             build_remote_dependency_batch_for_workspace(state, &params.workspace_uri)
@@ -3401,7 +3401,7 @@ lo_helper->r";
             .collect();
 
         assert!(
-            labels.iter().any(|label| *label == "run"),
+            labels.contains(&"run"),
             "expected helper method completion before workspace commit: {labels:?}"
         );
 
@@ -3911,7 +3911,7 @@ lo_helper->r"
             .filter_map(|item| item.get("label").and_then(Value::as_str))
             .collect();
         assert!(
-            labels.iter().any(|label| *label == "run"),
+            labels.contains(&"run"),
             "expected helper method completion during debounce: {labels:?}"
         );
 
