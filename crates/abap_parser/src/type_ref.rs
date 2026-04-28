@@ -158,7 +158,7 @@ pub(crate) fn parse_type_ref_tokens(
             {
                 break;
             }
-            if i > idx && tok.kind == TokenKind::Ident && token_begins_line(source, tok) {
+            if i > idx && tok.kind == TokenKind::Ident && token_begins_line(tok) {
                 if is_definite_stmt_lead_keyword(source, tok) {
                     break;
                 }

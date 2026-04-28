@@ -32,6 +32,18 @@ enum ConstructorSequenceKind {
     SingleExpr,
 }
 
+#[rustfmt::skip]
+const COMPARISON_KEYWORDS: &[&str] = &["EQ", "NE", "LT", "LE", "GT", "GE", "CO", "CN", "CA", "NA", "CS", "NS", "CP", "NP", "IN", "BETWEEN"];
+const CALL_ARGUMENT_SECTION_KEYWORDS: &[&str] = &[
+    "EXPORTING",
+    "IMPORTING",
+    "CHANGING",
+    "RECEIVING",
+    "EXCEPTIONS",
+];
+#[rustfmt::skip]
+const CONSTRUCTOR_KEYWORDS: &[&str] = &["NEW", "VALUE", "CONV", "REF", "CAST", "EXACT", "CORRESPONDING", "FILTER", "REDUCE", "SWITCH", "COND"];
+
 struct Parser<'a, 'b> {
     source: &'a str,
     tokens: &'a [Token],
@@ -46,6 +58,11 @@ fn ident_eq(source: &str, t: &Token, kw: &str) -> bool {
     t.kind == TokenKind::Ident && t.lexeme(source).eq_ignore_ascii_case(kw)
 }
 
+#[inline]
+fn keyword_any(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
+}
+
 fn is_comparison_op(source: &str, t: &Token) -> bool {
     match t.kind {
         TokenKind::Lt
@@ -56,22 +73,7 @@ fn is_comparison_op(source: &str, t: &Token) -> bool {
         | TokenKind::Eq => true,
         TokenKind::Ident => {
             let s = t.lexeme(source);
-            s.eq_ignore_ascii_case("EQ")
-                || s.eq_ignore_ascii_case("NE")
-                || s.eq_ignore_ascii_case("LT")
-                || s.eq_ignore_ascii_case("LE")
-                || s.eq_ignore_ascii_case("GT")
-                || s.eq_ignore_ascii_case("GE")
-                || s.eq_ignore_ascii_case("CO")
-                || s.eq_ignore_ascii_case("CN")
-                || s.eq_ignore_ascii_case("CA")
-                || s.eq_ignore_ascii_case("NA")
-                || s.eq_ignore_ascii_case("CS")
-                || s.eq_ignore_ascii_case("NS")
-                || s.eq_ignore_ascii_case("CP")
-                || s.eq_ignore_ascii_case("NP")
-                || s.eq_ignore_ascii_case("IN")
-                || s.eq_ignore_ascii_case("BETWEEN")
+            keyword_any(s, COMPARISON_KEYWORDS)
         }
         _ => false,
     }
@@ -79,11 +81,30 @@ fn is_comparison_op(source: &str, t: &Token) -> bool {
 
 #[inline]
 fn is_call_argument_section(source: &str, token: &Token) -> bool {
-    token.kind == TokenKind::Ident
-        && matches!(
-            token.lexeme(source).to_ascii_uppercase().as_str(),
-            "EXPORTING" | "IMPORTING" | "CHANGING" | "RECEIVING" | "EXCEPTIONS"
-        )
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = token.lexeme(source);
+    keyword_any(text, CALL_ARGUMENT_SECTION_KEYWORDS)
+}
+
+#[inline]
+fn is_constructor_keyword(text: &str) -> bool {
+    keyword_any(text, CONSTRUCTOR_KEYWORDS)
+}
+
+fn constructor_sequence_kind(text: &str) -> ConstructorSequenceKind {
+    if text.eq_ignore_ascii_case("CORRESPONDING") {
+        ConstructorSequenceKind::Corresponding
+    } else if text.eq_ignore_ascii_case("COND") {
+        ConstructorSequenceKind::Cond
+    } else if text.eq_ignore_ascii_case("SWITCH") {
+        ConstructorSequenceKind::Switch
+    } else if text.eq_ignore_ascii_case("REDUCE") {
+        ConstructorSequenceKind::Reduce
+    } else {
+        ConstructorSequenceKind::Value
+    }
 }
 
 #[inline]
@@ -2348,13 +2369,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn parse_constructor_expr(&mut self) -> Option<NodeId> {
         let kw_tok = self.bump()?;
-        let constructor_kind = match kw_tok.lexeme(self.source).to_ascii_uppercase().as_str() {
-            "CORRESPONDING" => ConstructorSequenceKind::Corresponding,
-            "COND" => ConstructorSequenceKind::Cond,
-            "SWITCH" => ConstructorSequenceKind::Switch,
-            "REDUCE" => ConstructorSequenceKind::Reduce,
-            _ => ConstructorSequenceKind::Value,
-        };
+        let constructor_kind = constructor_sequence_kind(kw_tok.lexeme(self.source));
         let mut children = vec![token_leaf(self.b, kw_tok)];
         self.skip_trivia();
         let type_start = self.idx;
@@ -2588,21 +2603,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.prev = self.tokens.last()?;
                     return Some(node);
                 }
-                let is_constructor_keyword = matches!(
-                    curr.lexeme(self.source).to_ascii_uppercase().as_str(),
-                    "NEW"
-                        | "VALUE"
-                        | "CONV"
-                        | "REF"
-                        | "CAST"
-                        | "EXACT"
-                        | "CORRESPONDING"
-                        | "FILTER"
-                        | "REDUCE"
-                        | "SWITCH"
-                        | "COND"
-                );
-                if is_constructor_keyword {
+                if is_constructor_keyword(curr.lexeme(self.source)) {
                     return self.parse_constructor_expr();
                 }
                 let t = self.bump()?;

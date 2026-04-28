@@ -575,7 +575,7 @@ fn collect_raw_decl_tail(
         ) {
             break;
         }
-        if token_begins_line(source, tok) {
+        if token_begins_line(tok) {
             let next_kind = tokens.get(idx + 1).map(|next| next.kind);
             if is_definite_stmt_lead_keyword(source, tok)
                 || matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))

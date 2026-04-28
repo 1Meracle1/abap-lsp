@@ -136,7 +136,7 @@ fn scan_assign_rhs(tokens: &[Token], source: &str, start: usize) -> AssignRhsSca
                 let named_arg_continuation =
                     allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
                 if t.kind == TokenKind::Ident
-                    && token_begins_line(source, t)
+                    && token_begins_line(t)
                     && is_definite_stmt_lead_keyword(source, t)
                     && !named_arg_continuation
                 {
@@ -145,7 +145,7 @@ fn scan_assign_rhs(tokens: &[Token], source: &str, start: usize) -> AssignRhsSca
                         nested_eq,
                     };
                 }
-                if t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                if t.kind == TokenKind::Ident && token_begins_line(t) {
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
                     if !allow_line_start_named_args
                         && !allow_line_start_condition_comparison

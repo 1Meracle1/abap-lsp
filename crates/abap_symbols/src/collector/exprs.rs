@@ -27,6 +27,17 @@ use crate::scope::Namespace;
 use super::Collector;
 use super::context::ExprContext;
 
+const TEMPLATE_DYNAMIC_FORMAT_KEYWORDS: &[&str] = &["WIDTH", "DECIMALS"];
+#[rustfmt::skip]
+const CONSTRUCTOR_TOKEN_KEYWORDS: &[&str] = &["COND", "CONV", "CORRESPONDING", "EXACT", "FILTER", "NEW", "REDUCE", "REF", "SWITCH", "VALUE", "CAST"];
+#[rustfmt::skip]
+const EXPR_NON_VALUE_KEYWORDS: &[&str] = &["AND", "OR", "NOT", "IS", "IN", "LET", "FOR", "WHERE", "UNTIL", "WHILE", "INIT", "NEXT", "WHEN", "THEN", "ELSE"];
+
+#[inline]
+fn keyword_any(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
+}
+
 pub(super) struct ExprLowering<'ctx, 'a> {
     ctx: ExprContext<'ctx, 'a>,
 }
@@ -1105,10 +1116,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         // String-template formatting specs use enum-like keywords for most values
         // (`ALPHA = OUT`, `DATE = USER`, `TIME = ISO`). Only numeric formatting
         // options can legitimately reference dynamic operands.
-        if matches!(
-            tokens[0].text.to_ascii_uppercase().as_str(),
-            "WIDTH" | "DECIMALS"
-        ) {
+        if keyword_any(tokens[0].text.as_ref(), TEMPLATE_DYNAMIC_FORMAT_KEYWORDS) {
             self.ctx
                 .collect_token_expression_refs_infos(&tokens[2..], scope, true);
         }
@@ -1593,20 +1601,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 continue;
             }
             if self.ctx.syntax_token_is_ident_like(token)
-                && matches!(
-                    token.text.to_ascii_uppercase().as_str(),
-                    "COND"
-                        | "CONV"
-                        | "CORRESPONDING"
-                        | "EXACT"
-                        | "FILTER"
-                        | "NEW"
-                        | "REDUCE"
-                        | "REF"
-                        | "SWITCH"
-                        | "VALUE"
-                        | "CAST"
-                )
+                && keyword_any(token.text.as_ref(), CONSTRUCTOR_TOKEN_KEYWORDS)
             {
                 return true;
             }
@@ -2730,24 +2725,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         .map(|prev| prev.text.as_ref()),
                     Some("->" | "=>" | "~" | "-")
                 )
-                && !matches!(
-                    token.text.to_ascii_uppercase().as_str(),
-                    "AND"
-                        | "OR"
-                        | "NOT"
-                        | "IS"
-                        | "IN"
-                        | "LET"
-                        | "FOR"
-                        | "WHERE"
-                        | "UNTIL"
-                        | "WHILE"
-                        | "INIT"
-                        | "NEXT"
-                        | "WHEN"
-                        | "THEN"
-                        | "ELSE"
-                )
+                && !keyword_any(token.text.as_ref(), EXPR_NON_VALUE_KEYWORDS)
             {
                 self.ctx.add_reference(
                     scope,

@@ -1741,7 +1741,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             if paren_depth == 0
                 && bracket_depth == 0
                 && brace_depth == 0
-                && matches!(token.text.to_ascii_uppercase().as_str(), "AND" | "OR")
+                && (token.text.eq_ignore_ascii_case("and") || token.text.eq_ignore_ascii_case("or"))
             {
                 flush_segment(self.collector, segment_start, idx);
                 segment_start = idx + 1;

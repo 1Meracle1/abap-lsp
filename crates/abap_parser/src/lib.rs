@@ -402,9 +402,9 @@ pub fn parse_error_is_include_fragment_boundary(error: &ParseError) -> bool {
     if message.starts_with("syntax error: unexpected ") && message.contains(" without matching ") {
         return true;
     }
-    MISSING_FRAGMENT_BOUNDARIES
-        .iter()
-        .any(|boundary| message == format!("syntax error: expected {boundary}"))
+    message
+        .strip_prefix("syntax error: expected ")
+        .is_some_and(|boundary| MISSING_FRAGMENT_BOUNDARIES.contains(&boundary))
 }
 
 pub fn parse(source: &str) -> ParseResult {

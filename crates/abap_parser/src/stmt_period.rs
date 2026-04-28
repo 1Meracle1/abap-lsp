@@ -29,8 +29,7 @@ impl Delimiter {
 }
 
 #[inline]
-pub(crate) fn token_begins_line(source: &str, tok: &Token) -> bool {
-    let _ = source;
+pub(crate) fn token_begins_line(tok: &Token) -> bool {
     tok.range.start == 0 || tok.has_newline_before()
 }
 
@@ -89,18 +88,12 @@ pub(crate) fn delimiter_error(
 
 #[inline]
 fn is_inline_data_start(tokens: &[Token], idx: usize) -> bool {
-    tokens
-        .get(idx)
-        .is_some_and(|tok| tok.kind == TokenKind::Ident)
-        && tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::LParen)
+    tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::LParen)
 }
 
 #[inline]
 fn is_inline_field_symbol_start(tokens: &[Token], idx: usize) -> bool {
-    tokens
-        .get(idx)
-        .is_some_and(|tok| tok.kind == TokenKind::Ident)
-        && tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::Minus)
+    tokens.get(idx + 1).map(|tok| tok.kind) == Some(TokenKind::Minus)
         && tokens
             .get(idx + 2)
             .is_some_and(|tok| tok.kind == TokenKind::Ident)
@@ -118,130 +111,50 @@ pub(crate) fn is_inline_decl_continuation(source: &str, tokens: &[Token], idx: u
                 && is_inline_field_symbol_start(tokens, idx)))
 }
 
+#[rustfmt::skip]
+const DEFINITE_STMT_LEAD_KEYWORDS: &[&str] = &["DATA", "STATICS", "FIELD", "REPORT", "INCLUDE", "START", "END", "TOP", "START-OF-SELECTION", "END-OF-SELECTION", "INITIALIZATION", "TOP-OF-PAGE", "END-OF-PAGE", "IF", "ELSEIF", "ELSE", "ENDIF", "ASSERT", "CHECK", "CASE", "WHEN", "ENDCASE", "WRITE", "CONCATENATE", "CONDENSE", "CLASS", "ENDCLASS", "INTERFACE", "ENDINTERFACE", "METHOD", "ENDMETHOD", "READ", "INSERT", "DELETE", "SYNTAX", "AUTHORITY", "MOVE", "COMPUTE", "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "TRANSLATE", "SHIFT", "SEARCH", "OVERLAY", "PACK", "UNPACK", "SKIP", "ULINE", "RESERVE", "BACK", "FORMAT", "POSITION", "HIDE", "SUPPRESS", "SORT", "SELECT", "ENDSELECT", "OPEN", "FETCH", "CLOSE", "FORM", "ENDFORM", "PERFORM", "LOOP", "ENDLOOP", "WHILE", "ENDWHILE", "DO", "ENDDO", "DEFINE", "CONTINUE", "EXIT", "RETURN", "STOP", "TRY", "CATCH", "CLEANUP", "ENDTRY", "ENDCATCH", "TYPES", "CONSTANTS", "FIELD-SYMBOLS", "PARAMETER", "PARAMETERS", "SELECTION", "TABLES", "FUNCTION", "ENDFUNCTION", "MODULE", "ENDMODULE", "ENHANCEMENT", "ENDENHANCEMENT"];
+const NAMED_ARG_CLAUSE_KEYWORDS: &[&str] = &[
+    "EXPORTING",
+    "IMPORTING",
+    "CHANGING",
+    "RECEIVING",
+    "EXCEPTIONS",
+];
+const CONDITION_CONTINUATION_KEYWORDS: &[&str] = &["AND", "OR", "NOT", "WHERE", "HAVING", "ON"];
+#[rustfmt::skip]
+const CONDITION_COMPARISON_KEYWORDS: &[&str] = &["EQ", "NE", "LT", "LE", "GT", "GE", "CP", "NP", "CO", "CN", "CA", "NA", "CS", "NS", "IS", "IN", "BETWEEN", "LIKE"];
+
+#[inline]
+fn keyword_any(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
+}
+
 /// Keywords that almost always start a new compilation-unit statement at the beginning of a line.
 #[inline]
 pub(crate) fn is_definite_stmt_lead_keyword(source: &str, tok: &Token) -> bool {
     if tok.kind != TokenKind::Ident {
         return false;
     }
-    let s = tok.lexeme(source);
-    s.eq_ignore_ascii_case("DATA")
-        || s.eq_ignore_ascii_case("STATICS")
-        || s.eq_ignore_ascii_case("FIELD")
-        || s.eq_ignore_ascii_case("REPORT")
-        || s.eq_ignore_ascii_case("INCLUDE")
-        || s.eq_ignore_ascii_case("START")
-        || s.eq_ignore_ascii_case("END")
-        || s.eq_ignore_ascii_case("TOP")
-        || s.eq_ignore_ascii_case("START-OF-SELECTION")
-        || s.eq_ignore_ascii_case("END-OF-SELECTION")
-        || s.eq_ignore_ascii_case("INITIALIZATION")
-        || s.eq_ignore_ascii_case("TOP-OF-PAGE")
-        || s.eq_ignore_ascii_case("END-OF-PAGE")
-        || s.eq_ignore_ascii_case("IF")
-        || s.eq_ignore_ascii_case("ELSEIF")
-        || s.eq_ignore_ascii_case("ELSE")
-        || s.eq_ignore_ascii_case("ENDIF")
-        || s.eq_ignore_ascii_case("ASSERT")
-        || s.eq_ignore_ascii_case("CHECK")
-        || s.eq_ignore_ascii_case("CASE")
-        || s.eq_ignore_ascii_case("WHEN")
-        || s.eq_ignore_ascii_case("ENDCASE")
-        || s.eq_ignore_ascii_case("WRITE")
-        || s.eq_ignore_ascii_case("CONCATENATE")
-        || s.eq_ignore_ascii_case("CONDENSE")
-        || s.eq_ignore_ascii_case("CLASS")
-        || s.eq_ignore_ascii_case("ENDCLASS")
-        || s.eq_ignore_ascii_case("INTERFACE")
-        || s.eq_ignore_ascii_case("ENDINTERFACE")
-        || s.eq_ignore_ascii_case("METHOD")
-        || s.eq_ignore_ascii_case("ENDMETHOD")
-        || s.eq_ignore_ascii_case("READ")
-        || s.eq_ignore_ascii_case("INSERT")
-        || s.eq_ignore_ascii_case("DELETE")
-        || s.eq_ignore_ascii_case("SYNTAX")
-        || s.eq_ignore_ascii_case("AUTHORITY")
-        || s.eq_ignore_ascii_case("MOVE")
-        || s.eq_ignore_ascii_case("COMPUTE")
-        || s.eq_ignore_ascii_case("ADD")
-        || s.eq_ignore_ascii_case("SUBTRACT")
-        || s.eq_ignore_ascii_case("MULTIPLY")
-        || s.eq_ignore_ascii_case("DIVIDE")
-        || s.eq_ignore_ascii_case("TRANSLATE")
-        || s.eq_ignore_ascii_case("SHIFT")
-        || s.eq_ignore_ascii_case("SEARCH")
-        || s.eq_ignore_ascii_case("OVERLAY")
-        || s.eq_ignore_ascii_case("PACK")
-        || s.eq_ignore_ascii_case("UNPACK")
-        || s.eq_ignore_ascii_case("SKIP")
-        || s.eq_ignore_ascii_case("ULINE")
-        || s.eq_ignore_ascii_case("RESERVE")
-        || s.eq_ignore_ascii_case("BACK")
-        || s.eq_ignore_ascii_case("FORMAT")
-        || s.eq_ignore_ascii_case("POSITION")
-        || s.eq_ignore_ascii_case("HIDE")
-        || s.eq_ignore_ascii_case("SUPPRESS")
-        || s.eq_ignore_ascii_case("SORT")
-        || s.eq_ignore_ascii_case("SELECT")
-        || s.eq_ignore_ascii_case("ENDSELECT")
-        || s.eq_ignore_ascii_case("OPEN")
-        || s.eq_ignore_ascii_case("FETCH")
-        || s.eq_ignore_ascii_case("CLOSE")
-        || s.eq_ignore_ascii_case("FORM")
-        || s.eq_ignore_ascii_case("ENDFORM")
-        || s.eq_ignore_ascii_case("PERFORM")
-        || s.eq_ignore_ascii_case("LOOP")
-        || s.eq_ignore_ascii_case("ENDLOOP")
-        || s.eq_ignore_ascii_case("WHILE")
-        || s.eq_ignore_ascii_case("ENDWHILE")
-        || s.eq_ignore_ascii_case("DO")
-        || s.eq_ignore_ascii_case("ENDDO")
-        || s.eq_ignore_ascii_case("DEFINE")
-        || s.eq_ignore_ascii_case("CONTINUE")
-        || s.eq_ignore_ascii_case("EXIT")
-        || s.eq_ignore_ascii_case("RETURN")
-        || s.eq_ignore_ascii_case("STOP")
-        || s.eq_ignore_ascii_case("CASE")
-        || s.eq_ignore_ascii_case("ENDCASE")
-        || s.eq_ignore_ascii_case("TRY")
-        || s.eq_ignore_ascii_case("CATCH")
-        || s.eq_ignore_ascii_case("CLEANUP")
-        || s.eq_ignore_ascii_case("ENDTRY")
-        || s.eq_ignore_ascii_case("ENDCATCH")
-        || s.eq_ignore_ascii_case("TYPES")
-        || s.eq_ignore_ascii_case("CONSTANTS")
-        || s.eq_ignore_ascii_case("FIELD-SYMBOLS")
-        || s.eq_ignore_ascii_case("PARAMETER")
-        || s.eq_ignore_ascii_case("PARAMETERS")
-        || s.eq_ignore_ascii_case("SELECTION")
-        || s.eq_ignore_ascii_case("TABLES")
-        || s.eq_ignore_ascii_case("FUNCTION")
-        || s.eq_ignore_ascii_case("ENDFUNCTION")
-        || s.eq_ignore_ascii_case("MODULE")
-        || s.eq_ignore_ascii_case("ENDMODULE")
-        || s.eq_ignore_ascii_case("ENHANCEMENT")
-        || s.eq_ignore_ascii_case("ENDENHANCEMENT")
+    let text = tok.lexeme(source);
+    keyword_any(text, DEFINITE_STMT_LEAD_KEYWORDS)
 }
 
 #[inline]
 pub(crate) fn is_named_arg_clause_keyword(source: &str, tok: &Token) -> bool {
-    tok.kind == TokenKind::Ident
-        && (tok.lexeme(source).eq_ignore_ascii_case("EXPORTING")
-            || tok.lexeme(source).eq_ignore_ascii_case("IMPORTING")
-            || tok.lexeme(source).eq_ignore_ascii_case("CHANGING")
-            || tok.lexeme(source).eq_ignore_ascii_case("RECEIVING")
-            || tok.lexeme(source).eq_ignore_ascii_case("EXCEPTIONS"))
+    if tok.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = tok.lexeme(source);
+    keyword_any(text, NAMED_ARG_CLAUSE_KEYWORDS)
 }
 
 #[inline]
 pub(crate) fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bool {
-    tok.kind == TokenKind::Ident
-        && (tok.lexeme(source).eq_ignore_ascii_case("AND")
-            || tok.lexeme(source).eq_ignore_ascii_case("OR")
-            || tok.lexeme(source).eq_ignore_ascii_case("NOT")
-            || tok.lexeme(source).eq_ignore_ascii_case("WHERE")
-            || tok.lexeme(source).eq_ignore_ascii_case("HAVING")
-            || tok.lexeme(source).eq_ignore_ascii_case("ON"))
+    if tok.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = tok.lexeme(source);
+    keyword_any(text, CONDITION_CONTINUATION_KEYWORDS)
 }
 
 #[inline]
@@ -375,25 +288,11 @@ fn is_authority_check_field_continuation(
 
 #[inline]
 fn is_condition_comparison_keyword(source: &str, tok: &Token) -> bool {
-    tok.kind == TokenKind::Ident
-        && (tok.lexeme(source).eq_ignore_ascii_case("EQ")
-            || tok.lexeme(source).eq_ignore_ascii_case("NE")
-            || tok.lexeme(source).eq_ignore_ascii_case("LT")
-            || tok.lexeme(source).eq_ignore_ascii_case("LE")
-            || tok.lexeme(source).eq_ignore_ascii_case("GT")
-            || tok.lexeme(source).eq_ignore_ascii_case("GE")
-            || tok.lexeme(source).eq_ignore_ascii_case("CP")
-            || tok.lexeme(source).eq_ignore_ascii_case("NP")
-            || tok.lexeme(source).eq_ignore_ascii_case("CO")
-            || tok.lexeme(source).eq_ignore_ascii_case("CN")
-            || tok.lexeme(source).eq_ignore_ascii_case("CA")
-            || tok.lexeme(source).eq_ignore_ascii_case("NA")
-            || tok.lexeme(source).eq_ignore_ascii_case("CS")
-            || tok.lexeme(source).eq_ignore_ascii_case("NS")
-            || tok.lexeme(source).eq_ignore_ascii_case("IS")
-            || tok.lexeme(source).eq_ignore_ascii_case("IN")
-            || tok.lexeme(source).eq_ignore_ascii_case("BETWEEN")
-            || tok.lexeme(source).eq_ignore_ascii_case("LIKE"))
+    if tok.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = tok.lexeme(source);
+    keyword_any(text, CONDITION_COMPARISON_KEYWORDS)
 }
 
 #[inline]
@@ -572,7 +471,7 @@ pub(crate) fn scan_until_statement_period_with_named_args(
                 let named_arg_continuation =
                     allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
                 if t.kind == TokenKind::Ident
-                    && token_begins_line(source, t)
+                    && token_begins_line(t)
                     && is_definite_stmt_lead_keyword(source, t)
                     && !is_perform_if_found_addition(source, tokens, start, i)
                     && !is_signature_addition(source, tokens, start, i)
@@ -586,7 +485,7 @@ pub(crate) fn scan_until_statement_period_with_named_args(
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }
-                if t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                if t.kind == TokenKind::Ident && token_begins_line(t) {
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
                     if !allow_line_start_named_args
                         && !allow_line_start_condition_comparison

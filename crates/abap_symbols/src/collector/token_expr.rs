@@ -16,6 +16,15 @@ use crate::scope::Namespace;
 use super::emit::RefSink;
 use super::{Collector, SyntaxTokenInfo};
 
+#[rustfmt::skip]
+const CONSTRUCTOR_EXPR_KEYWORDS: &[&str] = &["COND", "CONV", "CORRESPONDING", "EXACT", "FILTER", "REDUCE", "REF", "SWITCH", "VALUE", "CAST"];
+
+fn token_text_is_constructor_expr_keyword(text: &str) -> bool {
+    CONSTRUCTOR_EXPR_KEYWORDS
+        .iter()
+        .any(|kw| text.eq_ignore_ascii_case(kw))
+}
+
 impl<'a> Collector<'a> {
     fn lower_arc(text: &str) -> Arc<str> {
         Arc::<str>::from(text.to_ascii_lowercase())
@@ -272,39 +281,15 @@ impl<'a> Collector<'a> {
         if next.text.as_ref() != "(" || self.syntax_tokens_have_space_between(token, next) {
             return false;
         }
-        !matches!(
-            token.text.to_ascii_uppercase().as_str(),
-            "COND"
-                | "CONV"
-                | "CORRESPONDING"
-                | "EXACT"
-                | "FILTER"
-                | "NEW"
-                | "REDUCE"
-                | "REF"
-                | "SWITCH"
-                | "VALUE"
-                | "CAST"
-        )
+        !token.text.eq_ignore_ascii_case("new")
+            && !token_text_is_constructor_expr_keyword(token.text.as_ref())
     }
 
     fn token_starts_constructor_expression(&self, tokens: &[SyntaxTokenInfo], idx: usize) -> bool {
         let Some(token) = tokens.get(idx) else {
             return false;
         };
-        matches!(
-            token.text.to_ascii_uppercase().as_str(),
-            "COND"
-                | "CONV"
-                | "CORRESPONDING"
-                | "EXACT"
-                | "FILTER"
-                | "REDUCE"
-                | "REF"
-                | "SWITCH"
-                | "VALUE"
-                | "CAST"
-        )
+        token_text_is_constructor_expr_keyword(token.text.as_ref())
     }
 
     fn field_symbol_state_check_kind(
@@ -526,7 +511,7 @@ impl<'a> Collector<'a> {
             return idx + 1;
         };
 
-        let keyword = tokens[idx].text.to_ascii_uppercase();
+        let keyword = tokens[idx].text.as_ref();
         let type_tokens = &tokens[cursor..lparen_idx];
         if let Some((name, range)) = self.simple_type_ref_base_from_infos(type_tokens) {
             self.add_reference(scope, name, Namespace::Type, ReferenceKind::TypeRef, range);
@@ -537,17 +522,17 @@ impl<'a> Collector<'a> {
             return lparen_idx + 1;
         };
         let inner = &tokens[lparen_idx + 1..rparen_idx];
-        match keyword.as_str() {
-            "VALUE" => self
-                .expr_lowering()
-                .collect_value_constructor_tokens_infos(inner, scope),
-            "COND" => self
-                .expr_lowering()
-                .collect_cond_constructor_tokens_infos(inner, scope),
-            "SWITCH" => self
-                .expr_lowering()
-                .collect_switch_constructor_tokens_infos(inner, scope),
-            _ => self.collect_token_expression_refs_infos(inner, scope, true),
+        if keyword.eq_ignore_ascii_case("VALUE") {
+            self.expr_lowering()
+                .collect_value_constructor_tokens_infos(inner, scope);
+        } else if keyword.eq_ignore_ascii_case("COND") {
+            self.expr_lowering()
+                .collect_cond_constructor_tokens_infos(inner, scope);
+        } else if keyword.eq_ignore_ascii_case("SWITCH") {
+            self.expr_lowering()
+                .collect_switch_constructor_tokens_infos(inner, scope);
+        } else {
+            self.collect_token_expression_refs_infos(inner, scope, true);
         }
         rparen_idx + 1
     }

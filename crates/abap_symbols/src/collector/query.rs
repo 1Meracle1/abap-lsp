@@ -219,10 +219,13 @@ impl<'a> Collector<'a> {
                 saw_keyword = !matches!(text, ":" | "," | "." | "-" | "(" | ")");
                 continue;
             }
-            if !matches!(
-                text.to_ascii_uppercase().as_str(),
-                "DEFINITION" | "IMPLEMENTATION" | "PUBLIC" | "PROTECTED" | "PRIVATE" | "SECTION"
-            ) && !matches!(text, ":" | "," | "." | "-" | "(" | ")")
+            if !(text.eq_ignore_ascii_case("DEFINITION")
+                || text.eq_ignore_ascii_case("IMPLEMENTATION")
+                || text.eq_ignore_ascii_case("PUBLIC")
+                || text.eq_ignore_ascii_case("PROTECTED")
+                || text.eq_ignore_ascii_case("PRIVATE")
+                || text.eq_ignore_ascii_case("SECTION"))
+                && !matches!(text, ":" | "," | "." | "-" | "(" | ")")
             {
                 return Some((
                     Arc::<str>::from(text.to_ascii_lowercase()),

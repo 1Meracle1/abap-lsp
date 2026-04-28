@@ -19,6 +19,16 @@ use crate::stmt_period::{
 use crate::syntax::token_leaf;
 use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
 
+#[rustfmt::skip]
+const SQL_AGGREGATE_NAMES: &[&str] = &["COUNT", "MAX", "MIN", "SUM", "AVG", "MEDIAN", "STDDEV", "VAR", "CORR", "CORR_SPEARMAN", "ALLOW_PRECISION_LOSS"];
+const SQL_AGGREGATES: &[&str] = &["COUNT", "MAX", "MIN", "SUM", "AVG"];
+const SUBMIT_COMPARISON_KEYWORDS: &[&str] = &["EQ", "NE", "CP", "NP", "GE", "GT", "LE", "LT"];
+
+#[inline]
+fn keyword_any(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
+}
+
 #[derive(Clone, Copy)]
 enum EventBlockLead {
     Single(&'static str),
@@ -522,21 +532,11 @@ fn select_header_projection_bounds(
 }
 
 fn sql_token_is_aggregate_name(source: &str, token: &Token) -> bool {
-    token.kind == TokenKind::Ident
-        && matches!(
-            token.lexeme(source).to_ascii_uppercase().as_str(),
-            "COUNT"
-                | "MAX"
-                | "MIN"
-                | "SUM"
-                | "AVG"
-                | "MEDIAN"
-                | "STDDEV"
-                | "VAR"
-                | "CORR"
-                | "CORR_SPEARMAN"
-                | "ALLOW_PRECISION_LOSS"
-        )
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = token.lexeme(source);
+    keyword_any(text, SQL_AGGREGATE_NAMES)
 }
 
 fn skip_projection_alias_after_aggregate(
@@ -1212,11 +1212,11 @@ fn sql_token_is_keyword(source: &str, token: &Token) -> bool {
 }
 
 fn sql_token_is_aggregate(source: &str, token: &Token) -> bool {
-    token.kind == TokenKind::Ident
-        && matches!(
-            token.lexeme(source).to_ascii_uppercase().as_str(),
-            "COUNT" | "MAX" | "MIN" | "SUM" | "AVG"
-        )
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = token.lexeme(source);
+    keyword_any(text, SQL_AGGREGATES)
 }
 
 fn find_matching_delim_in_range(
@@ -2375,7 +2375,7 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                 let named_arg_continuation =
                     allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
                 if t.kind == TokenKind::Ident
-                    && token_begins_line(source, t)
+                    && token_begins_line(t)
                     && is_definite_stmt_lead_keyword(source, t)
                     && !(is_keyword(source, t, "select")
                         && select_token_is_set_operand_lead(source, tokens, i))
@@ -2387,7 +2387,7 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                 {
                     return StmtPeriodScan::Unterminated { end_exclusive: i };
                 }
-                if t.kind == TokenKind::Ident && token_begins_line(source, t) {
+                if t.kind == TokenKind::Ident && token_begins_line(t) {
                     let next_kind = tokens.get(i + 1).map(|x| x.kind);
                     if !allow_line_start_named_args
                         && !allow_line_start_condition_comparison
@@ -2464,7 +2464,7 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
                 }
             }
 
-            if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
+            if i > start && t.kind == TokenKind::Ident && token_begins_line(t) {
                 let table_key_continuation =
                     inside_key_components && line_start_table_key_component_continues(tokens, i);
                 if is_definite_stmt_lead_keyword(source, t)
@@ -2534,7 +2534,7 @@ fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                 allow_line_start_condition_comparison = true;
             }
 
-            if i > start && t.kind == TokenKind::Ident && token_begins_line(source, t) {
+            if i > start && t.kind == TokenKind::Ident && token_begins_line(t) {
                 let condition_continuation = allow_line_start_condition_comparison
                     && line_start_condition_operand_continues(source, tokens, i);
                 if is_definite_stmt_lead_keyword(source, t)
@@ -3155,12 +3155,14 @@ fn submit_is_comparison_operator(source: &str, tokens: &[Token], idx: usize) -> 
     let Some(token) = tokens.get(idx) else {
         return false;
     };
-    token.kind == TokenKind::Eq
-        || (token.kind == TokenKind::Ident
-            && matches!(
-                token.lexeme(source).to_ascii_uppercase().as_str(),
-                "EQ" | "NE" | "CP" | "NP" | "GE" | "GT" | "LE" | "LT"
-            ))
+    if token.kind == TokenKind::Eq {
+        return true;
+    }
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = token.lexeme(source);
+    keyword_any(text, SUBMIT_COMPARISON_KEYWORDS)
 }
 
 fn scan_submit_expr_end(

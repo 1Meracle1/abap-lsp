@@ -1830,10 +1830,13 @@ fn is_internal_table_type_display(display: &str) -> bool {
 }
 
 fn is_generic_internal_table_type_display(display: &str) -> bool {
-    matches!(
-        display.trim().to_ascii_uppercase().as_str(),
-        "STANDARD TABLE" | "SORTED TABLE" | "HASHED TABLE" | "ANY TABLE" | "INDEX TABLE" | "TABLE"
-    )
+    let display = display.trim();
+    display.eq_ignore_ascii_case("STANDARD TABLE")
+        || display.eq_ignore_ascii_case("SORTED TABLE")
+        || display.eq_ignore_ascii_case("HASHED TABLE")
+        || display.eq_ignore_ascii_case("ANY TABLE")
+        || display.eq_ignore_ascii_case("INDEX TABLE")
+        || display.eq_ignore_ascii_case("TABLE")
 }
 
 pub fn collect_unit(
