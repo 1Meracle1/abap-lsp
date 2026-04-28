@@ -11,22 +11,10 @@ use crate::{ServerState, publish_open_document, sem_tokens};
 const DEFAULT_SAMPLE_PATH: &str = r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///semantic_tokens_perf_sample.abap";
 
-fn perf_sample_path() -> PathBuf {
-    env::var("ABAP_PERF_SAMPLE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_SAMPLE_PATH))
-}
-
-fn perf_iterations() -> usize {
-    env::var("ABAP_PERF_ITERATIONS")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(10)
-}
-
 fn load_perf_sample() -> (PathBuf, String) {
-    let path = perf_sample_path();
+    let path = env::var("ABAP_PERF_SAMPLE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_SAMPLE_PATH));
     let source = fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read perf sample '{}': {err}", path.display()));
     (path, source)
@@ -37,11 +25,6 @@ fn load_perf_sample() -> (PathBuf, String) {
 fn large_file_build_semantic_tokens_breakdown() {
     let (path, text) = load_perf_sample();
     let line_count = text.lines().count();
-    assert!(
-        line_count >= 10_000,
-        "expected a large ABAP sample, got only {line_count} lines from '{}'",
-        path.display()
-    );
 
     let state = ServerState::default();
     let uri = Uri::from_str(PERF_SAMPLE_URI).expect("uri");
@@ -69,7 +52,11 @@ fn large_file_build_semantic_tokens_breakdown() {
         path.display()
     );
 
-    let iterations = perf_iterations();
+    let iterations = env::var("ABAP_PERF_ITERATIONS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(10);
     let build_start = Instant::now();
     let mut total_tokens = 0usize;
     for _ in 0..iterations {

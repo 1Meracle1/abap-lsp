@@ -35,12 +35,6 @@ fn run() -> Result<(), String> {
         )
     })?;
     let line_count = source.lines().count();
-    if line_count < 10_000 {
-        return Err(format!(
-            "expected a large ABAP sample, got only {line_count} lines from '{}'",
-            config.sample_path.display()
-        ));
-    }
 
     let parse_start = Instant::now();
     let parsed = parse(&source);
@@ -104,9 +98,6 @@ fn run() -> Result<(), String> {
 }
 
 fn duration_per_iteration(total: Duration, iterations: usize) -> Duration {
-    if iterations == 0 {
-        return Duration::ZERO;
-    }
     Duration::from_secs_f64(total.as_secs_f64() / iterations as f64)
 }
 

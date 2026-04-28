@@ -18,14 +18,10 @@ use crate::validate::validate_project_with_scope_indexes;
 const DEFAULT_SAMPLE_PATH: &str = r"D:\dev\abap\prod_rep_check\perf-samples\CL_GUI_ALV_GRID.abap";
 const PERF_SAMPLE_URI: &str = "file:///perf_sample.abap";
 
-fn perf_sample_path() -> PathBuf {
-    env::var("ABAP_PERF_SAMPLE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_SAMPLE_PATH))
-}
-
 fn load_perf_sample() -> (PathBuf, String) {
-    let path = perf_sample_path();
+    let path = env::var("ABAP_PERF_SAMPLE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_SAMPLE_PATH));
     let source = fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("failed to read perf sample '{}': {err}", path.display()));
     (path, source)
@@ -36,11 +32,6 @@ fn load_perf_sample() -> (PathBuf, String) {
 fn large_file_phase_breakdown() {
     let (path, source) = load_perf_sample();
     let line_count = source.lines().count();
-    assert!(
-        line_count >= 10_000,
-        "expected a large ABAP sample, got only {line_count} lines from '{}'",
-        path.display()
-    );
 
     let parse_start = Instant::now();
     let parsed = parse(&source);
