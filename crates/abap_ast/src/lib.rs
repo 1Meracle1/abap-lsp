@@ -481,6 +481,20 @@ pub enum SyntaxKind {
     PackStmt,
     /// Classic conversion statement `UNPACK source TO target .`
     UnpackStmt,
+    /// Classic list statement `SKIP ... .`
+    SkipStmt,
+    /// Classic list statement `ULINE ... .`
+    UlineStmt,
+    /// Classic list statement `NEW-LINE ... .`
+    NewLineStmt,
+    /// Classic list statement `NEW-PAGE ... .`
+    NewPageStmt,
+    /// Classic list statement `RESERVE ... LINES .`
+    ReserveStmt,
+    /// Classic list navigation statement `BACK .`
+    BackStmt,
+    /// Source/read operand inside a classic list-control statement.
+    ListControlOperand,
     /// Classic list formatting statement `FORMAT ... .`
     FormatStmt,
     /// Classic list cursor statement `POSITION ... .`
@@ -945,6 +959,13 @@ impl SyntaxKind {
             Self::OverlayStmt => "OverlayStmt",
             Self::PackStmt => "PackStmt",
             Self::UnpackStmt => "UnpackStmt",
+            Self::SkipStmt => "SkipStmt",
+            Self::UlineStmt => "UlineStmt",
+            Self::NewLineStmt => "NewLineStmt",
+            Self::NewPageStmt => "NewPageStmt",
+            Self::ReserveStmt => "ReserveStmt",
+            Self::BackStmt => "BackStmt",
+            Self::ListControlOperand => "ListControlOperand",
             Self::FormatStmt => "FormatStmt",
             Self::PositionStmt => "PositionStmt",
             Self::HideStmt => "HideStmt",

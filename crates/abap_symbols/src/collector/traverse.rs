@@ -145,6 +145,12 @@ impl<'a> Collector<'a> {
                 self.stmt_lowering().collect_pack_like_stmt(node, scope)
             }
             SyntaxKind::SearchStmt => self.stmt_lowering().collect_search_stmt(node, scope),
+            SyntaxKind::SkipStmt
+            | SyntaxKind::UlineStmt
+            | SyntaxKind::NewLineStmt
+            | SyntaxKind::NewPageStmt
+            | SyntaxKind::ReserveStmt
+            | SyntaxKind::BackStmt => self.stmt_lowering().collect_list_control_stmt(node, scope),
             SyntaxKind::UpdateTarget
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt

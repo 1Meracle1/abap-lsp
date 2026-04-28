@@ -1759,6 +1759,94 @@ UNPACK lv_source TO lv_target.
 }
 
 #[test]
+fn resolves_classic_list_control_operands_without_keyword_diagnostics() {
+    let src = r#"
+DATA lv_skip TYPE i VALUE 2.
+DATA lv_line TYPE i VALUE 4.
+DATA lv_col TYPE i VALUE 8.
+DATA lv_len TYPE i VALUE 45.
+DATA lv_size TYPE i VALUE 79.
+DATA lv_count TYPE i VALUE 60.
+DATA lv_title TYPE string VALUE 'Dynamic title'.
+DATA lv_reserve TYPE i VALUE 10.
+
+SKIP lv_skip.
+SKIP TO LINE lv_line.
+ULINE AT lv_col(lv_len).
+NEW-LINE NO-SCROLLING.
+NEW-PAGE NO-TITLE LINE-SIZE lv_size LINE-COUNT lv_count WITH-TITLE lv_title.
+RESERVE lv_reserve LINES.
+BACK.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///classic_list_control_stmt.abap", src, &parsed);
+
+    for name in [
+        "lv_skip",
+        "lv_line",
+        "lv_col",
+        "lv_len",
+        "lv_size",
+        "lv_count",
+        "lv_title",
+        "lv_reserve",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved list-control reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected list-control diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for keyword in [
+        "skip",
+        "to",
+        "line",
+        "uline",
+        "at",
+        "new",
+        "no",
+        "scrolling",
+        "page",
+        "title",
+        "count",
+        "with",
+        "reserve",
+        "lines",
+        "back",
+    ] {
+        assert!(
+            unit.references.iter().all(|reference| {
+                !reference.name.eq_ignore_ascii_case(keyword) || reference.resolution.is_some()
+            }),
+            "list-control keyword `{keyword}` became an unresolved reference: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        unit.routine_sites.is_empty(),
+        "list-control statements should not create routine/control-flow effects: {:?}",
+        unit.routine_sites
+    );
+}
+
+#[test]
 fn corresponding_mapping_resolves_outer_operands_without_component_unresolved_refs() {
     let src = r#"
 TYPES: BEGIN OF ty_child_src,

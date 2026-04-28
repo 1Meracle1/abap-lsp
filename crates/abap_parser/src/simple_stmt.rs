@@ -76,6 +76,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["field"], classify_field_stmt),
     GuardedSimpleStmtClassifier::new(&["suppress"], classify_suppress_dialog_stmt),
     GuardedSimpleStmtClassifier::new(&["log"], classify_log_point_stmt),
+    GuardedSimpleStmtClassifier::new(&["new"], classify_new_list_control_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
 
@@ -83,6 +84,7 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("add", SyntaxKind::AddStmt),
     ("aliases", SyntaxKind::AliasesStmt),
     ("assert", SyntaxKind::AssertStmt),
+    ("back", SyntaxKind::BackStmt),
     ("check", SyntaxKind::CheckStmt),
     ("clear", SyntaxKind::ClearStmt),
     ("compute", SyntaxKind::ComputeStmt),
@@ -101,11 +103,14 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("return", SyntaxKind::ReturnStmt),
     ("search", SyntaxKind::SearchStmt),
     ("shift", SyntaxKind::ShiftStmt),
+    ("skip", SyntaxKind::SkipStmt),
     ("submit", SyntaxKind::SubmitStmt),
+    ("reserve", SyntaxKind::ReserveStmt),
     ("stop", SyntaxKind::StopStmt),
     ("subtract", SyntaxKind::SubtractStmt),
     ("translate", SyntaxKind::TranslateStmt),
     ("transfer", SyntaxKind::TransferStmt),
+    ("uline", SyntaxKind::UlineStmt),
     ("unpack", SyntaxKind::UnpackStmt),
     ("replace", SyntaxKind::ReplaceStmt),
     ("wait", SyntaxKind::WaitStmt),
@@ -2647,6 +2652,374 @@ fn build_classic_text_stmt_children(
     children
 }
 
+fn token_matches_sequence_part(source: &str, token: &Token, part: &str) -> bool {
+    match part {
+        "-" => token.kind == TokenKind::Minus,
+        "/" => token.kind == TokenKind::Slash,
+        _ => token_matches_keyword(source, token, part),
+    }
+}
+
+fn match_list_control_token_sequence(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    parts: &[&str],
+) -> Option<usize> {
+    let mut cursor = start;
+    for part in parts {
+        let part_idx = next_non_comment(tokens, cursor, end);
+        if part_idx >= end || !token_matches_sequence_part(source, &tokens[part_idx], part) {
+            return None;
+        }
+        cursor = part_idx + 1;
+    }
+    Some(cursor)
+}
+
+fn list_control_new_page_operand_clause_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<usize> {
+    let clauses: &[&[&str]] = &[
+        &["line", "-", "size"],
+        &["line", "-", "count"],
+        &["destination"],
+        &["copies"],
+        &["list", "name"],
+        &["with", "-", "title"],
+        &["to", "page"],
+    ];
+    clauses
+        .iter()
+        .find_map(|parts| match_list_control_token_sequence(source, tokens, start, end, parts))
+}
+
+fn list_control_new_page_static_clause_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<usize> {
+    let clauses: &[&[&str]] = &[
+        &["no", "-", "title"],
+        &["no", "-", "heading"],
+        &["with", "-", "heading"],
+        &["print", "on"],
+        &["print", "off"],
+        &["print"],
+    ];
+    clauses
+        .iter()
+        .find_map(|parts| match_list_control_token_sequence(source, tokens, start, end, parts))
+}
+
+fn list_control_new_page_clause_start(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> bool {
+    list_control_new_page_operand_clause_end(source, tokens, start, end).is_some()
+        || list_control_new_page_static_clause_end(source, tokens, start, end).is_some()
+}
+
+fn scan_list_control_operand_end(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if token.kind == TokenKind::Comma
+                || list_control_new_page_clause_start(source, tokens, idx, end)
+            {
+                break;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn push_list_control_operand_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) -> Option<NodeId> {
+    let value_start = next_non_comment(tokens, start, end);
+    let value_end = trim_trailing_comments(tokens, value_start, end);
+    push_token_range(b, children, tokens, start, value_start);
+    if value_start >= value_end {
+        push_token_range(b, children, tokens, value_start, end);
+        return None;
+    }
+
+    let operand = build_wrapped_expr_child(
+        b,
+        source,
+        tokens,
+        value_start,
+        value_end,
+        SyntaxKind::ListControlOperand,
+    );
+    children.push(operand);
+    push_token_range(b, children, tokens, value_end, end);
+    Some(operand)
+}
+
+fn build_skip_list_control_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let body_start = idx + 1;
+
+    if let Some(line_end) =
+        match_list_control_token_sequence(source, tokens, body_start, period_i, &["to", "line"])
+    {
+        push_token_range(b, &mut children, tokens, body_start, line_end);
+        push_list_control_operand_child(b, &mut children, source, tokens, line_end, period_i);
+        children.push(token_leaf(b, &tokens[period_i]));
+        return children;
+    }
+
+    let line_keyword_idx =
+        find_top_level_any_keyword_index(source, tokens, body_start, period_i, &["line", "lines"]);
+    let operand_end = line_keyword_idx.unwrap_or(period_i);
+    push_list_control_operand_child(b, &mut children, source, tokens, body_start, operand_end);
+    push_token_range(b, &mut children, tokens, operand_end, period_i + 1);
+    children
+}
+
+fn build_reserve_list_control_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let body_start = idx + 1;
+    let line_keyword_idx =
+        find_top_level_any_keyword_index(source, tokens, body_start, period_i, &["line", "lines"]);
+    let operand_end = line_keyword_idx.unwrap_or(period_i);
+    push_list_control_operand_child(b, &mut children, source, tokens, body_start, operand_end);
+    push_token_range(b, &mut children, tokens, operand_end, period_i + 1);
+    children
+}
+
+fn build_new_page_list_control_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let lead_end =
+        match_list_control_token_sequence(source, tokens, idx, period_i, &["new", "-", "page"])
+            .unwrap_or(idx + 1);
+    push_token_range(b, &mut children, tokens, idx, lead_end);
+
+    let mut cursor = lead_end;
+    while cursor < period_i {
+        if tokens[cursor].kind == TokenKind::Comment {
+            children.push(token_leaf(b, &tokens[cursor]));
+            cursor += 1;
+            continue;
+        }
+
+        if let Some(clause_end) =
+            list_control_new_page_operand_clause_end(source, tokens, cursor, period_i)
+        {
+            push_token_range(b, &mut children, tokens, cursor, clause_end);
+            let operand_end = scan_list_control_operand_end(source, tokens, clause_end, period_i);
+            push_list_control_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                clause_end,
+                operand_end,
+            );
+            cursor = operand_end;
+            continue;
+        }
+
+        if let Some(clause_end) =
+            list_control_new_page_static_clause_end(source, tokens, cursor, period_i)
+        {
+            push_token_range(b, &mut children, tokens, cursor, clause_end);
+            cursor = clause_end;
+            continue;
+        }
+
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn find_matching_rparen_token(tokens: &[Token], lparen_idx: usize, end: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for idx in lparen_idx..end {
+        match tokens[idx].kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn consume_uline_operand(tokens: &[Token], start: usize, end: usize) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if matches!(
+                token.kind,
+                TokenKind::LParen | TokenKind::Slash | TokenKind::Comma
+            ) {
+                break;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn build_uline_list_control_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let mut cursor = idx + 1;
+    while cursor < period_i {
+        let token = &tokens[cursor];
+        if token.kind == TokenKind::Comment
+            || token.kind == TokenKind::Slash
+            || token.kind == TokenKind::Comma
+            || token_matches_keyword(source, token, "at")
+        {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        }
+
+        if token.kind == TokenKind::LParen
+            && let Some(close_idx) = find_matching_rparen_token(tokens, cursor, period_i)
+        {
+            children.push(token_leaf(b, token));
+            push_list_control_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                cursor + 1,
+                close_idx,
+            );
+            children.push(token_leaf(b, &tokens[close_idx]));
+            cursor = close_idx + 1;
+            continue;
+        }
+
+        let operand_end = consume_uline_operand(tokens, cursor, period_i);
+        if operand_end > cursor {
+            push_list_control_operand_child(b, &mut children, source, tokens, cursor, operand_end);
+            cursor = operand_end;
+        } else {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+        }
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_list_control_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+    kind: SyntaxKind,
+) -> Vec<NodeId> {
+    match kind {
+        SyntaxKind::SkipStmt => {
+            build_skip_list_control_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::ReserveStmt => {
+            build_reserve_list_control_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::UlineStmt => {
+            build_uline_list_control_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::NewPageStmt => {
+            build_new_page_list_control_stmt_children(b, source, tokens, idx, period_i)
+        }
+        _ => tokens[idx..=period_i]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect(),
+    }
+}
+
 fn push_maybe_inline_target_child(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -3250,6 +3623,21 @@ fn classify_log_point_stmt(source: &str, significant: &[&Token]) -> Option<Synta
     .then_some(SyntaxKind::LogPointStmt)
 }
 
+fn classify_new_list_control_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    if last.kind != TokenKind::Period {
+        return None;
+    }
+
+    if significant_starts_hyphenated_keyword(source, significant, &["new", "line"]) {
+        Some(SyntaxKind::NewLineStmt)
+    } else if significant_starts_hyphenated_keyword(source, significant, &["new", "page"]) {
+        Some(SyntaxKind::NewPageStmt)
+    } else {
+        None
+    }
+}
+
 fn classify_direct_call_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
     direct_call_statement(source, significant).then(|| {
         if direct_call_padding_is_valid(significant) {
@@ -3663,6 +4051,14 @@ pub fn try_parse_simple_stmt(
                 | SyntaxKind::PackStmt
                 | SyntaxKind::UnpackStmt => {
                     build_classic_text_stmt_children(b, source, tokens, idx, period_i, kind)
+                }
+                SyntaxKind::SkipStmt
+                | SyntaxKind::UlineStmt
+                | SyntaxKind::NewLineStmt
+                | SyntaxKind::NewPageStmt
+                | SyntaxKind::ReserveStmt
+                | SyntaxKind::BackStmt => {
+                    build_list_control_stmt_children(b, source, tokens, idx, period_i, kind)
                 }
                 _ => tokens[idx..=period_i]
                     .iter()
@@ -4443,6 +4839,47 @@ UNPACK lv_source TO lv_target.",
         );
         assert_eq!(
             parsed.file.count_kind(root, SyntaxKind::TextSourceOperand),
+            10
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn classifies_classic_list_control_statements_with_operands() {
+        let parsed = crate::parse(
+            "\
+DATA lv_skip TYPE i.
+DATA lv_line TYPE i.
+DATA lv_col TYPE i.
+DATA lv_len TYPE i.
+DATA lv_size TYPE i.
+DATA lv_count TYPE i.
+DATA lv_title TYPE string.
+DATA lv_reserve TYPE i.
+SKIP.
+SKIP lv_skip.
+SKIP TO LINE lv_line.
+ULINE.
+ULINE /(45).
+ULINE AT lv_col(lv_len).
+NEW-LINE.
+NEW-LINE NO-SCROLLING.
+NEW-PAGE NO-TITLE LINE-SIZE 79.
+NEW-PAGE LINE-SIZE lv_size LINE-COUNT lv_count WITH-TITLE lv_title.
+RESERVE lv_reserve LINES.
+BACK.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SkipStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UlineStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::NewLineStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::NewPageStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReserveStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::BackStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ListControlOperand),
             10
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);

@@ -278,6 +278,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_list_control_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::ListControlOperand
+                && let Some(value) = self.collector.first_non_token_child(child)
+            {
+                self.collector.walk_node(value, scope);
+            }
+        }
+    }
+
     fn collect_leave_operand_tokens(&mut self, tail: &[SyntaxTokenInfo], scope: ScopeId) {
         if tail.is_empty() {
             return;
