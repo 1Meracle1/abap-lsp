@@ -10256,6 +10256,98 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn workspace_refresh_uses_single_actual_case_uri_for_namespaced_selection_include() {
+        let workspace_path = temp_workspace_path("workspace_namespaced_selection_include_case");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(workspace_path.join("src/Includes")).expect("includes dir");
+        fs::write(workspace_path.join("abapls.toml"), "version = 1\n").expect("manifest");
+        fs::write(
+            workspace_path.join("src/basic.abap"),
+            "REPORT zattp_ar_dm_obj_rel.\n\
+INCLUDE /sttp/ar_dm_obj_rel_top.\n\
+INCLUDE /sttp/ar_dm_obj_rel_ssc.\n\
+INCLUDE /sttp/ar_dm_obj_rel_f01.\n",
+        )
+        .expect("report");
+        fs::write(
+            workspace_path.join("src/Includes/%2FSTTP%2FAR_DM_OBJ_REL_TOP.abap"),
+            "DATA gv_code_char TYPE string.\n",
+        )
+        .expect("top include");
+        fs::write(
+            workspace_path.join("src/Includes/%2FSTTP%2FAR_DM_OBJ_REL_SSC.abap"),
+            "SELECT-OPTIONS pr_codch FOR gv_code_char.\n",
+        )
+        .expect("selection include");
+        let f01_path = workspace_path.join("src/Includes/%2FSTTP%2FAR_DM_OBJ_REL_F01.abap");
+        let f01_text = "FORM main_processing.\n\
+  FIELD-SYMBOLS <ls_codch> LIKE LINE OF pr_codch.\n\
+  LOOP AT pr_codch ASSIGNING <ls_codch>.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        fs::write(&f01_path, f01_text).expect("form include");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let f01_uri = normalize_lsp_uri(&path_to_file_uri(&f01_path));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let f01_uris: Vec<_> = workspace
+            .cache
+            .uris()
+            .into_iter()
+            .filter(|uri| uri.contains("AR_DM_OBJ_REL_F01"))
+            .collect();
+        assert_eq!(f01_uris, vec![Arc::<str>::from(f01_uri.as_str())]);
+
+        let snapshot = snapshot_for_uri(&state, &f01_uri).expect("f01 snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("pr_codch")),
+            "{diagnostics:#?}"
+        );
+
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&f01_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 2,
+                    text: f01_text.to_string(),
+                },
+            },
+        );
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let f01_uris: Vec<_> = workspace
+            .cache
+            .uris()
+            .into_iter()
+            .filter(|uri| uri.contains("AR_DM_OBJ_REL_F01"))
+            .collect();
+        assert_eq!(f01_uris, vec![Arc::<str>::from(f01_uri.as_str())]);
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), opened.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("pr_codch")),
+            "{diagnostics:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn workspace_refresh_resolves_flat_root_includes_without_opening_them() {
         let workspace_path = temp_workspace_path("workspace_flat_root_includes");
         let _ = fs::remove_dir_all(&workspace_path);

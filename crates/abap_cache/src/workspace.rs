@@ -1072,7 +1072,12 @@ fn discover_single_file_units(
     relative_dir: &str,
     kind: &str,
 ) -> Vec<ManifestUnit> {
-    let dir = root_path.join(relative_dir);
+    let Some(dir) = existing_workspace_relative_path(root_path, relative_dir) else {
+        return Vec::new();
+    };
+    if !dir.is_dir() {
+        return Vec::new();
+    }
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -1092,7 +1097,12 @@ fn discover_single_file_units(
 }
 
 fn discover_folder_units(root_path: &Path, relative_dir: &str, kind: &str) -> Vec<ManifestUnit> {
-    let dir = root_path.join(relative_dir);
+    let Some(dir) = existing_workspace_relative_path(root_path, relative_dir) else {
+        return Vec::new();
+    };
+    if !dir.is_dir() {
+        return Vec::new();
+    }
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -1120,7 +1130,7 @@ fn discover_folder_units(root_path: &Path, relative_dir: &str, kind: &str) -> Ve
 }
 
 fn single_file_unit(root_path: &Path, path: &Path, kind: &str) -> ManifestUnit {
-    let relative = workspace_relative_path(root_path, path);
+    let relative = workspace_relative_path(root_path, &workspace_existing_path(root_path, path));
     let name = infer_object_name_from_manifest_path(&relative).unwrap_or_default();
     let mut unit = ManifestUnit {
         name,
@@ -1141,7 +1151,10 @@ fn folder_unit(root_path: &Path, dir_path: &Path, kind: &str) -> Option<Manifest
         return None;
     }
 
-    let root_file = workspace_relative_path(root_path, &root_file_path);
+    let root_file = workspace_relative_path(
+        root_path,
+        &workspace_existing_path(root_path, &root_file_path),
+    );
     let mut member_paths = Vec::new();
     collect_abap_file_paths(dir_path, &mut member_paths);
     member_paths.sort();
@@ -1150,7 +1163,7 @@ fn folder_unit(root_path: &Path, dir_path: &Path, kind: &str) -> Option<Manifest
         .filter(|path| path != &root_file_path)
         .map(|path| ManifestUnitMember {
             role: String::new(),
-            file: workspace_relative_path(root_path, &path),
+            file: workspace_relative_path(root_path, &workspace_existing_path(root_path, &path)),
             object_name: String::new(),
         })
         .collect::<Vec<_>>();
@@ -1164,6 +1177,49 @@ fn folder_unit(root_path: &Path, dir_path: &Path, kind: &str) -> Option<Manifest
     };
     apply_unit_sidecar_manifest(root_path, dir_path, &mut unit);
     Some(unit)
+}
+
+fn workspace_existing_path(root_path: &Path, path: &Path) -> PathBuf {
+    let relative = workspace_relative_path(root_path, path);
+    existing_workspace_relative_path(root_path, &relative).unwrap_or_else(|| path.to_path_buf())
+}
+
+fn existing_workspace_relative_path(root_path: &Path, relative: &str) -> Option<PathBuf> {
+    let mut path = root_path.to_path_buf();
+    for segment in normalize_manifest_path(relative)
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+    {
+        path = existing_child_path(&path, segment)?;
+    }
+    Some(path)
+}
+
+fn existing_child_path(parent: &Path, segment: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(parent).ok()?;
+    #[cfg(windows)]
+    let mut case_insensitive = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == segment {
+            return Some(entry.path());
+        }
+        #[cfg(windows)]
+        {
+            if case_insensitive.is_none() && name.eq_ignore_ascii_case(segment) {
+                case_insensitive = Some(entry.path());
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        case_insensitive
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 fn discover_uncovered_src_file_units(
@@ -4967,6 +5023,44 @@ cache_dir = "legacy-cache"
             loaded_uris
                 .iter()
                 .any(|uri| uri.ends_with("/src/function-groups/ZFG/includes/LZFGTOP.abap"))
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_only_manifest_preserves_actual_case_for_conventional_include_dir() {
+        let root = std::env::temp_dir().join("abap-lsp-settings-only-include-case");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/Includes")).expect("includes dir");
+        fs::write(root.join("abapls.toml"), "version = 1\n").expect("manifest");
+        fs::write(
+            root.join("src/Includes/ZREP_TOP.abap"),
+            "DATA lv_top TYPE i.",
+        )
+        .expect("include");
+
+        let root_uri = path_to_file_uri(&root);
+        let loaded = load_workspace_documents(&root_uri, &HashMap::new());
+        let manifest = loaded.manifest.as_ref().expect("effective manifest");
+        let include_units: Vec<_> = manifest
+            .units
+            .iter()
+            .filter(|unit| unit.root_file.ends_with("ZREP_TOP.abap"))
+            .collect();
+        let include_documents: Vec<_> = loaded
+            .documents
+            .iter()
+            .filter(|document| document.uri.ends_with("ZREP_TOP.abap"))
+            .collect();
+
+        assert_eq!(include_units.len(), 1, "{:#?}", manifest.units);
+        assert_eq!(include_units[0].root_file, "src/Includes/ZREP_TOP.abap");
+        assert_eq!(include_documents.len(), 1, "{:#?}", loaded.documents);
+        assert!(
+            !include_documents[0].uri.contains("/src/includes/"),
+            "{}",
+            include_documents[0].uri
         );
 
         let _ = fs::remove_dir_all(&root);
