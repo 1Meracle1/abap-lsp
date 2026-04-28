@@ -7,6 +7,17 @@ use abap_symbols::{
     analyze_project_from_units, analyze_unit,
 };
 
+fn analyze(src: &str, uri: &str) -> abap_symbols::UnitAnalysis {
+    let parsed = parse(src);
+    analyze_unit(uri, src, &parsed)
+}
+
+fn analyze_ok(src: &str, uri: &str) -> abap_symbols::UnitAnalysis {
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    analyze_unit(uri, src, &parsed)
+}
+
 #[test]
 fn resolves_do_times_count_variable_in_header() {
     let src = r#"
@@ -17,8 +28,7 @@ FORM f.
   ENDDO.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///do_times_header.abap", src, &parsed);
+    let unit = analyze(src, "file:///do_times_header.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -54,8 +64,7 @@ FORM f.
   ENDDO.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///do_body.abap", src, &parsed);
+    let unit = analyze(src, "file:///do_body.abap");
 
     let lv_refs: Vec<_> = unit
         .references
@@ -97,8 +106,7 @@ FORM f.
   ENDCASE.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///case_when_header.abap", src, &parsed);
+    let unit = analyze(src, "file:///case_when_header.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -137,8 +145,7 @@ FORM f.
   ROLLBACK WORK.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///commit_rollback_work.abap", src, &parsed);
+    let unit = analyze(src, "file:///commit_rollback_work.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -161,9 +168,7 @@ CLASS c2 DEFINITION.
     DATA c2ref TYPE c1.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///class_type_without_ref.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///class_type_without_ref.abap");
 
     let diagnostic = unit
         .diagnostics
@@ -191,9 +196,7 @@ CLASS c2 DEFINITION.
     DATA c2ref TYPE REF TO c1.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///class_type_with_ref.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///class_type_with_ref.abap");
 
     assert!(
         unit.diagnostics
@@ -214,9 +217,7 @@ ENDCLASS.
 
 DATA(lr_retriable_errs) = VALUE lcl_archive_connector=>tr_retriable_errs( ).
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///class_qualified_value_type.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///class_qualified_value_type.abap");
 
     let symbol = unit
         .symbols
@@ -246,8 +247,7 @@ FORM f.
   TYPE-POOLS abap.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///type_pools.abap", src, &parsed);
+    let unit = analyze(src, "file:///type_pools.abap");
 
     assert!(
         !unit
@@ -280,8 +280,7 @@ FORM some_form CHANGING cv_result TYPE string.
     cv_result = lv_var2.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///form.abap", src, &parsed);
+    let unit = analyze(src, "file:///form.abap");
 
     assert!(unit.symbols.iter().any(|symbol| {
         symbol.kind == abap_symbols::SymbolKind::Parameter && symbol.name.as_ref() == "cv_result"
@@ -327,8 +326,7 @@ FORM f USING VALUE(iv) TYPE i.
   iv = 1.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_param.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_param.abap");
 
     let iv = unit
         .symbols
@@ -353,8 +351,7 @@ ENDINTERFACE.
 FORM run USING VALUE(io_row) TYPE REF TO zif_demo=>ty_row.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///form_type_ref.abap", src, &parsed);
+    let unit = analyze(src, "file:///form_type_ref.abap");
 
     let io_row = unit
         .symbols
@@ -388,8 +385,7 @@ FORM some_form.
         lv_lines TYPE i.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///chained_data_table_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///chained_data_table_type.abap");
 
     for name in ["ls_event", "ls_choice", "lt_split", "ls_split", "lv_lines"] {
         assert!(
@@ -423,8 +419,7 @@ FORM some_form.
   lv_counter = lv_counter + 1.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///chained_data_value_clause.abap", src, &parsed);
+    let unit = analyze(src, "file:///chained_data_value_clause.abap");
 
     for name in [
         "lv_curr_node",
@@ -458,8 +453,7 @@ ENDINTERFACE.
 
 TYPES ty_tab TYPE STANDARD TABLE OF zif_demo=>ty_row WITH DEFAULT KEY.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///type_member_table_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///type_member_table_type.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.kind == ReferenceKind::TypeRef
@@ -486,8 +480,7 @@ ENDFORM.
 DATA lv_count TYPE i.
 PERFORM process_data USING 'demo' CHANGING lv_count.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///perform_valid.abap", src, &parsed);
+    let unit = analyze(src, "file:///perform_valid.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.kind == ReferenceKind::RoutineCall
@@ -518,8 +511,7 @@ DATA lt_rows TYPE STANDARD TABLE OF i WITH EMPTY KEY.
 DATA lv_count TYPE i.
 PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///perform_call_sections.abap", src, &parsed);
+    let unit = analyze(src, "file:///perform_call_sections.abap");
 
     let call = unit.perform_calls.first().expect("perform call");
     assert_eq!(call.routine_name.as_ref(), "process_data");
@@ -566,8 +558,7 @@ DATA: lv_form  TYPE string VALUE 'process_data',
       lv_count TYPE i.
 PERFORM (lv_form) IN PROGRAM (lv_prog) IF FOUND USING 'demo' CHANGING lv_count.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///perform_dynamic.abap", src, &parsed);
+    let unit = analyze(src, "file:///perform_dynamic.abap");
 
     assert!(
         unit.diagnostics
@@ -631,8 +622,7 @@ PERFORM (lw_parameter-callback-userexitf)
   IN PROGRAM (lw_parameter-callback-userexitp)
   IF FOUND USING lv_object lw_parameter-t_par.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///perform_dynamic_structured.abap", src, &parsed);
+    let unit = analyze(src, "file:///perform_dynamic_structured.abap");
 
     assert!(
         unit.diagnostics
@@ -750,12 +740,7 @@ ENDFORM.
 DATA lv_prog TYPE syrepid.
 PERFORM process_data IN PROGRAM (lv_prog) USING 'demo'.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///perform_static_form_dynamic_program.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///perform_static_form_dynamic_program.abap");
 
     assert!(
         unit.diagnostics
@@ -787,8 +772,7 @@ PERFORM append_fldcat1 USING:
   'MATNR' 18 'Material' lv_flag1,
   'MAKTX' 40 'Description' lv_flag2.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///perform_chain.abap", src, &parsed);
+    let unit = analyze(src, "file:///perform_chain.abap");
 
     assert!(
         unit.diagnostics
@@ -838,8 +822,7 @@ DATA lv_description_mode TYPE string.
 PERFORM: f_set_individual_status USING lv_status CHANGING lv_description_status,
          f_set_individual_trans_mode USING lv_mode CHANGING lv_description_mode.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///perform_grouped.abap", src, &parsed);
+    let unit = analyze(src, "file:///perform_grouped.abap");
 
     assert!(
         unit.diagnostics
@@ -923,8 +906,7 @@ DATA lv_count TYPE i.
 #[test]
 fn resolves_local_references_in_scope() {
     let src = "DATA lv_value TYPE i. lv_value = lv_value + 1.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///resolve.abap", src, &parsed);
+    let unit = analyze(src, "file:///resolve.abap");
 
     let resolved_value_refs = unit
         .references
@@ -948,8 +930,7 @@ LOOP AT lt_rows INTO DATA(ls_row).
   ls_row = ls_row.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_inline_data.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_inline_data.abap");
 
     let lt_rows_ref = unit
         .references
@@ -1021,8 +1002,7 @@ METHOD run.
     UP TO @lv_bj2_max ROWS.
 ENDMETHOD.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///if_inline_scope.abap", src, &parsed);
+    let unit = analyze(src, "file:///if_inline_scope.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -1134,8 +1114,7 @@ DATA lt TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 LOOP AT lt TRANSPORTING NO FIELDS WHERE table_line IS NOT INITIAL.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_table_line.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_table_line.abap");
 
     let table_line_ref = unit
         .references
@@ -1175,8 +1154,7 @@ DATA lt TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
 LOOP AT lt TRANSPORTING NO FIELDS WHERE table_line IS NOT INITIAL.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_table_line_struct.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_table_line_struct.abap");
 
     let table_line_ref = unit
         .references
@@ -1210,8 +1188,7 @@ LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<ls_row>).
   <ls_row> = <ls_row>.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_inline_fs.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_inline_fs.abap");
 
     let lt_rows_ref = unit
         .references
@@ -1289,8 +1266,7 @@ LOOP AT lt_rel_data ASSIGNING FIELD-SYMBOL(<fs_arch>)
   ENDLOOP.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_group_by.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_group_by.abap");
 
     let fs_arch_refs: Vec<_> = unit
         .references
@@ -1370,8 +1346,7 @@ LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<row>)
   ENDLOOP.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_group_by_structured.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_group_by_structured.abap");
 
     let row_refs: Vec<_> = unit
         .references
@@ -1426,8 +1401,7 @@ DATA lt_evt TYPE ty_evt_tab.
 
 APPEND ls_evt TO lt_evt.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///append_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///append_stmt.abap");
 
     for name in ["ls_evt", "lt_evt"] {
         assert!(
@@ -1460,8 +1434,7 @@ DATA lt_dst TYPE ty_evt_tab.
 
 APPEND LINES OF lt_src TO lt_dst.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///append_lines_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///append_lines_stmt.abap");
 
     for name in ["lt_src", "lt_dst"] {
         assert!(
@@ -1495,8 +1468,7 @@ FIELD-SYMBOLS <ls_evt> TYPE any.
 APPEND INITIAL LINE TO lt_dst ASSIGNING <ls_evt>.
 <ls_evt> = <ls_evt>.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///append_initial_line_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///append_initial_line_stmt.abap");
 
     for name in ["lt_dst", "<ls_evt>"] {
         assert!(
@@ -1528,8 +1500,7 @@ DATA ls_ord_head TYPE string.
 
 MOVE-CORRESPONDING ls_general TO ls_ord_head.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///move_corresponding_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///move_corresponding_stmt.abap");
 
     for name in ["ls_general", "ls_ord_head"] {
         assert!(
@@ -1571,9 +1542,7 @@ MULTIPLY lv_a BY lv_b GIVING lv_c.
 DIVIDE lv_a BY lv_b GIVING lv_c.
 DIVIDE lv_a INTO lv_b.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///classic_arithmetic_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///classic_arithmetic_stmt.abap");
 
     for name in ["lv_a", "lv_b", "lv_c", "lv_d"] {
         assert!(
@@ -1658,9 +1627,7 @@ OVERLAY lv_text WITH lv_mask ONLY lv_only.
 PACK lv_source TO lv_target.
 UNPACK lv_source TO lv_target.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///classic_text_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///classic_text_stmt.abap");
 
     for name in [
         "lv_text",
@@ -1778,9 +1745,7 @@ NEW-PAGE NO-TITLE LINE-SIZE lv_size LINE-COUNT lv_count WITH-TITLE lv_title.
 RESERVE lv_reserve LINES.
 BACK.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///classic_list_control_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///classic_list_control_stmt.abap");
 
     for name in [
         "lv_skip",
@@ -1877,8 +1842,7 @@ ls_dst = CORRESPONDING ty_dst( ls_src
           ( child = child MAPPING dst_nested = src_nested EXCEPT spare )
   EXCEPT unused ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///corresponding_mapping_expr.abap", src, &parsed);
+    let unit = analyze(src, "file:///corresponding_mapping_expr.abap");
 
     for name in ["ls_src", "ls_dst", "lv_fallback"] {
         assert!(
@@ -1958,8 +1922,7 @@ DATA zatt_trans_cust TYPE ty_trans.
 
 MODIFY zatt_trans_cust FROM ls_trans.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///modify_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///modify_stmt.abap");
 
     for name in ["zatt_trans_cust", "ls_trans"] {
         assert!(
@@ -2001,8 +1964,7 @@ MODIFY lt_rows FROM ls_row
     AND sign IS INITIAL
     AND option IS INITIAL.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///modify_transporting_where.abap", src, &parsed);
+    let unit = analyze(src, "file:///modify_transporting_where.abap");
 
     for field_name in ["sign", "option"] {
         assert!(
@@ -2063,8 +2025,7 @@ MODIFY it_zatt_trans_cust FROM ls_data_aux INDEX lv_index
 
 DATA it_zatt_trans_cust TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///modify_index_transporting.abap", src, &parsed);
+    let unit = analyze(src, "file:///modify_index_transporting.abap");
 
     assert!(
         unit.sql_queries.is_empty(),
@@ -2127,8 +2088,7 @@ DATA ls_trans TYPE ty_trans.
 
 MODIFY zattp_tnc_ptrans FROM ls_trans.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///modify_dbtab.abap", src, &parsed);
+    let unit = analyze(src, "file:///modify_dbtab.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
@@ -2160,8 +2120,7 @@ DATA ls_trn TYPE string.
 
 READ TABLE lt_trn INTO ls_trn INDEX 1.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///read_table_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///read_table_stmt.abap");
 
     for name in ["lt_trn", "ls_trn"] {
         assert!(
@@ -2199,8 +2158,7 @@ CONSTANTS lc_rs_bj2_max TYPE string VALUE 'RS_BJ2_MAX'.
 READ TABLE lt_t_param INTO DATA(ls_bj2_max) WITH KEY param_name = lc_rs_bj2_max.
 ls_bj2_max-param_value = ls_bj2_max-param_value.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///read_table_inline_into_with_key.abap", src, &parsed);
+    let unit = analyze(src, "file:///read_table_inline_into_with_key.abap");
 
     for name in ["lt_t_param", "ls_bj2_max", "lc_rs_bj2_max"] {
         assert!(
@@ -2241,8 +2199,7 @@ DATA ls_zatt_ship_pending TYPE ty_trn.
 READ TABLE: lt_aux_dm_trn     INTO ls_aux_dm_trn     WITH KEY docnum = ls_zatt_ship_pending-docnum,
             lt_aux_dm_trn_evt INTO ls_aux_dm_trn_evt WITH KEY trnid  = ls_aux_dm_trn-trnid.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///read_table_stmt_chain.abap", src, &parsed);
+    let unit = analyze(src, "file:///read_table_stmt_chain.abap");
 
     for name in [
         "lt_aux_dm_trn",
@@ -2285,8 +2242,7 @@ AUTHORITY-CHECK OBJECT lc_auth_obj FOR USER lv_user
   ID lc_carrid FIELD lv_carrid
   ID lc_actvt DUMMY.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///authority_check_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///authority_check_stmt.abap");
 
     for name in [
         "lc_auth_obj",
@@ -2334,8 +2290,7 @@ DATA lv_current_ts TYPE string.
 GET TIME STAMP FIELD lv_current_ts.
 lv_current_ts = lv_current_ts.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///get_time_stamp_field.abap", src, &parsed);
+    let unit = analyze(src, "file:///get_time_stamp_field.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -2376,8 +2331,7 @@ DATA lv_state TYPE string.
 CLEAR ls_trans.
 CLEAR: lv_state, ls_trans.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///clear_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///clear_stmt.abap");
 
     for name in ["ls_trans", "lv_state"] {
         assert!(
@@ -2414,8 +2368,7 @@ FORM run USING iv_date TYPE d
   CONVERT DATE iv_date TIME iv_time INTO TIME STAMP lv_timestamp TIME ZONE iv_tzone.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///convert_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///convert_stmt.abap");
 
     for (name, type_name) in [("sv_last_tzone", "tznzone"), ("sv_last_offset", "string")] {
         let symbol = unit
@@ -2474,8 +2427,7 @@ FORM run USING iv_stamp TYPE timestamp
                DAYLIGHT SAVING TIME iv_dst.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///convert_time_stamp_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///convert_time_stamp_stmt.abap");
 
     for name in ["iv_stamp", "iv_tzone", "iv_date", "iv_time", "iv_dst"] {
         assert!(
@@ -2515,8 +2467,7 @@ FORM run USING iv_stamp TYPE timestamp
   WRITE lv_dst.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///convert_time_stamp_inline_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///convert_time_stamp_inline_stmt.abap");
 
     for (name, type_name) in [("lv_date", "d"), ("lv_time", "t"), ("lv_dst", "c")] {
         let symbol = unit
@@ -2567,8 +2518,7 @@ fn resolves_get_time_stamp_inline_data_target() {
 GET TIME STAMP FIELD DATA(lv_current_ts).
 lv_current_ts = lv_current_ts.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///get_time_stamp_inline.abap", src, &parsed);
+    let unit = analyze(src, "file:///get_time_stamp_inline.abap");
 
     let symbol = unit
         .symbols
@@ -2613,8 +2563,7 @@ fn resolves_flat_select_inline_table_target_after_statement() {
 SELECT rfcdest FROM rfcdes INTO TABLE @DATA(lt_rfcdes).
 WRITE lt_rfcdes.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///select_inline_table.abap", src, &parsed);
+    let unit = analyze(src, "file:///select_inline_table.abap");
 
     let symbol = unit
         .symbols
@@ -2663,8 +2612,7 @@ SELECT carrid
 
 WRITE lt_flights.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_host_var.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_host_var.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     let query = &unit.sql_queries[0];
@@ -2727,8 +2675,7 @@ SELECT carrid
 
 WRITE lt_flights.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_cte_select.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_cte_select.abap");
 
     assert_eq!(unit.sql_queries.len(), 3, "{:?}", unit.sql_queries);
     for source_name in ["sflight", "spfli", "+filtered", "+joined"] {
@@ -2807,8 +2754,7 @@ SELECT FROM scarr
   WRITE lines( lt_rows ).
 ENDSELECT.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_tail_clauses.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_tail_clauses.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     let query = &unit.sql_queries[0];
@@ -2840,8 +2786,7 @@ SELECT carrid FROM scarr
 UNION ALL SELECT carrid FROM spfli
 INTO TABLE @DATA(lt_ids).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_for_update_set.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_for_update_set.abap");
 
     assert_eq!(unit.sql_queries.len(), 2, "{:?}", unit.sql_queries);
     assert!(unit.sql_queries[0].is_single);
@@ -2856,8 +2801,7 @@ fn open_sql_source_name_excludes_privileged_access_modifier() {
     let src = r#"
 SELECT * FROM scarr WITH PRIVILEGED ACCESS INTO TABLE @DATA(lt_scarr).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_privileged_access_source.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_privileged_access_source.abap");
 
     assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
     assert_eq!(unit.sql_sources[0].name.as_ref(), "scarr");
@@ -2870,8 +2814,7 @@ DATA lt_sequen_buff TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 
 INSERT zattp_sequen_bf FROM TABLE lt_sequen_buff ACCEPTING DUPLICATE KEYS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///insert_dbtab_from_table.abap", src, &parsed);
+    let unit = analyze(src, "file:///insert_dbtab_from_table.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
@@ -2910,8 +2853,7 @@ DATA langu2 TYPE spras.
 
 INSERT TEXTPOOL program FROM text2 LANGUAGE langu2.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///insert_textpool.abap", src, &parsed);
+    let unit = analyze(src, "file:///insert_textpool.abap");
 
     for name in ["program", "text2", "langu2"] {
         assert!(
@@ -2944,13 +2886,7 @@ DATA lt_textpool TYPE STANDARD TABLE OF textpool WITH EMPTY KEY.
 
 INSERT TEXTPOOL lv_progname FROM lt_textpool.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit(
-        "file:///insert_textpool_without_language.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze_ok(src, "file:///insert_textpool_without_language.abap");
 
     for name in ["lv_progname", "lt_textpool"] {
         assert!(
@@ -2999,9 +2935,7 @@ INSERT REPORT lv_prog FROM lt_source.
 DELETE REPORT lv_prog.
 SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_prog.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///source_maintenance_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///source_maintenance_stmt.abap");
 
     for name in ["lv_prog", "lt_source", "lv_msg", "lv_line", "lv_word"] {
         assert!(
@@ -3093,8 +3027,7 @@ INSERT INTO zattp_rs_ruleacc
   VALUES @( VALUE #( parent_rule_rep = ls_rep_evt-parent_rule_rep
                      child_rule_rep = <fs_repevtid>-child_rule_rep ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///insert_dbtab_values.abap", src, &parsed);
+    let unit = analyze(src, "file:///insert_dbtab_values.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     assert_eq!(unit.sql_sources.len(), 1, "{:?}", unit.sql_sources);
@@ -3126,8 +3059,7 @@ DATA im_pmast TYPE string.
 
 INSERT INTO (lv_master) VALUES im_pmast.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///insert_dbtab_dynamic.abap", src, &parsed);
+    let unit = analyze(src, "file:///insert_dbtab_dynamic.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     assert!(unit.sql_sources.is_empty(), "{:?}", unit.sql_sources);
@@ -3169,8 +3101,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_where_param.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_where_param.abap");
 
     assert!(
         !unit.sql_name_refs.iter().any(|reference| {
@@ -3208,8 +3139,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_where_selector.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_where_selector.abap");
 
     assert!(
         !unit.sql_name_refs.iter().any(|reference| {
@@ -3254,8 +3184,7 @@ FORM run.
       AND lgnum EQ lt_lqua-lgnum.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_where_eq_operator.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_where_eq_operator.abap");
 
     assert!(
         !unit
@@ -3306,8 +3235,7 @@ SELECT DISTINCT a~bupid, b~*
 
 WRITE lt_rows.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_dynamic_where.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_dynamic_where.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     let query = &unit.sql_queries[0];
@@ -3392,8 +3320,7 @@ SELECT MAX( a~bupid ) AS max_bupid
   AND status = iv_status
   INTO @DATA(lv_bupid).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_structured_projection.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_structured_projection.abap");
 
     assert_eq!(unit.sql_projections.len(), 1, "{:?}", unit.sql_projections);
     let projection = &unit.sql_projections[0];
@@ -3444,8 +3371,7 @@ FORM f.
     WHERE id = lv_id.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///update_hosts.abap", src, &parsed);
+    let unit = analyze(src, "file:///update_hosts.abap");
 
     let ls_row_refs: Vec<_> = unit
         .references
@@ -3494,8 +3420,7 @@ FORM f.
     WHERE rep_evtid EQ <fs_rs_represp>-rep_evtid.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///update_semantics.abap", src, &parsed);
+    let unit = analyze(src, "file:///update_semantics.abap");
 
     assert!(unit.sql_queries.len() == 1, "{:?}", unit.sql_queries);
     assert!(unit.sql_name_refs.iter().any(|sql_ref| {
@@ -3536,8 +3461,7 @@ FORM run.
   UPDATE /aif/fhead FROM ls_fhead.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///update_from_work_area.abap", src, &parsed);
+    let unit = analyze(src, "file:///update_from_work_area.abap");
 
     assert!(unit.sql_name_refs.iter().any(|sql_ref| {
         sql_ref.kind == SqlNameRefKind::Source && sql_ref.name.as_ref() == "/aif/fhead"
@@ -3578,8 +3502,7 @@ FORM run.
     WHERE msgguid = lv_guid32.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///update_dynamic.abap", src, &parsed);
+    let unit = analyze(src, "file:///update_dynamic.abap");
 
     assert_eq!(unit.sql_queries.len(), 2, "{:?}", unit.sql_queries);
     assert!(unit.sql_queries.iter().any(|query| query.has_dynamic_where));
@@ -3657,8 +3580,7 @@ LOOP AT lt_rep_evt INTO DATA(ls_rep_evt).
   WRITE ls_rep_evt-priority.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_inline_shape_unknown.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_inline_shape_unknown.abap");
 
     let lt_rep_evt = unit
         .symbols
@@ -3772,8 +3694,7 @@ SELECT rep_evtid,
 SORT lt_rep_evt BY creation_time ASCENDING.
 DELETE lt_rep_evt WHERE ext_ref_id IS INITIAL.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_inline_sort_delete.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_inline_sort_delete.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -3800,8 +3721,7 @@ DATA lv_filter TYPE i.
 SORT lt_rows BY comp ASCENDING.
 DELETE lt_rows WHERE comp = lv_filter.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sort_delete_structured_clauses.abap", src, &parsed);
+    let unit = analyze(src, "file:///sort_delete_structured_clauses.abap");
 
     assert!(unit.field_accesses.iter().any(|access| {
         access.base_namespace == Namespace::Value
@@ -3856,8 +3776,7 @@ SELECT rep_evtid,                                                   "Reporting E
 
 SORT lt_rep_evt BY creation_time ASCENDING.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sql_inline_commented_projection.abap", src, &parsed);
+    let unit = analyze(src, "file:///sql_inline_commented_projection.abap");
 
     let lt_rep_evt = unit
         .symbols
@@ -3912,8 +3831,7 @@ SELECT rep_evtid,
 DATA(lt_obj) = lt_obj_rel.
 DELETE lt_obj WHERE rep_evtid NE ls_priority1.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_assign_table_shape.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_assign_table_shape.abap");
 
     let lt_obj = unit
         .symbols
@@ -3949,8 +3867,7 @@ fn reports_unverified_open_sql_sources_without_workspace_type() {
     let src = r#"
 SELECT * FROM /sttp/unknown_tab INTO TABLE DATA(lt).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_unverified.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_unverified.abap");
     assert!(
         unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::UnverifiedOpenSqlSource
@@ -3968,8 +3885,7 @@ TYPES ty_row TYPE i.
 DATA lt TYPE STANDARD TABLE OF ty_row.
 SELECT * FROM ty_row INTO TABLE lt.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_local_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_local_type.abap");
     assert!(
         !unit
             .diagnostics
@@ -4137,8 +4053,7 @@ SELECT a~carrid
   INTO TABLE @DATA(lt_rows)
   ORDER BY PRIMARY KEY.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///join_order_by_primary_key.abap", src, &parsed);
+    let unit = analyze(src, "file:///join_order_by_primary_key.abap");
 
     assert!(
         unit.diagnostics.iter().any(|diag| {
@@ -4332,8 +4247,7 @@ SELECT locno gln
   INTO TABLE @DATA(lt_loc)
   WHERE locno = 'PL'.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_strict_projection.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_strict_projection.abap");
 
     assert!(
         unit.diagnostics.iter().any(|diag| {
@@ -4358,8 +4272,7 @@ SELECT locno gln
   INTO TABLE DATA(lt_loc)
   WHERE locno = 'PL'.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_inline_target_escape.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_inline_target_escape.abap");
 
     assert!(
         unit.diagnostics.iter().any(|diag| {
@@ -4377,8 +4290,7 @@ fn select_from_dynamic_dbtab_resolves_operand_without_sql_source_diag() {
 DATA lv_idx_tbl TYPE string.
 SELECT * FROM (lv_idx_tbl) INTO TABLE @DATA(lt_rows).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_dynamic_source.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_dynamic_source.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     assert!(unit.sql_dynamic_fragments.iter().any(|fragment| {
@@ -4419,8 +4331,7 @@ SELECT (lv_fields)
 
 WRITE lt_rows.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///opensql_dynamic_fragments.abap", src, &parsed);
+    let unit = analyze(src, "file:///opensql_dynamic_fragments.abap");
 
     assert_eq!(unit.sql_queries.len(), 1, "{:?}", unit.sql_queries);
     for kind in [
@@ -4473,8 +4384,7 @@ TYPES ty_row TYPE i.
 DATA wa TYPE ty_row.
 SELECT * FROM ty_row INTO TABLE wa.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///into_table_bad.abap", src, &parsed);
+    let unit = analyze(src, "file:///into_table_bad.abap");
     assert!(
         unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget && diag.message.contains("wa")
@@ -4494,8 +4404,7 @@ TYPES ty_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
 DATA lt_rows TYPE ty_rows.
 SELECT * FROM ty_row INTO TABLE lt_rows.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///into_table_alias_ok.abap", src, &parsed);
+    let unit = analyze(src, "file:///into_table_alias_ok.abap");
     assert!(
         !unit
             .diagnostics
@@ -4522,12 +4431,7 @@ SELECT objid
   FOR ALL ENTRIES IN @lt_epc_list
   WHERE serno EQ @lt_epc_list-epc.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///into_table_inline_previous_select_ok.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///into_table_inline_previous_select_ok.abap");
     assert!(
         !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
@@ -4680,8 +4584,7 @@ SELECT SINGLE vhcnum
 
 WRITE lv_vozilooznaka.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///select_single_inline_scalar.abap", src, &parsed);
+    let unit = analyze(src, "file:///select_single_inline_scalar.abap");
 
     let symbol = unit
         .symbols
@@ -4729,12 +4632,7 @@ SELECT SINGLE vhcnum
 
 WRITE lv_vozilooznaka.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///select_single_inline_scalar_commented.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///select_single_inline_scalar_commented.abap");
 
     let symbol = unit
         .symbols
@@ -4769,8 +4667,7 @@ fn resolves_select_into_flat_target_reference() {
 DATA lt TYPE string.
 SELECT * FROM demo INTO lt.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///into_flat.abap", src, &parsed);
+    let unit = analyze(src, "file:///into_flat.abap");
     let into_pos = src.find("INTO").expect("INTO");
     assert!(
         unit.references.iter().any(|reference| {
@@ -4809,8 +4706,7 @@ SELECT SINGLE lgpla
   AND   lgtyp = p_lgtyp
   AND   lgpla = p_lgpla.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///select_single_into_tuple.abap", src, &parsed);
+    let unit = analyze(src, "file:///select_single_into_tuple.abap");
     let into_pos = src.find("INTO").expect("INTO");
 
     for target_name in ["lw_lgpla", "lw_skzsi"] {
@@ -4846,8 +4742,7 @@ TYPES ty_scalar TYPE i.
 DATA lv TYPE ty_scalar.
 SELECT * FROM ty_scalar INTO CORRESPONDING FIELDS OF lv.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///into_corr.abap", src, &parsed);
+    let unit = analyze(src, "file:///into_corr.abap");
     assert!(
         unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
@@ -4866,8 +4761,7 @@ TYPES ty_row TYPE i.
 DATA lt_gs1_gcp TYPE STANDARD TABLE OF ty_row.
 SELECT * FROM demo INTO CORRESPONDING FIELDS OF TABLE lt_gs1_gcp.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///into_corr_table.abap", src, &parsed);
+    let unit = analyze(src, "file:///into_corr_table.abap");
     assert!(
         !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
@@ -4896,8 +4790,7 @@ SELECT SINGLE *
   FROM (lv_gentab)
   INTO CORRESPONDING FIELDS OF <ls_data>.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///into_corr_field_symbol.abap", src, &parsed);
+    let unit = analyze(src, "file:///into_corr_field_symbol.abap");
     assert!(
         !unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
@@ -4917,8 +4810,7 @@ DATA(lv_gentab) = '/STTP/DM_OBJ'.
 
 ASSIGN lo_data->* TO <ls_data> CASTING TYPE (lv_gentab).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///assign_casting_dynamic.abap", src, &parsed);
+    let unit = analyze(src, "file:///assign_casting_dynamic.abap");
     assert!(
         unit.references.iter().any(|reference| {
             reference.kind == ReferenceKind::Identifier
@@ -4944,8 +4836,7 @@ FIELD-SYMBOLS: <ls_data> TYPE any.
 
 ASSIGN lo_data->* TO <ls_data> CASTING TYPE ty_row.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///assign_casting_static.abap", src, &parsed);
+    let unit = analyze(src, "file:///assign_casting_static.abap");
     let edge = unit
         .semantic()
         .facts()
@@ -4977,8 +4868,7 @@ FORM f.
   SORT lt_tab BY gs1_gcp.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sort_by_unresolved_row.abap", src, &parsed);
+    let unit = analyze(src, "file:///sort_by_unresolved_row.abap");
     assert!(
         !unit.references.iter().any(|reference| {
             reference.namespace == Namespace::Value
@@ -5020,8 +4910,7 @@ FORM f.
   SORT lt_tab BY no_such_field.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sort_by_bad_field.abap", src, &parsed);
+    let unit = analyze(src, "file:///sort_by_bad_field.abap");
     assert!(
         unit.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::UnknownField && diag.message.contains("no_such_field")
@@ -5043,8 +4932,7 @@ FORM f.
   SORT lt_lqua BY matnr lgnum.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///sort_by_multiple_fields.abap", src, &parsed);
+    let unit = analyze(src, "file:///sort_by_multiple_fields.abap");
     for field_name in ["matnr", "lgnum"] {
         assert!(
             unit.field_accesses.iter().any(|access| {
@@ -5081,12 +4969,7 @@ FORM f.
   DELETE ADJACENT DUPLICATES FROM lt_lqua COMPARING matnr lgnum.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///delete_adjacent_duplicates_comparing.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///delete_adjacent_duplicates_comparing.abap");
     for field_name in ["matnr", "lgnum"] {
         assert!(
             unit.field_accesses.iter().any(|access| {
@@ -5118,12 +5001,7 @@ FORM f.
   DELETE ADJACENT DUPLICATES FROM t_exidv COMPARING exidv vbeln.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///delete_adjacent_duplicates_unresolved.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///delete_adjacent_duplicates_unresolved.abap");
 
     assert!(
         !unit.sql_name_refs.iter().any(|sql_ref| {
@@ -5171,8 +5049,7 @@ DATA lv_delivery_msg TYPE string.
 
 CONCATENATE lo_prog->to_string( ) mv_odlv INTO lv_delivery_msg SEPARATED BY ': '.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///concatenate_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///concatenate_stmt.abap");
 
     for name in ["lo_prog", "mv_odlv", "lv_delivery_msg"] {
         assert!(
@@ -5225,8 +5102,7 @@ FORM build_timestamp.
   WRITE lv_timestp.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///concatenate_inline_data.abap", src, &parsed);
+    let unit = analyze(src, "file:///concatenate_inline_data.abap");
 
     let symbol = unit
         .symbols
@@ -5265,8 +5141,7 @@ DATA lv_question TYPE string.
 CONCATENATE: TEXT-010 ls_zatt_transloading-vhcnum INTO lv_question SEPARATED BY space,
              lv_question TEXT-041                 INTO lv_question SEPARATED BY space.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///grouped_concatenate_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///grouped_concatenate_stmt.abap");
 
     for name in ["ls_zatt_transloading", "lv_question"] {
         assert!(
@@ -5342,8 +5217,7 @@ INTO  lv_part_1
       lv_part_6
 IN CHARACTER MODE.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///split_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///split_stmt.abap");
 
     for name in [
         "iv_sgtin",
@@ -5388,8 +5262,7 @@ DATA ls_trn TYPE ty_trn.
 SPLIT ls_trn-trncode AT ':' INTO TABLE DATA(lt_split).
 CLEAR lt_split.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///split_into_table_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///split_into_table_stmt.abap");
 
     assert!(unit.symbols.iter().any(|symbol| {
         symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "lt_split"
@@ -5435,9 +5308,7 @@ DATA lt_glns TYPE STANDARD TABLE OF string.
 SPLIT: gs_user_creation-user_role AT ',' INTO TABLE lt_roles,
        gs_user_creation-gln       AT ',' INTO TABLE lt_glns.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///chained_split_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///chained_split_stmt.abap");
 
     for name in ["gs_user_creation", "lt_roles", "lt_glns"] {
         assert!(
@@ -5480,9 +5351,7 @@ SPLIT: gs_user_creation-user_role AT ',' INTO TABLE DATA(lt_roles),
 CLEAR lt_roles.
 CLEAR lt_glns.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///chained_split_inline_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///chained_split_inline_stmt.abap");
 
     for name in ["lt_roles", "lt_glns"] {
         assert!(
@@ -5526,8 +5395,7 @@ DATA lv_value TYPE string.
 ASSIGN lv_value TO FIELD-SYMBOL(<lv_value>).
 <lv_value> = <lv_value>.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///assign_inline_fs.abap", src, &parsed);
+    let unit = analyze(src, "file:///assign_inline_fs.abap");
 
     assert!(unit.symbols.iter().any(|symbol| {
         symbol.kind == abap_symbols::SymbolKind::FieldSymbol && symbol.name.as_ref() == "<lv_value>"
@@ -5576,12 +5444,7 @@ fn reports_unknown_named_assign_field_symbol_target() {
     let src = r#"
 ASSIGN sy-datlo+0(4) TO <s>.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///assign_unknown_field_symbol_target.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///assign_unknown_field_symbol_target.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -5614,8 +5477,7 @@ ASSIGN COMPONENT 'EVENT_LIST'
   TO FIELD-SYMBOL(<ls_event>).
 <ls_event> = <ls_event>.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///assign_component_inline_fs.abap", src, &parsed);
+    let unit = analyze(src, "file:///assign_component_inline_fs.abap");
 
     assert!(unit.symbols.iter().any(|symbol| {
         symbol.kind == abap_symbols::SymbolKind::FieldSymbol && symbol.name.as_ref() == "<ls_event>"
@@ -5666,8 +5528,7 @@ FIELD-SYMBOLS <ls_outbound> TYPE any.
 
 ASSERT <ls_outbound> IS ASSIGNED.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///assert_is_assigned.abap", src, &parsed);
+    let unit = analyze(src, "file:///assert_is_assigned.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -5711,8 +5572,7 @@ DATA lv_name TYPE string.
 
 lv_name = lr_row->*-name.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///deref_selector.abap", src, &parsed);
+    let unit = analyze(src, "file:///deref_selector.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -5752,8 +5612,7 @@ DATA lv_name TYPE string.
 
 lv_name = ( ls_row-name ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///paren_selector.abap", src, &parsed);
+    let unit = analyze(src, "file:///paren_selector.abap");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -5784,8 +5643,7 @@ DATA lv_len TYPE i.
 
 lv_len = ( strlen( lv_text ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///paren_builtin_call.abap", src, &parsed);
+    let unit = analyze(src, "file:///paren_builtin_call.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -5832,8 +5690,7 @@ DATA ls_row TYPE ty_row.
 lo_demo = NEW zcl_demo( ).
 ls_row = VALUE ty_row( comp = 1 ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///constructor_type_facts.abap", src, &parsed);
+    let unit = analyze(src, "file:///constructor_type_facts.abap");
 
     let new_assignment = unit
         .assignment_sites
@@ -5877,8 +5734,7 @@ DATA lr_row TYPE REF TO ty_row.
 ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
 <ls_row>-name = 'demo'.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///assign_deref_inline_fs.abap", src, &parsed);
+    let unit = analyze(src, "file:///assign_deref_inline_fs.abap");
 
     let fs_symbol = unit
         .symbols
@@ -5926,8 +5782,7 @@ SELECT carrid, carrname
 
 WRITE lt_scarr.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_sql_inline_table.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_sql_inline_table.abap");
     let semantic = unit.semantic();
     let offset = src.rfind("lt_scarr").expect("lt_scarr use");
     let fact = semantic
@@ -5978,8 +5833,7 @@ DATA ls_row TYPE ty_row.
 
 ls_row = lo_demo->make_row( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_method_return.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_method_return.abap");
     let semantic = unit.semantic();
     let offset = src
         .rfind("make_row( )")
@@ -6019,8 +5873,7 @@ DATA lv_value TYPE i.
 
 lv_value = ls_outer-inner-value.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_structure_chain.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_structure_chain.abap");
     let semantic = unit.semantic();
     let offset = src
         .rfind("inner-value")
@@ -6051,9 +5904,7 @@ DATA ls_outers TYPE ty_outers.
 
 WRITE: /5 ls_outers-parent_epc.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///write_position_selector.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///write_position_selector.abap");
     let offset = src.rfind("parent_epc").expect("selector component");
     let fact = unit
         .semantic()
@@ -6098,8 +5949,7 @@ DATA lv_name TYPE string.
 
 lv_name = lo_box->payload-name.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_object_member.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_object_member.abap");
     let semantic = unit.semantic();
     let payload_offset = src.rfind("payload").expect("payload selector");
     let payload_fact = semantic
@@ -6140,8 +5990,7 @@ DATA lr_row TYPE REF TO ty_row.
 
 ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_assign_field_symbol.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_assign_field_symbol.abap");
 
     let edge = unit
         .semantic()
@@ -6169,8 +6018,7 @@ DATA lv_text TYPE string.
 
 ASSIGN lv_text TO FIELD-SYMBOL(<lv_text>).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_assign_local_field_symbol.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_assign_local_field_symbol.abap");
 
     let edge = unit
         .semantic()
@@ -6197,8 +6045,7 @@ LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<ls_row>).
   WRITE <ls_row>.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_loop_assigning.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_loop_assigning.abap");
 
     let edge = unit
         .semantic()
@@ -6234,8 +6081,7 @@ DATA lo_demo TYPE REF TO zcl_demo.
 IF lo_demo->run( ) IS INITIAL.
 ENDIF.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_unknown_call_result.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_unknown_call_result.abap");
     let semantic = unit.semantic();
     let offset = src
         .rfind("run( )")
@@ -6277,8 +6123,7 @@ DATA ls_row TYPE ty_row.
 ASSIGN lr_row->* TO FIELD-SYMBOL(<ls_row>).
 ls_row = lo_demo->make_row( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fact_idempotent.abap", src, &parsed);
+    let unit = analyze(src, "file:///fact_idempotent.abap");
     let edge_count = unit.value_flow_edges.len();
     let fact_count = unit.expression_facts.len();
 
@@ -6306,8 +6151,7 @@ DATA lv_value TYPE i.
 
 lv_value = ls_outer-inner-value.
 "#;
-    let parsed = parse(src);
-    let mut unit = analyze_unit("file:///fact_foreign_scope.abap", src, &parsed);
+    let mut unit = analyze(src, "file:///fact_foreign_scope.abap");
     assert!(
         !unit.field_accesses.is_empty(),
         "expected collected field access"
@@ -6345,8 +6189,7 @@ LOOP AT lt_statements INTO DATA(lo_stmt).
   lv_text = lo_stmt->to_string( ).
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_ref_rows.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_ref_rows.abap");
 
     let lo_stmt = unit
         .symbols
@@ -6398,8 +6241,7 @@ LOOP AT lt_rows INTO DATA(ls_row).
   ls_row-name = 'demo'.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_struct_rows.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_struct_rows.abap");
 
     let ls_row = unit
         .symbols
@@ -6436,8 +6278,7 @@ LOOP AT lt_dm_obj_temp INTO DATA(ls_dm_obj_tmp).
   CLEAR ls_dm_obj_tmp.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_named_string_line_display.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_named_string_line_display.abap");
 
     let ls_dm_obj_tmp = unit
         .symbols
@@ -6536,8 +6377,7 @@ LOOP AT lt_dm_obj_temp INTO DATA(ls_dm_obj_tmp).
   <ls_obj_data> = ls_dm_obj_tmp.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_named_string_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_named_string_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6560,12 +6400,7 @@ FIELD-SYMBOLS: <ls_obj_data> LIKE LINE OF lt_dm_obj_arc.
 APPEND INITIAL LINE TO lt_dm_obj_arc ASSIGNING <ls_obj_data>.
 <ls_obj_data> = lv_bytes.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///field_symbol_string_xstring_assignment.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///field_symbol_string_xstring_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6595,11 +6430,9 @@ LOOP AT lt_dm_obj_temp INTO DATA(ls_dm_obj_tmp).
   <ls_obj_data> = 'sdf'.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///field_symbol_structured_scalar_assignment.abap",
+    let unit = analyze(
         src,
-        &parsed,
+        "file:///field_symbol_structured_scalar_assignment.abap",
     );
 
     assert!(
@@ -6616,8 +6449,7 @@ ENDLOOP.
 #[test]
 fn reports_duplicate_declarations() {
     let src = "DATA lv_value TYPE i. DATA lv_value TYPE i.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///dupe.abap", src, &parsed);
+    let unit = analyze(src, "file:///dupe.abap");
 
     assert!(
         unit.diagnostics
@@ -6632,8 +6464,7 @@ fn read_table_inline_data_is_not_reported_as_duplicate_declaration() {
 DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
 READ TABLE lt_values INTO DATA(ls_value) INDEX 1.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///read_table_inline.abap", src, &parsed);
+    let unit = analyze(src, "file:///read_table_inline.abap");
 
     assert!(
         !unit
@@ -6658,8 +6489,7 @@ FORM pick_public_key_file.
   lv_copy = ls_file.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///read_table_into_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///read_table_into_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6692,12 +6522,7 @@ FORM pick_pending_events.
   lv_trnid = ls_aux_dm_trn_evt-trnid.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///read_table_chain_into_assignment.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///read_table_chain_into_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6722,8 +6547,7 @@ FORM save_text_file.
   lv_count = lines( lt_lines ).
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///append_target_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///append_target_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6747,8 +6571,7 @@ FORM event_posting_attp.
   lv_count = lines( lt_msg ).
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///refresh_target_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///refresh_target_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6776,8 +6599,7 @@ FORM f_set_descriptions.
   lv_count = lines( lt_zatt_trans_cust ).
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///insert_target_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///insert_target_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6814,8 +6636,7 @@ FORM f_sto_data USING it_src TYPE ty_output_tab.
   DELETE ADJACENT DUPLICATES FROM lt_temp COMPARING src_plant dest_plant.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_table_body_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_table_body_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6849,8 +6670,7 @@ CLASS some_class IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_impl.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_impl.abap");
 
     let class_decls = unit
         .symbols
@@ -6902,13 +6722,7 @@ CLASS c1 DEFINITION.
     DATA c2ref TYPE REF TO c2.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit(
-        "file:///class_forward_ref_without_deferred.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze_ok(src, "file:///class_forward_ref_without_deferred.abap");
 
     assert!(
         unit.diagnostics.iter().any(|diag| {
@@ -6935,9 +6749,7 @@ CLASS c1 DEFINITION.
     DATA c2ref TYPE REF TO c2.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///class_forward_ref_with_deferred.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///class_forward_ref_with_deferred.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -6976,13 +6788,7 @@ ENDCLASS.
 INTERFACE i1.
 ENDINTERFACE.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit(
-        "file:///interface_forward_ref_with_deferred.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze_ok(src, "file:///interface_forward_ref_with_deferred.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7028,9 +6834,7 @@ ENDCLASS.
 INTERFACE i1.
 ENDINTERFACE.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///chained_deferred_forward_refs.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///chained_deferred_forward_refs.abap");
 
     for name in ["c1", "i1"] {
         assert!(
@@ -7061,8 +6865,7 @@ CLASS some_class DEFINITION.
         iv_value TYPE i.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_methods.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_methods.abap");
 
     let class_symbol = unit
         .symbols
@@ -7094,8 +6897,7 @@ CLASS zcl_read_char_value_matnr DEFINITION.
         !ep_value TYPE ANY.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_methods_bang_params.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_methods_bang_params.abap");
 
     let class_symbol = unit
         .symbols
@@ -7139,8 +6941,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///chained_method_parameter_types.abap", src, &parsed);
+    let unit = analyze(src, "file:///chained_method_parameter_types.abap");
 
     for type_name in ["char1", "xstring", "string"] {
         let refs: Vec<_> = unit
@@ -7180,8 +6981,7 @@ START-OF-SELECTION.
   DATA lv_value TYPE i.
   lv_value = zcl_demo=>gv_value.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_data_static_member.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_data_static_member.abap");
 
     let class_symbol = unit
         .symbols
@@ -7238,8 +7038,7 @@ START-OF-SELECTION.
   DATA lv TYPE i.
   lv = zcl_demo=>gc_s_tab-p0.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///grouped_class_constants.abap", src, &parsed);
+    let unit = analyze(src, "file:///grouped_class_constants.abap");
 
     let class_symbol = unit
         .symbols
@@ -7298,8 +7097,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///grouped_class_constants_me.abap", src, &parsed);
+    let unit = analyze(src, "file:///grouped_class_constants_me.abap");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -7355,8 +7153,7 @@ CLASS zcl_number_literal IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_member_resolution.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_member_resolution.abap");
 
     for name in ["iv_value", "mv_value", "rv_text"] {
         assert!(
@@ -7401,8 +7198,7 @@ DATA lo_expr TYPE REF TO zcl_expr.
 DATA lv_text TYPE string.
 lv_text = lo_expr->to_string( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inherited_methods.abap", src, &parsed);
+    let unit = analyze(src, "file:///inherited_methods.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7438,8 +7234,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///instance_me.abap", src, &parsed);
+    let unit = analyze(src, "file:///instance_me.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -7505,9 +7300,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///dynamic_legacy_call_method.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///dynamic_legacy_call_method.abap");
 
     for name in ["lo_obj", "l_method", "lv_result"] {
         assert!(
@@ -7565,8 +7358,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///implicit_legacy_call_method.abap", src, &parsed);
+    let unit = analyze(src, "file:///implicit_legacy_call_method.abap");
 
     let lv_response = unit
         .symbols
@@ -7615,8 +7407,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///static_me.abap", src, &parsed);
+    let unit = analyze(src, "file:///static_me.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("me")
@@ -7676,8 +7467,7 @@ ENDCLASS.
 
 some_class=>exe( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///unknown_static_method.abap", src, &parsed);
+    let unit = analyze(src, "file:///unknown_static_method.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnknownField
@@ -7688,8 +7478,7 @@ some_class=>exe( ).
 #[test]
 fn reports_wrong_namespace_for_type_references() {
     let src = "DATA foo TYPE i. DATA bar TYPE foo.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///namespace.abap", src, &parsed);
+    let unit = analyze(src, "file:///namespace.abap");
 
     assert!(
         unit.diagnostics
@@ -7701,8 +7490,7 @@ fn reports_wrong_namespace_for_type_references() {
 #[test]
 fn tables_declaration_reports_unknown_type_instead_of_wrong_namespace() {
     let src = "TABLES sscrfields.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///tables_decl.abap", src, &parsed);
+    let unit = analyze(src, "file:///tables_decl.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("sscrfields")
@@ -7717,8 +7505,7 @@ fn resolves_like_line_of_internal_table_variable_for_field_symbols() {
     let src = "\
 DATA lt_tab TYPE STANDARD TABLE OF string.\n\
 FIELD-SYMBOLS <ls> LIKE LINE OF lt_tab.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///like_line_of_fs.abap", src, &parsed);
+    let unit = analyze(src, "file:///like_line_of_fs.abap");
 
     let lt_ref = unit.references.iter().find(|reference| {
         reference.kind == ReferenceKind::TypeRef
@@ -7742,8 +7529,7 @@ TYPES ty_range TYPE RANGE OF string.
 DATA lt_rng TYPE ty_range.
 DATA ls_rng LIKE LINE OF lt_rng.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///range_line_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///range_line_type.abap");
 
     let ls_rng = unit
         .symbols
@@ -7774,8 +7560,7 @@ FORM save_range.
   APPEND ls_rng TO lt_rng.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///range_append_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///range_append_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7797,8 +7582,7 @@ DATA:
 
 APPEND ls_archive_name TO lr_archive_name.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///range_append_forward_ref.abap", src, &parsed);
+    let unit = analyze(src, "file:///range_append_forward_ref.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7826,8 +7610,7 @@ DATA: lr_archive_name TYPE RANGE OF string,
 
 APPEND ls_archive_name TO lr_archive_name.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///range_append_decl_order.abap", src, &parsed);
+    let unit = analyze(src, "file:///range_append_decl_order.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7850,8 +7633,7 @@ DATA et_dm_obj_arc TYPE tt_dm_obj_arc.
 DATA ls_dm_obj_arc LIKE LINE OF et_dm_obj_arc.
 APPEND ls_dm_obj_arc TO et_dm_obj_arc.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///named_string_table_append.abap", src, &parsed);
+    let unit = analyze(src, "file:///named_string_table_append.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7871,8 +7653,7 @@ DATA et_dm_obj_arc TYPE tt_dm_obj_arc.
 DATA lt_dm_obj_arc TYPE tt_dm_obj_arc.
 APPEND LINES OF lt_dm_obj_arc TO et_dm_obj_arc.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///named_string_table_append_lines.abap", src, &parsed);
+    let unit = analyze(src, "file:///named_string_table_append_lines.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -7905,8 +7686,7 @@ fn recovers_after_syntax_errors_and_keeps_later_resolution() {
 #[test]
 fn resolves_builtin_abap_boolean_constants_and_type() {
     let src = "DATA lv_flag TYPE abap_bool. lv_flag = abap_true. IF lv_flag = abap_false. ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtins.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtins.abap");
 
     assert!(unit.symbols.iter().any(|symbol| {
         symbol.kind == abap_symbols::SymbolKind::BuiltinType && symbol.name.as_ref() == "abap_bool"
@@ -7944,8 +7724,7 @@ fn resolves_builtin_abap_boolean_constants_and_type() {
 #[test]
 fn resolves_data_value_clause_boolean_constant_as_value_reference() {
     let src = "DATA gv_error_refresh TYPE boolean VALUE abap_false.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///data_value_boolean_constant.abap", src, &parsed);
+    let unit = analyze(src, "file:///data_value_boolean_constant.abap");
 
     let false_ref = unit
         .references
@@ -7968,8 +7747,7 @@ fn resolves_data_value_clause_boolean_constant_as_value_reference() {
 #[test]
 fn resolves_any_as_builtin_type() {
     let src = "DATA lr_any TYPE any.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_any.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_any.abap");
 
     let any_ref = unit
         .references
@@ -8006,8 +7784,7 @@ IF sy-subrc = 0.\n\
   lv_user = syst-uname.\n\
   lv_tabix = sy-tabix.\n\
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_builtins.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_builtins.abap");
 
     for (name, kind) in [
         ("sy", abap_symbols::SymbolKind::BuiltinType),
@@ -8121,8 +7898,7 @@ DATA lv_msg TYPE symsgv.\n\
 DATA lv_date TYPE sydatum.\n\
 DATA lv_ts TYPE timestamp.\n\
 DATA lv_cursor TYPE cursor.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///more_builtins.abap", src, &parsed);
+    let unit = analyze(src, "file:///more_builtins.abap");
 
     for name in ["symsgv", "sydatum", "timestamp", "cursor"] {
         assert!(unit.references.iter().any(|reference| {
@@ -8144,8 +7920,7 @@ fn resolves_close_cursor_handle_operand() {
     let src = "\
 DATA lv_cursor TYPE cursor.\n\
 CLOSE CURSOR @lv_cursor.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///close_cursor.abap", src, &parsed);
+    let unit = analyze(src, "file:///close_cursor.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -8177,8 +7952,7 @@ DATA lv_cursor TYPE cursor.\n\
 DATA lt_lot_items TYPE STANDARD TABLE OF i WITH EMPTY KEY.\n\
 DATA iv_size_lot_items TYPE i.\n\
 FETCH NEXT CURSOR @lv_cursor INTO TABLE @lt_lot_items PACKAGE SIZE @iv_size_lot_items.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///fetch_cursor.abap", src, &parsed);
+    let unit = analyze(src, "file:///fetch_cursor.abap");
 
     for name in ["lv_cursor", "lt_lot_items", "iv_size_lot_items"] {
         let refs: Vec<_> = unit
@@ -8199,8 +7973,7 @@ FETCH NEXT CURSOR @lv_cursor INTO TABLE @lt_lot_items PACKAGE SIZE @iv_size_lot_
 #[test]
 fn rejects_unknown_sy_field_access() {
     let src = "IF sy-nope = 0. ENDIF. DATA lv_bad TYPE sy-nope.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///bad_sy.abap", src, &parsed);
+    let unit = analyze(src, "file:///bad_sy.abap");
 
     assert!(
         unit.diagnostics
@@ -8245,8 +8018,7 @@ ENDWHILE.
 LOOP AT itab INTO wa.
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///system_field_updates.abap", src, &parsed);
+    let unit = analyze(src, "file:///system_field_updates.abap");
 
     let has_update = |statement, field_name: &str| {
         unit.system_field_updates
@@ -8341,8 +8113,7 @@ TYPES: BEGIN OF ty_pair,\n\
        END OF ty_pair.\n\
 DATA ls_pair TYPE ty_pair.\n\
 ls_pair-a = 1.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///ty_pair.abap", src, &parsed);
+    let unit = analyze(src, "file:///ty_pair.abap");
 
     let ty_pair = unit
         .symbols
@@ -8390,8 +8161,7 @@ DATA: BEGIN OF ls_date,\n\
         mm(2),\n\
       END OF ls_date.\n\
 ls_date-yyyy = '2026'.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///ls_date.abap", src, &parsed);
+    let unit = analyze(src, "file:///ls_date.abap");
 
     let ls_date = unit
         .symbols
@@ -8432,9 +8202,7 @@ DATA: status_info TYPE string,\n\
 TYPES: BEGIN OF ts_obj_ids,\n\
          owner TYPE char12,\n\
        END OF ts_obj_ids.";
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///structured_end_refs.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///structured_end_refs.abap");
 
     let data_symbol = unit
         .symbols
@@ -8521,9 +8289,7 @@ TYPES:\n\
       product TYPE char10,\n\
       serial TYPE char60,\n\
     END OF ts_obj_ids.";
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///forward_type_ref.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///forward_type_ref.abap");
 
     let forward_type_offset = src.find("ts_obj_ids").expect("DATA type reference");
     assert!(
@@ -8542,9 +8308,7 @@ fn reports_mismatched_structured_begin_end_names() {
     let src = "\
 TYPES: BEGIN OF ty_open, field TYPE i, END OF ty_close.\n\
 DATA: BEGIN OF ls_open, field TYPE i, END OF ls_close.";
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///structured_name_mismatch.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///structured_name_mismatch.abap");
 
     let diagnostics: Vec<_> = unit
         .diagnostics
@@ -8583,9 +8347,7 @@ DATA: BEGIN OF gs_user_creation,\n\
       gt_user_creation LIKE TABLE OF gs_user_creation,\n\
       gv_file_name     TYPE string.\n\
 gv_file_name = replace( val = gs_user_creation-username sub = '*' with = '%' occ = 0 ).";
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///grouped_data_begin_of.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///grouped_data_begin_of.abap");
 
     let gs_user_creation = unit
         .symbols
@@ -8661,8 +8423,7 @@ TYPES: BEGIN OF ty_pair,\n\
          a TYPE i,\n\
        END OF ty_pair.\n\
 DATA lv_value TYPE ty_pair-a.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///type_component.abap", src, &parsed);
+    let unit = analyze(src, "file:///type_component.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -8687,8 +8448,7 @@ TYPES: BEGIN OF ty_pair,\n\
 DATA ls_pair TYPE ty_pair.\n\
 ls_pair-missing = 1.\n\
 DATA lv_value TYPE ty_pair-missing.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///missing_field.abap", src, &parsed);
+    let unit = analyze(src, "file:///missing_field.abap");
 
     let unknown_field_diags: Vec<_> = unit
         .diagnostics
@@ -8708,8 +8468,7 @@ TYPES: BEGIN OF ty_outer,\n\
            a TYPE i,\n\
          END OF inner,\n\
        END OF ty_outer.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///nested_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///nested_type.abap");
 
     let ty_outer = unit
         .symbols
@@ -8744,8 +8503,7 @@ TYPES: BEGIN OF ty_outer,\n\
 DATA ls_outer TYPE ty_outer.\n\
 ls_outer-inner-a = 1.\n\
 DATA lv_value TYPE ty_outer-inner-a.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///nested_chain.abap", src, &parsed);
+    let unit = analyze(src, "file:///nested_chain.abap");
 
     assert!(
         !unit
@@ -8767,8 +8525,7 @@ TYPES: BEGIN OF ty_outer,\n\
 DATA ls_outer TYPE ty_outer.\n\
 ls_outer-inner-missing = 1.\n\
 DATA lv_value TYPE ty_outer-inner-missing.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///nested_missing.abap", src, &parsed);
+    let unit = analyze(src, "file:///nested_missing.abap");
 
     let unknown_field_diags: Vec<_> = unit
         .diagnostics
@@ -8786,8 +8543,7 @@ fn exposes_declared_field_type_metadata_for_scalar_fields() {
 TYPES: BEGIN OF ty_pair,\n\
          a TYPE i,\n\
        END OF ty_pair.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///field_type_scalar.abap", src, &parsed);
+    let unit = analyze(src, "file:///field_type_scalar.abap");
 
     let ty_pair = unit
         .symbols
@@ -8821,8 +8577,7 @@ TYPES: BEGIN OF ty_outer,\n\
 DATA ls_outer TYPE ty_outer.\n\
 ls_outer-inner-a = 1.\n\
 DATA lv_value TYPE ty_outer-inner-a.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///field_type_struct.abap", src, &parsed);
+    let unit = analyze(src, "file:///field_type_struct.abap");
 
     let ty_outer = unit
         .symbols
@@ -8869,8 +8624,7 @@ END OF ty_outer.\n\
 DATA ls_outer TYPE ty_outer.\n\
 ls_outer-a = 1.\n\
 DATA lv_value TYPE ty_outer-a.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///include_type_block.abap", src, &parsed);
+    let unit = analyze(src, "file:///include_type_block.abap");
 
     let ty_outer = unit
         .symbols
@@ -8926,9 +8680,7 @@ DATA: status_info     TYPE string,\n\
 wa_zatt_trans_cust-trans_id = 1.\n\
 wa_zatt_trans_cust-status_info = 'ready'.\n\
 DATA lv_req_date TYPE wa_zatt_trans_cust-zz_req_del_date.";
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///data_begin_of_include.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///data_begin_of_include.abap");
 
     let wa = unit
         .symbols
@@ -8983,8 +8735,7 @@ ls_outer-work_mon = 1.\n\
 ls_outer-monday-work = 2.\n\
 DATA lv_direct TYPE ty_outer-work_mon.\n\
 DATA lv_alias TYPE ty_outer-monday-work.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///include_type_suffix_alias.abap", src, &parsed);
+    let unit = analyze(src, "file:///include_type_suffix_alias.abap");
 
     let ty_outer = unit
         .symbols
@@ -9027,8 +8778,7 @@ fn include_type_alias_is_preserved_for_unresolved_external_types() {
 TYPES: BEGIN OF ty_outer.\n\
 INCLUDE TYPE /sttp/s_obj_ids AS obj_ids.\n\
 TYPES: END OF ty_outer.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///include_type_external_alias.abap", src, &parsed);
+    let unit = analyze(src, "file:///include_type_external_alias.abap");
 
     let ty_outer = unit
         .symbols
@@ -9129,8 +8879,7 @@ ENDMETHOD.\n\
 TYPES: BEGIN OF ty_inner,\n\
          field TYPE string,\n\
        END OF ty_inner.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///include_type_hybrid_local.abap", src, &parsed);
+    let unit = analyze(src, "file:///include_type_hybrid_local.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -9161,8 +8910,7 @@ DATA ls_cust_info TYPE ts_cust_info.\n\
 DATA lt_cust_info TYPE tt_cust_info.\n\
 ls_cust_info-type = 'A'.\n\
 ls_cust_info-root = 'node'.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///structured_types_keyword_fields.abap", src, &parsed);
+    let unit = analyze(src, "file:///structured_types_keyword_fields.abap");
 
     let ts_cust_info = unit
         .symbols
@@ -9248,13 +8996,7 @@ END OF slis_seldis1_alv.\n\
 DATA ls_seldis TYPE slis_seldis1_alv.\n\
 ls_seldis-field = sy-ucomm.\n\
 ls_seldis-stext = 'X'.";
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit(
-        "file:///legacy_type_pool_structured_fields.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze_ok(src, "file:///legacy_type_pool_structured_fields.abap");
 
     let type_symbol = unit
         .symbols
@@ -9319,8 +9061,7 @@ TYPES: BEGIN OF ty_outer,\n\
          inner TYPE ty_inner,\n\
          label TYPE string,\n\
        END OF ty_outer.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///field_query.abap", src, &parsed);
+    let unit = analyze(src, "file:///field_query.abap");
 
     let ty_outer = unit
         .symbols
@@ -9373,8 +9114,7 @@ CLASS some_class IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///new_ctor.abap", src, &parsed);
+    let unit = analyze(src, "file:///new_ctor.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -9423,8 +9163,7 @@ ENDCLASS.
 DATA lo_instance TYPE REF TO some_class.
 CREATE OBJECT lo_instance.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///create_object.abap", src, &parsed);
+    let unit = analyze(src, "file:///create_object.abap");
 
     let lo_instance = unit
         .symbols
@@ -9489,8 +9228,7 @@ CREATE OBJECT lo_instance TYPE some_class
   EXPORTING
     iv_text = lv_text.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///create_object_call_site.abap", src, &parsed);
+    let unit = analyze(src, "file:///create_object_call_site.abap");
 
     assert!(unit.call_sites.iter().any(|site| {
         matches!(
@@ -9523,8 +9261,7 @@ CLASS some_sub DEFINITION INHERITING FROM some_base.
       RETURNING VALUE(rv_output) TYPE string.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_signature.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_signature.abap");
 
     let base = unit
         .symbols
@@ -9578,8 +9315,7 @@ INTERFACE zif_demo.
     RETURNING VALUE(rv_text) TYPE string.
 ENDINTERFACE.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///interface_method_metadata.abap", src, &parsed);
+    let unit = analyze(src, "file:///interface_method_metadata.abap");
 
     let interface_symbol = unit
         .symbols
@@ -9607,8 +9343,7 @@ INTERFACE zif_demo.
   DATA gv_value TYPE i.
 ENDINTERFACE.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///interface_attr_metadata.abap", src, &parsed);
+    let unit = analyze(src, "file:///interface_attr_metadata.abap");
 
     let interface_symbol = unit
         .symbols
@@ -9637,8 +9372,7 @@ ENDCLASS.
 CLASS zcl_demo IMPLEMENTATION.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_private_attr_metadata.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_private_attr_metadata.abap");
 
     let class_symbol = unit
         .symbols
@@ -9669,8 +9403,7 @@ DATA ls_finf TYPE ty_finf.
 
 CREATE DATA lr_sap_data TYPE (ls_finf-ddicstructure).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///create_data.abap", src, &parsed);
+    let unit = analyze(src, "file:///create_data.abap");
 
     let lr_sap_data = unit
         .symbols
@@ -9722,8 +9455,7 @@ DATA iv_data TYPE string.
 
 CREATE DATA mo_outbound LIKE iv_data.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///create_data_like.abap", src, &parsed);
+    let unit = analyze(src, "file:///create_data_like.abap");
 
     let mo_outbound = unit
         .symbols
@@ -9800,8 +9532,7 @@ CLASS zcl_binary_expr DEFINITION INHERITING FROM zcl_expr.
         io_right TYPE REF TO zcl_expr.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///constructor_signature.abap", src, &parsed);
+    let unit = analyze(src, "file:///constructor_signature.abap");
 
     let ctor_start = src
         .find("METHODS constructor")
@@ -9973,8 +9704,7 @@ CLASS lcl_demo DEFINITION.
     METHODS run RAISING resumable(zcx_resume).
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///method_raising.abap", src, &parsed);
+    let unit = analyze(src, "file:///method_raising.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -10013,8 +9743,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///raise_exception_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///raise_exception_type.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -10049,8 +9778,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///raise_exception_type_message.abap", src, &parsed);
+    let unit = analyze(src, "file:///raise_exception_type_message.abap");
 
     let refs: Vec<_> = unit
         .references
@@ -10101,8 +9829,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///raise_exception_type_exporting.abap", src, &parsed);
+    let unit = analyze(src, "file:///raise_exception_type_exporting.abap");
 
     assert!(unit.call_sites.iter().any(|site| {
         matches!(
@@ -10206,8 +9933,7 @@ START-OF-SELECTION.
   lo_prog->add_statement( lo_print ).
   WRITE / lo_prog->to_string( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///simple_stmt_refs.abap", src, &parsed);
+    let unit = analyze(src, "file:///simple_stmt_refs.abap");
 
     for name in ["lo_expr1", "lo_assign", "lo_print", "lo_prog"] {
         assert!(
@@ -10283,8 +10009,7 @@ START-OF-SELECTION.
     ELSE lo_element->name
   ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///cond_constructor.abap", src, &parsed);
+    let unit = analyze(src, "file:///cond_constructor.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -10350,8 +10075,7 @@ DATA it_obj_itm TYPE STANDARD TABLE OF ty_item WITH EMPTY KEY.
 DATA is_obj_ids TYPE ty_item.
 DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_optional.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_optional.abap");
 
     for name in ["it_obj_itm", "is_obj_ids"] {
         assert!(
@@ -10421,8 +10145,7 @@ DATA it_obj_itm TYPE tty_item.
 DATA is_obj_ids TYPE ty_item.
 DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_optional_named_table_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_optional_named_table_type.abap");
 
     let ls_obj_itm = unit
         .symbols
@@ -10461,8 +10184,7 @@ lt_sequen_buff = VALUE #( BASE lt_sequen_buff
                           FOR ls_obj IN mt_obj_ids_native
                           ( objid = ls_obj-objid ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_for.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_for.abap");
 
     for name in ["lt_sequen_buff", "mt_obj_ids_native", "ls_obj"] {
         assert!(
@@ -10527,8 +10249,7 @@ lt_obj_ids = VALUE #( BASE lt_obj_ids
                       WHERE ( native IS NOT INITIAL )
                       ( objid = ls_rel-objid ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_base_table_alias.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_base_table_alias.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -10603,8 +10324,7 @@ ENDLOOP.
 LOOP AT lt_evt_rel INTO DATA(ls_rel).
 ENDLOOP.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///constructor_for_iterator_reuse.abap", src, &parsed);
+    let unit = analyze(src, "file:///constructor_for_iterator_reuse.abap");
 
     let second_for = src
         .match_indices("FOR ls_rel")
@@ -10665,12 +10385,7 @@ lt_obj_ids = VALUE #( BASE lt_obj_ids
                       WHERE ( native IS NOT INITIAL )
                       ( objid = ls_rel-objid ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///constructor_for_iterator_loop_first.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///constructor_for_iterator_loop_first.abap");
 
     let for_iterator = src.find("FOR ls_rel").expect("FOR iterator") + "FOR ".len();
     let inline_loop_target = src.find("DATA(ls_rel)").expect("inline LOOP target") + "DATA(".len();
@@ -10709,8 +10424,7 @@ DATA(lt_filtered) = VALUE #(
   WHERE ( objid <> lv_parent )
   ( ls_obj-objid ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_for_where.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_for_where.abap");
 
     for name in ["mt_obj_ids_native", "objid", "lv_parent", "ls_obj"] {
         assert!(
@@ -10766,8 +10480,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_for_where_implicit_method.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_for_where_implicit_method.abap");
 
     assert!(
         unit.named_arguments.iter().any(|access| {
@@ -10807,8 +10520,7 @@ DATA(lt_new) = VALUE #( BASE lt_sequen_buff
                         ( objid = ls_obj-objid ) ).
 DELETE lt_new WHERE objid = ''.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_base_infer.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_base_infer.abap");
 
     let lt_new = unit
         .symbols
@@ -10844,8 +10556,7 @@ TYPES: BEGIN OF ty_item,
 
 DATA(ls_obj_itm) = VALUE ty_item( objid = 'X' ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_explicit_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_explicit_type.abap");
 
     let ls_obj_itm = unit
         .symbols
@@ -10875,8 +10586,7 @@ TYPES /sttp/t_dm_evt_rel TYPE STANDARD TABLE OF /sttp/dm_evt_rel WITH EMPTY KEY.
 DATA mt_evt_rel TYPE /sttp/t_dm_evt_rel.
 DATA(lv_parent) = VALUE #( mt_evt_rel[ parent = 'X' ]-objid OPTIONAL ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_optional_table_field_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_optional_table_field_type.abap");
 
     let lv_parent = unit
         .symbols
@@ -11042,8 +10752,7 @@ DATA(lt_result) = COND ty_tab(
   )
   ELSE VALUE #( ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_lines_of_cond.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_lines_of_cond.abap");
 
     for name in ["lt_source", "lv_from", "lv_to", "lv_ok", "lv_extra"] {
         assert!(
@@ -11104,8 +10813,7 @@ DATA(lr_obj_ids) = VALUE rseloption(
        option = o
        ( low = ls_ids-objid ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_for_let.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_for_let.abap");
 
     for name in ["it_objids", "ls_ids", "s", "o"] {
         assert!(
@@ -11146,8 +10854,7 @@ DATA(ls_selopt) = VALUE ty_selopt(
   sign = 'I'
   option = 'EQ' ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_constructor_fields.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_constructor_fields.abap");
 
     for field_name in ["sign", "option"] {
         assert!(
@@ -11196,8 +10903,7 @@ DATA(isodate) = COND string(
                          IN <date>-year && sep && <date>-month && sep && <date>-day
   ELSE `` ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///cond_let_field_symbol.abap", src, &parsed);
+    let unit = analyze(src, "file:///cond_let_field_symbol.abap");
 
     for name in ["dates", "sy", "<date>", "sep"] {
         assert!(
@@ -11231,8 +10937,7 @@ DATA(lv_text) = COND string(
   WHEN sy-timlo < noon THEN |AM|
   ELSE |PM| ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///cond_leading_let.abap", src, &parsed);
+    let unit = analyze(src, "file:///cond_leading_let.abap");
 
     for name in ["sy", "noon"] {
         assert!(
@@ -11305,8 +11010,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///switch_constructor.abap", src, &parsed);
+    let unit = analyze(src, "file:///switch_constructor.abap");
 
     for name in ["iv_kind", "lv_suffix"] {
         assert!(
@@ -11343,8 +11047,7 @@ DATA(lv_text) = SWITCH string(
   WHEN noon THEN |noon|
   ELSE |other| ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///switch_leading_let.abap", src, &parsed);
+    let unit = analyze(src, "file:///switch_leading_let.abap");
 
     for name in ["sy", "noon"] {
         assert!(
@@ -11416,8 +11119,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///cond_value_method_calls.abap", src, &parsed);
+    let unit = analyze(src, "file:///cond_value_method_calls.abap");
 
     for name in ["get_unavailable_obj_pda", "get_object_hry", "get_objid"] {
         assert!(
@@ -11464,8 +11166,7 @@ fn suppresses_dependent_field_reference_when_base_type_is_unknown() {
 DATA is_response TYPE /sttp/unknown_response.
 DATA(lt_codes) = VALUE #( is_response-data[ 1 ]-kodovi OPTIONAL ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///unknown_base_type_field.abap", src, &parsed);
+    let unit = analyze(src, "file:///unknown_base_type_field.abap");
 
     assert!(
         unit.diagnostics.iter().any(|diag| {
@@ -11493,8 +11194,7 @@ DATA(lv_status) = COND string(
   WHEN abap_true = abap_true THEN TEXT-005
   ELSE TEXT-006 ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///text_pool_cond.abap", src, &parsed);
+    let unit = analyze(src, "file:///text_pool_cond.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -11529,8 +11229,7 @@ DATA(ls_item) = VALUE string(
 DATA(ls_row) = VALUE stringtab(
   ( COND #( WHEN abap_true = abap_true THEN `ok` ELSE TEXT-001 ) ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_named_arg_cond_keywords.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_named_arg_cond_keywords.abap");
 
     for keyword in ["when", "then", "else"] {
         assert!(
@@ -11552,8 +11251,7 @@ DATA(lt_text) = VALUE stringtab(
   IN ( |To { it } is to do| )
      ( |To do is to { it }| ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_let_templates.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_let_templates.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -11598,8 +11296,7 @@ DATA(text) = VALUE stringtab(
   FOR n = 1 UNTIL n > lv_limit
   ( |{ n }| ) ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///value_conditional_for.abap", src, &parsed);
+    let unit = analyze(src, "file:///value_conditional_for.abap");
 
     for name in ["lv_limit", "n"] {
         assert!(
@@ -11653,8 +11350,7 @@ DATA(lv_rep) = REDUCE i(
   FOR wa IN lt_rep
   NEXT x = x + wa ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///reduce_for.abap", src, &parsed);
+    let unit = analyze(src, "file:///reduce_for.abap");
 
     for name in ["lt_rep", "wa", "x"] {
         assert!(
@@ -11702,8 +11398,7 @@ DATA(lv_rep) = REDUCE i(
               AND objid = ls_obj_ids-objid )
   NEXT x = x + 1 ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///reduce_for_where.abap", src, &parsed);
+    let unit = analyze(src, "file:///reduce_for_where.abap");
 
     for name in ["lt_rep", "status_rep_evt", "objid", "ls_obj_ids", "x"] {
         assert!(
@@ -11740,8 +11435,7 @@ FORM run.
   WAIT UP TO lv_time SECONDS.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///wait_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///wait_stmt.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -11773,8 +11467,7 @@ FORM run.
   DELETE TABLE ct_objids FROM is_obj_ids.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///delete_table_from.abap", src, &parsed);
+    let unit = analyze(src, "file:///delete_table_from.abap");
 
     for name in ["ct_objids", "is_obj_ids"] {
         assert!(
@@ -11828,8 +11521,7 @@ FORM run USING iv_id TYPE string.
   REPLACE ALL OCCURRENCES OF REGEX '%2F|%2f' IN iv_id WITH '/' IN CHARACTER MODE.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///replace_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///replace_stmt.abap");
 
     for name in ["ev_timestamp_iso", "iv_id", "<fs_destination>"] {
         assert!(
@@ -11916,8 +11608,7 @@ FORM run USING iv_tag_path TYPE string.
   FIND FIRST OCCURRENCE OF | | IN iv_tag_path MATCH OFFSET lv_first_sep.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_stmt.abap");
 
     for name in ["iv_tag_path", "lv_first_sep"] {
         assert!(
@@ -11954,8 +11645,7 @@ FORM parse_xml_public_key USING iv_key_text TYPE string.
   ENDIF.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_submatches_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_submatches_assignment.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -11978,8 +11668,7 @@ FORM parse_xml_public_key USING iv_key_text TYPE string.
   ENDIF.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_submatches_inline.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_submatches_inline.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -12026,8 +11715,7 @@ FORM run USING lv_response_string TYPE string.
   DESCRIBE TABLE lt_match LINES DATA(lv_count).
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_results_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_results_stmt.abap");
 
     for name in ["lv_response_string", "lt_match", "ls_match"] {
         assert!(
@@ -12085,8 +11773,7 @@ FORM run USING lv_response_string TYPE string.
   DATA(lt_submatches) = ls_match-submatches.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_first_results_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_first_results_stmt.abap");
 
     for name in ["lv_response_string", "ls_match"] {
         assert!(
@@ -12153,8 +11840,7 @@ FORM run.
   ENDLOOP.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_results_substring_inline.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_results_substring_inline.abap");
 
     let lv_code = unit
         .symbols
@@ -12185,8 +11871,7 @@ START-OF-SELECTION.
   DATA(lo_prog) = NEW zcl_program( ).
   lo_prog->add_statement( io_stmt = 'x' ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_named_args.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_named_args.abap");
 
     let lo_prog = unit
         .symbols
@@ -12245,8 +11930,7 @@ START-OF-SELECTION.
   ls_evt = `done`.
   lv_hash = mv_text.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///static_method_call_sections.abap", src, &parsed);
+    let unit = analyze(src, "file:///static_method_call_sections.abap");
 
     for name in ["ls_evt", "lv_hash"] {
         let symbol = unit
@@ -12318,8 +12002,7 @@ START-OF-SELECTION.
   ls_evt = `done`.
   lv_hash = mv_text.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_call_method_sections.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_call_method_sections.abap");
 
     for name in ["ls_evt", "lv_hash"] {
         let symbol = unit
@@ -12382,8 +12065,7 @@ START-OF-SELECTION.
   CALL METHOD lo_demo->get_data.
   CALL METHOD lo_demo->missing_method.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///chained_methods_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///chained_methods_stmt.abap");
 
     let method_names: Vec<_> = unit
         .class_members
@@ -12456,11 +12138,9 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///legacy_call_method_parenthesized_sections.abap",
+    let unit = analyze(
         src,
-        &parsed,
+        "file:///legacy_call_method_parenthesized_sections.abap",
     );
 
     for (name, type_name) in [("lt_kodovi", "stringtab"), ("lt_kodovi_all", "stringtab")] {
@@ -12532,12 +12212,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///implicit_method_call_inline_importing.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///implicit_method_call_inline_importing.abap");
 
     for (name, type_name) in [
         ("lv_seq_err", "abap_bool"),
@@ -12606,11 +12281,9 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///implicit_method_call_inline_importing_comments.abap",
+    let unit = analyze(
         src,
-        &parsed,
+        "file:///implicit_method_call_inline_importing_comments.abap",
     );
 
     assert!(
@@ -12651,8 +12324,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_call_method_comments.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_call_method_comments.abap");
 
     for name in ["lv_rep_status", "lv_http_code"] {
         let symbol = unit
@@ -12704,12 +12376,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///legacy_call_method_try_visibility.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///legacy_call_method_try_visibility.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -12744,8 +12411,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///catch_inline_visibility.abap", src, &parsed);
+    let unit = analyze(src, "file:///catch_inline_visibility.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -12766,8 +12432,7 @@ FORM run.
   CALL FUNCTION 'BAPI_PO_CREATE1'.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///call_function_no_args.abap", src, &parsed);
+    let unit = analyze(src, "file:///call_function_no_args.abap");
 
     assert!(
         unit.call_sites.iter().any(|site| {
@@ -12806,8 +12471,7 @@ START-OF-SELECTION.
     EXCEPTIONS
       OTHERS                 = 1.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///call_function_sections.abap", src, &parsed);
+    let unit = analyze(src, "file:///call_function_sections.abap");
 
     assert!(unit.named_arguments.iter().any(|access| {
         access.name.as_ref() == "input_string"
@@ -12853,8 +12517,7 @@ START-OF-SELECTION.
   CALL lv_cfunc ID lv_id FIELD opcode_wp_get_info
                 ID 'ROWS' FIELD lt_rows[].
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///system_function_call.abap", src, &parsed);
+    let unit = analyze(src, "file:///system_function_call.abap");
 
     for keyword in ["ID", "FIELD"] {
         assert!(
@@ -12893,12 +12556,7 @@ START-OF-SELECTION.
     FIELDS lv_log_handle.
   GET BADI lr_runtime.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///aif_unsupported_simple_statements.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///aif_unsupported_simple_statements.abap");
 
     for keyword in [
         "UPDATE", "TASK", "LOCAL", "TIME", "BADI", "ID", "SUBKEY", "FIELDS",
@@ -12944,9 +12602,7 @@ START-OF-SELECTION.
   LOG-POINT ID (lv_log_id) SUBKEY lv_subkey
     FIELDS lv_value lv_field1 lv_field2.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///runtime_parameter_log_stmt.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///runtime_parameter_log_stmt.abap");
 
     for name in [
         "lv_pid",
@@ -13039,8 +12695,7 @@ START-OF-SELECTION.
   SET PF-STATUS lv_status OF PROGRAM lv_prog EXCLUDING lt_excl.
   SET TITLEBAR lv_title OF PROGRAM lv_prog WITH lv_text1 lv_text2.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///set_gui_statements.abap", src, &parsed);
+    let unit = analyze(src, "file:///set_gui_statements.abap");
 
     for keyword in [
         "SET",
@@ -13099,8 +12754,7 @@ START-OF-SELECTION.
     SOURCE XML lv_json_hex
     RESULT result = ev_data.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///call_transformation.abap", src, &parsed);
+    let unit = analyze(src, "file:///call_transformation.abap");
 
     for name in ["lv_json", "lo_writer", "lv_json_hex", "ev_data"] {
         assert!(
@@ -13148,8 +12802,7 @@ DATA rv_text TYPE string.
 
 rv_text = |({ mo_left->to_string( ) } { mv_op } { mo_right->to_string( ) })|.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///template_refs.abap", src, &parsed);
+    let unit = analyze(src, "file:///template_refs.abap");
 
     for name in ["mo_left", "mv_op", "mo_right"] {
         assert!(
@@ -13257,8 +12910,7 @@ FUNCTION /AIF/FILE_PROCESS_DATA
   CLEAR return_tab.
 ENDFUNCTION.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///function_params.abap", src, &parsed);
+    let unit = analyze(src, "file:///function_params.abap");
 
     for name in [
         "iv_count",
@@ -13316,8 +12968,7 @@ FUNCTION /AIF/FILE_PROCESS_DATA
     failed.
 ENDFUNCTION.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///function_metadata.abap", src, &parsed);
+    let unit = analyze(src, "file:///function_metadata.abap");
 
     let function_symbol = unit
         .symbols
@@ -13373,8 +13024,7 @@ ENDFUNCTION.
 FORM run RAISING resumable(cx_demo) cx_other.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///raising_headers.abap", src, &parsed);
+    let unit = analyze(src, "file:///raising_headers.abap");
 
     for keyword in ["RAISING", "RESUMABLE"] {
         assert!(
@@ -13976,8 +13626,7 @@ DATA lt_rep TYPE ty_rep_tab.
 DATA lv_type TYPE string.
 
 lv_type = lt_rep[ 1 ]-type.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///table_expr_selector.abap", src, &parsed);
+    let unit = analyze(src, "file:///table_expr_selector.abap");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -14024,8 +13673,7 @@ IF lt_tab[] IS NOT INITIAL.
   LOOP AT lt_tab[] ASSIGNING <lv_row>.
   ENDLOOP.
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_table_body_operator.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_table_body_operator.abap");
 
     let lt_tab_refs = unit
         .references
@@ -14083,8 +13731,7 @@ IF it_obj_ids[] IS NOT INITIAL.
     WHERE mandt = it_obj_ids.
   ENDSELECT.
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_table_body_misc.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_table_body_misc.abap");
 
     for name in ["it_src", "it_dst", "lv_lines", "it_obj_ids", "lv_dummy"] {
         assert!(
@@ -14123,12 +13770,7 @@ DESCRIBE TABLE lt_split LINES DATA(lv_lines).
 IF lv_lines > 0.
   WRITE lv_lines.
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///describe_table_lines_inline_data.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///describe_table_lines_inline_data.abap");
 
     for name in ["lt_split", "lv_lines"] {
         assert!(
@@ -14167,8 +13809,7 @@ DESCRIBE TABLE: lt_aux_bup_adr    LINES lv_n_customers,
 IF lv_n_customers + lv_n_total > 0.
   WRITE lv_n_total.
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///grouped_describe_table.abap", src, &parsed);
+    let unit = analyze(src, "file:///grouped_describe_table.abap");
 
     for name in [
         "lt_aux_bup_adr",
@@ -14207,8 +13848,7 @@ DATA(lv_obj_count) = lines( lt_obj ).
 IF lv_obj_count > 0.
   WRITE lv_obj_count.
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_lines_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_lines_type.abap");
 
     let symbol = unit
         .symbols
@@ -14249,8 +13889,7 @@ START-OF-SELECTION.
   ).
   IF lo_http_client IS BOUND.
   ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_http_client_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_http_client_type.abap");
 
     let symbol = unit
         .symbols
@@ -14284,8 +13923,7 @@ START-OF-SELECTION.
     IMPORTING
       ev_key = DATA(lv_content_key2)
   ).";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_named_arg_observed_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_named_arg_observed_type.abap");
 
     let symbol = unit
         .symbols
@@ -14315,8 +13953,7 @@ DATA(lv_total) = lv_obj_count + lv_count_com.
 IF lv_total > 0.
   WRITE lv_total.
 ENDIF.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_sum_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_sum_type.abap");
 
     let symbol = unit
         .symbols
@@ -14350,8 +13987,7 @@ DATA(lv_data) = 'hello'.
 DATA(lv_data_2) = |{ lv_data }, world|.
 
 WRITE lv_data_2.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///inline_string_template_type.abap", src, &parsed);
+    let unit = analyze(src, "file:///inline_string_template_type.abap");
 
     let symbol = unit
         .symbols
@@ -14391,8 +14027,7 @@ SELECT rep_evtid,
   FOR ALL ENTRIES IN @lt_rep_evt
   WHERE rep_evtid = @lt_rep_evt.
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///host_expr_for_all_entries.abap", src, &parsed);
+    let unit = analyze(src, "file:///host_expr_for_all_entries.abap");
     let semantic = unit.semantic();
     let for_all_entries_offset = src.find("@lt_rep_evt").expect("for all entries host expr") + 1;
 
@@ -14430,8 +14065,7 @@ FIELD-SYMBOLS: <fs_choice> TYPE any,
 
 LOOP AT <fs_choice>-object_event-extension-destination_list-destination[] ASSIGNING <fs_destination>.
 ENDLOOP.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///selector_legacy_table_body.abap", src, &parsed);
+    let unit = analyze(src, "file:///selector_legacy_table_body.abap");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -14486,8 +14120,7 @@ FIELD-SYMBOLS <fs_destination> TYPE ty_dest.
 LOOP AT lt_dest[] ASSIGNING <fs_destination>
 WHERE type IS NOT INITIAL.
 ENDLOOP.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_where_bare_field.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_where_bare_field.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -14540,8 +14173,7 @@ CLASS zcl_demo IMPLEMENTATION.
     ENDLOOP.
   ENDMETHOD.
 ENDCLASS.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///loop_where_nested_selector_cs.abap", src, &parsed);
+    let unit = analyze(src, "file:///loop_where_nested_selector_cs.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -14573,8 +14205,7 @@ DATA ls_xmlparse TYPE ty_xmlparse.
 
 GET REFERENCE OF es_request_aif_struct INTO ls_xmlparse-xi_data.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///get_reference_struct.abap", src, &parsed);
+    let unit = analyze(src, "file:///get_reference_struct.abap");
 
     let source_symbol = unit
         .symbols
@@ -14627,8 +14258,7 @@ DATA lo_xmlparse TYPE REF TO data.
 
 GET REFERENCE OF ls_xmlparse INTO lo_xmlparse.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///get_reference_plain.abap", src, &parsed);
+    let unit = analyze(src, "file:///get_reference_plain.abap");
 
     for name in ["ls_xmlparse", "lo_xmlparse"] {
         let symbol = unit
@@ -14678,8 +14308,7 @@ FORM run.
   DELETE zattp_rs_represp FROM <fs_rs_represp>.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///delete_dbtab_from_work_area.abap", src, &parsed);
+    let unit = analyze(src, "file:///delete_dbtab_from_work_area.abap");
 
     assert!(
         unit.sql_name_refs.iter().any(|sql_ref| {
@@ -14716,8 +14345,7 @@ FORM run.
   DELETE FROM zattp_reload_ret WHERE objid IN lr_objid.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///delete_from_dbtab_where.abap", src, &parsed);
+    let unit = analyze(src, "file:///delete_from_dbtab_where.abap");
 
     assert!(
         unit.sql_name_refs.iter().any(|sql_ref| {
@@ -14780,8 +14408,7 @@ FORM run.
   DELETE FROM zattp_reload_ret WHERE table_line IS NOT INITIAL.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///delete_from_local_itab.abap", src, &parsed);
+    let unit = analyze(src, "file:///delete_from_local_itab.abap");
 
     assert!(
         !unit.sql_name_refs.iter().any(|sql_ref| {
@@ -15121,8 +14748,7 @@ DATA rv_text TYPE string.
 
 rv_text = |{ mo_left->missing( ) }|.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///template_unknown_member.abap", src, &parsed);
+    let unit = analyze(src, "file:///template_unknown_member.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::UnknownField
@@ -15134,8 +14760,7 @@ rv_text = |{ mo_left->missing( ) }|.
 #[test]
 fn reports_builtin_routine_named_argument_passing_as_invalid() {
     let src = "DATA text TYPE string. DATA len TYPE i. len = strlen( val = text ).";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///routine_named_args.abap", src, &parsed);
+    let unit = analyze(src, "file:///routine_named_args.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
@@ -15147,8 +14772,7 @@ fn reports_builtin_routine_named_argument_passing_as_invalid() {
 #[test]
 fn resolves_to_lower_as_builtin_routine() {
     let src = "DATA text TYPE string. DATA lower TYPE string. lower = to_lower( text ).";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_to_lower.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_to_lower.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.kind == ReferenceKind::RoutineCall
@@ -15175,8 +14799,7 @@ ev1 = substring( val = iv_string off = gc_0 len = gc_50 ).\n\
 ev2 = substring( val = iv_string off = gc_150 ).\n\
 ev3 = substring( val = iv_string len = 10 ).\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_substring.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_substring.abap");
 
     let substring_calls: Vec<_> = unit
         .references
@@ -15209,8 +14832,7 @@ DATA ev_characters TYPE string.\n\
 DATA sv_null_char TYPE string.\n\
 ev_characters = condense( val = ev_characters del = sv_null_char ).\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_condense.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_condense.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.kind == ReferenceKind::RoutineCall
@@ -15282,8 +14904,7 @@ DATA lv_mode TYPE i VALUE 0.\n\
 DATA lv_out TYPE decfloat34.\n\
 lv_out = round( val = lv_value dec = lv_dec mode = lv_mode ).\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_round.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_round.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -15322,8 +14943,7 @@ DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
 IF line_exists( lt_rep_evt[ table_line = 'X' ] ).\n\
 ENDIF.\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_line_exists.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_line_exists.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -15353,8 +14973,7 @@ CONSTANTS lc_rs_comm TYPE string VALUE 'COMM'.\n\
 IF NOT line_exists( lt_rep_evt[ rule_type = lc_rs_comm ] ) AND lt_obj_comm IS NOT INITIAL.\n\
 ENDIF.\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_line_exists_not_and.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_line_exists_not_and.abap");
 
     let line_exists_refs: Vec<_> = unit
         .references
@@ -15386,8 +15005,7 @@ IF line_exists( lt_resp[ trkid = ls_child-trkid ] ) OR\n\
    line_exists( lt_resp[ serial = ls_child-serial ] ).\n\
 ENDIF.\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///builtin_line_exists_or.abap", src, &parsed);
+    let unit = analyze(src, "file:///builtin_line_exists_or.abap");
 
     let line_exists_refs: Vec<_> = unit
         .references
@@ -15415,12 +15033,7 @@ DATA iv_gln TYPE zattp_param_value.\n\
 IF line_exists( gt_sloc_gln[ table_line = iv_gln ] ).\n\
 ENDIF.\n\
 ";
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///builtin_line_exists_scalar_table_line.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///builtin_line_exists_scalar_table_line.abap");
 
     assert!(!unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument
@@ -15450,8 +15063,7 @@ CLASS /cdbasis/cl_messages DEFINITION.
     CLASS-DATA sv_loglevel TYPE i VALUE 0. "#EC NOTEXT           " .
 ENDCLASS.
 "##;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///class_data_value_decl.abap", src, &parsed);
+    let unit = analyze(src, "file:///class_data_value_decl.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -15511,9 +15123,7 @@ START-OF-SELECTION.
   lo_obj->m2( ).
   lo_obj->m3( ).
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///interfaces_aliases.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///interfaces_aliases.abap");
 
     assert!(
         unit.implemented_interfaces.iter().any(|item| {
@@ -15603,9 +15213,7 @@ START-OF-SELECTION.
   CREATE OBJECT lo_obj.
   lo_obj->i1~meth( ).
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///inherited_interface_impl.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///inherited_interface_impl.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -15642,9 +15250,7 @@ CLASS c1 IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///qualified_method_impl_scope.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///qualified_method_impl_scope.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -15715,9 +15321,7 @@ CLASS c1 IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///second_interface_impl_scope.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///second_interface_impl_scope.abap");
 
     assert!(
         unit.implemented_interfaces
@@ -15783,9 +15387,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///namespaced_interface_impl.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///namespaced_interface_impl.abap");
 
     for name in ["me", "iv_evtid", "is_rule_keys", "co_messages"] {
         assert!(
@@ -15851,9 +15453,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///unresolved_first_interface.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///unresolved_first_interface.abap");
 
     assert!(unit.references.iter().any(|reference| {
         reference.namespace == Namespace::Value
@@ -15891,9 +15491,7 @@ INTERFACE if_outer.
   INTERFACE if_inner LOAD.
 ENDINTERFACE.
 "#;
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let unit = analyze_unit("file:///interface_load.abap", src, &parsed);
+    let unit = analyze_ok(src, "file:///interface_load.abap");
 
     assert!(
         unit.implemented_interfaces.iter().any(|item| {
@@ -15931,8 +15529,7 @@ DATA lv_evt TYPE string.\n\
 DATA lv_long TYPE string.\n\
 lv_evt = ls_time+2(8).\n\
 lv_long = ls_time(14).";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///substring_expr.abap", src, &parsed);
+    let unit = analyze(src, "file:///substring_expr.abap");
 
     let ls_time_refs: Vec<_> = unit
         .references
@@ -15960,8 +15557,7 @@ TYPES ty_encode_decode_tab TYPE STANDARD TABLE OF ty_encode_decode WITH EMPTY KE
 DATA lt_encode_decode TYPE ty_encode_decode_tab.\n\
 DATA rv_gs1 TYPE string.\n\
 rv_gs1 = lt_encode_decode[ 1 ]-code_char+2.";
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///substring_table_expr_selector.abap", src, &parsed);
+    let unit = analyze(src, "file:///substring_table_expr_selector.abap");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -16008,12 +15604,7 @@ TYPES ty_encode_decode_tab TYPE STANDARD TABLE OF ty_encode_decode WITH EMPTY KE
 DATA lt_encode_decode TYPE ty_encode_decode_tab.\n\
 DATA rv_gs1 TYPE string.\n\
 rv_gs1 = VALUE #( lt_encode_decode[ 1 ]-code_char+2 OPTIONAL ).";
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///value_optional_substring_table_expr.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///value_optional_substring_table_expr.abap");
 
     assert!(
         unit.field_accesses.iter().any(|access| {
@@ -16065,8 +15656,7 @@ CLASS zcl_child IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///missing_super_ctor.abap", src, &parsed);
+    let unit = analyze(src, "file:///missing_super_ctor.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::MissingSuperConstructorCall
@@ -16104,8 +15694,7 @@ CLASS zcl_child IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///missing_super_ctor_args.abap", src, &parsed);
+    let unit = analyze(src, "file:///missing_super_ctor_args.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::MissingSuperConstructorCall && diag.message.contains("iv_kind")
@@ -16145,8 +15734,7 @@ CLASS zcl_child IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///valid_super_ctor.abap", src, &parsed);
+    let unit = analyze(src, "file:///valid_super_ctor.abap");
 
     assert!(
         !unit
@@ -16189,8 +15777,7 @@ CLASS zcl_child IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_super_ctor.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_super_ctor.abap");
 
     assert!(
         !unit
@@ -16226,8 +15813,7 @@ CLASS zcl_child IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_super_ctor_spaced.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_super_ctor_spaced.abap");
 
     assert!(
         !unit
@@ -16263,8 +15849,7 @@ CLASS lcl_object_event IMPLEMENTATION.
 
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///missing_method_impl.abap", src, &parsed);
+    let unit = analyze(src, "file:///missing_method_impl.abap");
     let method_offset = src.find("add_to_epcis").expect("method declaration");
     let method_range = method_offset..method_offset + "add_to_epcis".len();
 
@@ -16299,8 +15884,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///message_stmt.abap", src, &parsed);
+    let unit = analyze(src, "file:///message_stmt.abap");
 
     for name in ["lv_lines", "iv_logsys", "gv_dummy_msg", "lv_result"] {
         assert!(
@@ -16328,8 +15912,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///message_into_data.abap", src, &parsed);
+    let unit = analyze(src, "file:///message_into_data.abap");
 
     assert!(
         unit.symbols.iter().any(|s| {
@@ -16364,8 +15947,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///message_stmt_literal_arg.abap", src, &parsed);
+    let unit = analyze(src, "file:///message_stmt_literal_arg.abap");
 
     for name in ["lv_lines", "iv_logsys", "gv_dummy_msg"] {
         assert!(
@@ -16401,8 +15983,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///message_stmt_text_pool.abap", src, &parsed);
+    let unit = analyze(src, "file:///message_stmt_text_pool.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -16443,8 +16024,7 @@ FORM run.
   MESSAGE e323(bf00) WITH gv_file_name RAISING file_error.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///message_stmt_raising_form.abap", src, &parsed);
+    let unit = analyze(src, "file:///message_stmt_raising_form.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -16481,8 +16061,7 @@ REPORT zmain MESSAGE-ID zfic.
 START-OF-SELECTION.
   MESSAGE i043.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///report_message_id.abap", src, &parsed);
+    let unit = analyze(src, "file:///report_message_id.abap");
 
     assert!(
         unit.references.iter().any(|reference| {
@@ -16516,8 +16095,7 @@ FORM run USING iv_tag_path TYPE string.
   FIND FIRST OCCURRENCE OF |abc| IN iv_tag_path MATCH OFFSET lv_first_sep.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///find_stmt_literal.abap", src, &parsed);
+    let unit = analyze(src, "file:///find_stmt_literal.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -16554,8 +16132,7 @@ CLASS zcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///template_alpha_out_multiline.abap", src, &parsed);
+    let unit = analyze(src, "file:///template_alpha_out_multiline.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -16597,8 +16174,7 @@ DATA lo_demo TYPE REF TO lcl_demo.
 START-OF-SELECTION.
   lo_demo->run( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///missing_required_param.abap", src, &parsed);
+    let unit = analyze(src, "file:///missing_required_param.abap");
 
     let missing: Vec<_> = unit
         .diagnostics
@@ -16634,8 +16210,7 @@ ENDCLASS.
 
 DATA(lo_node) = NEW lcl_ast_node( ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///abstract_class_new.abap", src, &parsed);
+    let unit = analyze(src, "file:///abstract_class_new.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::AbstractClassInstantiation
@@ -16668,8 +16243,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///token_only_implicit_value_calls.abap", src, &parsed);
+    let unit = analyze(src, "file:///token_only_implicit_value_calls.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::MissingRequiredParameter && diag.message.contains("iv_req")
@@ -16699,8 +16273,7 @@ CLASS lcl_demo IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_call_method_validation.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_call_method_validation.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::MissingRequiredParameter && diag.message.contains("iv_req")
@@ -16728,8 +16301,7 @@ START-OF-SELECTION.
     EXCEPTIONS
       OTHERS = 1.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///legacy_call_method_others.abap", src, &parsed);
+    let unit = analyze(src, "file:///legacy_call_method_others.abap");
 
     assert!(
         !unit.diagnostics.iter().any(|diag| {
@@ -16763,8 +16335,7 @@ START-OF-SELECTION.
     iv_missing = 3
   ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///dup_unknown_named_param.abap", src, &parsed);
+    let unit = analyze(src, "file:///dup_unknown_named_param.abap");
 
     assert!(unit.diagnostics.iter().any(|diag| {
         diag.kind == DiagnosticKind::DuplicateNamedParameter && diag.message.contains("iv_req")
@@ -16807,12 +16378,7 @@ CLASS sub IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///inherited_redefinition_named_args.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///inherited_redefinition_named_args.abap");
 
     assert!(
         unit.diagnostics.iter().all(|diag| {
@@ -16848,8 +16414,7 @@ START-OF-SELECTION.
   lo_demo->take_value( iv_value = lt_values ).
   lo_demo->take_table( it_values = lv_value ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///incompatible_method_args.abap", src, &parsed);
+    let unit = analyze(src, "file:///incompatible_method_args.abap");
 
     let diags: Vec<_> = unit
         .diagnostics
@@ -16871,8 +16436,7 @@ START-OF-SELECTION.
   lv_value = lt_values.
   lt_values = lv_value.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///incompatible_assignments.abap", src, &parsed);
+    let unit = analyze(src, "file:///incompatible_assignments.abap");
 
     let diags: Vec<_> = unit
         .diagnostics
@@ -16896,12 +16460,7 @@ START-OF-SELECTION.
   lv_value = lv_bytes.
   lv_text = lv_bytes.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///compatible_byte_like_assignments.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///compatible_byte_like_assignments.abap");
 
     assert!(
         unit.diagnostics
@@ -16922,12 +16481,7 @@ START-OF-SELECTION.
   lv_date = lv_time.
   lv_time = lv_date.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///incompatible_date_time_assignments.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///incompatible_date_time_assignments.abap");
 
     let diags: Vec<_> = unit
         .diagnostics
@@ -16959,12 +16513,7 @@ FORM some_form.
   lv_address = 2.
 ENDFORM.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit(
-        "file:///incompatible_structure_assignments.abap",
-        src,
-        &parsed,
-    );
+    let unit = analyze(src, "file:///incompatible_structure_assignments.abap");
 
     let diags: Vec<_> = unit
         .diagnostics
@@ -17000,8 +16549,7 @@ DATA ls_vepo TYPE ty_vepo.
 START-OF-SELECTION.
   lw_itemunpack-batch = ls_vepo-charg.
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///compatible_selector_assignment.abap", src, &parsed);
+    let unit = analyze(src, "file:///compatible_selector_assignment.abap");
 
     assert!(
         unit.diagnostics
@@ -17035,8 +16583,7 @@ DATA lt_outtab TYPE typ_t_to_display.
 START-OF-SELECTION.
   lcl_demo=>run( it_outtab = lt_outtab ).
 "#;
-    let parsed = parse(src);
-    let unit = analyze_unit("file:///generic_standard_table_param.abap", src, &parsed);
+    let unit = analyze(src, "file:///generic_standard_table_param.abap");
 
     assert!(
         unit.diagnostics.iter().all(|diag| {
