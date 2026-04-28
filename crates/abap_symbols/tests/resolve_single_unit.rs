@@ -2814,6 +2814,99 @@ INSERT TEXTPOOL lv_progname FROM lt_textpool.
 }
 
 #[test]
+fn resolves_source_maintenance_operands_and_emits_assignment_flow() {
+    let src = r#"
+DATA lv_prog TYPE sy-repid.
+DATA lt_source TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_msg TYPE string.
+DATA lv_line TYPE i.
+DATA lv_word TYPE string.
+
+READ REPORT lv_prog INTO lt_source.
+INSERT REPORT lv_prog FROM lt_source.
+DELETE REPORT lv_prog.
+SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_prog.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///source_maintenance_stmt.abap", src, &parsed);
+
+    for name in ["lv_prog", "lt_source", "lv_msg", "lv_line", "lv_word"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected source-maintenance reference for `{name}` to resolve, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected source-maintenance diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for keyword in [
+        "read", "report", "into", "insert", "from", "delete", "syntax", "check", "for", "message",
+        "line", "word", "program",
+    ] {
+        assert!(
+            unit.references.iter().all(|reference| {
+                !reference.name.eq_ignore_ascii_case(keyword) || reference.resolution.is_some()
+            }),
+            "keyword `{keyword}` became an unresolved reference: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let assignment_targets = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    for target in ["lt_source", "lv_msg", "lv_line", "lv_word"] {
+        assert!(
+            assignment_targets.iter().any(|found| found == target),
+            "expected source-maintenance write target `{target}`, targets={assignment_targets:?}"
+        );
+    }
+    assert!(
+        unit.value_flow_edges
+            .iter()
+            .filter(|edge| edge.kind == ValueFlowKind::Assignment)
+            .count()
+            >= 4,
+        "expected assignment flow for source-maintenance write targets, got {:?}",
+        unit.value_flow_edges
+    );
+
+    let has_update = |statement| {
+        unit.system_field_updates
+            .iter()
+            .any(|update| update.statement == statement && update.field_name.as_ref() == "subrc")
+    };
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::ReadReport
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::InsertReport
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::DeleteReport
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::SyntaxCheck
+    ));
+}
+
+#[test]
 fn collects_sql_semantics_for_insert_into_dbtab_values_constructor_expr() {
     let src = r#"
 TYPES: BEGIN OF zattp_rs_ruleacc,
@@ -7952,10 +8045,17 @@ DATA wa TYPE i.
 DATA program TYPE sy-repid.
 DATA text2 TYPE STANDARD TABLE OF textpool WITH EMPTY KEY.
 DATA langu2 TYPE spras.
+DATA lv_msg TYPE string.
+DATA lv_line TYPE i.
+DATA lv_word TYPE string.
 
 APPEND 1 TO itab.
 INSERT 2 INTO TABLE itab.
 INSERT TEXTPOOL program FROM text2 LANGUAGE langu2.
+READ REPORT program INTO text2.
+INSERT REPORT program FROM text2.
+DELETE REPORT program.
+SYNTAX-CHECK FOR text2 MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM program.
 MODIFY TABLE itab FROM 3.
 DELETE itab WHERE table_line = 3.
 AUTHORITY-CHECK OBJECT 'S_CARRID'
@@ -7996,6 +8096,22 @@ ENDLOOP.
     ));
     assert!(has_update(
         abap_symbols::SystemFieldStatementKind::InsertTextpool,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::ReadReport,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::InsertReport,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::DeleteReport,
+        "subrc"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::SyntaxCheck,
         "subrc"
     ));
     assert!(has_update(

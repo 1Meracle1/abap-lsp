@@ -423,6 +423,26 @@ pub enum SyntaxKind {
     InsertTextpoolStmt,
     /// `READ TEXTPOOL prog INTO itab [LANGUAGE lang] .`
     ReadTextpoolStmt,
+    /// `READ REPORT prog INTO itab .`
+    ReadReportStmt,
+    /// `INSERT REPORT prog FROM itab .`
+    InsertReportStmt,
+    /// `DELETE REPORT prog .`
+    DeleteReportStmt,
+    /// `SYNTAX-CHECK FOR itab MESSAGE msg LINE line WORD word [PROGRAM prog] .`
+    SyntaxCheckStmt,
+    /// Program/report operand in source maintenance statements.
+    SourceMaintenanceProgramOperand,
+    /// Source operand after `FROM` in source maintenance statements.
+    SourceMaintenanceSourceOperand,
+    /// Table operand after `INTO`/`FOR` in source maintenance statements.
+    SourceMaintenanceTableOperand,
+    /// Target operand after `MESSAGE` in `SYNTAX-CHECK`.
+    SourceMaintenanceMessageOperand,
+    /// Target operand after `LINE` in `SYNTAX-CHECK`.
+    SourceMaintenanceLineOperand,
+    /// Target operand after `WORD` in `SYNTAX-CHECK`.
+    SourceMaintenanceWordOperand,
     /// `APPEND ... TO ... .`
     AppendStmt,
     /// `MOVE-CORRESPONDING ... TO ... .`
@@ -896,6 +916,16 @@ impl SyntaxKind {
             Self::InsertDbTableStmt => "InsertDbTableStmt",
             Self::InsertTextpoolStmt => "InsertTextpoolStmt",
             Self::ReadTextpoolStmt => "ReadTextpoolStmt",
+            Self::ReadReportStmt => "ReadReportStmt",
+            Self::InsertReportStmt => "InsertReportStmt",
+            Self::DeleteReportStmt => "DeleteReportStmt",
+            Self::SyntaxCheckStmt => "SyntaxCheckStmt",
+            Self::SourceMaintenanceProgramOperand => "SourceMaintenanceProgramOperand",
+            Self::SourceMaintenanceSourceOperand => "SourceMaintenanceSourceOperand",
+            Self::SourceMaintenanceTableOperand => "SourceMaintenanceTableOperand",
+            Self::SourceMaintenanceMessageOperand => "SourceMaintenanceMessageOperand",
+            Self::SourceMaintenanceLineOperand => "SourceMaintenanceLineOperand",
+            Self::SourceMaintenanceWordOperand => "SourceMaintenanceWordOperand",
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::MoveStmt => "MoveStmt",

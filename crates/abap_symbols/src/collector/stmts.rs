@@ -2312,6 +2312,109 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn source_maintenance_operand_values(&self, node: NodeId, kind: SyntaxKind) -> Vec<NodeId> {
+        self.collector
+            .file
+            .children(node)
+            .filter(|&child| self.collector.file.kind(child) == kind)
+            .filter_map(|operand| self.collector.first_non_token_child(operand))
+            .collect()
+    }
+
+    fn collect_source_maintenance_read_values(&mut self, values: &[NodeId], scope: ScopeId) {
+        for &value in values {
+            self.collector.walk_node(value, scope);
+        }
+    }
+
+    fn collect_source_maintenance_write_values(
+        &mut self,
+        stmt: NodeId,
+        values: &[NodeId],
+        scope: ScopeId,
+    ) {
+        let stmt_range = self.collector.file.range(stmt);
+        for &value in values {
+            self.collector.walk_node(value, scope);
+            self.emit_assignment_site_with_type_facts(
+                scope,
+                stmt_range.clone(),
+                value,
+                &[],
+                None,
+                None,
+            );
+        }
+    }
+
+    pub(super) fn collect_read_report_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::ReadReport,
+            &["subrc"],
+        );
+        let programs = self
+            .source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceProgramOperand);
+        let tables =
+            self.source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceTableOperand);
+        self.collect_source_maintenance_read_values(&programs, scope);
+        self.collect_source_maintenance_write_values(node, &tables, scope);
+    }
+
+    pub(super) fn collect_insert_report_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::InsertReport,
+            &["subrc"],
+        );
+        let programs = self
+            .source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceProgramOperand);
+        let sources = self
+            .source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceSourceOperand);
+        self.collect_source_maintenance_read_values(&programs, scope);
+        self.collect_source_maintenance_read_values(&sources, scope);
+    }
+
+    pub(super) fn collect_delete_report_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::DeleteReport,
+            &["subrc"],
+        );
+        let programs = self
+            .source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceProgramOperand);
+        self.collect_source_maintenance_read_values(&programs, scope);
+    }
+
+    pub(super) fn collect_syntax_check_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::SyntaxCheck,
+            &["subrc"],
+        );
+        let programs = self
+            .source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceProgramOperand);
+        let tables =
+            self.source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceTableOperand);
+        let messages = self
+            .source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceMessageOperand);
+        let lines =
+            self.source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceLineOperand);
+        let words =
+            self.source_maintenance_operand_values(node, SyntaxKind::SourceMaintenanceWordOperand);
+        self.collect_source_maintenance_read_values(&programs, scope);
+        self.collect_source_maintenance_read_values(&tables, scope);
+        self.collect_source_maintenance_write_values(node, &messages, scope);
+        self.collect_source_maintenance_write_values(node, &lines, scope);
+        self.collect_source_maintenance_write_values(node, &words, scope);
+    }
+
     pub(super) fn collect_read_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_system_field_updates(
             scope,

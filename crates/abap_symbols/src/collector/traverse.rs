@@ -151,13 +151,22 @@ impl<'a> Collector<'a> {
             | SyntaxKind::SetBitStmt => self.walk_children(node, scope),
             SyntaxKind::ModifyStmt => self.stmt_lowering().collect_modify_stmt(node, scope),
             SyntaxKind::UpdateStmt => self.stmt_lowering().collect_update_stmt(node, scope),
+            SyntaxKind::ReadReportStmt => {
+                self.stmt_lowering().collect_read_report_stmt(node, scope)
+            }
             SyntaxKind::ReadTableStmt => self.stmt_lowering().collect_read_table_stmt(node, scope),
             SyntaxKind::AuthorityCheckStmt => self
                 .stmt_lowering()
                 .collect_authority_check_stmt(node, scope),
+            SyntaxKind::InsertReportStmt => {
+                self.stmt_lowering().collect_insert_report_stmt(node, scope)
+            }
             SyntaxKind::InsertDbTableStmt => self
                 .sql_lowering()
                 .collect_insert_db_table_stmt(node, scope),
+            SyntaxKind::DeleteReportStmt => {
+                self.stmt_lowering().collect_delete_report_stmt(node, scope)
+            }
             SyntaxKind::DeleteDbTableStmt => self
                 .sql_lowering()
                 .collect_delete_db_table_stmt(node, scope),
@@ -200,6 +209,9 @@ impl<'a> Collector<'a> {
             }
             SyntaxKind::GetTimeStmt => self.stmt_lowering().collect_get_time_stmt(node, scope),
             SyntaxKind::LogPointStmt => self.stmt_lowering().collect_log_point_stmt(node, scope),
+            SyntaxKind::SyntaxCheckStmt => {
+                self.stmt_lowering().collect_syntax_check_stmt(node, scope)
+            }
             SyntaxKind::AliasesStmt => self.stmt_lowering().collect_aliases_stmt(node, scope),
             SyntaxKind::ClearStmt => self.stmt_lowering().collect_clear_stmt(node, scope),
             SyntaxKind::RefreshStmt => self.stmt_lowering().collect_refresh_stmt(node, scope),

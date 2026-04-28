@@ -733,6 +733,34 @@ ast_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
 ast_node!(ReadDatasetStmt, SyntaxKind::ReadDatasetStmt);
 ast_node!(ReadTextpoolStmt, SyntaxKind::ReadTextpoolStmt);
+ast_node!(ReadReportStmt, SyntaxKind::ReadReportStmt);
+ast_node!(InsertReportStmt, SyntaxKind::InsertReportStmt);
+ast_node!(DeleteReportStmt, SyntaxKind::DeleteReportStmt);
+ast_node!(SyntaxCheckStmt, SyntaxKind::SyntaxCheckStmt);
+ast_node!(
+    SourceMaintenanceProgramOperand,
+    SyntaxKind::SourceMaintenanceProgramOperand
+);
+ast_node!(
+    SourceMaintenanceSourceOperand,
+    SyntaxKind::SourceMaintenanceSourceOperand
+);
+ast_node!(
+    SourceMaintenanceTableOperand,
+    SyntaxKind::SourceMaintenanceTableOperand
+);
+ast_node!(
+    SourceMaintenanceMessageOperand,
+    SyntaxKind::SourceMaintenanceMessageOperand
+);
+ast_node!(
+    SourceMaintenanceLineOperand,
+    SyntaxKind::SourceMaintenanceLineOperand
+);
+ast_node!(
+    SourceMaintenanceWordOperand,
+    SyntaxKind::SourceMaintenanceWordOperand
+);
 ast_node!(AuthorityCheckStmt, SyntaxKind::AuthorityCheckStmt);
 ast_node!(
     AuthorityCheckObjectOperand,

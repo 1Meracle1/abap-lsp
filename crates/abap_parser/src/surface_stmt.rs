@@ -5867,6 +5867,545 @@ pub fn try_parse_report_stmt(
     )
 }
 
+fn source_maintenance_clause_keyword_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keyword: &str,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 && is_keyword(source, token, keyword) {
+            let previous_kind =
+                previous_non_comment_token(tokens, idx).map(|prev| tokens[prev].kind);
+            if !matches!(
+                previous_kind,
+                Some(TokenKind::Minus | TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde)
+            ) {
+                return Some(idx);
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn push_source_maintenance_operand_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+    wrapper_kind: SyntaxKind,
+) -> bool {
+    let value_start = skip_trivia(tokens, start);
+    let value_end = trim_trailing_comment_tokens(tokens, value_start, end_exclusive);
+    if value_start >= value_end {
+        return false;
+    }
+    push_wrapped_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        value_start,
+        value_end,
+        prev_before_first,
+        wrapper_kind,
+    );
+    true
+}
+
+fn build_source_maintenance_error_node(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    start_idx: usize,
+    period_i: usize,
+    start_tok: &Token,
+) -> NodeId {
+    let children = token_children(b, tokens, start_idx, period_i + 1);
+    b.branch(
+        SyntaxKind::Error,
+        start_tok.range.start..tokens[period_i].range.end,
+        &children,
+    )
+}
+
+pub fn try_parse_read_report_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let read_tok = tokens.get(idx)?;
+    let report_idx = idx + 1;
+    if !is_keyword(source, read_tok, "read")
+        || !tokens
+            .get(report_idx)
+            .is_some_and(|token| is_keyword(source, token, "report"))
+    {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        report_idx + 1,
+        read_tok,
+        "syntax error: expected '.' after READ REPORT statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, errors| {
+            let Some(into_idx) = source_maintenance_clause_keyword_index(
+                source,
+                tokens,
+                report_idx + 1,
+                period_i,
+                "into",
+            ) else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected INTO in READ REPORT statement".to_string(),
+                    range: read_tok.range.start..tokens[period_i].range.end,
+                });
+                let node = build_source_maintenance_error_node(b, tokens, idx, period_i, read_tok);
+                return (node, period_i + 1);
+            };
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, read_tok));
+            children.push(token_leaf(b, &tokens[report_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                report_idx + 1,
+                into_idx,
+                Some(&tokens[report_idx]),
+                SyntaxKind::SourceMaintenanceProgramOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected program operand in READ REPORT statement"
+                        .to_string(),
+                    range: read_tok.range.start..tokens[period_i].range.end,
+                });
+                let node = build_source_maintenance_error_node(b, tokens, idx, period_i, read_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[into_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                into_idx + 1,
+                period_i,
+                Some(&tokens[into_idx]),
+                SyntaxKind::SourceMaintenanceTableOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected table operand in READ REPORT statement"
+                        .to_string(),
+                    range: read_tok.range.start..tokens[period_i].range.end,
+                });
+                let node = build_source_maintenance_error_node(b, tokens, idx, period_i, read_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::ReadReportStmt,
+                read_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_insert_report_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let insert_tok = tokens.get(idx)?;
+    let report_idx = idx + 1;
+    if !is_keyword(source, insert_tok, "insert")
+        || !tokens
+            .get(report_idx)
+            .is_some_and(|token| is_keyword(source, token, "report"))
+    {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        report_idx + 1,
+        insert_tok,
+        "syntax error: expected '.' after INSERT REPORT statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, errors| {
+            let Some(from_idx) = source_maintenance_clause_keyword_index(
+                source,
+                tokens,
+                report_idx + 1,
+                period_i,
+                "from",
+            ) else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected FROM in INSERT REPORT statement".to_string(),
+                    range: insert_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, insert_tok);
+                return (node, period_i + 1);
+            };
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, insert_tok));
+            children.push(token_leaf(b, &tokens[report_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                report_idx + 1,
+                from_idx,
+                Some(&tokens[report_idx]),
+                SyntaxKind::SourceMaintenanceProgramOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected program operand in INSERT REPORT statement"
+                        .to_string(),
+                    range: insert_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, insert_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[from_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                from_idx + 1,
+                period_i,
+                Some(&tokens[from_idx]),
+                SyntaxKind::SourceMaintenanceSourceOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected source operand in INSERT REPORT statement"
+                        .to_string(),
+                    range: insert_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, insert_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::InsertReportStmt,
+                insert_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_delete_report_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let delete_tok = tokens.get(idx)?;
+    let report_idx = idx + 1;
+    if !is_keyword(source, delete_tok, "delete")
+        || !tokens
+            .get(report_idx)
+            .is_some_and(|token| is_keyword(source, token, "report"))
+    {
+        return None;
+    }
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        report_idx + 1,
+        delete_tok,
+        "syntax error: expected '.' after DELETE REPORT statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, errors| {
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            children.push(token_leaf(b, delete_tok));
+            children.push(token_leaf(b, &tokens[report_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                report_idx + 1,
+                period_i,
+                Some(&tokens[report_idx]),
+                SyntaxKind::SourceMaintenanceProgramOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected program operand in DELETE REPORT statement"
+                        .to_string(),
+                    range: delete_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, delete_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::DeleteReportStmt,
+                delete_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
+pub fn try_parse_syntax_check_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let syntax_tok = tokens.get(idx)?;
+    let lead_end = match_hyphenated_keyword(source, tokens, idx, &["syntax", "check"])?;
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        syntax_tok,
+        "syntax error: expected '.' after SYNTAX-CHECK statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, errors| {
+            let Some(for_idx) =
+                source_maintenance_clause_keyword_index(source, tokens, lead_end, period_i, "for")
+            else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected FOR in SYNTAX-CHECK statement".to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            };
+            let Some(message_idx) = source_maintenance_clause_keyword_index(
+                source,
+                tokens,
+                for_idx + 1,
+                period_i,
+                "message",
+            ) else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected MESSAGE in SYNTAX-CHECK statement".to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            };
+            let Some(line_idx) = source_maintenance_clause_keyword_index(
+                source,
+                tokens,
+                message_idx + 1,
+                period_i,
+                "line",
+            ) else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected LINE in SYNTAX-CHECK statement".to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            };
+            let Some(word_idx) = source_maintenance_clause_keyword_index(
+                source,
+                tokens,
+                line_idx + 1,
+                period_i,
+                "word",
+            ) else {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected WORD in SYNTAX-CHECK statement".to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            };
+            let word_value_start = skip_trivia(tokens, word_idx + 1);
+            let program_idx = if word_value_start < period_i {
+                source_maintenance_clause_keyword_index(
+                    source,
+                    tokens,
+                    word_value_start + 1,
+                    period_i,
+                    "program",
+                )
+            } else {
+                None
+            };
+
+            let mut children = Vec::with_capacity(period_i - idx + 1);
+            push_token_children(b, &mut children, tokens, idx, lead_end);
+            push_token_children(b, &mut children, tokens, lead_end, for_idx);
+            children.push(token_leaf(b, &tokens[for_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                for_idx + 1,
+                message_idx,
+                Some(&tokens[for_idx]),
+                SyntaxKind::SourceMaintenanceTableOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected table operand in SYNTAX-CHECK statement"
+                        .to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[message_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                message_idx + 1,
+                line_idx,
+                Some(&tokens[message_idx]),
+                SyntaxKind::SourceMaintenanceMessageOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected MESSAGE target in SYNTAX-CHECK statement"
+                        .to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[line_idx]));
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                line_idx + 1,
+                word_idx,
+                Some(&tokens[line_idx]),
+                SyntaxKind::SourceMaintenanceLineOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected LINE target in SYNTAX-CHECK statement"
+                        .to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            }
+            children.push(token_leaf(b, &tokens[word_idx]));
+            let word_end = program_idx.unwrap_or(period_i);
+            if !push_source_maintenance_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                word_idx + 1,
+                word_end,
+                Some(&tokens[word_idx]),
+                SyntaxKind::SourceMaintenanceWordOperand,
+            ) {
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected WORD target in SYNTAX-CHECK statement"
+                        .to_string(),
+                    range: syntax_tok.range.start..tokens[period_i].range.end,
+                });
+                let node =
+                    build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                return (node, period_i + 1);
+            }
+            if let Some(program_idx) = program_idx {
+                children.push(token_leaf(b, &tokens[program_idx]));
+                if !push_source_maintenance_operand_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    program_idx + 1,
+                    period_i,
+                    Some(&tokens[program_idx]),
+                    SyntaxKind::SourceMaintenanceProgramOperand,
+                ) {
+                    errors.push(crate::ParseError {
+                        message: "syntax error: expected PROGRAM operand in SYNTAX-CHECK statement"
+                            .to_string(),
+                        range: syntax_tok.range.start..tokens[period_i].range.end,
+                    });
+                    let node =
+                        build_source_maintenance_error_node(b, tokens, idx, period_i, syntax_tok);
+                    return (node, period_i + 1);
+                }
+            }
+            children.push(token_leaf(b, &tokens[period_i]));
+            let node = b.branch(
+                SyntaxKind::SyntaxCheckStmt,
+                syntax_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 pub fn try_parse_include_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -13574,6 +14113,105 @@ EXPORT ls_aup_parent_evt\n\
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadTableStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::TemplateExpr), 6);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_source_maintenance_statements_with_operands() {
+        let parsed = crate::parse(
+            "READ REPORT lv_prog INTO lt_source.\n\
+INSERT REPORT lv_prog FROM lt_source.\n\
+DELETE REPORT lv_prog.\n\
+SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_prog.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadReportStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::InsertReportStmt),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::DeleteReportStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SyntaxCheckStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SourceMaintenanceProgramOperand),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SourceMaintenanceSourceOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SourceMaintenanceTableOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SourceMaintenanceMessageOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SourceMaintenanceLineOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SourceMaintenanceWordOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn recovers_missing_period_after_source_maintenance_statement() {
+        for (src, expected) in [
+            (
+                "READ REPORT lv_prog INTO lt_source\nDATA lv_next TYPE i.",
+                "expected '.' after READ REPORT statement",
+            ),
+            (
+                "INSERT REPORT lv_prog FROM lt_source\nDATA lv_next TYPE i.",
+                "expected '.' after INSERT REPORT statement",
+            ),
+            (
+                "DELETE REPORT lv_prog\nDATA lv_next TYPE i.",
+                "expected '.' after DELETE REPORT statement",
+            ),
+            (
+                "SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word\nDATA lv_next TYPE i.",
+                "expected '.' after SYNTAX-CHECK statement",
+            ),
+        ] {
+            let parsed = crate::parse(src);
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "{src}: {:?}",
+                parsed.errors
+            );
+            let root = parsed.file.root();
+            assert_eq!(
+                parsed.file.count_kind(root, SyntaxKind::DataDecl),
+                1,
+                "{src}"
+            );
+            assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 1, "{src}");
+        }
     }
 
     #[test]
