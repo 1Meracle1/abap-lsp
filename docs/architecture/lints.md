@@ -685,6 +685,8 @@ Priority 4: new SAP-inspired native lints after the framework lands
 - hard-coded text literals without text symbol or pragma
 - `CALL 'SYSTEM'` or kernel C calls without approved pseudo comment
 - authority-check result ignored (first local pack: `abap-lsp.ignored-authority-check`)
+- conservative CALL FUNCTION result ignored or overwritten before check (first local pack:
+  `abap-lsp.ignored-call-function-result`)
 - broad `CATCH cx_root` without handling
 - empty `CATCH` or swallowed exceptions
 - missing `sy-subrc` check after statements where it matters

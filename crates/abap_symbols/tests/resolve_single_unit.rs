@@ -12282,6 +12282,15 @@ ENDFORM.
         "missing no-argument function call site: {:?}",
         unit.call_sites
     );
+    assert!(
+        unit.system_field_updates.iter().any(|update| {
+            update.statement == abap_symbols::SystemFieldStatementKind::CallFunction
+                && update.field_name.as_ref() == "subrc"
+                && src[update.range.clone()].contains("CALL FUNCTION 'BAPI_PO_CREATE1'")
+        }),
+        "missing CALL FUNCTION sy-subrc update fact: {:?}",
+        unit.system_field_updates
+    );
 }
 
 #[test]

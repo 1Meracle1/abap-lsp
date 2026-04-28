@@ -4271,11 +4271,12 @@ mod tests {
         render_call_dataflow_parameter_rich_mermaid, render_call_dataflow_report,
     };
     use abap_cache::{
-        ABAP_LSP_SELECT_STAR, CallDataflowByteRange, CallDataflowLifecycle,
-        CallDataflowLifecycleEdge, CallDataflowLifecycleNode, CallDataflowParameterTrace,
-        CallDataflowProvenanceEdge, CallDataflowProvenanceGraph, CallDataflowProvenanceNode,
-        CallDataflowQuery, CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace,
-        LintDiagnostic, LintGroup, LintLevel, LintOrigin, LintSuppression, LintSuppressionKind,
+        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_STAR, CallDataflowByteRange,
+        CallDataflowLifecycle, CallDataflowLifecycleEdge, CallDataflowLifecycleNode,
+        CallDataflowParameterTrace, CallDataflowProvenanceEdge, CallDataflowProvenanceGraph,
+        CallDataflowProvenanceNode, CallDataflowQuery, CallDataflowSelectedCall,
+        CallDataflowSummary, CallDataflowTrace, LintDiagnostic, LintGroup, LintLevel, LintOrigin,
+        LintSuppression, LintSuppressionKind,
     };
     use serde_json::json;
     use std::fs;
@@ -4482,6 +4483,43 @@ SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).",
             "\" abap-lsp:allow-next-line(abap-lsp.select-star)"
         );
         assert_eq!(report["summary"]["suppressed"], 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lint_json_includes_call_function_result_lint() {
+        let root = std::env::temp_dir().join("abap-cli-lint-call-function-result");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("temp root");
+        let path = root.join("zlint_call_function.abap");
+        fs::write(
+            &path,
+            "\
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    failed = 1.
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
+IF sy-subrc <> 0.
+  RETURN.
+ENDIF.",
+        )
+        .expect("lint source");
+
+        let snapshot = load_single_file_lint_snapshot(Some(path.to_string_lossy().as_ref()), false)
+            .expect("lint snapshot");
+        let findings = snapshot.snapshot.lint_diagnostics().to_vec();
+        let report = lint_report_json(&snapshot, &findings, &[]);
+        let finding = report["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .find(|finding| finding["lint_id"] == ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT)
+            .expect("call function result finding");
+
+        assert_eq!(finding["level"], "info");
+        assert_eq!(finding["group"], "correctness");
+        assert_eq!(finding["origin"], "abap-lsp");
 
         let _ = fs::remove_dir_all(&root);
     }

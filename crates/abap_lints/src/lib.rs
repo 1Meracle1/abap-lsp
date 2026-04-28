@@ -25,6 +25,7 @@ pub const ABAP_LSP_SELECT_IN_LOOP: LintId = "abap-lsp.select-in-loop";
 pub const ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD: LintId = "abap-lsp.for-all-entries-without-guard";
 pub const ABAP_LSP_DYNAMIC_OPEN_SQL: LintId = "abap-lsp.dynamic-open-sql";
 pub const ABAP_LSP_IGNORED_AUTHORITY_CHECK: LintId = "abap-lsp.ignored-authority-check";
+pub const ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT: LintId = "abap-lsp.ignored-call-function-result";
 pub const EPC_UNVERIFIED_OPEN_SQL_SOURCE: LintId = "epc.unverified-open-sql-source";
 pub const EPC_INVALID_OPEN_SQL_INTO_TARGET: LintId = "epc.invalid-open-sql-into-target";
 pub const EPC_MISSING_TABLES_DECLARATION: LintId = "epc.missing-tables-declaration";
@@ -968,6 +969,15 @@ const REGISTRY: &[LintMetadata] = &[
         sap_aliases: &[],
     },
     LintMetadata {
+        id: ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
+        group: LintGroup::Correctness,
+        origin: LintOrigin::AbapLsp,
+        default_level: LintLevel::Info,
+        summary: "CALL FUNCTION result is not handled before it is overwritten or ignored",
+        tags: &["call-function", "sy-subrc"],
+        sap_aliases: &[],
+    },
+    LintMetadata {
         id: EPC_UNVERIFIED_OPEN_SQL_SOURCE,
         group: LintGroup::Correctness,
         origin: LintOrigin::SapExtendedProgramCheck,
@@ -1106,12 +1116,12 @@ fn default_sap_atc_check_variant() -> String {
 mod tests {
     use super::{
         ABAP_LSP_DEAD_STORE, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
-        ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
-        ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
-        EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE, LINT_PROFILE_RECOMMENDED,
-        LINT_PROFILE_STRICT, LintConfig, LintConfigDiagnosticKind, LintDiagnostic, LintGroup,
-        LintLevel, LintOrigin, LintPolicy, LintSuppressionKind, SuppressionIndex,
-        lint_config_diagnostics, lint_docs_anchor, metadata_for, registry,
+        ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
+        ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
+        EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE,
+        LINT_PROFILE_RECOMMENDED, LINT_PROFILE_STRICT, LintConfig, LintConfigDiagnosticKind,
+        LintDiagnostic, LintGroup, LintLevel, LintOrigin, LintPolicy, LintSuppressionKind,
+        SuppressionIndex, lint_config_diagnostics, lint_docs_anchor, metadata_for, registry,
     };
     use abap_lexer::tokenize;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1128,7 +1138,7 @@ mod tests {
 
     #[test]
     fn registry_contains_initial_lints() {
-        assert_eq!(registry().len(), 13);
+        assert_eq!(registry().len(), 14);
 
         let dead_store = metadata_for(ABAP_LSP_DEAD_STORE).expect("dead store metadata");
         assert_eq!(dead_store.group, LintGroup::Style);
@@ -1161,6 +1171,12 @@ mod tests {
         assert_eq!(authority_check.group, LintGroup::Security);
         assert_eq!(authority_check.origin, LintOrigin::SapAtc);
         assert_eq!(authority_check.default_level, LintLevel::Info);
+
+        let call_function_result = metadata_for(ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT)
+            .expect("call function result metadata");
+        assert_eq!(call_function_result.group, LintGroup::Correctness);
+        assert_eq!(call_function_result.origin, LintOrigin::AbapLsp);
+        assert_eq!(call_function_result.default_level, LintLevel::Info);
     }
 
     #[test]

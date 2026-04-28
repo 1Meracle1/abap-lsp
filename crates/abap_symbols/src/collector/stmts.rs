@@ -3606,7 +3606,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     .unwrap_or(name);
                 Some((range, Arc::<str>::from(unquoted.to_ascii_lowercase())))
             });
-            function_info.map(|(range, function_name)| {
+            let function_name = function_info.map(|(range, function_name)| {
                 self.collector.add_reference(
                     scope,
                     Arc::clone(&function_name),
@@ -3615,7 +3615,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     range,
                 );
                 function_name
-            })
+            });
+            self.record_system_field_updates(
+                scope,
+                node,
+                SystemFieldStatementKind::CallFunction,
+                &["subrc"],
+            );
+            function_name
         } else {
             None
         };

@@ -59,6 +59,7 @@ least one unsuppressed `deny` finding is emitted.
 | `abap-lsp.for-all-entries-without-guard` | `info` | `correctness` | `sap-code-inspector` | `CI_FAE_LINES_ENSURED` |
 | `abap-lsp.dynamic-open-sql` | `info` | `security` | `sap-code-inspector` | none |
 | `abap-lsp.ignored-authority-check` | `info` | `security` | `sap-atc` | none |
+| `abap-lsp.ignored-call-function-result` | `info` | `correctness` | `abap-lsp` | none |
 | `epc.unverified-open-sql-source` | `deny` | `correctness` | `sap-extended-program-check` | `extended-program-check` |
 | `epc.invalid-open-sql-into-target` | `deny` | `correctness` | `sap-extended-program-check` | `extended-program-check` |
 | `epc.missing-tables-declaration` | `deny` | `correctness` | `sap-extended-program-check` | `extended-program-check` |
@@ -110,6 +111,14 @@ Flags dynamic Open SQL source, projection, and `WHERE` fragments that cannot be 
 Flags `AUTHORITY-CHECK` when the result in `sy-subrc` is not observed before another `sy-subrc`
 write. Defaults to `info` because legacy authorization wrappers can obscure the check.
 
+### `abap-lsp.ignored-call-function-result`
+
+Flags `CALL FUNCTION` when the analyzer can prove that no modeled result is handled before the
+function result is overwritten or ignored. It reports only conservative cases: exception mappings
+whose `sy-subrc` result is overwritten before a matching check, or local output result arguments
+with no later value reference in the same routine flow. Defaults to `info` because function wrappers
+and framework callbacks can hide result handling.
+
 ### `epc.unverified-open-sql-source`
 
 Reports Open SQL sources that cannot be verified against local or repository metadata.
@@ -135,3 +144,5 @@ The first local pack uses facts already produced by `abap_symbols`.
 - `abap-lsp.dynamic-open-sql`: flags dynamic Open SQL source, projection, and `WHERE` fragments.
 - `abap-lsp.ignored-authority-check`: flags `AUTHORITY-CHECK` when its `sy-subrc` result is not
   observed before another `sy-subrc` update becomes the latest checkable result.
+- `abap-lsp.ignored-call-function-result`: flags conservative `CALL FUNCTION` cases where the
+  modeled result is provably overwritten or ignored before any matching `sy-subrc` check.

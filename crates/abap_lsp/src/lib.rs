@@ -5833,9 +5833,9 @@ fn callable_completion_item_metadata(
 #[cfg(test)]
 mod tests {
     use abap_cache::{
-        ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE, DocumentInput, DocumentStore,
-        ManifestPerformance, ManifestResolution, ManifestUnit, ManifestUnitMember,
-        WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
+        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
+        DocumentInput, DocumentStore, ManifestPerformance, ManifestResolution, ManifestUnit,
+        ManifestUnitMember, WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
     };
     use abap_dependency_store::StoredArtifactInput;
     use abap_symbols::DiagnosticKind;
@@ -6426,6 +6426,42 @@ check_variant = "DEFAULT""#,
         assert_eq!(
             data.get("origin").and_then(serde_json::Value::as_str),
             Some("abap-lsp")
+        );
+    }
+
+    #[test]
+    fn lsp_diagnostics_publish_call_function_result_lint_metadata() {
+        let store = DocumentStore::default();
+        let src = "\
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    failed = 1.
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
+IF sy-subrc <> 0.
+  RETURN.
+ENDIF.";
+        let snapshot = store.publish("file:///lint_call_function_result_lsp.abap", 1, src);
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diag| {
+                diag.code
+                    == Some(NumberOrString::String(
+                        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT.to_string(),
+                    ))
+            })
+            .expect("call function result lint diagnostic");
+        assert_eq!(diagnostic.source.as_deref(), Some(LINT_DIAGNOSTIC_SOURCE));
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::INFORMATION));
+        let data = diagnostic.data.as_ref().expect("lint diagnostic data");
+        assert_eq!(
+            data.get("lint_id").and_then(serde_json::Value::as_str),
+            Some(ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT)
+        );
+        assert_eq!(
+            data.get("group").and_then(serde_json::Value::as_str),
+            Some("correctness")
         );
     }
 

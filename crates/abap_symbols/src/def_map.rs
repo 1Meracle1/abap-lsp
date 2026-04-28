@@ -823,6 +823,7 @@ pub enum SystemFieldStatementKind {
     Append,
     Assign,
     AuthorityCheck,
+    CallFunction,
     Convert,
     DeleteTable,
     DeleteDbTable,

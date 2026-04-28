@@ -10,13 +10,14 @@ use abap_ast::ast::{
 use abap_lexer::{TokenKind, tokenize};
 pub use abap_lints::{
     ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
-    ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL,
-    ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
-    ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH, ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT,
-    EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_MISSING_TABLES_DECLARATION,
-    EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup, LintId, LintLevel, LintMetadata,
-    LintOrigin, LintPolicy, LintSuppression, LintSuppressionKind, ProjectLintAnalysis,
-    SapAtcLintConfig, SapAtcLintMode, SuppressionIndex, lint_docs_anchor, metadata_for, registry,
+    ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
+    ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
+    ABAP_LSP_UNREACHABLE_CODE, ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH,
+    ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT, EPC_INVALID_OPEN_SQL_INTO_TARGET,
+    EPC_MISSING_TABLES_DECLARATION, EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup,
+    LintId, LintLevel, LintMetadata, LintOrigin, LintPolicy, LintSuppression, LintSuppressionKind,
+    ProjectLintAnalysis, SapAtcLintConfig, SapAtcLintMode, SuppressionIndex, lint_docs_anchor,
+    metadata_for, registry,
 };
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
@@ -11043,7 +11044,9 @@ fn build_project_lint_analysis<'a>(
                 );
             }
         }
-        for mut lint_diagnostic in build_local_lint_diagnostics(unit, lint_policy) {
+        for mut lint_diagnostic in
+            build_local_lint_diagnostics(unit, prepared.analysis_text.as_ref(), lint_policy)
+        {
             push_filtered_lint_diagnostic(
                 &mut diagnostics,
                 unit.uri.as_ref(),
@@ -11076,6 +11079,7 @@ fn push_filtered_lint_diagnostic(
 
 fn build_local_lint_diagnostics(
     unit: &UnitAnalysis,
+    source: &str,
     lint_policy: &LintPolicy,
 ) -> Vec<LintDiagnostic> {
     let mut diagnostics = Vec::new();
@@ -11084,6 +11088,7 @@ fn build_local_lint_diagnostics(
     lint_for_all_entries_without_guard(unit, lint_policy, &mut diagnostics);
     lint_dynamic_open_sql(unit, lint_policy, &mut diagnostics);
     lint_ignored_authority_check(unit, lint_policy, &mut diagnostics);
+    lint_ignored_call_function_result(unit, source, lint_policy, &mut diagnostics);
     diagnostics
 }
 
@@ -11224,7 +11229,7 @@ fn lint_ignored_authority_check(
         {
             continue;
         }
-        if authority_check_result_is_observed(unit, update) {
+        if system_field_update_result_is_observed(unit, update) {
             continue;
         }
         emit_lint_diagnostic(
@@ -11233,6 +11238,67 @@ fn lint_ignored_authority_check(
             update.range.clone(),
             "AUTHORITY-CHECK result is not checked via sy-subrc before it is overwritten"
                 .to_string(),
+            lint_policy,
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallFunctionResultEvidence {
+    SySubrcOverwritten,
+    ResultArgumentIgnored,
+}
+
+fn lint_ignored_call_function_result(
+    unit: &UnitAnalysis,
+    source: &str,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT) else {
+        return;
+    };
+    for update in &unit.system_field_updates {
+        if update.statement != SystemFieldStatementKind::CallFunction
+            || !update.field_name.eq_ignore_ascii_case("subrc")
+        {
+            continue;
+        }
+        let Some(call_site) = call_function_site_for_update(unit, update) else {
+            continue;
+        };
+        if system_field_update_result_is_observed(unit, update)
+            || call_function_has_potentially_handled_result_argument(unit, call_site)
+        {
+            continue;
+        }
+
+        let evidence = if call_function_has_ignored_output_result(unit, call_site) {
+            Some(CallFunctionResultEvidence::ResultArgumentIgnored)
+        } else if call_function_has_nonzero_exception_mapping(call_site, source)
+            && next_proven_subrc_update_after(unit, update).is_some()
+        {
+            Some(CallFunctionResultEvidence::SySubrcOverwritten)
+        } else {
+            None
+        };
+        let Some(evidence) = evidence else {
+            continue;
+        };
+        let message = match evidence {
+            CallFunctionResultEvidence::SySubrcOverwritten => {
+                "CALL FUNCTION result in sy-subrc is not checked before it is overwritten"
+                    .to_string()
+            }
+            CallFunctionResultEvidence::ResultArgumentIgnored => {
+                "CALL FUNCTION output result is ignored and sy-subrc is not checked".to_string()
+            }
+        };
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            update.range.clone(),
+            message,
             lint_policy,
         );
     }
@@ -11430,12 +11496,160 @@ fn scope_has_direct_terminating_site(unit: &UnitAnalysis, scope: ScopeId) -> boo
     })
 }
 
-fn authority_check_result_is_observed(unit: &UnitAnalysis, update: &SystemFieldUpdateData) -> bool {
+fn system_field_update_result_is_observed(
+    unit: &UnitAnalysis,
+    update: &SystemFieldUpdateData,
+) -> bool {
     unit.value_state_checks
         .iter()
         .filter(|check| is_sy_subrc_check(check))
         .filter_map(|check| latest_subrc_update_before_check(unit, check))
         .any(|latest| same_system_field_update(latest, update))
+}
+
+fn call_function_site_for_update<'a>(
+    unit: &'a UnitAnalysis,
+    update: &SystemFieldUpdateData,
+) -> Option<&'a CallSiteData> {
+    unit.call_sites.iter().find(|call_site| {
+        call_site.scope == update.scope
+            && call_site.range == update.range
+            && matches!(call_site.target, NamedArgumentTarget::Function { .. })
+    })
+}
+
+fn call_function_has_potentially_handled_result_argument(
+    unit: &UnitAnalysis,
+    call_site: &CallSiteData,
+) -> bool {
+    call_site
+        .arguments
+        .iter()
+        .any(|argument| match argument.section {
+            Some(NamedArgumentSection::Changing) => true,
+            Some(NamedArgumentSection::Importing | NamedArgumentSection::Tables) => {
+                !call_function_output_argument_is_proven_ignored(unit, call_site, argument)
+            }
+            _ => false,
+        })
+}
+
+fn call_function_has_ignored_output_result(unit: &UnitAnalysis, call_site: &CallSiteData) -> bool {
+    let mut saw_output_argument = false;
+    for argument in call_site.arguments.iter().filter(|argument| {
+        matches!(
+            argument.section,
+            Some(NamedArgumentSection::Importing | NamedArgumentSection::Tables)
+        )
+    }) {
+        saw_output_argument = true;
+        if !call_function_output_argument_is_proven_ignored(unit, call_site, argument) {
+            return false;
+        }
+    }
+    saw_output_argument
+}
+
+fn call_function_output_argument_is_proven_ignored(
+    unit: &UnitAnalysis,
+    call_site: &CallSiteData,
+    argument: &CallArgumentData,
+) -> bool {
+    if unit.diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == DiagnosticKind::DeadStore
+            && range_contains(&argument.range, &diagnostic.range)
+    }) {
+        return true;
+    }
+    let Some(symbol) = call_function_output_argument_local_symbol(unit, call_site, argument) else {
+        return false;
+    };
+    !unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.range.start >= call_site.range.end
+            && reference_targets_symbol(reference, symbol)
+            && scopes_may_share_sequential_flow(unit, call_site.scope, reference.scope)
+    })
+}
+
+fn call_function_output_argument_local_symbol(
+    unit: &UnitAnalysis,
+    call_site: &CallSiteData,
+    argument: &CallArgumentData,
+) -> Option<SymbolHandle> {
+    let mut matches = unit.references.iter().filter_map(|reference| {
+        if reference.namespace != Namespace::Value
+            || !range_contains(&argument.range, &reference.range)
+        {
+            return None;
+        }
+        let Some(Resolution::Symbol(symbol)) = reference.resolution else {
+            return None;
+        };
+        if symbol.unit != unit.unit_id
+            || !scopes_may_share_sequential_flow(unit, call_site.scope, reference.scope)
+        {
+            return None;
+        }
+        let symbol_data = unit.symbol(symbol.symbol);
+        let symbol_scope = unit.scopes.get(symbol_data.scope.as_usize())?;
+        (symbol_scope.kind != ScopeKind::File).then_some(symbol)
+    });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn reference_targets_symbol(reference: &ReferenceData, symbol: SymbolHandle) -> bool {
+    matches!(reference.resolution, Some(Resolution::Symbol(target)) if target == symbol)
+}
+
+fn scopes_may_share_sequential_flow(unit: &UnitAnalysis, left: ScopeId, right: ScopeId) -> bool {
+    left == right
+        || scope_descends_from(unit, left, right)
+        || scope_descends_from(unit, right, left)
+}
+
+fn call_function_has_nonzero_exception_mapping(call_site: &CallSiteData, source: &str) -> bool {
+    call_site.arguments.iter().any(|argument| {
+        argument.section == Some(NamedArgumentSection::Exceptions)
+            && source
+                .get(argument.range.clone())
+                .is_some_and(exception_mapping_value_is_nonzero_literal)
+    })
+}
+
+fn exception_mapping_value_is_nonzero_literal(value: &str) -> bool {
+    let value = value
+        .rsplit_once('=')
+        .map(|(_, value)| value)
+        .unwrap_or(value)
+        .trim();
+    !value.is_empty()
+        && value.chars().all(|ch| ch.is_ascii_digit())
+        && value.chars().any(|ch| ch != '0')
+}
+
+fn next_proven_subrc_update_after<'a>(
+    unit: &'a UnitAnalysis,
+    update: &SystemFieldUpdateData,
+) -> Option<&'a SystemFieldUpdateData> {
+    unit.system_field_updates
+        .iter()
+        .filter(|candidate| {
+            candidate.field_name.eq_ignore_ascii_case("subrc")
+                && !same_system_field_update(candidate, update)
+                && candidate.range.start >= update.range.end
+                && subrc_update_is_proven_later_on_same_flow(unit, update, candidate)
+        })
+        .min_by_key(|candidate| (candidate.range.start, candidate.range.end))
+}
+
+fn subrc_update_is_proven_later_on_same_flow(
+    unit: &UnitAnalysis,
+    earlier: &SystemFieldUpdateData,
+    later: &SystemFieldUpdateData,
+) -> bool {
+    earlier.scope == later.scope || scope_descends_from(unit, earlier.scope, later.scope)
 }
 
 fn latest_subrc_update_before_check<'a>(
@@ -12498,11 +12712,11 @@ impl DocumentStore {
 mod tests {
     use super::{
         ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
-        ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
-        AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
-        HoveredComponentKind, LintPolicy, LintSuppressionKind, ReferenceTarget, SnapshotBuildPlan,
-        ddic_xml_to_abap_source, dependency_surface_text,
-        opened_function_module_dependency_analysis_text,
+        ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
+        ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR, AnalysisSnapshot, CallableSummary,
+        DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, LintPolicy,
+        LintSuppressionKind, ReferenceTarget, SnapshotBuildPlan, ddic_xml_to_abap_source,
+        dependency_surface_text, opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
@@ -15270,6 +15484,122 @@ ENDIF.";
         let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_AUTHORITY_CHECK);
 
         assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    #[test]
+    fn local_lint_pack_flags_call_function_subrc_overwritten_before_check() {
+        let store = DocumentStore::default();
+        let src = "\
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    failed = 1.
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
+IF sy-subrc <> 0.
+  RETURN.
+ENDIF.";
+
+        let snapshot = store.publish("file:///lint_call_function_subrc_overwritten.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT);
+
+        assert_eq!(
+            ignored,
+            vec!["CALL FUNCTION 'Z_DEMO'\n  EXCEPTIONS\n    failed = 1.".to_string()],
+            "{ignored:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_accepts_call_function_subrc_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    failed = 1.
+IF sy-subrc <> 0.
+  RETURN.
+ENDIF.
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).";
+
+        let snapshot = store.publish("file:///lint_call_function_subrc_guarded.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT);
+
+        assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    #[test]
+    fn local_lint_pack_does_not_flag_call_function_without_overwrite_or_ignored_result() {
+        let store = DocumentStore::default();
+        let src = "\
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    failed = 1.
+WRITE 'ok'.";
+
+        let snapshot = store.publish("file:///lint_call_function_no_proof.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT);
+
+        assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    #[test]
+    fn local_lint_pack_flags_call_function_output_result_without_later_read() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  DATA lv_result TYPE string.
+  CALL FUNCTION 'Z_DEMO'
+    IMPORTING
+      ev_result = lv_result.
+ENDFORM.";
+
+        let snapshot = store.publish("file:///lint_call_function_ignored_output.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT);
+
+        assert_eq!(
+            ignored,
+            vec!["CALL FUNCTION 'Z_DEMO'\n    IMPORTING\n      ev_result = lv_result.".to_string()],
+            "{ignored:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_accepts_call_function_output_result_read() {
+        let store = DocumentStore::default();
+        let src = "\
+FORM run.
+  DATA lv_result TYPE string.
+  CALL FUNCTION 'Z_DEMO'
+    IMPORTING
+      ev_result = lv_result.
+  WRITE lv_result.
+  SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
+ENDFORM.";
+
+        let snapshot = store.publish("file:///lint_call_function_output_read.abap", 1, src);
+        let ignored = lint_slices(src, &snapshot, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT);
+
+        assert!(ignored.is_empty(), "{ignored:?}");
+    }
+
+    #[test]
+    fn local_lint_pack_honors_call_function_result_allow_comment() {
+        let store = DocumentStore::default();
+        let src = "\
+CALL FUNCTION 'Z_DEMO'
+  EXCEPTIONS
+    failed = 1. \" abap-lsp:allow(abap-lsp.ignored-call-function-result)
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).";
+
+        let snapshot = store.publish("file:///lint_call_function_allowed.abap", 1, src);
+
+        assert!(
+            snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|diag| diag.id != ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT),
+            "{:#?}",
+            snapshot.lint_diagnostics()
+        );
     }
 
     #[test]
