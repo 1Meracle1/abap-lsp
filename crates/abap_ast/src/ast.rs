@@ -423,6 +423,14 @@ impl<'a> SyntaxNodeRef<'a> {
             .map(|id| SyntaxNodeRef::new(self.tree, id))
     }
 
+    fn cast_child<T: AstNode<'a>>(self, kind: SyntaxKind) -> Option<T> {
+        self.child_by_kind(kind).and_then(T::cast)
+    }
+
+    fn cast_children<T: AstNode<'a> + 'a>(self) -> impl DoubleEndedIterator<Item = T> + Clone + 'a {
+        self.children().filter_map(T::cast)
+    }
+
     pub fn children_by_kind(
         self,
         kind: SyntaxKind,
@@ -539,6 +547,18 @@ macro_rules! ast_node {
     };
 }
 
+macro_rules! ast_value_node {
+    ($name:ident, $kind:expr) => {
+        ast_node!($name, $kind);
+
+        impl<'a> $name<'a> {
+            pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
+                self.syntax.first_non_token_child()
+            }
+        }
+    };
+}
+
 ast_node!(ExprIdent, SyntaxKind::ExprIdent);
 ast_node!(DataDecl, SyntaxKind::DataDecl);
 ast_node!(DataDeclName, SyntaxKind::DataDeclName);
@@ -579,12 +599,12 @@ ast_node!(
     ConstructorCorrespondingExceptClause,
     SyntaxKind::ConstructorCorrespondingExceptClause
 );
-ast_node!(ConstructorBaseClause, SyntaxKind::ConstructorBaseClause);
+ast_value_node!(ConstructorBaseClause, SyntaxKind::ConstructorBaseClause);
 ast_node!(
     ConstructorLinesOfClause,
     SyntaxKind::ConstructorLinesOfClause
 );
-ast_node!(ConstructorOptionalExpr, SyntaxKind::ConstructorOptionalExpr);
+ast_value_node!(ConstructorOptionalExpr, SyntaxKind::ConstructorOptionalExpr);
 ast_node!(AliasesStmt, SyntaxKind::AliasesStmt);
 ast_node!(AliasEntry, SyntaxKind::AliasEntry);
 ast_node!(AliasName, SyntaxKind::AliasName);
@@ -615,7 +635,7 @@ ast_node!(MethodsStmt, SyntaxKind::MethodsStmt);
 ast_node!(EventsStmt, SyntaxKind::EventsStmt);
 ast_node!(InterfacesStmt, SyntaxKind::InterfacesStmt);
 ast_node!(ClearStmt, SyntaxKind::ClearStmt);
-ast_node!(ClearOperand, SyntaxKind::ClearOperand);
+ast_value_node!(ClearOperand, SyntaxKind::ClearOperand);
 ast_node!(RefreshStmt, SyntaxKind::RefreshStmt);
 ast_node!(RefreshOperand, SyntaxKind::RefreshOperand);
 ast_node!(CollectStmt, SyntaxKind::CollectStmt);
@@ -643,62 +663,62 @@ ast_node!(
 ast_node!(MemoryIdOperand, SyntaxKind::MemoryIdOperand);
 ast_node!(DataBufferOperand, SyntaxKind::DataBufferOperand);
 ast_node!(ConvertStmt, SyntaxKind::ConvertStmt);
-ast_node!(ConvertOperand, SyntaxKind::ConvertOperand);
-ast_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);
-ast_node!(ConvertTimeZoneOperand, SyntaxKind::ConvertTimeZoneOperand);
-ast_node!(ConvertDateTarget, SyntaxKind::ConvertDateTarget);
-ast_node!(ConvertTimeTarget, SyntaxKind::ConvertTimeTarget);
-ast_node!(
+ast_value_node!(ConvertOperand, SyntaxKind::ConvertOperand);
+ast_value_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);
+ast_value_node!(ConvertTimeZoneOperand, SyntaxKind::ConvertTimeZoneOperand);
+ast_value_node!(ConvertDateTarget, SyntaxKind::ConvertDateTarget);
+ast_value_node!(ConvertTimeTarget, SyntaxKind::ConvertTimeTarget);
+ast_value_node!(
     ConvertDaylightSavingTarget,
     SyntaxKind::ConvertDaylightSavingTarget
 );
 ast_node!(DescribeStmt, SyntaxKind::DescribeStmt);
-ast_node!(DescribeTableOperand, SyntaxKind::DescribeTableOperand);
-ast_node!(DescribeLinesTarget, SyntaxKind::DescribeLinesTarget);
+ast_value_node!(DescribeTableOperand, SyntaxKind::DescribeTableOperand);
+ast_value_node!(DescribeLinesTarget, SyntaxKind::DescribeLinesTarget);
 ast_node!(ReplaceStmt, SyntaxKind::ReplaceStmt);
-ast_node!(ReplacePatternOperand, SyntaxKind::ReplacePatternOperand);
-ast_node!(ReplaceTargetOperand, SyntaxKind::ReplaceTargetOperand);
-ast_node!(ReplaceWithOperand, SyntaxKind::ReplaceWithOperand);
+ast_value_node!(ReplacePatternOperand, SyntaxKind::ReplacePatternOperand);
+ast_value_node!(ReplaceTargetOperand, SyntaxKind::ReplaceTargetOperand);
+ast_value_node!(ReplaceWithOperand, SyntaxKind::ReplaceWithOperand);
 ast_node!(WaitStmt, SyntaxKind::WaitStmt);
-ast_node!(WaitOperand, SyntaxKind::WaitOperand);
+ast_value_node!(WaitOperand, SyntaxKind::WaitOperand);
 ast_node!(PerformStmt, SyntaxKind::PerformStmt);
 ast_node!(SubmitStmt, SyntaxKind::SubmitStmt);
-ast_node!(SubmitTarget, SyntaxKind::SubmitTarget);
-ast_node!(
+ast_value_node!(SubmitTarget, SyntaxKind::SubmitTarget);
+ast_value_node!(
     SubmitSelectionScreenOperand,
     SyntaxKind::SubmitSelectionScreenOperand
 );
-ast_node!(
+ast_value_node!(
     SubmitSelectionSetOperand,
     SyntaxKind::SubmitSelectionSetOperand
 );
-ast_node!(
+ast_value_node!(
     SubmitSelectionSetsProgramOperand,
     SyntaxKind::SubmitSelectionSetsProgramOperand
 );
-ast_node!(
+ast_value_node!(
     SubmitSelectionTableOperand,
     SyntaxKind::SubmitSelectionTableOperand
 );
 ast_node!(SubmitWithClause, SyntaxKind::SubmitWithClause);
-ast_node!(
+ast_value_node!(
     SubmitFreeSelectionsOperand,
     SyntaxKind::SubmitFreeSelectionsOperand
 );
-ast_node!(SubmitLineSizeOperand, SyntaxKind::SubmitLineSizeOperand);
-ast_node!(SubmitLineCountOperand, SyntaxKind::SubmitLineCountOperand);
-ast_node!(
+ast_value_node!(SubmitLineSizeOperand, SyntaxKind::SubmitLineSizeOperand);
+ast_value_node!(SubmitLineCountOperand, SyntaxKind::SubmitLineCountOperand);
+ast_value_node!(
     SubmitSpoolParametersOperand,
     SyntaxKind::SubmitSpoolParametersOperand
 );
-ast_node!(
+ast_value_node!(
     SubmitArchiveParametersOperand,
     SyntaxKind::SubmitArchiveParametersOperand
 );
-ast_node!(SubmitUserOperand, SyntaxKind::SubmitUserOperand);
-ast_node!(SubmitJobOperand, SyntaxKind::SubmitJobOperand);
-ast_node!(SubmitJobNumberOperand, SyntaxKind::SubmitJobNumberOperand);
-ast_node!(SubmitLanguageOperand, SyntaxKind::SubmitLanguageOperand);
+ast_value_node!(SubmitUserOperand, SyntaxKind::SubmitUserOperand);
+ast_value_node!(SubmitJobOperand, SyntaxKind::SubmitJobOperand);
+ast_value_node!(SubmitJobNumberOperand, SyntaxKind::SubmitJobNumberOperand);
+ast_value_node!(SubmitLanguageOperand, SyntaxKind::SubmitLanguageOperand);
 ast_node!(CreateObjectStmt, SyntaxKind::CreateObjectStmt);
 ast_node!(CreateDataStmt, SyntaxKind::CreateDataStmt);
 ast_node!(CallStmt, SyntaxKind::CallStmt);
@@ -725,11 +745,11 @@ ast_node!(ContinueStmt, SyntaxKind::ContinueStmt);
 ast_node!(ExitStmt, SyntaxKind::ExitStmt);
 ast_node!(ReturnStmt, SyntaxKind::ReturnStmt);
 ast_node!(StopStmt, SyntaxKind::StopStmt);
-ast_node!(FindPatternOperand, SyntaxKind::FindPatternOperand);
-ast_node!(FindInOperand, SyntaxKind::FindInOperand);
-ast_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
-ast_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
-ast_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
+ast_value_node!(FindPatternOperand, SyntaxKind::FindPatternOperand);
+ast_value_node!(FindInOperand, SyntaxKind::FindInOperand);
+ast_value_node!(FindMatchTarget, SyntaxKind::FindMatchTarget);
+ast_value_node!(FindSubmatchTarget, SyntaxKind::FindSubmatchTarget);
+ast_value_node!(FindResultsTarget, SyntaxKind::FindResultsTarget);
 ast_node!(ReadTableStmt, SyntaxKind::ReadTableStmt);
 ast_node!(ReadDatasetStmt, SyntaxKind::ReadDatasetStmt);
 ast_node!(ReadTextpoolStmt, SyntaxKind::ReadTextpoolStmt);
@@ -762,17 +782,17 @@ ast_node!(
     SyntaxKind::SourceMaintenanceWordOperand
 );
 ast_node!(AuthorityCheckStmt, SyntaxKind::AuthorityCheckStmt);
-ast_node!(
+ast_value_node!(
     AuthorityCheckObjectOperand,
     SyntaxKind::AuthorityCheckObjectOperand
 );
-ast_node!(
+ast_value_node!(
     AuthorityCheckUserOperand,
     SyntaxKind::AuthorityCheckUserOperand
 );
 ast_node!(AuthorityCheckIdClause, SyntaxKind::AuthorityCheckIdClause);
-ast_node!(AuthorityCheckIdOperand, SyntaxKind::AuthorityCheckIdOperand);
-ast_node!(
+ast_value_node!(AuthorityCheckIdOperand, SyntaxKind::AuthorityCheckIdOperand);
+ast_value_node!(
     AuthorityCheckFieldOperand,
     SyntaxKind::AuthorityCheckFieldOperand
 );
@@ -791,19 +811,19 @@ ast_node!(
 );
 ast_node!(GenerateDynproStmt, SyntaxKind::GenerateDynproStmt);
 ast_node!(SplitStmt, SyntaxKind::SplitStmt);
-ast_node!(SplitSourceOperand, SyntaxKind::SplitSourceOperand);
-ast_node!(SplitSeparatorOperand, SyntaxKind::SplitSeparatorOperand);
-ast_node!(SplitTargetOperand, SyntaxKind::SplitTargetOperand);
+ast_value_node!(SplitSourceOperand, SyntaxKind::SplitSourceOperand);
+ast_value_node!(SplitSeparatorOperand, SyntaxKind::SplitSeparatorOperand);
+ast_value_node!(SplitTargetOperand, SyntaxKind::SplitTargetOperand);
 ast_node!(ConcatenateStmt, SyntaxKind::ConcatenateStmt);
-ast_node!(
+ast_value_node!(
     ConcatenateSourceOperand,
     SyntaxKind::ConcatenateSourceOperand
 );
-ast_node!(
+ast_value_node!(
     ConcatenateTargetOperand,
     SyntaxKind::ConcatenateTargetOperand
 );
-ast_node!(
+ast_value_node!(
     ConcatenateSeparatorOperand,
     SyntaxKind::ConcatenateSeparatorOperand
 );
@@ -877,9 +897,9 @@ ast_node!(UpdateStmt, SyntaxKind::UpdateStmt);
 ast_node!(UpdateTarget, SyntaxKind::UpdateTarget);
 ast_node!(UpdateSetClause, SyntaxKind::UpdateSetClause);
 ast_node!(UpdateSetAssignment, SyntaxKind::UpdateSetAssignment);
-ast_node!(UpdateSetValueOperand, SyntaxKind::UpdateSetValueOperand);
-ast_node!(UpdateFromOperand, SyntaxKind::UpdateFromOperand);
-ast_node!(UpdateWhereClause, SyntaxKind::UpdateWhereClause);
+ast_value_node!(UpdateSetValueOperand, SyntaxKind::UpdateSetValueOperand);
+ast_value_node!(UpdateFromOperand, SyntaxKind::UpdateFromOperand);
+ast_value_node!(UpdateWhereClause, SyntaxKind::UpdateWhereClause);
 
 #[derive(Clone, Copy)]
 pub struct DeclClause<'a> {
@@ -1006,9 +1026,7 @@ fn block_header_signature_text<'a>(syntax: SyntaxNodeRef<'a>, source: &str) -> S
 
 impl<'a> FormDecl<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 
     pub fn signature_text(self, source: &str) -> String {
@@ -1018,7 +1036,7 @@ impl<'a> FormDecl<'a> {
     pub fn param_sections(
         self,
     ) -> impl DoubleEndedIterator<Item = FormParamSection<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(FormParamSection::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -1040,15 +1058,13 @@ impl<'a> FormParamSection<'a> {
     }
 
     pub fn params(self) -> impl DoubleEndedIterator<Item = FormParam<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(FormParam::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> FormParam<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 
     pub fn passing_kind(self, source: &str) -> FormParamPassingKind {
@@ -1084,9 +1100,7 @@ impl<'a> FormParam<'a> {
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn is_resumable(self, source: &str) -> bool {
@@ -1100,9 +1114,7 @@ impl<'a> FormParam<'a> {
 
 impl<'a> FunctionDecl<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 
     pub fn signature_text(self, source: &str) -> String {
@@ -1112,9 +1124,7 @@ impl<'a> FunctionDecl<'a> {
     pub fn param_sections(
         self,
     ) -> impl DoubleEndedIterator<Item = FunctionParamSection<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(FunctionParamSection::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -1140,15 +1150,13 @@ impl<'a> FunctionParamSection<'a> {
     }
 
     pub fn params(self) -> impl DoubleEndedIterator<Item = FunctionParam<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(FunctionParam::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> FunctionParam<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 
     pub fn passing_kind(self, source: &str) -> FormParamPassingKind {
@@ -1184,9 +1192,7 @@ impl<'a> FunctionParam<'a> {
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn is_optional(self, source: &str) -> bool {
@@ -1236,25 +1242,19 @@ impl<'a> ClassSectionVisibility<'a> {
 
 impl<'a> ClassSectionStmt<'a> {
     pub fn visibility(self) -> Option<ClassSectionVisibility<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ClassSectionVisibility)
-            .and_then(ClassSectionVisibility::cast)
+        self.syntax.cast_child(SyntaxKind::ClassSectionVisibility)
     }
 }
 
 impl<'a> ClassInheritanceClause<'a> {
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 }
 
 impl<'a> ClassDecl<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 
     pub fn is_implementation(self) -> bool {
@@ -1264,9 +1264,7 @@ impl<'a> ClassDecl<'a> {
     }
 
     pub fn inheritance_clause(self) -> Option<ClassInheritanceClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ClassInheritanceClause)
-            .and_then(ClassInheritanceClause::cast)
+        self.syntax.cast_child(SyntaxKind::ClassInheritanceClause)
     }
 
     pub fn superclass(self) -> Option<TypeRefSimple<'a>> {
@@ -1286,49 +1284,41 @@ impl<'a> ClassDecl<'a> {
 
 impl<'a> InterfaceDecl<'a> {
     pub fn name_token(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 }
 
 impl<'a> MethodDeclTarget<'a> {
     pub fn qualifier(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn member_name(self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 }
 
 impl<'a> MethodDecl<'a> {
     pub fn target(self) -> Option<MethodDeclTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::MethodDeclTarget)
-            .and_then(MethodDeclTarget::cast)
+        self.syntax.cast_child(SyntaxKind::MethodDeclTarget)
     }
 }
 
 impl<'a> IncludeStmt<'a> {
     pub fn names(self) -> impl DoubleEndedIterator<Item = IncludeName<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(IncludeName::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> DataDecl<'a> {
     pub fn clauses(&self) -> impl DoubleEndedIterator<Item = DeclClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(DeclClause::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> DataLikeDecl<'a> {
     pub fn clauses(&self) -> impl DoubleEndedIterator<Item = DeclClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(DeclClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn storage_kind(self, source: &str) -> Option<DataLikeStorageKind> {
@@ -1372,13 +1362,11 @@ impl<'a> DataLikeDecl<'a> {
 
 impl<'a> DeclClause<'a> {
     pub fn name(&self) -> Option<DataDeclName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::DataDeclName)
-            .and_then(DataDeclName::cast)
+        self.syntax.cast_child(SyntaxKind::DataDeclName)
     }
 
     pub fn type_refs(&self) -> impl DoubleEndedIterator<Item = TypeRefSimple<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(TypeRefSimple::cast)
+        self.syntax.cast_children()
     }
 
     pub fn first_type_ref(&self) -> Option<TypeRefSimple<'a>> {
@@ -1496,9 +1484,7 @@ impl<'a> StructuredIncludeClause<'a> {
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn alias_name_token(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
@@ -1638,9 +1624,7 @@ impl<'a> CallExpr<'a> {
     }
 
     pub fn arg_list(&self) -> Option<CallArgList<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallArgList)
-            .and_then(CallArgList::cast)
+        self.syntax.cast_child(SyntaxKind::CallArgList)
     }
 }
 
@@ -1660,15 +1644,11 @@ impl<'a> ConstructorExpr<'a> {
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn arg_list(self) -> Option<CallArgList<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallArgList)
-            .and_then(CallArgList::cast)
+        self.syntax.cast_child(SyntaxKind::CallArgList)
     }
 }
 
@@ -1676,9 +1656,7 @@ impl<'a> LetExpr<'a> {
     pub fn bindings(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorLetBinding<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorLetBinding::cast)
+        self.syntax.cast_children()
     }
 
     pub fn result_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
@@ -1717,87 +1695,71 @@ impl<'a> CallArgList<'a> {
     }
 
     pub fn sections(self) -> impl DoubleEndedIterator<Item = CallArgSection<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(CallArgSection::cast)
+        self.syntax.cast_children()
     }
 
     pub fn named_args(self) -> impl DoubleEndedIterator<Item = CallNamedArg<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(CallNamedArg::cast)
+        self.syntax.cast_children()
     }
 
     pub fn positional_args(
         self,
     ) -> impl DoubleEndedIterator<Item = CallPositionalArg<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(CallPositionalArg::cast)
+        self.syntax.cast_children()
     }
 
     pub fn constructor_when_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorWhenClause<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorWhenClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn constructor_else_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorElseClause<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorElseClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn constructor_for_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorForClause<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorForClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn constructor_init_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorInitClause<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorInitClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn constructor_next_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNextClause<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorNextClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn constructor_named_assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorNamedAssignment::cast)
+        self.syntax.cast_children()
     }
 
     pub fn corresponding_mapping_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorCorrespondingMappingClause<'a>> + Clone + 'a
     {
-        self.syntax
-            .children()
-            .filter_map(ConstructorCorrespondingMappingClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn corresponding_except_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorCorrespondingExceptClause<'a>> + Clone + 'a
     {
-        self.syntax
-            .children()
-            .filter_map(ConstructorCorrespondingExceptClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn let_exprs(self) -> impl DoubleEndedIterator<Item = LetExpr<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(LetExpr::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -1936,9 +1898,7 @@ impl<'a> ConstructorInitClause<'a> {
     pub fn assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorNamedAssignment::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -1946,9 +1906,7 @@ impl<'a> ConstructorNextClause<'a> {
     pub fn assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorNamedAssignment<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConstructorNamedAssignment::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -1967,9 +1925,7 @@ impl<'a> ConstructorCorrespondingMappingClause<'a> {
         self,
     ) -> impl DoubleEndedIterator<Item = ConstructorCorrespondingMappingAssignment<'a>> + Clone + 'a
     {
-        self.syntax
-            .children()
-            .filter_map(ConstructorCorrespondingMappingAssignment::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -2018,20 +1974,12 @@ impl<'a> ConstructorCorrespondingMappingAssignment<'a> {
 
     pub fn mapping_clause(self) -> Option<ConstructorCorrespondingMappingClause<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::ConstructorCorrespondingMappingClause)
-            .and_then(ConstructorCorrespondingMappingClause::cast)
+            .cast_child(SyntaxKind::ConstructorCorrespondingMappingClause)
     }
 
     pub fn except_clause(self) -> Option<ConstructorCorrespondingExceptClause<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::ConstructorCorrespondingExceptClause)
-            .and_then(ConstructorCorrespondingExceptClause::cast)
-    }
-}
-
-impl<'a> ConstructorBaseClause<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+            .cast_child(SyntaxKind::ConstructorCorrespondingExceptClause)
     }
 }
 
@@ -2049,15 +1997,9 @@ impl<'a> ConstructorLinesOfClause<'a> {
     }
 }
 
-impl<'a> ConstructorOptionalExpr<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
 impl<'a> MethodsStmt<'a> {
     pub fn type_refs(&self) -> impl DoubleEndedIterator<Item = TypeRefSimple<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(TypeRefSimple::cast)
+        self.syntax.cast_children()
     }
 
     pub fn member_kind(self, source: &str) -> Option<MethodsStmtKind> {
@@ -2604,7 +2546,7 @@ impl<'a> MethodsStmt<'a> {
 
 impl<'a> EventsStmt<'a> {
     pub fn type_refs(&self) -> impl DoubleEndedIterator<Item = TypeRefSimple<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(TypeRefSimple::cast)
+        self.syntax.cast_children()
     }
 
     pub fn member_kind(self, source: &str) -> Option<EventsStmtKind> {
@@ -2766,99 +2708,36 @@ impl<'a> EventsStmt<'a> {
     }
 }
 
-impl<'a> ClearOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
 impl<'a> ClearStmt<'a> {
     pub fn operands(self) -> impl DoubleEndedIterator<Item = ClearOperand<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ClearOperand::cast)
-    }
-}
-
-impl<'a> ConvertOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConvertTargetOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConvertTimeZoneOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConvertDateTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConvertTimeTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConvertDaylightSavingTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> ConvertStmt<'a> {
     pub fn operands(self) -> impl DoubleEndedIterator<Item = ConvertOperand<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ConvertOperand::cast)
+        self.syntax.cast_children()
     }
 
     pub fn target(self) -> Option<ConvertTargetOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ConvertTargetOperand)
-            .and_then(ConvertTargetOperand::cast)
+        self.syntax.cast_child(SyntaxKind::ConvertTargetOperand)
     }
 
     pub fn time_zone(self) -> Option<ConvertTimeZoneOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ConvertTimeZoneOperand)
-            .and_then(ConvertTimeZoneOperand::cast)
+        self.syntax.cast_child(SyntaxKind::ConvertTimeZoneOperand)
     }
 
     pub fn date_target(self) -> Option<ConvertDateTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ConvertDateTarget)
-            .and_then(ConvertDateTarget::cast)
+        self.syntax.cast_child(SyntaxKind::ConvertDateTarget)
     }
 
     pub fn time_target(self) -> Option<ConvertTimeTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ConvertTimeTarget)
-            .and_then(ConvertTimeTarget::cast)
+        self.syntax.cast_child(SyntaxKind::ConvertTimeTarget)
     }
 
     pub fn daylight_saving_target(self) -> Option<ConvertDaylightSavingTarget<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::ConvertDaylightSavingTarget)
-            .and_then(ConvertDaylightSavingTarget::cast)
-    }
-}
-
-impl<'a> DescribeTableOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> DescribeLinesTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+            .cast_child(SyntaxKind::ConvertDaylightSavingTarget)
     }
 }
 
@@ -2866,15 +2745,13 @@ impl<'a> DescribeStmt<'a> {
     pub fn table_operands(
         self,
     ) -> impl DoubleEndedIterator<Item = DescribeTableOperand<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(DescribeTableOperand::cast)
+        self.syntax.cast_children()
     }
 
     pub fn lines_targets(
         self,
     ) -> impl DoubleEndedIterator<Item = DescribeLinesTarget<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(DescribeLinesTarget::cast)
+        self.syntax.cast_children()
     }
 
     pub fn table_operand(self) -> Option<DescribeTableOperand<'a>> {
@@ -2886,57 +2763,27 @@ impl<'a> DescribeStmt<'a> {
     }
 }
 
-impl<'a> ReplacePatternOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ReplaceTargetOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ReplaceWithOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
 impl<'a> ReplaceStmt<'a> {
     pub fn patterns(
         self,
     ) -> impl DoubleEndedIterator<Item = ReplacePatternOperand<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ReplacePatternOperand::cast)
+        self.syntax.cast_children()
     }
 
     pub fn targets(self) -> impl DoubleEndedIterator<Item = ReplaceTargetOperand<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ReplaceTargetOperand::cast)
+        self.syntax.cast_children()
     }
 
     pub fn replacements(
         self,
     ) -> impl DoubleEndedIterator<Item = ReplaceWithOperand<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(ReplaceWithOperand::cast)
-    }
-}
-
-impl<'a> WaitOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> WaitStmt<'a> {
     pub fn duration(self) -> Option<WaitOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::WaitOperand)
-            .and_then(WaitOperand::cast)
+        self.syntax.cast_child(SyntaxKind::WaitOperand)
     }
 }
 
@@ -2963,9 +2810,7 @@ impl<'a> SubmitStmt<'a> {
     }
 
     pub fn target(self) -> Option<SubmitTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitTarget)
-            .and_then(SubmitTarget::cast)
+        self.syntax.cast_child(SyntaxKind::SubmitTarget)
     }
 
     pub fn target_token(self) -> Option<SyntaxNodeRef<'a>> {
@@ -2976,116 +2821,67 @@ impl<'a> SubmitStmt<'a> {
 
     pub fn selection_screen(self) -> Option<SubmitSelectionScreenOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitSelectionScreenOperand)
-            .and_then(SubmitSelectionScreenOperand::cast)
+            .cast_child(SyntaxKind::SubmitSelectionScreenOperand)
     }
 
     pub fn selection_set(self) -> Option<SubmitSelectionSetOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitSelectionSetOperand)
-            .and_then(SubmitSelectionSetOperand::cast)
+            .cast_child(SyntaxKind::SubmitSelectionSetOperand)
     }
 
     pub fn selection_sets_program(self) -> Option<SubmitSelectionSetsProgramOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitSelectionSetsProgramOperand)
-            .and_then(SubmitSelectionSetsProgramOperand::cast)
+            .cast_child(SyntaxKind::SubmitSelectionSetsProgramOperand)
     }
 
     pub fn selection_table(self) -> Option<SubmitSelectionTableOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitSelectionTableOperand)
-            .and_then(SubmitSelectionTableOperand::cast)
+            .cast_child(SyntaxKind::SubmitSelectionTableOperand)
     }
 
     pub fn with_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = SubmitWithClause<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(SubmitWithClause::cast)
+        self.syntax.cast_children()
     }
 
     pub fn free_selections(self) -> Option<SubmitFreeSelectionsOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitFreeSelectionsOperand)
-            .and_then(SubmitFreeSelectionsOperand::cast)
+            .cast_child(SyntaxKind::SubmitFreeSelectionsOperand)
     }
 
     pub fn line_size(self) -> Option<SubmitLineSizeOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitLineSizeOperand)
-            .and_then(SubmitLineSizeOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SubmitLineSizeOperand)
     }
 
     pub fn line_count(self) -> Option<SubmitLineCountOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitLineCountOperand)
-            .and_then(SubmitLineCountOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SubmitLineCountOperand)
     }
 
     pub fn spool_parameters(self) -> Option<SubmitSpoolParametersOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitSpoolParametersOperand)
-            .and_then(SubmitSpoolParametersOperand::cast)
+            .cast_child(SyntaxKind::SubmitSpoolParametersOperand)
     }
 
     pub fn archive_parameters(self) -> Option<SubmitArchiveParametersOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::SubmitArchiveParametersOperand)
-            .and_then(SubmitArchiveParametersOperand::cast)
+            .cast_child(SyntaxKind::SubmitArchiveParametersOperand)
     }
 
     pub fn user(self) -> Option<SubmitUserOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitUserOperand)
-            .and_then(SubmitUserOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SubmitUserOperand)
     }
 
     pub fn job(self) -> Option<SubmitJobOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitJobOperand)
-            .and_then(SubmitJobOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SubmitJobOperand)
     }
 
     pub fn job_number(self) -> Option<SubmitJobNumberOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitJobNumberOperand)
-            .and_then(SubmitJobNumberOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SubmitJobNumberOperand)
     }
 
     pub fn language(self) -> Option<SubmitLanguageOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SubmitLanguageOperand)
-            .and_then(SubmitLanguageOperand::cast)
-    }
-}
-
-impl<'a> SubmitTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitSelectionScreenOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitSelectionSetOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitSelectionSetsProgramOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitSelectionTableOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_child(SyntaxKind::SubmitLanguageOperand)
     }
 }
 
@@ -3095,71 +2891,13 @@ impl<'a> SubmitWithClause<'a> {
     }
 }
 
-impl<'a> SubmitFreeSelectionsOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitLineSizeOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitLineCountOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitSpoolParametersOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitArchiveParametersOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitUserOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitJobOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitJobNumberOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SubmitLanguageOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
 impl<'a> RaiseStmt<'a> {
     pub fn exception_type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn arg_list(self) -> Option<CallArgList<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallArgList)
-            .and_then(CallArgList::cast)
+        self.syntax.cast_child(SyntaxKind::CallArgList)
     }
 
     pub fn trailing_children(self) -> Vec<SyntaxNodeRef<'a>> {
@@ -3186,15 +2924,11 @@ impl<'a> CreateObjectStmt<'a> {
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn arg_list(self) -> Option<CallArgList<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallArgList)
-            .and_then(CallArgList::cast)
+        self.syntax.cast_child(SyntaxKind::CallArgList)
     }
 }
 
@@ -3221,9 +2955,7 @@ impl<'a> CreateDataStmt<'a> {
     }
 
     pub fn type_ref(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn type_value(self, source: &str) -> Option<SyntaxNodeRef<'a>> {
@@ -3243,15 +2975,11 @@ impl<'a> CreateDataStmt<'a> {
 
 impl<'a> CallMethodStmt<'a> {
     pub fn target(self) -> Option<CallMethodTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallMethodTarget)
-            .and_then(CallMethodTarget::cast)
+        self.syntax.cast_child(SyntaxKind::CallMethodTarget)
     }
 
     pub fn arg_list(self) -> Option<CallArgList<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallArgList)
-            .and_then(CallArgList::cast)
+        self.syntax.cast_child(SyntaxKind::CallArgList)
     }
 }
 
@@ -3301,79 +3029,59 @@ impl<'a> CallStmt<'a> {
     }
 
     pub fn direct_call(self) -> Option<CallExpr<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallExpr)
-            .and_then(CallExpr::cast)
+        self.syntax.cast_child(SyntaxKind::CallExpr)
     }
 
     pub fn arg_list(self) -> Option<CallArgList<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CallArgList)
-            .and_then(CallArgList::cast)
+        self.syntax.cast_child(SyntaxKind::CallArgList)
     }
 }
 
 impl<'a> InterfacesStmt<'a> {
     pub fn type_refs(&self) -> impl DoubleEndedIterator<Item = TypeRefSimple<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(TypeRefSimple::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> AliasesStmt<'a> {
     pub fn entries(self) -> impl DoubleEndedIterator<Item = AliasEntry<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(AliasEntry::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> AliasEntry<'a> {
     pub fn alias_name(self) -> Option<AliasName<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::AliasName)
-            .and_then(AliasName::cast)
+        self.syntax.cast_child(SyntaxKind::AliasName)
     }
 
     pub fn target_interface(self) -> Option<TypeRefSimple<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::TypeRefSimple)
-            .and_then(TypeRefSimple::cast)
+        self.syntax.cast_child(SyntaxKind::TypeRefSimple)
     }
 
     pub fn target_member(self) -> Option<AliasMember<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::AliasMember)
-            .and_then(AliasMember::cast)
+        self.syntax.cast_child(SyntaxKind::AliasMember)
     }
 }
 
 impl<'a> MessageStmt<'a> {
     pub fn head_clause(self) -> Option<MessageHeadClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::MessageHeadClause)
-            .and_then(MessageHeadClause::cast)
+        self.syntax.cast_child(SyntaxKind::MessageHeadClause)
     }
 
     pub fn with_clause(self) -> Option<MessageWithClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::MessageWithClause)
-            .and_then(MessageWithClause::cast)
+        self.syntax.cast_child(SyntaxKind::MessageWithClause)
     }
 
     pub fn into_clause(self) -> Option<MessageIntoClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::MessageIntoClause)
-            .and_then(MessageIntoClause::cast)
+        self.syntax.cast_child(SyntaxKind::MessageIntoClause)
     }
 
     pub fn display_like_clause(self) -> Option<MessageDisplayLikeClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::MessageDisplayLikeClause)
-            .and_then(MessageDisplayLikeClause::cast)
+        self.syntax.cast_child(SyntaxKind::MessageDisplayLikeClause)
     }
 
     pub fn raising_clause(self) -> Option<MessageRaisingClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::MessageRaisingClause)
-            .and_then(MessageRaisingClause::cast)
+        self.syntax.cast_child(SyntaxKind::MessageRaisingClause)
     }
 }
 
@@ -3391,63 +3099,29 @@ impl<'a> MessageWithClause<'a> {
 
 impl<'a> FindStmt<'a> {
     pub fn pattern(self) -> Option<FindPatternOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::FindPatternOperand)
-            .and_then(FindPatternOperand::cast)
+        self.syntax.cast_child(SyntaxKind::FindPatternOperand)
     }
 
     pub fn target(self) -> Option<FindInOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::FindInOperand)
-            .and_then(FindInOperand::cast)
+        self.syntax.cast_child(SyntaxKind::FindInOperand)
     }
 
     pub fn match_targets(
         self,
     ) -> impl DoubleEndedIterator<Item = FindMatchTarget<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(FindMatchTarget::cast)
+        self.syntax.cast_children()
     }
 
     pub fn submatch_targets(
         self,
     ) -> impl DoubleEndedIterator<Item = FindSubmatchTarget<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(FindSubmatchTarget::cast)
+        self.syntax.cast_children()
     }
 
     pub fn results_targets(
         self,
     ) -> impl DoubleEndedIterator<Item = FindResultsTarget<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(FindResultsTarget::cast)
-    }
-}
-
-impl<'a> FindPatternOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> FindInOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> FindMatchTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> FindSubmatchTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> FindResultsTarget<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_children()
     }
 }
 
@@ -3482,60 +3156,29 @@ impl<'a> ReadTableStmt<'a> {
 impl<'a> AuthorityCheckStmt<'a> {
     pub fn object(self) -> Option<AuthorityCheckObjectOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::AuthorityCheckObjectOperand)
-            .and_then(AuthorityCheckObjectOperand::cast)
+            .cast_child(SyntaxKind::AuthorityCheckObjectOperand)
     }
 
     pub fn user(self) -> Option<AuthorityCheckUserOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::AuthorityCheckUserOperand)
-            .and_then(AuthorityCheckUserOperand::cast)
+            .cast_child(SyntaxKind::AuthorityCheckUserOperand)
     }
 
     pub fn id_clauses(
         self,
     ) -> impl DoubleEndedIterator<Item = AuthorityCheckIdClause<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(AuthorityCheckIdClause::cast)
-    }
-}
-
-impl<'a> AuthorityCheckObjectOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> AuthorityCheckUserOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> AuthorityCheckIdClause<'a> {
     pub fn id(self) -> Option<AuthorityCheckIdOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::AuthorityCheckIdOperand)
-            .and_then(AuthorityCheckIdOperand::cast)
+        self.syntax.cast_child(SyntaxKind::AuthorityCheckIdOperand)
     }
 
     pub fn field(self) -> Option<AuthorityCheckFieldOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::AuthorityCheckFieldOperand)
-            .and_then(AuthorityCheckFieldOperand::cast)
-    }
-}
-
-impl<'a> AuthorityCheckIdOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> AuthorityCheckFieldOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+            .cast_child(SyntaxKind::AuthorityCheckFieldOperand)
     }
 }
 
@@ -3545,57 +3188,17 @@ impl<'a> WriteStmt<'a> {
     }
 }
 
-impl<'a> SplitSourceOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SplitSeparatorOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> SplitTargetOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
 impl<'a> SplitStmt<'a> {
     pub fn source(self) -> Option<SplitSourceOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SplitSourceOperand)
-            .and_then(SplitSourceOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SplitSourceOperand)
     }
 
     pub fn separator(self) -> Option<SplitSeparatorOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SplitSeparatorOperand)
-            .and_then(SplitSeparatorOperand::cast)
+        self.syntax.cast_child(SyntaxKind::SplitSeparatorOperand)
     }
 
     pub fn targets(self) -> impl DoubleEndedIterator<Item = SplitTargetOperand<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(SplitTargetOperand::cast)
-    }
-}
-
-impl<'a> ConcatenateSourceOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConcatenateTargetOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> ConcatenateSeparatorOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_children()
     }
 }
 
@@ -3603,47 +3206,22 @@ impl<'a> ConcatenateStmt<'a> {
     pub fn sources(
         self,
     ) -> impl DoubleEndedIterator<Item = ConcatenateSourceOperand<'a>> + Clone + 'a {
-        self.syntax
-            .children()
-            .filter_map(ConcatenateSourceOperand::cast)
+        self.syntax.cast_children()
     }
 
     pub fn target(self) -> Option<ConcatenateTargetOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::ConcatenateTargetOperand)
-            .and_then(ConcatenateTargetOperand::cast)
+        self.syntax.cast_child(SyntaxKind::ConcatenateTargetOperand)
     }
 
     pub fn separator(self) -> Option<ConcatenateSeparatorOperand<'a>> {
         self.syntax
-            .child_by_kind(SyntaxKind::ConcatenateSeparatorOperand)
-            .and_then(ConcatenateSeparatorOperand::cast)
-    }
-}
-
-impl<'a> UpdateSetValueOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+            .cast_child(SyntaxKind::ConcatenateSeparatorOperand)
     }
 }
 
 impl<'a> UpdateSetAssignment<'a> {
     pub fn value(self) -> Option<UpdateSetValueOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::UpdateSetValueOperand)
-            .and_then(UpdateSetValueOperand::cast)
-    }
-}
-
-impl<'a> UpdateFromOperand<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
-    }
-}
-
-impl<'a> UpdateWhereClause<'a> {
-    pub fn value(self) -> Option<SyntaxNodeRef<'a>> {
-        self.syntax.first_non_token_child()
+        self.syntax.cast_child(SyntaxKind::UpdateSetValueOperand)
     }
 }
 
@@ -3729,27 +3307,19 @@ impl<'a> SortStmt<'a> {
 
 impl<'a> UpdateStmt<'a> {
     pub fn target(self) -> Option<UpdateTarget<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::UpdateTarget)
-            .and_then(UpdateTarget::cast)
+        self.syntax.cast_child(SyntaxKind::UpdateTarget)
     }
 
     pub fn set_clause(self) -> Option<UpdateSetClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::UpdateSetClause)
-            .and_then(UpdateSetClause::cast)
+        self.syntax.cast_child(SyntaxKind::UpdateSetClause)
     }
 
     pub fn from_operand(self) -> Option<UpdateFromOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::UpdateFromOperand)
-            .and_then(UpdateFromOperand::cast)
+        self.syntax.cast_child(SyntaxKind::UpdateFromOperand)
     }
 
     pub fn where_clause(self) -> Option<UpdateWhereClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::UpdateWhereClause)
-            .and_then(UpdateWhereClause::cast)
+        self.syntax.cast_child(SyntaxKind::UpdateWhereClause)
     }
 }
 
@@ -3757,21 +3327,17 @@ impl<'a> UpdateSetClause<'a> {
     pub fn assignments(
         self,
     ) -> impl DoubleEndedIterator<Item = UpdateSetAssignment<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(UpdateSetAssignment::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> SelectStmt<'a> {
     pub fn with_clause(&self) -> Option<SelectWithClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SelectWithClause)
-            .and_then(SelectWithClause::cast)
+        self.syntax.cast_child(SyntaxKind::SelectWithClause)
     }
 
     pub fn query(&self) -> Option<SelectQuery<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SelectQuery)
-            .and_then(SelectQuery::cast)
+        self.syntax.cast_child(SyntaxKind::SelectQuery)
     }
 
     pub fn non_query_children(
@@ -3785,31 +3351,23 @@ impl<'a> SelectStmt<'a> {
 
 impl<'a> OpenCursorStmt<'a> {
     pub fn handle(&self) -> Option<CursorHandleOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CursorHandleOperand)
-            .and_then(CursorHandleOperand::cast)
+        self.syntax.cast_child(SyntaxKind::CursorHandleOperand)
     }
 
     pub fn query(&self) -> Option<SelectQuery<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SelectQuery)
-            .and_then(SelectQuery::cast)
+        self.syntax.cast_child(SyntaxKind::SelectQuery)
     }
 }
 
 impl<'a> FetchCursorStmt<'a> {
     pub fn handle(&self) -> Option<CursorHandleOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CursorHandleOperand)
-            .and_then(CursorHandleOperand::cast)
+        self.syntax.cast_child(SyntaxKind::CursorHandleOperand)
     }
 }
 
 impl<'a> CloseCursorStmt<'a> {
     pub fn handle(&self) -> Option<CursorHandleOperand<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::CursorHandleOperand)
-            .and_then(CursorHandleOperand::cast)
+        self.syntax.cast_child(SyntaxKind::CursorHandleOperand)
     }
 }
 
@@ -3830,21 +3388,19 @@ impl<'a> SelectWithClause<'a> {
     pub fn definitions(
         self,
     ) -> impl DoubleEndedIterator<Item = SelectCteDefinition<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(SelectCteDefinition::cast)
+        self.syntax.cast_children()
     }
 }
 
 impl<'a> SelectCteDefinition<'a> {
     pub fn query(self) -> Option<SelectQuery<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SelectQuery)
-            .and_then(SelectQuery::cast)
+        self.syntax.cast_child(SyntaxKind::SelectQuery)
     }
 }
 
 impl<'a> SelectProjectionList<'a> {
     pub fn items(self) -> impl DoubleEndedIterator<Item = SqlProjectionItem<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(SqlProjectionItem::cast)
+        self.syntax.cast_children()
     }
 }
 
@@ -3915,7 +3471,7 @@ impl<'a> SelectJoinClause<'a> {
 
 impl<'a> SqlPredicateExpr<'a> {
     pub fn operands(self) -> impl DoubleEndedIterator<Item = SqlPredicateOperand<'a>> + Clone + 'a {
-        self.syntax.children().filter_map(SqlPredicateOperand::cast)
+        self.syntax.cast_children()
     }
 
     pub fn token_texts(self, source: &'a str) -> Vec<&'a str> {
@@ -3937,9 +3493,7 @@ impl<'a> SqlPredicateOperand<'a> {
 
 impl<'a> SqlProjectionItem<'a> {
     pub fn alias_clause(self) -> Option<SqlAliasClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SqlAliasClause)
-            .and_then(SqlAliasClause::cast)
+        self.syntax.cast_child(SyntaxKind::SqlAliasClause)
     }
 
     pub fn alias(self) -> Option<SqlAlias<'a>> {
@@ -3959,9 +3513,7 @@ impl<'a> SqlProjectionItem<'a> {
 
 impl<'a> SqlDataSource<'a> {
     pub fn alias_clause(self) -> Option<SqlAliasClause<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SqlAliasClause)
-            .and_then(SqlAliasClause::cast)
+        self.syntax.cast_child(SyntaxKind::SqlAliasClause)
     }
 
     pub fn alias(self) -> Option<SqlAlias<'a>> {
@@ -4025,9 +3577,7 @@ impl<'a> SqlDataSource<'a> {
 
 impl<'a> SqlAliasClause<'a> {
     pub fn alias(self) -> Option<SqlAlias<'a>> {
-        self.syntax
-            .child_by_kind(SyntaxKind::SqlAlias)
-            .and_then(SqlAlias::cast)
+        self.syntax.cast_child(SyntaxKind::SqlAlias)
     }
 }
 
