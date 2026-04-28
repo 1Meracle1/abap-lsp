@@ -307,7 +307,7 @@ impl<'a> EventsStmtEntry<'a> {
         self.items
             .iter()
             .copied()
-            .find(|item| EventsStmt::is_ident_token(*item, source))
+            .find(|item| MethodsStmt::is_ident_token(*item, source))
     }
 
     pub fn signature_text(&self, source: &str) -> String {
@@ -2061,7 +2061,7 @@ impl<'a> MethodsStmt<'a> {
     }
 
     pub fn member_kind(self, source: &str) -> Option<MethodsStmtKind> {
-        let items = self.significant_children(source);
+        let items = self.significant_children();
         let first = *items.first()?;
         if Self::token_text_is(first, source, "methods") {
             return Some(MethodsStmtKind::Instance);
@@ -2104,7 +2104,7 @@ impl<'a> MethodsStmt<'a> {
     }
 
     pub fn entries(self, source: &str) -> Vec<MethodsStmtEntry<'a>> {
-        let items = self.significant_children(source);
+        let items = self.significant_children();
         let (kind, mut idx) = match self.member_kind(source) {
             Some(MethodsStmtKind::Instance) => (MethodsStmtKind::Instance, 1),
             Some(MethodsStmtKind::Class) => (MethodsStmtKind::Class, 3),
@@ -2344,8 +2344,7 @@ impl<'a> MethodsStmt<'a> {
         })
     }
 
-    fn significant_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
-        let _ = source;
+    fn significant_children(self) -> Vec<SyntaxNodeRef<'a>> {
         self.syntax.children().collect()
     }
 
@@ -2609,15 +2608,15 @@ impl<'a> EventsStmt<'a> {
     }
 
     pub fn member_kind(self, source: &str) -> Option<EventsStmtKind> {
-        let items = self.significant_children(source);
+        let items: Vec<_> = self.syntax.children().collect();
         let first = *items.first()?;
-        if Self::token_text_is(first, source, "events") {
+        if MethodsStmt::token_text_is(first, source, "events") {
             return Some(EventsStmtKind::Instance);
         }
         if items.len() >= 3
-            && Self::token_text_is(items[0], source, "class")
-            && Self::token_text_is(items[1], source, "-")
-            && Self::token_text_is(items[2], source, "events")
+            && MethodsStmt::token_text_is(items[0], source, "class")
+            && MethodsStmt::token_text_is(items[1], source, "-")
+            && MethodsStmt::token_text_is(items[2], source, "events")
         {
             return Some(EventsStmtKind::Class);
         }
@@ -2625,7 +2624,7 @@ impl<'a> EventsStmt<'a> {
     }
 
     pub fn entries(self, source: &str) -> Vec<EventsStmtEntry<'a>> {
-        let items = self.significant_children(source);
+        let items: Vec<_> = self.syntax.children().collect();
         let (kind, mut idx) = match self.member_kind(source) {
             Some(EventsStmtKind::Instance) => (EventsStmtKind::Instance, 1),
             Some(EventsStmtKind::Class) => (EventsStmtKind::Class, 3),
@@ -2635,13 +2634,13 @@ impl<'a> EventsStmt<'a> {
         while idx < items.len() {
             while items
                 .get(idx)
-                .is_some_and(|item| Self::is_punctuation(*item, source))
+                .is_some_and(|item| MethodsStmt::is_punctuation(*item, source))
             {
                 idx += 1;
             }
             if items
                 .get(idx)
-                .is_some_and(|item| Self::token_text_is(*item, source, "."))
+                .is_some_and(|item| MethodsStmt::token_text_is(*item, source, "."))
             {
                 break;
             }
@@ -2669,7 +2668,7 @@ impl<'a> EventsStmt<'a> {
             }
             if items
                 .get(idx)
-                .is_some_and(|item| Self::token_text_is(*item, source, "."))
+                .is_some_and(|item| MethodsStmt::token_text_is(*item, source, "."))
             {
                 break;
             }
@@ -2684,25 +2683,25 @@ impl<'a> EventsStmt<'a> {
         };
         let mut idx = 0usize;
         while let Some(item) = items.get(idx).copied() {
-            if Self::is_punctuation(item, source) {
+            if MethodsStmt::is_punctuation(item, source) {
                 idx += 1;
                 continue;
             }
-            if Self::is_ident_token(item, source) {
+            if MethodsStmt::is_ident_token(item, source) {
                 idx += 1;
             }
             break;
         }
         if !items
             .get(idx)
-            .is_some_and(|item| Self::token_text_is(*item, source, "exporting"))
+            .is_some_and(|item| MethodsStmt::token_text_is(*item, source, "exporting"))
         {
             return signature;
         }
         idx += 1;
         while idx < items.len() {
             let item = items[idx];
-            if Self::token_text_is(item, source, ".") {
+            if MethodsStmt::token_text_is(item, source, ".") {
                 break;
             }
             if let Some((param, next_idx)) = Self::try_consume_parameter(items, idx, source) {
@@ -2715,31 +2714,6 @@ impl<'a> EventsStmt<'a> {
         signature
     }
 
-    fn significant_children(self, source: &str) -> Vec<SyntaxNodeRef<'a>> {
-        let _ = source;
-        self.syntax.children().collect()
-    }
-
-    fn token_text_is(node: SyntaxNodeRef<'a>, source: &str, expected: &str) -> bool {
-        node.text(source)
-            .is_some_and(|text| text.eq_ignore_ascii_case(expected))
-    }
-
-    fn is_ident_token(node: SyntaxNodeRef<'a>, source: &str) -> bool {
-        node.kind() == SyntaxKind::Token
-            && !matches!(
-                node.text(source),
-                Some("(" | ")" | "[" | "]" | ":" | "," | "." | "-")
-            )
-    }
-
-    fn is_punctuation(node: SyntaxNodeRef<'a>, source: &str) -> bool {
-        node.kind() == SyntaxKind::Token
-            && node
-                .text(source)
-                .is_some_and(|text| matches!(text, ":" | "," | "."))
-    }
-
     fn try_consume_parameter(
         items: &[SyntaxNodeRef<'a>],
         idx: usize,
@@ -2748,7 +2722,7 @@ impl<'a> EventsStmt<'a> {
         let mut j = idx;
         while items
             .get(j)
-            .is_some_and(|item| Self::is_punctuation(*item, source))
+            .is_some_and(|item| MethodsStmt::is_punctuation(*item, source))
         {
             j += 1;
         }
@@ -2756,14 +2730,18 @@ impl<'a> EventsStmt<'a> {
         let (name, mut j) = MethodsStmt::parameter_name(items, j, source)?;
         while items
             .get(j)
-            .is_some_and(|item| Self::is_punctuation(*item, source))
+            .is_some_and(|item| MethodsStmt::is_punctuation(*item, source))
         {
             j += 1;
         }
 
         let type_clause = match items.get(j).copied() {
-            Some(item) if Self::token_text_is(item, source, "type") => MethodsTypeClauseKind::Type,
-            Some(item) if Self::token_text_is(item, source, "like") => MethodsTypeClauseKind::Like,
+            Some(item) if MethodsStmt::token_text_is(item, source, "type") => {
+                MethodsTypeClauseKind::Type
+            }
+            Some(item) if MethodsStmt::token_text_is(item, source, "like") => {
+                MethodsTypeClauseKind::Like
+            }
             _ => return None,
         };
         j += 1;
@@ -2772,8 +2750,8 @@ impl<'a> EventsStmt<'a> {
         let next_idx = MethodsStmt::skip_type_expression(items, j, source);
         let type_display_range = MethodsStmt::token_span(&items[j..next_idx]);
         let is_optional = items.get(next_idx).is_some_and(|item| {
-            Self::token_text_is(*item, source, "optional")
-                || Self::token_text_is(*item, source, "default")
+            MethodsStmt::token_text_is(*item, source, "optional")
+                || MethodsStmt::token_text_is(*item, source, "default")
         });
         Some((
             EventsStmtParameter {

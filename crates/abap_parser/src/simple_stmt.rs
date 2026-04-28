@@ -564,70 +564,6 @@ fn events_stmt_type_ref_ranges(
     ranges
 }
 
-fn build_methods_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let ranges = methods_stmt_type_ref_ranges(source, tokens, idx, period_i);
-    if ranges.is_empty() {
-        return tokens[idx..=period_i]
-            .iter()
-            .map(|t| token_leaf(b, t))
-            .collect();
-    }
-    let mut children = Vec::with_capacity(period_i - idx + 1);
-    let mut i = idx;
-    let mut range_idx = 0usize;
-    while i <= period_i {
-        if let Some((start, end)) = ranges.get(range_idx).copied()
-            && i == start
-        {
-            children.push(build_type_ref_node(b, source, &tokens[start..end]));
-            i = end;
-            range_idx += 1;
-            continue;
-        }
-        children.push(token_leaf(b, &tokens[i]));
-        i += 1;
-    }
-    children
-}
-
-fn build_events_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let ranges = events_stmt_type_ref_ranges(source, tokens, idx, period_i);
-    if ranges.is_empty() {
-        return tokens[idx..=period_i]
-            .iter()
-            .map(|t| token_leaf(b, t))
-            .collect();
-    }
-    let mut children = Vec::with_capacity(period_i - idx + 1);
-    let mut i = idx;
-    let mut range_idx = 0usize;
-    while i <= period_i {
-        if let Some((start, end)) = ranges.get(range_idx).copied()
-            && i == start
-        {
-            children.push(build_type_ref_node(b, source, &tokens[start..end]));
-            i = end;
-            range_idx += 1;
-            continue;
-        }
-        children.push(token_leaf(b, &tokens[i]));
-        i += 1;
-    }
-    children
-}
-
 fn interfaces_stmt_type_ref_ranges(
     source: &str,
     tokens: &[Token],
@@ -696,20 +632,20 @@ fn interfaces_stmt_type_ref_ranges(
     Vec::new()
 }
 
-fn build_interfaces_stmt_children(
+fn build_stmt_children_with_type_refs(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
     period_i: usize,
+    ranges: Vec<(usize, usize)>,
 ) -> Vec<NodeId> {
-    let ranges = interfaces_stmt_type_ref_ranges(source, tokens, idx, period_i);
     if ranges.is_empty() {
         return tokens[idx..=period_i]
             .iter()
             .map(|t| token_leaf(b, t))
             .collect();
-    };
+    }
     let mut children = Vec::with_capacity(period_i - idx + 1);
     let mut i = idx;
     let mut range_idx = 0usize;
@@ -3967,15 +3903,30 @@ pub fn try_parse_simple_stmt(
                 SyntaxKind::AliasesStmt => {
                     build_aliases_stmt_children(b, source, tokens, idx, period_i)
                 }
-                SyntaxKind::MethodsStmt => {
-                    build_methods_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::EventsStmt => {
-                    build_events_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::InterfacesStmt => {
-                    build_interfaces_stmt_children(b, source, tokens, idx, period_i)
-                }
+                SyntaxKind::MethodsStmt => build_stmt_children_with_type_refs(
+                    b,
+                    source,
+                    tokens,
+                    idx,
+                    period_i,
+                    methods_stmt_type_ref_ranges(source, tokens, idx, period_i),
+                ),
+                SyntaxKind::EventsStmt => build_stmt_children_with_type_refs(
+                    b,
+                    source,
+                    tokens,
+                    idx,
+                    period_i,
+                    events_stmt_type_ref_ranges(source, tokens, idx, period_i),
+                ),
+                SyntaxKind::InterfacesStmt => build_stmt_children_with_type_refs(
+                    b,
+                    source,
+                    tokens,
+                    idx,
+                    period_i,
+                    interfaces_stmt_type_ref_ranges(source, tokens, idx, period_i),
+                ),
                 SyntaxKind::ClearStmt => {
                     build_clear_stmt_children(b, source, tokens, idx, period_i)
                 }

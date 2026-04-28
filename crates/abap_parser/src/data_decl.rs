@@ -149,42 +149,15 @@ pub fn try_parse_parameters_decl(
     if !is_parameters_keyword(source, kw_tok) {
         return None;
     }
-
-    let mut i = idx + 1;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = parse_parameters_clause(b, source, tokens, i)?;
-        clause_nodes.push(clause);
-        i = next_i;
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
-                children.push(token_leaf(b, kw_tok));
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(
-                    SyntaxKind::ParametersDecl,
-                    kw_tok.range.start..next.range.end,
-                    &children,
-                );
-                return Some((node, i + 1));
-            }
-            _ => return None,
-        }
-    }
+    parse_clause_list_decl(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        SyntaxKind::ParametersDecl,
+        parse_parameters_clause,
+    )
 }
 
 pub fn try_parse_tables_decl(
@@ -198,43 +171,15 @@ pub fn try_parse_tables_decl(
     if !is_keyword(source, kw_tok, "tables") {
         return None;
     }
-
-    let mut i = idx + 1;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = parse_tables_clause(b, source, tokens, i)?;
-        clause_nodes.push(clause);
-        i = next_i;
-
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
-                children.push(token_leaf(b, kw_tok));
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(
-                    SyntaxKind::TablesDecl,
-                    kw_tok.range.start..next.range.end,
-                    &children,
-                );
-                return Some((node, i + 1));
-            }
-            _ => return None,
-        }
-    }
+    parse_clause_list_decl(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        SyntaxKind::TablesDecl,
+        parse_tables_clause,
+    )
 }
 
 pub fn try_parse_select_options_decl(
@@ -245,44 +190,15 @@ pub fn try_parse_select_options_decl(
     _errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
     let kw_end = match_hyphenated_keyword(source, tokens, idx, &["select", "options"])?;
-
-    let mut i = kw_end;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = parse_select_options_clause(b, source, tokens, i)?;
-        clause_nodes.push(clause);
-        i = next_i;
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + (kw_end - idx) + 1);
-                for token in &tokens[idx..kw_end] {
-                    children.push(token_leaf(b, token));
-                }
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(
-                    SyntaxKind::SelectOptionsDecl,
-                    tokens[idx].range.start..next.range.end,
-                    &children,
-                );
-                return Some((node, i + 1));
-            }
-            _ => return None,
-        }
-    }
+    parse_clause_list_decl(
+        b,
+        source,
+        tokens,
+        idx,
+        kw_end,
+        SyntaxKind::SelectOptionsDecl,
+        parse_select_options_clause,
+    )
 }
 
 pub fn try_parse_ranges_decl(
@@ -296,42 +212,15 @@ pub fn try_parse_ranges_decl(
     if !is_keyword(source, kw_tok, "ranges") {
         return None;
     }
-
-    let mut i = idx + 1;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = parse_select_options_clause(b, source, tokens, i)?;
-        clause_nodes.push(clause);
-        i = next_i;
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
-                children.push(token_leaf(b, kw_tok));
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(
-                    SyntaxKind::RangesDecl,
-                    kw_tok.range.start..next.range.end,
-                    &children,
-                );
-                return Some((node, i + 1));
-            }
-            _ => return None,
-        }
-    }
+    parse_clause_list_decl(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        SyntaxKind::RangesDecl,
+        parse_select_options_clause,
+    )
 }
 
 pub fn try_parse_controls_decl(
@@ -345,8 +234,30 @@ pub fn try_parse_controls_decl(
     if !is_keyword(source, kw_tok, "controls") {
         return None;
     }
+    parse_clause_list_decl(
+        b,
+        source,
+        tokens,
+        idx,
+        idx + 1,
+        SyntaxKind::ControlsDecl,
+        parse_controls_clause,
+    )
+}
 
-    let mut i = idx + 1;
+fn parse_clause_list_decl<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    keyword_end: usize,
+    kind: SyntaxKind,
+    mut parse_clause: F,
+) -> Option<(NodeId, usize)>
+where
+    F: FnMut(&mut SyntaxTreeBuilder, &str, &[Token], usize) -> Option<(NodeId, usize)>,
+{
+    let mut i = keyword_end;
     let has_colon = match tokens.get(i).map(|t| t.kind) {
         Some(TokenKind::Colon) => {
             i += 1;
@@ -360,22 +271,20 @@ pub fn try_parse_controls_decl(
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
             i += 1;
         }
-        let (clause, next_i) = parse_controls_clause(b, source, tokens, i)?;
+        let (clause, next_i) = parse_clause(b, source, tokens, i)?;
         clause_nodes.push(clause);
         i = next_i;
         let next = tokens.get(i)?;
         match next.kind {
             TokenKind::Comma if has_colon => i += 1,
             TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + 2);
-                children.push(token_leaf(b, kw_tok));
+                let mut children = Vec::with_capacity(clause_nodes.len() + (keyword_end - idx) + 1);
+                for token in &tokens[idx..keyword_end] {
+                    children.push(token_leaf(b, token));
+                }
                 children.extend(clause_nodes);
                 children.push(token_leaf(b, next));
-                let node = b.branch(
-                    SyntaxKind::ControlsDecl,
-                    kw_tok.range.start..next.range.end,
-                    &children,
-                );
+                let node = b.branch(kind, tokens[idx].range.start..next.range.end, &children);
                 return Some((node, i + 1));
             }
             _ => return None,
