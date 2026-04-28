@@ -96,6 +96,8 @@ pub struct WorkspaceState {
     pub preview_snapshots: HashMap<String, Arc<AnalysisSnapshot>>,
     pub dependency_parent_uris: HashMap<String, HashSet<String>>,
     pub dependency_batch_candidates: HashMap<String, CachedDependencyBatchCandidates>,
+    pub local_export_chain_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
+    pub local_export_chain_refresh_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     pub local_export_resolver: Arc<Mutex<LocalExportResolver>>,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_uri: String,
@@ -157,6 +159,12 @@ pub struct CachedDependencyBatchCandidates {
     pub candidates: Vec<RemoteDependencyCandidate>,
 }
 
+fn clear_workspace_dependency_candidate_caches(workspace: &mut WorkspaceState) {
+    workspace.dependency_batch_candidates.clear();
+    workspace.local_export_chain_candidates.clear();
+    workspace.local_export_chain_refresh_candidates.clear();
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -174,6 +182,8 @@ impl WorkspaceState {
             preview_snapshots: HashMap::new(),
             dependency_parent_uris: HashMap::new(),
             dependency_batch_candidates: HashMap::new(),
+            local_export_chain_candidates: HashMap::new(),
+            local_export_chain_refresh_candidates: HashMap::new(),
             local_export_resolver: Arc::new(Mutex::new(LocalExportResolver::default())),
             manifest: None,
             manifest_uri: String::new(),
@@ -1081,6 +1091,7 @@ fn collect_local_export_dependency_closure_documents(
         .cloned()
         .map(|document| (document.uri.to_string(), document))
         .collect();
+    let workspace_candidate_names = workspace_local_candidate_names(documents);
     let mut document_configs = HashMap::<String, LocalExportConfig>::new();
     let mut queue = VecDeque::<String>::new();
     let mut pending = HashSet::<String>::new();
@@ -1098,53 +1109,60 @@ fn collect_local_export_dependency_closure_documents(
     }
 
     let mut additions = Vec::<WorkspaceDocument>::new();
-    let mut candidate_cache = HashMap::<String, Vec<RemoteDependencyCandidate>>::new();
+    let mut resolution_cache = HashMap::<String, Option<WorkspaceDocument>>::new();
     let mut resolver = LocalExportResolver::default();
 
-    while let Some(uri) = queue.pop_front() {
-        pending.remove(&uri);
-        let Some(config) = document_configs.get(&uri).cloned() else {
-            continue;
-        };
-        if !config.uses_local_exports() {
-            continue;
-        }
-        let Some(document) = documents_by_uri.get(&uri).cloned() else {
-            continue;
-        };
-
-        let candidates = candidate_cache
-            .entry(uri.clone())
-            .or_insert_with(|| collect_local_export_dependency_candidates(&document))
-            .clone();
-
-        for candidate in candidates {
-            if documents_by_uri
-                .values()
-                .any(|document| workspace_document_matches_local_candidate(document, &candidate))
-            {
-                continue;
-            }
-            let Some(resolved_document) = resolve_local_export_dependency_document(
-                &config.roots,
-                &mut resolver,
-                &candidate.name,
-                &candidate.kind,
-            ) else {
+    while !queue.is_empty() {
+        let mut batch = Vec::new();
+        while let Some(uri) = queue.pop_front() {
+            pending.remove(&uri);
+            let Some(config) = document_configs.get(&uri).cloned() else {
                 continue;
             };
-            let resolved_uri = resolved_document.uri.to_string();
-            let entry = document_configs
-                .entry(resolved_uri.clone())
-                .or_insert_with(|| config.clone());
-            let config_changed = merge_local_export_config(entry, &config);
-            let first_seen = !documents_by_uri.contains_key(&resolved_uri);
-            if first_seen {
-                documents_by_uri.insert(resolved_uri.clone(), resolved_document.clone());
-                additions.push(resolved_document);
+            if !config.uses_local_exports() {
+                continue;
             }
-            if (first_seen || config_changed) && pending.insert(resolved_uri.clone()) {
-                queue.push_back(resolved_uri);
+            let Some(document) = documents_by_uri.get(&uri).cloned() else {
+                continue;
+            };
+            batch.push((uri, config, document));
+        }
+        let batch_candidates = collect_local_export_dependency_candidate_batch(batch);
+
+        for (_uri, config, candidates) in batch_candidates {
+            for candidate in candidates {
+                if workspace_candidate_names.contains(&candidate.name.trim().to_ascii_lowercase()) {
+                    continue;
+                }
+                let resolution_key = local_export_resolution_cache_key(&config.roots, &candidate);
+                let resolved = if let Some(cached) = resolution_cache.get(&resolution_key) {
+                    cached.clone()
+                } else {
+                    let resolved = resolve_local_export_dependency_document(
+                        &config.roots,
+                        &mut resolver,
+                        &candidate.name,
+                        &candidate.kind,
+                    );
+                    resolution_cache.insert(resolution_key, resolved.clone());
+                    resolved
+                };
+                let Some(resolved_document) = resolved else {
+                    continue;
+                };
+                let resolved_uri = resolved_document.uri.to_string();
+                let entry = document_configs
+                    .entry(resolved_uri.clone())
+                    .or_insert_with(|| config.clone());
+                let config_changed = merge_local_export_config(entry, &config);
+                let first_seen = !documents_by_uri.contains_key(&resolved_uri);
+                if first_seen {
+                    documents_by_uri.insert(resolved_uri.clone(), resolved_document.clone());
+                    additions.push(resolved_document);
+                }
+                if (first_seen || config_changed) && pending.insert(resolved_uri.clone()) {
+                    queue.push_back(resolved_uri);
+                }
             }
         }
     }
@@ -1152,33 +1170,108 @@ fn collect_local_export_dependency_closure_documents(
     additions
 }
 
-fn workspace_document_matches_local_candidate(
-    document: &WorkspaceDocument,
+fn workspace_local_candidate_names(documents: &[WorkspaceDocument]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for document in documents.iter().filter(|document| !document.is_dependency) {
+        if let Some(object_name) = document.object_name.as_ref() {
+            let normalized = object_name.trim().to_ascii_lowercase();
+            if !normalized.is_empty() {
+                names.insert(normalized);
+            }
+        }
+        if let Some(stem) = file_uri_to_path(document.uri.as_ref())
+            .and_then(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(str::to_string)
+            })
+            .map(|stem| stem.trim().to_ascii_lowercase())
+            .filter(|stem| !stem.is_empty())
+        {
+            names.insert(stem);
+        }
+    }
+    names
+}
+
+fn local_export_resolution_cache_key(
+    roots: &[PathBuf],
     candidate: &RemoteDependencyCandidate,
-) -> bool {
-    if document.is_dependency {
-        return false;
-    }
-    let candidate_name = candidate.name.trim();
-    if candidate_name.is_empty() {
-        return false;
-    }
-
-    if document
-        .object_name
-        .as_ref()
-        .is_some_and(|object_name| object_name.eq_ignore_ascii_case(candidate_name))
-    {
-        return true;
-    }
-
-    file_uri_to_path(document.uri.as_ref())
-        .and_then(|path| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(str::to_string)
+) -> String {
+    let roots_key = roots
+        .iter()
+        .map(|root| {
+            root.to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
         })
-        .is_some_and(|stem| stem.eq_ignore_ascii_case(candidate_name))
+        .collect::<Vec<_>>()
+        .join(";");
+    format!("{roots_key}|{}", remote_candidate_key(candidate))
+}
+
+fn collect_local_export_dependency_candidate_batch(
+    batch: Vec<(String, LocalExportConfig, WorkspaceDocument)>,
+) -> Vec<(String, LocalExportConfig, Vec<RemoteDependencyCandidate>)> {
+    if batch.len() < 8 {
+        return batch
+            .into_iter()
+            .map(|(uri, config, document)| {
+                (
+                    uri,
+                    config,
+                    collect_local_export_dependency_candidates(&document),
+                )
+            })
+            .collect();
+    }
+
+    let parallelism = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(batch.len());
+    if parallelism <= 1 {
+        return batch
+            .into_iter()
+            .map(|(uri, config, document)| {
+                (
+                    uri,
+                    config,
+                    collect_local_export_dependency_candidates(&document),
+                )
+            })
+            .collect();
+    }
+
+    let chunk_size = batch.len().div_ceil(parallelism);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for chunk in batch.chunks(chunk_size) {
+            let chunk = chunk.to_vec();
+            handles.push(scope.spawn(move || {
+                chunk
+                    .into_iter()
+                    .map(|(uri, config, document)| {
+                        (
+                            uri,
+                            config,
+                            collect_local_export_dependency_candidates(&document),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
+
+        let mut out = Vec::new();
+        for handle in handles {
+            out.extend(
+                handle
+                    .join()
+                    .expect("local export candidate worker should not panic"),
+            );
+        }
+        out
+    })
 }
 
 fn collect_local_export_dependency_candidates(
@@ -1591,6 +1684,7 @@ fn refresh_workspace_inputs_with_progress(
     if inputs.is_empty() {
         return Vec::new();
     }
+    clear_workspace_dependency_candidate_caches(workspace);
     sync_workspace_lint_policy(workspace);
     let refreshed_uris: Vec<_> = inputs.iter().map(|input| Arc::clone(&input.uri)).collect();
     let build_plan = workspace_committed_build_plan(workspace);
@@ -1654,11 +1748,12 @@ fn hydrate_workspace_dependency_documents(
                 continue;
             }
 
-            for candidate in collect_remote_dependency_candidates_for_batch(
+            let candidates = collect_remote_dependency_candidates_for_batch(
                 workspace,
                 snapshot.as_ref(),
                 uri.as_ref(),
-            ) {
+            );
+            for candidate in candidates {
                 let candidate_key = remote_candidate_key(&candidate);
                 if !queried_candidates.insert(candidate_key) {
                     continue;
@@ -1722,7 +1817,7 @@ fn rebuild_workspace_cache_with_progress(
     workspace.manifest_diagnostics = loaded.manifest_diagnostics.clone();
     sync_workspace_lint_policy(workspace);
     workspace.dependency_parent_uris.clear();
-    workspace.dependency_batch_candidates.clear();
+    clear_workspace_dependency_candidate_caches(workspace);
     let documents = loaded.documents;
     let build_plan = workspace_committed_build_plan(workspace);
     let mut snapshots = if let Some(progress) = progress {
@@ -1979,6 +2074,7 @@ fn publish_workspace_input_with_dependency_hydration(
     input: DocumentInput,
     build_plan: SnapshotBuildPlan,
 ) -> Arc<AnalysisSnapshot> {
+    clear_workspace_dependency_candidate_caches(workspace);
     sync_workspace_lint_policy(workspace);
     let uri = Arc::clone(&input.uri);
     let snapshot = workspace
@@ -2491,6 +2587,7 @@ pub fn store_remote_dependency_artifacts(
     }
 
     if !artifacts.is_empty() {
+        clear_workspace_dependency_candidate_caches(workspace);
         let inputs = artifact_ids
             .into_iter()
             .zip(artifacts.iter())
@@ -2677,7 +2774,7 @@ fn collect_remote_dependency_candidates_for_batch(
 }
 
 fn collect_remote_dependency_refresh_candidates_for_batch(
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     snapshot: &AnalysisSnapshot,
     source_uri: &str,
 ) -> Vec<RemoteDependencyCandidate> {
@@ -2690,8 +2787,44 @@ fn collect_remote_dependency_refresh_candidates_for_batch(
     collect_remote_dependency_refresh_candidates_for_include_component(workspace, snapshot)
 }
 
-fn collect_remote_dependency_candidates_for_local_export_chain(
+fn local_export_chain_candidate_cache_key(
     workspace: &WorkspaceState,
+    source_uri: &str,
+    roots: &[PathBuf],
+) -> String {
+    let roots_key = roots
+        .iter()
+        .map(|root| {
+            root.to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    let mut component_uris = workspace
+        .cache
+        .get(source_uri)
+        .map(|snapshot| {
+            include_component_unit_ids(snapshot.as_ref())
+                .into_iter()
+                .filter_map(|unit_id| {
+                    snapshot
+                        .project
+                        .units
+                        .get(unit_id.as_usize())
+                        .map(|unit| unit.uri.to_string())
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|uris| !uris.is_empty())
+        .unwrap_or_else(|| vec![source_uri.to_string()]);
+    component_uris.sort();
+    component_uris.dedup();
+    format!("{roots_key}|{}", component_uris.join(";"))
+}
+
+fn collect_remote_dependency_candidates_for_local_export_chain(
+    workspace: &mut WorkspaceState,
     source_uri: &str,
 ) -> Vec<RemoteDependencyCandidate> {
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
@@ -2714,10 +2847,36 @@ fn collect_remote_dependency_candidates_for_local_export_chain(
             .unwrap_or_default();
     }
 
+    let cache_key =
+        local_export_chain_candidate_cache_key(workspace, source_uri, config.roots.as_slice());
+    if let Some(cached) = workspace
+        .local_export_chain_candidates
+        .get(&cache_key)
+        .cloned()
+    {
+        return cached;
+    }
+
+    let candidates =
+        collect_remote_dependency_candidates_for_local_export_chain_uncached(workspace, source_uri);
+    workspace
+        .local_export_chain_candidates
+        .insert(cache_key, candidates.clone());
+    candidates
+}
+
+fn collect_remote_dependency_candidates_for_local_export_chain_uncached(
+    workspace: &WorkspaceState,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
     let mut visited_uris = HashSet::from([source_uri.to_string()]);
     let mut queue = VecDeque::from([source_uri.to_string()]);
-    let mut resolver = LocalExportResolver::default();
+    let dependency_uri_by_name = workspace_dependency_uri_by_object_name(workspace);
+    let component_index = workspace
+        .cache
+        .get(source_uri)
+        .map(|snapshot| IncludeComponentIndex::new(snapshot.project.as_ref()));
 
     while let Some(current_uri) = queue.pop_front() {
         let Some(snapshot) = workspace.cache.get(&current_uri) else {
@@ -2725,26 +2884,22 @@ fn collect_remote_dependency_candidates_for_local_export_chain(
         };
 
         enqueue_resolved_local_export_dependency_uris(
+            workspace,
             snapshot.as_ref(),
-            &config.roots,
-            &mut resolver,
             &mut visited_uris,
             &mut queue,
         );
-        for candidate in
-            collect_remote_dependency_candidates_for_include_component(snapshot.as_ref())
-        {
-            if let Some(document) = resolve_local_export_dependency_document(
-                &config.roots,
-                &mut resolver,
-                candidate.name.as_str(),
-                candidate.kind.as_str(),
-            ) {
-                let dependency_uri = document.uri.to_string();
+        for candidate in collect_remote_dependency_candidates_for_include_component_indexed(
+            snapshot.as_ref(),
+            component_index.as_ref(),
+        ) {
+            if let Some(dependency_uri) =
+                dependency_uri_by_name.get(&candidate.name.trim().to_ascii_lowercase())
+            {
                 if visited_uris.insert(dependency_uri.clone())
                     && workspace.cache.get(&dependency_uri).is_some()
                 {
-                    queue.push_back(dependency_uri);
+                    queue.push_back(dependency_uri.clone());
                 }
                 continue;
             }
@@ -2756,7 +2911,7 @@ fn collect_remote_dependency_candidates_for_local_export_chain(
 }
 
 fn collect_remote_dependency_refresh_candidates_for_local_export_chain(
-    workspace: &WorkspaceState,
+    workspace: &mut WorkspaceState,
     source_uri: &str,
 ) -> Vec<RemoteDependencyCandidate> {
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
@@ -2785,10 +2940,37 @@ fn collect_remote_dependency_refresh_candidates_for_local_export_chain(
             .unwrap_or_default();
     }
 
+    let cache_key =
+        local_export_chain_candidate_cache_key(workspace, source_uri, config.roots.as_slice());
+    if let Some(cached) = workspace
+        .local_export_chain_refresh_candidates
+        .get(&cache_key)
+        .cloned()
+    {
+        return cached;
+    }
+
+    let candidates = collect_remote_dependency_refresh_candidates_for_local_export_chain_uncached(
+        workspace, source_uri,
+    );
+    workspace
+        .local_export_chain_refresh_candidates
+        .insert(cache_key, candidates.clone());
+    candidates
+}
+
+fn collect_remote_dependency_refresh_candidates_for_local_export_chain_uncached(
+    workspace: &WorkspaceState,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
     let mut visited_uris = HashSet::from([source_uri.to_string()]);
     let mut queue = VecDeque::from([source_uri.to_string()]);
-    let mut resolver = LocalExportResolver::default();
+    let dependency_uri_by_name = workspace_dependency_uri_by_object_name(workspace);
+    let component_index = workspace
+        .cache
+        .get(source_uri)
+        .map(|snapshot| IncludeComponentIndex::new(snapshot.project.as_ref()));
 
     while let Some(current_uri) = queue.pop_front() {
         let Some(snapshot) = workspace.cache.get(&current_uri) else {
@@ -2796,27 +2978,23 @@ fn collect_remote_dependency_refresh_candidates_for_local_export_chain(
         };
 
         enqueue_resolved_local_export_dependency_uris(
+            workspace,
             snapshot.as_ref(),
-            &config.roots,
-            &mut resolver,
             &mut visited_uris,
             &mut queue,
         );
-        for candidate in collect_remote_dependency_refresh_candidates_for_include_component(
+        for candidate in collect_remote_dependency_refresh_candidates_for_include_component_indexed(
             workspace,
             snapshot.as_ref(),
+            component_index.as_ref(),
         ) {
-            if let Some(document) = resolve_local_export_dependency_document(
-                &config.roots,
-                &mut resolver,
-                candidate.name.as_str(),
-                candidate.kind.as_str(),
-            ) {
-                let dependency_uri = document.uri.to_string();
+            if let Some(dependency_uri) =
+                dependency_uri_by_name.get(&candidate.name.trim().to_ascii_lowercase())
+            {
                 if visited_uris.insert(dependency_uri.clone())
                     && workspace.cache.get(&dependency_uri).is_some()
                 {
-                    queue.push_back(dependency_uri);
+                    queue.push_back(dependency_uri.clone());
                 }
             }
             insert_remote_candidate(&mut deduped, candidate);
@@ -2826,42 +3004,56 @@ fn collect_remote_dependency_refresh_candidates_for_local_export_chain(
     deduped.into_values().collect()
 }
 
+fn workspace_dependency_uri_by_object_name(workspace: &WorkspaceState) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for uri in workspace.cache.uris() {
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        if !snapshot.is_dependency {
+            continue;
+        }
+        let Some(object_name) = snapshot.object_name.as_ref() else {
+            continue;
+        };
+        let normalized = object_name.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        out.entry(normalized).or_insert_with(|| uri.to_string());
+    }
+    out
+}
+
 fn enqueue_resolved_local_export_dependency_uris(
+    workspace: &WorkspaceState,
     snapshot: &AnalysisSnapshot,
-    roots: &[PathBuf],
-    resolver: &mut LocalExportResolver,
     visited_uris: &mut HashSet<String>,
     queue: &mut VecDeque<String>,
 ) {
-    if roots.is_empty() {
-        return;
-    }
-
     for reference in &snapshot.symbols.references {
-        let Some(kind) =
-            local_export_candidate_kind_for_reference(reference.kind, reference.namespace)
-        else {
+        if local_export_candidate_kind_for_reference(reference.kind, reference.namespace).is_none()
+        {
             continue;
-        };
+        }
         let Some(abap_symbols::Resolution::Symbol(handle)) = &reference.resolution else {
-            continue;
-        };
-        let Some(document) = resolve_local_export_dependency_document(
-            roots,
-            resolver,
-            reference.name.as_ref(),
-            kind,
-        ) else {
             continue;
         };
         let Some(resolved_unit) = snapshot.project.units.get(handle.unit.as_usize()) else {
             continue;
         };
-        if resolved_unit.uri.as_ref() != document.uri.as_ref() {
+        let dependency_uri = resolved_unit.uri.to_string();
+        if dependency_uri == snapshot.uri.as_ref() {
             continue;
         }
-        let dependency_uri = document.uri.to_string();
-        if dependency_uri != snapshot.uri.as_ref() && visited_uris.insert(dependency_uri.clone()) {
+        if !workspace
+            .cache
+            .get(&dependency_uri)
+            .is_some_and(|snapshot| snapshot.is_dependency)
+        {
+            continue;
+        }
+        if visited_uris.insert(dependency_uri.clone()) {
             queue.push_back(dependency_uri);
         }
     }
@@ -3141,8 +3333,18 @@ fn remote_dependency_candidate_for_reference(
 fn collect_remote_dependency_candidates_for_include_component(
     snapshot: &AnalysisSnapshot,
 ) -> Vec<RemoteDependencyCandidate> {
+    collect_remote_dependency_candidates_for_include_component_indexed(snapshot, None)
+}
+
+fn collect_remote_dependency_candidates_for_include_component_indexed(
+    snapshot: &AnalysisSnapshot,
+    component_index: Option<&IncludeComponentIndex>,
+) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
-    for unit_id in include_component_unit_ids(snapshot) {
+    let unit_ids = component_index
+        .map(|index| index.component_unit_ids(snapshot.symbols.unit_id))
+        .unwrap_or_else(|| include_component_unit_ids(snapshot));
+    for unit_id in unit_ids {
         let Some(unit) = snapshot.project.units.get(unit_id.as_usize()) else {
             continue;
         };
@@ -3160,8 +3362,21 @@ fn collect_remote_dependency_refresh_candidates_for_include_component(
     workspace: &WorkspaceState,
     snapshot: &AnalysisSnapshot,
 ) -> Vec<RemoteDependencyCandidate> {
+    collect_remote_dependency_refresh_candidates_for_include_component_indexed(
+        workspace, snapshot, None,
+    )
+}
+
+fn collect_remote_dependency_refresh_candidates_for_include_component_indexed(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+    component_index: Option<&IncludeComponentIndex>,
+) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
-    for unit_id in include_component_unit_ids(snapshot) {
+    let unit_ids = component_index
+        .map(|index| index.component_unit_ids(snapshot.symbols.unit_id))
+        .unwrap_or_else(|| include_component_unit_ids(snapshot));
+    for unit_id in unit_ids {
         let Some(unit) = snapshot.project.units.get(unit_id.as_usize()) else {
             continue;
         };
@@ -3175,6 +3390,49 @@ fn collect_remote_dependency_refresh_candidates_for_include_component(
         insert_remote_candidate(&mut deduped, candidate);
     }
     deduped.into_values().collect()
+}
+
+struct IncludeComponentIndex {
+    adjacency: HashMap<UnitId, HashSet<UnitId>>,
+}
+
+impl IncludeComponentIndex {
+    fn new(project: &abap_symbols::ProjectAnalysis) -> Self {
+        let mut adjacency = HashMap::<UnitId, HashSet<UnitId>>::new();
+        for unit in &project.units {
+            for edge in &unit.include_edges {
+                let Some(target) = edge.target else {
+                    continue;
+                };
+                adjacency.entry(unit.unit_id).or_default().insert(target);
+                adjacency.entry(target).or_default().insert(unit.unit_id);
+            }
+        }
+        Self { adjacency }
+    }
+
+    fn component_unit_ids(&self, root_unit_id: UnitId) -> HashSet<UnitId> {
+        if self.adjacency.is_empty() {
+            return HashSet::from([root_unit_id]);
+        }
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::from([root_unit_id]);
+        while let Some(unit_id) = queue.pop_front() {
+            if !visited.insert(unit_id) {
+                continue;
+            }
+            if let Some(neighbors) = self.adjacency.get(&unit_id) {
+                queue.extend(neighbors.iter().copied());
+            }
+        }
+
+        if visited.is_empty() {
+            HashSet::from([root_unit_id])
+        } else {
+            visited
+        }
+    }
 }
 
 fn include_component_unit_ids(snapshot: &AnalysisSnapshot) -> HashSet<UnitId> {
