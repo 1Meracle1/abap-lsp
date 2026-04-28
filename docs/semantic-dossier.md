@@ -32,7 +32,7 @@ Notes:
 
 ## Top-level schema
 
-The current schema id is `abap.semantic_dossier` with `schema_version = 4`.
+The current schema id is `abap.semantic_dossier` with `schema_version = 5`.
 
 Top-level fields:
 
@@ -118,12 +118,15 @@ Top-level fields:
 - Each entry includes the enclosing `scope_id`, the statement `range`, the normalized statement
   kind, and the updated `field_name`.
 - Current coverage includes common control-flow, internal-table, Open SQL, `MESSAGE`,
-  `AUTHORITY-CHECK`, `DESCRIBE TABLE`, and `FIND` statements.
+  `AUTHORITY-CHECK`, `DESCRIBE TABLE`, `FIND`/`SEARCH`, and source-maintenance statements such as
+  `READ REPORT` and `SYNTAX-CHECK`.
 
 `sql`
 
-- Includes `touched_objects`.
+- Includes `touched_objects` for external SQL sources.
 - Each query includes clause ranges, sources, projections, predicates, targets, and SQL name refs.
+- Common table expression sources remain in query `sources` with `resolution = "local_cte"` but are
+  not counted as external touched objects.
 
 `unresolved_names`
 

@@ -1435,7 +1435,11 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             name: Arc::clone(&name),
             alias: alias.clone(),
             join_kind,
-            resolution: SqlResolution::External,
+            resolution: if is_local_cte_source {
+                SqlResolution::LocalCte
+            } else {
+                SqlResolution::External
+            },
         });
         if !is_local_cte_source {
             self.push_sql_name_ref(

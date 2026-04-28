@@ -125,6 +125,7 @@ pub enum Resolution {
 pub enum SqlResolution {
     Unresolved,
     External,
+    LocalCte,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3,9 +3,30 @@ use std::sync::Arc;
 
 use abap_parser::parse;
 use abap_symbols::{
-    ProjectAnalysis, SemanticDossierContext, analyze_unit, build_project_routine_analysis,
-    build_project_static_analysis_summary, build_semantic_dossier,
+    ProjectAnalysis, SemanticDossier, SemanticDossierContext, analyze_unit,
+    build_project_routine_analysis, build_project_static_analysis_summary, build_semantic_dossier,
 };
+
+fn dossier_for(uri: &str, path: &str, src: &str) -> SemanticDossier {
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit(uri, src, &parsed);
+    build_semantic_dossier(
+        &unit,
+        SemanticDossierContext {
+            parse_errors: &parsed.errors,
+            project: None,
+            static_analysis: None,
+            target_path: Some(path),
+            object_name: None,
+            is_dependency: false,
+            workspace_root_uri: None,
+            manifest_present: false,
+            project_unit_count: None,
+            dependency_unit_count: None,
+        },
+    )
+}
 
 #[test]
 fn dossier_exports_simple_local_resolution() {
@@ -211,6 +232,72 @@ SELECT (lv_fields)
 }
 
 #[test]
+fn dossier_exports_common_table_expression_sql_facts() {
+    let src = r#"
+DATA lv_carrid TYPE string.
+
+WITH +filtered AS (
+       SELECT carrid, connid
+         FROM sflight
+         WHERE carrid = @lv_carrid
+     ),
+     +joined AS (
+       SELECT f~carrid
+         FROM +filtered AS f
+         INNER JOIN spfli AS p ON p~carrid = f~carrid
+     )
+SELECT carrid
+  FROM +joined
+  INTO TABLE @DATA(lt_flights).
+"#;
+    let dossier = dossier_for("file:///cte_dossier.abap", "D:\\cte_dossier.abap", src);
+
+    assert_eq!(dossier.schema_version, 5);
+    assert_eq!(dossier.summary.sql_query_count, 3);
+    assert_eq!(dossier.summary.sql_source_count, 4);
+    assert_eq!(dossier.summary.sql_touched_object_count, 2);
+    assert_eq!(
+        dossier.sql.touched_objects,
+        vec!["sflight".to_string(), "spfli".to_string()]
+    );
+
+    let sources: Vec<_> = dossier
+        .sql
+        .queries
+        .iter()
+        .flat_map(|query| query.sources.iter())
+        .collect();
+    for name in ["sflight", "spfli"] {
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.name == name && source.resolution == "external"),
+            "missing external SQL source {name}: {sources:?}"
+        );
+    }
+    for name in ["+filtered", "+joined"] {
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.name == name && source.resolution == "local_cte"),
+            "missing local CTE SQL source {name}: {sources:?}"
+        );
+    }
+    assert!(dossier.sql.queries.iter().any(|query| {
+        query
+            .targets
+            .iter()
+            .any(|target| target.target_name.as_deref() == Some("lt_flights"))
+    }));
+    assert!(dossier.sql.queries.iter().all(|query| {
+        query
+            .name_refs
+            .iter()
+            .all(|name_ref| !(name_ref.kind == "source" && name_ref.name.starts_with('+')))
+    }));
+}
+
+#[test]
 fn dossier_buckets_unresolved_references() {
     let src = "lv_missing = 1.";
     let parsed = parse(src);
@@ -314,6 +401,117 @@ WRITE lt_scarr.
             .iter()
             .any(|edge| edge.kind == "assignment")
     );
+}
+
+#[test]
+fn dossier_exports_recent_statement_facts_through_existing_sections() {
+    let src = r#"
+DATA lv_a TYPE i VALUE 2.
+DATA lv_b TYPE i VALUE 3.
+DATA lv_c TYPE i.
+DATA lv_text TYPE string VALUE 'abc123'.
+DATA lv_pid TYPE string VALUE 'ABC'.
+DATA lv_param TYPE string.
+DATA lv_time TYPE t.
+DATA lv_prog TYPE string.
+DATA lt_source TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lv_msg TYPE string.
+DATA lv_line TYPE i.
+DATA lv_word TYPE string.
+
+ADD lv_a TO lv_b.
+COMPUTE lv_c = lv_a + lv_b.
+GET PARAMETER ID lv_pid FIELD lv_param.
+GET TIME FIELD lv_time.
+SEARCH lv_text FOR lv_param.
+PACK lv_text TO lv_param.
+READ REPORT lv_prog INTO lt_source.
+INSERT REPORT lv_prog FROM lt_source.
+DELETE REPORT lv_prog.
+SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_prog.
+"#;
+    let dossier = dossier_for(
+        "file:///recent_statement_facts.abap",
+        "D:\\recent_statement_facts.abap",
+        src,
+    );
+
+    for name in [
+        "lv_a",
+        "lv_b",
+        "lv_c",
+        "lv_text",
+        "lv_pid",
+        "lv_param",
+        "lv_time",
+        "lv_prog",
+        "lt_source",
+        "lv_msg",
+        "lv_line",
+        "lv_word",
+    ] {
+        assert!(
+            dossier.references.iter().any(|reference| {
+                reference.namespace == "value"
+                    && reference.kind == "identifier"
+                    && reference.name == name
+                    && reference.resolution.is_some()
+            }),
+            "expected resolved value reference for {name}: {:?}",
+            dossier.references
+        );
+    }
+
+    let assignment_targets: Vec<_> = dossier
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.start..site.lhs_range.end].trim())
+        .collect();
+    for target in [
+        "lv_b",
+        "lv_c",
+        "lv_param",
+        "lv_time",
+        "lt_source",
+        "lv_msg",
+        "lv_line",
+        "lv_word",
+    ] {
+        assert!(
+            assignment_targets.contains(&target),
+            "expected assignment target {target}: {assignment_targets:?}"
+        );
+    }
+    assert_eq!(
+        dossier.summary.assignment_site_count,
+        dossier.assignment_sites.len()
+    );
+    assert_eq!(
+        dossier.summary.value_flow_edge_count,
+        dossier.value_flow_edges.len()
+    );
+    assert!(
+        dossier
+            .value_flow_edges
+            .iter()
+            .filter(|edge| edge.kind == "assignment")
+            .count()
+            >= 8,
+        "{:?}",
+        dossier.value_flow_edges
+    );
+
+    let has_update = |statement: &str, field_name: &str| {
+        dossier
+            .system_field_updates
+            .iter()
+            .any(|update| update.statement == statement && update.field_name == field_name)
+    };
+    assert!(has_update("search", "fdpos"));
+    assert!(has_update("read_report", "subrc"));
+    assert!(has_update("insert_report", "subrc"));
+    assert!(has_update("delete_report", "subrc"));
+    assert!(has_update("syntax_check", "subrc"));
 }
 
 #[test]

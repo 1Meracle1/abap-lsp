@@ -714,6 +714,7 @@ pub fn build_semantic_dossier(
     let touched_objects: Vec<_> = unit
         .sql_sources
         .iter()
+        .filter(|source| source.resolution == SqlResolution::External)
         .map(|source| source.name.to_string())
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -1812,5 +1813,6 @@ fn sql_resolution_name(resolution: SqlResolution) -> &'static str {
     match resolution {
         SqlResolution::Unresolved => "unresolved",
         SqlResolution::External => "external",
+        SqlResolution::LocalCte => "local_cte",
     }
 }

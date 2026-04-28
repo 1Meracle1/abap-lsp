@@ -4014,6 +4014,86 @@ ENDFORM.",
     }
 
     #[test]
+    fn traces_classic_text_assignment_sites_in_parameter_provenance() {
+        let snapshot = snapshot_for(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+REPORT z_classic_text_flow.
+
+FORM call_api.
+  DATA lv_raw TYPE string VALUE '123'.
+  DATA lv_payload TYPE string.
+
+  PACK lv_raw TO lv_payload.
+  CALL FUNCTION 'TARGET_API'
+    EXPORTING
+      iv_payload = lv_payload.
+ENDFORM.
+
+START-OF-SELECTION.
+  PERFORM call_api.",
+                    ),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///target.abap"),
+                    version: 1,
+                    text: Arc::from(
+                        "\
+FUNCTION target_api
+  IMPORTING
+    iv_payload TYPE string.
+ENDFUNCTION.",
+                    ),
+                    is_dependency: true,
+                    object_name: None,
+                },
+            ],
+            "file:///main.abap",
+        );
+
+        let trace = build_call_dataflow_trace(
+            snapshot.as_ref(),
+            CallDataflowQuery {
+                target: "TARGET_API".to_string(),
+                caller: Some("call_api".to_string()),
+                occurrence: None,
+            },
+        );
+
+        let iv_payload = trace
+            .parameter_traces
+            .iter()
+            .find(|trace| trace.parameter_name.as_deref() == Some("iv_payload"))
+            .expect("iv_payload trace");
+        assert!(
+            iv_payload.field_mappings.iter().any(|mapping| {
+                mapping.target_path == "iv_payload"
+                    && mapping.source_kind == "assignment"
+                    && mapping.source_display == "lv_raw"
+                    && mapping
+                        .statement_text
+                        .as_deref()
+                        .is_some_and(|text| text.contains("PACK lv_raw TO lv_payload"))
+            }),
+            "{:?}",
+            iv_payload.field_mappings
+        );
+        assert!(
+            iv_payload.provenance.nodes.iter().any(|node| {
+                node.kind == "assignment" && node.label.contains("PACK lv_raw TO lv_payload")
+            }),
+            "{:?}",
+            iv_payload.provenance.nodes
+        );
+    }
+
+    #[test]
     fn traces_global_sql_writers_across_sibling_routines() {
         let snapshot = snapshot_for(
             vec![
