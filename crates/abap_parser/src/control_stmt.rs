@@ -1,11 +1,11 @@
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind, have_space_between};
+use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::{
-    Boundary, error_token_children, is_keyword, next_after_unterminated_scan,
-    parse_body_until_keywords, parse_header_until_period, recover_skip_after_keyword,
-    scan_boundary_keywords, skip_trivia,
+    Boundary, error_token_children, inline_name_spacing_is_valid, is_keyword,
+    next_after_unterminated_scan, parse_body_until_keywords, parse_end_keyword,
+    parse_header_until_period, parse_inline_name, scan_boundary_keywords, skip_trivia,
 };
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
@@ -14,59 +14,6 @@ use crate::stmt_period::{
 };
 use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
-
-fn parse_end_keyword(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    start_tok: &Token,
-    end_kw: &str,
-    missing_message: &str,
-    errors: &mut Vec<crate::ParseError>,
-) -> (Vec<NodeId>, usize, usize) {
-    let end_idx = skip_trivia(tokens, idx);
-    let Some(end_tok) = tokens.get(end_idx) else {
-        errors.push(crate::ParseError {
-            message: missing_message.to_string(),
-            range: start_tok.range.start..start_tok.range.end,
-        });
-        return (Vec::new(), tokens.len(), start_tok.range.end);
-    };
-    if !is_keyword(source, end_tok, end_kw) {
-        errors.push(crate::ParseError {
-            message: missing_message.to_string(),
-            range: start_tok.range.start..end_tok.range.end,
-        });
-        let recover = recover_skip_after_keyword(source, tokens, idx, end_kw);
-        return (Vec::new(), recover, end_tok.range.end);
-    }
-
-    let mut j = end_idx + 1;
-    j = skip_trivia(tokens, j);
-    let Some(period_tok) = tokens.get(j) else {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_kw}"),
-            range: end_tok.range.clone(),
-        });
-        let recover = recover_skip_after_keyword(source, tokens, end_idx, end_kw);
-        return (vec![token_leaf(b, end_tok)], recover, end_tok.range.end);
-    };
-    if period_tok.kind != TokenKind::Period {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_kw}"),
-            range: end_tok.range.start..period_tok.range.end,
-        });
-        let recover = recover_skip_after_keyword(source, tokens, end_idx, end_kw);
-        return (vec![token_leaf(b, end_tok)], recover, period_tok.range.end);
-    }
-
-    (
-        vec![token_leaf(b, end_tok), token_leaf(b, period_tok)],
-        j + 1,
-        period_tok.range.end,
-    )
-}
 
 fn scan_catch_type_ref_end(tokens: &[Token], idx: usize) -> usize {
     let Some(first) = tokens.get(idx) else {
@@ -259,34 +206,6 @@ fn parse_catch_system_exceptions_header_until_period(
             )
         }
     }
-}
-
-fn parse_inline_name(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let name_tok = tokens.get(idx)?;
-    if name_tok.kind != TokenKind::Ident {
-        return None;
-    }
-    let leaf = token_leaf(b, name_tok);
-    Some((
-        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
-        idx + 1,
-    ))
-}
-
-fn inline_name_spacing_is_valid(
-    tokens: &[Token],
-    lparen_idx: usize,
-    name_idx: usize,
-    rparen_idx: usize,
-) -> bool {
-    let lparen = &tokens[lparen_idx];
-    let name = &tokens[name_idx];
-    let rparen = &tokens[rparen_idx];
-    !have_space_between(lparen, name) && !have_space_between(name, rparen)
 }
 
 fn try_parse_loop_inline_data_target(

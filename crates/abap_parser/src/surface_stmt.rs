@@ -3,8 +3,9 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::block_helpers::{
-    error_token_children, is_keyword, next_after_unterminated_scan, parse_body_until_keywords,
-    parse_header_until_period, recover_skip_after_keyword, skip_trivia,
+    error_token_children, inline_name_spacing_is_valid, is_keyword, match_hyphenated_keyword,
+    next_after_unterminated_scan, parse_body_until_keywords, parse_end_keyword,
+    parse_header_until_period, parse_inline_name, recover_skip_after_keyword, skip_trivia,
 };
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
@@ -2798,34 +2799,6 @@ fn build_include_stmt_children(
     children
 }
 
-fn parse_inline_name(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let name_tok = tokens.get(idx)?;
-    if name_tok.kind != TokenKind::Ident {
-        return None;
-    }
-    let leaf = token_leaf(b, name_tok);
-    Some((
-        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
-        idx + 1,
-    ))
-}
-
-fn inline_name_spacing_is_valid(
-    tokens: &[Token],
-    lparen_idx: usize,
-    name_idx: usize,
-    rparen_idx: usize,
-) -> bool {
-    let lparen = &tokens[lparen_idx];
-    let name = &tokens[name_idx];
-    let rparen = &tokens[rparen_idx];
-    !have_space_between(lparen, name) && !have_space_between(name, rparen)
-}
-
 fn try_parse_field_symbol_inline_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -4843,58 +4816,6 @@ fn scan_read_table_key_value_end(
     i
 }
 
-fn parse_end_keyword(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    start_tok: &Token,
-    end_kw: &str,
-    missing_message: &str,
-    errors: &mut Vec<crate::ParseError>,
-) -> (Vec<NodeId>, usize, usize) {
-    let end_idx = skip_trivia(tokens, idx);
-    let Some(end_tok) = tokens.get(end_idx) else {
-        errors.push(crate::ParseError {
-            message: missing_message.to_string(),
-            range: start_tok.range.clone(),
-        });
-        return (Vec::new(), tokens.len(), start_tok.range.end);
-    };
-    if !is_keyword(source, end_tok, end_kw) {
-        errors.push(crate::ParseError {
-            message: missing_message.to_string(),
-            range: start_tok.range.start..end_tok.range.end,
-        });
-        let recover = recover_skip_after_keyword(source, tokens, idx, end_kw);
-        return (Vec::new(), recover, end_tok.range.end);
-    }
-
-    let mut j = end_idx + 1;
-    j = skip_trivia(tokens, j);
-    let Some(period_tok) = tokens.get(j) else {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_kw}"),
-            range: end_tok.range.clone(),
-        });
-        let recover = recover_skip_after_keyword(source, tokens, end_idx, end_kw);
-        return (vec![token_leaf(b, end_tok)], recover, end_tok.range.end);
-    };
-    if period_tok.kind != TokenKind::Period {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_kw}"),
-            range: end_tok.range.start..period_tok.range.end,
-        });
-        let recover = recover_skip_after_keyword(source, tokens, end_idx, end_kw);
-        return (vec![token_leaf(b, end_tok)], recover, period_tok.range.end);
-    }
-    (
-        vec![token_leaf(b, end_tok), token_leaf(b, period_tok)],
-        j + 1,
-        period_tok.range.end,
-    )
-}
-
 #[derive(Clone, Copy)]
 enum EnhancementEndKind {
     Section,
@@ -5920,29 +5841,6 @@ fn parse_sqlscript_island_until_endmethod(
     let range = tokens[idx].range.start..tokens[end - 1].range.end;
     let island = b.branch(SyntaxKind::SqlScriptIsland, range, &children);
     (vec![island], end)
-}
-
-fn match_hyphenated_keyword(
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    parts: &[&str],
-) -> Option<usize> {
-    let mut i = idx;
-    for (part_idx, part) in parts.iter().enumerate() {
-        let tok = tokens.get(i)?;
-        if !is_keyword(source, tok, part) {
-            return None;
-        }
-        i += 1;
-        if part_idx + 1 < parts.len() {
-            if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Minus) {
-                return None;
-            }
-            i += 1;
-        }
-    }
-    Some(i)
 }
 
 fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {

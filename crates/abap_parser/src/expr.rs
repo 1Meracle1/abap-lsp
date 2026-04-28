@@ -8,20 +8,11 @@
 //! `IS [NOT] INITIAL|…`; [`SyntaxKind::InstanceOfPredicate`] for `IS [NOT] INSTANCE OF type` (type =
 //! concat-expr). Comment tokens (including lexer `##…` pragmas) are skipped inside the expression parser.
 
-use crate::syntax::parse_char_string_template;
+use crate::syntax::{parse_char_string_template, token_leaf};
 use crate::type_ref::build_type_ref_node;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
-
-fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(
-        SyntaxKind::Token,
-        token.range.clone(),
-        token.index(),
-        token.kind,
-    )
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParenInner {

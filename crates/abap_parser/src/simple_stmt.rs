@@ -4,21 +4,14 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
+use crate::block_helpers::{inline_name_spacing_is_valid, parse_inline_name};
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
 use crate::stmt_period::{
     StmtPeriodScan, delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
     scan_until_statement_period, unterminated_err_end,
 };
+use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
-
-fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(
-        SyntaxKind::Token,
-        token.range.clone(),
-        token.index(),
-        token.kind,
-    )
-}
 
 fn token_matches_keyword(source: &str, token: &Token, keyword: &str) -> bool {
     token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(keyword)
@@ -784,7 +777,7 @@ fn build_deferred_type_stmt_children(
             expect_name = true;
             continue;
         }
-        if expect_name && let Some((name, next_i)) = parse_inline_name_local(b, tokens, i) {
+        if expect_name && let Some((name, next_i)) = parse_inline_name(b, tokens, i) {
             children.push(name);
             expect_name = false;
             if next_i == i + 1 {
@@ -797,34 +790,6 @@ fn build_deferred_type_stmt_children(
         children.push(token_leaf(b, &tokens[i]));
     }
     children
-}
-
-fn parse_inline_name_local(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let name_tok = tokens.get(idx)?;
-    if name_tok.kind != TokenKind::Ident {
-        return None;
-    }
-    let leaf = token_leaf(b, name_tok);
-    Some((
-        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
-        idx + 1,
-    ))
-}
-
-fn inline_name_spacing_is_valid_local(
-    tokens: &[Token],
-    lparen_idx: usize,
-    name_idx: usize,
-    rparen_idx: usize,
-) -> bool {
-    let lparen = &tokens[lparen_idx];
-    let name = &tokens[name_idx];
-    let rparen = &tokens[rparen_idx];
-    !have_space_between(lparen, name) && !have_space_between(name, rparen)
 }
 
 fn build_data_inline_decl_local(
@@ -844,12 +809,12 @@ fn build_data_inline_decl_local(
     if lparen.kind != TokenKind::LParen {
         return None;
     }
-    let (name, next_idx) = parse_inline_name_local(b, tokens, start + 2)?;
+    let (name, next_idx) = parse_inline_name(b, tokens, start + 2)?;
     let rparen = tokens.get(next_idx)?;
     if rparen.kind != TokenKind::RParen || next_idx + 1 != end {
         return None;
     }
-    if !inline_name_spacing_is_valid_local(tokens, start + 1, start + 2, next_idx) {
+    if !inline_name_spacing_is_valid(tokens, start + 1, start + 2, next_idx) {
         let children: Vec<_> = tokens[start..end]
             .iter()
             .map(|token| token_leaf(b, token))

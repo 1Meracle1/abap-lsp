@@ -16,6 +16,7 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::Token;
 use abap_lexer::TokenKind;
+use block_helpers::match_hyphenated_keyword;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -250,26 +251,6 @@ const STRAY_HYPHENATED_BLOCK_BOUNDARIES: &[(&[&str], &str, &str)] = &[(
     "ENHANCEMENT-SECTION",
 )];
 
-fn match_hyphenated_keyword(source: &str, tokens: &[Token], idx: usize, parts: &[&str]) -> bool {
-    let mut i = idx;
-    for (part_idx, part) in parts.iter().enumerate() {
-        let Some(tok) = tokens.get(i) else {
-            return false;
-        };
-        if tok.kind != TokenKind::Ident || !tok.lexeme(source).eq_ignore_ascii_case(part) {
-            return false;
-        }
-        i += 1;
-        if part_idx + 1 < parts.len() {
-            if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Minus) {
-                return false;
-            }
-            i += 1;
-        }
-    }
-    true
-}
-
 fn stray_block_boundary(
     source: &str,
     tokens: &[Token],
@@ -280,7 +261,7 @@ fn stray_block_boundary(
         return None;
     }
     for (parts, boundary, opener) in STRAY_HYPHENATED_BLOCK_BOUNDARIES {
-        if match_hyphenated_keyword(source, tokens, idx, parts) {
+        if match_hyphenated_keyword(source, tokens, idx, parts).is_some() {
             return Some((*boundary, *opener));
         }
     }

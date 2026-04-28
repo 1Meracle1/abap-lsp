@@ -4,25 +4,15 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
+use crate::block_helpers::{
+    inline_name_spacing_is_valid, is_keyword, match_hyphenated_keyword, parse_inline_name,
+};
 use crate::stmt_period::{
     StmtPeriodScan, delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
     scan_until_statement_period, token_begins_line, unterminated_err_end,
 };
+use crate::syntax::token_leaf;
 use crate::type_ref::parse_type_ref_tokens;
-
-fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(
-        SyntaxKind::Token,
-        token.range.clone(),
-        token.index(),
-        token.kind,
-    )
-}
-
-#[inline]
-fn is_keyword(source: &str, token: &Token, kw: &str) -> bool {
-    token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(kw)
-}
 
 #[inline]
 fn is_parameters_keyword(source: &str, token: &Token) -> bool {
@@ -784,57 +774,6 @@ fn parse_value_clause(
     idx: usize,
 ) -> Option<(NodeId, usize)> {
     parse_value_clause_keywords(b, source, tokens, idx, &["value"])
-}
-
-fn parse_inline_name(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let name_tok = tokens.get(idx)?;
-    if name_tok.kind != TokenKind::Ident {
-        return None;
-    }
-    let leaf = token_leaf(b, name_tok);
-    Some((
-        b.branch(SyntaxKind::DataDeclName, name_tok.range.clone(), &[leaf]),
-        idx + 1,
-    ))
-}
-
-fn inline_name_spacing_is_valid(
-    tokens: &[Token],
-    lparen_idx: usize,
-    name_idx: usize,
-    rparen_idx: usize,
-) -> bool {
-    let lparen = &tokens[lparen_idx];
-    let name = &tokens[name_idx];
-    let rparen = &tokens[rparen_idx];
-    !have_space_between(lparen, name) && !have_space_between(name, rparen)
-}
-
-fn match_hyphenated_keyword(
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    parts: &[&str],
-) -> Option<usize> {
-    let mut i = idx;
-    for (part_idx, part) in parts.iter().enumerate() {
-        let tok = tokens.get(i)?;
-        if !is_keyword(source, tok, part) {
-            return None;
-        }
-        i += 1;
-        if part_idx + 1 < parts.len() {
-            if tokens.get(i).map(|t| t.kind) != Some(TokenKind::Minus) {
-                return None;
-            }
-            i += 1;
-        }
-    }
-    Some(i)
 }
 
 fn parse_optional_paren_length(

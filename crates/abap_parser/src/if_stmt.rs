@@ -4,7 +4,10 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
-use crate::block_helpers::ensure_forward_progress;
+use crate::block_helpers::{
+    ensure_forward_progress, error_token_children, next_after_unterminated_scan,
+    recover_skip_after_keyword, skip_trivia,
+};
 use crate::expr::parse_logical_expr;
 use crate::stmt_period::{
     StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
@@ -41,50 +44,6 @@ fn scan_if_boundary(source: &str, tokens: &[Token], mut idx: usize) -> Option<If
         }
     }
     None
-}
-
-fn skip_trivia(tokens: &[Token], mut idx: usize) -> usize {
-    while idx < tokens.len() && tokens[idx].kind == TokenKind::Comment {
-        idx += 1;
-    }
-    idx
-}
-
-fn next_after_unterminated_scan(tokens: &[Token], end_exclusive: usize) -> usize {
-    if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
-        tokens.len()
-    } else {
-        end_exclusive
-    }
-}
-
-fn error_token_children(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    start: usize,
-    end_exclusive: usize,
-) -> Vec<NodeId> {
-    let mut children = Vec::with_capacity(end_exclusive.saturating_sub(start));
-    for t in &tokens[start..end_exclusive] {
-        children.push(token_leaf(b, t));
-    }
-    children
-}
-
-fn recover_skip_after_endif(source: &str, tokens: &[Token], mut idx: usize) -> usize {
-    while idx < tokens.len() {
-        if tokens[idx].kind == TokenKind::Ident
-            && tokens[idx].lexeme(source).eq_ignore_ascii_case("endif")
-        {
-            let mut j = idx + 1;
-            j = skip_trivia(tokens, j);
-            if tokens.get(j).map(|t| t.kind) == Some(TokenKind::Period) {
-                return j + 1;
-            }
-        }
-        idx += 1;
-    }
-    tokens.len()
 }
 
 fn parse_body_until(
@@ -275,7 +234,7 @@ pub fn try_parse_if_stmt(
                 message: "syntax error: expected '.' after ELSE".to_string(),
                 range: else_tok.range.clone(),
             });
-            let recover = recover_skip_after_endif(source, tokens, next);
+            let recover = recover_skip_after_keyword(source, tokens, next, "endif");
             let node = b.branch(
                 SyntaxKind::IfStmt,
                 if_tok.range.start..else_tok.range.end,
@@ -288,7 +247,7 @@ pub fn try_parse_if_stmt(
                 message: "syntax error: expected '.' after ELSE".to_string(),
                 range: else_tok.range.start..period_else.range.end,
             });
-            let recover = recover_skip_after_endif(source, tokens, next);
+            let recover = recover_skip_after_keyword(source, tokens, next, "endif");
             let node = b.branch(
                 SyntaxKind::IfStmt,
                 if_tok.range.start..period_else.range.end,
@@ -321,7 +280,7 @@ pub fn try_parse_if_stmt(
             message: "syntax error: expected ENDIF".to_string(),
             range: if_tok.range.start..source.len(),
         });
-        let recover = recover_skip_after_endif(source, tokens, idx + 1);
+        let recover = recover_skip_after_keyword(source, tokens, idx + 1, "endif");
         let node = b.branch(
             SyntaxKind::IfStmt,
             if_tok.range.start..source.len(),
@@ -336,7 +295,7 @@ pub fn try_parse_if_stmt(
             message: "syntax error: expected ENDIF".to_string(),
             range: if_tok.range.start..endif_tok.range.end,
         });
-        let recover = recover_skip_after_endif(source, tokens, next);
+        let recover = recover_skip_after_keyword(source, tokens, next, "endif");
         let node = b.branch(
             SyntaxKind::IfStmt,
             if_tok.range.start..endif_tok.range.end,
@@ -352,7 +311,7 @@ pub fn try_parse_if_stmt(
             message: "syntax error: expected '.' after ENDIF".to_string(),
             range: endif_tok.range.clone(),
         });
-        let recover = recover_skip_after_endif(source, tokens, endif_idx);
+        let recover = recover_skip_after_keyword(source, tokens, endif_idx, "endif");
         let node = b.branch(
             SyntaxKind::IfStmt,
             if_tok.range.start..endif_tok.range.end,
@@ -365,7 +324,7 @@ pub fn try_parse_if_stmt(
             message: "syntax error: expected '.' after ENDIF".to_string(),
             range: endif_tok.range.start..final_period.range.end,
         });
-        let recover = recover_skip_after_endif(source, tokens, endif_idx);
+        let recover = recover_skip_after_keyword(source, tokens, endif_idx, "endif");
         let node = b.branch(
             SyntaxKind::IfStmt,
             if_tok.range.start..final_period.range.end,

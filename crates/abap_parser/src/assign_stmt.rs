@@ -9,15 +9,7 @@ use crate::stmt_period::{
     delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
     line_start_named_arg_continues, token_begins_line, unterminated_err_end,
 };
-
-fn token_leaf(b: &mut SyntaxTreeBuilder, token: &Token) -> NodeId {
-    b.token_leaf(
-        SyntaxKind::Token,
-        token.range.clone(),
-        token.index(),
-        token.kind,
-    )
-}
+use crate::syntax::token_leaf;
 
 #[inline]
 fn is_data_keyword(source: &str, t: &Token) -> bool {
