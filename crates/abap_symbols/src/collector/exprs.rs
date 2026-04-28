@@ -4347,7 +4347,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     scope,
                     base_namespace: namespace,
                     base_name,
-                    base_range: base_range,
+                    base_range,
                     field_path,
                     in_type_position: false,
                 });

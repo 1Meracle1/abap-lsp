@@ -414,7 +414,7 @@ fn print_closure_profile(label: &str, profile: &LocalExportDependencyClosureProf
     );
 
     let mut slow_documents = profile.candidate_documents.clone();
-    slow_documents.sort_by(|left, right| right.elapsed.cmp(&left.elapsed));
+    slow_documents.sort_by_key(|document| std::cmp::Reverse(document.elapsed));
     for (idx, document) in slow_documents.into_iter().take(top_n).enumerate() {
         let rank = idx + 1;
         println!(
@@ -430,7 +430,7 @@ fn print_closure_profile(label: &str, profile: &LocalExportDependencyClosureProf
     }
 
     let mut slow_waves = profile.wave_profiles.clone();
-    slow_waves.sort_by(|left, right| right.elapsed.cmp(&left.elapsed));
+    slow_waves.sort_by_key(|wave| std::cmp::Reverse(wave.elapsed));
     for (idx, wave) in slow_waves.into_iter().take(top_n).enumerate() {
         let rank = idx + 1;
         println!(

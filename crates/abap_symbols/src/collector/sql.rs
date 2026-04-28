@@ -586,7 +586,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         self.ctx.emit_sql_query(SqlQueryData {
             id: query_id,
             scope,
-            range: range,
+            range,
             projection_clause: None,
             from_clause: target_range,
             into_clause: None,

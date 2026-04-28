@@ -8598,7 +8598,7 @@ ENDCLASS.";
         let _ = handle_remote_dependencies_updated(
             &mut state,
             &super::RemoteDependenciesUpdatedParams {
-                workspace_uri: workspace_uri,
+                workspace_uri,
                 source_uri: source_uri.clone(),
                 source_uris: vec![source_uri.clone()],
                 fetched: vec!["ZCL_HELPER".to_string()],
@@ -10078,7 +10078,7 @@ dependency_mode = "remote-on-demand"
         let error = store_remote_dependency_artifacts(
             &mut state,
             &StoreRemoteDependencyArtifactsParams {
-                workspace_uri: workspace_uri,
+                workspace_uri,
                 connection_key: Some("https://example.sap.local".to_string()),
                 artifacts: vec![DependencyArtifactPayload {
                     package_name: "ZPKG".to_string(),
@@ -16086,7 +16086,7 @@ ENDCLASS.
         store_remote_dependency_artifacts(
             &mut state,
             &StoreRemoteDependencyArtifactsParams {
-                workspace_uri: workspace_uri,
+                workspace_uri,
                 connection_key: Some("https://example.sap.local".to_string()),
                 artifacts: vec![DependencyArtifactPayload {
                     package_name: "ZPKG".to_string(),

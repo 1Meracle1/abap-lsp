@@ -1056,7 +1056,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .unwrap_or_else(|| target_range.clone());
         let source_type = TypeFactData {
             structure,
-            declared_type: declared_type,
+            declared_type,
             type_clause_display: None,
             table_line: None,
         };
@@ -4464,7 +4464,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     scope,
                     base_namespace: namespace,
                     base_name: Arc::clone(&base_name),
-                    base_range: base_range,
+                    base_range,
                     field_path,
                     in_type_position: false,
                 });

@@ -732,12 +732,11 @@ fn manifest_with_discovered_units(
 }
 
 pub fn manifest_supports_remote_resolution(manifest: Option<&WorkspaceManifest>) -> bool {
-    let Some(manifest) = manifest else {
-        return false;
-    };
-    normalize_dependency_mode(&manifest.resolution.dependency_mode)
-        == DEPENDENCY_MODE_REMOTE_ON_DEMAND
-        && manifest.dependency_store.is_some()
+    manifest.is_some_and(|manifest| {
+        normalize_dependency_mode(&manifest.resolution.dependency_mode)
+            == DEPENDENCY_MODE_REMOTE_ON_DEMAND
+            && manifest.dependency_store.is_some()
+    })
 }
 
 pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
@@ -747,8 +746,7 @@ pub fn manifest_cache_dir(manifest: Option<&WorkspaceManifest>) -> &str {
         .unwrap_or("")
 }
 
-pub fn normalize_dependency_mode(value: &str) -> &'static str {
-    let _ = value;
+pub fn normalize_dependency_mode(_value: &str) -> &'static str {
     DEPENDENCY_MODE_REMOTE_ON_DEMAND
 }
 
@@ -874,8 +872,9 @@ pub fn is_remote_lookup_candidate_after_local_resolution(name: &str, kind: &str)
     }
 
     match kind.trim().to_ascii_lowercase().as_str() {
-        "type" | "static" => is_standard_remote_type_like_name_after_local_resolution(trimmed),
-        "function" | "report" => is_standard_remote_type_like_name_after_local_resolution(trimmed),
+        "type" | "static" | "function" | "report" => {
+            is_standard_remote_type_like_name_after_local_resolution(trimmed)
+        }
         "message-class" => is_standard_message_class_name(trimmed),
         _ => false,
     }

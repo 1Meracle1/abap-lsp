@@ -438,13 +438,7 @@ fn read_source(path: Option<&str>) -> Result<String, String> {
 }
 
 fn human_exit(json_output: bool, has_errors: bool) -> i32 {
-    if json_output {
-        0
-    } else if has_errors {
-        1
-    } else {
-        0
-    }
+    (!json_output && has_errors) as i32
 }
 
 fn token_json(source: &str, token: &abap_lexer::Token) -> Value {
@@ -472,13 +466,12 @@ fn ast_node_json(tree: &abap_ast::File, id: NodeId, source: &str) -> Value {
         _ => {}
     }
 
-    let children: Vec<NodeId> = tree.children(id).collect();
+    let children: Vec<Value> = tree
+        .children(id)
+        .map(|c| ast_node_json(tree, c, source))
+        .collect();
     if !children.is_empty() {
-        let ch: Vec<Value> = children
-            .iter()
-            .map(|&c| ast_node_json(tree, c, source))
-            .collect();
-        obj.insert("children".to_string(), json!(ch));
+        obj.insert("children".to_string(), json!(children));
     }
 
     Value::Object(obj)
@@ -494,6 +487,20 @@ fn parse_errors_to_diags(errors: &[abap_parser::ParseError]) -> Vec<human::Diagn
         .collect()
 }
 
+macro_rules! print_json {
+    ($value:expr, $pretty:expr) => {
+        println!(
+            "{}",
+            (if $pretty {
+                serde_json::to_string_pretty($value)
+            } else {
+                serde_json::to_string($value)
+            })
+            .map_err(|e| e.to_string())?
+        );
+    };
+}
+
 fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
@@ -507,23 +514,14 @@ fn main() {
 fn run() -> Result<i32, String> {
     let cli = parse_cli_args(std::env::args().skip(1))?;
 
-    if cli.command == Command::Analyze {
-        return run_analyze(&cli);
-    }
-    if cli.command == Command::Lint {
-        return run_lint(&cli);
-    }
-    if cli.command == Command::Expand {
-        return run_expand(&cli);
-    }
-    if cli.command == Command::CallGraph {
-        return run_call_graph(&cli);
-    }
-    if cli.command == Command::CallDataflow {
-        return run_call_dataflow(&cli);
-    }
-    if cli.command == Command::RemoteCandidates {
-        return run_remote_candidates(&cli);
+    match cli.command {
+        Command::Analyze => return run_analyze(&cli),
+        Command::Lint => return run_lint(&cli),
+        Command::Expand => return run_expand(&cli),
+        Command::CallGraph => return run_call_graph(&cli),
+        Command::CallDataflow => return run_call_dataflow(&cli),
+        Command::RemoteCandidates => return run_remote_candidates(&cli),
+        _ => {}
     }
 
     let source = read_source(cli.path.as_deref())?;
@@ -554,10 +552,7 @@ fn run() -> Result<i32, String> {
                         "errors": err_val,
                     })
                 };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
-                );
+                print_json!(&out, true);
                 return Ok(0);
             }
 
@@ -605,10 +600,7 @@ fn run() -> Result<i32, String> {
                 } else {
                     json!({ "phase": "parse", "errors": err_val })
                 };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
-                );
+                print_json!(&out, true);
                 return Ok(0);
             }
 
@@ -698,10 +690,7 @@ fn run() -> Result<i32, String> {
                         "unknown_symbols": unknown,
                     })
                 };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
-                );
+                print_json!(&out, true);
                 return Ok(0);
             }
 
@@ -776,10 +765,7 @@ fn run() -> Result<i32, String> {
                     "semantic_diagnostics": semantic_diags,
                     "semantic_note": "Semantic checking currently covers symbol collection, lexical resolution, wrong-namespace diagnostics, and include resolution; deeper type checking is still reserved.",
                 });
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
-                );
+                print_json!(&out, true);
                 return Ok(0);
             }
 
@@ -910,14 +896,8 @@ fn run_lint(cli: &Cli) -> Result<i32, String> {
 
     if cli.json_output {
         let output = lint_report_json(&snapshot, &findings, &hard_errors);
-        let json = if cli.pretty {
-            serde_json::to_string_pretty(&output)
-        } else {
-            serde_json::to_string(&output)
-        }
-        .map_err(|e| e.to_string())?;
-        println!("{json}");
-        return Ok(if should_fail { 1 } else { 0 });
+        print_json!(&output, cli.pretty);
+        return Ok(should_fail as i32);
     }
 
     let source = snapshot.snapshot.text.as_ref();
@@ -930,7 +910,7 @@ fn run_lint(cli: &Cli) -> Result<i32, String> {
         human::write_lint_diagnostics(&diags, source, &file_label).map_err(|e| e.to_string())?;
     }
 
-    Ok(if should_fail { 1 } else { 0 })
+    Ok(should_fail as i32)
 }
 
 fn run_lint_all_files(cli: &Cli) -> Result<i32, String> {
@@ -942,14 +922,8 @@ fn run_lint_all_files(cli: &Cli) -> Result<i32, String> {
 
     if cli.json_output {
         let output = lint_all_files_report_json(&report);
-        let json = if cli.pretty {
-            serde_json::to_string_pretty(&output)
-        } else {
-            serde_json::to_string(&output)
-        }
-        .map_err(|e| e.to_string())?;
-        println!("{json}");
-        return Ok(if should_fail { 1 } else { 0 });
+        print_json!(&output, cli.pretty);
+        return Ok(should_fail as i32);
     }
 
     for file in &report.files {
@@ -965,7 +939,7 @@ fn run_lint_all_files(cli: &Cli) -> Result<i32, String> {
         }
     }
 
-    Ok(if should_fail { 1 } else { 0 })
+    Ok(should_fail as i32)
 }
 
 fn lint_should_fail(
@@ -1269,13 +1243,7 @@ fn run_analyze(cli: &Cli) -> Result<i32, String> {
         },
     );
 
-    let json = if cli.pretty {
-        serde_json::to_string_pretty(&dossier)
-    } else {
-        serde_json::to_string(&dossier)
-    }
-    .map_err(|e| e.to_string())?;
-    println!("{json}");
+    print_json!(&dossier, cli.pretty);
     Ok(0)
 }
 
@@ -1284,13 +1252,7 @@ fn run_expand(cli: &Cli) -> Result<i32, String> {
     let effective = build_effective_source(snapshots.root.as_ref(), &snapshots.snapshots);
 
     if cli.json_output {
-        let json = if cli.pretty {
-            serde_json::to_string_pretty(&effective)
-        } else {
-            serde_json::to_string(&effective)
-        }
-        .map_err(|e| e.to_string())?;
-        println!("{json}");
+        print_json!(&effective, cli.pretty);
         return Ok(0);
     }
 
@@ -1378,13 +1340,7 @@ fn run_call_graph(cli: &Cli) -> Result<i32, String> {
         })
     };
 
-    let json = if cli.pretty {
-        serde_json::to_string_pretty(&output)
-    } else {
-        serde_json::to_string(&output)
-    }
-    .map_err(|e| e.to_string())?;
-    println!("{json}");
+    print_json!(&output, cli.pretty);
     Ok(0)
 }
 
@@ -1403,13 +1359,7 @@ fn run_call_dataflow(cli: &Cli) -> Result<i32, String> {
     );
 
     if cli.json_output {
-        let json = if cli.pretty {
-            serde_json::to_string_pretty(&trace)
-        } else {
-            serde_json::to_string(&trace)
-        }
-        .map_err(|e| e.to_string())?;
-        println!("{json}");
+        print_json!(&trace, cli.pretty);
         return Ok(0);
     }
 
@@ -1434,13 +1384,7 @@ fn run_remote_candidates(cli: &Cli) -> Result<i32, String> {
             "source_candidates": workspace.source_candidates,
             "candidates": workspace.candidates,
         });
-        let json = if cli.pretty {
-            serde_json::to_string_pretty(&output)
-        } else {
-            serde_json::to_string(&output)
-        }
-        .map_err(|e| e.to_string())?;
-        println!("{json}");
+        print_json!(&output, cli.pretty);
         return Ok(0);
     }
 
