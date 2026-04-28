@@ -36,16 +36,26 @@ Use JSON for CI or downstream tooling:
 ```bat
 cargo run -p abap_cli -- lint --json --pretty path\to\zreport.abap
 cargo run -p abap_cli -- lint --json --with-project path\to\zreport.abap
+cargo run -p abap_cli -- lint --json --all-files path\to\workspace
 ```
 
 `--with-project` discovers the workspace around `FILE`, applies `[lints]` from `abapls.toml`, and
 uses the same project-loading conventions as `abap-cli analyze --json --with-project`. Without
 `--with-project`, the command uses a single-file snapshot and the default lint profile.
 
+`--all-files` loads workspace context and reports every editable workspace file rooted at `PATH`
+or the current directory. `--show-suppressed` includes config-disabled and source-suppressed
+diagnostics in human and JSON output. `--fail-on-warnings` makes unsuppressed `warn` findings
+return a nonzero exit code for CI.
+
 JSON output uses top-level `schema = "abap-lsp.lint"` and `version = 1`, includes target/workspace
 metadata, `findings`, `hard_errors`, and `summary` counts by level and group. Warn-only findings do
-not fail the process. The exit status is nonzero when parse hard errors prevent linting or when at
-least one unsuppressed `deny` finding is emitted.
+not fail the process unless `--fail-on-warnings` is set. The exit status is nonzero when parse hard
+errors prevent linting, when at least one unsuppressed `deny` finding is emitted, or when
+`--fail-on-warnings` sees an unsuppressed warning.
+
+For `--all-files`, the JSON report also includes `workspace.all_files = true`, a per-file `files`
+array, flattened workspace-level `findings` and `hard_errors`, and `summary.file_count`.
 
 | ID | Default | Group | Origin | SAP suppression aliases |
 | --- | --- | --- | --- | --- |

@@ -87,7 +87,7 @@ Source suppressions are statement-scoped unless explicitly file-scoped:
 ```abap
 DATA lv_unused TYPE i. " abap-lsp:allow(abap-lsp.dead-store)
 gv_unused = 1 ##NEEDED.
-SELECT * FROM mara INTO TABLE @DATA(lt_mara). "#EC CI_BUFFJOIN
+SELECT * FROM mara INTO TABLE @DATA(lt_mara). "#EC CI_ALL_FIELDS_NEEDED
 " abap-lsp:allow-next-line(abap-lsp.select-single-without-full-key)
 SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid_out) WHERE carrid = @lv_carrid.
 ```

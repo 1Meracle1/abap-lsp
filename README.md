@@ -137,6 +137,17 @@ report_suppressed = false
 `recommended` keeps parser and semantic hard errors visible while leaving noisier SAP-inspired
 heuristics at `info`. Raise individual rules to `warn` or `deny` once they are useful for a
 workspace; use `profile = "strict"` only after expected informational findings are handled.
+Unknown lint groups and unknown native lint IDs are reported as `abapls.toml` diagnostics.
+
+The CLI can lint one file, load project context, or report every editable workspace file:
+
+```bat
+cargo run -p abap_cli -- lint path\to\zreport.abap
+cargo run -p abap_cli -- lint --json --with-project path\to\zreport.abap
+cargo run -p abap_cli -- lint --json --all-files --fail-on-warnings path\to\workspace
+```
+
+Use `--show-suppressed` to include config-disabled and source-suppressed diagnostics.
 
 Suppress one statement with an explicit native ID or a supported SAP alias:
 
@@ -173,14 +184,15 @@ Non-goals for the current project:
 ## Status And Coverage
 
 This is an early alpha project with usable pieces. These percentages are
-engineering estimates as of April 27, 2026, not formal conformance metrics.
+engineering estimates as of April 28, 2026, not formal conformance metrics.
 
 | Area | Estimated coverage | Notes |
 | --- | ---: | --- |
 | Workspace and LSP plumbing | 60-70% | Stdio/TCP server, VS Code client, background analysis, diagnostics, navigation, rename, semantic tokens, inlay hints, dependency notifications, preview rebuilds, and cache documents are wired. Packaging, installer polish, and broader client UX remain incomplete. |
 | Parser coverage for common ABAP source | 55-65% | Handles many declarations, reports/programs, includes, forms, function modules, module pools, methods, classes, interfaces, control-flow blocks, expressions, assignments, Open SQL SELECT/cursors, internal-table operations, classic list/dynpro statements, dataset/textpool statements, runtime-generation statements, and AMDP SQLScript islands. Many statement additions, macro-heavy fragments, CDS/RAP, and full DDIC syntax still parse conservatively or need grammar work. |
 | Semantic analysis | 45-55% | Symbol collection, scope modeling, includes, class/interface facts, function modules, references, type/value facts, calls, PERFORM forms, Open SQL facts, validation, DDIC proxy metadata, semantic dossiers, and call graph/dataflow exports exist. Dynamic dispatch, generated code, macro-heavy flow, full DDIC semantics, and broad interprocedural precision remain limited. |
-| Static analysis | 35-45% | Current findings include unreachable code, use before definite assignment, possibly unbound field symbols, and dead stores. Routine summaries now cover CFG/dataflow convergence, loops, try/catch, PERFORM handoffs, common guards, and compact dossier output, but remain intentionally conservative. |
+| Native linting | 55-65% | `abap_lints` provides stable IDs, groups, levels, safe defaults, config diagnostics, source suppressions, LSP diagnostics, and `abap-cli lint` for single-file, project-context, and all-files runs. Current local rules cover routine dataflow, unsafe table reads, common Open SQL checks, ignored authorization checks, and conservative `CALL FUNCTION` result handling. Rule coverage, block suppressions, fix-its, and richer provider integration remain incomplete. |
+| Static analysis | 40-50% | Current findings include unreachable code, use before definite assignment, possibly unbound field symbols, dead stores, unsorted `READ TABLE ... BINARY SEARCH`, and lint-backed SAP-inspired checks. Routine summaries cover CFG/dataflow convergence, loops, try/catch, PERFORM handoffs, common guards, and compact dossier output, but remain intentionally conservative. |
 | SAP integration | 40-50% | Repository search, source/DDIC fetches, child discovery, local export fallback, centralized dependency caching, dependency URI projection, and VS Code-triggered remote fetch flows exist. Writeback, activation, debugger, transports, and full ADT object editing are out of scope today. |
 | Performance and profiling harnesses | 45-55% | Parser, symbol phase, semantic-token, local workspace export, and remote dependency wave perf entry points exist. The portable perf script runs generated smokes by default and large-file profiling when `ABAP_PERF_SAMPLE` points at a representative source file; deeper CPU flamegraphs and real customer-workspace baselines still need regular collection. |
 | Complete ABAP language and platform parity | 25-30% | The project is source-analysis first. Full SAP ADT-level coverage would include many object editors, server-side services, CDS/RAP, debugger, activation, transports, lifecycle integration, and quality tooling that are not implemented here. |
@@ -190,7 +202,7 @@ every construct in that bucket works.
 
 Latest local validation:
 
-- `cargo test --workspace` passed on April 27, 2026.
+- `cargo test --workspace` passed on April 28, 2026.
 - Release parser smoke parsed the 429-byte generated fixture 2,000 times in
   53 ms.
 - Release semantic-token request smoke built 2,012 token entries per request
@@ -280,10 +292,12 @@ Then configure the VS Code extension setting `abap-ls.serverTransport` to
 ## Documentation
 
 - [Workspace layout](docs/workspace-layout.md)
+- [Native lint reference](docs/reference/lints.md)
 - [Semantic dossier](docs/semantic-dossier.md)
 - [Call graph](docs/call-graph.md)
 - [Call dataflow](docs/call-dataflow.md)
 - [ABAP ADT CLI](docs/abap-adt-cli.md)
+- [Lint architecture](docs/architecture/lints.md)
 - [Remote dependencies](docs/architecture/remote-dependencies.md)
 - [Concurrency model](docs/architecture/concurrency.md)
 - [Static analysis artifacts](docs/architecture/static-analysis.md)
