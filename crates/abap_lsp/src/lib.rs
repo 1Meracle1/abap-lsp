@@ -5833,9 +5833,10 @@ fn callable_completion_item_metadata(
 #[cfg(test)]
 mod tests {
     use abap_cache::{
-        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
-        DocumentInput, DocumentStore, ManifestPerformance, ManifestResolution, ManifestUnit,
-        ManifestUnitMember, WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
+        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY,
+        ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE, DocumentInput, DocumentStore,
+        ManifestPerformance, ManifestResolution, ManifestUnit, ManifestUnitMember,
+        WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
     };
     use abap_dependency_store::StoredArtifactInput;
     use abap_symbols::DiagnosticKind;
@@ -6384,6 +6385,92 @@ check_variant = "DEFAULT""#,
             }),
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn workspace_publishes_select_single_without_full_key_lsp_diagnostic() {
+        let workspace_path = temp_workspace_path("lint_select_single_without_full_key");
+        fs::create_dir_all(workspace_path.join("src/dictionary/database-tables"))
+            .expect("workspace dirs");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZFLIGHT"
+kind = "ddic-table"
+root_file = "src/dictionary/database-tables/ZFLIGHT.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/dictionary/database-tables/ZFLIGHT.abap"),
+            "\
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, \" primary key; client
+         carrid TYPE c LENGTH 3, \" primary key; carrier
+         connid TYPE c LENGTH 4, \" primary key; connection
+       END OF zflight.",
+        )
+        .expect("ddic");
+        let source_path = workspace_path.join("src/ZMAIN.abap");
+        fs::write(
+            &source_path,
+            "\
+DATA lv_carrid TYPE c LENGTH 3.
+SELECT SINGLE carrid
+  FROM zflight
+  INTO @DATA(lv_carrid_out)
+  WHERE carrid = @lv_carrid.",
+        )
+        .expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&path_to_file_uri(&source_path));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace.cache.get(&source_uri).expect("snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diag| {
+                diag.code
+                    == Some(NumberOrString::String(
+                        ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY.to_string(),
+                    ))
+            })
+            .expect("select single full-key lint");
+
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::INFORMATION));
+        assert_eq!(diagnostic.source.as_deref(), Some(LINT_DIAGNOSTIC_SOURCE));
+        assert!(
+            diagnostic
+                .code_description
+                .as_ref()
+                .is_some_and(|description| description
+                    .href
+                    .as_str()
+                    .contains("abap-lspselect-single-without-full-key")),
+            "{diagnostic:#?}"
+        );
+        assert!(
+            diagnostic.message.contains("connid") && !diagnostic.message.contains("mandt"),
+            "{diagnostic:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

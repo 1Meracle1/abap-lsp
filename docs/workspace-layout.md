@@ -34,6 +34,7 @@ report_suppressed = false
 [lints.rules]
 "abap-lsp.dead-store" = "info"
 "abap-lsp.select-in-loop" = "info"
+"abap-lsp.select-single-without-full-key" = "info"
 ```
 
 The root manifest does not need explicit `[[unit]]` entries for normal `src` content.
@@ -70,6 +71,7 @@ heuristics at `info`. Use targeted rule overrides when a team is ready to make o
 ```toml
 [lints.rules]
 "abap-lsp.select-star" = "warn"
+"abap-lsp.select-single-without-full-key" = "warn"
 "abap-lsp.for-all-entries-without-guard" = "warn"
 ```
 
@@ -86,6 +88,8 @@ Source suppressions are statement-scoped unless explicitly file-scoped:
 DATA lv_unused TYPE i. " abap-lsp:allow(abap-lsp.dead-store)
 gv_unused = 1 ##NEEDED.
 SELECT * FROM mara INTO TABLE @DATA(lt_mara). "#EC CI_BUFFJOIN
+" abap-lsp:allow-next-line(abap-lsp.select-single-without-full-key)
+SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid_out) WHERE carrid = @lv_carrid.
 ```
 
 SAP pragmas and pseudo comments only suppress lints that list the corresponding SAP alias in lint

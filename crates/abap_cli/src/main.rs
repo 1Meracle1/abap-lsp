@@ -4265,18 +4265,18 @@ mod tests {
         CallDataflowDiagramFormat, LintFileReportContext, LintHardError, LintReportContext,
         LintWorkspaceReportContext, lint_all_files_report_json_from_context, lint_finding_json,
         lint_report_json, lint_report_json_from_context, lint_should_fail, lint_summary_json,
-        load_remote_candidate_workspace, load_single_file_lint_snapshot, parse_cli_args,
-        path_to_file_uri, render_call_dataflow_diagram_block,
-        render_call_dataflow_parameter_provenance_mermaid,
+        load_project_lint_snapshot, load_remote_candidate_workspace,
+        load_single_file_lint_snapshot, parse_cli_args, path_to_file_uri,
+        render_call_dataflow_diagram_block, render_call_dataflow_parameter_provenance_mermaid,
         render_call_dataflow_parameter_rich_mermaid, render_call_dataflow_report,
     };
     use abap_cache::{
-        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_STAR, CallDataflowByteRange,
-        CallDataflowLifecycle, CallDataflowLifecycleEdge, CallDataflowLifecycleNode,
-        CallDataflowParameterTrace, CallDataflowProvenanceEdge, CallDataflowProvenanceGraph,
-        CallDataflowProvenanceNode, CallDataflowQuery, CallDataflowSelectedCall,
-        CallDataflowSummary, CallDataflowTrace, LintDiagnostic, LintGroup, LintLevel, LintOrigin,
-        LintSuppression, LintSuppressionKind,
+        ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY,
+        ABAP_LSP_SELECT_STAR, CallDataflowByteRange, CallDataflowLifecycle,
+        CallDataflowLifecycleEdge, CallDataflowLifecycleNode, CallDataflowParameterTrace,
+        CallDataflowProvenanceEdge, CallDataflowProvenanceGraph, CallDataflowProvenanceNode,
+        CallDataflowQuery, CallDataflowSelectedCall, CallDataflowSummary, CallDataflowTrace,
+        LintDiagnostic, LintGroup, LintLevel, LintOrigin, LintSuppression, LintSuppressionKind,
     };
     use serde_json::json;
     use std::fs;
@@ -4520,6 +4520,70 @@ ENDIF.",
         assert_eq!(finding["level"], "info");
         assert_eq!(finding["group"], "correctness");
         assert_eq!(finding["origin"], "abap-lsp");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lint_with_project_json_includes_select_single_without_full_key() {
+        let root = std::env::temp_dir().join("abap-cli-lint-select-single-key");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src/dictionary/database-tables")).expect("workspace dirs");
+        fs::write(
+            root.join("abapls.toml"),
+            r#"
+version = 1
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZFLIGHT"
+kind = "ddic-table"
+root_file = "src/dictionary/database-tables/ZFLIGHT.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            root.join("src/dictionary/database-tables/ZFLIGHT.abap"),
+            "\
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, \" primary key; client
+         carrid TYPE c LENGTH 3, \" primary key; carrier
+         connid TYPE c LENGTH 4, \" primary key; connection
+       END OF zflight.",
+        )
+        .expect("ddic table");
+        let main_path = root.join("src/ZMAIN.abap");
+        fs::write(
+            &main_path,
+            "\
+DATA lv_carrid TYPE c LENGTH 3.
+SELECT SINGLE carrid
+  FROM zflight
+  INTO @DATA(lv_carrid_out)
+  WHERE carrid = @lv_carrid.",
+        )
+        .expect("main source");
+
+        let snapshot =
+            load_project_lint_snapshot(Some(main_path.to_string_lossy().as_ref()), false)
+                .expect("project lint snapshot");
+        let findings = snapshot.snapshot.lint_diagnostics().to_vec();
+        let report = lint_report_json(&snapshot, &findings, &[]);
+        let finding = report["findings"]
+            .as_array()
+            .expect("findings array")
+            .iter()
+            .find(|finding| finding["lint_id"] == ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY)
+            .expect("select single full-key finding");
+
+        assert_eq!(finding["level"], "info");
+        assert_eq!(finding["group"], "correctness");
+        assert_eq!(finding["origin"], "abap-lsp");
+        assert_eq!(report["workspace"]["with_project"], true);
 
         let _ = fs::remove_dir_all(&root);
     }

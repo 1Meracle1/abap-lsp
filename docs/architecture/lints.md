@@ -681,6 +681,8 @@ Priority 4: new SAP-inspired native lints after the framework lands
 - `FOR ALL ENTRIES` without an initial-table guard (first local pack:
   `abap-lsp.for-all-entries-without-guard`)
 - missing `ORDER BY` before order-dependent reads (covered by `abap-lsp.unsorted-read-table-binary-search`)
+- `SELECT SINGLE` without a full known DDIC/repository primary key (first local pack:
+  `abap-lsp.select-single-without-full-key`)
 - obsolete statements and syntax forms
 - hard-coded text literals without text symbol or pragma
 - `CALL 'SYSTEM'` or kernel C calls without approved pseudo comment

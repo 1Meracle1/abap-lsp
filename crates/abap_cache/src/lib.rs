@@ -11,13 +11,13 @@ use abap_lexer::{TokenKind, tokenize};
 pub use abap_lints::{
     ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
     ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
-    ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL, ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR,
-    ABAP_LSP_UNREACHABLE_CODE, ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH,
-    ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT, EPC_INVALID_OPEN_SQL_INTO_TARGET,
-    EPC_MISSING_TABLES_DECLARATION, EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup,
-    LintId, LintLevel, LintMetadata, LintOrigin, LintPolicy, LintSuppression, LintSuppressionKind,
-    ProjectLintAnalysis, SapAtcLintConfig, SapAtcLintMode, SuppressionIndex, lint_docs_anchor,
-    metadata_for, registry,
+    ABAP_LSP_POSSIBLY_UNBOUND_FIELD_SYMBOL, ABAP_LSP_SELECT_IN_LOOP,
+    ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
+    ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH, ABAP_LSP_USE_BEFORE_DEFINITE_ASSIGNMENT,
+    EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_MISSING_TABLES_DECLARATION,
+    EPC_UNVERIFIED_OPEN_SQL_SOURCE, LintDiagnostic, LintGroup, LintId, LintLevel, LintMetadata,
+    LintOrigin, LintPolicy, LintSuppression, LintSuppressionKind, ProjectLintAnalysis,
+    SapAtcLintConfig, SapAtcLintMode, SuppressionIndex, lint_docs_anchor, metadata_for, registry,
 };
 use abap_parser::{ParseResult, parse};
 use abap_symbols::{
@@ -29,12 +29,12 @@ use abap_symbols::{
     PerformCallData, PerformParameterSection, ProjectAnalysis, ProjectRoutineAnalysis,
     ProjectStaticAnalysisSummary, ReferenceData, ReferenceKind, Resolution,
     RoutineControlRegionData, RoutineLoopKind, RoutineSiteKind, ScopeId, ScopeKind,
-    SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind, SqlProjectionKind, StructureFieldData,
-    StructureFieldInfo, StructureFieldShape, StructureId, SymbolData, SymbolHandle, SymbolId,
-    SymbolKind, SystemFieldStatementKind, SystemFieldUpdateData, UnitAnalysis, UnitId,
-    ValueStateCheckData, ValueStateCheckKind, Visibility, build_project_routine_analysis,
-    build_project_static_analysis_summary, builtin_routine_spec, call_section_matches_parameter,
-    parameter_is_required,
+    SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind, SqlProjectionKind, SqlQueryData,
+    SqlSourceData, SqlSourceKind, StructureFieldData, StructureFieldInfo, StructureFieldShape,
+    StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, SystemFieldStatementKind,
+    SystemFieldUpdateData, UnitAnalysis, UnitId, ValueStateCheckData, ValueStateCheckKind,
+    Visibility, build_project_routine_analysis, build_project_static_analysis_summary,
+    builtin_routine_spec, call_section_matches_parameter, parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
         analyze_unit_local_state_for_project_build, incremental_project_update,
@@ -10921,7 +10921,18 @@ fn materialize_snapshots(
         };
         prepared_units.push((prepared, unit));
     }
+    let lint_scope_indexes: Vec<_> = prepared_units
+        .iter()
+        .map(|(prepared, _)| prepared.local.scope_index.clone())
+        .collect();
+    let lint_lookup = build_lint_metadata_lookup(project.as_ref());
+    let lint_context = ProjectLintContext {
+        project: project.as_ref(),
+        scope_indexes: &lint_scope_indexes,
+        lookup: &lint_lookup,
+    };
     let lint_analysis = Arc::new(build_project_lint_analysis(
+        &lint_context,
         prepared_units
             .iter()
             .map(|(prepared, unit)| (prepared, unit)),
@@ -11023,7 +11034,19 @@ pub fn lint_id_for_diagnostic_kind(kind: DiagnosticKind) -> Option<LintId> {
     lint_metadata_for_diagnostic_kind(kind).map(|metadata| metadata.id)
 }
 
+struct ProjectLintContext<'a> {
+    project: &'a ProjectAnalysis,
+    scope_indexes: &'a [ScopeIndex],
+    lookup: &'a LintMetadataLookup,
+}
+
+struct LintMetadataLookup {
+    per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
+    root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+}
+
 fn build_project_lint_analysis<'a>(
+    context: &ProjectLintContext<'_>,
     units: impl IntoIterator<Item = (&'a PreparedDocument, &'a UnitAnalysis)>,
     lint_policy: &LintPolicy,
 ) -> ProjectLintAnalysis {
@@ -11044,9 +11067,12 @@ fn build_project_lint_analysis<'a>(
                 );
             }
         }
-        for mut lint_diagnostic in
-            build_local_lint_diagnostics(unit, prepared.analysis_text.as_ref(), lint_policy)
-        {
+        for mut lint_diagnostic in build_local_lint_diagnostics(
+            context,
+            unit,
+            prepared.analysis_text.as_ref(),
+            lint_policy,
+        ) {
             push_filtered_lint_diagnostic(
                 &mut diagnostics,
                 unit.uri.as_ref(),
@@ -11078,6 +11104,7 @@ fn push_filtered_lint_diagnostic(
 }
 
 fn build_local_lint_diagnostics(
+    context: &ProjectLintContext<'_>,
     unit: &UnitAnalysis,
     source: &str,
     lint_policy: &LintPolicy,
@@ -11085,6 +11112,7 @@ fn build_local_lint_diagnostics(
     let mut diagnostics = Vec::new();
     lint_select_star(unit, lint_policy, &mut diagnostics);
     lint_select_in_loop(unit, lint_policy, &mut diagnostics);
+    lint_select_single_without_full_key(context, unit, lint_policy, &mut diagnostics);
     lint_for_all_entries_without_guard(unit, lint_policy, &mut diagnostics);
     lint_dynamic_open_sql(unit, lint_policy, &mut diagnostics);
     lint_ignored_authority_check(unit, lint_policy, &mut diagnostics);
@@ -11156,6 +11184,438 @@ fn lint_select_in_loop(
             lint_policy,
         );
     }
+}
+
+fn lint_select_single_without_full_key(
+    context: &ProjectLintContext<'_>,
+    unit: &UnitAnalysis,
+    lint_policy: &LintPolicy,
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let Some(metadata) = abap_lints::metadata_for(ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY) else {
+        return;
+    };
+    for query in &unit.sql_queries {
+        if !query.is_single || query.has_dynamic_where {
+            continue;
+        }
+        let Some(source) = single_static_from_source(unit, query.id) else {
+            continue;
+        };
+        let Some(primary_key_fields) =
+            open_sql_primary_key_fields_for_source(context, unit, query.scope, source)
+        else {
+            continue;
+        };
+        let required_key_fields = primary_key_fields
+            .iter()
+            .filter(|field| !is_client_column_name(field.as_ref()))
+            .collect::<Vec<_>>();
+        if required_key_fields.is_empty() {
+            continue;
+        }
+        let where_fields = open_sql_where_column_names(unit, query, source);
+        let missing_key_fields = required_key_fields
+            .iter()
+            .filter(|field| !where_fields.contains(&field.to_ascii_lowercase()))
+            .map(|field| field.as_ref().to_string())
+            .collect::<Vec<_>>();
+        if missing_key_fields.is_empty() {
+            continue;
+        }
+
+        let range = query
+            .where_clause
+            .clone()
+            .or_else(|| query.from_clause.clone())
+            .unwrap_or_else(|| query.range.clone());
+        emit_lint_diagnostic(
+            diagnostics,
+            metadata,
+            range,
+            format!(
+                "SELECT SINGLE from '{}' does not restrict primary-key field(s) {} in the WHERE clause",
+                source.name,
+                missing_key_fields.join(", ")
+            ),
+            lint_policy,
+        );
+    }
+}
+
+fn single_static_from_source(unit: &UnitAnalysis, query_id: usize) -> Option<&SqlSourceData> {
+    let sources = unit
+        .sql_sources
+        .iter()
+        .filter(|source| source.query_id == query_id)
+        .collect::<Vec<_>>();
+    sources
+        .as_slice()
+        .first()
+        .copied()
+        .filter(|source| sources.len() == 1 && source.source_kind == SqlSourceKind::From)
+}
+
+fn open_sql_where_column_names(
+    unit: &UnitAnalysis,
+    query: &SqlQueryData,
+    source: &SqlSourceData,
+) -> HashSet<String> {
+    let Some(where_range) = query.where_clause.as_ref() else {
+        return HashSet::new();
+    };
+    unit.sql_name_refs
+        .iter()
+        .filter(|sql_ref| sql_ref.query_id == query.id)
+        .filter(|sql_ref| {
+            matches!(
+                sql_ref.kind,
+                SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+            )
+        })
+        .filter(|sql_ref| {
+            where_range.start <= sql_ref.range.start && sql_ref.range.end <= where_range.end
+        })
+        .filter(|sql_ref| {
+            sql_ref
+                .qualifier
+                .as_ref()
+                .is_none_or(|qualifier| sql_source_matches_qualifier(source, qualifier))
+        })
+        .map(|sql_ref| sql_ref.name.to_ascii_lowercase())
+        .collect()
+}
+
+fn build_lint_metadata_lookup(project: &ProjectAnalysis) -> LintMetadataLookup {
+    let mut per_unit_root_index = vec![HashMap::new(); project.units.len()];
+    let mut root_index = HashMap::new();
+
+    for unit in &project.units {
+        for symbol in &unit.symbols {
+            if symbol.scope != unit.root_scope {
+                continue;
+            }
+            for &namespace in symbol.kind.namespaces() {
+                per_unit_root_index[unit.unit_id.as_usize()]
+                    .entry((namespace, Arc::clone(&symbol.name)))
+                    .or_insert_with(Vec::new)
+                    .push(symbol.id);
+                root_index
+                    .entry((namespace, Arc::clone(&symbol.name)))
+                    .or_insert_with(Vec::new)
+                    .push(SymbolHandle {
+                        unit: unit.unit_id,
+                        symbol: symbol.id,
+                    });
+            }
+        }
+    }
+
+    LintMetadataLookup {
+        per_unit_root_index,
+        root_index,
+    }
+}
+
+fn open_sql_primary_key_fields_for_source(
+    context: &ProjectLintContext<'_>,
+    unit: &UnitAnalysis,
+    query_scope: ScopeId,
+    source: &SqlSourceData,
+) -> Option<Vec<Arc<str>>> {
+    let scope_index = context.scope_indexes.get(unit.unit_id.as_usize())?;
+    let (source_unit, structure_id) =
+        open_sql_source_structure_for_name(context, unit, scope_index, query_scope, &source.name)?;
+    if !unit_is_ddic_table_like_metadata(source_unit) {
+        return None;
+    }
+    let fields = structure_field_infos_project(
+        context,
+        source_unit,
+        scope_for_unit(source_unit, query_scope),
+        structure_id,
+    )
+    .into_iter()
+    .filter(|field| field.is_key)
+    .map(|field| field.name)
+    .collect::<Vec<_>>();
+    (!fields.is_empty()).then_some(fields)
+}
+
+fn open_sql_source_structure_for_name<'a>(
+    context: &'a ProjectLintContext<'_>,
+    unit: &'a UnitAnalysis,
+    scope_index: &ScopeIndex,
+    query_scope: ScopeId,
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    let handle = open_sql_source_symbol_handle(context, unit, scope_index, query_scope, name)?;
+    let source_unit = &context.project.units[handle.unit.as_usize()];
+    resolve_symbol_structure_project(
+        context,
+        source_unit,
+        scope_for_unit(source_unit, query_scope),
+        handle.symbol,
+    )
+}
+
+fn open_sql_source_symbol_handle(
+    context: &ProjectLintContext<'_>,
+    unit: &UnitAnalysis,
+    scope_index: &ScopeIndex,
+    query_scope: ScopeId,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    if let Some(symbol_id) =
+        resolve_symbol_in_lint_scope_chain(unit, scope_index, query_scope, Namespace::Type, name)
+    {
+        return Some(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: symbol_id,
+        });
+    }
+
+    root_symbol_handle_matching(context, unit, Namespace::Type, name, |symbol| {
+        symbol.kind.occupies(Namespace::Type)
+    })
+}
+
+fn resolve_symbol_structure_project<'a>(
+    context: &'a ProjectLintContext<'_>,
+    unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    symbol_id: SymbolId,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    let mut current_unit = unit;
+    let mut current_symbol_id = symbol_id;
+    let mut seen = HashSet::new();
+    for _ in 0..8 {
+        let symbol = current_unit.symbol(current_symbol_id);
+        if let Some(structure_id) = symbol.structure {
+            return Some((current_unit, structure_id));
+        }
+        let type_ref = symbol.declared_type.as_ref()?;
+        let handle = resolve_type_like_symbol_handle(context, current_unit, scope, type_ref)?;
+        if !seen.insert((handle.unit.0, handle.symbol.0)) {
+            return None;
+        }
+        current_unit = &context.project.units[handle.unit.as_usize()];
+        current_symbol_id = handle.symbol;
+    }
+    None
+}
+
+fn resolve_type_like_symbol_handle(
+    context: &ProjectLintContext<'_>,
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+    type_ref: &FieldTypeRefData,
+) -> Option<SymbolHandle> {
+    let namespaces = if type_ref.namespace == Namespace::Value {
+        [Namespace::Value, Namespace::Type]
+    } else {
+        [type_ref.namespace, type_ref.namespace]
+    };
+    let scope_index = context.scope_indexes.get(unit.unit_id.as_usize())?;
+
+    for namespace in namespaces {
+        if let Some(symbol_id) = resolve_symbol_in_lint_scope_chain(
+            unit,
+            scope_index,
+            scope,
+            namespace,
+            &type_ref.base_name,
+        ) {
+            return Some(SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol_id,
+            });
+        }
+
+        if let Some(handle) =
+            root_symbol_handle_matching(context, unit, namespace, &type_ref.base_name, |symbol| {
+                symbol.kind.namespaces().contains(&namespace)
+            })
+        {
+            return Some(handle);
+        }
+    }
+
+    None
+}
+
+fn root_symbol_handle_matching<F>(
+    context: &ProjectLintContext<'_>,
+    preferred_unit: &UnitAnalysis,
+    namespace: Namespace,
+    name: &Arc<str>,
+    predicate: F,
+) -> Option<SymbolHandle>
+where
+    F: Fn(&SymbolData) -> bool,
+{
+    let key = (namespace, Arc::clone(name));
+    if let Some(symbol_ids) =
+        context.lookup.per_unit_root_index[preferred_unit.unit_id.as_usize()].get(&key)
+    {
+        for &symbol_id in symbol_ids {
+            let handle = SymbolHandle {
+                unit: preferred_unit.unit_id,
+                symbol: symbol_id,
+            };
+            if predicate(context.project.units[handle.unit.as_usize()].symbol(handle.symbol)) {
+                return Some(handle);
+            }
+        }
+    }
+
+    context.lookup.root_index.get(&key).and_then(|handles| {
+        handles.iter().copied().find(|handle| {
+            handle.unit != preferred_unit.unit_id
+                && predicate(context.project.units[handle.unit.as_usize()].symbol(handle.symbol))
+        })
+    })
+}
+
+fn resolve_symbol_in_lint_scope_chain(
+    unit: &UnitAnalysis,
+    scope_index: &ScopeIndex,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<SymbolId> {
+    let key = (namespace, Arc::clone(name));
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        if let Some(symbols) = scope_index
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.get(&key))
+            && let Some(symbol_id) = symbols.last().copied()
+        {
+            return Some(symbol_id);
+        }
+        current = unit
+            .scopes
+            .get(scope_id.as_usize())
+            .and_then(|scope| scope.parent);
+    }
+    None
+}
+
+fn structure_field_infos_project(
+    context: &ProjectLintContext<'_>,
+    current_unit: &UnitAnalysis,
+    scope: ScopeId,
+    structure_id: StructureId,
+) -> Vec<StructureFieldInfo> {
+    fn collect(
+        context: &ProjectLintContext<'_>,
+        current_unit: &UnitAnalysis,
+        scope: ScopeId,
+        structure_id: StructureId,
+        seen_structures: &mut HashSet<(u32, u32)>,
+        seen_fields: &mut HashSet<Arc<str>>,
+        out: &mut Vec<StructureFieldInfo>,
+    ) {
+        if !seen_structures.insert((current_unit.unit_id.0, structure_id.0)) {
+            return;
+        }
+        for field in current_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
+        {
+            if seen_fields.insert(Arc::clone(&field.name)) {
+                out.push(field.clone());
+            }
+            if !field_looks_like_ddic_proxy_include(current_unit, &field) {
+                continue;
+            }
+            let Some((included_unit, included_structure)) =
+                included_structure_for_proxy_field(context, current_unit, scope, &field)
+            else {
+                continue;
+            };
+            let nested_scope = scope_for_unit(included_unit, scope);
+            collect(
+                context,
+                included_unit,
+                nested_scope,
+                included_structure,
+                seen_structures,
+                seen_fields,
+                out,
+            );
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut seen_structures = HashSet::new();
+    let mut seen_fields = HashSet::new();
+    collect(
+        context,
+        current_unit,
+        scope,
+        structure_id,
+        &mut seen_structures,
+        &mut seen_fields,
+        &mut out,
+    );
+    out
+}
+
+fn included_structure_for_proxy_field<'a>(
+    context: &'a ProjectLintContext<'_>,
+    current_unit: &'a UnitAnalysis,
+    scope: ScopeId,
+    field: &StructureFieldInfo,
+) -> Option<(&'a UnitAnalysis, StructureId)> {
+    let type_ref = field.type_ref.as_ref()?;
+    let handle = resolve_type_like_symbol_handle(
+        context,
+        current_unit,
+        scope_for_unit(current_unit, scope),
+        type_ref,
+    )?;
+    let resolved_unit = &context.project.units[handle.unit.as_usize()];
+    resolve_symbol_structure_project(
+        context,
+        resolved_unit,
+        scope_for_unit(resolved_unit, scope),
+        handle.symbol,
+    )
+}
+
+fn scope_for_unit(unit: &UnitAnalysis, scope: ScopeId) -> ScopeId {
+    if unit.scopes.get(scope.as_usize()).is_some() {
+        scope
+    } else {
+        unit.root_scope
+    }
+}
+
+fn sql_source_matches_qualifier(source: &SqlSourceData, qualifier: &Arc<str>) -> bool {
+    source.alias.as_ref() == Some(qualifier) || source.name == *qualifier
+}
+
+fn is_client_column_name(field_name: &str) -> bool {
+    field_name.eq_ignore_ascii_case("mandt") || field_name.eq_ignore_ascii_case("client")
+}
+
+fn unit_is_ddic_table_like_metadata(unit: &UnitAnalysis) -> bool {
+    let uri = unit.uri.to_ascii_lowercase().replace('\\', "/");
+    if uri.contains("ddic-table-type") || uri.contains("/ddic/tabletypes/") {
+        return false;
+    }
+    uri.contains("/ddic/tables/")
+        || uri.contains("/ddic/database-tables/")
+        || uri.contains("/ddic/views/")
+        || uri.contains("/ddic-table/")
+        || uri.contains("/ddic-view/")
+        || uri.contains("/dictionary/database-tables/")
+        || uri.contains("/dictionary/views/")
+        || uri.contains("kind=ddic-table")
+        || uri.contains("kind=ddic-view")
 }
 
 fn lint_for_all_entries_without_guard(
@@ -12713,10 +13173,11 @@ mod tests {
     use super::{
         ABAP_LSP_DEAD_STORE, ABAP_LSP_DYNAMIC_OPEN_SQL, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
         ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
-        ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR, AnalysisSnapshot, CallableSummary,
-        DefinitionTarget, DocumentInput, DocumentStore, HoveredComponentKind, LintPolicy,
-        LintSuppressionKind, ReferenceTarget, SnapshotBuildPlan, ddic_xml_to_abap_source,
-        dependency_surface_text, opened_function_module_dependency_analysis_text,
+        ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY, ABAP_LSP_SELECT_STAR,
+        AnalysisSnapshot, CallableSummary, DefinitionTarget, DocumentInput, DocumentStore,
+        HoveredComponentKind, LintPolicy, LintSuppressionKind, ReferenceTarget, SnapshotBuildPlan,
+        ddic_xml_to_abap_source, dependency_surface_text,
+        opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
         Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
@@ -15361,6 +15822,182 @@ ENDLOOP.";
                 .iter()
                 .any(|slice| slice.contains("FROM scarr")),
             "{select_in_loop:?}"
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_flags_select_single_without_full_known_key() {
+        let store = DocumentStore::default();
+        let ddic_src = "\
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, \" primary key; client
+         carrid TYPE c LENGTH 3, \" primary key; carrier
+         connid TYPE c LENGTH 4, \" primary key; connection
+         fldate TYPE d,
+       END OF zflight.";
+        let main_src = "\
+DATA lv_carrid TYPE c LENGTH 3.
+
+SELECT SINGLE carrid
+  FROM zflight
+  INTO @DATA(lv_carrid_out)
+  WHERE carrid = @lv_carrid.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///packages/z/ddic-table/zflight.abap"),
+                version: 1,
+                text: Arc::from(ddic_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zflight")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///select_single_missing_key.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///select_single_missing_key.abap")
+            .expect("main snapshot");
+        let diagnostics = snapshot
+            .lint_diagnostics()
+            .iter()
+            .filter(|diag| diag.id == ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY)
+            .collect::<Vec<_>>();
+
+        assert_eq!(diagnostics.len(), 1, "{:#?}", snapshot.lint_diagnostics());
+        assert_eq!(diagnostics[0].level, super::LintLevel::Info);
+        assert!(
+            diagnostics[0].message.contains("connid") && !diagnostics[0].message.contains("mandt"),
+            "{:#?}",
+            diagnostics[0]
+        );
+        assert!(main_src[diagnostics[0].range.clone()].contains("WHERE"));
+    }
+
+    #[test]
+    fn local_lint_pack_accepts_select_single_with_full_known_key() {
+        let store = DocumentStore::default();
+        let ddic_src = "\
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, \" primary key; client
+         carrid TYPE c LENGTH 3, \" primary key; carrier
+         connid TYPE c LENGTH 4, \" primary key; connection
+         fldate TYPE d,
+       END OF zflight.";
+        let main_src = "\
+DATA lv_carrid TYPE c LENGTH 3.
+DATA lv_connid TYPE c LENGTH 4.
+
+SELECT SINGLE carrid
+  FROM zflight
+  INTO @DATA(lv_carrid_out)
+  WHERE carrid = @lv_carrid
+    AND connid = @lv_connid.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///packages/z/ddic-table/zflight.abap"),
+                version: 1,
+                text: Arc::from(ddic_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zflight")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///select_single_full_key.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///select_single_full_key.abap")
+            .expect("main snapshot");
+
+        assert!(
+            snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|diag| diag.id != ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY),
+            "{:#?}",
+            snapshot.lint_diagnostics()
+        );
+    }
+
+    #[test]
+    fn local_lint_pack_skips_select_single_when_key_metadata_is_missing() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lv_carrid TYPE c LENGTH 3.
+
+SELECT SINGLE carrid
+  FROM scarr
+  INTO @DATA(lv_carrid_out)
+  WHERE carrid = @lv_carrid.";
+
+        let snapshot = store.publish("file:///select_single_no_key_metadata.abap", 1, src);
+
+        assert!(
+            snapshot
+                .lint_diagnostics()
+                .iter()
+                .all(|diag| diag.id != ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY),
+            "{:#?}",
+            snapshot.lint_diagnostics()
+        );
+    }
+
+    #[test]
+    fn lint_allow_next_line_suppresses_select_single_without_full_key() {
+        let store = DocumentStore::default();
+        store.set_lint_policy(LintPolicy::default().with_report_suppressed(true));
+        let ddic_src = "\
+TYPES: BEGIN OF zflight,
+         mandt  TYPE c LENGTH 3, \" primary key; client
+         carrid TYPE c LENGTH 3, \" primary key; carrier
+         connid TYPE c LENGTH 4, \" primary key; connection
+       END OF zflight.";
+        let main_src = "\
+DATA lv_carrid TYPE c LENGTH 3.
+
+\" abap-lsp:allow-next-line(abap-lsp.select-single-without-full-key)
+SELECT SINGLE carrid
+  FROM zflight
+  INTO @DATA(lv_carrid_out)
+  WHERE carrid = @lv_carrid.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///packages/z/ddic-table/zflight.abap"),
+                version: 1,
+                text: Arc::from(ddic_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zflight")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///select_single_suppressed.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots
+            .get("file:///select_single_suppressed.abap")
+            .expect("main snapshot");
+        let diagnostic = snapshot
+            .lint_diagnostics()
+            .iter()
+            .find(|diag| diag.id == ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY)
+            .expect("reported suppressed lint");
+        let suppression = diagnostic.suppression.as_ref().expect("suppression");
+
+        assert!(diagnostic.suppressed);
+        assert_eq!(suppression.kind, LintSuppressionKind::AbapLspAllow);
+        assert_eq!(
+            suppression.token,
+            "\" abap-lsp:allow-next-line(abap-lsp.select-single-without-full-key)"
         );
     }
 

@@ -22,6 +22,8 @@ pub const ABAP_LSP_UNSORTED_READ_TABLE_BINARY_SEARCH: LintId =
     "abap-lsp.unsorted-read-table-binary-search";
 pub const ABAP_LSP_SELECT_STAR: LintId = "abap-lsp.select-star";
 pub const ABAP_LSP_SELECT_IN_LOOP: LintId = "abap-lsp.select-in-loop";
+pub const ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY: LintId =
+    "abap-lsp.select-single-without-full-key";
 pub const ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD: LintId = "abap-lsp.for-all-entries-without-guard";
 pub const ABAP_LSP_DYNAMIC_OPEN_SQL: LintId = "abap-lsp.dynamic-open-sql";
 pub const ABAP_LSP_IGNORED_AUTHORITY_CHECK: LintId = "abap-lsp.ignored-authority-check";
@@ -942,6 +944,15 @@ const REGISTRY: &[LintMetadata] = &[
         sap_aliases: &["CI_SEL_NESTED"],
     },
     LintMetadata {
+        id: ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY,
+        group: LintGroup::Correctness,
+        origin: LintOrigin::AbapLsp,
+        default_level: LintLevel::Info,
+        summary: "Open SQL SELECT SINGLE does not restrict all known primary-key fields",
+        tags: &["open-sql", "primary-key"],
+        sap_aliases: &[],
+    },
+    LintMetadata {
         id: ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
         group: LintGroup::Correctness,
         origin: LintOrigin::SapCodeInspector,
@@ -1117,11 +1128,12 @@ mod tests {
     use super::{
         ABAP_LSP_DEAD_STORE, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD,
         ABAP_LSP_IGNORED_AUTHORITY_CHECK, ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT,
-        ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE,
-        EPC_INVALID_OPEN_SQL_INTO_TARGET, EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE,
-        LINT_PROFILE_RECOMMENDED, LINT_PROFILE_STRICT, LintConfig, LintConfigDiagnosticKind,
-        LintDiagnostic, LintGroup, LintLevel, LintOrigin, LintPolicy, LintSuppressionKind,
-        SuppressionIndex, lint_config_diagnostics, lint_docs_anchor, metadata_for, registry,
+        ABAP_LSP_SELECT_IN_LOOP, ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY, ABAP_LSP_SELECT_STAR,
+        ABAP_LSP_UNREACHABLE_CODE, EPC_INVALID_OPEN_SQL_INTO_TARGET,
+        EPC_UNVERIFIED_OPEN_SQL_SOURCE, LINT_PROFILE_NONE, LINT_PROFILE_RECOMMENDED,
+        LINT_PROFILE_STRICT, LintConfig, LintConfigDiagnosticKind, LintDiagnostic, LintGroup,
+        LintLevel, LintOrigin, LintPolicy, LintSuppressionKind, SuppressionIndex,
+        lint_config_diagnostics, lint_docs_anchor, metadata_for, registry,
     };
     use abap_lexer::tokenize;
     use std::collections::{BTreeMap, BTreeSet};
@@ -1138,7 +1150,7 @@ mod tests {
 
     #[test]
     fn registry_contains_initial_lints() {
-        assert_eq!(registry().len(), 14);
+        assert_eq!(registry().len(), 15);
 
         let dead_store = metadata_for(ABAP_LSP_DEAD_STORE).expect("dead store metadata");
         assert_eq!(dead_store.group, LintGroup::Style);
@@ -1160,6 +1172,16 @@ mod tests {
             metadata_for(ABAP_LSP_SELECT_IN_LOOP).expect("select in loop metadata");
         assert_eq!(select_in_loop.default_level, LintLevel::Info);
         assert_eq!(select_in_loop.sap_aliases, &["CI_SEL_NESTED"]);
+
+        let select_single_without_full_key =
+            metadata_for(ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY).expect("select single metadata");
+        assert_eq!(select_single_without_full_key.group, LintGroup::Correctness);
+        assert_eq!(select_single_without_full_key.origin, LintOrigin::AbapLsp);
+        assert_eq!(
+            select_single_without_full_key.default_level,
+            LintLevel::Info
+        );
+        assert!(select_single_without_full_key.sap_aliases.is_empty());
 
         let for_all_entries =
             metadata_for(ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD).expect("fae metadata");

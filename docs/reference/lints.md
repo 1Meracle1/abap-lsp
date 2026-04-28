@@ -56,6 +56,7 @@ least one unsuppressed `deny` finding is emitted.
 | `abap-lsp.unsorted-read-table-binary-search` | `info` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.select-star` | `info` | `performance` | `sap-code-inspector` | `CI_ALL_FIELDS_NEEDED` |
 | `abap-lsp.select-in-loop` | `info` | `performance` | `sap-code-inspector` | `CI_SEL_NESTED` |
+| `abap-lsp.select-single-without-full-key` | `info` | `correctness` | `abap-lsp` | none |
 | `abap-lsp.for-all-entries-without-guard` | `info` | `correctness` | `sap-code-inspector` | `CI_FAE_LINES_ENSURED` |
 | `abap-lsp.dynamic-open-sql` | `info` | `security` | `sap-code-inspector` | none |
 | `abap-lsp.ignored-authority-check` | `info` | `security` | `sap-atc` | none |
@@ -96,6 +97,13 @@ Flags `SELECT *` and qualified star projections such as `alias~*`.
 
 Flags Open SQL `SELECT` statements inside `LOOP`, `DO`, or `WHILE` bodies. Defaults to `info`
 because small lookup tables and buffered reads may be acceptable.
+
+### `abap-lsp.select-single-without-full-key`
+
+Flags `SELECT SINGLE` when existing DDIC/repository metadata identifies primary-key fields and the
+static `WHERE` clause does not mention every non-client key field. The rule is intentionally
+conservative: it does not report joins, dynamic `WHERE` clauses, unresolved sources, or sources
+without key metadata.
 
 ### `abap-lsp.for-all-entries-without-guard`
 
@@ -138,6 +146,8 @@ The first local pack uses facts already produced by `abap_symbols`.
 - `abap-lsp.select-star`: flags `SELECT *` and qualified star projections such as `alias~*`.
 - `abap-lsp.select-in-loop`: flags Open SQL `SELECT` statements whose query scope is inside a
   `LOOP`, `DO`, or `WHILE` body.
+- `abap-lsp.select-single-without-full-key`: flags `SELECT SINGLE` when known DDIC/repository
+  primary-key metadata proves the static `WHERE` clause is missing a non-client key field.
 - `abap-lsp.for-all-entries-without-guard`: flags `FOR ALL ENTRIES` when the entries table is not
   protected by an enclosing `IS NOT INITIAL` guard, the `ELSE` branch of an `IS INITIAL` guard, or
   a prior `IF table IS INITIAL. RETURN. ENDIF.` guard in the same flow.
