@@ -1147,7 +1147,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     let mut project = ProjectAnalysis {
         units,
         uri_to_unit: workspace_index.uri_to_unit.clone(),
-        provided_name_to_unit: workspace_index.provided_name_to_unit.clone(),
+        provided_name_to_unit: workspace_index.provided_name_to_unit,
         diagnostics: Vec::new(),
     };
     let diagnostic_scope_unit_ids =

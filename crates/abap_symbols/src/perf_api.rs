@@ -227,7 +227,7 @@ pub fn preview_project_update(
     };
 
     let Some(previous_project) = previous_project else {
-        let project = validate_single_unit(current.unit.clone());
+        let project = validate_single_unit(current.unit);
         return PreviewProjectUpdate {
             changed_unit: project.units[0].clone(),
             project,
@@ -236,7 +236,7 @@ pub fn preview_project_update(
         };
     };
     let Some(previous_locals) = previous_locals else {
-        let project = validate_single_unit(current.unit.clone());
+        let project = validate_single_unit(current.unit);
         return PreviewProjectUpdate {
             changed_unit: project.units[0].clone(),
             project,
@@ -255,7 +255,7 @@ pub fn preview_project_update(
             units.push(current.unit.clone());
         }
         std::cmp::Ordering::Greater => {
-            let project = validate_single_unit(current.unit.clone());
+            let project = validate_single_unit(current.unit);
             return PreviewProjectUpdate {
                 changed_unit: project.units[0].clone(),
                 project,

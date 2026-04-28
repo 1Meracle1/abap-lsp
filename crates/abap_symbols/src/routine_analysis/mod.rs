@@ -1726,7 +1726,7 @@ fn build_routine_dataflow(
         &mut block_bound_entry_bits,
         &sy_subrc_guard_bound_block_refinements,
     );
-    let mut safe_read_refs = safe_field_symbol_checks.clone();
+    let mut safe_read_refs = safe_field_symbol_checks;
     safe_read_refs.extend(safe_value_state_checks);
     safe_read_refs.extend(safe_loop_field_refs);
     let mut suppressed_refs = vec![false; unit.references.len()];

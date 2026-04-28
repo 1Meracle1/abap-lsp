@@ -3019,7 +3019,7 @@ START-OF-SELECTION.
         let normalized_uri = abap_lsp::normalize_lsp_uri(&source_uri);
 
         let mut state = ServerState::default();
-        state.register_workspace_folder(workspace_uri.clone());
+        state.register_workspace_folder(workspace_uri);
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
@@ -3474,7 +3474,7 @@ lo_helper->r";
         let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
 
         let mut state = ServerState::default();
-        state.register_workspace_folder(workspace_uri.clone());
+        state.register_workspace_folder(workspace_uri);
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
@@ -3552,14 +3552,14 @@ lo_helper->r";
         let normalized_source_uri = abap_lsp::normalize_lsp_uri(&source_uri);
 
         let mut state = ServerState::default();
-        state.register_workspace_folder(workspace_uri.clone());
+        state.register_workspace_folder(workspace_uri);
         state
             .workspaces
             .get_mut(&normalized_workspace_uri)
             .expect("workspace")
             .open_documents
             .insert(
-                normalized_source_uri.clone(),
+                normalized_source_uri,
                 abap_lsp::OpenDocumentOverlay {
                     version: 1,
                     text: Arc::from("REPORT zmain."),
@@ -5379,7 +5379,7 @@ object_name = "ZREPORT_TWO"
         let mut state = ServerState::default();
         let config = ServerConfig::default();
         configure_test_dependency_store(&mut state, &workspace_path);
-        state.register_workspace_folder(workspace_uri.clone());
+        state.register_workspace_folder(workspace_uri);
 
         let handled = handle_message(
             &mut state,
@@ -6738,7 +6738,7 @@ object_name = "ZCL_TWO"
         let workspace_uri = file_uri(&workspace_path);
         let open_uri = format!("{workspace_uri}/src/ZCL_ONE.abap");
         let mut state = ServerState::default();
-        state.register_workspace_folder(workspace_uri.clone());
+        state.register_workspace_folder(workspace_uri);
         let config = ServerConfig::default();
 
         handle_message(
@@ -7015,8 +7015,8 @@ START-OF-SELECTION.
                 "id": 1,
                 "method": "initialize",
                 "params": {
-                    "rootUri": workspace_uri.clone(),
-                    "workspaceFolders": [{ "uri": workspace_uri.clone(), "name": "workspace" }],
+                    "rootUri": workspace_uri,
+                    "workspaceFolders": [{ "uri": workspace_uri, "name": "workspace" }],
                     "initializationOptions": {
                         "dependencyCachePath": store_path.to_string_lossy()
                     },
@@ -7034,7 +7034,7 @@ START-OF-SELECTION.
                 "id": 2,
                 "method": "abapls/storeRemoteDependencyArtifacts",
                 "params": {
-                    "workspaceUri": workspace_uri.clone(),
+                    "workspaceUri": workspace_uri,
                     "connectionKey": "https://example.sap.local",
                     "artifacts": [{
                         "packageName": "/STTP/RU",
@@ -7072,7 +7072,7 @@ START-OF-SELECTION.
                 "method": "textDocument/didOpen",
                 "params": {
                     "textDocument": {
-                        "uri": source_uri.clone(),
+                        "uri": source_uri,
                         "languageId": "abap",
                         "version": 1,
                         "text": source

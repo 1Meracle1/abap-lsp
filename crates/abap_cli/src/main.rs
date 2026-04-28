@@ -465,7 +465,7 @@ fn ast_node_json(tree: &abap_ast::File, id: NodeId, source: &str) -> Value {
 
     match kind {
         SyntaxKind::Token | SyntaxKind::ExprIdent | SyntaxKind::ExprLiteral => {
-            if let Some(slice) = source.get(range.clone()) {
+            if let Some(slice) = source.get(range) {
                 obj.insert("lexeme".to_string(), json!(slice));
             }
         }

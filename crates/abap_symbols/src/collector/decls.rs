@@ -842,8 +842,8 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     SymbolKind::FieldSymbol,
                     range,
                     structure,
-                    declared_type.clone(),
-                    type_clause_display.clone(),
+                    declared_type,
+                    type_clause_display,
                     None,
                 );
                 break;
@@ -877,7 +877,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                     scope,
                     base_namespace: namespace,
                     base_name,
-                    base_range: range.clone(),
+                    base_range: range,
                     field_path,
                     in_type_position: true,
                 });

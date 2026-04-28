@@ -3887,17 +3887,12 @@ mod tests {
             "CLASS-METHODS run IMPORTING VALUE(iv_x) TYPE i RETURNING VALUE(rv_y) LIKE foo.";
         let mut b = SyntaxTreeBuilder::default();
         let mut cursor = 0usize;
-        let mut last_range = 0..0;
         let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
             let rel = source[cursor..].find(needle).expect("token text");
             let start = cursor + rel;
             let end = start + needle.len();
             cursor = end;
-            last_range = start..end;
-            (
-                builder.leaf(SyntaxKind::Token, start..end),
-                last_range.clone(),
-            )
+            (builder.leaf(SyntaxKind::Token, start..end), start..end)
         };
 
         let (class_tok, class_range) = take("CLASS", &mut b);
@@ -3911,7 +3906,7 @@ mod tests {
         let (rparen_1, _) = take(")", &mut b);
         let (type_tok, _) = take("TYPE", &mut b);
         let (i_tok, i_range) = take("i", &mut b);
-        let i_type = b.branch(SyntaxKind::TypeRefSimple, i_range.clone(), &[i_tok]);
+        let i_type = b.branch(SyntaxKind::TypeRefSimple, i_range, &[i_tok]);
         let (returning_tok, _) = take("RETURNING", &mut b);
         let (value_tok_2, _) = take("VALUE", &mut b);
         let (lparen_2, _) = take("(", &mut b);
@@ -3919,7 +3914,7 @@ mod tests {
         let (rparen_2, _) = take(")", &mut b);
         let (like_tok, _) = take("LIKE", &mut b);
         let (foo_tok, foo_range) = take("foo", &mut b);
-        let foo_type = b.branch(SyntaxKind::TypeRefSimple, foo_range.clone(), &[foo_tok]);
+        let foo_type = b.branch(SyntaxKind::TypeRefSimple, foo_range, &[foo_tok]);
         let (period_tok, period_range) = take(".", &mut b);
 
         let methods_stmt = b.branch(
@@ -4010,17 +4005,12 @@ CLASS-METHODS read_char_value
     !ep_value TYPE ANY.";
         let mut b = SyntaxTreeBuilder::default();
         let mut cursor = 0usize;
-        let mut last_range = 0..0;
         let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
             let rel = source[cursor..].find(needle).expect("token text");
             let start = cursor + rel;
             let end = start + needle.len();
             cursor = end;
-            last_range = start..end;
-            (
-                builder.leaf(SyntaxKind::Token, start..end),
-                last_range.clone(),
-            )
+            (builder.leaf(SyntaxKind::Token, start..end), start..end)
         };
 
         let (class_tok, class_range) = take("CLASS", &mut b);
@@ -4041,13 +4031,13 @@ CLASS-METHODS read_char_value
         let (ip_charact_tok, _) = take("ip_charact", &mut b);
         let (type_2_tok, _) = take("TYPE", &mut b);
         let (any_2_tok, any_2_range) = take("ANY", &mut b);
-        let any_2_type = b.branch(SyntaxKind::TypeRefSimple, any_2_range.clone(), &[any_2_tok]);
+        let any_2_type = b.branch(SyntaxKind::TypeRefSimple, any_2_range, &[any_2_tok]);
         let (exporting_tok, _) = take("EXPORTING", &mut b);
         let (bang_3_tok, _) = take("!", &mut b);
         let (ep_value_tok, _) = take("ep_value", &mut b);
         let (type_3_tok, _) = take("TYPE", &mut b);
         let (any_3_tok, any_3_range) = take("ANY", &mut b);
-        let any_3_type = b.branch(SyntaxKind::TypeRefSimple, any_3_range.clone(), &[any_3_tok]);
+        let any_3_type = b.branch(SyntaxKind::TypeRefSimple, any_3_range, &[any_3_tok]);
         let (period_tok, period_range) = take(".", &mut b);
 
         let methods_stmt = b.branch(
@@ -4100,17 +4090,12 @@ CLASS-METHODS read_char_value
         let source = "METHODS run RAISING resumable(/sttp/cx_demo) cx_other.";
         let mut b = SyntaxTreeBuilder::default();
         let mut cursor = 0usize;
-        let mut last_range = 0..0;
         let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
             let rel = source[cursor..].find(needle).expect("token text");
             let start = cursor + rel;
             let end = start + needle.len();
             cursor = end;
-            last_range = start..end;
-            (
-                builder.leaf(SyntaxKind::Token, start..end),
-                last_range.clone(),
-            )
+            (builder.leaf(SyntaxKind::Token, start..end), start..end)
         };
 
         let (methods_tok, methods_range) = take("METHODS", &mut b);
@@ -4119,18 +4104,10 @@ CLASS-METHODS read_char_value
         let (resumable_tok, _) = take("resumable", &mut b);
         let (lparen_tok, _) = take("(", &mut b);
         let (cx_demo_tok, cx_demo_range) = take("/sttp/cx_demo", &mut b);
-        let cx_demo_type = b.branch(
-            SyntaxKind::TypeRefSimple,
-            cx_demo_range.clone(),
-            &[cx_demo_tok],
-        );
+        let cx_demo_type = b.branch(SyntaxKind::TypeRefSimple, cx_demo_range, &[cx_demo_tok]);
         let (rparen_tok, _) = take(")", &mut b);
         let (cx_other_tok, cx_other_range) = take("cx_other", &mut b);
-        let cx_other_type = b.branch(
-            SyntaxKind::TypeRefSimple,
-            cx_other_range.clone(),
-            &[cx_other_tok],
-        );
+        let cx_other_type = b.branch(SyntaxKind::TypeRefSimple, cx_other_range, &[cx_other_tok]);
         let (period_tok, period_range) = take(".", &mut b);
 
         let methods_stmt = b.branch(
@@ -4172,17 +4149,12 @@ CLASS-METHODS read_char_value
         let source = "METHODS: get_response IMPORTING iv_x TYPE i, get_data.";
         let mut b = SyntaxTreeBuilder::default();
         let mut cursor = 0usize;
-        let mut last_range = 0..0;
         let mut take = |needle: &str, builder: &mut SyntaxTreeBuilder| {
             let rel = source[cursor..].find(needle).expect("token text");
             let start = cursor + rel;
             let end = start + needle.len();
             cursor = end;
-            last_range = start..end;
-            (
-                builder.leaf(SyntaxKind::Token, start..end),
-                last_range.clone(),
-            )
+            (builder.leaf(SyntaxKind::Token, start..end), start..end)
         };
 
         let (methods_tok, methods_range) = take("METHODS", &mut b);
@@ -4192,7 +4164,7 @@ CLASS-METHODS read_char_value
         let (iv_x_tok, _) = take("iv_x", &mut b);
         let (type_tok, _) = take("TYPE", &mut b);
         let (i_tok, i_range) = take("i", &mut b);
-        let i_type = b.branch(SyntaxKind::TypeRefSimple, i_range.clone(), &[i_tok]);
+        let i_type = b.branch(SyntaxKind::TypeRefSimple, i_range, &[i_tok]);
         let (comma_tok, _) = take(",", &mut b);
         let (get_data_tok, _) = take("get_data", &mut b);
         let (period_tok, period_range) = take(".", &mut b);

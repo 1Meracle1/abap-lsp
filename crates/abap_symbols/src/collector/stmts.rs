@@ -665,11 +665,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         tokens: &[SyntaxTokenInfo],
     ) -> Option<TextRange> {
         tokens.windows(2).find_map(|window| {
-            if Self::tokens_match_keyword_sequence(window, &["binary", "search"]) {
-                Some(window[0].range.start..window[1].range.end)
-            } else {
-                None
-            }
+            Self::tokens_match_keyword_sequence(window, &["binary", "search"])
+                .then_some(window[0].range.start..window[1].range.end)
         })
     }
 
@@ -873,7 +870,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     ValueFlowKind::ConditionalFieldSymbolAssignment,
                     source_expr,
                     inferred_metadata.0,
-                    inferred_metadata.1.clone(),
+                    inferred_metadata.1,
                     target_name,
                     target_range,
                 );
@@ -1059,7 +1056,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .unwrap_or_else(|| target_range.clone());
         let source_type = TypeFactData {
             structure,
-            declared_type: declared_type.clone(),
+            declared_type: declared_type,
             type_clause_display: None,
             table_line: None,
         };
@@ -1159,11 +1156,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
     fn type_fact_from_table_line_node(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
         let fact = self.type_fact_from_assignment_node(node, scope);
-        let (structure, declared_type) = self.collector.internal_table_line_metadata(
-            scope,
-            fact.structure,
-            fact.declared_type.clone(),
-        );
+        let (structure, declared_type) =
+            self.collector
+                .internal_table_line_metadata(scope, fact.structure, fact.declared_type);
         TypeFactData {
             structure,
             declared_type,
@@ -4469,7 +4464,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     scope,
                     base_namespace: namespace,
                     base_name: Arc::clone(&base_name),
-                    base_range: base_range.clone(),
+                    base_range: base_range,
                     field_path,
                     in_type_position: false,
                 });

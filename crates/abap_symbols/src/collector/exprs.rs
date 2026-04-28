@@ -2121,7 +2121,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         {
             let condition_end = self.value_for_where_condition_end(tokens, cursor + 1);
             if condition_end > cursor + 1
-                && let Some(source_access) = source_access.clone()
+                && let Some(source_access) = source_access
             {
                 self.ctx
                     .push_loop_where_field_context(crate::def_map::LoopWhereFieldContext {
@@ -3661,7 +3661,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         source_access: source_access.clone(),
                     });
                 if let Some(where_id) = where_id {
-                    if let Some(source_access) = source_access.clone() {
+                    if let Some(source_access) = source_access {
                         self.ctx.push_loop_where_field_context(
                             crate::def_map::LoopWhereFieldContext {
                                 scope: child_scope,
@@ -3672,7 +3672,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                                     scope: child_scope,
                                     base_namespace: Namespace::Value,
                                     base_name: iter_name,
-                                    base_range: decl_range.clone(),
+                                    base_range: decl_range,
                                     field_path: Vec::new(),
                                     in_type_position: false,
                                 }),
@@ -4347,7 +4347,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     scope,
                     base_namespace: namespace,
                     base_name,
-                    base_range: base_range.clone(),
+                    base_range: base_range,
                     field_path,
                     in_type_position: false,
                 });

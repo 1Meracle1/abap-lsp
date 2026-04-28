@@ -802,14 +802,10 @@ pub fn lint_docs_anchor(id: &str) -> String {
     id.trim()
         .to_ascii_lowercase()
         .chars()
-        .filter_map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' {
-                Some(ch)
-            } else if ch == '_' {
-                Some('-')
-            } else {
-                None
-            }
+        .filter_map(|ch| match ch {
+            '_' => Some('-'),
+            ch if ch.is_ascii_alphanumeric() || ch == '-' => Some(ch),
+            _ => None,
         })
         .collect()
 }

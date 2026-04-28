@@ -18402,7 +18402,7 @@ SELECT * FROM ty_demo INTO TABLE lt.
         let offset = src.rfind("ty_demo").expect("from ty_demo");
         let def = snapshot.definition_at(offset).expect("definition target");
         assert_eq!(def.uri.as_ref(), "file:///sql.abap");
-        assert_eq!(&src[def.range.clone()], "ty_demo");
+        assert_eq!(&src[def.range], "ty_demo");
     }
 
     #[test]
@@ -19300,7 +19300,7 @@ START-OF-SELECTION.
             .definition_at(parameter_offset)
             .expect("parameter definition");
         assert_eq!(target.uri.as_ref(), "file:///fm_completion_dep.abap");
-        assert_eq!(&dep_src[target.range.clone()], "cv_text");
+        assert_eq!(&dep_src[target.range], "cv_text");
     }
 
     #[test]

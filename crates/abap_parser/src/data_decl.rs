@@ -105,11 +105,8 @@ pub fn try_parse_data_decl(
             classify_malformed_data_decl(source, tokens, idx, period_i)
         }
         StmtPeriodScan::Unterminated { end_exclusive } => {
-            if looks_like_typed_data_candidate(source, &tokens[idx..end_exclusive]) {
-                Some("syntax error: expected '.' to end DATA declaration")
-            } else {
-                None
-            }
+            looks_like_typed_data_candidate(source, &tokens[idx..end_exclusive])
+                .then_some("syntax error: expected '.' to end DATA declaration")
         }
     };
     let message = malformed?;

@@ -1264,11 +1264,8 @@ impl<'a> Collector<'a> {
         let end_name_tok = tokens.windows(3).rev().find_map(|window| {
             let end_text = self.syntax(window[0]).text(self.source)?;
             let of_text = self.syntax(window[1]).text(self.source)?;
-            if end_text.eq_ignore_ascii_case("end") && of_text.eq_ignore_ascii_case("of") {
-                Some(window[2])
-            } else {
-                None
-            }
+            (end_text.eq_ignore_ascii_case("end") && of_text.eq_ignore_ascii_case("of"))
+                .then_some(window[2])
         })?;
         if !self.syntax_token_is_identifier_node(end_name_tok) {
             return None;

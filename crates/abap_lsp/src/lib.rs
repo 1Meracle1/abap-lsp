@@ -8693,7 +8693,7 @@ ENDCLASS.";
         let _ = handle_remote_dependencies_updated(
             &mut state,
             &super::RemoteDependenciesUpdatedParams {
-                workspace_uri: workspace_uri.clone(),
+                workspace_uri: workspace_uri,
                 source_uri: source_uri.clone(),
                 source_uris: vec![source_uri.clone()],
                 fetched: vec!["ZCL_HELPER".to_string()],
@@ -10173,7 +10173,7 @@ dependency_mode = "remote-on-demand"
         let error = store_remote_dependency_artifacts(
             &mut state,
             &StoreRemoteDependencyArtifactsParams {
-                workspace_uri: workspace_uri.clone(),
+                workspace_uri: workspace_uri,
                 connection_key: Some("https://example.sap.local".to_string()),
                 artifacts: vec![DependencyArtifactPayload {
                     package_name: "ZPKG".to_string(),
@@ -12748,7 +12748,7 @@ ENDCLASS.";
                     uri: Uri::from_str(&dependency_uri).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: dependency_text.to_string(),
+                    text: dependency_text,
                 },
             },
         );
@@ -12982,7 +12982,7 @@ ENDFORM.";
                     uri: Uri::from_str(&dependency_uri).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: dependency_text.to_string(),
+                    text: dependency_text,
                 },
             },
         );
@@ -13115,7 +13115,7 @@ ENDFORM.";
                     uri: Uri::from_str(&dependency_uri).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: dependency_text.to_string(),
+                    text: dependency_text,
                 },
             },
         );
@@ -14229,7 +14229,7 @@ dependency_mode = "remote-on-demand"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: batch.source_uri.clone(),
-                source_uris: batch.source_uris.clone(),
+                source_uris: batch.source_uris,
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: vec![super::RemoteDependencyCandidate {
                     name: "zcl_second".to_string(),
@@ -14573,7 +14573,7 @@ dependency_mode = "remote-on-demand"
             &super::RemoteDependenciesUpdatedParams {
                 workspace_uri: workspace_uri.clone(),
                 source_uri: first.source_uri.clone(),
-                source_uris: first.source_uris.clone(),
+                source_uris: first.source_uris,
                 fetched: Vec::new(),
                 failed: Vec::new(),
             },
@@ -15581,7 +15581,7 @@ dependency_mode = "remote-on-demand"
         let workspace_uri = path_to_file_uri(&workspace_path);
         let source_uri = format!("{workspace_uri}/src/reports/ZREP/ZREP.abap");
         let mut state = ServerState::default();
-        state.register_workspace_folder(workspace_uri.clone());
+        state.register_workspace_folder(workspace_uri);
         publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
@@ -16181,7 +16181,7 @@ ENDCLASS.
         store_remote_dependency_artifacts(
             &mut state,
             &StoreRemoteDependencyArtifactsParams {
-                workspace_uri: workspace_uri.clone(),
+                workspace_uri: workspace_uri,
                 connection_key: Some("https://example.sap.local".to_string()),
                 artifacts: vec![DependencyArtifactPayload {
                     package_name: "ZPKG".to_string(),
@@ -16347,7 +16347,7 @@ ENDCLASS.";
                     uri: Uri::from_str(&dependency_uri).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
-                    text: dependency_text.to_string(),
+                    text: dependency_text,
                 },
             },
         );

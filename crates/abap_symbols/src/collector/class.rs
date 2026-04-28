@@ -591,7 +591,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 Arc::clone(&name),
                 Namespace::Type,
                 ReferenceKind::TypeRef,
-                range.clone(),
+                range,
             );
         }
         if !is_implementation && let Some((superclass, superclass_range)) = superclass_info {
