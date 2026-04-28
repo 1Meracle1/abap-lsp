@@ -72,20 +72,20 @@ pub use workspace::{
     DEFAULT_REMOTE_REQUESTS_PER_SECOND, DEPENDENCY_MODE_REMOTE_ON_DEMAND,
     EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD, EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD,
     EDITOR_FIRST_UNIT_COUNT_THRESHOLD, LocalDependencySourceMode, LocalExportConfig,
-    LocalExportResolver, ManifestDiagnostic, ManifestPerformance, ManifestResolution,
-    ManifestTextRange, ManifestUnit, ManifestUnitDependencyOf, ManifestUnitMember,
-    OpenDocumentOverlay, WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
-    WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE, WorkspaceDocument, WorkspaceLoadResult,
-    WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source, file_uri_to_path,
-    is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
-    is_remote_lookup_name, load_effective_manifest_from_workspace_result,
-    load_manifest_diagnostics_from_workspace, load_manifest_from_workspace,
-    load_manifest_from_workspace_result, load_workspace_documents,
+    LocalExportResolveProfile, LocalExportResolver, ManifestDiagnostic, ManifestPerformance,
+    ManifestResolution, ManifestTextRange, ManifestUnit, ManifestUnitDependencyOf,
+    ManifestUnitMember, OpenDocumentOverlay, WORKSPACE_PERFORMANCE_MODE_AUTO,
+    WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WORKSPACE_PERFORMANCE_MODE_FULL_WORKSPACE,
+    WorkspaceDocument, WorkspaceLoadResult, WorkspaceManifest, WorkspacePerformanceMode,
+    ddic_xml_to_abap_source, file_uri_to_path, is_remote_lookup_candidate,
+    is_remote_lookup_candidate_after_local_resolution, is_remote_lookup_name,
+    load_effective_manifest_from_workspace_result, load_manifest_diagnostics_from_workspace,
+    load_manifest_from_workspace, load_manifest_from_workspace_result, load_workspace_documents,
     load_workspace_documents_with_progress, local_export_config_for_source, manifest_declares_uri,
     manifest_diagnostics_for_manifest_text, manifest_document_metadata,
     manifest_supports_remote_resolution, normalize_dependency_mode,
     normalize_workspace_performance_mode, path_to_file_uri,
-    resolve_local_export_dependency_document,
+    resolve_local_export_dependency_document, resolve_local_export_dependency_document_profiled,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace, workspace_relative_path,
 };
@@ -125,11 +125,18 @@ pub struct DocumentInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyDiagnosticsMode {
+    All,
+    EditableAndIncludes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapshotBuildPlan {
     pub routine_analysis: bool,
     pub static_analysis: bool,
     pub call_graph: bool,
     pub callable_summaries: bool,
+    pub dependency_diagnostics: DependencyDiagnosticsMode,
 }
 
 impl SnapshotBuildPlan {
@@ -138,6 +145,7 @@ impl SnapshotBuildPlan {
         static_analysis: true,
         call_graph: true,
         callable_summaries: true,
+        dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
     pub const SEMANTIC_DOSSIER: Self = Self {
@@ -145,6 +153,7 @@ impl SnapshotBuildPlan {
         static_analysis: true,
         call_graph: false,
         callable_summaries: false,
+        dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
     pub const EFFECTIVE_SOURCE: Self = Self {
@@ -152,6 +161,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: false,
         callable_summaries: false,
+        dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
     pub const REMOTE_CANDIDATES: Self = Self::EFFECTIVE_SOURCE;
@@ -161,6 +171,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: false,
         callable_summaries: false,
+        dependency_diagnostics: DependencyDiagnosticsMode::EditableAndIncludes,
     };
 
     pub const CALL_GRAPH: Self = Self {
@@ -168,6 +179,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: true,
         callable_summaries: false,
+        dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
     pub const CALL_DATAFLOW: Self = Self {
@@ -175,6 +187,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: true,
         callable_summaries: true,
+        dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
     pub const fn normalized(self) -> Self {
@@ -185,6 +198,7 @@ impl SnapshotBuildPlan {
             static_analysis: self.static_analysis,
             call_graph: self.call_graph || self.callable_summaries,
             callable_summaries: self.callable_summaries,
+            dependency_diagnostics: self.dependency_diagnostics,
         }
     }
 }
@@ -10480,6 +10494,7 @@ fn bare_identifier_token_context_is_type_position(
 pub struct DocumentStore {
     documents: RwLock<HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     analysis: RwLock<Option<CachedWorkspaceAnalysis>>,
+    analysis_revision: RwLock<u64>,
     preview_metrics: RwLock<Option<PreviewMetrics>>,
     lint_policy: RwLock<Arc<LintPolicy>>,
 }
@@ -10489,6 +10504,7 @@ impl Clone for DocumentStore {
         Self {
             documents: RwLock::new(self.documents.read().clone()),
             analysis: RwLock::new(self.analysis.read().clone()),
+            analysis_revision: RwLock::new(*self.analysis_revision.read()),
             preview_metrics: RwLock::new(self.preview_metrics.read().clone()),
             lint_policy: RwLock::new(Arc::clone(&self.lint_policy.read())),
         }
@@ -10559,6 +10575,8 @@ struct AnalysisMetrics {
     full_rebuild: bool,
     unit_count: usize,
     dirty_unit_count: usize,
+    diagnostic_scope_unit_count: usize,
+    validation_unit_count: usize,
     scope_index_clone_micros: u128,
     build_workspace_index_micros: u128,
     compute_dirty_set_micros: u128,
@@ -10581,7 +10599,7 @@ struct PreviewMetrics {
     fell_back_to_single_document: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceAnalysisMetricsSnapshot {
     pub parse_count: usize,
     pub local_phase_count: usize,
@@ -10607,6 +10625,8 @@ pub struct WorkspaceAnalysisMetricsSnapshot {
     pub full_rebuild: bool,
     pub unit_count: usize,
     pub dirty_unit_count: usize,
+    pub diagnostic_scope_unit_count: usize,
+    pub validation_unit_count: usize,
     pub scope_index_clone_micros: u128,
     pub build_workspace_index_micros: u128,
     pub compute_dirty_set_micros: u128,
@@ -10914,12 +10934,18 @@ fn materialize_snapshots(
             .unit_by_uri(prepared.uri.as_ref())
             .cloned()
             .expect("project analysis should include every prepared document");
-        let unit = if build_plan.routine_analysis {
-            augment_unit_with_routine_diagnostics(unit, routine_analysis.as_ref())
-        } else {
-            unit
-        };
         prepared_units.push((prepared, unit));
+    }
+    let diagnostic_unit_ids =
+        diagnostic_unit_ids_for_build_plan(&prepared_units, project.as_ref(), build_plan);
+    for (_, unit) in &mut prepared_units {
+        if !diagnostic_unit_ids.contains(&unit.unit_id) {
+            unit.diagnostics.clear();
+            continue;
+        }
+        if build_plan.routine_analysis {
+            *unit = augment_unit_with_routine_diagnostics(unit.clone(), routine_analysis.as_ref());
+        }
     }
     let lint_scope_indexes: Vec<_> = prepared_units
         .iter()
@@ -10935,6 +10961,7 @@ fn materialize_snapshots(
         &lint_context,
         prepared_units
             .iter()
+            .filter(|(_, unit)| diagnostic_unit_ids.contains(&unit.unit_id))
             .map(|(prepared, unit)| (prepared, unit)),
         lint_policy.as_ref(),
     ));
@@ -11013,6 +11040,68 @@ fn augment_unit_with_routine_diagnostics(
     });
     unit.diagnostics.dedup();
     unit
+}
+
+fn diagnostic_scope_roots_for_build_plan(
+    prepared: &[PreparedDocument],
+    build_plan: SnapshotBuildPlan,
+) -> Option<HashSet<UnitId>> {
+    match build_plan.normalized().dependency_diagnostics {
+        DependencyDiagnosticsMode::All => None,
+        DependencyDiagnosticsMode::EditableAndIncludes => Some(
+            prepared
+                .iter()
+                .filter(|prepared| !prepared.is_dependency)
+                .map(|prepared| prepared.local.unit.unit_id)
+                .collect(),
+        ),
+    }
+}
+
+fn diagnostic_unit_ids_for_build_plan(
+    prepared_units: &[(PreparedDocument, UnitAnalysis)],
+    project: &ProjectAnalysis,
+    build_plan: SnapshotBuildPlan,
+) -> HashSet<UnitId> {
+    match build_plan.normalized().dependency_diagnostics {
+        DependencyDiagnosticsMode::All => project.units.iter().map(|unit| unit.unit_id).collect(),
+        DependencyDiagnosticsMode::EditableAndIncludes => {
+            let roots: HashSet<_> = prepared_units
+                .iter()
+                .filter(|(prepared, _)| !prepared.is_dependency)
+                .map(|(_, unit)| unit.unit_id)
+                .collect();
+            include_closure_for_unit_ids(&project.units, &roots)
+        }
+    }
+}
+
+fn include_closure_for_unit_ids(
+    units: &[UnitAnalysis],
+    roots: &HashSet<UnitId>,
+) -> HashSet<UnitId> {
+    let mut out = HashSet::new();
+    for &root in roots {
+        collect_include_closure_for_unit_id(units, root, &mut out);
+    }
+    out
+}
+
+fn collect_include_closure_for_unit_id(
+    units: &[UnitAnalysis],
+    unit_id: UnitId,
+    out: &mut HashSet<UnitId>,
+) {
+    if units.get(unit_id.as_usize()).is_none() || !out.insert(unit_id) {
+        return;
+    }
+    for target in units[unit_id.as_usize()]
+        .include_edges
+        .iter()
+        .filter_map(|edge| edge.target)
+    {
+        collect_include_closure_for_unit_id(units, target, out);
+    }
 }
 
 pub fn lint_metadata_for_diagnostic_kind(kind: DiagnosticKind) -> Option<&'static LintMetadata> {
@@ -12227,7 +12316,9 @@ fn analyze_inputs_with_progress(
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     CachedWorkspaceAnalysis,
 ) {
+    let build_plan = build_plan.normalized();
     let (prepared, mut metrics) = prepare_documents(inputs, existing, previous_analysis, progress);
+    let diagnostic_scope_roots = diagnostic_scope_roots_for_build_plan(&prepared, build_plan);
     let locals: Vec<_> = prepared
         .iter()
         .map(|prepared| prepared.local.clone())
@@ -12243,11 +12334,14 @@ fn analyze_inputs_with_progress(
         locals,
         changed_uris,
         force_full,
+        diagnostic_scope_roots.as_ref(),
     );
     metrics.project_update_micros = update_timer.elapsed().as_micros();
     metrics.full_rebuild = update.full_rebuild;
     metrics.unit_count = update.unit_count;
     metrics.dirty_unit_count = update.dirty_unit_count;
+    metrics.diagnostic_scope_unit_count = update.diagnostic_scope_unit_count;
+    metrics.validation_unit_count = update.validation_unit_count;
     metrics.scope_index_clone_micros = update.scope_index_clone_micros;
     metrics.build_workspace_index_micros = update.build_workspace_index_micros;
     metrics.compute_dirty_set_micros = update.compute_dirty_set_micros;
@@ -12272,6 +12366,8 @@ fn analyze_inputs_with_progress(
     analysis.metrics.full_rebuild = metrics.full_rebuild;
     analysis.metrics.unit_count = metrics.unit_count;
     analysis.metrics.dirty_unit_count = metrics.dirty_unit_count;
+    analysis.metrics.diagnostic_scope_unit_count = metrics.diagnostic_scope_unit_count;
+    analysis.metrics.validation_unit_count = metrics.validation_unit_count;
     analysis.metrics.scope_index_clone_micros = metrics.scope_index_clone_micros;
     analysis.metrics.build_workspace_index_micros = metrics.build_workspace_index_micros;
     analysis.metrics.compute_dirty_set_micros = metrics.compute_dirty_set_micros;
@@ -12777,6 +12873,7 @@ impl DocumentStore {
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
         *self.analysis.write() = Some(rebuilt_analysis);
+        *self.analysis_revision.write() += 1;
         rebuilt
     }
 
@@ -12842,6 +12939,7 @@ impl DocumentStore {
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
         *self.analysis.write() = Some(rebuilt_analysis);
+        *self.analysis_revision.write() += 1;
         rebuilt
             .get(input.uri.as_ref())
             .cloned()
@@ -12932,6 +13030,7 @@ impl DocumentStore {
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
         *self.analysis.write() = Some(rebuilt_analysis);
+        *self.analysis_revision.write() += 1;
         rebuilt
     }
 
@@ -13006,6 +13105,11 @@ impl DocumentStore {
     }
 
     #[doc(hidden)]
+    pub fn last_analysis_revision(&self) -> u64 {
+        *self.analysis_revision.read()
+    }
+
+    #[doc(hidden)]
     pub fn last_analysis_metrics(&self) -> Option<(usize, usize, usize)> {
         self.analysis.read().as_ref().map(|analysis| {
             (
@@ -13054,6 +13158,8 @@ impl DocumentStore {
                 full_rebuild: analysis.metrics.full_rebuild,
                 unit_count: analysis.metrics.unit_count,
                 dirty_unit_count: analysis.metrics.dirty_unit_count,
+                diagnostic_scope_unit_count: analysis.metrics.diagnostic_scope_unit_count,
+                validation_unit_count: analysis.metrics.validation_unit_count,
                 scope_index_clone_micros: analysis.metrics.scope_index_clone_micros,
                 build_workspace_index_micros: analysis.metrics.build_workspace_index_micros,
                 compute_dirty_set_micros: analysis.metrics.compute_dirty_set_micros,
@@ -13180,9 +13286,9 @@ mod tests {
         opened_function_module_dependency_analysis_text,
     };
     use abap_symbols::{
-        Diagnostic, DiagnosticKind, Namespace, ReferenceKind, RoutineBlockKind, RoutineBranchKind,
-        RoutineEdgeKind, RoutineInstructionSite, RoutineKind, ScopeId, ScopeKind,
-        StructureFieldShape, SymbolHandle, SymbolId, SymbolKind,
+        Diagnostic, DiagnosticKind, Namespace, ReferenceKind, Resolution, RoutineBlockKind,
+        RoutineBranchKind, RoutineEdgeKind, RoutineInstructionSite, RoutineKind, ScopeId,
+        ScopeKind, StructureFieldShape, SymbolHandle, SymbolId, SymbolKind,
     };
     use std::sync::Arc;
 
@@ -14034,6 +14140,151 @@ lv_value = 1.",
         assert_eq!(metrics.routine_analysis_micros, 0);
         assert_eq!(metrics.static_analysis_summary_micros, 0);
         assert_eq!(metrics.callable_summary_micros, 0);
+    }
+
+    #[test]
+    fn editor_workspace_defers_dependency_diagnostics_but_keeps_editable_diagnostics_and_resolution()
+     {
+        let dependency_src = "\
+CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    DATA dep_value TYPE zty_dep_missing.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+ENDCLASS.";
+        let main_src = "\
+DATA lo_dep TYPE REF TO zcl_dep.
+DATA lv_missing TYPE zty_main_missing.";
+        let inputs = vec![
+            DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(dependency_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zcl_dep")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ];
+
+        let full_store = DocumentStore::default();
+        let full = full_store.replace_all_with_build_plan(inputs.clone(), SnapshotBuildPlan::FULL);
+        let full_dep = full.get("file:///dep.abap").expect("full dependency");
+        assert!(
+            full_dep
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("zty_dep_missing")),
+            "{:?}",
+            full_dep.symbols.diagnostics
+        );
+
+        let editor_store = DocumentStore::default();
+        let editor =
+            editor_store.replace_all_with_build_plan(inputs, SnapshotBuildPlan::EDITOR_WORKSPACE);
+        let metrics = editor_store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics snapshot");
+        let editor_dep = editor.get("file:///dep.abap").expect("editor dependency");
+        let editor_main = editor.get("file:///main.abap").expect("editor main");
+
+        assert_eq!(metrics.diagnostic_scope_unit_count, 1);
+        assert_eq!(metrics.validation_unit_count, 1);
+        assert!(
+            editor_dep
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("zty_dep_missing")),
+            "{:?}",
+            editor_dep.symbols.diagnostics
+        );
+        assert!(
+            editor_main
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("zty_main_missing")),
+            "{:?}",
+            editor_main.symbols.diagnostics
+        );
+        assert!(
+            editor_main
+                .symbols
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("zcl_dep")),
+            "{:?}",
+            editor_main.symbols.diagnostics
+        );
+        assert!(
+            editor_main.symbols.references.iter().any(|reference| {
+                reference.name.as_ref() == "zcl_dep"
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "{:?}",
+            editor_main.symbols.references
+        );
+    }
+
+    #[test]
+    fn editor_workspace_keeps_dependency_include_components_in_diagnostic_scope() {
+        let store = DocumentStore::default();
+        let main_src = "\
+REPORT zmain.
+INCLUDE zinc_dep.";
+        let include_src = "DATA lv_inc TYPE zty_include_missing.";
+
+        let snapshots = store.replace_all_with_build_plan(
+            vec![
+                DocumentInput {
+                    uri: Arc::from("file:///main.abap"),
+                    version: 1,
+                    text: Arc::from(main_src),
+                    is_dependency: false,
+                    object_name: None,
+                },
+                DocumentInput {
+                    uri: Arc::from("file:///zinc_dep.abap"),
+                    version: 1,
+                    text: Arc::from(include_src),
+                    is_dependency: true,
+                    object_name: Some(Arc::from("zinc_dep")),
+                },
+            ],
+            SnapshotBuildPlan::EDITOR_WORKSPACE,
+        );
+        let metrics = store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics snapshot");
+        let main = snapshots.get("file:///main.abap").expect("main snapshot");
+        let include = snapshots
+            .get("file:///zinc_dep.abap")
+            .expect("include snapshot");
+
+        assert_eq!(metrics.diagnostic_scope_unit_count, 2);
+        assert_eq!(metrics.validation_unit_count, 2);
+        assert!(
+            main.symbols
+                .include_edges
+                .iter()
+                .any(|edge| edge.name.as_ref() == "zinc_dep" && edge.target.is_some())
+        );
+        assert!(
+            include
+                .symbols
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("zty_include_missing")),
+            "{:?}",
+            include.symbols.diagnostics
+        );
     }
 
     #[test]

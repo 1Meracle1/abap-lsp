@@ -69,6 +69,8 @@ pub struct IncrementalProjectUpdate {
     pub full_rebuild: bool,
     pub unit_count: usize,
     pub dirty_unit_count: usize,
+    pub diagnostic_scope_unit_count: usize,
+    pub validation_unit_count: usize,
     pub scope_index_clone_micros: u128,
     pub build_workspace_index_micros: u128,
     pub compute_dirty_set_micros: u128,
@@ -128,6 +130,7 @@ pub fn incremental_project_update(
     locals: Vec<LocalAnalysis>,
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
+    diagnostic_scope_roots: Option<&HashSet<UnitId>>,
 ) -> IncrementalProjectUpdate {
     let previous_locals = previous_locals.map(|locals| {
         locals
@@ -168,11 +171,14 @@ pub fn incremental_project_update(
         locals,
         changed_uris,
         force_full,
+        diagnostic_scope_roots,
     );
     let ProjectUpdateMetrics {
         full_rebuild,
         unit_count,
         dirty_unit_count,
+        diagnostic_scope_unit_count,
+        validation_unit_count,
         scope_index_clone_micros,
         build_workspace_index_micros,
         compute_dirty_set_micros,
@@ -191,6 +197,8 @@ pub fn incremental_project_update(
         full_rebuild,
         unit_count,
         dirty_unit_count,
+        diagnostic_scope_unit_count,
+        validation_unit_count,
         scope_index_clone_micros,
         build_workspace_index_micros,
         compute_dirty_set_micros,

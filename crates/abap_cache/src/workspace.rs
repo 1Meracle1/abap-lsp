@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use abap_dependency_store::DependencyProfile;
 use abap_lints::{LintConfig, lint_config_diagnostics};
@@ -18,6 +19,7 @@ pub const DEFAULT_REMOTE_REQUESTS_PER_SECOND: usize = 24;
 pub const EDITOR_FIRST_UNIT_COUNT_THRESHOLD: usize = 1_000;
 pub const EDITOR_FIRST_DEPENDENCY_MEMBER_THRESHOLD: usize = 1_000;
 pub const EDITOR_FIRST_MANIFEST_BYTES_THRESHOLD: usize = 1_000_000;
+const LOCAL_EXPORT_ARTIFACT_SOURCE_CACHE_MAX_ENTRIES: usize = 16_384;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspacePerformanceMode {
@@ -228,6 +230,35 @@ pub struct LocalExportResolver {
     fresh_indices: HashSet<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalExportResolveProfile {
+    pub resolver_index_hits: usize,
+    pub shared_index_cache_hits: usize,
+    pub index_build_count: usize,
+    pub index_build_time: Duration,
+    pub index_refresh_count: usize,
+    pub index_refresh_time: Duration,
+    pub document_read_count: usize,
+    pub document_read_cache_hits: usize,
+    pub document_read_time: Duration,
+    pub document_read_bytes: usize,
+}
+
+impl LocalExportResolveProfile {
+    pub fn merge_from(&mut self, other: &Self) {
+        self.resolver_index_hits += other.resolver_index_hits;
+        self.shared_index_cache_hits += other.shared_index_cache_hits;
+        self.index_build_count += other.index_build_count;
+        self.index_build_time += other.index_build_time;
+        self.index_refresh_count += other.index_refresh_count;
+        self.index_refresh_time += other.index_refresh_time;
+        self.document_read_count += other.document_read_count;
+        self.document_read_cache_hits += other.document_read_cache_hits;
+        self.document_read_time += other.document_read_time;
+        self.document_read_bytes += other.document_read_bytes;
+    }
+}
+
 #[derive(Debug, Default)]
 struct LocalExportIndex {
     artifacts_by_file_name: HashMap<String, Vec<LocalExportArtifact>>,
@@ -269,6 +300,12 @@ struct CachedLocalExportConfig {
     sidecar_keys: Vec<String>,
     sidecar_states: Vec<Option<LocalExportPathState>>,
     config: LocalExportConfig,
+}
+
+#[derive(Debug, Clone)]
+struct CachedLocalExportArtifactSource {
+    state: Option<LocalExportPathState>,
+    source_text: Arc<str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,6 +365,13 @@ fn unit_sidecar_manifest_cache() -> &'static Mutex<HashMap<String, CachedUnitSid
 
 fn local_export_config_cache() -> &'static Mutex<HashMap<String, CachedLocalExportConfig>> {
     static CACHE: OnceLock<Mutex<HashMap<String, CachedLocalExportConfig>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn local_export_artifact_source_cache()
+-> &'static Mutex<HashMap<String, CachedLocalExportArtifactSource>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedLocalExportArtifactSource>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1537,8 +1581,19 @@ fn local_export_index_for_root(
     root: &Path,
     resolver: &mut LocalExportResolver,
 ) -> Arc<LocalExportIndex> {
+    local_export_index_for_root_profiled(root, resolver, None)
+}
+
+fn local_export_index_for_root_profiled(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Arc<LocalExportIndex> {
     let key = normalized_local_export_path_key(root);
     if let Some(index) = resolver.indices.get(&key) {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.resolver_index_hits += 1;
+        }
         return Arc::clone(index);
     }
 
@@ -1546,11 +1601,19 @@ fn local_export_index_for_root(
         .get(&key)
         .cloned()
     {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.shared_index_cache_hits += 1;
+        }
         resolver.indices.insert(key, Arc::clone(&index));
         return index;
     }
 
+    let index_start = Instant::now();
     let index = Arc::new(build_local_export_index(root));
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.index_build_count += 1;
+        profile.index_build_time += index_start.elapsed();
+    }
     lock_unpoisoned(local_export_index_cache()).insert(key.clone(), Arc::clone(&index));
     resolver.fresh_indices.insert(key.clone());
     resolver.indices.insert(key, Arc::clone(&index));
@@ -1561,8 +1624,21 @@ fn refresh_local_export_index_for_root(
     root: &Path,
     resolver: &mut LocalExportResolver,
 ) -> Arc<LocalExportIndex> {
+    refresh_local_export_index_for_root_profiled(root, resolver, None)
+}
+
+fn refresh_local_export_index_for_root_profiled(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Arc<LocalExportIndex> {
     let key = normalized_local_export_path_key(root);
+    let index_start = Instant::now();
     let index = Arc::new(build_local_export_index(root));
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.index_refresh_count += 1;
+        profile.index_refresh_time += index_start.elapsed();
+    }
     lock_unpoisoned(local_export_index_cache()).insert(key.clone(), Arc::clone(&index));
     resolver.fresh_indices.insert(key.clone());
     resolver.indices.insert(key, Arc::clone(&index));
@@ -1575,6 +1651,22 @@ fn resolve_local_export_dependency_document_in_index(
     candidate_name: &str,
     candidate_kind: &str,
 ) -> Option<WorkspaceDocument> {
+    resolve_local_export_dependency_document_in_index_profiled(
+        index,
+        file_names,
+        candidate_name,
+        candidate_kind,
+        None,
+    )
+}
+
+fn resolve_local_export_dependency_document_in_index_profiled(
+    index: &LocalExportIndex,
+    file_names: &[String],
+    candidate_name: &str,
+    candidate_kind: &str,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Option<WorkspaceDocument> {
     for file_name in file_names {
         let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
             continue;
@@ -1582,10 +1674,11 @@ fn resolve_local_export_dependency_document_in_index(
         for artifact in artifacts {
             let mut source_text = None;
             if !local_export_artifact_matches_candidate(artifact, candidate_name, candidate_kind) {
-                source_text = local_export_fallback_source_if_matches(
+                source_text = local_export_fallback_source_if_matches_profiled(
                     artifact,
                     candidate_name,
                     candidate_kind,
+                    profile.as_deref_mut(),
                 );
                 if source_text.is_none() {
                     continue;
@@ -1593,10 +1686,13 @@ fn resolve_local_export_dependency_document_in_index(
             }
             let source_text = match source_text {
                 Some(source_text) => source_text,
-                None => match fs::read_to_string(&artifact.path) {
-                    Ok(source_text) => source_text,
-                    Err(_) => continue,
-                },
+                None => {
+                    match read_local_export_artifact_source(&artifact.path, profile.as_deref_mut())
+                    {
+                        Ok(source_text) => source_text,
+                        Err(_) => continue,
+                    }
+                }
             };
             let text = if artifact
                 .path
@@ -1624,6 +1720,50 @@ fn resolve_local_export_dependency_document_in_index(
     }
 
     None
+}
+
+fn read_local_export_artifact_source(
+    path: &Path,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Result<String, std::io::Error> {
+    let cache_key = normalized_local_export_path_key(path);
+    let path_state = local_export_path_state(path);
+    if let Some(cached) = lock_unpoisoned(local_export_artifact_source_cache())
+        .get(&cache_key)
+        .filter(|cached| cached.state == path_state)
+        .cloned()
+    {
+        if let Some(profile) = profile.as_deref_mut() {
+            profile.document_read_cache_hits += 1;
+        }
+        return Ok(cached.source_text.to_string());
+    }
+
+    let read_start = Instant::now();
+    let result = fs::read_to_string(path);
+    if let Some(profile) = profile.as_deref_mut() {
+        profile.document_read_count += 1;
+        profile.document_read_time += read_start.elapsed();
+        if let Ok(source_text) = result.as_ref() {
+            profile.document_read_bytes += source_text.len();
+        }
+    }
+    if let Ok(source_text) = result.as_ref() {
+        let mut cache = lock_unpoisoned(local_export_artifact_source_cache());
+        if cache.len() >= LOCAL_EXPORT_ARTIFACT_SOURCE_CACHE_MAX_ENTRIES
+            && !cache.contains_key(&cache_key)
+        {
+            cache.clear();
+        }
+        cache.insert(
+            cache_key,
+            CachedLocalExportArtifactSource {
+                state: path_state,
+                source_text: Arc::from(source_text.as_str()),
+            },
+        );
+    }
+    result
 }
 
 fn resolve_local_export_dependency_document_in_root(
@@ -1655,6 +1795,39 @@ fn resolve_local_export_dependency_document_in_root(
     )
 }
 
+fn resolve_local_export_dependency_document_in_root_profiled(
+    root: &Path,
+    resolver: &mut LocalExportResolver,
+    file_names: &[String],
+    candidate_name: &str,
+    candidate_kind: &str,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Option<WorkspaceDocument> {
+    let key = normalized_local_export_path_key(root);
+    let index = local_export_index_for_root_profiled(root, resolver, profile.as_deref_mut());
+    if let Some(document) = resolve_local_export_dependency_document_in_index_profiled(
+        index.as_ref(),
+        file_names,
+        candidate_name,
+        candidate_kind,
+        profile.as_deref_mut(),
+    ) {
+        return Some(document);
+    }
+    if resolver.fresh_indices.contains(&key) {
+        return None;
+    }
+    let refreshed =
+        refresh_local_export_index_for_root_profiled(root, resolver, profile.as_deref_mut());
+    resolve_local_export_dependency_document_in_index_profiled(
+        refreshed.as_ref(),
+        file_names,
+        candidate_name,
+        candidate_kind,
+        profile.as_deref_mut(),
+    )
+}
+
 pub fn resolve_local_export_dependency_document(
     roots: &[PathBuf],
     resolver: &mut LocalExportResolver,
@@ -1673,6 +1846,34 @@ pub fn resolve_local_export_dependency_document(
             &file_names,
             candidate_name,
             candidate_kind,
+        ) {
+            return Some(document);
+        }
+    }
+
+    None
+}
+
+pub fn resolve_local_export_dependency_document_profiled(
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+    candidate_name: &str,
+    candidate_kind: &str,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Option<WorkspaceDocument> {
+    let file_names = local_export_candidate_file_names(candidate_name, candidate_kind);
+    if file_names.is_empty() {
+        return None;
+    }
+
+    for root in roots {
+        if let Some(document) = resolve_local_export_dependency_document_in_root_profiled(
+            root,
+            resolver,
+            &file_names,
+            candidate_name,
+            candidate_kind,
+            profile.as_deref_mut(),
         ) {
             return Some(document);
         }
@@ -1818,20 +2019,26 @@ fn resolve_local_export_function_module_documents_by_prefix_in_root(
     )
 }
 
-fn local_export_fallback_source_if_matches(
+fn local_export_fallback_source_if_matches_profiled(
     artifact: &LocalExportArtifact,
     candidate_name: &str,
     candidate_kind: &str,
+    profile: Option<&mut LocalExportResolveProfile>,
 ) -> Option<String> {
     match candidate_kind.trim().to_ascii_lowercase().as_str() {
-        "function" => local_export_flat_function_module_source_if_matches(artifact, candidate_name),
+        "function" => local_export_flat_function_module_source_if_matches_profiled(
+            artifact,
+            candidate_name,
+            profile,
+        ),
         _ => None,
     }
 }
 
-fn local_export_flat_function_module_source_if_matches(
+fn local_export_flat_function_module_source_if_matches_profiled(
     artifact: &LocalExportArtifact,
     candidate_name: &str,
+    profile: Option<&mut LocalExportResolveProfile>,
 ) -> Option<String> {
     if !artifact
         .path
@@ -1842,7 +2049,7 @@ fn local_export_flat_function_module_source_if_matches(
         return None;
     }
 
-    let source_text = fs::read_to_string(&artifact.path).ok()?;
+    let source_text = read_local_export_artifact_source(&artifact.path, profile).ok()?;
     let function_name = first_abap_function_module_name(source_text.as_str())?;
     function_name
         .eq_ignore_ascii_case(candidate_name.trim())
@@ -3693,15 +3900,16 @@ mod tests {
     };
 
     use super::{
-        DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalDependencySourceMode, LocalExportResolver,
-        WORKSPACE_PERFORMANCE_MODE_AUTO, WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST,
-        WorkspaceManifest, WorkspacePerformanceMode, ddic_xml_to_abap_source,
-        is_remote_lookup_candidate, is_remote_lookup_candidate_after_local_resolution,
-        is_remote_lookup_name, load_effective_manifest_from_workspace_result,
-        load_manifest_from_workspace, load_workspace_documents, local_export_config_for_source,
-        manifest_declares_uri, manifest_document_metadata, manifest_supports_remote_resolution,
-        path_to_file_uri, resolve_local_export_dependency_document,
-        resolve_workspace_performance_mode,
+        DEFAULT_REMOTE_REQUESTS_PER_SECOND, LocalDependencySourceMode, LocalExportResolveProfile,
+        LocalExportResolver, WORKSPACE_PERFORMANCE_MODE_AUTO,
+        WORKSPACE_PERFORMANCE_MODE_EDITOR_FIRST, WorkspaceManifest, WorkspacePerformanceMode,
+        ddic_xml_to_abap_source, is_remote_lookup_candidate,
+        is_remote_lookup_candidate_after_local_resolution, is_remote_lookup_name,
+        load_effective_manifest_from_workspace_result, load_manifest_from_workspace,
+        load_workspace_documents, local_export_config_for_source, manifest_declares_uri,
+        manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
+        resolve_local_export_dependency_document,
+        resolve_local_export_dependency_document_profiled, resolve_workspace_performance_mode,
     };
 
     #[test]
@@ -4376,6 +4584,71 @@ mode = "full-workspace"
             "{}",
             document.text
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_artifact_source_cache_reuses_and_refreshes_file_text() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "abap-lsp-local-export-source-cache-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("packages/ZPKG/global-class")).expect("class dir");
+        let class_path = root.join("packages/ZPKG/global-class/ZCL_DEMO.abap");
+        fs::write(&class_path, "CLASS zcl_demo DEFINITION. ENDCLASS.").expect("class");
+
+        let roots = vec![root.clone()];
+        let mut resolver = LocalExportResolver::default();
+        let mut first_profile = LocalExportResolveProfile::default();
+        let first = resolve_local_export_dependency_document_profiled(
+            &roots,
+            &mut resolver,
+            "zcl_demo",
+            "static",
+            Some(&mut first_profile),
+        )
+        .expect("first resolve");
+        assert!(first.text.contains("CLASS zcl_demo DEFINITION"));
+        assert_eq!(first_profile.document_read_count, 1);
+        assert_eq!(first_profile.document_read_cache_hits, 0);
+
+        let mut second_profile = LocalExportResolveProfile::default();
+        let second = resolve_local_export_dependency_document_profiled(
+            &roots,
+            &mut resolver,
+            "zcl_demo",
+            "static",
+            Some(&mut second_profile),
+        )
+        .expect("second resolve");
+        assert_eq!(second.text, first.text);
+        assert_eq!(second_profile.document_read_count, 0);
+        assert_eq!(second_profile.document_read_cache_hits, 1);
+
+        fs::write(
+            &class_path,
+            "CLASS zcl_demo DEFINITION. PUBLIC SECTION. DATA gv_changed TYPE i. ENDCLASS.",
+        )
+        .expect("changed class");
+
+        let mut changed_profile = LocalExportResolveProfile::default();
+        let changed = resolve_local_export_dependency_document_profiled(
+            &roots,
+            &mut resolver,
+            "zcl_demo",
+            "static",
+            Some(&mut changed_profile),
+        )
+        .expect("changed resolve");
+        assert!(changed.text.contains("gv_changed"), "{}", changed.text);
+        assert_eq!(changed_profile.document_read_count, 1);
+        assert_eq!(changed_profile.document_read_cache_hits, 0);
 
         let _ = fs::remove_dir_all(&root);
     }

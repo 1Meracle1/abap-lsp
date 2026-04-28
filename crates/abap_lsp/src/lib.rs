@@ -9,20 +9,21 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use abap_cache::{
-    CallableCompletionKind, DocumentInput, DocumentStore, LintDiagnostic, LintLevel, LintPolicy,
-    LocalExportConfig, LocalExportResolver, ManifestDiagnostic, SnapshotBuildPlan,
-    WorkspaceDocument, WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source,
-    file_uri_to_path, function_module_completion_items_from_source, is_remote_lookup_candidate,
+    CallableCompletionKind, DependencyDiagnosticsMode, DocumentInput, DocumentStore,
+    LintDiagnostic, LintLevel, LintPolicy, LocalExportConfig, LocalExportResolveProfile,
+    LocalExportResolver, ManifestDiagnostic, SnapshotBuildPlan, WorkspaceDocument,
+    WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source, file_uri_to_path,
+    function_module_completion_items_from_source, is_remote_lookup_candidate,
     is_remote_lookup_candidate_after_local_resolution, lint_docs_anchor,
     lint_id_for_diagnostic_kind, load_effective_manifest_from_workspace_result,
     load_manifest_diagnostics_from_workspace, load_workspace_documents_with_progress,
     local_export_config_for_source, manifest_document_metadata,
     manifest_supports_remote_resolution, path_to_file_uri, registry,
-    resolve_local_export_dependency_document,
+    resolve_local_export_dependency_document, resolve_local_export_dependency_document_profiled,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
 };
@@ -73,6 +74,7 @@ const LINT_DIAGNOSTIC_SOURCE: &str = "abap-lsp-lints";
 const LINT_REFERENCE_DOCS_URL: &str =
     "https://github.com/1Meracle1/abap-lsp/blob/main/docs/reference/lints.md";
 const SAP_ATC_DIAGNOSTIC_SOURCE: &str = "sap-atc";
+const LOCAL_EXPORT_DEPENDENCY_CANDIDATE_CACHE_MAX_ENTRIES: usize = 16_384;
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
@@ -99,6 +101,7 @@ pub struct WorkspaceState {
     pub dependency_batch_candidates: HashMap<String, CachedDependencyBatchCandidates>,
     pub local_export_chain_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
     pub local_export_chain_refresh_candidates: HashMap<String, Vec<RemoteDependencyCandidate>>,
+    pub dependency_store_hydration_metrics: Option<DependencyStoreHydrationMetrics>,
     pub local_export_resolver: Arc<Mutex<LocalExportResolver>>,
     pub manifest: Option<WorkspaceManifest>,
     pub manifest_uri: String,
@@ -160,6 +163,52 @@ pub struct CachedDependencyBatchCandidates {
     pub candidates: Vec<RemoteDependencyCandidate>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DependencyStoreHydrationMetrics {
+    pub elapsed: Duration,
+    pub supported: bool,
+    pub profile_present: bool,
+    pub reader_available: bool,
+    pub iterations: usize,
+    pub cache_uri_scans: usize,
+    pub source_snapshots_examined: usize,
+    pub dependency_snapshots_skipped: usize,
+    pub candidate_count: usize,
+    pub unique_candidate_queries: usize,
+    pub artifact_hits: usize,
+    pub existing_or_duplicate_inputs: usize,
+    pub hydrated_input_count: usize,
+    pub published_batch_count: usize,
+    pub candidate_collection_micros: u128,
+    pub store_lookup_micros: u128,
+    pub publish_micros: u128,
+}
+
+#[derive(Debug, Clone)]
+struct CachedLocalExportDependencyCandidates {
+    version: i32,
+    text_len: usize,
+    text_hash: u64,
+    is_dependency: bool,
+    object_name: Option<Arc<str>>,
+    candidates: Vec<RemoteDependencyCandidate>,
+}
+
+fn local_export_dependency_candidate_cache()
+-> &'static Mutex<HashMap<String, CachedLocalExportDependencyCandidates>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedLocalExportDependencyCandidates>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn clear_local_export_dependency_candidate_cache_for_tests() {
+    local_export_dependency_candidate_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+}
+
 fn clear_workspace_dependency_candidate_caches(workspace: &mut WorkspaceState) {
     workspace.dependency_batch_candidates.clear();
     workspace.local_export_chain_candidates.clear();
@@ -185,6 +234,7 @@ impl WorkspaceState {
             dependency_batch_candidates: HashMap::new(),
             local_export_chain_candidates: HashMap::new(),
             local_export_chain_refresh_candidates: HashMap::new(),
+            dependency_store_hydration_metrics: None,
             local_export_resolver: Arc::new(Mutex::new(LocalExportResolver::default())),
             manifest: None,
             manifest_uri: String::new(),
@@ -855,6 +905,38 @@ fn dependency_document_input_from_payload_with_kind(
     }
 }
 
+fn workspace_dependency_document_input_from_payload_with_kind(
+    workspace: &WorkspaceState,
+    artifact_id: i64,
+    record: &StoredArtifactInput,
+) -> DocumentInput {
+    let uri = dependency_document_uri(
+        &workspace.root_uri,
+        artifact_id,
+        record.object_name.as_str(),
+    );
+    let uri_with_kind = dependency_document_uri_with_kind(
+        &workspace.root_uri,
+        artifact_id,
+        record.object_name.as_str(),
+        Some(record.object_kind.as_str()),
+    );
+    if let Some(overlay) = workspace
+        .open_documents
+        .get(&uri_with_kind)
+        .or_else(|| workspace.open_documents.get(&uri))
+    {
+        return DocumentInput {
+            uri: Arc::from(uri_with_kind),
+            version: overlay.version,
+            text: Arc::clone(&overlay.text),
+            is_dependency: false,
+            object_name: Some(Arc::from(record.object_name.as_str())),
+        };
+    }
+    dependency_document_input_from_payload_with_kind(&workspace.root_uri, artifact_id, record)
+}
+
 fn workspace_dependency_document_input(
     workspace: &WorkspaceState,
     record: &StoredArtifactRecord,
@@ -1094,6 +1176,54 @@ fn merge_local_export_config(target: &mut LocalExportConfig, incoming: &LocalExp
     changed
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalExportDependencyClosureProfile {
+    pub total_elapsed: Duration,
+    pub waves: usize,
+    pub queue_iterations: usize,
+    pub documents_examined_for_candidates: usize,
+    pub remote_dependency_candidates_produced: usize,
+    pub candidate_cache_hits: usize,
+    pub candidate_cache_misses: usize,
+    pub unique_candidate_resolution_attempts: usize,
+    pub resolution_cache_hits: usize,
+    pub resolution_cache_misses: usize,
+    pub local_export_resolve: LocalExportResolveProfile,
+    pub candidate_parse_analyze_time: Duration,
+    pub candidate_collection_time: Duration,
+    pub added_dependency_documents: usize,
+    pub candidate_documents: Vec<LocalExportCandidateDocumentProfile>,
+    pub wave_profiles: Vec<LocalExportDependencyClosureWaveProfile>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalExportCandidateDocumentProfile {
+    pub uri: String,
+    pub is_dependency: bool,
+    pub text_len: usize,
+    pub candidate_count: usize,
+    pub cache_hit: bool,
+    pub elapsed: Duration,
+    pub parse_analyze_time: Duration,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalExportDependencyClosureWaveProfile {
+    pub index: usize,
+    pub elapsed: Duration,
+    pub batch_documents: usize,
+    pub candidates_produced: usize,
+    pub candidate_cache_hits: usize,
+    pub candidate_cache_misses: usize,
+    pub unique_candidate_resolution_attempts: usize,
+    pub resolution_cache_hits: usize,
+    pub resolution_cache_misses: usize,
+    pub added_dependency_documents: usize,
+    pub candidate_collection_time: Duration,
+    pub candidate_parse_analyze_time: Duration,
+    pub local_export_resolve: LocalExportResolveProfile,
+}
+
 pub fn replace_all_workspace_documents_with_local_exports(
     store: &DocumentStore,
     root_path: &Path,
@@ -1117,7 +1247,22 @@ pub fn replace_all_workspace_documents_with_local_exports_for_build_plan(
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
-        store, root_path, None, documents, build_plan, progress,
+        store, root_path, None, None, documents, build_plan, progress,
+    )
+}
+
+pub fn replace_all_workspace_documents_with_local_exports_for_build_plan_profiled(
+    store: &DocumentStore,
+    root_path: &Path,
+    documents: &[WorkspaceDocument],
+    build_plan: SnapshotBuildPlan,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> (
+    HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    LocalExportDependencyClosureProfile,
+) {
+    replace_all_workspace_documents_with_dependency_resolution_for_build_plan_profiled(
+        store, root_path, None, None, documents, build_plan, progress,
     )
 }
 
@@ -1125,6 +1270,7 @@ fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
     store: &DocumentStore,
     root_path: &Path,
     dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    local_export_resolver: Option<&mut LocalExportResolver>,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
@@ -1133,11 +1279,54 @@ fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
         .iter()
         .map(document_input_from_workspace_document)
         .collect();
-    let mut additions =
-        collect_local_export_dependency_closure_documents(root_path, dependency_store, documents);
+    let mut additions = collect_local_export_dependency_closure_documents(
+        root_path,
+        dependency_store,
+        local_export_resolver,
+        documents,
+        local_export_dependency_max_waves(build_plan),
+    );
     additions.sort_by(|left, right| left.uri.cmp(&right.uri));
     inputs.extend(additions.iter().map(document_input_from_workspace_document));
     store.replace_all_with_build_plan_and_progress(inputs, build_plan, progress)
+}
+
+fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan_profiled(
+    store: &DocumentStore,
+    root_path: &Path,
+    dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    local_export_resolver: Option<&mut LocalExportResolver>,
+    documents: &[WorkspaceDocument],
+    build_plan: SnapshotBuildPlan,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> (
+    HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
+    LocalExportDependencyClosureProfile,
+) {
+    let mut inputs: Vec<_> = documents
+        .iter()
+        .map(document_input_from_workspace_document)
+        .collect();
+    let (mut additions, profile) = collect_local_export_dependency_closure_documents_profiled(
+        root_path,
+        dependency_store,
+        local_export_resolver,
+        documents,
+        local_export_dependency_max_waves(build_plan),
+    );
+    additions.sort_by(|left, right| left.uri.cmp(&right.uri));
+    inputs.extend(additions.iter().map(document_input_from_workspace_document));
+    (
+        store.replace_all_with_build_plan_and_progress(inputs, build_plan, progress),
+        profile,
+    )
+}
+
+fn local_export_dependency_max_waves(build_plan: SnapshotBuildPlan) -> Option<usize> {
+    match build_plan.normalized().dependency_diagnostics {
+        DependencyDiagnosticsMode::All => None,
+        DependencyDiagnosticsMode::EditableAndIncludes => Some(1),
+    }
 }
 
 struct DependencyStoreResolutionContext {
@@ -1463,7 +1652,9 @@ fn percent_decode_local_export_segment(segment: &str) -> String {
 fn collect_local_export_dependency_closure_documents(
     root_path: &Path,
     mut dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    local_export_resolver: Option<&mut LocalExportResolver>,
     documents: &[WorkspaceDocument],
+    max_waves: Option<usize>,
 ) -> Vec<WorkspaceDocument> {
     let mut documents_by_uri: HashMap<String, WorkspaceDocument> = documents
         .iter()
@@ -1489,9 +1680,15 @@ fn collect_local_export_dependency_closure_documents(
 
     let mut additions = Vec::<WorkspaceDocument>::new();
     let mut resolution_cache = HashMap::<String, Option<WorkspaceDocument>>::new();
-    let mut resolver = LocalExportResolver::default();
+    let mut fallback_resolver = LocalExportResolver::default();
+    let resolver = match local_export_resolver {
+        Some(resolver) => resolver,
+        None => &mut fallback_resolver,
+    };
 
+    let mut waves = 0usize;
     while !queue.is_empty() {
+        waves += 1;
         let mut batch = Vec::new();
         while let Some(uri) = queue.pop_front() {
             pending.remove(&uri);
@@ -1520,7 +1717,7 @@ fn collect_local_export_dependency_closure_documents(
                     let resolved = resolve_dependency_document_for_candidate(
                         dependency_store.as_deref_mut(),
                         &config.roots,
-                        &mut resolver,
+                        resolver,
                         &candidate,
                     );
                     resolution_cache.insert(resolution_key, resolved.clone());
@@ -1544,33 +1741,222 @@ fn collect_local_export_dependency_closure_documents(
                 }
             }
         }
+        if max_waves.is_some_and(|max_waves| waves >= max_waves) {
+            break;
+        }
     }
 
     additions
 }
 
+fn collect_local_export_dependency_closure_documents_profiled(
+    root_path: &Path,
+    mut dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    local_export_resolver: Option<&mut LocalExportResolver>,
+    documents: &[WorkspaceDocument],
+    max_waves: Option<usize>,
+) -> (Vec<WorkspaceDocument>, LocalExportDependencyClosureProfile) {
+    let total_start = Instant::now();
+    let mut profile = LocalExportDependencyClosureProfile::default();
+    let mut documents_by_uri: HashMap<String, WorkspaceDocument> = documents
+        .iter()
+        .cloned()
+        .map(|document| (document.uri.to_string(), document))
+        .collect();
+    let workspace_candidate_names = workspace_local_candidate_names(documents);
+    let mut document_configs = HashMap::<String, LocalExportConfig>::new();
+    let mut queue = VecDeque::<String>::new();
+    let mut pending = HashSet::<String>::new();
+
+    for document in documents.iter().filter(|document| !document.is_dependency) {
+        let config = local_export_config_for_source(root_path, document.uri.as_ref());
+        if !config.uses_local_exports() {
+            continue;
+        }
+        let uri = document.uri.to_string();
+        document_configs.insert(uri.clone(), config);
+        if pending.insert(uri.clone()) {
+            queue.push_back(uri);
+        }
+    }
+
+    let mut additions = Vec::<WorkspaceDocument>::new();
+    let mut resolution_cache = HashMap::<String, Option<WorkspaceDocument>>::new();
+    let mut fallback_resolver = LocalExportResolver::default();
+    let resolver = match local_export_resolver {
+        Some(resolver) => resolver,
+        None => &mut fallback_resolver,
+    };
+    let mut wave_index = 0usize;
+
+    while !queue.is_empty() {
+        wave_index += 1;
+        let wave_start = Instant::now();
+        let mut wave_profile = LocalExportDependencyClosureWaveProfile {
+            index: wave_index,
+            ..Default::default()
+        };
+        let mut batch = Vec::new();
+        while let Some(uri) = queue.pop_front() {
+            pending.remove(&uri);
+            profile.queue_iterations += 1;
+            let Some(config) = document_configs.get(&uri).cloned() else {
+                continue;
+            };
+            if !config.uses_local_exports() {
+                continue;
+            }
+            let Some(document) = documents_by_uri.get(&uri).cloned() else {
+                continue;
+            };
+            batch.push((uri, config, document));
+        }
+        wave_profile.batch_documents = batch.len();
+        profile.waves += 1;
+
+        let candidate_collection_start = Instant::now();
+        let batch_candidates = collect_local_export_dependency_candidate_batch_profiled(batch);
+        wave_profile.candidate_collection_time = candidate_collection_start.elapsed();
+
+        let mut wave_resolve_profile = LocalExportResolveProfile::default();
+        for (_uri, config, candidates, candidate_profile) in batch_candidates {
+            profile.documents_examined_for_candidates += 1;
+            profile.remote_dependency_candidates_produced += candidate_profile.candidate_count;
+            if candidate_profile.cache_hit {
+                profile.candidate_cache_hits += 1;
+                wave_profile.candidate_cache_hits += 1;
+            } else {
+                profile.candidate_cache_misses += 1;
+                wave_profile.candidate_cache_misses += 1;
+            }
+            profile.candidate_parse_analyze_time += candidate_profile.parse_analyze_time;
+            wave_profile.candidates_produced += candidate_profile.candidate_count;
+            wave_profile.candidate_parse_analyze_time += candidate_profile.parse_analyze_time;
+            profile.candidate_documents.push(candidate_profile);
+
+            for candidate in candidates {
+                if workspace_candidate_names.contains(&candidate.name.trim().to_ascii_lowercase()) {
+                    continue;
+                }
+                let resolution_key = local_export_resolution_cache_key(&config.roots, &candidate);
+                let resolved = if let Some(cached) = resolution_cache.get(&resolution_key) {
+                    profile.resolution_cache_hits += 1;
+                    wave_profile.resolution_cache_hits += 1;
+                    cached.clone()
+                } else {
+                    profile.resolution_cache_misses += 1;
+                    profile.unique_candidate_resolution_attempts += 1;
+                    wave_profile.resolution_cache_misses += 1;
+                    wave_profile.unique_candidate_resolution_attempts += 1;
+                    let resolved = resolve_dependency_document_for_candidate_profiled(
+                        dependency_store.as_deref_mut(),
+                        &config.roots,
+                        resolver,
+                        &candidate,
+                        &mut wave_resolve_profile,
+                    );
+                    resolution_cache.insert(resolution_key, resolved.clone());
+                    resolved
+                };
+                let Some(resolved_document) = resolved else {
+                    continue;
+                };
+                let resolved_uri = resolved_document.uri.to_string();
+                let entry = document_configs
+                    .entry(resolved_uri.clone())
+                    .or_insert_with(|| config.clone());
+                let config_changed = merge_local_export_config(entry, &config);
+                let first_seen = !documents_by_uri.contains_key(&resolved_uri);
+                if first_seen {
+                    documents_by_uri.insert(resolved_uri.clone(), resolved_document.clone());
+                    additions.push(resolved_document);
+                    wave_profile.added_dependency_documents += 1;
+                }
+                if (first_seen || config_changed) && pending.insert(resolved_uri.clone()) {
+                    queue.push_back(resolved_uri);
+                }
+            }
+        }
+
+        wave_profile.local_export_resolve = wave_resolve_profile.clone();
+        profile
+            .local_export_resolve
+            .merge_from(&wave_resolve_profile);
+        profile.candidate_collection_time += wave_profile.candidate_collection_time;
+        wave_profile.elapsed = wave_start.elapsed();
+        profile.wave_profiles.push(wave_profile);
+        if max_waves.is_some_and(|max_waves| wave_index >= max_waves) {
+            break;
+        }
+    }
+
+    profile.added_dependency_documents = additions.len();
+    profile.total_elapsed = total_start.elapsed();
+    (additions, profile)
+}
+
 fn workspace_local_candidate_names(documents: &[WorkspaceDocument]) -> HashSet<String> {
     let mut names = HashSet::new();
     for document in documents.iter().filter(|document| !document.is_dependency) {
-        if let Some(object_name) = document.object_name.as_ref() {
-            let normalized = object_name.trim().to_ascii_lowercase();
-            if !normalized.is_empty() {
-                names.insert(normalized);
-            }
-        }
-        if let Some(stem) = file_uri_to_path(document.uri.as_ref())
-            .and_then(|path| {
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .map(str::to_string)
-            })
-            .map(|stem| stem.trim().to_ascii_lowercase())
-            .filter(|stem| !stem.is_empty())
-        {
-            names.insert(stem);
-        }
+        add_workspace_local_candidate_names(
+            &mut names,
+            document.uri.as_ref(),
+            document.object_name.as_ref(),
+        );
     }
     names
+}
+
+fn workspace_local_candidate_names_from_cache(
+    workspace: &WorkspaceState,
+    edited_document: &WorkspaceDocument,
+) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for uri in workspace.cache.uris() {
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        if snapshot.is_dependency || snapshot.uri.as_ref() == edited_document.uri.as_ref() {
+            continue;
+        }
+        add_workspace_local_candidate_names(
+            &mut names,
+            snapshot.uri.as_ref(),
+            snapshot.object_name.as_ref(),
+        );
+    }
+    if !edited_document.is_dependency {
+        add_workspace_local_candidate_names(
+            &mut names,
+            edited_document.uri.as_ref(),
+            edited_document.object_name.as_ref(),
+        );
+    }
+    names
+}
+
+fn add_workspace_local_candidate_names(
+    names: &mut HashSet<String>,
+    uri: &str,
+    object_name: Option<&Arc<str>>,
+) {
+    if let Some(object_name) = object_name {
+        let normalized = object_name.trim().to_ascii_lowercase();
+        if !normalized.is_empty() {
+            names.insert(normalized);
+        }
+    }
+    if let Some(stem) = file_uri_to_path(uri)
+        .and_then(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+        })
+        .map(|stem| stem.trim().to_ascii_lowercase())
+        .filter(|stem| !stem.is_empty())
+    {
+        names.insert(stem);
+    }
 }
 
 fn local_export_resolution_cache_key(
@@ -1615,6 +2001,38 @@ fn resolve_dependency_document_for_candidate(
         local_export_resolver,
         &candidate.name,
         &candidate.kind,
+    )
+}
+
+fn resolve_dependency_document_for_candidate_profiled(
+    dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    roots: &[PathBuf],
+    local_export_resolver: &mut LocalExportResolver,
+    candidate: &RemoteDependencyCandidate,
+    profile: &mut LocalExportResolveProfile,
+) -> Option<WorkspaceDocument> {
+    if let Some(context) = dependency_store {
+        if let Some(document) = context.read_candidate(candidate) {
+            return Some(document);
+        }
+        let document = resolve_local_export_dependency_document_profiled(
+            roots,
+            local_export_resolver,
+            &candidate.name,
+            &candidate.kind,
+            Some(profile),
+        )?;
+        return context
+            .store_local_export_document(candidate, &document)
+            .or(Some(document));
+    }
+
+    resolve_local_export_dependency_document_profiled(
+        roots,
+        local_export_resolver,
+        &candidate.name,
+        &candidate.kind,
+        Some(profile),
     )
 }
 
@@ -1682,7 +2100,82 @@ fn collect_local_export_dependency_candidate_batch(
     })
 }
 
+fn collect_local_export_dependency_candidate_batch_profiled(
+    batch: Vec<(String, LocalExportConfig, WorkspaceDocument)>,
+) -> Vec<(
+    String,
+    LocalExportConfig,
+    Vec<RemoteDependencyCandidate>,
+    LocalExportCandidateDocumentProfile,
+)> {
+    if batch.len() < 8 {
+        return batch
+            .into_iter()
+            .map(|(uri, config, document)| {
+                let (candidates, profile) =
+                    collect_local_export_dependency_candidates_profiled(&document);
+                (uri, config, candidates, profile)
+            })
+            .collect();
+    }
+
+    let parallelism = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(batch.len());
+    if parallelism <= 1 {
+        return batch
+            .into_iter()
+            .map(|(uri, config, document)| {
+                let (candidates, profile) =
+                    collect_local_export_dependency_candidates_profiled(&document);
+                (uri, config, candidates, profile)
+            })
+            .collect();
+    }
+
+    let chunk_size = batch.len().div_ceil(parallelism);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for chunk in batch.chunks(chunk_size) {
+            let chunk = chunk.to_vec();
+            handles.push(scope.spawn(move || {
+                chunk
+                    .into_iter()
+                    .map(|(uri, config, document)| {
+                        let (candidates, profile) =
+                            collect_local_export_dependency_candidates_profiled(&document);
+                        (uri, config, candidates, profile)
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
+
+        let mut out = Vec::new();
+        for handle in handles {
+            out.extend(
+                handle
+                    .join()
+                    .expect("local export candidate worker should not panic"),
+            );
+        }
+        out
+    })
+}
+
 fn collect_local_export_dependency_candidates(
+    document: &WorkspaceDocument,
+) -> Vec<RemoteDependencyCandidate> {
+    if let Some(candidates) = cached_local_export_dependency_candidates(document) {
+        return candidates;
+    }
+
+    let candidates = collect_local_export_dependency_candidates_uncached(document);
+    store_local_export_dependency_candidates(document, candidates.clone());
+    candidates
+}
+
+fn collect_local_export_dependency_candidates_uncached(
     document: &WorkspaceDocument,
 ) -> Vec<RemoteDependencyCandidate> {
     let analysis_text = if document.is_dependency {
@@ -1697,11 +2190,210 @@ fn collect_local_export_dependency_candidates(
     collect_remote_dependency_candidates_for_unit(&unit)
 }
 
+fn cached_local_export_dependency_candidates(
+    document: &WorkspaceDocument,
+) -> Option<Vec<RemoteDependencyCandidate>> {
+    let (text_len, text_hash) = dependency_batch_candidate_fingerprint(document.text.as_str());
+    let cache = local_export_dependency_candidate_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let cached = cache.get(document.uri.as_ref())?;
+    (cached.version == document.version
+        && cached.text_len == text_len
+        && cached.text_hash == text_hash
+        && cached.is_dependency == document.is_dependency
+        && cached.object_name == document.object_name)
+        .then(|| cached.candidates.clone())
+}
+
+fn store_local_export_dependency_candidates(
+    document: &WorkspaceDocument,
+    candidates: Vec<RemoteDependencyCandidate>,
+) {
+    let (text_len, text_hash) = dependency_batch_candidate_fingerprint(document.text.as_str());
+    let mut cache = local_export_dependency_candidate_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cache.len() >= LOCAL_EXPORT_DEPENDENCY_CANDIDATE_CACHE_MAX_ENTRIES
+        && !cache.contains_key(document.uri.as_ref())
+    {
+        cache.clear();
+    }
+    cache.insert(
+        document.uri.to_string(),
+        CachedLocalExportDependencyCandidates {
+            version: document.version,
+            text_len,
+            text_hash,
+            is_dependency: document.is_dependency,
+            object_name: document.object_name.clone(),
+            candidates,
+        },
+    );
+}
+
+fn collect_local_export_dependency_candidates_profiled(
+    document: &WorkspaceDocument,
+) -> (
+    Vec<RemoteDependencyCandidate>,
+    LocalExportCandidateDocumentProfile,
+) {
+    let total_start = Instant::now();
+    if let Some(candidates) = cached_local_export_dependency_candidates(document) {
+        let profile = LocalExportCandidateDocumentProfile {
+            uri: document.uri.to_string(),
+            is_dependency: document.is_dependency,
+            text_len: document.text.len(),
+            candidate_count: candidates.len(),
+            cache_hit: true,
+            elapsed: total_start.elapsed(),
+            parse_analyze_time: Duration::ZERO,
+        };
+        return (candidates, profile);
+    }
+
+    let analysis_text = if document.is_dependency {
+        // Dependency surface projection strips method bodies, but local export closure
+        // needs full dependency text to discover implementation-only transitive refs.
+        Arc::<str>::from(document.text.as_str())
+    } else {
+        analysis_text_for_document(document.text.as_ref(), false)
+    };
+    let parse_analyze_start = Instant::now();
+    let parsed = parse(analysis_text.as_ref());
+    let unit = analyze_unit(Arc::clone(&document.uri), analysis_text.as_ref(), &parsed);
+    let parse_analyze_time = parse_analyze_start.elapsed();
+    let candidates = collect_remote_dependency_candidates_for_unit(&unit);
+    store_local_export_dependency_candidates(document, candidates.clone());
+    let profile = LocalExportCandidateDocumentProfile {
+        uri: document.uri.to_string(),
+        is_dependency: document.is_dependency,
+        text_len: document.text.len(),
+        candidate_count: candidates.len(),
+        cache_hit: false,
+        elapsed: total_start.elapsed(),
+        parse_analyze_time,
+    };
+    (candidates, profile)
+}
+
 fn document_uses_local_exports(workspace: &WorkspaceState, uri: &str) -> bool {
     let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
         return false;
     };
     local_export_config_for_source(&root_path, uri).uses_local_exports()
+}
+
+fn workspace_document_from_input(input: &DocumentInput) -> WorkspaceDocument {
+    WorkspaceDocument {
+        uri: Arc::clone(&input.uri),
+        version: input.version,
+        text: input.text.to_string(),
+        is_dependency: input.is_dependency,
+        object_name: input.object_name.clone(),
+    }
+}
+
+fn collect_incremental_local_export_dependency_documents(
+    workspace: &mut WorkspaceState,
+    source_document: &WorkspaceDocument,
+) -> Vec<WorkspaceDocument> {
+    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
+        return Vec::new();
+    };
+    let source_config = local_export_config_for_source(&root_path, source_document.uri.as_ref());
+    if !source_config.uses_local_exports() {
+        return Vec::new();
+    }
+
+    let workspace_candidate_names =
+        workspace_local_candidate_names_from_cache(workspace, source_document);
+    let mut known_uris: HashSet<String> = workspace
+        .cache
+        .uris()
+        .into_iter()
+        .map(|uri| uri.to_string())
+        .collect();
+    known_uris.insert(source_document.uri.to_string());
+
+    let mut additions = Vec::<WorkspaceDocument>::new();
+    let mut queue = VecDeque::<(LocalExportConfig, WorkspaceDocument)>::new();
+    queue.push_back((source_config, source_document.clone()));
+    let mut resolution_cache = HashMap::<String, Option<WorkspaceDocument>>::new();
+    let mut dependency_store_resolution = DependencyStoreResolutionContext::new(workspace);
+    let resolver = Arc::clone(&workspace.local_export_resolver);
+    let mut waves = 0usize;
+
+    while let Some((config, document)) = queue.pop_front() {
+        waves += 1;
+        for candidate in collect_local_export_dependency_candidates(&document) {
+            if workspace_candidate_names.contains(&candidate.name.trim().to_ascii_lowercase()) {
+                continue;
+            }
+            let resolution_key = local_export_resolution_cache_key(&config.roots, &candidate);
+            let resolved = if let Some(cached) = resolution_cache.get(&resolution_key) {
+                cached.clone()
+            } else {
+                let resolved = {
+                    let mut resolver = resolver.lock().unwrap_or_else(|error| error.into_inner());
+                    resolve_dependency_document_for_candidate(
+                        dependency_store_resolution.as_mut(),
+                        &config.roots,
+                        &mut resolver,
+                        &candidate,
+                    )
+                };
+                resolution_cache.insert(resolution_key, resolved.clone());
+                resolved
+            };
+            let Some(resolved_document) = resolved else {
+                continue;
+            };
+            let resolved_uri = resolved_document.uri.to_string();
+            if !known_uris.insert(resolved_uri) {
+                continue;
+            }
+            queue.push_back((config.clone(), resolved_document.clone()));
+            additions.push(resolved_document);
+        }
+        if waves >= 1 {
+            break;
+        }
+    }
+
+    additions.sort_by(|left, right| left.uri.cmp(&right.uri));
+    additions
+}
+
+fn publish_workspace_input_with_local_export_resolution(
+    workspace: &mut WorkspaceState,
+    input: DocumentInput,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Arc<AnalysisSnapshot> {
+    let uri = Arc::clone(&input.uri);
+    let source_document = workspace_document_from_input(&input);
+    let additions =
+        collect_incremental_local_export_dependency_documents(workspace, &source_document);
+    if additions.is_empty() {
+        let build_plan = workspace_committed_build_plan(workspace);
+        return publish_workspace_input_with_dependency_hydration(workspace, input, build_plan);
+    }
+
+    clear_workspace_dependency_candidate_caches(workspace);
+    sync_workspace_lint_policy(workspace);
+    let build_plan = workspace_committed_build_plan(workspace);
+    let mut inputs = Vec::with_capacity(additions.len() + 1);
+    inputs.push(input);
+    inputs.extend(additions.iter().map(document_input_from_workspace_document));
+    let snapshots = workspace
+        .cache
+        .publish_inputs_with_build_plan_and_progress(inputs, build_plan, progress);
+    let _ = hydrate_workspace_dependency_documents(workspace);
+    workspace
+        .cache
+        .get(uri.as_ref())
+        .or_else(|| snapshots.get(uri.as_ref()).cloned())
+        .expect("published local-export source should exist")
 }
 
 #[derive(Debug, Clone)]
@@ -2125,63 +2817,92 @@ fn workspace_committed_build_plan(_workspace: &WorkspaceState) -> SnapshotBuildP
 fn hydrate_workspace_dependency_documents(
     workspace: &mut WorkspaceState,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    let total_start = Instant::now();
+    let mut metrics = DependencyStoreHydrationMetrics::default();
+    let hydrated = hydrate_workspace_dependency_documents_with_metrics(workspace, &mut metrics);
+    metrics.elapsed = total_start.elapsed();
+    workspace.dependency_store_hydration_metrics = Some(metrics);
+    workspace.local_export_chain_candidates.clear();
+    workspace.local_export_chain_refresh_candidates.clear();
+    hydrated
+}
+
+fn hydrate_workspace_dependency_documents_with_metrics(
+    workspace: &mut WorkspaceState,
+    metrics: &mut DependencyStoreHydrationMetrics,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     if !workspace_supports_dependency_store_resolution(workspace) {
         return HashMap::new();
     }
+    metrics.supported = true;
     let Some(profile) = workspace_dependency_profile(workspace) else {
         return HashMap::new();
     };
+    metrics.profile_present = true;
     let Some(store) = workspace_dependency_store(workspace) else {
         return HashMap::new();
     };
     let Some(reader) = store.reader().ok() else {
         return HashMap::new();
     };
+    metrics.reader_available = true;
 
     let build_plan = workspace_committed_build_plan(workspace);
     let mut queried_candidates = HashSet::<String>::new();
     let mut hydrated = HashMap::new();
 
     loop {
+        metrics.iterations += 1;
         let mut inputs = Vec::<DocumentInput>::new();
         let mut input_uris = HashSet::<String>::new();
 
         let cache_uris = workspace.cache.uris();
+        metrics.cache_uri_scans += cache_uris.len();
         for uri in cache_uris {
             let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
                 continue;
             };
             let snapshot = Arc::clone(&snapshot);
             if snapshot.is_dependency && !workspace.open_documents.contains_key(uri.as_ref()) {
+                metrics.dependency_snapshots_skipped += 1;
                 continue;
             }
 
-            let candidates = collect_remote_dependency_candidates_for_batch(
+            metrics.source_snapshots_examined += 1;
+            let candidate_start = Instant::now();
+            let candidates = collect_remote_dependency_candidates_for_hydration(
                 workspace,
                 snapshot.as_ref(),
                 uri.as_ref(),
             );
+            metrics.candidate_collection_micros += candidate_start.elapsed().as_micros();
+            metrics.candidate_count += candidates.len();
             for candidate in candidates {
                 let candidate_key = remote_candidate_key(&candidate);
                 if !queried_candidates.insert(candidate_key) {
                     continue;
                 }
-                let Some(record) = reader
+                metrics.unique_candidate_queries += 1;
+                let lookup_start = Instant::now();
+                let record = reader
                     .find_artifact_for_candidate(
                         &profile,
                         candidate.name.as_str(),
                         candidate.kind.as_str(),
                     )
                     .ok()
-                    .flatten()
-                else {
+                    .flatten();
+                metrics.store_lookup_micros += lookup_start.elapsed().as_micros();
+                let Some(record) = record else {
                     continue;
                 };
+                metrics.artifact_hits += 1;
                 let input = workspace_dependency_document_input(workspace, &record);
                 record_dependency_parent_uri(workspace, input.uri.as_ref(), uri.as_ref());
                 if workspace.cache.get(input.uri.as_ref()).is_some()
                     || !input_uris.insert(input.uri.to_string())
                 {
+                    metrics.existing_or_duplicate_inputs += 1;
                     continue;
                 }
                 inputs.push(input);
@@ -2192,9 +2913,13 @@ fn hydrate_workspace_dependency_documents(
             break;
         }
 
+        metrics.hydrated_input_count += inputs.len();
+        metrics.published_batch_count += 1;
+        let publish_start = Instant::now();
         hydrated = workspace
             .cache
             .publish_inputs_with_build_plan(inputs, build_plan);
+        metrics.publish_micros += publish_start.elapsed().as_micros();
     }
 
     hydrated
@@ -2204,8 +2929,8 @@ fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
-    *workspace
-        .local_export_resolver
+    let local_export_resolver = Arc::clone(&workspace.local_export_resolver);
+    *local_export_resolver
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = LocalExportResolver::default();
     let loaded = load_workspace_documents_with_progress(
@@ -2229,31 +2954,38 @@ fn rebuild_workspace_cache_with_progress(
     let documents = loaded.documents;
     let build_plan = workspace_committed_build_plan(workspace);
     let mut dependency_store_resolution = DependencyStoreResolutionContext::new(workspace);
-    let mut snapshots = if let Some(progress) = progress {
-        let stage_count = documents.len();
-        let analysis_progress = |processed: usize, _total: usize| {
-            progress(
-                stage_count.saturating_add(processed),
-                stage_count.saturating_mul(2),
-            );
-        };
-        replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
-            &workspace.cache,
-            &loaded.root_path,
-            dependency_store_resolution.as_mut(),
-            &documents,
-            build_plan,
-            Some(&analysis_progress),
-        )
-    } else {
-        replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
-            &workspace.cache,
-            &loaded.root_path,
-            dependency_store_resolution.as_mut(),
-            &documents,
-            build_plan,
-            None,
-        )
+    let mut snapshots = {
+        let mut resolver = local_export_resolver
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(progress) = progress {
+            let stage_count = documents.len();
+            let analysis_progress = |processed: usize, _total: usize| {
+                progress(
+                    stage_count.saturating_add(processed),
+                    stage_count.saturating_mul(2),
+                );
+            };
+            replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
+                &workspace.cache,
+                &loaded.root_path,
+                dependency_store_resolution.as_mut(),
+                Some(&mut resolver),
+                &documents,
+                build_plan,
+                Some(&analysis_progress),
+            )
+        } else {
+            replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
+                &workspace.cache,
+                &loaded.root_path,
+                dependency_store_resolution.as_mut(),
+                Some(&mut resolver),
+                &documents,
+                build_plan,
+                None,
+            )
+        }
     };
     let open_dependency_inputs = open_dependency_document_inputs(workspace);
     if !open_dependency_inputs.is_empty() {
@@ -2570,14 +3302,29 @@ pub fn publish_open_document_mut_with_progress(
                     true,
                 ))
             } else if document_uses_local_exports(workspace, &uri) {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                Some((
-                    workspace_uri,
-                    snapshots.get(uri.as_str()).cloned().expect(
-                        "opened workspace document should exist after local export rebuild",
-                    ),
-                    true,
-                ))
+                if let Some(input) = incremental_workspace_document_input(
+                    workspace,
+                    &uri,
+                    params.text_document.version,
+                    &params.text_document.text,
+                ) {
+                    Some((
+                        workspace_uri,
+                        publish_workspace_input_with_local_export_resolution(
+                            workspace, input, progress,
+                        ),
+                        false,
+                    ))
+                } else {
+                    let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                    Some((
+                        workspace_uri,
+                        snapshots.get(uri.as_str()).cloned().expect(
+                            "opened workspace document should exist after local export rebuild",
+                        ),
+                        true,
+                    ))
+                }
             } else if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
@@ -2695,8 +3442,23 @@ pub fn publish_changed_document_mut_with_progress(
                 },
             );
             if document_uses_local_exports(workspace, &uri) {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
-                Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
+                if let Some(input) = incremental_workspace_document_input(
+                    workspace,
+                    &uri,
+                    params.text_document.version,
+                    &change.text,
+                ) {
+                    Some((
+                        workspace_uri,
+                        Some(publish_workspace_input_with_local_export_resolution(
+                            workspace, input, progress,
+                        )),
+                        false,
+                    ))
+                } else {
+                    let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                    Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
+                }
             } else if let Some(input) = incremental_workspace_document_input(
                 workspace,
                 &uri,
@@ -3003,8 +3765,8 @@ pub fn store_remote_dependency_artifacts(
             .into_iter()
             .zip(artifacts.iter())
             .map(|(artifact_id, artifact)| {
-                dependency_document_input_from_payload_with_kind(
-                    &workspace.root_uri,
+                workspace_dependency_document_input_from_payload_with_kind(
+                    workspace,
                     artifact_id,
                     artifact,
                 )
@@ -3184,6 +3946,18 @@ fn collect_remote_dependency_candidates_for_batch(
     collect_remote_dependency_candidates_for_include_component(snapshot)
 }
 
+fn collect_remote_dependency_candidates_for_hydration(
+    workspace: &mut WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+    source_uri: &str,
+) -> Vec<RemoteDependencyCandidate> {
+    if snapshot.is_dependency {
+        return cached_dependency_batch_candidates(workspace, snapshot);
+    }
+    let _ = source_uri;
+    collect_remote_dependency_candidates_for_include_component(snapshot)
+}
+
 fn collect_remote_dependency_refresh_candidates_for_batch(
     workspace: &mut WorkspaceState,
     snapshot: &AnalysisSnapshot,
@@ -3284,6 +4058,9 @@ fn collect_remote_dependency_candidates_for_local_export_chain_uncached(
     let mut visited_uris = HashSet::from([source_uri.to_string()]);
     let mut queue = VecDeque::from([source_uri.to_string()]);
     let dependency_uri_by_name = workspace_dependency_uri_by_object_name(workspace);
+    let local_export_config = file_uri_to_path(&workspace.root_uri)
+        .map(|root_path| local_export_config_for_source(&root_path, source_uri))
+        .filter(|config| config.uses_local_exports());
     let component_index = workspace
         .cache
         .get(source_uri)
@@ -3314,11 +4091,32 @@ fn collect_remote_dependency_candidates_for_local_export_chain_uncached(
                 }
                 continue;
             }
+            if local_export_config.as_ref().is_some_and(|config| {
+                local_export_candidate_resolves_from_config(workspace, config, &candidate)
+            }) {
+                continue;
+            }
             insert_remote_candidate(&mut deduped, candidate);
         }
     }
 
     deduped.into_values().collect()
+}
+
+fn local_export_candidate_resolves_from_config(
+    workspace: &WorkspaceState,
+    config: &LocalExportConfig,
+    candidate: &RemoteDependencyCandidate,
+) -> bool {
+    let resolver = Arc::clone(&workspace.local_export_resolver);
+    let mut resolver = resolver.lock().unwrap_or_else(|error| error.into_inner());
+    resolve_local_export_dependency_document(
+        &config.roots,
+        &mut resolver,
+        candidate.name.as_str(),
+        candidate.kind.as_str(),
+    )
+    .is_some()
 }
 
 fn collect_remote_dependency_refresh_candidates_for_local_export_chain(
@@ -3524,7 +4322,7 @@ fn collect_remote_dependency_candidates_for_unit(
             }
             ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
         };
-        if reference.resolution.is_some() {
+        if !matches!(reference.resolution, None | Some(Resolution::External)) {
             continue;
         }
         let is_remote_candidate = match reference.kind {
@@ -3888,15 +4686,15 @@ fn collect_remote_dependency_candidates_for_workspace_batch(
         return collect_remote_dependency_candidates(snapshot);
     }
 
-    let full_snapshot = DocumentStore::default().publish_input(DocumentInput {
+    let document = WorkspaceDocument {
         uri: Arc::clone(&snapshot.uri),
         version: snapshot.version,
-        text: Arc::clone(&snapshot.text),
-        is_dependency: false,
+        text: snapshot.text.to_string(),
+        is_dependency: true,
         object_name: snapshot.object_name.clone(),
-    });
+    };
     let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
-    for candidate in collect_remote_dependency_candidates(full_snapshot.as_ref()) {
+    for candidate in collect_local_export_dependency_candidates(&document) {
         insert_remote_candidate(&mut deduped, candidate);
     }
     if let Some(candidate) = stale_dependency_refresh_candidate(snapshot) {
@@ -4547,6 +5345,9 @@ fn build_remote_dependency_batch_for_workspace_filtered_with_options(
         .manifest
         .as_ref()
         .map(|manifest| manifest.resolution.remote_requests_per_second);
+    let skip_unparented_closed_dependencies = source_uri_filter.is_none()
+        && !options.include_resolved_dependencies
+        && workspace_has_local_export_sources(workspace);
 
     for (uri, phase) in uri_entries {
         if selected_phase.is_some_and(|selected| phase != selected) {
@@ -4557,6 +5358,11 @@ fn build_remote_dependency_batch_for_workspace_filtered_with_options(
             continue;
         };
         let snapshot = Arc::clone(&snapshot);
+        if skip_unparented_closed_dependencies
+            && skip_closed_dependency_batch_source(workspace, uri.as_ref(), snapshot.as_ref())
+        {
+            continue;
+        }
 
         let mut added_for_uri = false;
         let mut uri_candidates = Vec::new();
@@ -4678,11 +5484,17 @@ pub fn build_remote_dependency_requests_for_workspace(
     let cache_context = RemoteDependencyCacheContext::new(workspace);
     let mut memo = RemoteDependencyMemo::new();
     let mut requests = Vec::new();
+    let skip_unparented_closed_dependencies = workspace_has_local_export_sources(workspace);
     for uri in sorted_uris {
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
         let snapshot = Arc::clone(&snapshot);
+        if skip_unparented_closed_dependencies
+            && skip_closed_dependency_batch_source(workspace, uri.as_ref(), snapshot.as_ref())
+        {
+            continue;
+        }
         if let Some(request) = build_remote_dependency_request_for_snapshot(
             workspace,
             uri.as_ref(),
@@ -4695,6 +5507,25 @@ pub fn build_remote_dependency_requests_for_workspace(
         }
     }
     requests
+}
+
+fn workspace_has_local_export_sources(workspace: &WorkspaceState) -> bool {
+    workspace.cache.uris().into_iter().any(|uri| {
+        workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+            !snapshot.is_dependency && document_uses_local_exports(workspace, uri.as_ref())
+        })
+    })
+}
+
+fn skip_closed_dependency_batch_source(
+    workspace: &WorkspaceState,
+    uri: &str,
+    snapshot: &AnalysisSnapshot,
+) -> bool {
+    snapshot.is_dependency
+        && !workspace.open_documents.contains_key(uri)
+        && !uri_is_manifest_dependency(workspace, uri)
+        && !workspace.dependency_parent_uris.contains_key(uri)
 }
 
 fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
@@ -6513,7 +7344,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use lsp_types::{
         CodeActionContext, CodeActionOrCommand, CompletionContext, CompletionTriggerKind,
@@ -6538,18 +7369,21 @@ mod tests {
         build_lsp_diagnostics_for_workspace, build_remote_dependency_batch_for_workspace,
         build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
         build_remote_dependency_request_retrying_negatives,
-        build_remote_dependency_requests_for_workspace, code_actions,
-        collect_local_export_dependency_candidates, collect_remote_dependency_candidates,
-        completion, definition, dependency_document_input_from_payload_with_kind,
-        dependency_document_uri, extract_stored_dependency_symbols,
-        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated,
-        handle_sap_atc_results_updated, hover, initialize_result, inlay_hints, normalize_lsp_uri,
+        build_remote_dependency_requests_for_workspace,
+        clear_local_export_dependency_candidate_cache_for_tests, code_actions,
+        collect_local_export_dependency_candidates,
+        collect_local_export_dependency_candidates_profiled, collect_remote_dependency_candidates,
+        collect_remote_dependency_candidates_for_workspace_batch, completion, definition,
+        dependency_document_input_from_payload_with_kind, dependency_document_uri,
+        extract_stored_dependency_symbols, handle_dependency_cache_refresh_requested,
+        handle_remote_dependencies_updated, handle_sap_atc_results_updated, hover,
+        hydrate_workspace_dependency_documents, initialize_result, inlay_hints, normalize_lsp_uri,
         offset_to_position, prepare_rename, publish_changed_document, publish_changed_document_mut,
         publish_open_document, publish_open_document_mut, read_dependency_document, references,
         refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
-        stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
-        workspace_committed_build_plan, workspace_dependency_store,
-        workspace_manifest_diagnostics_params,
+        stage_workspace_preview_snapshot, store_local_export_dependency_candidates,
+        store_remote_dependency_artifacts, workspace_committed_build_plan,
+        workspace_dependency_store, workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -10639,7 +11473,6 @@ ENDCLASS.
             .get(&normalize_lsp_uri(&workspace_uri))
             .expect("workspace");
         let factory_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_FACTORY");
-        let helper_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_HELPER");
         assert_eq!(
             workspace
                 .cache
@@ -10660,8 +11493,14 @@ ENDCLASS.
             factory_snapshot.symbols.diagnostics
         );
         assert!(
-            snapshot_for_uri(&state, &helper_uri).is_some(),
-            "transitive helper dependency should be loaded from legacy layout"
+            workspace.cache.uris().into_iter().all(|uri| {
+                workspace
+                    .cache
+                    .get(uri.as_ref())
+                    .and_then(|snapshot| snapshot.object_name.as_ref().map(|name| name.to_string()))
+                    .is_none_or(|name| !name.eq_ignore_ascii_case("ZCL_HELPER"))
+            }),
+            "transitive helper dependency should stay out of the editor startup graph"
         );
         assert!(
             build_remote_dependency_request(&mut state, &target_uri).is_none(),
@@ -10699,6 +11538,63 @@ ENDCLASS.
                 .iter()
                 .any(|candidate| candidate.kind == "static" && candidate.name == "zcl_helper"),
             "{candidates:#?}"
+        );
+    }
+
+    #[test]
+    fn local_export_dependency_candidate_cache_reuses_unchanged_text_and_refreshes_changes() {
+        clear_local_export_dependency_candidate_cache_for_tests();
+
+        let base_document = WorkspaceDocument {
+            uri: Arc::from("file:///candidate-cache/factory.abap"),
+            version: 0,
+            text: "\
+CLASS zcl_factory DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS build.
+ENDCLASS.
+CLASS zcl_factory IMPLEMENTATION.
+  METHOD build.
+    zcl_helper=>assist( ).
+  ENDMETHOD.
+ENDCLASS.
+"
+            .to_string(),
+            is_dependency: true,
+            object_name: Some(Arc::from("zcl_factory")),
+        };
+
+        let (first, first_profile) =
+            collect_local_export_dependency_candidates_profiled(&base_document);
+        assert!(!first_profile.cache_hit);
+        assert!(
+            first
+                .iter()
+                .any(|candidate| { candidate.kind == "static" && candidate.name == "zcl_helper" })
+        );
+
+        let (second, second_profile) =
+            collect_local_export_dependency_candidates_profiled(&base_document);
+        assert!(second_profile.cache_hit);
+        assert_eq!(first, second);
+        assert_eq!(second_profile.parse_analyze_time, Duration::ZERO);
+
+        let changed_document = WorkspaceDocument {
+            text: base_document.text.replace("zcl_helper", "zcl_other"),
+            ..base_document.clone()
+        };
+        let (changed, changed_profile) =
+            collect_local_export_dependency_candidates_profiled(&changed_document);
+        assert!(!changed_profile.cache_hit);
+        assert!(
+            changed
+                .iter()
+                .any(|candidate| { candidate.kind == "static" && candidate.name == "zcl_other" })
+        );
+        assert!(
+            !changed
+                .iter()
+                .any(|candidate| { candidate.kind == "static" && candidate.name == "zcl_helper" })
         );
     }
 
@@ -11327,6 +12223,245 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn changing_local_export_workspace_file_body_stays_incremental() {
+        let workspace_path = temp_workspace_path("workspace_local_export_change_body_incremental");
+        let export_root =
+            temp_workspace_path("workspace_local_export_change_body_incremental_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::create_dir_all(export_root.join("packages/ZPKG/global-class")).expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "ZCL_PROVIDER"
+kind = "global-class"
+root_file = "src/ZCL_PROVIDER.abap"
+
+[[unit]]
+name = "ZREP"
+kind = "report"
+root_file = "src/ZREP.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        let provider_v1 = "\
+CLASS zcl_provider DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_provider IMPLEMENTATION.
+  METHOD value.
+    zcl_ext=>assist( ).
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.
+";
+        let provider_v2 = provider_v1.replace("rv_value = 1.", "rv_value = 2.");
+        fs::write(workspace_path.join("src/ZCL_PROVIDER.abap"), provider_v1).expect("provider");
+        fs::write(
+            workspace_path.join("src/ZREP.abap"),
+            "DATA lo_provider TYPE REF TO zcl_provider.\nSTART-OF-SELECTION.\n  lo_provider->value( ).\n",
+        )
+        .expect("consumer");
+        fs::write(
+            export_root.join("packages/ZPKG/global-class/ZCL_EXT.abap"),
+            "\
+CLASS zcl_ext DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS assist.
+ENDCLASS.
+CLASS zcl_ext IMPLEMENTATION.
+  METHOD assist.
+  ENDMETHOD.
+ENDCLASS.
+",
+        )
+        .expect("export");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let provider_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZCL_PROVIDER.abap"));
+        let consumer_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let changed = publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&provider_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: provider_v2,
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let metrics = workspace
+            .cache
+            .last_analysis_metrics_snapshot()
+            .expect("metrics");
+        let dirty = workspace.cache.last_dirty_uris();
+
+        assert_eq!(changed.version, 2);
+        assert!(!metrics.full_rebuild);
+        assert_eq!(metrics.parse_count, 1);
+        assert_eq!(metrics.local_phase_count, 1);
+        assert_eq!(metrics.dirty_unit_count, 1);
+        assert!(dirty.contains(provider_uri.as_str()));
+        assert!(!dirty.contains(consumer_uri.as_str()));
+        assert!(
+            dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_EXT")
+                .starts_with("abapls-cache:")
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn changing_local_export_workspace_file_signature_marks_dependents_without_full_rebuild() {
+        let workspace_path =
+            temp_workspace_path("workspace_local_export_change_signature_incremental");
+        let export_root =
+            temp_workspace_path("workspace_local_export_change_signature_incremental_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::create_dir_all(&export_root).expect("export dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "ZCL_PROVIDER"
+kind = "global-class"
+root_file = "src/ZCL_PROVIDER.abap"
+
+[[unit]]
+name = "ZREP"
+kind = "report"
+root_file = "src/ZREP.abap"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        let provider_v1 = "\
+CLASS zcl_provider DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+CLASS zcl_provider IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+ENDCLASS.
+";
+        let provider_v2 = "\
+CLASS zcl_provider DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    METHODS value RETURNING VALUE(rv_value) TYPE i.
+    METHODS extra.
+ENDCLASS.
+CLASS zcl_provider IMPLEMENTATION.
+  METHOD value.
+    rv_value = 1.
+  ENDMETHOD.
+  METHOD extra.
+  ENDMETHOD.
+ENDCLASS.
+";
+        fs::write(workspace_path.join("src/ZCL_PROVIDER.abap"), provider_v1).expect("provider");
+        fs::write(
+            workspace_path.join("src/ZREP.abap"),
+            "DATA lo_provider TYPE REF TO zcl_provider.\nSTART-OF-SELECTION.\n  lo_provider->value( ).\n",
+        )
+        .expect("consumer");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let provider_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZCL_PROVIDER.abap"));
+        let consumer_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZREP.abap"));
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let changed = publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&provider_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: provider_v2.to_string(),
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let metrics = workspace
+            .cache
+            .last_analysis_metrics_snapshot()
+            .expect("metrics");
+        let dirty = workspace.cache.last_dirty_uris();
+
+        assert_eq!(changed.version, 2);
+        assert!(!metrics.full_rebuild);
+        assert_eq!(metrics.parse_count, 1);
+        assert_eq!(metrics.local_phase_count, 1);
+        assert_eq!(metrics.dirty_unit_count, 2);
+        assert!(dirty.contains(provider_uri.as_str()));
+        assert!(dirty.contains(consumer_uri.as_str()));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
     fn workspace_manifest_refresh_enables_remote_dependency_requests() {
         let workspace_path = temp_workspace_path("manifest_refresh");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -11620,6 +12755,110 @@ ENDCLASS.";
             snapshot_for_uri(&state, &dependency_uri).expect("dependency snapshot after refresh");
         assert!(!refreshed.is_dependency);
         assert!(refreshed.definition_at(use_offset).is_some());
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn storing_remote_artifact_preserves_open_dependency_diagnostics() {
+        let workspace_path = temp_workspace_path("workspace_open_dependency_store_preserves");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(workspace_path.join("src/ZMAIN.abap"), "REPORT zmain.").expect("source");
+        let dependency_text = "\
+CLASS zcl_dep DEFINITION PUBLIC.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lv_missing TYPE zty_missing.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let artifact = DependencyArtifactPayload {
+            package_name: "ZPKG".to_string(),
+            object_kind: "global-class".to_string(),
+            object_name: "ZCL_DEP".to_string(),
+            object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+            object_type: "CLAS/OC".to_string(),
+            description: "Remote class".to_string(),
+            file_extension: "abap".to_string(),
+            source_text: dependency_text.to_string(),
+            fetched_at: "2026-04-23T00:00:00Z".to_string(),
+        };
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![artifact.clone()],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 7,
+                    text: dependency_text.to_string(),
+                },
+            },
+        );
+        assert!(!opened.is_dependency);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    fetched_at: "2026-04-23T00:01:00Z".to_string(),
+                    ..artifact
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("refresh dependency artifact");
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let refreshed = snapshot_for_uri(&state, &dependency_uri).expect("refreshed dependency");
+        assert!(!refreshed.is_dependency);
+        assert_eq!(refreshed.version, 7);
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), refreshed.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("zty_missing")),
+            "{diagnostics:#?}"
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -13788,6 +15027,71 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
+    fn workspace_remote_dependency_batch_skips_unparented_closed_dependency_sources() {
+        let workspace_path = temp_workspace_path("unparented_closed_dependency_batch");
+        let export_root = temp_workspace_path("unparented_closed_dependency_batch_export");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::create_dir_all(&export_root).expect("export root");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(workspace_path.join("main.abap"), "REPORT zmain.\n").expect("main");
+        fs::write(
+            workspace_path.join("main.abap.abapls-unit.toml"),
+            format!(
+                "[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("sidecar");
+        let workspace_uri = path_to_file_uri(&workspace_path);
+
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_UNPARENTED".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_unparented".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Unparented cached class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_unparented DEFINITION.\n  PUBLIC SECTION.\n    METHODS missing.\nENDCLASS.\nCLASS zcl_unparented IMPLEMENTATION.\n  METHOD missing.\n    DATA lo_inner TYPE REF TO zcl_inner.\n  ENDMETHOD.\nENDCLASS.\n".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+
+        assert!(
+            build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
+            "unparented closed cached dependencies should not fan out background remote waves"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
     fn dependency_batch_cache_reuses_closed_dependency_candidate_projection() {
         let workspace_path = temp_workspace_path("dependency_batch_candidate_cache");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
@@ -13882,6 +15186,65 @@ dependency_mode = "remote-on-demand"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn hydration_clears_local_export_chain_candidate_cache() {
+        let mut workspace = WorkspaceState::new("file:///workspace");
+        workspace.local_export_chain_candidates.insert(
+            "stale".to_string(),
+            vec![RemoteDependencyCandidate {
+                name: "zcached".to_string(),
+                kind: "type".to_string(),
+            }],
+        );
+        workspace
+            .local_export_chain_refresh_candidates
+            .insert("stale".to_string(), Vec::new());
+
+        let hydrated = hydrate_workspace_dependency_documents(&mut workspace);
+
+        assert!(hydrated.is_empty());
+        assert!(workspace.local_export_chain_candidates.is_empty());
+        assert!(workspace.local_export_chain_refresh_candidates.is_empty());
+        assert!(workspace.dependency_store_hydration_metrics.is_some());
+    }
+
+    #[test]
+    fn dependency_workspace_batch_reuses_full_text_candidate_cache() {
+        clear_local_export_dependency_candidate_cache_for_tests();
+        let uri = Arc::<str>::from("file:///dependency.abap");
+        let object_name = Some(Arc::<str>::from("zcl_cached_dep"));
+        let text = "CLASS zcl_cached_dep DEFINITION.\nENDCLASS.\nCLASS zcl_cached_dep IMPLEMENTATION.\nENDCLASS.\n";
+        let cached_candidate = RemoteDependencyCandidate {
+            name: "zfrom_cache".to_string(),
+            kind: "type".to_string(),
+        };
+        let document = WorkspaceDocument {
+            uri: Arc::clone(&uri),
+            version: 1,
+            text: text.to_string(),
+            is_dependency: true,
+            object_name: object_name.clone(),
+        };
+        store_local_export_dependency_candidates(&document, vec![cached_candidate.clone()]);
+
+        let snapshot = DocumentStore::default().publish_input(DocumentInput {
+            uri,
+            version: 1,
+            text: Arc::from(text),
+            is_dependency: true,
+            object_name,
+        });
+        let candidates =
+            collect_remote_dependency_candidates_for_workspace_batch(snapshot.as_ref());
+
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate == &cached_candidate),
+            "{candidates:#?}"
+        );
     }
 
     #[test]

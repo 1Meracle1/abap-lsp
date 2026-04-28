@@ -31,6 +31,24 @@ if /I "%MODE%"=="release" (
   cargo run -p abap_cli --example perf_baseline --%CARGO_ARGS%
 )
 
+set PERF_CORPUS=%CD%\examples\perf_corpus
+set LOCAL_EXPORT_WORKSPACE=%PERF_CORPUS%\local-export-workspace
+set LOCAL_EXPORT_TARGET=%LOCAL_EXPORT_WORKSPACE%\src\ZPERF_LOCAL_DRIVER.abap
+
+echo workspace_analysis_perf_local_export_corpus
+if /I "%MODE%"=="release" (
+  cargo run -p abap_cache --example workspace_analysis_perf --release -- --workspace "%LOCAL_EXPORT_WORKSPACE%" --target "%LOCAL_EXPORT_TARGET%"
+) else (
+  cargo run -p abap_cache --example workspace_analysis_perf -- --workspace "%LOCAL_EXPORT_WORKSPACE%" --target "%LOCAL_EXPORT_TARGET%"
+)
+
+echo workspace_local_export_perf_corpus
+if /I "%MODE%"=="release" (
+  cargo run -p abap_lsp --example workspace_local_export_perf --release -- --workspace "%LOCAL_EXPORT_WORKSPACE%" --target "%LOCAL_EXPORT_TARGET%"
+) else (
+  cargo run -p abap_lsp --example workspace_local_export_perf -- --workspace "%LOCAL_EXPORT_WORKSPACE%" --target "%LOCAL_EXPORT_TARGET%"
+)
+
 if defined ABAP_PERF_SAMPLE (
   if exist "%ABAP_PERF_SAMPLE%" (
     echo large_file_phase_breakdown

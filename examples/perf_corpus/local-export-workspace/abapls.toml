@@ -1,0 +1,16 @@
+version = 1
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[dependency_store]
+product_version = "synthetic"
+default_package_version = "001"
+
+[[unit]]
+name = "ZPERF_LOCAL_DRIVER"
+kind = "report"
+root_file = "src/ZPERF_LOCAL_DRIVER.abap"

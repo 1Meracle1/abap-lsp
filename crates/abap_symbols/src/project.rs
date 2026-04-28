@@ -85,6 +85,8 @@ pub(crate) struct ProjectUpdateMetrics {
     pub(crate) full_rebuild: bool,
     pub(crate) unit_count: usize,
     pub(crate) dirty_unit_count: usize,
+    pub(crate) diagnostic_scope_unit_count: usize,
+    pub(crate) validation_unit_count: usize,
     pub(crate) scope_index_clone_micros: u128,
     pub(crate) build_workspace_index_micros: u128,
     pub(crate) compute_dirty_set_micros: u128,
@@ -846,6 +848,69 @@ fn dirty_set_for_all_units(local_units: &[LocallyResolvedUnit]) -> DirtySet {
     dirty
 }
 
+fn include_closure_for_unit_ids(
+    units: &[UnitAnalysis],
+    roots: &HashSet<UnitId>,
+) -> HashSet<UnitId> {
+    let mut out = HashSet::new();
+    for &root in roots {
+        collect_include_closure_for_unit_id(units, root, &mut out);
+    }
+    out
+}
+
+fn collect_include_closure_for_unit_id(
+    units: &[UnitAnalysis],
+    unit_id: UnitId,
+    out: &mut HashSet<UnitId>,
+) {
+    if units.get(unit_id.as_usize()).is_none() || !out.insert(unit_id) {
+        return;
+    }
+    for target in units[unit_id.as_usize()]
+        .include_edges
+        .iter()
+        .filter_map(|edge| edge.target)
+    {
+        collect_include_closure_for_unit_id(units, target, out);
+    }
+}
+
+fn diagnostic_scope_for_units(
+    units: &[UnitAnalysis],
+    diagnostic_scope_roots: Option<&HashSet<UnitId>>,
+) -> Option<HashSet<UnitId>> {
+    diagnostic_scope_roots.map(|roots| include_closure_for_unit_ids(units, roots))
+}
+
+fn validation_unit_ids_for_dirty_set(
+    dirty_unit_ids: &HashSet<UnitId>,
+    diagnostic_scope_unit_ids: Option<&HashSet<UnitId>>,
+) -> HashSet<UnitId> {
+    match diagnostic_scope_unit_ids {
+        Some(scope) => dirty_unit_ids
+            .iter()
+            .copied()
+            .filter(|unit_id| scope.contains(unit_id))
+            .collect(),
+        None => dirty_unit_ids.clone(),
+    }
+}
+
+fn clear_diagnostics_outside_scope(
+    units: &mut [UnitAnalysis],
+    diagnostic_scope_unit_ids: Option<&HashSet<UnitId>>,
+) {
+    let Some(scope) = diagnostic_scope_unit_ids else {
+        return;
+    };
+    for unit in units {
+        if !scope.contains(&unit.unit_id) {
+            unit.diagnostics.clear();
+        }
+    }
+}
+
 fn include_component_dirty_set(
     local_units: &[LocallyResolvedUnit],
     workspace_index: &WorkspaceIndex,
@@ -999,6 +1064,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     local_units: Vec<LocallyResolvedUnit>,
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
+    diagnostic_scope_roots: Option<&HashSet<UnitId>>,
 ) -> IncrementalProjectAnalysisResult {
     let mut metrics = ProjectUpdateMetrics {
         unit_count: local_units.len(),
@@ -1034,7 +1100,11 @@ pub(crate) fn analyze_project_incremental_from_locals(
         metrics.full_rebuild = true;
         let dirty_set = dirty_set_for_all_units(&local_units);
         metrics.dirty_unit_count = dirty_set.unit_ids.len();
-        let (project, full_metrics) = analyze_project_from_local_units_profiled(local_units);
+        let (project, full_metrics) =
+            analyze_project_from_local_units_profiled_with_diagnostic_scope(
+                local_units,
+                diagnostic_scope_roots,
+            );
         metrics.resolve_include_edges_micros = full_metrics.resolve_include_edges_micros;
         metrics.resolve_cross_unit_micros = full_metrics.resolve_cross_unit_micros;
         metrics.infer_semantic_facts_micros = full_metrics.infer_semantic_facts_micros;
@@ -1042,6 +1112,8 @@ pub(crate) fn analyze_project_incremental_from_locals(
         metrics.validate_micros = full_metrics.validate_micros;
         metrics.collect_project_diagnostics_micros =
             full_metrics.collect_project_diagnostics_micros;
+        metrics.diagnostic_scope_unit_count = full_metrics.diagnostic_scope_unit_count;
+        metrics.validation_unit_count = full_metrics.validation_unit_count;
         return IncrementalProjectAnalysisResult {
             project,
             dirty_set,
@@ -1084,13 +1156,22 @@ pub(crate) fn analyze_project_incremental_from_locals(
         provided_name_to_unit: workspace_index.provided_name_to_unit.clone(),
         diagnostics: Vec::new(),
     };
+    let diagnostic_scope_unit_ids =
+        diagnostic_scope_for_units(&project.units, diagnostic_scope_roots);
+    metrics.diagnostic_scope_unit_count = diagnostic_scope_unit_ids
+        .as_ref()
+        .map_or(project.units.len(), HashSet::len);
+    let validation_unit_ids =
+        validation_unit_ids_for_dirty_set(&dirty_set.unit_ids, diagnostic_scope_unit_ids.as_ref());
+    metrics.validation_unit_count = validation_unit_ids.len();
     let validate_timer = std::time::Instant::now();
     validate_project_with_scope_indexes_for_units(
         &mut project,
         &scope_indexes,
-        &dirty_set.unit_ids,
+        &validation_unit_ids,
     );
     metrics.validate_micros = validate_timer.elapsed().as_micros();
+    clear_diagnostics_outside_scope(&mut project.units, diagnostic_scope_unit_ids.as_ref());
     let collect_project_diagnostics_timer = std::time::Instant::now();
     collect_project_diagnostics(&mut project);
     metrics.collect_project_diagnostics_micros =
@@ -1109,6 +1190,13 @@ fn analyze_project_from_local_units(local_units: Vec<LocallyResolvedUnit>) -> Pr
 
 fn analyze_project_from_local_units_profiled(
     local_units: Vec<LocallyResolvedUnit>,
+) -> (ProjectAnalysis, ProjectUpdateMetrics) {
+    analyze_project_from_local_units_profiled_with_diagnostic_scope(local_units, None)
+}
+
+fn analyze_project_from_local_units_profiled_with_diagnostic_scope(
+    local_units: Vec<LocallyResolvedUnit>,
+    diagnostic_scope_roots: Option<&HashSet<UnitId>>,
 ) -> (ProjectAnalysis, ProjectUpdateMetrics) {
     let workspace_index = build_workspace_index(&local_units);
     let scope_indexes: Vec<_> = local_units
@@ -1147,9 +1235,22 @@ fn analyze_project_from_local_units_profiled(
         provided_name_to_unit: workspace_index.provided_name_to_unit,
         diagnostics: Vec::new(),
     };
+    let diagnostic_scope_unit_ids =
+        diagnostic_scope_for_units(&project.units, diagnostic_scope_roots);
+    metrics.diagnostic_scope_unit_count = diagnostic_scope_unit_ids
+        .as_ref()
+        .map_or(project.units.len(), HashSet::len);
+    let validation_unit_ids =
+        validation_unit_ids_for_dirty_set(&dirty_unit_ids, diagnostic_scope_unit_ids.as_ref());
+    metrics.validation_unit_count = validation_unit_ids.len();
     let validate_timer = std::time::Instant::now();
-    validate_project_with_scope_indexes(&mut project, &scope_indexes);
+    validate_project_with_scope_indexes_for_units(
+        &mut project,
+        &scope_indexes,
+        &validation_unit_ids,
+    );
     metrics.validate_micros = validate_timer.elapsed().as_micros();
+    clear_diagnostics_outside_scope(&mut project.units, diagnostic_scope_unit_ids.as_ref());
     let collect_project_diagnostics_timer = std::time::Instant::now();
     collect_project_diagnostics(&mut project);
     metrics.collect_project_diagnostics_micros =

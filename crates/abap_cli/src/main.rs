@@ -37,7 +37,7 @@ use abap_cache::{
 };
 use abap_lexer::tokenize;
 use abap_lsp::{
-    RemoteDependencyCandidate, collect_remote_dependency_candidates,
+    RemoteDependencyCandidate, collect_remote_dependency_candidates, normalize_lsp_uri,
     replace_all_workspace_documents_with_local_exports_for_build_plan,
 };
 use abap_parser::parse;
@@ -1478,10 +1478,11 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         .iter()
         .filter(|document| !document.is_dependency)
     {
+        let source_uri = normalize_lsp_uri(document.uri.as_ref());
         let roots = source_local_export_roots(&workspace.root_path, document.uri.as_ref());
         let per_source = collect_transitive_remote_candidates_for_source(
             &snapshots,
-            document.uri.as_ref(),
+            &source_uri,
             &roots,
             &mut local_export_resolver,
         );
@@ -1546,7 +1547,7 @@ fn collect_transitive_remote_candidates_for_source(
             if let Some(document) =
                 resolve_candidate_from_local_export_roots(&candidate, roots, resolver)
             {
-                let dependency_uri = document.uri.to_string();
+                let dependency_uri = normalize_lsp_uri(document.uri.as_ref());
                 if visited_uris.insert(dependency_uri.clone())
                     && snapshots.get(dependency_uri.as_str()).is_some()
                 {
@@ -1592,10 +1593,10 @@ fn enqueue_resolved_local_export_dependency_uris_for_cli(
         let Some(resolved_unit) = snapshot.project.units.get(handle.unit.as_usize()) else {
             continue;
         };
-        if resolved_unit.uri.as_ref() != document.uri.as_ref() {
+        let dependency_uri = normalize_lsp_uri(document.uri.as_ref());
+        if resolved_unit.uri.as_ref() != dependency_uri {
             continue;
         }
-        let dependency_uri = document.uri.to_string();
         if dependency_uri != snapshot.uri.as_ref() && visited_uris.insert(dependency_uri.clone()) {
             queue.push_back(dependency_uri);
         }
@@ -3707,8 +3708,9 @@ fn load_all_files_lint_report(
         .iter()
         .filter(|document| !document.is_dependency)
     {
+        let snapshot_uri = normalize_lsp_uri(document.uri.as_ref());
         let snapshot = snapshots
-            .get(document.uri.as_ref())
+            .get(snapshot_uri.as_str())
             .cloned()
             .ok_or_else(|| format!("workspace lint analysis did not include {}", document.uri))?;
         let hard_errors = lint_hard_errors(snapshot.as_ref());
@@ -3762,6 +3764,7 @@ fn load_call_graph_snapshot(
     };
 
     let target_uri = path_to_file_uri(&target_path);
+    let snapshot_target_uri = normalize_lsp_uri(&target_uri);
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
@@ -3769,7 +3772,7 @@ fn load_call_graph_snapshot(
 
     if !documents
         .iter()
-        .any(|document| document.uri.as_ref() == target_uri)
+        .any(|document| normalize_lsp_uri(document.uri.as_ref()) == snapshot_target_uri)
     {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
@@ -3802,18 +3805,22 @@ fn load_call_graph_snapshot(
         build_plan,
         None,
     );
-    snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
-        format!(
-            "workspace call graph did not include {}",
-            target_path.display()
-        )
-    })
+    snapshots
+        .get(snapshot_target_uri.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "workspace call graph did not include {}",
+                target_path.display()
+            )
+        })
 }
 
 fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, String> {
     let target_path = resolve_target_path(path)?
         .ok_or_else(|| "--with-project requires a file path".to_string())?;
     let target_uri = path_to_file_uri(&target_path);
+    let snapshot_target_uri = normalize_lsp_uri(&target_uri);
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
@@ -3822,7 +3829,7 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
 
     if !documents
         .iter()
-        .any(|document| document.uri.as_ref() == target_uri)
+        .any(|document| normalize_lsp_uri(document.uri.as_ref()) == snapshot_target_uri)
     {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
@@ -3855,12 +3862,15 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
         SnapshotBuildPlan::SEMANTIC_DOSSIER,
         None,
     );
-    let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
-        format!(
-            "workspace analysis did not include {}",
-            target_path.display()
-        )
-    })?;
+    let snapshot = snapshots
+        .get(snapshot_target_uri.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "workspace analysis did not include {}",
+                target_path.display()
+            )
+        })?;
     let dependency_unit_count = snapshots
         .values()
         .filter(|snapshot| snapshot.is_dependency)
@@ -3888,6 +3898,7 @@ fn load_project_lint_snapshot(
     let target_path = resolve_target_path(path)?
         .ok_or_else(|| "--with-project requires a file path".to_string())?;
     let target_uri = path_to_file_uri(&target_path);
+    let snapshot_target_uri = normalize_lsp_uri(&target_uri);
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
@@ -3896,7 +3907,7 @@ fn load_project_lint_snapshot(
 
     if !documents
         .iter()
-        .any(|document| document.uri.as_ref() == target_uri)
+        .any(|document| normalize_lsp_uri(document.uri.as_ref()) == snapshot_target_uri)
     {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
@@ -3930,12 +3941,15 @@ fn load_project_lint_snapshot(
         SnapshotBuildPlan::SEMANTIC_DOSSIER,
         None,
     );
-    let snapshot = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
-        format!(
-            "workspace lint analysis did not include {}",
-            target_path.display()
-        )
-    })?;
+    let snapshot = snapshots
+        .get(snapshot_target_uri.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "workspace lint analysis did not include {}",
+                target_path.display()
+            )
+        })?;
     let dependency_unit_count = snapshots
         .values()
         .filter(|snapshot| snapshot.is_dependency)
@@ -4030,6 +4044,7 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
     };
 
     let target_uri = path_to_file_uri(&target_path);
+    let snapshot_target_uri = normalize_lsp_uri(&target_uri);
     let workspace_root = find_workspace_root(&target_path)?;
     let workspace_root_uri = path_to_file_uri(&workspace_root);
     let workspace = load_workspace_documents(&workspace_root_uri, &HashMap::new());
@@ -4037,7 +4052,7 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
 
     if !documents
         .iter()
-        .any(|document| document.uri.as_ref() == target_uri)
+        .any(|document| normalize_lsp_uri(document.uri.as_ref()) == snapshot_target_uri)
     {
         let source = std::fs::read_to_string(&target_path)
             .map_err(|e| format!("{}: {e}", target_path.display()))?;
@@ -4070,12 +4085,15 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
         SnapshotBuildPlan::EFFECTIVE_SOURCE,
         None,
     );
-    let root = snapshots.get(target_uri.as_str()).cloned().ok_or_else(|| {
-        format!(
-            "workspace expansion did not include {}",
-            target_path.display()
-        )
-    })?;
+    let root = snapshots
+        .get(snapshot_target_uri.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "workspace expansion did not include {}",
+                target_path.display()
+            )
+        })?;
 
     Ok(ExpandSnapshotSet { root, snapshots })
 }

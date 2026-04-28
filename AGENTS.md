@@ -1,5 +1,20 @@
 # Repository Guidelines
 
+## Top Priority Convention
+
+This section has priority over every other convention in this file.
+
+- Simplicity first: write the minimum code that solves the problem. Nothing
+  speculative.
+- Implement only what was asked. No features beyond the request.
+- Do not add abstractions for single-use code.
+- Do not add flexibility or configurability that was not requested.
+- Do not add error handling for impossible scenarios.
+- If you write 20 lines and it could be 5, rewrite it.
+- Minimize code size aggressively: no pessimization, no bloat, no excess.
+- Write compact, simple, clean, deeply thought-through code from first
+  principles that surgically executes the intention.
+
 ## Project Structure & Module Organization
 This repository is a Rust workspace rooted at `Cargo.toml`. Core crates live under `crates/`, with `abap_lsp_server` as the default binary and supporting libraries such as `abap_parser`, `abap_symbols`, and `abap_lsp` split by responsibility. Shared examples live in `examples/*.abap`, design and architecture notes in `docs/`, and the editor client in `editors/vscode/`. Keep dependency flow one-way: lower layers (`abap_jsonrpc`, `abap_lexer`, `abap_ast`) must not depend on higher layers such as `abap_cache`, `abap_lsp`, or `abap_lsp_server`.
 

@@ -9,9 +9,11 @@ use abap_cache::{
     load_workspace_documents, manifest_document_metadata, path_to_file_uri,
 };
 use abap_lsp::{
-    replace_all_workspace_documents_with_local_exports,
-    replace_all_workspace_documents_with_local_exports_for_build_plan,
+    LocalExportDependencyClosureProfile,
+    replace_all_workspace_documents_with_local_exports_for_build_plan_profiled,
 };
+
+const TOP_N: usize = 10;
 
 struct Config {
     workspace_root: PathBuf,
@@ -62,12 +64,14 @@ fn run() -> Result<(), String> {
 
     let local_export_store = DocumentStore::default();
     let local_export_cold_start = Instant::now();
-    let local_export_cold_snapshots = replace_all_workspace_documents_with_local_exports(
-        &local_export_store,
-        &workspace.root_path,
-        &documents,
-        None,
-    );
+    let (local_export_cold_snapshots, local_export_cold_profile) =
+        replace_all_workspace_documents_with_local_exports_for_build_plan_profiled(
+            &local_export_store,
+            &workspace.root_path,
+            &documents,
+            SnapshotBuildPlan::FULL,
+            None,
+        );
     let local_export_cold_elapsed = local_export_cold_start.elapsed();
     let local_export_cold_metrics = local_export_store
         .last_analysis_metrics_snapshot()
@@ -75,12 +79,14 @@ fn run() -> Result<(), String> {
 
     let local_export_warm_store = DocumentStore::default();
     let local_export_warm_start = Instant::now();
-    let local_export_warm_snapshots = replace_all_workspace_documents_with_local_exports(
-        &local_export_warm_store,
-        &workspace.root_path,
-        &documents,
-        None,
-    );
+    let (local_export_warm_snapshots, local_export_warm_profile) =
+        replace_all_workspace_documents_with_local_exports_for_build_plan_profiled(
+            &local_export_warm_store,
+            &workspace.root_path,
+            &documents,
+            SnapshotBuildPlan::FULL,
+            None,
+        );
     let local_export_warm_elapsed = local_export_warm_start.elapsed();
     let local_export_warm_metrics = local_export_warm_store
         .last_analysis_metrics_snapshot()
@@ -88,8 +94,8 @@ fn run() -> Result<(), String> {
 
     let editor_workspace_store = DocumentStore::default();
     let editor_workspace_start = Instant::now();
-    let editor_workspace_snapshots =
-        replace_all_workspace_documents_with_local_exports_for_build_plan(
+    let (editor_workspace_snapshots, editor_workspace_profile) =
+        replace_all_workspace_documents_with_local_exports_for_build_plan_profiled(
             &editor_workspace_store,
             &workspace.root_path,
             &documents,
@@ -163,6 +169,7 @@ fn run() -> Result<(), String> {
                 snapshot.project.units.len()
             }),
     );
+    print_closure_profile("local_export_cold", &local_export_cold_profile, TOP_N);
     print_result(
         "local_export_warm",
         local_export_warm_elapsed,
@@ -178,6 +185,7 @@ fn run() -> Result<(), String> {
                 snapshot.project.units.len()
             }),
     );
+    print_closure_profile("local_export_warm", &local_export_warm_profile, TOP_N);
     print_result(
         "editor_workspace",
         editor_workspace_elapsed,
@@ -193,6 +201,7 @@ fn run() -> Result<(), String> {
                 snapshot.project.units.len()
             }),
     );
+    print_closure_profile("editor_workspace", &editor_workspace_profile, TOP_N);
 
     Ok(())
 }
@@ -291,6 +300,14 @@ fn print_result(
     println!("{label}_full_rebuild={}", metrics.full_rebuild);
     println!("{label}_dirty_unit_count={}", metrics.dirty_unit_count);
     println!(
+        "{label}_diagnostic_scope_unit_count={}",
+        metrics.diagnostic_scope_unit_count
+    );
+    println!(
+        "{label}_validation_unit_count={}",
+        metrics.validation_unit_count
+    );
+    println!(
         "{label}_resolve_cross_unit={:?}",
         std::time::Duration::from_micros(metrics.resolve_cross_unit_micros as u64)
     );
@@ -302,6 +319,140 @@ fn print_result(
         "{label}_validate={:?}",
         std::time::Duration::from_micros(metrics.validate_micros as u64)
     );
+}
+
+fn print_closure_profile(label: &str, profile: &LocalExportDependencyClosureProfile, top_n: usize) {
+    let resolver = &profile.local_export_resolve;
+    println!(
+        "{label}_local_export_closure_total={:?}",
+        profile.total_elapsed
+    );
+    println!("{label}_local_export_closure_waves={}", profile.waves);
+    println!(
+        "{label}_local_export_closure_queue_iterations={}",
+        profile.queue_iterations
+    );
+    println!(
+        "{label}_local_export_documents_examined_for_candidates={}",
+        profile.documents_examined_for_candidates
+    );
+    println!(
+        "{label}_local_export_remote_dependency_candidates_produced={}",
+        profile.remote_dependency_candidates_produced
+    );
+    println!(
+        "{label}_local_export_candidate_cache_hits={}",
+        profile.candidate_cache_hits
+    );
+    println!(
+        "{label}_local_export_candidate_cache_misses={}",
+        profile.candidate_cache_misses
+    );
+    println!(
+        "{label}_local_export_unique_candidate_resolution_attempts={}",
+        profile.unique_candidate_resolution_attempts
+    );
+    println!(
+        "{label}_local_export_resolution_cache_hits={}",
+        profile.resolution_cache_hits
+    );
+    println!(
+        "{label}_local_export_resolution_cache_misses={}",
+        profile.resolution_cache_misses
+    );
+    println!(
+        "{label}_local_export_resolver_index_builds={}",
+        resolver.index_build_count
+    );
+    println!(
+        "{label}_local_export_resolver_index_build_time={:?}",
+        resolver.index_build_time
+    );
+    println!(
+        "{label}_local_export_resolver_index_refreshes={}",
+        resolver.index_refresh_count
+    );
+    println!(
+        "{label}_local_export_resolver_index_refresh_time={:?}",
+        resolver.index_refresh_time
+    );
+    println!(
+        "{label}_local_export_resolver_index_hits={}",
+        resolver.resolver_index_hits
+    );
+    println!(
+        "{label}_local_export_shared_index_cache_hits={}",
+        resolver.shared_index_cache_hits
+    );
+    println!(
+        "{label}_local_export_document_reads={}",
+        resolver.document_read_count
+    );
+    println!(
+        "{label}_local_export_document_read_cache_hits={}",
+        resolver.document_read_cache_hits
+    );
+    println!(
+        "{label}_local_export_document_read_time={:?}",
+        resolver.document_read_time
+    );
+    println!(
+        "{label}_local_export_document_read_bytes={}",
+        resolver.document_read_bytes
+    );
+    println!(
+        "{label}_local_export_candidate_collection_wall={:?}",
+        profile.candidate_collection_time
+    );
+    println!(
+        "{label}_local_export_candidate_parse_analyze_time={:?}",
+        profile.candidate_parse_analyze_time
+    );
+    println!(
+        "{label}_local_export_added_dependency_documents={}",
+        profile.added_dependency_documents
+    );
+
+    let mut slow_documents = profile.candidate_documents.clone();
+    slow_documents.sort_by(|left, right| right.elapsed.cmp(&left.elapsed));
+    for (idx, document) in slow_documents.into_iter().take(top_n).enumerate() {
+        let rank = idx + 1;
+        println!(
+            "{label}_local_export_top_candidate_{rank}=elapsed={:?},parse_analyze={:?},candidates={},cache_hit={},dependency={},bytes={},uri={}",
+            document.elapsed,
+            document.parse_analyze_time,
+            document.candidate_count,
+            document.cache_hit,
+            document.is_dependency,
+            document.text_len,
+            document.uri
+        );
+    }
+
+    let mut slow_waves = profile.wave_profiles.clone();
+    slow_waves.sort_by(|left, right| right.elapsed.cmp(&left.elapsed));
+    for (idx, wave) in slow_waves.into_iter().take(top_n).enumerate() {
+        let rank = idx + 1;
+        println!(
+            "{label}_local_export_top_wave_{rank}=index={},elapsed={:?},batch_documents={},candidates={},candidate_cache_hits={},candidate_cache_misses={},attempts={},cache_hits={},cache_misses={},added={},candidate_wall={:?},candidate_parse_analyze={:?},index_build={:?},index_refresh={:?},document_read={:?},document_read_cache_hits={}",
+            wave.index,
+            wave.elapsed,
+            wave.batch_documents,
+            wave.candidates_produced,
+            wave.candidate_cache_hits,
+            wave.candidate_cache_misses,
+            wave.unique_candidate_resolution_attempts,
+            wave.resolution_cache_hits,
+            wave.resolution_cache_misses,
+            wave.added_dependency_documents,
+            wave.candidate_collection_time,
+            wave.candidate_parse_analyze_time,
+            wave.local_export_resolve.index_build_time,
+            wave.local_export_resolve.index_refresh_time,
+            wave.local_export_resolve.document_read_time,
+            wave.local_export_resolve.document_read_cache_hits
+        );
+    }
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Config, String> {
