@@ -881,6 +881,25 @@ pub fn is_remote_lookup_candidate_after_local_resolution(name: &str, kind: &str)
     }
 }
 
+pub fn local_export_candidate_kind_for_reference(
+    kind: abap_symbols::ReferenceKind,
+    namespace: abap_symbols::Namespace,
+) -> Option<&'static str> {
+    match kind {
+        abap_symbols::ReferenceKind::Include => Some("include"),
+        abap_symbols::ReferenceKind::StaticTarget => Some("static"),
+        abap_symbols::ReferenceKind::TypeRef => Some("type"),
+        abap_symbols::ReferenceKind::StructuredDeclEnd => None,
+        abap_symbols::ReferenceKind::MessageClass => Some("message-class"),
+        abap_symbols::ReferenceKind::RoutineCall
+            if namespace == abap_symbols::Namespace::Routine =>
+        {
+            Some("function")
+        }
+        abap_symbols::ReferenceKind::Identifier | abap_symbols::ReferenceKind::RoutineCall => None,
+    }
+}
+
 fn is_standard_remote_type_like_name(name: &str) -> bool {
     if name.starts_with('/') {
         return true;

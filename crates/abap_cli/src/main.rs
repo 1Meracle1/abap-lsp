@@ -32,8 +32,9 @@ use abap_cache::{
     CallDataflowProvenanceGraph, CallDataflowQuery, CallDataflowSelectedCall, CallDataflowTrace,
     CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource, LintDiagnostic,
     LintLevel, LintPolicy, LocalExportResolver, SnapshotBuildPlan, build_call_dataflow_trace,
-    build_effective_source, file_uri_to_path, load_workspace_documents, manifest_document_metadata,
-    path_to_file_uri, resolve_local_export_dependency_document,
+    build_effective_source, file_uri_to_path, load_workspace_documents,
+    local_export_candidate_kind_for_reference, local_export_config_for_source,
+    manifest_document_metadata, path_to_file_uri, resolve_local_export_dependency_document,
 };
 use abap_lexer::tokenize;
 use abap_lsp::{
@@ -47,7 +48,6 @@ use abap_symbols::{
     build_semantic_dossier,
 };
 use serde_json::{Value, json};
-use toml::Value as TomlValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -1479,7 +1479,8 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         .filter(|document| !document.is_dependency)
     {
         let source_uri = normalize_lsp_uri(document.uri.as_ref());
-        let roots = source_local_export_roots(&workspace.root_path, document.uri.as_ref());
+        let roots =
+            local_export_config_for_source(&workspace.root_path, document.uri.as_ref()).roots;
         let per_source = collect_transitive_remote_candidates_for_source(
             &snapshots,
             &source_uri,
@@ -1505,20 +1506,6 @@ fn load_remote_candidate_workspace(path: Option<&str>) -> Result<RemoteCandidate
         source_candidates,
         candidates,
     })
-}
-
-fn source_local_export_roots(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let mut seen = HashSet::new();
-    for sidecar_path in source_unit_sidecar_paths(workspace_root, source_uri) {
-        for root in read_unit_sidecar_local_roots(&sidecar_path) {
-            let key = normalized_local_export_path_key(&root);
-            if seen.insert(key) {
-                roots.push(root);
-            }
-        }
-    }
-    roots
 }
 
 fn collect_transitive_remote_candidates_for_source(
@@ -1603,114 +1590,6 @@ fn enqueue_resolved_local_export_dependency_uris_for_cli(
     }
 }
 
-fn local_export_candidate_kind_for_reference(
-    kind: abap_symbols::ReferenceKind,
-    namespace: abap_symbols::Namespace,
-) -> Option<&'static str> {
-    match kind {
-        abap_symbols::ReferenceKind::Include => Some("include"),
-        abap_symbols::ReferenceKind::StaticTarget => Some("static"),
-        abap_symbols::ReferenceKind::TypeRef => Some("type"),
-        abap_symbols::ReferenceKind::StructuredDeclEnd => None,
-        abap_symbols::ReferenceKind::MessageClass => Some("message-class"),
-        abap_symbols::ReferenceKind::RoutineCall
-            if namespace == abap_symbols::Namespace::Routine =>
-        {
-            Some("function")
-        }
-        abap_symbols::ReferenceKind::Identifier | abap_symbols::ReferenceKind::RoutineCall => None,
-    }
-}
-
-fn source_unit_sidecar_paths(workspace_root: &Path, source_uri: &str) -> Vec<PathBuf> {
-    let Some(source_path) = file_uri_to_path(source_uri) else {
-        return Vec::new();
-    };
-    if !source_path.starts_with(workspace_root) {
-        return Vec::new();
-    }
-
-    let mut sidecar_paths = Vec::new();
-    let mut seen = HashSet::new();
-
-    if let Some(file_name) = source_path.file_name().and_then(|value| value.to_str()) {
-        let sibling = source_path.with_file_name(format!("{file_name}.abapls-unit.toml"));
-        push_sidecar_path_if_exists(&mut sidecar_paths, &mut seen, sibling);
-    }
-
-    let mut current_dir = source_path.parent();
-    while let Some(dir) = current_dir {
-        if !dir.starts_with(workspace_root) {
-            break;
-        }
-        push_sidecar_path_if_exists(&mut sidecar_paths, &mut seen, dir.join("abapls-unit.toml"));
-        if dir == workspace_root {
-            break;
-        }
-        current_dir = dir.parent();
-    }
-
-    sidecar_paths
-}
-
-fn push_sidecar_path_if_exists(
-    sidecar_paths: &mut Vec<PathBuf>,
-    seen: &mut HashSet<String>,
-    path: PathBuf,
-) {
-    if !path.is_file() {
-        return;
-    }
-    let key = normalized_local_export_path_key(&path);
-    if seen.insert(key) {
-        sidecar_paths.push(path);
-    }
-}
-
-fn read_unit_sidecar_local_roots(sidecar_path: &Path) -> Vec<PathBuf> {
-    let text = match fs::read_to_string(sidecar_path) {
-        Ok(text) => text,
-        Err(_) => return Vec::new(),
-    };
-    let value: TomlValue = match toml::from_str(&text) {
-        Ok(value) => value,
-        Err(_) => return Vec::new(),
-    };
-    let roots = match value
-        .get("local_export")
-        .and_then(TomlValue::as_table)
-        .and_then(|table| table.get("roots"))
-        .and_then(TomlValue::as_array)
-    {
-        Some(roots) => roots,
-        None => return Vec::new(),
-    };
-
-    let mut resolved = Vec::new();
-    let mut seen = HashSet::new();
-    let base_dir = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
-    for root in roots.iter().filter_map(TomlValue::as_str) {
-        let root = root.trim();
-        if root.is_empty() {
-            continue;
-        }
-        let path = if Path::new(root).is_absolute() {
-            PathBuf::from(root)
-        } else {
-            base_dir.join(root)
-        };
-        let normalized = match path.canonicalize() {
-            Ok(path) => normalize_windows_path(path),
-            Err(_) => normalize_windows_path(path),
-        };
-        let key = normalized_local_export_path_key(&normalized);
-        if seen.insert(key) {
-            resolved.push(normalized);
-        }
-    }
-    resolved
-}
-
 fn resolve_candidate_from_local_export_roots(
     candidate: &RemoteDependencyCandidate,
     roots: &[PathBuf],
@@ -1726,13 +1605,6 @@ fn resolve_candidate_from_local_export_roots(
         candidate.name.as_str(),
         candidate.kind.as_str(),
     )
-}
-
-fn normalized_local_export_path_key(path: &Path) -> String {
-    normalize_windows_path(path.to_path_buf())
-        .to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase()
 }
 
 fn insert_remote_candidate(

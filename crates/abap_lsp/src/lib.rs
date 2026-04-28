@@ -21,8 +21,8 @@ use abap_cache::{
     is_remote_lookup_candidate_after_local_resolution, lint_docs_anchor,
     lint_id_for_diagnostic_kind, load_effective_manifest_from_workspace_result,
     load_manifest_diagnostics_from_workspace, load_workspace_documents_with_progress,
-    local_export_config_for_source, manifest_document_metadata,
-    manifest_supports_remote_resolution, path_to_file_uri, registry,
+    local_export_candidate_kind_for_reference, local_export_config_for_source,
+    manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri, registry,
     resolve_local_export_dependency_document, resolve_local_export_dependency_document_profiled,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace,
@@ -4274,23 +4274,6 @@ fn enqueue_resolved_local_export_dependency_uris(
     }
 }
 
-fn local_export_candidate_kind_for_reference(
-    kind: ReferenceKind,
-    namespace: abap_symbols::Namespace,
-) -> Option<&'static str> {
-    match kind {
-        ReferenceKind::Include => Some("include"),
-        ReferenceKind::StaticTarget => Some("static"),
-        ReferenceKind::TypeRef => Some("type"),
-        ReferenceKind::StructuredDeclEnd => None,
-        ReferenceKind::MessageClass => Some("message-class"),
-        ReferenceKind::RoutineCall if namespace == abap_symbols::Namespace::Routine => {
-            Some("function")
-        }
-        ReferenceKind::Identifier | ReferenceKind::RoutineCall => None,
-    }
-}
-
 fn collect_remote_dependency_candidates_for_unit(
     unit: &abap_symbols::UnitAnalysis,
 ) -> Vec<RemoteDependencyCandidate> {
@@ -4315,92 +4298,23 @@ fn collect_remote_dependency_candidates_for_unit(
     }
 
     for reference in semantic.refs().all() {
-        let kind = match reference.kind {
-            ReferenceKind::Include => continue,
-            ReferenceKind::StaticTarget => "static",
-            ReferenceKind::TypeRef => "type",
-            ReferenceKind::StructuredDeclEnd => continue,
-            ReferenceKind::MessageClass => "message-class",
-            ReferenceKind::RoutineCall
-                if reference.namespace == abap_symbols::Namespace::Routine =>
-            {
-                "function"
-            }
-            ReferenceKind::Identifier | ReferenceKind::RoutineCall => "symbol",
-        };
         if !matches!(reference.resolution, None | Some(Resolution::External)) {
             continue;
         }
-        let is_remote_candidate = match reference.kind {
-            ReferenceKind::StaticTarget | ReferenceKind::TypeRef => {
-                is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
-            }
-            ReferenceKind::RoutineCall
-                if reference.namespace == abap_symbols::Namespace::Routine =>
-            {
-                is_remote_lookup_candidate_after_local_resolution(reference.name.as_ref(), kind)
-            }
-            _ => is_remote_lookup_candidate(reference.name.as_ref(), kind),
-        };
-        if !is_remote_candidate {
-            continue;
+        if let Some(candidate) = remote_dependency_candidate_for_reference(reference) {
+            insert_remote_candidate(&mut deduped, candidate);
         }
-        insert_remote_candidate(
-            &mut deduped,
-            RemoteDependencyCandidate {
-                name: reference.name.to_string(),
-                kind: kind.to_string(),
-            },
-        );
     }
 
     for sql_source in &unit.sql_sources {
-        if sql_source.resolution == SqlResolution::External
-            && is_remote_lookup_candidate(sql_source.name.as_ref(), "type")
-        {
-            insert_remote_candidate(
-                &mut deduped,
-                RemoteDependencyCandidate {
-                    name: sql_source.name.to_string(),
-                    kind: "type".to_string(),
-                },
-            );
+        if let Some(candidate) = remote_dependency_candidate_for_sql_source(sql_source) {
+            insert_remote_candidate(&mut deduped, candidate);
         }
     }
 
     for call_site in &unit.call_sites {
-        match &call_site.target {
-            abap_symbols::NamedArgumentTarget::Function { function_name } => {
-                if !is_remote_lookup_candidate_after_local_resolution(
-                    function_name.as_ref(),
-                    "function",
-                ) {
-                    continue;
-                }
-                insert_remote_candidate(
-                    &mut deduped,
-                    RemoteDependencyCandidate {
-                        name: function_name.to_string(),
-                        kind: "function".to_string(),
-                    },
-                );
-            }
-            abap_symbols::NamedArgumentTarget::Report { report_name } => {
-                if !is_remote_lookup_candidate_after_local_resolution(
-                    report_name.as_ref(),
-                    "report",
-                ) {
-                    continue;
-                }
-                insert_remote_candidate(
-                    &mut deduped,
-                    RemoteDependencyCandidate {
-                        name: report_name.to_string(),
-                        kind: "report".to_string(),
-                    },
-                );
-            }
-            _ => {}
+        if let Some(candidate) = remote_dependency_candidate_for_call_site(call_site) {
+            insert_remote_candidate(&mut deduped, candidate);
         }
     }
 
@@ -4461,52 +4375,14 @@ fn collect_remote_dependency_refresh_candidates_for_unit(
     }
 
     for sql_source in &unit.sql_sources {
-        if sql_source.resolution == SqlResolution::External
-            && is_remote_lookup_candidate(sql_source.name.as_ref(), "type")
-        {
-            insert_remote_candidate(
-                &mut deduped,
-                RemoteDependencyCandidate {
-                    name: sql_source.name.to_string(),
-                    kind: "type".to_string(),
-                },
-            );
+        if let Some(candidate) = remote_dependency_candidate_for_sql_source(sql_source) {
+            insert_remote_candidate(&mut deduped, candidate);
         }
     }
 
     for call_site in &unit.call_sites {
-        match &call_site.target {
-            abap_symbols::NamedArgumentTarget::Function { function_name } => {
-                if !is_remote_lookup_candidate_after_local_resolution(
-                    function_name.as_ref(),
-                    "function",
-                ) {
-                    continue;
-                }
-                insert_remote_candidate(
-                    &mut deduped,
-                    RemoteDependencyCandidate {
-                        name: function_name.to_string(),
-                        kind: "function".to_string(),
-                    },
-                );
-            }
-            abap_symbols::NamedArgumentTarget::Report { report_name } => {
-                if !is_remote_lookup_candidate_after_local_resolution(
-                    report_name.as_ref(),
-                    "report",
-                ) {
-                    continue;
-                }
-                insert_remote_candidate(
-                    &mut deduped,
-                    RemoteDependencyCandidate {
-                        name: report_name.to_string(),
-                        kind: "report".to_string(),
-                    },
-                );
-            }
-            _ => {}
+        if let Some(candidate) = remote_dependency_candidate_for_call_site(call_site) {
+            insert_remote_candidate(&mut deduped, candidate);
         }
     }
 
@@ -4542,6 +4418,35 @@ fn remote_dependency_candidate_for_reference(
     Some(RemoteDependencyCandidate {
         name: reference.name.to_string(),
         kind: kind.to_string(),
+    })
+}
+
+fn remote_dependency_candidate_for_sql_source(
+    sql_source: &abap_symbols::SqlSourceData,
+) -> Option<RemoteDependencyCandidate> {
+    (sql_source.resolution == SqlResolution::External
+        && is_remote_lookup_candidate(sql_source.name.as_ref(), "type"))
+    .then(|| RemoteDependencyCandidate {
+        name: sql_source.name.to_string(),
+        kind: "type".to_string(),
+    })
+}
+
+fn remote_dependency_candidate_for_call_site(
+    call_site: &abap_symbols::CallSiteData,
+) -> Option<RemoteDependencyCandidate> {
+    let (name, kind) = match &call_site.target {
+        abap_symbols::NamedArgumentTarget::Function { function_name } => {
+            (function_name, "function")
+        }
+        abap_symbols::NamedArgumentTarget::Report { report_name } => (report_name, "report"),
+        _ => return None,
+    };
+    is_remote_lookup_candidate_after_local_resolution(name.as_ref(), kind).then(|| {
+        RemoteDependencyCandidate {
+            name: name.to_string(),
+            kind: kind.to_string(),
+        }
     })
 }
 
