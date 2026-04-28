@@ -135,6 +135,16 @@ impl<'a> Collector<'a> {
             | SyntaxKind::ComputeStmt
             | SyntaxKind::MultiplyStmt
             | SyntaxKind::DivideStmt => self.stmt_lowering().collect_arithmetic_stmt(node, scope),
+            SyntaxKind::TranslateStmt
+            | SyntaxKind::ShiftStmt
+            | SyntaxKind::CondenseStmt
+            | SyntaxKind::OverlayStmt => {
+                self.stmt_lowering().collect_text_mutation_stmt(node, scope)
+            }
+            SyntaxKind::PackStmt | SyntaxKind::UnpackStmt => {
+                self.stmt_lowering().collect_pack_like_stmt(node, scope)
+            }
+            SyntaxKind::SearchStmt => self.stmt_lowering().collect_search_stmt(node, scope),
             SyntaxKind::UpdateTarget
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt

@@ -1635,6 +1635,7 @@ fn system_field_statement_kind_name(kind: SystemFieldStatementKind) -> &'static 
         SystemFieldStatementKind::ModifyTable => "modify_table",
         SystemFieldStatementKind::ModifyDbTable => "modify_db_table",
         SystemFieldStatementKind::ReadTable => "read_table",
+        SystemFieldStatementKind::Search => "search",
         SystemFieldStatementKind::Select => "select",
         SystemFieldStatementKind::UpdateDbTable => "update_db_table",
         SystemFieldStatementKind::While => "while",

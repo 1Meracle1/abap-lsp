@@ -6212,7 +6212,7 @@ pub fn try_parse_condense_stmt(
                     range: condense_tok.range.start..tokens[period_i].range.end,
                 });
             } else {
-                push_expr_child(
+                push_wrapped_expr_child(
                     b,
                     &mut children,
                     source,
@@ -6220,6 +6220,7 @@ pub fn try_parse_condense_stmt(
                     target_start,
                     expr_end,
                     Some(condense_tok),
+                    SyntaxKind::TextTargetOperand,
                 );
             }
 
@@ -12928,6 +12929,12 @@ CONCATENATE lv_evttime+6(4) '-'\n\
                 .count_kind(parsed.file.root(), SyntaxKind::CondenseStmt),
             1
         );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::TextTargetOperand),
+            1
+        );
     }
 
     #[test]
@@ -12938,6 +12945,12 @@ CONCATENATE lv_evttime+6(4) '-'\n\
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::CondenseStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::TextTargetOperand),
             1
         );
     }

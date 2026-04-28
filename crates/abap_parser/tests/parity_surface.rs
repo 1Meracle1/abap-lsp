@@ -57,6 +57,9 @@ fn classifies_classic_arithmetic_string_and_list_statements() {
         "SHIFT lv_text RIGHT BY 1 PLACES.\n",
         "SEARCH lt_lines FOR lv_pattern.\n",
         "SEARCH lv_text FOR 'ABC' STARTING AT lv_offset.\n",
+        "OVERLAY lv_text WITH lv_mask.\n",
+        "PACK lv_source TO lv_target.\n",
+        "UNPACK lv_source TO lv_target.\n",
         "FORMAT COLOR COL_HEADING INTENSIFIED.\n",
         "FORMAT RESET.\n",
         "POSITION e-lopind.\n",
@@ -71,6 +74,9 @@ fn classifies_classic_arithmetic_string_and_list_statements() {
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::TranslateStmt), 2);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::ShiftStmt), 2);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::SearchStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::OverlayStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::PackStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnpackStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::FormatStmt), 2);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::PositionStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::HideStmt), 1);

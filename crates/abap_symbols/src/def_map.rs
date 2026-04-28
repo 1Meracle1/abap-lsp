@@ -838,6 +838,7 @@ pub enum SystemFieldStatementKind {
     ModifyTable,
     ModifyDbTable,
     ReadTable,
+    Search,
     Select,
     UpdateDbTable,
     While,

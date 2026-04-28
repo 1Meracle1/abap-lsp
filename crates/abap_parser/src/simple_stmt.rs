@@ -93,6 +93,8 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("format", SyntaxKind::FormatStmt),
     ("hide", SyntaxKind::HideStmt),
     ("multiply", SyntaxKind::MultiplyStmt),
+    ("overlay", SyntaxKind::OverlayStmt),
+    ("pack", SyntaxKind::PackStmt),
     ("perform", SyntaxKind::PerformStmt),
     ("position", SyntaxKind::PositionStmt),
     ("return", SyntaxKind::ReturnStmt),
@@ -103,6 +105,7 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("subtract", SyntaxKind::SubtractStmt),
     ("translate", SyntaxKind::TranslateStmt),
     ("transfer", SyntaxKind::TransferStmt),
+    ("unpack", SyntaxKind::UnpackStmt),
     ("replace", SyntaxKind::ReplaceStmt),
     ("wait", SyntaxKind::WaitStmt),
 ];
@@ -2115,6 +2118,534 @@ fn build_arithmetic_stmt_children(
     children
 }
 
+fn push_text_operand_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    kind: SyntaxKind,
+) -> Option<NodeId> {
+    let value_start = next_non_comment(tokens, start, end);
+    let value_end = trim_trailing_comments(tokens, value_start, end);
+    push_token_range(b, children, tokens, start, value_start);
+    if value_start >= value_end {
+        push_token_range(b, children, tokens, value_start, end);
+        return None;
+    }
+
+    let operand = if kind == SyntaxKind::TextTargetOperand {
+        build_wrapped_expr_or_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            value_start,
+            value_end,
+            kind,
+        )
+        .unwrap_or_else(|| {
+            build_wrapped_expr_child(b, source, tokens, value_start, value_end, kind)
+        })
+    } else {
+        build_wrapped_expr_child(b, source, tokens, value_start, value_end, kind)
+    };
+    children.push(operand);
+    push_token_range(b, children, tokens, value_end, end);
+    Some(operand)
+}
+
+fn build_pack_like_text_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let Some(to_idx) = find_top_level_keyword_index(source, tokens, entry_start, entry_end, "to")
+    else {
+        push_token_range(b, &mut children, tokens, entry_start, entry_end);
+        return children;
+    };
+
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        entry_start,
+        to_idx,
+        SyntaxKind::TextSourceOperand,
+    );
+    children.push(token_leaf(b, &tokens[to_idx]));
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        to_idx + 1,
+        entry_end,
+        SyntaxKind::TextTargetOperand,
+    );
+    children
+}
+
+fn build_overlay_text_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let Some(with_idx) =
+        find_top_level_keyword_index(source, tokens, entry_start, entry_end, "with")
+    else {
+        push_token_range(b, &mut children, tokens, entry_start, entry_end);
+        return children;
+    };
+
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        entry_start,
+        with_idx,
+        SyntaxKind::TextTargetOperand,
+    );
+    children.push(token_leaf(b, &tokens[with_idx]));
+
+    let only_idx = find_top_level_keyword_index(source, tokens, with_idx + 1, entry_end, "only");
+    let mask_end = only_idx.unwrap_or(entry_end);
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        with_idx + 1,
+        mask_end,
+        SyntaxKind::TextSourceOperand,
+    );
+    if let Some(only_idx) = only_idx {
+        children.push(token_leaf(b, &tokens[only_idx]));
+        push_text_operand_child(
+            b,
+            &mut children,
+            source,
+            tokens,
+            only_idx + 1,
+            entry_end,
+            SyntaxKind::TextSourceOperand,
+        );
+    }
+    children
+}
+
+fn build_search_text_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let Some(for_idx) = find_top_level_keyword_index(source, tokens, entry_start, entry_end, "for")
+    else {
+        push_token_range(b, &mut children, tokens, entry_start, entry_end);
+        return children;
+    };
+
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        entry_start,
+        for_idx,
+        SyntaxKind::TextSourceOperand,
+    );
+    children.push(token_leaf(b, &tokens[for_idx]));
+
+    let pattern_end = find_top_level_any_keyword_index(
+        source,
+        tokens,
+        for_idx + 1,
+        entry_end,
+        &["starting", "ending", "and", "abbreviated"],
+    )
+    .unwrap_or(entry_end);
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        for_idx + 1,
+        pattern_end,
+        SyntaxKind::TextSourceOperand,
+    );
+
+    let mut cursor = pattern_end;
+    while cursor < entry_end {
+        if token_matches_keyword(source, &tokens[cursor], "starting")
+            || token_matches_keyword(source, &tokens[cursor], "ending")
+        {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let at_idx = next_non_comment(tokens, cursor + 1, entry_end);
+            push_token_range(b, &mut children, tokens, cursor + 1, at_idx);
+            let operand_start =
+                if at_idx < entry_end && token_matches_keyword(source, &tokens[at_idx], "at") {
+                    children.push(token_leaf(b, &tokens[at_idx]));
+                    at_idx + 1
+                } else {
+                    at_idx
+                };
+            let operand_end = find_top_level_any_keyword_index(
+                source,
+                tokens,
+                operand_start,
+                entry_end,
+                &["starting", "ending", "and", "abbreviated"],
+            )
+            .unwrap_or(entry_end);
+            push_text_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                operand_start,
+                operand_end,
+                SyntaxKind::TextSourceOperand,
+            );
+            cursor = operand_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    children
+}
+
+fn push_translate_code_page_or_number_format_clause(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    cursor: usize,
+    entry_end: usize,
+) -> Option<usize> {
+    let lead_idx = next_non_comment(tokens, cursor + 1, entry_end);
+    if lead_idx >= entry_end {
+        return None;
+    }
+
+    let second_keyword = if token_matches_keyword(source, &tokens[lead_idx], "code") {
+        "page"
+    } else if token_matches_keyword(source, &tokens[lead_idx], "number") {
+        "format"
+    } else {
+        return None;
+    };
+
+    push_token_range(b, children, tokens, cursor + 1, lead_idx);
+    children.push(token_leaf(b, &tokens[lead_idx]));
+    let second_idx = next_non_comment(tokens, lead_idx + 1, entry_end);
+    push_token_range(b, children, tokens, lead_idx + 1, second_idx);
+    if second_idx >= entry_end
+        || !token_matches_keyword(source, &tokens[second_idx], second_keyword)
+    {
+        return Some(second_idx);
+    }
+    children.push(token_leaf(b, &tokens[second_idx]));
+    let operand_start = second_idx + 1;
+    let operand_end = find_top_level_any_keyword_index(
+        source,
+        tokens,
+        operand_start,
+        entry_end,
+        &["to", "from", "using"],
+    )
+    .unwrap_or(entry_end);
+    push_text_operand_child(
+        b,
+        children,
+        source,
+        tokens,
+        operand_start,
+        operand_end,
+        SyntaxKind::TextSourceOperand,
+    );
+    Some(operand_end)
+}
+
+fn build_translate_text_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let target_end = find_top_level_any_keyword_index(
+        source,
+        tokens,
+        entry_start,
+        entry_end,
+        &["to", "using", "from"],
+    )
+    .unwrap_or(entry_end);
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        entry_start,
+        target_end,
+        SyntaxKind::TextTargetOperand,
+    );
+
+    let mut cursor = target_end;
+    while cursor < entry_end {
+        if token_matches_keyword(source, &tokens[cursor], "using") {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let operand_end = find_top_level_any_keyword_index(
+                source,
+                tokens,
+                cursor + 1,
+                entry_end,
+                &["to", "from"],
+            )
+            .unwrap_or(entry_end);
+            push_text_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                cursor + 1,
+                operand_end,
+                SyntaxKind::TextSourceOperand,
+            );
+            cursor = operand_end;
+            continue;
+        }
+        if token_matches_keyword(source, &tokens[cursor], "to")
+            || token_matches_keyword(source, &tokens[cursor], "from")
+        {
+            children.push(token_leaf(b, &tokens[cursor]));
+            if let Some(next_cursor) = push_translate_code_page_or_number_format_clause(
+                b,
+                &mut children,
+                source,
+                tokens,
+                cursor,
+                entry_end,
+            ) {
+                cursor = next_cursor;
+                continue;
+            }
+            cursor += 1;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    children
+}
+
+fn build_shift_text_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let target_end = find_top_level_any_keyword_index(
+        source,
+        tokens,
+        entry_start,
+        entry_end,
+        &["by", "up", "left", "right", "circular", "deleting", "in"],
+    )
+    .unwrap_or(entry_end);
+    push_text_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        entry_start,
+        target_end,
+        SyntaxKind::TextTargetOperand,
+    );
+
+    let mut cursor = target_end;
+    while cursor < entry_end {
+        if token_matches_keyword(source, &tokens[cursor], "by") {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let operand_end = find_top_level_any_keyword_index(
+                source,
+                tokens,
+                cursor + 1,
+                entry_end,
+                &[
+                    "places", "left", "right", "circular", "deleting", "in", "up",
+                ],
+            )
+            .unwrap_or(entry_end);
+            push_text_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                cursor + 1,
+                operand_end,
+                SyntaxKind::TextSourceOperand,
+            );
+            cursor = operand_end;
+            continue;
+        }
+        if token_matches_keyword(source, &tokens[cursor], "up") {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let to_idx = next_non_comment(tokens, cursor + 1, entry_end);
+            push_token_range(b, &mut children, tokens, cursor + 1, to_idx);
+            if to_idx < entry_end && token_matches_keyword(source, &tokens[to_idx], "to") {
+                children.push(token_leaf(b, &tokens[to_idx]));
+                let operand_end = find_top_level_any_keyword_index(
+                    source,
+                    tokens,
+                    to_idx + 1,
+                    entry_end,
+                    &[
+                        "by", "places", "left", "right", "circular", "deleting", "in",
+                    ],
+                )
+                .unwrap_or(entry_end);
+                push_text_operand_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    to_idx + 1,
+                    operand_end,
+                    SyntaxKind::TextSourceOperand,
+                );
+                cursor = operand_end;
+                continue;
+            }
+            cursor = to_idx;
+            continue;
+        }
+        if token_matches_keyword(source, &tokens[cursor], "leading")
+            || token_matches_keyword(source, &tokens[cursor], "trailing")
+        {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let operand_end = find_top_level_any_keyword_index(
+                source,
+                tokens,
+                cursor + 1,
+                entry_end,
+                &[
+                    "by", "places", "left", "right", "circular", "deleting", "in", "up",
+                ],
+            )
+            .unwrap_or(entry_end);
+            push_text_operand_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                cursor + 1,
+                operand_end,
+                SyntaxKind::TextSourceOperand,
+            );
+            cursor = operand_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    children
+}
+
+fn build_classic_text_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+    kind: SyntaxKind,
+) -> Vec<NodeId> {
+    match kind {
+        SyntaxKind::TranslateStmt => {
+            build_translate_text_entry_children(b, source, tokens, entry_start, entry_end)
+        }
+        SyntaxKind::ShiftStmt => {
+            build_shift_text_entry_children(b, source, tokens, entry_start, entry_end)
+        }
+        SyntaxKind::SearchStmt => {
+            build_search_text_entry_children(b, source, tokens, entry_start, entry_end)
+        }
+        SyntaxKind::OverlayStmt => {
+            build_overlay_text_entry_children(b, source, tokens, entry_start, entry_end)
+        }
+        SyntaxKind::PackStmt | SyntaxKind::UnpackStmt => {
+            build_pack_like_text_entry_children(b, source, tokens, entry_start, entry_end)
+        }
+        _ => {
+            let mut children = Vec::new();
+            push_token_range(b, &mut children, tokens, entry_start, entry_end);
+            children
+        }
+    }
+}
+
+fn build_classic_text_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+    kind: SyntaxKind,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    children.push(token_leaf(b, &tokens[idx]));
+    let mut cursor = idx + 1;
+
+    let colon_idx = next_non_comment(tokens, cursor, period_i);
+    if colon_idx < period_i && tokens[colon_idx].kind == TokenKind::Colon {
+        push_token_range(b, &mut children, tokens, cursor, colon_idx + 1);
+        cursor = colon_idx + 1;
+    }
+
+    while cursor < period_i {
+        let entry_start = next_non_comment(tokens, cursor, period_i);
+        push_token_range(b, &mut children, tokens, cursor, entry_start);
+        if entry_start >= period_i {
+            break;
+        }
+        let entry_end =
+            find_top_level_token_kind_index(tokens, entry_start, period_i, TokenKind::Comma)
+                .unwrap_or(period_i);
+        children.extend(build_classic_text_entry_children(
+            b,
+            source,
+            tokens,
+            entry_start,
+            entry_end,
+            kind,
+        ));
+        cursor = entry_end;
+        if cursor < period_i && tokens[cursor].kind == TokenKind::Comma {
+            children.push(token_leaf(b, &tokens[cursor]));
+            cursor += 1;
+        }
+    }
+
+    push_token_range(b, &mut children, tokens, cursor, period_i + 1);
+    children
+}
+
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
     let Some(first) = significant.first() else {
         return false;
@@ -3028,6 +3559,14 @@ pub fn try_parse_simple_stmt(
                 | SyntaxKind::DivideStmt => {
                     build_arithmetic_stmt_children(b, source, tokens, idx, period_i, kind)
                 }
+                SyntaxKind::TranslateStmt
+                | SyntaxKind::ShiftStmt
+                | SyntaxKind::SearchStmt
+                | SyntaxKind::OverlayStmt
+                | SyntaxKind::PackStmt
+                | SyntaxKind::UnpackStmt => {
+                    build_classic_text_stmt_children(b, source, tokens, idx, period_i, kind)
+                }
                 _ => tokens[idx..=period_i]
                     .iter()
                     .map(|t| token_leaf(b, t))
@@ -3766,6 +4305,49 @@ DIVIDE lv_a BY lv_b GIVING lv_c.",
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::MultiplyStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DivideStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ArithmeticEntry), 5);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn classifies_classic_text_statements_with_operands() {
+        let parsed = crate::parse(
+            "\
+DATA lv_text TYPE string.
+DATA lv_mask TYPE string.
+DATA lv_only TYPE string.
+DATA lv_source TYPE string.
+DATA lv_target TYPE string.
+DATA lv_count TYPE i.
+DATA lv_start TYPE i.
+DATA lv_end TYPE i.
+DATA lv_pattern TYPE string.
+TRANSLATE lv_text TO UPPER CASE.
+TRANSLATE lv_text USING lv_mask.
+SHIFT lv_text RIGHT BY lv_count PLACES.
+SEARCH lv_text FOR lv_pattern STARTING AT lv_start ENDING AT lv_end.
+CONDENSE lv_text NO-GAPS.
+OVERLAY lv_text WITH lv_mask ONLY lv_only.
+PACK lv_source TO lv_target.
+UNPACK lv_source TO lv_target.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TranslateStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ShiftStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SearchStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CondenseStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::OverlayStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::PackStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnpackStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::TextTargetOperand),
+            7
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::TextSourceOperand),
+            10
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }

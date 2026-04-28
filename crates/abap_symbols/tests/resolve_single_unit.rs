@@ -1637,6 +1637,128 @@ DIVIDE lv_a INTO lv_b.
 }
 
 #[test]
+fn resolves_classic_text_operands_and_emits_assignment_flow() {
+    let src = r#"
+DATA lv_text TYPE string VALUE 'ABC 123'.
+DATA lv_mask TYPE string VALUE 'ABab'.
+DATA lv_only TYPE string VALUE 'A'.
+DATA lv_pattern TYPE string VALUE '12'.
+DATA lv_count TYPE i VALUE 1.
+DATA lv_start TYPE i VALUE 1.
+DATA lv_end TYPE i VALUE 7.
+DATA lv_source TYPE c LENGTH 10 VALUE '123'.
+DATA lv_target TYPE c LENGTH 10.
+
+TRANSLATE lv_text TO UPPER CASE.
+TRANSLATE lv_text USING lv_mask.
+SHIFT lv_text RIGHT BY lv_count PLACES.
+SEARCH lv_text FOR lv_pattern STARTING AT lv_start ENDING AT lv_end.
+CONDENSE lv_text NO-GAPS.
+OVERLAY lv_text WITH lv_mask ONLY lv_only.
+PACK lv_source TO lv_target.
+UNPACK lv_source TO lv_target.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///classic_text_stmt.abap", src, &parsed);
+
+    for name in [
+        "lv_text",
+        "lv_mask",
+        "lv_only",
+        "lv_pattern",
+        "lv_count",
+        "lv_start",
+        "lv_end",
+        "lv_source",
+        "lv_target",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved text-statement reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected text-statement diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for keyword in [
+        "translate",
+        "to",
+        "upper",
+        "case",
+        "using",
+        "shift",
+        "right",
+        "by",
+        "places",
+        "search",
+        "for",
+        "starting",
+        "at",
+        "ending",
+        "condense",
+        "no",
+        "gaps",
+        "overlay",
+        "with",
+        "only",
+        "pack",
+        "unpack",
+    ] {
+        assert!(
+            unit.references.iter().all(|reference| {
+                !reference.name.eq_ignore_ascii_case(keyword) || reference.resolution.is_some()
+            }),
+            "text keyword `{keyword}` became an unresolved reference: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let assignment_targets: Vec<_> = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect();
+    for target in ["lv_text", "lv_target"] {
+        assert!(
+            assignment_targets.iter().any(|found| found == target),
+            "expected text assignment target `{target}`, targets={assignment_targets:?}"
+        );
+    }
+    assert!(
+        unit.assignment_sites.len() >= 7,
+        "expected assignment sites for text mutation statements, got {:?}",
+        unit.assignment_sites
+    );
+    assert!(
+        unit.value_flow_edges
+            .iter()
+            .filter(|edge| edge.kind == ValueFlowKind::Assignment)
+            .count()
+            >= 7,
+        "expected assignment value-flow edges for text statements, got {:?}",
+        unit.value_flow_edges
+    );
+    assert!(unit.system_field_updates.iter().any(|update| {
+        update.statement == abap_symbols::SystemFieldStatementKind::Search
+            && update.field_name.as_ref() == "fdpos"
+    }));
+}
+
+#[test]
 fn corresponding_mapping_resolves_outer_operands_without_component_unresolved_refs() {
     let src = r#"
 TYPES: BEGIN OF ty_child_src,
@@ -7841,6 +7963,7 @@ AUTHORITY-CHECK OBJECT 'S_CARRID'
 DESCRIBE TABLE itab LINES DATA(lv_lines).
 READ TABLE itab INDEX 1 INTO wa.
 FIND '1' IN '123'.
+SEARCH '123' FOR '1'.
 MESSAGE 'ready' TYPE 'S'.
 SELECT SINGLE carrid FROM scarr INTO @DATA(lv_carrid).
 DO 1 TIMES.
@@ -7893,6 +8016,10 @@ ENDLOOP.
     ));
     assert!(has_update(
         abap_symbols::SystemFieldStatementKind::Find,
+        "fdpos"
+    ));
+    assert!(has_update(
+        abap_symbols::SystemFieldStatementKind::Search,
         "fdpos"
     ));
     assert!(has_update(

@@ -445,12 +445,22 @@ pub enum SyntaxKind {
     ArithmeticSourceOperand,
     /// Changed or result operand inside a classic arithmetic statement.
     ArithmeticTargetOperand,
+    /// Source/read operand inside a classic string or text statement.
+    TextSourceOperand,
+    /// Changed/write operand inside a classic string or text statement.
+    TextTargetOperand,
     /// Classic string statement `TRANSLATE ... .`
     TranslateStmt,
     /// Classic string statement `SHIFT ... .`
     ShiftStmt,
     /// Classic string/table search statement `SEARCH ... FOR ... .`
     SearchStmt,
+    /// Classic string statement `OVERLAY ... WITH ... .`
+    OverlayStmt,
+    /// Classic conversion statement `PACK source TO target .`
+    PackStmt,
+    /// Classic conversion statement `UNPACK source TO target .`
+    UnpackStmt,
     /// Classic list formatting statement `FORMAT ... .`
     FormatStmt,
     /// Classic list cursor statement `POSITION ... .`
@@ -889,9 +899,14 @@ impl SyntaxKind {
             Self::ArithmeticEntry => "ArithmeticEntry",
             Self::ArithmeticSourceOperand => "ArithmeticSourceOperand",
             Self::ArithmeticTargetOperand => "ArithmeticTargetOperand",
+            Self::TextSourceOperand => "TextSourceOperand",
+            Self::TextTargetOperand => "TextTargetOperand",
             Self::TranslateStmt => "TranslateStmt",
             Self::ShiftStmt => "ShiftStmt",
             Self::SearchStmt => "SearchStmt",
+            Self::OverlayStmt => "OverlayStmt",
+            Self::PackStmt => "PackStmt",
+            Self::UnpackStmt => "UnpackStmt",
             Self::FormatStmt => "FormatStmt",
             Self::PositionStmt => "PositionStmt",
             Self::HideStmt => "HideStmt",

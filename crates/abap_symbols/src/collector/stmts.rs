@@ -127,6 +127,157 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_text_mutation_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let stmt_range = self.collector.file.range(node);
+        let children: Vec<_> = self.collector.file.children(node).collect();
+        let mut entry_start = 0usize;
+        while entry_start < children.len() {
+            let mut entry_end = entry_start;
+            while entry_end < children.len() {
+                let child = children[entry_end];
+                if self.collector.file.kind(child) == SyntaxKind::Token
+                    && self
+                        .collector
+                        .syntax_token_nodes(child)
+                        .into_iter()
+                        .next()
+                        .is_some_and(|token| token.text.as_ref() == ",")
+                {
+                    break;
+                }
+                entry_end += 1;
+            }
+
+            self.collect_text_mutation_entry(
+                &children[entry_start..entry_end],
+                stmt_range.clone(),
+                scope,
+            );
+            entry_start = entry_end.saturating_add(1);
+        }
+    }
+
+    fn collect_text_mutation_entry(
+        &mut self,
+        children: &[NodeId],
+        stmt_range: abap_lexer::TextRange,
+        scope: ScopeId,
+    ) {
+        let mut source_values = Vec::new();
+        let mut target_values = Vec::new();
+        for &child in children {
+            match self.collector.file.kind(child) {
+                SyntaxKind::TextSourceOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        source_values.push(value);
+                    }
+                }
+                SyntaxKind::TextTargetOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        target_values.push(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for &source in &source_values {
+            self.collector.walk_node(source, scope);
+        }
+        for &target in &target_values {
+            self.collector.walk_node(target, scope);
+        }
+        for target in target_values {
+            let mut rhs_nodes = source_values.clone();
+            rhs_nodes.push(target);
+            self.emit_assignment_site_from_ranges(scope, stmt_range.clone(), target, &rhs_nodes);
+        }
+    }
+
+    pub(super) fn collect_pack_like_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let stmt_range = self.collector.file.range(node);
+        let children: Vec<_> = self.collector.file.children(node).collect();
+        let mut entry_start = 0usize;
+        while entry_start < children.len() {
+            let mut entry_end = entry_start;
+            while entry_end < children.len() {
+                let child = children[entry_end];
+                if self.collector.file.kind(child) == SyntaxKind::Token
+                    && self
+                        .collector
+                        .syntax_token_nodes(child)
+                        .into_iter()
+                        .next()
+                        .is_some_and(|token| token.text.as_ref() == ",")
+                {
+                    break;
+                }
+                entry_end += 1;
+            }
+
+            self.collect_pack_like_entry(
+                &children[entry_start..entry_end],
+                stmt_range.clone(),
+                scope,
+            );
+            entry_start = entry_end.saturating_add(1);
+        }
+    }
+
+    fn collect_pack_like_entry(
+        &mut self,
+        children: &[NodeId],
+        stmt_range: abap_lexer::TextRange,
+        scope: ScopeId,
+    ) {
+        let mut source_values = Vec::new();
+        let mut target_values = Vec::new();
+        for &child in children {
+            match self.collector.file.kind(child) {
+                SyntaxKind::TextSourceOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        source_values.push(value);
+                    }
+                }
+                SyntaxKind::TextTargetOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        target_values.push(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for &source in &source_values {
+            self.collector.walk_node(source, scope);
+        }
+        for &target in &target_values {
+            self.collector.walk_node(target, scope);
+            self.emit_assignment_site_from_ranges(
+                scope,
+                stmt_range.clone(),
+                target,
+                &source_values,
+            );
+        }
+    }
+
+    pub(super) fn collect_search_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_system_field_updates(
+            scope,
+            node,
+            SystemFieldStatementKind::Search,
+            &["subrc", "fdpos"],
+        );
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::TextSourceOperand
+                && let Some(value) = self.collector.first_non_token_child(child)
+            {
+                self.collector.walk_node(value, scope);
+            }
+        }
+    }
+
     fn collect_leave_operand_tokens(&mut self, tail: &[SyntaxTokenInfo], scope: ScopeId) {
         if tail.is_empty() {
             return;
