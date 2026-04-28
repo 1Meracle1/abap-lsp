@@ -105,6 +105,10 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
     IdentLeadParserRegistration::new(&["append"], surface_stmt::try_parse_append_stmt),
     IdentLeadParserRegistration::new(&["insert"], surface_stmt::try_parse_insert_table_stmt),
     IdentLeadParserRegistration::new(&["move"], surface_stmt::try_parse_move_stmt),
+    IdentLeadParserRegistration::new(
+        &["add", "subtract", "compute", "multiply", "divide"],
+        simple_stmt::try_parse_simple_stmt,
+    ),
     IdentLeadParserRegistration::new(&["sort"], surface_stmt::try_parse_sort_stmt),
     IdentLeadParserRegistration::new(&["modify"], surface_stmt::try_parse_modify_stmt),
     IdentLeadParserRegistration::new(&["delete"], surface_stmt::try_parse_delete_stmt),

@@ -130,6 +130,11 @@ impl<'a> Collector<'a> {
             SyntaxKind::MoveStmt | SyntaxKind::MoveCorrespondingStmt => {
                 self.stmt_lowering().collect_move_stmt(node, scope)
             }
+            SyntaxKind::AddStmt
+            | SyntaxKind::SubtractStmt
+            | SyntaxKind::ComputeStmt
+            | SyntaxKind::MultiplyStmt
+            | SyntaxKind::DivideStmt => self.stmt_lowering().collect_arithmetic_stmt(node, scope),
             SyntaxKind::UpdateTarget
             | SyntaxKind::GetReferenceStmt
             | SyntaxKind::GetBitStmt

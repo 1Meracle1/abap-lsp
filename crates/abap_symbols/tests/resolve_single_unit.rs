@@ -3,7 +3,7 @@ use abap_parser::parse;
 use abap_symbols::{
     DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId,
     SqlDynamicFragmentKind, SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlSourceKind,
-    SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, analyze_project,
+    SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, ValueFlowKind, analyze_project,
     analyze_project_from_units, analyze_unit,
 };
 
@@ -1551,6 +1551,89 @@ MOVE-CORRESPONDING ls_general TO ls_ord_head.
             unit.diagnostics
         );
     }
+}
+
+#[test]
+fn resolves_classic_arithmetic_operands_and_emits_assignment_flow() {
+    let src = r#"
+DATA lv_a TYPE i VALUE 20.
+DATA lv_b TYPE i VALUE 4.
+DATA lv_c TYPE i.
+DATA lv_d TYPE i.
+
+ADD lv_a TO lv_b.
+ADD lv_a TO lv_b GIVING lv_c.
+SUBTRACT lv_a FROM lv_b.
+SUBTRACT lv_a FROM lv_b GIVING lv_c.
+COMPUTE lv_d = lv_a + lv_b.
+MULTIPLY lv_a BY lv_b.
+MULTIPLY lv_a BY lv_b GIVING lv_c.
+DIVIDE lv_a BY lv_b GIVING lv_c.
+DIVIDE lv_a INTO lv_b.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///classic_arithmetic_stmt.abap", src, &parsed);
+
+    for name in ["lv_a", "lv_b", "lv_c", "lv_d"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved arithmetic reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected arithmetic diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for keyword in [
+        "add", "to", "subtract", "from", "compute", "multiply", "by", "divide", "into", "giving",
+    ] {
+        assert!(
+            unit.references.iter().all(|reference| {
+                !reference.name.eq_ignore_ascii_case(keyword) || reference.resolution.is_some()
+            }),
+            "arithmetic keyword `{keyword}` became an unresolved reference: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    let assignment_targets: Vec<_> = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect();
+    for target in ["lv_b", "lv_c", "lv_d"] {
+        assert!(
+            assignment_targets.iter().any(|found| found == target),
+            "expected arithmetic assignment target `{target}`, targets={assignment_targets:?}"
+        );
+    }
+    assert!(
+        unit.assignment_sites.len() >= 9,
+        "expected assignment sites for all arithmetic statements, got {:?}",
+        unit.assignment_sites
+    );
+    assert!(
+        unit.value_flow_edges
+            .iter()
+            .filter(|edge| edge.kind == ValueFlowKind::Assignment)
+            .count()
+            >= 9,
+        "expected assignment value-flow edges for arithmetic statements, got {:?}",
+        unit.value_flow_edges
+    );
 }
 
 #[test]

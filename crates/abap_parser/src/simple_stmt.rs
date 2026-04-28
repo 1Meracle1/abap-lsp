@@ -84,12 +84,15 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("assert", SyntaxKind::AssertStmt),
     ("check", SyntaxKind::CheckStmt),
     ("clear", SyntaxKind::ClearStmt),
+    ("compute", SyntaxKind::ComputeStmt),
     ("continue", SyntaxKind::ContinueStmt),
     ("convert", SyntaxKind::ConvertStmt),
     ("describe", SyntaxKind::DescribeStmt),
+    ("divide", SyntaxKind::DivideStmt),
     ("exit", SyntaxKind::ExitStmt),
     ("format", SyntaxKind::FormatStmt),
     ("hide", SyntaxKind::HideStmt),
+    ("multiply", SyntaxKind::MultiplyStmt),
     ("perform", SyntaxKind::PerformStmt),
     ("position", SyntaxKind::PositionStmt),
     ("return", SyntaxKind::ReturnStmt),
@@ -1807,6 +1810,311 @@ fn build_wait_stmt_children(
     children
 }
 
+fn find_top_level_token_kind_index(
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    kind: TokenKind,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 && token.kind == kind {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn find_top_level_any_keyword_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    keywords: &[&str],
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0
+            && bracket == 0
+            && brace == 0
+            && keywords
+                .iter()
+                .any(|keyword| token_matches_keyword(source, token, keyword))
+        {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn push_arithmetic_operand_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    kind: SyntaxKind,
+) -> Option<NodeId> {
+    let value_start = next_non_comment(tokens, start, end);
+    let value_end = trim_trailing_comments(tokens, value_start, end);
+    push_token_range(b, children, tokens, start, value_start);
+    if value_start >= value_end {
+        push_token_range(b, children, tokens, value_start, end);
+        return None;
+    }
+
+    let operand = if kind == SyntaxKind::ArithmeticTargetOperand {
+        build_wrapped_expr_or_data_inline_decl_child(
+            b,
+            source,
+            tokens,
+            value_start,
+            value_end,
+            kind,
+        )
+        .unwrap_or_else(|| {
+            build_wrapped_expr_child(b, source, tokens, value_start, value_end, kind)
+        })
+    } else {
+        build_wrapped_expr_child(b, source, tokens, value_start, value_end, kind)
+    };
+    children.push(operand);
+    push_token_range(b, children, tokens, value_end, end);
+    Some(operand)
+}
+
+fn build_compute_arithmetic_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let exact_idx = next_non_comment(tokens, entry_start, entry_end);
+    let mut cursor = entry_start;
+    if exact_idx < entry_end && token_matches_keyword(source, &tokens[exact_idx], "exact") {
+        push_token_range(b, &mut children, tokens, cursor, exact_idx + 1);
+        cursor = exact_idx + 1;
+    }
+
+    let Some(eq_idx) = find_top_level_token_kind_index(tokens, cursor, entry_end, TokenKind::Eq)
+    else {
+        push_token_range(b, &mut children, tokens, cursor, entry_end);
+        return children;
+    };
+
+    push_arithmetic_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        cursor,
+        eq_idx,
+        SyntaxKind::ArithmeticTargetOperand,
+    );
+    children.push(token_leaf(b, &tokens[eq_idx]));
+    push_arithmetic_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        eq_idx + 1,
+        entry_end,
+        SyntaxKind::ArithmeticSourceOperand,
+    );
+    children
+}
+
+fn arithmetic_operator_keywords(kind: SyntaxKind) -> &'static [&'static str] {
+    match kind {
+        SyntaxKind::AddStmt => &["to"],
+        SyntaxKind::SubtractStmt => &["from"],
+        SyntaxKind::MultiplyStmt => &["by"],
+        SyntaxKind::DivideStmt => &["by", "into"],
+        _ => &[],
+    }
+}
+
+fn build_classic_arithmetic_entry_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+    kind: SyntaxKind,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    let Some(operator_idx) = find_top_level_any_keyword_index(
+        source,
+        tokens,
+        entry_start,
+        entry_end,
+        arithmetic_operator_keywords(kind),
+    ) else {
+        push_token_range(b, &mut children, tokens, entry_start, entry_end);
+        return children;
+    };
+    let giving_idx =
+        find_top_level_keyword_index(source, tokens, operator_idx + 1, entry_end, "giving");
+    let after_operator_end = giving_idx.unwrap_or(entry_end);
+    let operator_is_by = token_matches_keyword(source, &tokens[operator_idx], "by");
+    let operator_is_into = token_matches_keyword(source, &tokens[operator_idx], "into");
+
+    let first_operand_kind =
+        if kind == SyntaxKind::DivideStmt && operator_is_by && giving_idx.is_none() {
+            SyntaxKind::ArithmeticTargetOperand
+        } else {
+            SyntaxKind::ArithmeticSourceOperand
+        };
+    push_arithmetic_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        entry_start,
+        operator_idx,
+        first_operand_kind,
+    );
+
+    children.push(token_leaf(b, &tokens[operator_idx]));
+
+    let second_operand_kind =
+        if giving_idx.is_some() || (kind == SyntaxKind::DivideStmt && operator_is_by) {
+            SyntaxKind::ArithmeticSourceOperand
+        } else if kind == SyntaxKind::DivideStmt && operator_is_into {
+            SyntaxKind::ArithmeticTargetOperand
+        } else {
+            SyntaxKind::ArithmeticTargetOperand
+        };
+    push_arithmetic_operand_child(
+        b,
+        &mut children,
+        source,
+        tokens,
+        operator_idx + 1,
+        after_operator_end,
+        second_operand_kind,
+    );
+
+    if let Some(giving_idx) = giving_idx {
+        children.push(token_leaf(b, &tokens[giving_idx]));
+        push_arithmetic_operand_child(
+            b,
+            &mut children,
+            source,
+            tokens,
+            giving_idx + 1,
+            entry_end,
+            SyntaxKind::ArithmeticTargetOperand,
+        );
+    }
+
+    children
+}
+
+fn build_arithmetic_entry(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    entry_start: usize,
+    entry_end: usize,
+    kind: SyntaxKind,
+) -> Option<NodeId> {
+    if entry_start >= entry_end {
+        return None;
+    }
+    let children = if kind == SyntaxKind::ComputeStmt {
+        build_compute_arithmetic_entry_children(b, source, tokens, entry_start, entry_end)
+    } else {
+        build_classic_arithmetic_entry_children(b, source, tokens, entry_start, entry_end, kind)
+    };
+    Some(b.branch(
+        SyntaxKind::ArithmeticEntry,
+        tokens[entry_start].range.start..tokens[entry_end - 1].range.end,
+        &children,
+    ))
+}
+
+fn build_arithmetic_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+    kind: SyntaxKind,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    children.push(token_leaf(b, &tokens[idx]));
+    let mut cursor = idx + 1;
+
+    let colon_idx = next_non_comment(tokens, cursor, period_i);
+    if colon_idx < period_i && tokens[colon_idx].kind == TokenKind::Colon {
+        push_token_range(b, &mut children, tokens, cursor, colon_idx + 1);
+        cursor = colon_idx + 1;
+    }
+
+    while cursor < period_i {
+        let entry_start = next_non_comment(tokens, cursor, period_i);
+        push_token_range(b, &mut children, tokens, cursor, entry_start);
+        if entry_start >= period_i {
+            break;
+        }
+        let entry_end =
+            find_top_level_token_kind_index(tokens, entry_start, period_i, TokenKind::Comma)
+                .unwrap_or(period_i);
+        if let Some(entry) = build_arithmetic_entry(b, source, tokens, entry_start, entry_end, kind)
+        {
+            children.push(entry);
+        }
+        cursor = entry_end;
+        if cursor < period_i && tokens[cursor].kind == TokenKind::Comma {
+            children.push(token_leaf(b, &tokens[cursor]));
+            cursor += 1;
+        }
+    }
+
+    push_token_range(b, &mut children, tokens, cursor, period_i + 1);
+    children
+}
+
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
     let Some(first) = significant.first() else {
         return false;
@@ -2713,6 +3021,13 @@ pub fn try_parse_simple_stmt(
                     build_replace_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::WaitStmt => build_wait_stmt_children(b, source, tokens, idx, period_i),
+                SyntaxKind::AddStmt
+                | SyntaxKind::SubtractStmt
+                | SyntaxKind::ComputeStmt
+                | SyntaxKind::MultiplyStmt
+                | SyntaxKind::DivideStmt => {
+                    build_arithmetic_stmt_children(b, source, tokens, idx, period_i, kind)
+                }
                 _ => tokens[idx..=period_i]
                     .iter()
                     .map(|t| token_leaf(b, t))
@@ -3428,6 +3743,31 @@ WAIT UP TO lv_stamp SECONDS.",
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReplaceStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::WaitStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn classifies_classic_arithmetic_statements_specifically() {
+        let parsed = crate::parse(
+            "\
+DATA lv_a TYPE i.
+DATA lv_b TYPE i.
+DATA lv_c TYPE i.
+ADD lv_a TO lv_b.
+SUBTRACT lv_a FROM lv_b.
+COMPUTE lv_c = lv_a + lv_b.
+MULTIPLY lv_a BY lv_b.
+DIVIDE lv_a BY lv_b GIVING lv_c.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AddStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SubtractStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ComputeStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MultiplyStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DivideStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ArithmeticEntry), 5);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

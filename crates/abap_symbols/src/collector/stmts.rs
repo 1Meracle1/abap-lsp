@@ -66,6 +66,67 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    pub(super) fn collect_arithmetic_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let stmt_kind = self.collector.file.kind(node);
+        let entries: Vec<_> = self
+            .collector
+            .file
+            .children(node)
+            .filter(|&child| self.collector.file.kind(child) == SyntaxKind::ArithmeticEntry)
+            .collect();
+        if entries.is_empty() {
+            self.collect_generic_simple_stmt(node, scope);
+            return;
+        }
+
+        for entry in entries {
+            self.collect_arithmetic_entry(entry, stmt_kind, scope);
+        }
+    }
+
+    fn collect_arithmetic_entry(&mut self, entry: NodeId, stmt_kind: SyntaxKind, scope: ScopeId) {
+        let has_giving = self
+            .collector
+            .significant_stmt_token_infos(entry)
+            .iter()
+            .any(|token| token.text.eq_ignore_ascii_case("giving"));
+        let target_is_also_source = stmt_kind != SyntaxKind::ComputeStmt && !has_giving;
+        let mut source_values = Vec::new();
+        let mut target_values = Vec::new();
+
+        for child in self.collector.file.children(entry) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::ArithmeticSourceOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        source_values.push(value);
+                    }
+                }
+                SyntaxKind::ArithmeticTargetOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        target_values.push(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for &source in &source_values {
+            self.collector.walk_node(source, scope);
+        }
+        for &target in &target_values {
+            self.collector.walk_node(target, scope);
+        }
+
+        let stmt_range = self.collector.file.range(entry);
+        for target in target_values {
+            let mut rhs_nodes = source_values.clone();
+            if target_is_also_source {
+                rhs_nodes.push(target);
+            }
+            self.emit_assignment_site_from_ranges(scope, stmt_range.clone(), target, &rhs_nodes);
+        }
+    }
+
     fn collect_leave_operand_tokens(&mut self, tail: &[SyntaxTokenInfo], scope: ScopeId) {
         if tail.is_empty() {
             return;

@@ -429,10 +429,22 @@ pub enum SyntaxKind {
     MoveCorrespondingStmt,
     /// `MOVE source TO target .`
     MoveStmt,
+    /// Classic arithmetic statement `COMPUTE target = expr .`
+    ComputeStmt,
     /// Classic arithmetic/list/string statement `ADD ... TO ... .`
     AddStmt,
     /// Classic arithmetic statement `SUBTRACT ... FROM ... .`
     SubtractStmt,
+    /// Classic arithmetic statement `MULTIPLY ... BY ... .`
+    MultiplyStmt,
+    /// Classic arithmetic statement `DIVIDE ... BY|INTO ... .`
+    DivideStmt,
+    /// One comma-separated classic arithmetic operation.
+    ArithmeticEntry,
+    /// Source operand inside a classic arithmetic statement.
+    ArithmeticSourceOperand,
+    /// Changed or result operand inside a classic arithmetic statement.
+    ArithmeticTargetOperand,
     /// Classic string statement `TRANSLATE ... .`
     TranslateStmt,
     /// Classic string statement `SHIFT ... .`
@@ -869,8 +881,14 @@ impl SyntaxKind {
             Self::AppendStmt => "AppendStmt",
             Self::MoveCorrespondingStmt => "MoveCorrespondingStmt",
             Self::MoveStmt => "MoveStmt",
+            Self::ComputeStmt => "ComputeStmt",
             Self::AddStmt => "AddStmt",
             Self::SubtractStmt => "SubtractStmt",
+            Self::MultiplyStmt => "MultiplyStmt",
+            Self::DivideStmt => "DivideStmt",
+            Self::ArithmeticEntry => "ArithmeticEntry",
+            Self::ArithmeticSourceOperand => "ArithmeticSourceOperand",
+            Self::ArithmeticTargetOperand => "ArithmeticTargetOperand",
             Self::TranslateStmt => "TranslateStmt",
             Self::ShiftStmt => "ShiftStmt",
             Self::SearchStmt => "SearchStmt",
