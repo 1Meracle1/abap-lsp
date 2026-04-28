@@ -2111,6 +2111,198 @@ fn select_token_is_set_operand_lead(source: &str, tokens: &[Token], select_idx: 
     false
 }
 
+fn build_select_query_until(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    let mut query_children = Vec::new();
+    let mut cursor = idx + 1;
+    if tokens
+        .get(cursor)
+        .is_some_and(|token| is_keyword(source, token, "single"))
+    {
+        query_children.push(token_leaf(b, &tokens[cursor]));
+        cursor += 1;
+    }
+    while cursor < end_exclusive {
+        let next_clause = scan_until_clause(tokens, cursor, end_exclusive, |tokens, idx| {
+            select_clause_start_kind(source, tokens, idx).is_some()
+        });
+        if next_clause > cursor {
+            if let Some(projection) =
+                build_select_projection_list(b, source, tokens, cursor, next_clause)
+            {
+                query_children.push(projection);
+            }
+            cursor = next_clause;
+            continue;
+        }
+        let Some(kind) = select_clause_start_kind(source, tokens, cursor) else {
+            break;
+        };
+        let clause_end = match kind {
+            SelectClauseKind::Distinct => skip_trivia(tokens, cursor + 1),
+            SelectClauseKind::SetOperator => {
+                scan_select_set_operator_clause_end(source, tokens, cursor + 1, end_exclusive)
+            }
+            _ => scan_until_clause(tokens, cursor + 1, end_exclusive, |tokens, idx| {
+                select_clause_start_kind(source, tokens, idx).is_some()
+            }),
+        };
+        if let Some(clause) = build_select_clause(b, source, tokens, kind, cursor, clause_end) {
+            query_children.push(clause);
+        }
+        cursor = clause_end;
+    }
+
+    if query_children.is_empty() {
+        return None;
+    }
+    let query_range = b.span(query_children[0]).start..b.span(*query_children.last().unwrap()).end;
+    Some(b.branch(SyntaxKind::SelectQuery, query_range, &query_children))
+}
+
+fn scan_select_cte_definition_end(tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 && token.kind == TokenKind::Comma {
+            break;
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn find_with_main_select_idx(source: &str, tokens: &[Token], with_idx: usize) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = with_idx + 1;
+    while idx < tokens.len() {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Eof {
+            return None;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if token.kind == TokenKind::Period {
+                return None;
+            }
+            if token.kind == TokenKind::Ident && is_keyword(source, token, "select") {
+                return Some(idx);
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn build_select_cte_definition(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<NodeId> {
+    if start >= end_exclusive {
+        return None;
+    }
+    let mut children = Vec::new();
+    let as_idx = find_top_level_keyword(source, tokens, start, end_exclusive, "as");
+    if let Some(as_idx) = as_idx {
+        let body_start = skip_trivia(tokens, as_idx + 1);
+        if tokens
+            .get(body_start)
+            .is_some_and(|token| token.kind == TokenKind::LParen)
+            && let Some(body_end) = find_matching_delim_in_range(
+                tokens,
+                body_start,
+                end_exclusive,
+                TokenKind::LParen,
+                TokenKind::RParen,
+            )
+        {
+            push_token_children(b, &mut children, tokens, start, body_start + 1);
+            let select_idx = skip_trivia(tokens, body_start + 1);
+            if tokens
+                .get(select_idx)
+                .is_some_and(|token| is_keyword(source, token, "select"))
+            {
+                if let Some(query) =
+                    build_select_query_until(b, source, tokens, select_idx, body_end)
+                {
+                    children.push(query);
+                } else {
+                    push_token_children(b, &mut children, tokens, select_idx, body_end);
+                }
+            } else {
+                push_token_children(b, &mut children, tokens, body_start + 1, body_end);
+            }
+            push_token_children(b, &mut children, tokens, body_end, end_exclusive);
+        } else {
+            push_token_children(b, &mut children, tokens, start, end_exclusive);
+        }
+    } else {
+        push_token_children(b, &mut children, tokens, start, end_exclusive);
+    }
+    let range = tokens[start].range.start..tokens[end_exclusive - 1].range.end;
+    Some(b.branch(SyntaxKind::SelectCteDefinition, range, &children))
+}
+
+fn build_select_with_clause(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    with_idx: usize,
+    main_select_idx: usize,
+) -> Option<NodeId> {
+    if with_idx >= main_select_idx {
+        return None;
+    }
+    let mut children = vec![token_leaf(b, &tokens[with_idx])];
+    let mut cursor = with_idx + 1;
+    while cursor < main_select_idx {
+        let def_end = scan_select_cte_definition_end(tokens, cursor, main_select_idx);
+        if let Some(definition) = build_select_cte_definition(b, source, tokens, cursor, def_end) {
+            children.push(definition);
+        } else {
+            push_token_children(b, &mut children, tokens, cursor, def_end);
+        }
+        if def_end < main_select_idx && tokens[def_end].kind == TokenKind::Comma {
+            children.push(token_leaf(b, &tokens[def_end]));
+            cursor = def_end + 1;
+        } else {
+            cursor = def_end;
+        }
+    }
+    let range = tokens[with_idx].range.start..tokens[main_select_idx - 1].range.end;
+    Some(b.branch(SyntaxKind::SelectWithClause, range, &children))
+}
+
 fn parse_select_header_until_period(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -2120,53 +2312,9 @@ fn parse_select_header_until_period(
 ) -> (Vec<NodeId>, usize) {
     match scan_select_stmt_period(tokens, source, idx + 1) {
         StmtPeriodScan::Found(period_i) => {
-            let mut query_children = Vec::new();
-            let mut cursor = idx + 1;
-            if tokens
-                .get(cursor)
-                .is_some_and(|token| is_keyword(source, token, "single"))
-            {
-                query_children.push(token_leaf(b, &tokens[cursor]));
-                cursor += 1;
-            }
-            while cursor < period_i {
-                let next_clause = scan_until_clause(tokens, cursor, period_i, |tokens, idx| {
-                    select_clause_start_kind(source, tokens, idx).is_some()
-                });
-                if next_clause > cursor {
-                    if let Some(projection) =
-                        build_select_projection_list(b, source, tokens, cursor, next_clause)
-                    {
-                        query_children.push(projection);
-                    }
-                    cursor = next_clause;
-                    continue;
-                }
-                let Some(kind) = select_clause_start_kind(source, tokens, cursor) else {
-                    break;
-                };
-                let clause_end = match kind {
-                    SelectClauseKind::Distinct => skip_trivia(tokens, cursor + 1),
-                    SelectClauseKind::SetOperator => {
-                        scan_select_set_operator_clause_end(source, tokens, cursor + 1, period_i)
-                    }
-                    _ => scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
-                        select_clause_start_kind(source, tokens, idx).is_some()
-                    }),
-                };
-                if let Some(clause) =
-                    build_select_clause(b, source, tokens, kind, cursor, clause_end)
-                {
-                    query_children.push(clause);
-                }
-                cursor = clause_end;
-            }
-
             let mut children = Vec::new();
-            if !query_children.is_empty() {
-                let query_range =
-                    b.span(query_children[0]).start..b.span(*query_children.last().unwrap()).end;
-                children.push(b.branch(SyntaxKind::SelectQuery, query_range, &query_children));
+            if let Some(query) = build_select_query_until(b, source, tokens, idx, period_i) {
+                children.push(query);
             }
             children.push(token_leaf(b, &tokens[period_i]));
             (children, period_i + 1)
@@ -12323,6 +12471,66 @@ pub fn try_parse_select_stmt(
     Some((node, cursor))
 }
 
+pub fn try_parse_with_select_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let with_tok = tokens.get(idx)?;
+    if !is_keyword(source, with_tok, "with") {
+        return None;
+    }
+    let main_select_idx = find_with_main_select_idx(source, tokens, idx)?;
+
+    let mut children = Vec::new();
+    if let Some(with_clause) = build_select_with_clause(b, source, tokens, idx, main_select_idx) {
+        children.push(with_clause);
+    } else {
+        push_token_children(b, &mut children, tokens, idx, main_select_idx);
+    }
+    let (select_children, next) =
+        parse_select_header_until_period(b, source, tokens, main_select_idx, errors);
+    children.extend(select_children);
+
+    let mut cursor = next;
+    let endselect_idx = recover_skip_after_keyword(source, tokens, next, "ENDSELECT");
+    if !select_header_is_flat(tokens, source, main_select_idx, next)
+        && endselect_idx != tokens.len()
+    {
+        let (body, after_body) =
+            parse_body_until_keywords(b, source, tokens, cursor, errors, &["ENDSELECT"]);
+        children.extend(body);
+        cursor = after_body;
+        let (end_children, next_after, end_pos) = parse_end_keyword(
+            b,
+            source,
+            tokens,
+            cursor,
+            with_tok,
+            "ENDSELECT",
+            "syntax error: expected ENDSELECT",
+            errors,
+        );
+        children.extend(end_children);
+        let node = b.branch(
+            SyntaxKind::SelectStmt,
+            with_tok.range.start..end_pos,
+            &children,
+        );
+        return Some((node, next_after));
+    }
+
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(with_tok.range.end);
+    let node = b.branch(SyntaxKind::SelectStmt, with_tok.range.start..end, &children);
+    Some((node, cursor))
+}
+
 pub fn try_parse_open_cursor_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -13137,6 +13345,97 @@ END OF BLOCK b02.",
                 .count_kind(parsed.file.root(), SyntaxKind::WriteStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_with_common_table_expression_as_select_stmt() {
+        let src = r#"
+WITH +flights AS (
+  SELECT carrid, connid
+    FROM sflight
+)
+SELECT carrid
+  FROM +flights
+  INTO TABLE @DATA(lt_flights).
+"#;
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWithClause),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectCteDefinition),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 2);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectFromClause),
+            2
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::MacroCallStmt), 0);
+    }
+
+    #[test]
+    fn parses_multiple_common_table_expressions() {
+        let src = r#"
+WITH +carriers AS (
+       SELECT carrid FROM scarr
+     ),
+     +flights AS (
+       SELECT carrid FROM sflight
+     )
+SELECT carrid FROM +flights INTO TABLE @DATA(lt_flights).
+"#;
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectCteDefinition),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectQuery), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn parses_host_expression_inside_common_table_expression() {
+        let src = r#"
+DATA lv_carrid TYPE string.
+
+WITH +flights AS (
+  SELECT carrid
+    FROM sflight
+    WHERE carrid = @lv_carrid
+)
+SELECT carrid FROM +flights INTO TABLE @DATA(lt_flights).
+"#;
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SqlHostExpr), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectWhereClause),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SelectIntoClause),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

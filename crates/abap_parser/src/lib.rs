@@ -97,6 +97,7 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
     IdentLeadParserRegistration::new(&["interface"], surface_stmt::try_parse_interface_decl),
     IdentLeadParserRegistration::new(&["method"], surface_stmt::try_parse_method_decl),
     IdentLeadParserRegistration::new(&["select"], surface_stmt::try_parse_select_stmt),
+    IdentLeadParserRegistration::new(&["with"], surface_stmt::try_parse_with_select_stmt),
     IdentLeadParserRegistration::new(&["open"], surface_stmt::try_parse_open_cursor_stmt),
     IdentLeadParserRegistration::new(&["fetch"], surface_stmt::try_parse_fetch_cursor_stmt),
     IdentLeadParserRegistration::new(&["close"], surface_stmt::try_parse_close_cursor_stmt),

@@ -4,7 +4,7 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AstNode, DataDeclName, SelectIntoClause, SelectJoinClause, SelectProjectionList, SelectQuery,
-    SelectStmt, SqlAggregateCall, SqlColumnRef, SqlDataSource, SqlProjectionItem,
+    SelectStmt, SelectWithClause, SqlAggregateCall, SqlColumnRef, SqlDataSource, SqlProjectionItem,
     SqlQualifiedColumnRef, SqlQualifiedStar,
 };
 use abap_lexer::TextRange;
@@ -93,28 +93,89 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             return;
         };
         let query_node = stmt.query().map(|query| query.syntax().id());
-        let non_query_children: Vec<_> =
-            stmt.non_query_children().map(|child| child.id()).collect();
+        let with_clause_node = stmt
+            .with_clause()
+            .map(|with_clause| with_clause.syntax().id());
+        let cte_names = with_clause_node
+            .map(|with_clause| self.select_cte_names(with_clause))
+            .unwrap_or_default();
+        let cte_query_nodes = with_clause_node
+            .map(|with_clause| self.select_cte_query_nodes(with_clause))
+            .unwrap_or_default();
+        let non_query_children: Vec<_> = stmt
+            .non_query_children()
+            .map(|child| child.id())
+            .filter(|child| Some(*child) != with_clause_node)
+            .collect();
         let has_endselect = self.ctx.control_lowering().select_stmt_has_endselect(node);
         if has_endselect {
             let range = self.ctx.file().range(node);
             let child_scope = self
                 .ctx
                 .push_scope(ScopeKind::SelectBlock, range, Some(scope), None);
+            for cte_query_node in &cte_query_nodes {
+                self.collect_select_query(*cte_query_node, child_scope, false, &cte_names);
+            }
             if let Some(query_node) = query_node {
-                self.collect_select_query(query_node, child_scope, true);
+                self.collect_select_query(query_node, child_scope, true, &cte_names);
             }
             for child in non_query_children {
                 self.ctx.walk_node(child, child_scope);
             }
         } else {
+            for cte_query_node in &cte_query_nodes {
+                self.collect_select_query(*cte_query_node, scope, false, &cte_names);
+            }
             if let Some(query_node) = query_node {
-                self.collect_select_query(query_node, scope, false);
+                self.collect_select_query(query_node, scope, false, &cte_names);
             }
             for child in non_query_children {
                 self.ctx.walk_node(child, scope);
             }
         }
+    }
+
+    fn select_cte_names(&self, with_clause_node: NodeId) -> Vec<Arc<str>> {
+        let Some(with_clause) = SelectWithClause::cast(self.ctx.syntax(with_clause_node)) else {
+            return Vec::new();
+        };
+        with_clause
+            .definitions()
+            .filter_map(|definition| self.select_cte_definition_name(definition.syntax().id()))
+            .collect()
+    }
+
+    fn select_cte_query_nodes(&self, with_clause_node: NodeId) -> Vec<NodeId> {
+        let Some(with_clause) = SelectWithClause::cast(self.ctx.syntax(with_clause_node)) else {
+            return Vec::new();
+        };
+        with_clause
+            .definitions()
+            .filter_map(|definition| definition.query().map(|query| query.syntax().id()))
+            .collect()
+    }
+
+    fn select_cte_definition_name(&self, definition_node: NodeId) -> Option<Arc<str>> {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(definition_node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        let first = tokens.first()?;
+        if first.text.as_ref() == "+"
+            && let Some(name) = tokens
+                .get(1)
+                .filter(|token| self.ctx.syntax_token_is_ident_like(token))
+        {
+            return Some(Arc::<str>::from(format!(
+                "+{}",
+                name.text.to_ascii_lowercase()
+            )));
+        }
+        self.ctx
+            .syntax_token_is_ident_like(first)
+            .then(|| Self::lower_arc(first.text.as_ref()))
     }
 
     pub(super) fn collect_insert_db_table_stmt(&mut self, node: NodeId, scope: ScopeId) {
@@ -627,6 +688,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         node: NodeId,
         scope: ScopeId,
         has_endselect: bool,
+        local_cte_names: &[Arc<str>],
     ) {
         let Some(query) = SelectQuery::cast(self.ctx.syntax(node)) else {
             return;
@@ -682,7 +744,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 }
                 SyntaxKind::SelectFromClause => {
                     from_clause = Some(child_range);
-                    self.collect_select_from_clause(query_id, child_id, scope);
+                    self.collect_select_from_clause(query_id, child_id, scope, local_cte_names);
                 }
                 SyntaxKind::SelectIntoClause => {
                     into_clause = Some(child_range);
@@ -1213,7 +1275,13 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         });
     }
 
-    fn collect_select_from_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+    fn collect_select_from_clause(
+        &mut self,
+        query_id: usize,
+        node: NodeId,
+        scope: ScopeId,
+        local_cte_names: &[Arc<str>],
+    ) {
         let mut saw_base_source = false;
         let children: Vec<_> = self
             .ctx
@@ -1230,10 +1298,17 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                         SqlSourceKind::From
                     };
                     saw_base_source = true;
-                    self.collect_sql_data_source(query_id, child, scope, source_kind, None);
+                    self.collect_sql_data_source(
+                        query_id,
+                        child,
+                        scope,
+                        source_kind,
+                        None,
+                        local_cte_names,
+                    );
                 }
                 SyntaxKind::SelectJoinClause => {
-                    self.collect_select_join_clause(query_id, child, scope)
+                    self.collect_select_join_clause(query_id, child, scope, local_cte_names)
                 }
                 _ => {}
             }
@@ -1271,10 +1346,16 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             return;
         }
 
-        self.collect_sql_data_source(query_id, node, scope, SqlSourceKind::From, None);
+        self.collect_sql_data_source(query_id, node, scope, SqlSourceKind::From, None, &[]);
     }
 
-    fn collect_select_join_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+    fn collect_select_join_clause(
+        &mut self,
+        query_id: usize,
+        node: NodeId,
+        scope: ScopeId,
+        local_cte_names: &[Arc<str>],
+    ) {
         let Some(join_clause) = SelectJoinClause::cast(self.ctx.syntax(node)) else {
             return;
         };
@@ -1292,6 +1373,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 scope,
                 SqlSourceKind::Join,
                 join_kind,
+                local_cte_names,
             );
         }
         if let Some(predicate_id) = predicate_id {
@@ -1306,6 +1388,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         scope: ScopeId,
         source_kind: SqlSourceKind,
         join_kind: Option<Arc<str>>,
+        local_cte_names: &[Arc<str>],
     ) {
         let alias_info = SqlDataSource::cast(self.ctx.syntax(node))
             .and_then(|source| source.alias())
@@ -1342,6 +1425,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         };
         let name = Arc::<str>::from(name_text.to_ascii_lowercase());
         let alias = alias_info.as_ref().map(|(name, _)| Arc::clone(name));
+        let is_local_cte_source = local_cte_names.iter().any(|cte| cte == &name);
 
         let source_range = self.ctx.file().range(node);
         self.ctx.emit_sql_source(SqlSourceData {
@@ -1353,14 +1437,16 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             join_kind,
             resolution: SqlResolution::External,
         });
-        self.push_sql_name_ref(
-            query_id,
-            scope,
-            name_range,
-            name,
-            None,
-            SqlNameRefKind::Source,
-        );
+        if !is_local_cte_source {
+            self.push_sql_name_ref(
+                query_id,
+                scope,
+                name_range,
+                Arc::clone(&name),
+                None,
+                SqlNameRefKind::Source,
+            );
+        }
         if let Some(alias_name) = alias {
             let alias_range = alias_info
                 .as_ref()

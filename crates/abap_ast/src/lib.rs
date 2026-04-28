@@ -355,6 +355,10 @@ pub enum SyntaxKind {
     CursorHandleOperand,
     /// Structured SQL query payload inside `SELECT`.
     SelectQuery,
+    /// Common table expression prefix before the main Open SQL `SELECT`.
+    SelectWithClause,
+    /// One `WITH +cte AS ( SELECT ... )` common table expression definition.
+    SelectCteDefinition,
     /// Projection segment between `SELECT` and the next SQL clause.
     SelectProjectionList,
     /// `FROM ...`
@@ -896,6 +900,8 @@ impl SyntaxKind {
             Self::CloseDatasetStmt => "CloseDatasetStmt",
             Self::CursorHandleOperand => "CursorHandleOperand",
             Self::SelectQuery => "SelectQuery",
+            Self::SelectWithClause => "SelectWithClause",
+            Self::SelectCteDefinition => "SelectCteDefinition",
             Self::SelectProjectionList => "SelectProjectionList",
             Self::SelectFromClause => "SelectFromClause",
             Self::SelectIntoClause => "SelectIntoClause",

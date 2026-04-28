@@ -815,6 +815,8 @@ ast_node!(OpenDatasetStmt, SyntaxKind::OpenDatasetStmt);
 ast_node!(CloseDatasetStmt, SyntaxKind::CloseDatasetStmt);
 ast_node!(CursorHandleOperand, SyntaxKind::CursorHandleOperand);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
+ast_node!(SelectWithClause, SyntaxKind::SelectWithClause);
+ast_node!(SelectCteDefinition, SyntaxKind::SelectCteDefinition);
 ast_node!(SelectProjectionList, SyntaxKind::SelectProjectionList);
 ast_node!(SelectFromClause, SyntaxKind::SelectFromClause);
 ast_node!(SelectIntoClause, SyntaxKind::SelectIntoClause);
@@ -3781,6 +3783,12 @@ impl<'a> UpdateSetClause<'a> {
 }
 
 impl<'a> SelectStmt<'a> {
+    pub fn with_clause(&self) -> Option<SelectWithClause<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SelectWithClause)
+            .and_then(SelectWithClause::cast)
+    }
+
     pub fn query(&self) -> Option<SelectQuery<'a>> {
         self.syntax
             .child_by_kind(SyntaxKind::SelectQuery)
@@ -3836,6 +3844,22 @@ impl<'a> SelectQuery<'a> {
         kind: SyntaxKind,
     ) -> impl DoubleEndedIterator<Item = SyntaxNodeRef<'a>> + Clone + 'a {
         self.syntax.children_by_kind(kind)
+    }
+}
+
+impl<'a> SelectWithClause<'a> {
+    pub fn definitions(
+        self,
+    ) -> impl DoubleEndedIterator<Item = SelectCteDefinition<'a>> + Clone + 'a {
+        self.syntax.children().filter_map(SelectCteDefinition::cast)
+    }
+}
+
+impl<'a> SelectCteDefinition<'a> {
+    pub fn query(self) -> Option<SelectQuery<'a>> {
+        self.syntax
+            .child_by_kind(SyntaxKind::SelectQuery)
+            .and_then(SelectQuery::cast)
     }
 }
 

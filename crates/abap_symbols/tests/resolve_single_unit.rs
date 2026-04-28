@@ -2707,6 +2707,90 @@ WRITE lt_flights.
 }
 
 #[test]
+fn collects_sql_semantics_for_common_table_expression_select() {
+    let src = r#"
+DATA lv_carrid TYPE string.
+
+WITH +filtered AS (
+       SELECT carrid, connid
+         FROM sflight
+         WHERE carrid = @lv_carrid
+     ),
+     +joined AS (
+       SELECT f~carrid
+         FROM +filtered AS f
+         INNER JOIN spfli AS p ON p~carrid = f~carrid
+     )
+SELECT carrid
+  FROM +joined
+  INTO TABLE @DATA(lt_flights).
+
+WRITE lt_flights.
+"#;
+    let parsed = parse(src);
+    let unit = analyze_unit("file:///sql_cte_select.abap", src, &parsed);
+
+    assert_eq!(unit.sql_queries.len(), 3, "{:?}", unit.sql_queries);
+    for source_name in ["sflight", "spfli", "+filtered", "+joined"] {
+        assert!(
+            unit.sql_sources
+                .iter()
+                .any(|source| source.name.as_ref() == source_name),
+            "expected SQL source {source_name}, sources={:?}",
+            unit.sql_sources
+        );
+    }
+    for external_source in ["sflight", "spfli"] {
+        assert!(
+            unit.sql_name_refs.iter().any(|reference| {
+                reference.kind == SqlNameRefKind::Source
+                    && reference.name.as_ref() == external_source
+            }),
+            "expected external SQL source ref for {external_source}, refs={:?}",
+            unit.sql_name_refs
+        );
+    }
+    for cte_source in ["+filtered", "+joined"] {
+        assert!(
+            !unit.sql_name_refs.iter().any(|reference| {
+                reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == cte_source
+            }),
+            "local CTE source should not be emitted as DDIC source ref: {:?}",
+            unit.sql_name_refs
+        );
+    }
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_carrid"
+            && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+    }));
+    assert!(unit.sql_targets.iter().any(|target| {
+        target.kind == SqlTargetKind::Into
+            && target.is_table
+            && target.is_inline
+            && target.target_name.as_deref() == Some("lt_flights")
+    }));
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && (diag.message.contains("filtered")
+                    || diag.message.contains("joined")
+                    || diag.message.contains("lv_carrid"))
+        }),
+        "unexpected unresolved CTE/host diagnostic: {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnverifiedOpenSqlSource
+                && (diag.message.contains("+filtered") || diag.message.contains("+joined"))
+        }),
+        "unexpected CTE source verification diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn collects_sql_semantics_for_documented_select_tail_clauses() {
     let src = r#"
 DATA lv_pack TYPE i.
