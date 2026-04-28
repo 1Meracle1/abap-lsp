@@ -75,6 +75,7 @@ const STRUCTURAL_SIMPLE_STMT_CLASSIFIERS: &[GuardedSimpleStmtClassifier] = &[
     GuardedSimpleStmtClassifier::new(&["interfaces", "interface"], classify_interfaces_stmt),
     GuardedSimpleStmtClassifier::new(&["field"], classify_field_stmt),
     GuardedSimpleStmtClassifier::new(&["suppress"], classify_suppress_dialog_stmt),
+    GuardedSimpleStmtClassifier::new(&["log"], classify_log_point_stmt),
     GuardedSimpleStmtClassifier::new(&[], classify_direct_call_stmt),
 ];
 
@@ -2646,6 +2647,76 @@ fn build_classic_text_stmt_children(
     children
 }
 
+fn push_maybe_inline_target_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+) {
+    let target_start = next_non_comment(tokens, start, end);
+    let target_end = trim_trailing_comments(tokens, target_start, end);
+    push_token_range(b, children, tokens, start, target_start);
+    if target_start >= target_end {
+        push_token_range(b, children, tokens, target_start, end);
+        return;
+    }
+
+    if let Some(inline_decl) =
+        build_data_inline_decl_local(b, source, tokens, target_start, target_end)
+    {
+        children.push(inline_decl);
+        push_token_range(b, children, tokens, target_end, end);
+    } else {
+        push_token_range(b, children, tokens, target_start, end);
+    }
+}
+
+fn build_get_time_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let Some(field_idx) = find_top_level_keyword_index(source, tokens, idx + 2, period_i, "field")
+    else {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect();
+    };
+
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    push_token_range(b, &mut children, tokens, idx, field_idx + 1);
+    push_maybe_inline_target_child(b, &mut children, source, tokens, field_idx + 1, period_i);
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_get_parameter_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let Some(field_idx) = find_top_level_keyword_index(source, tokens, idx + 2, period_i, "field")
+    else {
+        return tokens[idx..=period_i]
+            .iter()
+            .map(|token| token_leaf(b, token))
+            .collect();
+    };
+
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    push_token_range(b, &mut children, tokens, idx, field_idx + 1);
+    push_maybe_inline_target_child(b, &mut children, source, tokens, field_idx + 1, period_i);
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
     let Some(first) = significant.first() else {
         return false;
@@ -3068,6 +3139,14 @@ fn classify_get_runtime_stmt(source: &str, significant: &[&Token]) -> Option<Syn
         Some(SyntaxKind::GetBadiStmt)
     } else if token_matches_keyword(source, significant[1], "cursor") {
         Some(SyntaxKind::GetCursorStmt)
+    } else if token_matches_keyword(source, significant[1], "parameter") {
+        Some(SyntaxKind::GetParameterStmt)
+    } else if token_matches_keyword(source, significant[1], "time")
+        && !significant
+            .get(2)
+            .is_some_and(|token| token_matches_keyword(source, token, "stamp"))
+    {
+        Some(SyntaxKind::GetTimeStmt)
     } else {
         None
     }
@@ -3106,6 +3185,11 @@ fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
         && token_matches_keyword(source, significant[1], "handler")
     {
         Some(SyntaxKind::SetHandlerStmt)
+    } else if significant.len() >= 3
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "parameter")
+    {
+        Some(SyntaxKind::SetParameterStmt)
     } else {
         None
     }
@@ -3157,6 +3241,13 @@ fn classify_field_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKin
     } else {
         Some(SyntaxKind::FieldStmt)
     }
+}
+
+fn classify_log_point_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
+    let last = *significant.last()?;
+    (last.kind == TokenKind::Period
+        && significant_starts_hyphenated_keyword(source, significant, &["log", "point"]))
+    .then_some(SyntaxKind::LogPointStmt)
 }
 
 fn classify_direct_call_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxKind> {
@@ -3552,6 +3643,12 @@ pub fn try_parse_simple_stmt(
                     build_replace_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::WaitStmt => build_wait_stmt_children(b, source, tokens, idx, period_i),
+                SyntaxKind::GetTimeStmt => {
+                    build_get_time_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::GetParameterStmt => {
+                    build_get_parameter_stmt_children(b, source, tokens, idx, period_i)
+                }
                 SyntaxKind::AddStmt
                 | SyntaxKind::SubtractStmt
                 | SyntaxKind::ComputeStmt

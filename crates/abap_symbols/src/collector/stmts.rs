@@ -1196,6 +1196,280 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn period_index_infos(&self, tokens: &[SyntaxTokenInfo]) -> usize {
+        tokens
+            .iter()
+            .position(|token| token.text.as_ref() == ".")
+            .unwrap_or(tokens.len())
+    }
+
+    fn clause_end_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        keywords: &[&str],
+    ) -> usize {
+        let period_idx = self.period_index_infos(tokens);
+        self.find_top_level_keyword_infos(tokens, start, keywords)
+            .filter(|&idx| idx < period_idx)
+            .unwrap_or(period_idx)
+    }
+
+    fn trim_comment_bounds_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        mut end: usize,
+    ) -> (usize, usize) {
+        let mut start = start;
+        while start < end && self.collector.syntax_token_is_comment(&tokens[start]) {
+            start += 1;
+        }
+        while end > start && self.collector.syntax_token_is_comment(&tokens[end - 1]) {
+            end -= 1;
+        }
+        (start, end)
+    }
+
+    fn token_infos_range(&self, tokens: &[SyntaxTokenInfo]) -> Option<abap_lexer::TextRange> {
+        tokens
+            .iter()
+            .filter(|token| !self.collector.syntax_token_is_comment(token))
+            .map(|token| token.range.clone())
+            .reduce(|acc, next| acc.start.min(next.start)..acc.end.max(next.end))
+    }
+
+    fn value_access_from_token_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) -> Option<FieldAccess> {
+        let clean = tokens
+            .iter()
+            .filter(|token| !self.collector.syntax_token_is_comment(token))
+            .cloned()
+            .collect::<Vec<_>>();
+        let first = clean.first()?;
+        if let Some((next_idx, namespace, base_name, base_range, field_path, _)) =
+            self.collector.consume_selector_access_from_infos(&clean, 0)
+            && next_idx == clean.len()
+            && namespace == Namespace::Value
+        {
+            return Some(FieldAccess {
+                scope,
+                base_namespace: namespace,
+                base_name,
+                base_range,
+                field_path,
+                in_type_position: false,
+            });
+        }
+
+        self.collector
+            .syntax_token_is_ident_like(first)
+            .then(|| FieldAccess {
+                scope,
+                base_namespace: Namespace::Value,
+                base_name: Arc::<str>::from(first.text.to_ascii_lowercase()),
+                base_range: first.range.clone(),
+                field_path: Vec::new(),
+                in_type_position: false,
+            })
+    }
+
+    fn emit_assignment_site_from_token_infos(
+        &mut self,
+        scope: ScopeId,
+        stmt_range: abap_lexer::TextRange,
+        target_tokens: &[SyntaxTokenInfo],
+    ) {
+        let Some(lhs_range) = self.token_infos_range(target_tokens) else {
+            return;
+        };
+        self.collector
+            .collect_token_expression_refs_infos(target_tokens, scope, true);
+        let lhs_target_access = self.value_access_from_token_infos(target_tokens, scope);
+        self.collector.emit_assignment_site(AssignmentSiteData {
+            scope,
+            range: stmt_range.clone(),
+            lhs_range,
+            rhs_range: stmt_range.start..stmt_range.start,
+            lhs_target_access,
+            lhs: TypeFactData::default(),
+            rhs: TypeFactData::default(),
+            rhs_is_top_level_sum: false,
+        });
+    }
+
+    fn collect_dynamic_id_operand_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+        require_parenthesized: bool,
+    ) {
+        let (start, end) = self.trim_comment_bounds_infos(tokens, start, end);
+        if start >= end {
+            return;
+        }
+
+        if tokens[start].text.as_ref() == "("
+            && let Some(close_idx) = self
+                .collector
+                .find_matching_group_end_infos(tokens, start, "(", ")")
+            && close_idx + 1 == end
+        {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[start + 1..close_idx],
+                scope,
+                true,
+            );
+            return;
+        }
+
+        if require_parenthesized {
+            return;
+        }
+
+        self.collector
+            .collect_token_expression_refs_infos(&tokens[start..end], scope, true);
+    }
+
+    fn collect_simple_operand_list_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) {
+        let mut idx = start;
+        while idx < end {
+            if matches!(tokens[idx].text.as_ref(), "," | ":") {
+                idx += 1;
+                continue;
+            }
+            let operand_end = self.consume_simple_operand_tokens(tokens, idx).min(end);
+            if operand_end <= idx {
+                idx += 1;
+                continue;
+            }
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[idx..operand_end],
+                scope,
+                true,
+            );
+            idx = operand_end;
+        }
+    }
+
+    fn inline_decl_child_in_range(
+        &self,
+        node: NodeId,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<NodeId> {
+        let range = self.token_infos_range(tokens)?;
+        self.collector.file.children(node).find(|&child| {
+            self.collector.file.kind(child) == SyntaxKind::DataInlineDecl && {
+                let child_range = self.collector.file.range(child);
+                child_range.start >= range.start && child_range.end <= range.end
+            }
+        })
+    }
+
+    fn collect_or_assign_runtime_target_infos(
+        &mut self,
+        node: NodeId,
+        scope: ScopeId,
+        target_tokens: &[SyntaxTokenInfo],
+        assign: bool,
+    ) {
+        if let Some(inline_decl) = self.inline_decl_child_in_range(node, target_tokens) {
+            self.collector
+                .decl_lowering()
+                .walk_inline_decl(inline_decl, scope);
+            return;
+        }
+
+        if assign {
+            self.emit_assignment_site_from_token_infos(
+                scope,
+                self.collector.file.range(node),
+                target_tokens,
+            );
+        } else {
+            self.collector
+                .collect_token_expression_refs_infos(target_tokens, scope, true);
+        }
+    }
+
+    pub(super) fn collect_get_time_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let Some(field_idx) = self.find_top_level_keyword_infos(&tokens, 2, &["FIELD"]) else {
+            return;
+        };
+        let period_idx = self.period_index_infos(&tokens);
+        if field_idx + 1 < period_idx {
+            self.collect_or_assign_runtime_target_infos(
+                node,
+                scope,
+                &tokens[field_idx + 1..period_idx],
+                true,
+            );
+        }
+    }
+
+    pub(super) fn collect_get_parameter_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let Some(field_idx) = self.find_top_level_keyword_infos(&tokens, 2, &["FIELD"]) else {
+            return;
+        };
+        if let Some(id_idx) = self
+            .find_top_level_keyword_infos(&tokens, 2, &["ID"])
+            .filter(|&idx| idx < field_idx)
+        {
+            self.collect_dynamic_id_operand_infos(&tokens, id_idx + 1, field_idx, scope, false);
+        }
+
+        let period_idx = self.period_index_infos(&tokens);
+        if field_idx + 1 < period_idx {
+            self.collect_or_assign_runtime_target_infos(
+                node,
+                scope,
+                &tokens[field_idx + 1..period_idx],
+                true,
+            );
+        }
+    }
+
+    pub(super) fn collect_set_parameter_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let Some(field_idx) = self.find_top_level_keyword_infos(&tokens, 2, &["FIELD"]) else {
+            return;
+        };
+        if let Some(id_idx) = self
+            .find_top_level_keyword_infos(&tokens, 2, &["ID"])
+            .filter(|&idx| idx < field_idx)
+        {
+            self.collect_dynamic_id_operand_infos(&tokens, id_idx + 1, field_idx, scope, false);
+        }
+
+        let period_idx = self.period_index_infos(&tokens);
+        if field_idx + 1 < period_idx {
+            self.collect_or_assign_runtime_target_infos(
+                node,
+                scope,
+                &tokens[field_idx + 1..period_idx],
+                false,
+            );
+        }
+    }
+
+    pub(super) fn collect_log_point_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        self.collect_log_point_stmt_infos(&tokens, scope);
+    }
+
     fn collect_log_point_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) -> bool {
         if tokens.len() < 4
             || !tokens[0].text.eq_ignore_ascii_case("log")
@@ -1213,22 +1487,16 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
 
             if token.text.eq_ignore_ascii_case("id") {
-                idx += 1;
-                if idx < tokens.len() && tokens[idx].text.as_ref() != "." {
-                    idx += 1;
-                }
+                let start = idx + 1;
+                let end = self.clause_end_infos(tokens, start, &["SUBKEY", "FIELDS"]);
+                self.collect_dynamic_id_operand_infos(tokens, start, end, scope, true);
+                idx = end;
                 continue;
             }
 
             if token.text.eq_ignore_ascii_case("subkey") {
                 let start = idx + 1;
-                let mut end = start;
-                while end < tokens.len()
-                    && tokens[end].text.as_ref() != "."
-                    && !tokens[end].text.eq_ignore_ascii_case("fields")
-                {
-                    end += 1;
-                }
+                let end = self.clause_end_infos(tokens, start, &["FIELDS"]);
                 if start < end {
                     self.collector.collect_token_expression_refs_infos(
                         &tokens[start..end],
@@ -1242,16 +1510,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
             if token.text.eq_ignore_ascii_case("fields") {
                 let start = idx + 1;
-                let mut end = start;
-                while end < tokens.len() && tokens[end].text.as_ref() != "." {
-                    end += 1;
-                }
+                let end = self.period_index_infos(tokens);
                 if start < end {
-                    self.collector.collect_token_expression_refs_infos(
-                        &tokens[start..end],
-                        scope,
-                        true,
-                    );
+                    self.collect_simple_operand_list_infos(tokens, start, end, scope);
                 }
                 return true;
             }

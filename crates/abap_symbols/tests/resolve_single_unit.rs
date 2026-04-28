@@ -12639,6 +12639,105 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_runtime_parameter_time_and_log_point_operands() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA lv_pid TYPE string VALUE 'ABC'.
+  DATA lv_value TYPE string.
+  DATA lv_time TYPE t.
+  DATA lv_subkey TYPE string.
+  DATA lv_log_id TYPE string.
+  DATA lv_field1 TYPE string.
+  DATA lv_field2 TYPE string.
+
+  GET PARAMETER ID lv_pid FIELD lv_value.
+  SET PARAMETER ID lv_pid FIELD lv_value.
+  GET TIME FIELD lv_time.
+  LOG-POINT ID (lv_log_id) SUBKEY lv_subkey
+    FIELDS lv_value lv_field1 lv_field2.
+"#;
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unit = analyze_unit("file:///runtime_parameter_log_stmt.abap", src, &parsed);
+
+    for name in [
+        "lv_pid",
+        "lv_value",
+        "lv_time",
+        "lv_subkey",
+        "lv_log_id",
+        "lv_field1",
+        "lv_field2",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected runtime/log reference for `{name}` to resolve, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected runtime/log diagnostics for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    for keyword in [
+        "parameter",
+        "id",
+        "field",
+        "log",
+        "point",
+        "subkey",
+        "fields",
+    ] {
+        assert!(
+            unit.references.iter().all(|reference| {
+                !reference.name.eq_ignore_ascii_case(keyword) || reference.resolution.is_some()
+            }),
+            "keyword `{keyword}` became an unresolved reference: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    let assignment_targets = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    for target in ["lv_value", "lv_time"] {
+        assert!(
+            assignment_targets.iter().any(|found| found == target),
+            "expected runtime write target `{target}`, targets={assignment_targets:?}"
+        );
+    }
+    assert!(
+        unit.value_flow_edges
+            .iter()
+            .filter(|edge| edge.kind == ValueFlowKind::Assignment)
+            .count()
+            >= 2,
+        "expected assignment flow for runtime write targets, got {:?}",
+        unit.value_flow_edges
+    );
+}
+
+#[test]
 fn set_gui_statements_resolve_operands_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.

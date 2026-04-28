@@ -147,6 +147,11 @@ fn classifies_runtime_generated_and_dynpro_statements() {
         "SET CURSOR 2 LS-CLINE.\n",
         "GET CURSOR FIELD l_field.\n",
         "GET CURSOR FIELD f LINE l OFFSET o.\n",
+        "GET TIME.\n",
+        "GET TIME FIELD lv_time.\n",
+        "GET PARAMETER ID lv_pid FIELD lv_value.\n",
+        "SET PARAMETER ID lv_pid FIELD lv_value.\n",
+        "LOG-POINT ID (lv_log_id) SUBKEY lv_subkey FIELDS lv_value.\n",
         "GET BADI lr_runtime.\n",
         "SET HANDLER lcl_alv_handler=>added_function FOR events.\n"
     );
@@ -186,6 +191,16 @@ fn classifies_runtime_generated_and_dynpro_statements() {
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetScreenStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetCursorStmt), 2);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetCursorStmt), 2);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetTimeStmt), 2);
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::GetParameterStmt),
+        1
+    );
+    assert_eq!(
+        parsed.file.count_kind(root, SyntaxKind::SetParameterStmt),
+        1
+    );
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::LogPointStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetBadiStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetHandlerStmt), 1);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);

@@ -623,6 +623,14 @@ pub enum SyntaxKind {
     AuthorityCheckFieldOperand,
     /// `GET TIME STAMP FIELD ... .`
     GetTimeStampStmt,
+    /// `GET PARAMETER ID ... FIELD ... .`
+    GetParameterStmt,
+    /// `SET PARAMETER ID ... FIELD ... .`
+    SetParameterStmt,
+    /// `GET TIME [FIELD ...] .`
+    GetTimeStmt,
+    /// `LOG-POINT ID ... [SUBKEY ...] [FIELDS ...] .`
+    LogPointStmt,
     /// `GET REFERENCE OF ... INTO ... .`
     GetReferenceStmt,
     /// `GET BIT ... OF ... INTO ... .`
@@ -988,6 +996,10 @@ impl SyntaxKind {
             Self::AuthorityCheckIdOperand => "AuthorityCheckIdOperand",
             Self::AuthorityCheckFieldOperand => "AuthorityCheckFieldOperand",
             Self::GetTimeStampStmt => "GetTimeStampStmt",
+            Self::GetParameterStmt => "GetParameterStmt",
+            Self::SetParameterStmt => "SetParameterStmt",
+            Self::GetTimeStmt => "GetTimeStmt",
+            Self::LogPointStmt => "LogPointStmt",
             Self::GetReferenceStmt => "GetReferenceStmt",
             Self::GetBitStmt => "GetBitStmt",
             Self::GetBadiStmt => "GetBadiStmt",

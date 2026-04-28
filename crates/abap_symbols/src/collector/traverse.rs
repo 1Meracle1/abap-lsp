@@ -192,6 +192,14 @@ impl<'a> Collector<'a> {
             SyntaxKind::GetTimeStampStmt => self
                 .stmt_lowering()
                 .collect_get_time_stamp_stmt(node, scope),
+            SyntaxKind::GetParameterStmt => {
+                self.stmt_lowering().collect_get_parameter_stmt(node, scope)
+            }
+            SyntaxKind::SetParameterStmt => {
+                self.stmt_lowering().collect_set_parameter_stmt(node, scope)
+            }
+            SyntaxKind::GetTimeStmt => self.stmt_lowering().collect_get_time_stmt(node, scope),
+            SyntaxKind::LogPointStmt => self.stmt_lowering().collect_log_point_stmt(node, scope),
             SyntaxKind::AliasesStmt => self.stmt_lowering().collect_aliases_stmt(node, scope),
             SyntaxKind::ClearStmt => self.stmt_lowering().collect_clear_stmt(node, scope),
             SyntaxKind::RefreshStmt => self.stmt_lowering().collect_refresh_stmt(node, scope),
