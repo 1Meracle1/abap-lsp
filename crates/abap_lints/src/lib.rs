@@ -228,8 +228,7 @@ impl ProjectLintAnalysis {
     pub fn diagnostics_for_uri(&self, uri: &str) -> &[LintDiagnostic] {
         self.diagnostics_by_uri
             .get(uri)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+            .map_or([].as_slice(), Vec::as_slice)
     }
 
     pub fn diagnostics_by_uri(&self) -> &BTreeMap<String, Vec<LintDiagnostic>> {
@@ -249,12 +248,6 @@ pub struct SuppressionIndex {
 impl SuppressionIndex {
     pub fn new(source: &str, lexed: &LexedSource) -> Self {
         let statements = StatementRanges::new(lexed.tokens.as_ref());
-        if statements.statements.is_empty() {
-            return Self {
-                entries: Vec::new(),
-            };
-        }
-
         let mut entries = Vec::new();
         for statement in &statements.statements {
             let first_token = &lexed.tokens[statement.first_token];
@@ -268,31 +261,23 @@ impl SuppressionIndex {
                     TriviaKind::Comment => {
                         if let Some(action) = parse_abap_lsp_allow_comment(source, piece) {
                             match action {
-                                AbapLspAllowAction::NextStatement(selectors)
-                                    if !selectors.is_empty() =>
-                                {
-                                    entries.push(SuppressionEntry {
-                                        target: SuppressionTarget::Statement(
-                                            statement.range.clone(),
-                                        ),
+                                AbapLspAllowAction::NextStatement(selectors) => {
+                                    push_abap_lsp_allow_entry(
+                                        source,
+                                        piece,
+                                        SuppressionTarget::Statement(statement.range.clone()),
                                         selectors,
-                                        kind: LintSuppressionKind::AbapLspAllow,
-                                        range: piece.range.clone(),
-                                        token: piece.lexeme(source).trim().to_string(),
-                                    });
+                                        &mut entries,
+                                    );
                                 }
-                                AbapLspAllowAction::File(selectors) if !selectors.is_empty() => {
-                                    entries.push(SuppressionEntry {
-                                        target: SuppressionTarget::File,
-                                        selectors,
-                                        kind: LintSuppressionKind::AbapLspAllow,
-                                        range: piece.range.clone(),
-                                        token: piece.lexeme(source).trim().to_string(),
-                                    });
-                                }
+                                AbapLspAllowAction::File(selectors) => push_abap_lsp_allow_entry(
+                                    source,
+                                    piece,
+                                    SuppressionTarget::File,
+                                    selectors,
+                                    &mut entries,
+                                ),
                                 AbapLspAllowAction::CurrentStatement(_) => {}
-                                AbapLspAllowAction::NextStatement(_)
-                                | AbapLspAllowAction::File(_) => {}
                             }
                         }
                     }
@@ -317,17 +302,13 @@ impl SuppressionIndex {
                             if let Some(AbapLspAllowAction::CurrentStatement(selectors)) =
                                 parse_abap_lsp_allow_comment(source, piece)
                             {
-                                if !selectors.is_empty() {
-                                    entries.push(SuppressionEntry {
-                                        target: SuppressionTarget::Statement(
-                                            statement.range.clone(),
-                                        ),
-                                        selectors,
-                                        kind: LintSuppressionKind::AbapLspAllow,
-                                        range: piece.range.clone(),
-                                        token: piece.lexeme(source).trim().to_string(),
-                                    });
-                                }
+                                push_abap_lsp_allow_entry(
+                                    source,
+                                    piece,
+                                    SuppressionTarget::Statement(statement.range.clone()),
+                                    selectors,
+                                    &mut entries,
+                                );
                             }
                         }
                         _ => {}
@@ -371,6 +352,24 @@ impl SuppressionIndex {
                 range: entry.range.clone(),
                 token: entry.token.clone(),
             })
+    }
+}
+
+fn push_abap_lsp_allow_entry(
+    source: &str,
+    piece: &TriviaPiece,
+    target: SuppressionTarget,
+    selectors: Vec<SuppressionSelector>,
+    entries: &mut Vec<SuppressionEntry>,
+) {
+    if !selectors.is_empty() {
+        entries.push(SuppressionEntry {
+            target,
+            selectors,
+            kind: LintSuppressionKind::AbapLspAllow,
+            range: piece.range.clone(),
+            token: piece.lexeme(source).trim().to_string(),
+        });
     }
 }
 
@@ -481,12 +480,8 @@ fn push_pragma_entry(
     let Some(alias) = token.strip_prefix("##") else {
         return;
     };
-    let alias = alias.trim();
-    if alias.is_empty() {
-        return;
-    }
-    let alias = normalized_lint_alias(alias);
-    if alias == "all" {
+    let alias = normalized_lint_alias(alias.trim());
+    if alias.is_empty() || alias == "all" {
         return;
     }
     entries.push(SuppressionEntry {
@@ -577,17 +572,11 @@ fn parse_lint_id_selectors(value: &str) -> Vec<SuppressionSelector> {
         .split(',')
         .filter_map(|part| {
             let part = part.trim();
-            if part.is_empty() || part.contains(':') {
-                return None;
-            }
-            if !part.chars().all(is_selector_char) {
+            if part.is_empty() || part.contains(':') || !part.chars().all(is_selector_char) {
                 return None;
             }
             let id = normalized_lint_id(part);
-            if id == "all" {
-                return None;
-            }
-            (!id.is_empty()).then_some(SuppressionSelector::LintId(id))
+            (id != "all" && !id.is_empty()).then_some(SuppressionSelector::LintId(id))
         })
         .collect::<Vec<_>>();
     selectors.sort();
@@ -743,9 +732,6 @@ impl LintPolicy {
 
         for (id, level) in &config.rules {
             let id = normalized_lint_id(id);
-            if id.is_empty() {
-                continue;
-            }
             if let Some(metadata) = metadata_for(id.as_str()) {
                 levels.insert(id, enforce_hard_error_level(metadata, *level));
             } else if is_external_provider_lint_id(id.as_str()) {

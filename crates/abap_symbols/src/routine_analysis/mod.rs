@@ -85,8 +85,7 @@ impl ProjectRoutineAnalysis {
     pub fn diagnostics_for_unit(&self, unit: UnitId) -> &[Diagnostic] {
         self.unit_diagnostics
             .get(unit.as_usize())
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or([].as_slice(), Vec::as_slice)
     }
 }
 
@@ -429,8 +428,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         };
         let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
             .get(&descriptor.id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
+            .map_or([].as_slice(), Vec::as_slice);
         let (cfg, diagnostics) = build_routine_cfg_and_diagnostics(
             unit,
             routine_control_regions,
@@ -493,8 +491,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             };
             let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
                 .get(&descriptor.id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or([].as_slice(), Vec::as_slice);
             out.metrics.dataflow_routine_runs += 1;
             let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
                 project,
@@ -712,9 +709,6 @@ impl DenseBitSet {
     }
 
     fn filled(bit_count: usize) -> Self {
-        if bit_count == 0 {
-            return Self { words: Vec::new() };
-        }
         let word_count = bit_count.div_ceil(64);
         let mut words = vec![u64::MAX; word_count];
         let trailing_bits = bit_count % 64;

@@ -220,6 +220,13 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
     let mut path: Option<String> = None;
 
     let remaining: Vec<String> = it.collect();
+    let take_value = |idx: &mut usize, flag: &str| {
+        *idx += 1;
+        remaining
+            .get(*idx)
+            .cloned()
+            .ok_or_else(|| format!("missing value for {flag}\n{}", usage()))
+    };
     let mut idx = 0usize;
     while let Some(arg) = remaining.get(idx) {
         match arg.as_str() {
@@ -233,32 +240,11 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
             "--fail-on-warnings" => lint_fail_on_warnings = true,
             "--pretty" => pretty = true,
             "--json" => json_output = true,
-            "--symbol" => {
-                idx += 1;
-                let Some(symbol) = remaining.get(idx) else {
-                    return Err(format!("missing value for --symbol\n{}", usage()));
-                };
-                call_graph_symbol = Some(symbol.clone());
-            }
-            "--target" => {
-                idx += 1;
-                let Some(target) = remaining.get(idx) else {
-                    return Err(format!("missing value for --target\n{}", usage()));
-                };
-                call_dataflow_target = Some(target.clone());
-            }
-            "--caller" => {
-                idx += 1;
-                let Some(caller) = remaining.get(idx) else {
-                    return Err(format!("missing value for --caller\n{}", usage()));
-                };
-                call_dataflow_caller = Some(caller.clone());
-            }
+            "--symbol" => call_graph_symbol = Some(take_value(&mut idx, "--symbol")?),
+            "--target" => call_dataflow_target = Some(take_value(&mut idx, "--target")?),
+            "--caller" => call_dataflow_caller = Some(take_value(&mut idx, "--caller")?),
             "--occurrence" => {
-                idx += 1;
-                let Some(raw_occurrence) = remaining.get(idx) else {
-                    return Err(format!("missing value for --occurrence\n{}", usage()));
-                };
+                let raw_occurrence = take_value(&mut idx, "--occurrence")?;
                 let occurrence = raw_occurrence.parse::<usize>().map_err(|_| {
                     format!(
                         "invalid value for --occurrence {:?}\n{}",
@@ -272,10 +258,7 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
                 call_dataflow_occurrence = Some(occurrence);
             }
             "--diagram" => {
-                idx += 1;
-                let Some(raw_diagram) = remaining.get(idx) else {
-                    return Err(format!("missing value for --diagram\n{}", usage()));
-                };
+                let raw_diagram = take_value(&mut idx, "--diagram")?;
                 saw_call_dataflow_diagram = true;
                 call_dataflow_diagram = match raw_diagram.to_ascii_lowercase().as_str() {
                     "ascii" => CallDataflowDiagramFormat::Ascii,
@@ -303,96 +286,84 @@ fn parse_cli_args(it: impl Iterator<Item = String>) -> Result<Cli, String> {
         idx += 1;
     }
 
-    if errors_only && !matches!(command, Command::Lex | Command::Parse) {
-        return Err(format!(
-            "--errors-only only applies to lex and parse\n{}",
-            usage()
-        ));
-    }
-    if unknown_only && command != Command::Symbols {
-        return Err(format!(
-            "--unknown-only only applies to symbols\n{}",
-            usage()
-        ));
-    }
-    if analyze_with_project && !matches!(command, Command::Analyze | Command::Lint) {
-        return Err(format!(
-            "--with-project only applies to analyze and lint\n{}",
-            usage()
-        ));
-    }
-    if lint_show_suppressed && command != Command::Lint {
-        return Err(format!(
-            "--show-suppressed only applies to lint\n{}",
-            usage()
-        ));
-    }
-    if lint_all_files && command != Command::Lint {
-        return Err(format!("--all-files only applies to lint\n{}", usage()));
-    }
-    if lint_fail_on_warnings && command != Command::Lint {
-        return Err(format!(
-            "--fail-on-warnings only applies to lint\n{}",
-            usage()
-        ));
-    }
-    if lint_all_files && path.as_deref() == Some("-") {
-        return Err(format!("--all-files does not support stdin\n{}", usage()));
-    }
-    if pretty
-        && !matches!(
-            command,
-            Command::Analyze
-                | Command::Lint
-                | Command::Expand
-                | Command::CallGraph
-                | Command::CallDataflow
-                | Command::RemoteCandidates
-        )
-    {
-        return Err(format!(
-            "--pretty only applies to analyze, lint, expand, call-graph, call-dataflow, and remote-candidates\n{}",
-            usage()
-        ));
-    }
-    if call_graph_symbol.is_some() && command != Command::CallGraph {
-        return Err(format!("--symbol only applies to call-graph\n{}", usage()));
-    }
-    if call_dataflow_target.is_some() && command != Command::CallDataflow {
-        return Err(format!(
-            "--target only applies to call-dataflow\n{}",
-            usage()
-        ));
-    }
-    if call_dataflow_caller.is_some() && command != Command::CallDataflow {
-        return Err(format!(
-            "--caller only applies to call-dataflow\n{}",
-            usage()
-        ));
-    }
-    if call_dataflow_occurrence.is_some() && command != Command::CallDataflow {
-        return Err(format!(
-            "--occurrence only applies to call-dataflow\n{}",
-            usage()
-        ));
-    }
-    if saw_call_dataflow_diagram && command != Command::CallDataflow {
-        return Err(format!(
-            "--diagram only applies to call-dataflow\n{}",
-            usage()
-        ));
-    }
-    if parse_show_ast && !matches!(command, Command::Parse) {
-        return Err(format!("--ast only applies to parse\n{}", usage()));
-    }
-    if matches!(command, Command::Parse) && parse_show_ast && errors_only {
-        return Err(format!(
-            "--ast and --errors-only cannot be used together on parse\n{}",
-            usage()
-        ));
-    }
-    if command == Command::CallDataflow && call_dataflow_target.is_none() {
-        return Err(format!("call-dataflow requires --target NAME\n{}", usage()));
+    for (condition, message) in [
+        (
+            errors_only && !matches!(command, Command::Lex | Command::Parse),
+            "--errors-only only applies to lex and parse",
+        ),
+        (
+            unknown_only && command != Command::Symbols,
+            "--unknown-only only applies to symbols",
+        ),
+        (
+            analyze_with_project && !matches!(command, Command::Analyze | Command::Lint),
+            "--with-project only applies to analyze and lint",
+        ),
+        (
+            lint_show_suppressed && command != Command::Lint,
+            "--show-suppressed only applies to lint",
+        ),
+        (
+            lint_all_files && command != Command::Lint,
+            "--all-files only applies to lint",
+        ),
+        (
+            lint_fail_on_warnings && command != Command::Lint,
+            "--fail-on-warnings only applies to lint",
+        ),
+        (
+            lint_all_files && path.as_deref() == Some("-"),
+            "--all-files does not support stdin",
+        ),
+        (
+            pretty
+                && !matches!(
+                    command,
+                    Command::Analyze
+                        | Command::Lint
+                        | Command::Expand
+                        | Command::CallGraph
+                        | Command::CallDataflow
+                        | Command::RemoteCandidates
+                ),
+            "--pretty only applies to analyze, lint, expand, call-graph, call-dataflow, and remote-candidates",
+        ),
+        (
+            call_graph_symbol.is_some() && command != Command::CallGraph,
+            "--symbol only applies to call-graph",
+        ),
+        (
+            call_dataflow_target.is_some() && command != Command::CallDataflow,
+            "--target only applies to call-dataflow",
+        ),
+        (
+            call_dataflow_caller.is_some() && command != Command::CallDataflow,
+            "--caller only applies to call-dataflow",
+        ),
+        (
+            call_dataflow_occurrence.is_some() && command != Command::CallDataflow,
+            "--occurrence only applies to call-dataflow",
+        ),
+        (
+            saw_call_dataflow_diagram && command != Command::CallDataflow,
+            "--diagram only applies to call-dataflow",
+        ),
+        (
+            parse_show_ast && command != Command::Parse,
+            "--ast only applies to parse",
+        ),
+        (
+            command == Command::Parse && parse_show_ast && errors_only,
+            "--ast and --errors-only cannot be used together on parse",
+        ),
+        (
+            command == Command::CallDataflow && call_dataflow_target.is_none(),
+            "call-dataflow requires --target NAME",
+        ),
+    ] {
+        if condition {
+            return Err(format!("{message}\n{}", usage()));
+        }
     }
 
     Ok(Cli {
