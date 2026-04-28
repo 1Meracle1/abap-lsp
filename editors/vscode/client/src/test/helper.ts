@@ -1,30 +1,27 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
-
-import * as vscode from 'vscode';
-import * as path from 'path';
+import * as path from "path";
+import * as vscode from "vscode";
 
 export let doc: vscode.TextDocument;
 export let editor: vscode.TextEditor;
 export let documentEol: string;
 export let platformEol: string;
 
-/**
- * Activates the vscode.lsp-sample extension
- */
-export async function activate(docUri: vscode.Uri) {
-	// The extensionId is `publisher.name` from package.json
-	const ext = vscode.extensions.getExtension('vscode-samples.lsp-sample')!;
+export const extensionId = "1meracle1.abap-lsp";
+
+export async function activate(docUri: vscode.Uri): Promise<vscode.Extension<unknown>> {
+	const ext = vscode.extensions.getExtension(extensionId);
+	if (!ext) {
+		throw new Error(`Extension ${extensionId} is not available in the test host.`);
+	}
 	await ext.activate();
 	try {
 		doc = await vscode.workspace.openTextDocument(docUri);
 		editor = await vscode.window.showTextDocument(doc);
-		await sleep(2000); // Wait for server activation
+		await sleep(2000);
 	} catch (e) {
 		console.error(e);
 	}
+	return ext;
 }
 
 async function sleep(ms: number) {
@@ -41,7 +38,7 @@ export const getDocUri = (p: string) => {
 export async function setTestContent(content: string): Promise<boolean> {
 	const all = new vscode.Range(
 		doc.positionAt(0),
-		doc.positionAt(doc.getText().length)
+		doc.positionAt(doc.getText().length),
 	);
 	return editor.edit(eb => eb.replace(all, content));
 }

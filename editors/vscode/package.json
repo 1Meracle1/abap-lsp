@@ -1,15 +1,50 @@
 {
   "name": "abap-lsp",
-  "displayName": "abap-lsp",
-  "description": "Language Server Protocol implementation for ABAP",
+  "displayName": "ABAP LSP",
+  "description": "Source-first ABAP language support powered by the Rust ABAP LSP server.",
   "version": "0.0.1",
+  "publisher": "1meracle1",
+  "license": "MIT",
+  "author": "ABAP LSP contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1Meracle1/abap-lsp.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/1Meracle1/abap-lsp/issues"
+  },
+  "homepage": "https://github.com/1Meracle1/abap-lsp#readme",
+  "preview": true,
   "engines": {
     "vscode": "^1.105.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Linters"
   ],
-  "activationEvents": [],
+  "keywords": [
+    "abap",
+    "sap",
+    "lsp",
+    "adt",
+    "language server"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onLanguage:abap",
+    "workspaceContains:abapls.toml",
+    "onCommand:abap-ls.createLinkedProject",
+    "onCommand:abap-ls.configureSapConnection",
+    "onCommand:abap-ls.searchRepositoryObjects",
+    "onCommand:abap-ls.addEditableAdtObjectToWorkspace",
+    "onCommand:abap-ls.createWorkspaceManifest",
+    "onCommand:abap-ls.refreshDependencyCache",
+    "onCommand:abap-ls.stopLanguageServer",
+    "onCommand:abap-ls.restartLanguageServer"
+  ],
   "main": "./client/out/extension",
   "contributes": {
     "commands": [
@@ -149,7 +184,7 @@
     "compile": "tsc -b",
     "watch": "tsc -b -w",
     "lint": "eslint",
-    "test:e2e": "sh ./scripts/e2e.sh"
+    "test:e2e": "node ./client/out/test/runTest"
   },
   "devDependencies": {
     "@types/node": "20.x",

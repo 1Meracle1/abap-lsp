@@ -1,23 +1,24 @@
 {
-	"name": "lsp-sample-client",
-	"description": "VSCode part of a language server",
-	"author": "Microsoft Corporation",
+	"name": "abap-lsp-client",
+	"description": "VS Code language client for ABAP LSP.",
+	"author": "ABAP LSP contributors",
 	"license": "MIT",
 	"version": "0.0.1",
-	"publisher": "vscode",
+	"publisher": "1meracle1",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/Microsoft/vscode-extension-samples"
+		"url": "https://github.com/1Meracle1/abap-lsp.git",
+		"directory": "editors/vscode/client"
 	},
 	"engines": {
-		"vscode": "^1.100.0"
+		"vscode": "^1.105.0"
 	},
 	"dependencies": {
 		"glob": "^11.0.0",
 		"vscode-languageclient": "^9.0.1"
 	},
 	"devDependencies": {
-		"@types/vscode": "^1.100.0",
-		"@vscode/test-electron": "^2.3.9"
+		"@types/vscode": "^1.105.0",
+		"@vscode/test-electron": "^2.4.1"
 	}
 }

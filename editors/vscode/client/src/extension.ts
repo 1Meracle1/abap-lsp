@@ -1,8 +1,3 @@
-/* --------------------------------------------------------------------------------------------
- * Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License. See License.txt in the project root for license information.
- * ------------------------------------------------------------------------------------------ */
-
 import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
@@ -1936,9 +1931,17 @@ export function computeAbapFoldingRanges(text: string): AbapFoldingRangeShape[] 
 					currentArmStartLine: line,
 				});
 				break;
-			case "ELSEIF":
-			case "ELSE": {
+			case "ELSEIF": {
 				const entry = findNearestIf(stack);
+				if (!entry) {
+					break;
+				}
+				pushFoldingRange(ranges, entry.currentArmStartLine ?? entry.startLine, line - 1);
+				entry.currentArmStartLine = line;
+				break;
+			}
+			case "ELSE": {
+				const entry = findNearestArmBlock(stack);
 				if (!entry) {
 					break;
 				}
@@ -1970,8 +1973,7 @@ export function computeAbapFoldingRanges(text: string): AbapFoldingRangeShape[] 
 					endKeyword: "ENDCASE",
 				});
 				break;
-			case "WHEN":
-			case "ELSE": {
+			case "WHEN": {
 				const caseEntry = findNearestCase(stack);
 				if (caseEntry) {
 					pushFoldingRange(
@@ -2051,6 +2053,19 @@ function findNearestCase(stack: BlockEntry[]): BlockEntry | undefined {
 	for (let idx = stack.length - 1; idx >= 0; idx -= 1) {
 		const entry = stack[idx];
 		if (entry.kind === "case" && entry.endKeyword === "ENDCASE") {
+			return entry;
+		}
+	}
+	return undefined;
+}
+
+function findNearestArmBlock(stack: BlockEntry[]): BlockEntry | undefined {
+	for (let idx = stack.length - 1; idx >= 0; idx -= 1) {
+		const entry = stack[idx];
+		if (
+			(entry.kind === "if" && entry.endKeyword === "ENDIF") ||
+			(entry.kind === "case" && entry.endKeyword === "ENDCASE")
+		) {
 			return entry;
 		}
 	}
