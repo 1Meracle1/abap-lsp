@@ -1311,6 +1311,44 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn loop_assigning_field_symbol_target_is_bound_inside_loop_body() {
+        let src = "\
+FORM run.\n\
+  TYPES: BEGIN OF ty_row,\n\
+           objid TYPE string,\n\
+         END OF ty_row.\n\
+  TYPES ty_tab TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.\n\
+  FIELD-SYMBOLS <lt_records> TYPE ty_tab.\n\
+  FIELD-SYMBOLS <ls_dm_obj_ids> TYPE ty_row.\n\
+  DATA lt_range_objid_for_update TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+  LOOP AT <lt_records> ASSIGNING <ls_dm_obj_ids>.\n\
+    APPEND <ls_dm_obj_ids>-objid TO lt_range_objid_for_update.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///loop_assigning_field_symbol_target.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::PossiblyUnboundFieldSymbol
+                        || !src[diagnostic.range.clone()].contains("<ls_dm_obj_ids>")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn open_sql_into_target_stays_possibly_unassigned_after_irrelevant_not_initial_guard() {
         let src = "\
 FORM run.\n\

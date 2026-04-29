@@ -2072,6 +2072,18 @@ fn build_routine_dataflow(
                 {
                     candidate_field_symbols.insert(target_value);
                     transfer.writes.push(target_value);
+                    let ValueFlowTargetData::FieldSymbol { range, name } = &edge.target else {
+                        continue;
+                    };
+                    let is_loop_target = routine_index.loop_regions.values().any(|region| {
+                        region.body_scope == instruction.scope
+                            && region.target_access.as_ref().is_some_and(|access| {
+                                access.base_range == *range
+                                    && name.as_ref().map_or(true, |name| {
+                                        access.base_name.as_ref() == name.as_ref()
+                                    })
+                            })
+                    });
                     let direct_source =
                         exact_reference_use_in_range(&reference_uses, &edge.source_range);
                     match edge.kind {
@@ -2089,12 +2101,14 @@ fn build_routine_dataflow(
                                             suppress_definite_assignment: false,
                                         });
                                     }
-                                    transfer.field_symbol_binding.push(
+                                    transfer.field_symbol_binding.push(if is_loop_target {
+                                        FieldSymbolBindingTransfer::Set(target_value)
+                                    } else {
                                         FieldSymbolBindingTransfer::Copy {
                                             target: target_value,
                                             source: source_use.value,
-                                        },
-                                    );
+                                        }
+                                    });
                                 } else {
                                     transfer
                                         .field_symbol_binding
@@ -2119,9 +2133,11 @@ fn build_routine_dataflow(
                                 &safe_read_refs,
                                 false,
                             ));
-                            transfer
-                                .field_symbol_binding
-                                .push(FieldSymbolBindingTransfer::Clear(target_value));
+                            transfer.field_symbol_binding.push(if is_loop_target {
+                                FieldSymbolBindingTransfer::Set(target_value)
+                            } else {
+                                FieldSymbolBindingTransfer::Clear(target_value)
+                            });
                         }
                         ValueFlowKind::Assignment | ValueFlowKind::CallArgument => {}
                     }
