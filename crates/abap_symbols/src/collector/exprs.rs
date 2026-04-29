@@ -1053,18 +1053,22 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             || tokens[1].text.as_ref() != "("
             || !self.ctx.syntax_token_is_ident_like(&tokens[2])
             || tokens[3].text.as_ref() != ")"
-            || tokens[4].text.as_ref() != "="
             || !self.syntax_token_is_zero_text(tokens[5].text.as_ref())
         {
             return;
         }
+        let kind = match tokens[4].text.as_ref() {
+            "=" => ValueStateCheckKind::IsInitial,
+            ">" => ValueStateCheckKind::IsNotInitial,
+            _ => return,
+        };
         self.ctx.add_value_state_check(ValueStateCheckData {
             scope,
             range: tokens[0].range.start..tokens[3].range.end,
             symbol_name: Arc::<str>::from(tokens[2].text.to_ascii_lowercase()),
             symbol_range: tokens[2].range.clone(),
             field_name: None,
-            kind: ValueStateCheckKind::IsInitial,
+            kind,
         });
     }
 
