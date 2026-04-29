@@ -102,19 +102,16 @@ pub(crate) struct SemanticIndex {
 
 impl SemanticIndex {
     pub(crate) fn build(unit: &UnitAnalysis) -> Self {
-        let symbols = unit
-            .symbols
-            .iter()
-            .enumerate()
-            .map(|(idx, symbol)| SemSymbol {
-                symbol_id: SymbolId(idx as u32),
-                scope: symbol.scope,
-                decl_range: symbol.decl_range.clone(),
-            })
-            .collect();
+        let mut symbols = Vec::with_capacity(unit.symbols.len());
         let mut symbols_by_kind_and_range: HashMap<(u8, usize, usize), Vec<SemSymbolId>> =
             HashMap::new();
         for (idx, symbol) in unit.symbols.iter().enumerate() {
+            let id = SemSymbolId(idx as u32);
+            symbols.push(SemSymbol {
+                symbol_id: SymbolId(idx as u32),
+                scope: symbol.scope,
+                decl_range: symbol.decl_range.clone(),
+            });
             symbols_by_kind_and_range
                 .entry((
                     symbol_kind_key(symbol.kind),
@@ -122,39 +119,32 @@ impl SemanticIndex {
                     symbol.decl_range.end,
                 ))
                 .or_default()
-                .push(SemSymbolId(idx as u32));
+                .push(id);
         }
-        let references = unit
-            .references
-            .iter()
-            .enumerate()
-            .map(|(idx, reference)| SemReference {
-                reference_id: ReferenceId(idx as u32),
-                scope: reference.scope,
-                range: reference.range.clone(),
-            })
-            .collect();
+        let mut references = Vec::with_capacity(unit.references.len());
         let mut references_by_resolution: HashMap<SymbolHandle, Vec<SemReferenceId>> =
             HashMap::new();
         let mut references_by_scope: HashMap<ScopeId, Vec<SemReferenceId>> = HashMap::new();
         let mut type_references_by_name: HashMap<String, Vec<SemReferenceId>> = HashMap::new();
         for (idx, reference) in unit.references.iter().enumerate() {
-            let sem_id = SemReferenceId(idx as u32);
+            let id = SemReferenceId(idx as u32);
+            references.push(SemReference {
+                reference_id: ReferenceId(idx as u32),
+                scope: reference.scope,
+                range: reference.range.clone(),
+            });
             if let Some(Resolution::Symbol(handle)) = reference.resolution {
-                references_by_resolution
-                    .entry(handle)
-                    .or_default()
-                    .push(sem_id);
+                references_by_resolution.entry(handle).or_default().push(id);
             }
             references_by_scope
                 .entry(reference.scope)
                 .or_default()
-                .push(sem_id);
+                .push(id);
             if reference.kind == ReferenceKind::TypeRef {
                 type_references_by_name
                     .entry(reference.name.to_ascii_lowercase())
                     .or_default()
-                    .push(sem_id);
+                    .push(id);
             }
         }
         let scopes = unit
@@ -177,17 +167,24 @@ impl SemanticIndex {
                 range: query.range.clone(),
             })
             .collect();
-        let sql_name_refs = unit
-            .sql_name_refs
-            .iter()
-            .enumerate()
-            .map(|(idx, sql_ref)| SemSqlNameRef {
+        let mut sql_name_refs = Vec::with_capacity(unit.sql_name_refs.len());
+        let mut sql_source_name_refs_by_name: HashMap<String, Vec<SemSqlNameRefId>> =
+            HashMap::new();
+        for (idx, sql_ref) in unit.sql_name_refs.iter().enumerate() {
+            let id = SemSqlNameRefId(idx as u32);
+            sql_name_refs.push(SemSqlNameRef {
                 raw_index: idx,
                 query_id: sql_ref.query_id,
                 range: sql_ref.range.clone(),
                 kind: sql_ref.kind,
-            })
-            .collect();
+            });
+            if sql_ref.kind == SqlNameRefKind::Source {
+                sql_source_name_refs_by_name
+                    .entry(sql_ref.name.to_ascii_lowercase())
+                    .or_default()
+                    .push(id);
+            }
+        }
         let class_members = unit
             .class_members
             .iter()
@@ -219,16 +216,6 @@ impl SemanticIndex {
                     })
             })
             .collect();
-        let mut sql_source_name_refs_by_name: HashMap<String, Vec<SemSqlNameRefId>> =
-            HashMap::new();
-        for (idx, sql_ref) in unit.sql_name_refs.iter().enumerate() {
-            if sql_ref.kind == SqlNameRefKind::Source {
-                sql_source_name_refs_by_name
-                    .entry(sql_ref.name.to_ascii_lowercase())
-                    .or_default()
-                    .push(SemSqlNameRefId(idx as u32));
-            }
-        }
         let mut sql_sources_by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (idx, source) in unit.sql_sources.iter().enumerate() {
             sql_sources_by_name

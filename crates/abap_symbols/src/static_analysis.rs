@@ -158,30 +158,19 @@ pub fn build_project_static_analysis_summary(
     };
 
     let collect_timer = std::time::Instant::now();
-    let mut exact_routine_scopes: Vec<Vec<Option<RoutineId>>> = project
-        .units
-        .iter()
-        .map(|unit| vec![None; unit.scopes.len()])
-        .collect();
-
     for routine in &routine_analysis.routines {
         let descriptor = &routine.descriptor;
         let routine_id = descriptor.id;
         let unit_idx = descriptor.unit.as_usize();
         let block_count = routine.cfg.blocks.len();
-        let reachable_block_count = routine
+        let (reachable_block_count, reachable_instruction_count) = routine
             .cfg
             .blocks
             .iter()
             .filter(|block| block.reachable)
-            .count();
-        let reachable_instruction_count = routine
-            .cfg
-            .blocks
-            .iter()
-            .filter(|block| block.reachable)
-            .map(|block| block.instructions.len())
-            .sum();
+            .fold((0, 0), |(blocks, instructions), block| {
+                (blocks + 1, instructions + block.instructions.len())
+            });
         let mut finding_counts = RoutineStaticAnalysisFindingCounts::default();
         let findings: Vec<_> = routine
             .diagnostics
@@ -194,7 +183,7 @@ pub fn build_project_static_analysis_summary(
             out.owner_to_routine.insert(owner, routine_id);
         }
         out.unit_routines[unit_idx].push(routine_id);
-        exact_routine_scopes[unit_idx][descriptor.scope.as_usize()] = Some(routine_id);
+        out.scope_to_routine[unit_idx][descriptor.scope.as_usize()] = Some(routine_id);
         out.routines.push(RoutineStaticAnalysisSummary {
             routine: routine_id,
             unit: descriptor.unit,
@@ -226,8 +215,8 @@ pub fn build_project_static_analysis_summary(
     let index_timer = std::time::Instant::now();
     for unit in &project.units {
         let unit_idx = unit.unit_id.as_usize();
-        out.scope_to_routine[unit_idx] =
-            build_scope_to_routine_map(unit, &exact_routine_scopes[unit_idx]);
+        let exact_scopes = std::mem::take(&mut out.scope_to_routine[unit_idx]);
+        out.scope_to_routine[unit_idx] = build_scope_to_routine_map(unit, &exact_scopes);
     }
     out.metrics.index_micros = index_timer.elapsed().as_micros();
     out.metrics.total_micros = total_timer.elapsed().as_micros();

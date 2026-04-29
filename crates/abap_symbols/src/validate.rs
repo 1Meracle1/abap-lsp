@@ -3694,18 +3694,6 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
     let lookup = build_validation_lookup(project, scope_indexes);
     let global_names = collect_global_names(project);
     let report_tables_contexts = build_report_tables_contexts(project);
-    let form_signatures: HashMap<(u32, u32), Vec<FormParameterData>> = project
-        .units
-        .iter()
-        .flat_map(|unit| {
-            unit.form_routines.iter().map(|routine| {
-                (
-                    (unit.unit_id.0, routine.symbol.0),
-                    routine.parameters.clone(),
-                )
-            })
-        })
-        .collect();
     project.diagnostics.clear();
 
     for unit_idx in 0..project.units.len() {
@@ -4782,7 +4770,10 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             let Some(handle) = project.resolve_perform_call_target(unit, perform_call) else {
                 continue;
             };
-            let Some(parameters) = form_signatures.get(&(handle.unit.0, handle.symbol.0)) else {
+            let Some(parameters) = project.units[handle.unit.as_usize()]
+                .form_routine(handle.symbol)
+                .map(|routine| routine.parameters.as_slice())
+            else {
                 continue;
             };
 
