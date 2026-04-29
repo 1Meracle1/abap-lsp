@@ -1115,6 +1115,41 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn open_sql_inline_table_target_is_safe_after_negative_sy_subrc_or_empty_return_guard() {
+        let src = "\
+FORM run.\n\
+  SELECT carrid\n\
+    FROM scarr\n\
+    INTO TABLE @DATA(lt_files).\n\
+  IF sy-subrc <> 0 OR lines( lt_files ) = 0.\n\
+    RETURN.\n\
+  ENDIF.\n\
+  DATA(lv_count) = lines( lt_files ).\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///open_sql_inline_table_guarded_subrc_or_empty.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !src[diagnostic.range.clone()].contains("lt_files")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn open_sql_into_target_is_safe_after_not_is_initial_guard() {
         let src = "\
 FORM run.\n\

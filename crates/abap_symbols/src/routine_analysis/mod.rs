@@ -3608,14 +3608,14 @@ fn single_negative_sy_subrc_guard_check_for_scope(
         .value_state_checks
         .iter()
         .filter(|candidate| candidate.scope == scope)
-        .filter(|candidate| candidate.kind != ValueStateCheckKind::ConditionProbe)
+        .filter(|candidate| sy_subrc_negative_guard_check(unit, candidate))
     {
         if check.is_some() {
             return None;
         }
         check = Some(candidate);
     }
-    check.filter(|candidate| sy_subrc_negative_guard_check(unit, candidate))
+    check
 }
 
 fn resolve_sy_subrc_success_bound_scope_refinements(
