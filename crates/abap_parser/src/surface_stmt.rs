@@ -5095,6 +5095,22 @@ fn form_header_starts_typed_param(source: &str, tokens: &[Token], idx: usize, en
         .is_some_and(|t| is_keyword(source, t, "type") || is_keyword(source, t, "like"))
 }
 
+fn form_header_starts_param(source: &str, tokens: &[Token], idx: usize, end: usize) -> bool {
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    if token.kind != TokenKind::Ident || form_header_section_keyword(source, token) {
+        return false;
+    }
+    if is_keyword(source, token, "value") || is_keyword(source, token, "reference") {
+        return idx + 3 < end
+            && tokens.get(idx + 1).map(|t| t.kind) == Some(TokenKind::LParen)
+            && tokens.get(idx + 2).map(|t| t.kind) == Some(TokenKind::Ident)
+            && tokens.get(idx + 3).map(|t| t.kind) == Some(TokenKind::RParen);
+    }
+    true
+}
+
 fn function_header_starts_param(source: &str, tokens: &[Token], idx: usize, end: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -5134,6 +5150,12 @@ fn skip_form_header_type_expression(
             }
             TokenKind::Period if depth == 0 => return idx,
             _ if depth == 0 && form_header_section_keyword(source, token) => return idx,
+            _ if depth == 0
+                && token.has_newline_before()
+                && form_header_starts_param(source, tokens, idx, end) =>
+            {
+                return idx;
+            }
             _ if depth == 0 && form_header_starts_typed_param(source, tokens, idx, end) => {
                 return idx;
             }
@@ -13017,6 +13039,55 @@ END OF BLOCK b02.",
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::FormDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_form_header_with_untyped_params_after_typed_params() {
+        let src = r#"FORM f_modify_table_rep_conn USING fv_msguid         TYPE /sttp/e_msguid_out
+                                   fv_rep_evtid      TYPE /sttp/e_evtid
+                                   fv_status_rep_evt TYPE /sttp/e_status_rep_evt
+                                   fv_response_http_code
+                                   fv_response_http_reason
+                                   fv_retries        TYPE i
+                                   fp_legisl         TYPE zattp_de_legislation
+                                   fv_creation_time  TYPE /sttp/e_timestamp_create
+                                   fv_message_type   TYPE string
+                             CHANGING fv_counter   TYPE i
+                                      fv_dummy_msg TYPE string.
+
+ENDFORM."#;
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let form = FormDecl::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::FormDecl)
+                .expect("form decl"),
+        ))
+        .expect("form decl");
+        let names: Vec<String> = form
+            .param_sections()
+            .flat_map(|section| section.params())
+            .filter_map(|param| param.name_token().and_then(|name| name.name(src)))
+            .map(|name| name.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "fv_msguid",
+                "fv_rep_evtid",
+                "fv_status_rep_evt",
+                "fv_response_http_code",
+                "fv_response_http_reason",
+                "fv_retries",
+                "fp_legisl",
+                "fv_creation_time",
+                "fv_message_type",
+                "fv_counter",
+                "fv_dummy_msg",
+            ]
+        );
     }
 
     #[test]
