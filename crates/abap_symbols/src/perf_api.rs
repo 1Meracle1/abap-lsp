@@ -45,11 +45,7 @@ pub fn validate_single_unit(unit: UnitAnalysis) -> ProjectAnalysis {
         diagnostics: Vec::new(),
     };
     validate_project_with_scope_indexes(&mut project, &scope_indexes);
-    for diagnostic in &project.units[0].diagnostics {
-        if !project.diagnostics.contains(diagnostic) {
-            project.diagnostics.push(diagnostic.clone());
-        }
-    }
+    collect_project_diagnostics(&mut project);
     project
 }
 

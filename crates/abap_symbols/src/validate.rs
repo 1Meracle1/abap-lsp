@@ -82,6 +82,9 @@ impl IncludeOrderIndex {
         decl_unit: UnitId,
         decl_offset: usize,
     ) -> bool {
+        if reference_unit == decl_unit {
+            return decl_offset > reference_offset;
+        }
         self.roots.iter().any(|root| {
             let Some(reference_prefixes) = root.unit_prefixes.get(reference_unit.as_usize()) else {
                 return false;
@@ -110,6 +113,14 @@ fn order_component(offset: usize, tag: usize) -> usize {
 }
 
 fn build_include_order_index(project: &ProjectAnalysis) -> IncludeOrderIndex {
+    if !project
+        .units
+        .iter()
+        .any(|unit| unit.include_edges.iter().any(|edge| edge.target.is_some()))
+    {
+        return IncludeOrderIndex::default();
+    }
+
     let roots = project
         .units
         .iter()
@@ -117,10 +128,11 @@ fn build_include_order_index(project: &ProjectAnalysis) -> IncludeOrderIndex {
             let mut root = IncludeOrderRoot {
                 unit_prefixes: vec![Vec::new(); project.units.len()],
             };
+            let mut prefix = Vec::new();
             collect_include_order_prefixes(
                 project,
                 unit.unit_id,
-                Vec::new(),
+                &mut prefix,
                 &mut root,
                 &mut HashSet::new(),
             );
@@ -133,7 +145,7 @@ fn build_include_order_index(project: &ProjectAnalysis) -> IncludeOrderIndex {
 fn collect_include_order_prefixes(
     project: &ProjectAnalysis,
     unit_id: UnitId,
-    prefix: Vec<usize>,
+    prefix: &mut Vec<usize>,
     root: &mut IncludeOrderRoot,
     stack: &mut HashSet<UnitId>,
 ) {
@@ -155,9 +167,9 @@ fn collect_include_order_prefixes(
         .collect::<Vec<_>>();
     edges.sort_by_key(|(offset, _)| *offset);
     for (offset, target) in edges {
-        let mut child_prefix = prefix.clone();
-        child_prefix.push(order_component(offset, 1));
-        collect_include_order_prefixes(project, target, child_prefix, root, stack);
+        prefix.push(order_component(offset, 1));
+        collect_include_order_prefixes(project, target, prefix, root, stack);
+        prefix.pop();
     }
 
     stack.remove(&unit_id);
@@ -234,28 +246,26 @@ where
     })
 }
 
-fn collect_global_names(project: &ProjectAnalysis) -> HashMap<Arc<str>, HashSet<Namespace>> {
-    let mut out: HashMap<Arc<str>, HashSet<Namespace>> = HashMap::new();
+fn collect_global_names(project: &ProjectAnalysis) -> HashMap<Arc<str>, u8> {
+    let mut out = HashMap::new();
     for unit in &project.units {
         for symbol in &unit.symbols {
             if symbol.scope != unit.root_scope {
                 continue;
             }
-            let entry = out.entry(Arc::clone(&symbol.name)).or_default();
             for &namespace in symbol.kind.namespaces() {
-                entry.insert(namespace);
+                *out.entry(Arc::clone(&symbol.name)).or_default() |= 1 << namespace as u8;
             }
         }
     }
     out
 }
 
-fn build_scope_names(unit: &crate::UnitAnalysis) -> HashMap<Arc<str>, HashSet<Namespace>> {
-    let mut scope_names: HashMap<Arc<str>, HashSet<Namespace>> = HashMap::new();
+fn build_scope_names(unit: &crate::UnitAnalysis) -> HashMap<Arc<str>, u8> {
+    let mut scope_names = HashMap::new();
     for symbol in &unit.symbols {
-        let entry = scope_names.entry(Arc::clone(&symbol.name)).or_default();
         for &namespace in symbol.kind.namespaces() {
-            entry.insert(namespace);
+            *scope_names.entry(Arc::clone(&symbol.name)).or_default() |= 1 << namespace as u8;
         }
     }
     scope_names
@@ -3214,16 +3224,6 @@ fn reference_depends_on_unresolved_field_access_base(
     }
 
     unit.field_accesses.iter().any(|access| {
-        let Some(base_handle) =
-            resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)
-        else {
-            return false;
-        };
-        let base_unit = &project.units[base_handle.unit.as_usize()];
-        let base_scope_index = &lookup.scope_indexes[base_unit.unit_id.as_usize()];
-        let access_scope = scope_for_unit(base_unit, access.scope);
-        let mut structure_id = base_unit.symbol(base_handle.symbol).structure;
-        let mut declared_type = base_unit.symbol(base_handle.symbol).declared_type.clone();
         let matching_segment_idx = access.field_path.iter().position(|segment| {
             segment.range == reference.range && segment.name.as_ref() == reference.name.as_ref()
         });
@@ -3239,6 +3239,17 @@ fn reference_depends_on_unresolved_field_access_base(
                 return false;
             }
         }
+
+        let Some(base_handle) =
+            resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)
+        else {
+            return false;
+        };
+        let base_unit = &project.units[base_handle.unit.as_usize()];
+        let base_scope_index = &lookup.scope_indexes[base_unit.unit_id.as_usize()];
+        let access_scope = scope_for_unit(base_unit, access.scope);
+        let mut structure_id = base_unit.symbol(base_handle.symbol).structure;
+        let mut declared_type = base_unit.symbol(base_handle.symbol).declared_type.clone();
 
         for step in access.field_path.iter().take(segment_idx) {
             if step.is_deref() {
@@ -3694,7 +3705,6 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
     let lookup = build_validation_lookup(project, scope_indexes);
     let global_names = collect_global_names(project);
     let report_tables_contexts = build_report_tables_contexts(project);
-    project.diagnostics.clear();
 
     for unit_idx in 0..project.units.len() {
         if !dirty_unit_ids.contains(&project.units[unit_idx].unit_id) {
@@ -3956,12 +3966,11 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 continue;
             }
 
-            let local_namespaces = scope_names.get(&reference.name);
-            let global_namespaces = global_names.get(&reference.name);
             let has_other_namespace = !reference_is_tables_decl_type_ref(unit, reference)
-                && local_namespaces
-                    .or(global_namespaces)
-                    .is_some_and(|namespaces| !namespaces.contains(&reference.namespace));
+                && scope_names
+                    .get(&reference.name)
+                    .or_else(|| global_names.get(&reference.name))
+                    .is_some_and(|namespaces| namespaces & (1 << reference.namespace as u8) == 0);
 
             let (kind, message) = if has_other_namespace {
                 (
@@ -4843,12 +4852,6 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
     let mut visited = HashSet::new();
     for unit_id in dirty_unit_ids {
         detect_include_cycles(project, unit_id.0, &mut visiting, &mut visited);
-    }
-    project.diagnostics.clear();
-    for unit in &project.units {
-        for diagnostic in &unit.diagnostics {
-            project.diagnostics.push(diagnostic.clone());
-        }
     }
 }
 
