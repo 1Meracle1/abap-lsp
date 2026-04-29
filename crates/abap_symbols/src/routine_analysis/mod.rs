@@ -3775,18 +3775,48 @@ fn resolve_is_assigned_bound_scope_refinements(
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
     for check in &unit.field_symbol_state_checks {
-        if check.kind != FieldSymbolStateCheckKind::IsAssigned
-            || !is_positive_branch_scope(unit, check.scope)
-        {
-            continue;
-        }
-        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+        let Some(value) =
+            field_symbol_check_value_id(unit, check, reference_uses, value_ids_by_symbol)
+        else {
             continue;
         };
-        if let Some(value) =
-            field_symbol_check_value_id(unit, check, reference_uses, value_ids_by_symbol)
+        if check.kind == FieldSymbolStateCheckKind::IsAssigned
+            && is_positive_branch_scope(unit, check.scope)
         {
-            scope_bits.insert(value);
+            if let Some(scope_bits) = out.get_mut(check.scope.as_usize()) {
+                scope_bits.insert(value);
+            }
+            continue;
+        }
+        if check.kind != FieldSymbolStateCheckKind::IsNotAssigned {
+            continue;
+        }
+        for region in &unit.routine_control_regions {
+            let RoutineControlRegionData::If(if_region) = region else {
+                continue;
+            };
+            let scopes = if if_region.then_scope == check.scope {
+                &if_region.elseif_scopes[..]
+            } else if let Some(idx) = if_region
+                .elseif_scopes
+                .iter()
+                .position(|&scope| scope == check.scope)
+            {
+                &if_region.elseif_scopes[idx + 1..]
+            } else {
+                continue;
+            };
+            for &scope in scopes {
+                if let Some(scope_bits) = out.get_mut(scope.as_usize()) {
+                    scope_bits.insert(value);
+                }
+            }
+            if let Some(scope) = if_region.else_scope
+                && let Some(scope_bits) = out.get_mut(scope.as_usize())
+            {
+                scope_bits.insert(value);
+            }
+            break;
         }
     }
     out

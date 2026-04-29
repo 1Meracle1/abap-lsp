@@ -13788,6 +13788,74 @@ FIELD-SYMBOLS: <lt_records> TYPE STANDARD TABLE.
 }
 
 #[test]
+fn append_initial_line_assigning_rebinds_field_symbol_after_conditional_read() {
+    let src = r#"
+TYPES: BEGIN OF ty_rule_aux,
+         evtid TYPE string,
+         rule_type TYPE string,
+       END OF ty_rule_aux.
+DATA lt_rule_aux TYPE STANDARD TABLE OF ty_rule_aux WITH EMPTY KEY.
+DATA lv_evtid TYPE string.
+DATA lv_rule_type TYPE string.
+FIELD-SYMBOLS <fs_rule_aux> TYPE ty_rule_aux.
+
+FORM f_process_sequence.
+  READ TABLE lt_rule_aux ASSIGNING <fs_rule_aux> INDEX 1.
+  APPEND INITIAL LINE TO lt_rule_aux ASSIGNING <fs_rule_aux>.
+  <fs_rule_aux>-evtid = lv_evtid.
+  <fs_rule_aux>-rule_type = lv_rule_type.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///append_assigning_field_symbol_guard.abap");
+    let project = analyze_project_from_units(vec![unit.clone()]);
+    let routine_analysis = build_project_routine_analysis(&project);
+    let diagnostics = routine_analysis.diagnostics_for_unit(unit.unit_id);
+
+    assert!(
+        !diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::PossiblyUnboundFieldSymbol
+                && diag.message.contains("<fs_rule_aux>")
+        }),
+        "{:?}",
+        diagnostics
+    );
+}
+
+#[test]
+fn not_assigned_if_guard_marks_elseif_field_symbol_bound() {
+    let src = r#"
+TYPES: BEGIN OF ty_rule_aux,
+         evtid TYPE string,
+       END OF ty_rule_aux.
+DATA lt_rule_aux TYPE STANDARD TABLE OF ty_rule_aux WITH EMPTY KEY.
+DATA lv_evtid TYPE string.
+FIELD-SYMBOLS <fs_rule_aux> TYPE ty_rule_aux.
+
+FORM f_process_sequence.
+  READ TABLE lt_rule_aux ASSIGNING <fs_rule_aux> INDEX 1.
+  IF NOT <fs_rule_aux> IS ASSIGNED.
+    RETURN.
+  ELSEIF <fs_rule_aux>-evtid = lv_evtid.
+    lv_evtid = <fs_rule_aux>-evtid.
+  ENDIF.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///not_assigned_guard_elseif.abap");
+    let project = analyze_project_from_units(vec![unit.clone()]);
+    let routine_analysis = build_project_routine_analysis(&project);
+    let diagnostics = routine_analysis.diagnostics_for_unit(unit.unit_id);
+
+    assert!(
+        !diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::PossiblyUnboundFieldSymbol
+                && diag.message.contains("<fs_rule_aux>")
+        }),
+        "{:?}",
+        diagnostics
+    );
+}
+
+#[test]
 fn initial_continue_guard_keeps_field_symbol_bound_on_fallthrough() {
     let src = r#"
 TYPES ty_string_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.

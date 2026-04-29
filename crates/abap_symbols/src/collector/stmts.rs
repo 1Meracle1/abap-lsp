@@ -1058,7 +1058,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     ) {
         let source_range = source_expr
             .map(|expr| self.collector.file.range(expr))
-            .unwrap_or_else(|| target_range.clone());
+            .unwrap_or(target_range.start..target_range.start);
         let source_type = TypeFactData {
             structure,
             declared_type,
@@ -2236,6 +2236,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let mut source_is_lines_of = false;
         let mut source_expr = None;
         let mut target_expr = None;
+        let mut assigning_target = None;
 
         for child in self.collector.file.children(node) {
             if self.collector.file.kind(child) == SyntaxKind::Token {
@@ -2290,11 +2291,24 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                         target_expr = Some(child);
                     }
                 }
-                AppendClause::Assigning | AppendClause::ReferenceInto | AppendClause::SortedBy => {}
+                AppendClause::Assigning => {
+                    if assigning_target.is_none() {
+                        assigning_target = self.direct_field_symbol_target(child, scope);
+                    }
+                }
+                AppendClause::ReferenceInto | AppendClause::SortedBy => {}
             }
 
             self.collector.walk_node(child, scope);
         }
+
+        let target_line_metadata = target_expr
+            .map(|expr| {
+                self.collector
+                    .control_lowering()
+                    .loop_source_line_metadata_from_node(expr, scope)
+            })
+            .unwrap_or((None, None));
 
         if let Some(target_expr) = target_expr {
             let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
@@ -2306,6 +2320,18 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 None,
                 None,
                 !source_is_lines_of,
+            );
+        }
+
+        if let Some((target_name, target_range)) = assigning_target {
+            self.emit_field_symbol_binding_edge(
+                scope,
+                ValueFlowKind::FieldSymbolAssignment,
+                None,
+                target_line_metadata.0,
+                target_line_metadata.1,
+                target_name,
+                target_range,
             );
         }
     }
