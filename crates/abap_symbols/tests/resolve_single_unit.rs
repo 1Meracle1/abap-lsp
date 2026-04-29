@@ -15061,6 +15061,50 @@ ENDIF.\n\
 }
 
 #[test]
+fn table_expression_named_key_components_do_not_resolve_key_syntax_as_values() {
+    let src = r#"
+TYPES: BEGIN OF ty_item,
+         lot_objid TYPE string,
+       END OF ty_item.
+DATA ct_objid TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+FIELD-SYMBOLS <ls_obj_itm> TYPE ty_item.
+
+IF line_exists( ct_objid[ KEY id COMPONENTS table_line = <ls_obj_itm>-lot_objid ] ).
+ENDIF.
+"#;
+    let unit = analyze_ok(src, "file:///table_expr_named_key_components.abap");
+
+    for name in ["key", "id", "components"] {
+        assert!(
+            !unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value && reference.name.as_ref() == name
+            }),
+            "table expression syntax `{name}` must not be collected as a value reference: {:?}",
+            unit.references
+        );
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for `{name}`: {:?}",
+            unit.diagnostics
+        );
+    }
+    for name in ["ct_objid", "<ls_obj_itm>"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved reference for `{name}`: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_line_exists_in_not_and_condition_as_builtin_routine() {
     let src = "\
 DATA lt_rep_evt TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\

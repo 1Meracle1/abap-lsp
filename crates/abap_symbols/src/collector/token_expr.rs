@@ -65,11 +65,7 @@ impl<'a> Collector<'a> {
                 "[" => {
                     if let Some(end_idx) = self.find_matching_group_end_infos(tokens, idx, "[", "]")
                     {
-                        self.collect_token_expression_refs_infos(
-                            &tokens[idx + 1..end_idx],
-                            scope,
-                            true,
-                        );
+                        self.collect_table_expr_key_refs_infos(&tokens[idx + 1..end_idx], scope);
                         idx = end_idx + 1;
                     } else {
                         idx += 1;
@@ -161,10 +157,9 @@ impl<'a> Collector<'a> {
                             if is_legacy_table_body {
                                 continue;
                             }
-                            self.collect_token_expression_refs_infos(
+                            self.collect_table_expr_key_refs_infos(
                                 &tokens[group_start + 1..group_end],
                                 scope,
-                                true,
                             );
                         }
                         let method_name =
@@ -290,6 +285,27 @@ impl<'a> Collector<'a> {
             return false;
         };
         token_text_is_constructor_expr_keyword(token.text.as_ref())
+    }
+
+    fn collect_table_expr_key_refs_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        let mut start = 0;
+        if tokens
+            .first()
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("key"))
+            && tokens
+                .get(1)
+                .is_some_and(|token| self.syntax_token_is_ident_like(token))
+            && tokens.get(2).is_none_or(|token| token.text.as_ref() != "=")
+        {
+            start = 2;
+            if tokens
+                .get(start)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("components"))
+            {
+                start += 1;
+            }
+        }
+        self.collect_token_expression_refs_infos(&tokens[start..], scope, true);
     }
 
     fn field_symbol_state_check_kind(

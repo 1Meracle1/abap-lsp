@@ -3212,6 +3212,18 @@ mod tests {
     }
 
     #[test]
+    fn line_exists_with_named_key_table_expression_parses_as_call_expr() {
+        let parsed = crate::parse(
+            "IF line_exists( ct_objid[ KEY id COMPONENTS table_line = <ls_obj_itm>-lot_objid ] ).\nENDIF.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TableExpr), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn value_constructor_with_conditional_for_parses() {
         let parsed =
             crate::parse("DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).");
