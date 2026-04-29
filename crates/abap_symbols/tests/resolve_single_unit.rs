@@ -15478,6 +15478,81 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn resolves_inherited_class_alias_to_project_interface_method() {
+    let if_message_src = r#"
+INTERFACE if_message.
+  METHODS get_longtext RETURNING VALUE(result) TYPE string.
+ENDINTERFACE.
+"#;
+    let cx_root_src = r#"
+CLASS cx_root DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_message.
+    ALIASES get_longtext FOR if_message~get_longtext.
+ENDCLASS.
+"#;
+    let cx_static_check_src =
+        "CLASS cx_static_check DEFINITION INHERITING FROM cx_root.\nENDCLASS.";
+    let cx_bcs_src = "CLASS cx_bcs DEFINITION INHERITING FROM cx_static_check.\nENDCLASS.";
+    let cx_document_bcs_src = "CLASS cx_document_bcs DEFINITION INHERITING FROM cx_bcs.\nENDCLASS.";
+    let main_src = r#"
+DATA lx_document_bcs TYPE REF TO cx_document_bcs.
+DATA lv_message TYPE string.
+lv_message = lx_document_bcs->get_longtext( ).
+"#;
+
+    let if_message_parse = parse(if_message_src);
+    let cx_root_parse = parse(cx_root_src);
+    let cx_static_check_parse = parse(cx_static_check_src);
+    let cx_bcs_parse = parse(cx_bcs_src);
+    let cx_document_bcs_parse = parse(cx_document_bcs_src);
+    let main_parse = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///if_message.abap",
+            source: if_message_src,
+            parse: &if_message_parse,
+        },
+        ProjectInput {
+            uri: "file:///cx_root.abap",
+            source: cx_root_src,
+            parse: &cx_root_parse,
+        },
+        ProjectInput {
+            uri: "file:///cx_static_check.abap",
+            source: cx_static_check_src,
+            parse: &cx_static_check_parse,
+        },
+        ProjectInput {
+            uri: "file:///cx_bcs.abap",
+            source: cx_bcs_src,
+            parse: &cx_bcs_parse,
+        },
+        ProjectInput {
+            uri: "file:///cx_document_bcs.abap",
+            source: cx_document_bcs_src,
+            parse: &cx_document_bcs_parse,
+        },
+        ProjectInput {
+            uri: "file:///cx_document_bcs_alias_main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///cx_document_bcs_alias_main.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("get_longtext")
+        }),
+        "{:#?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_me_and_interface_parameters_in_qualified_method_implementation() {
     let src = r#"
 INTERFACE i1.

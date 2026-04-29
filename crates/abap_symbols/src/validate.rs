@@ -1041,8 +1041,35 @@ fn resolve_class_member_in_hierarchy<'a>(
                 return Some((unit, member));
             }
         }
+        if let Some(member) =
+            resolve_class_member_alias_target(project, lookup, current, member_name)
+        {
+            return Some(member);
+        }
         current = direct_superclass_handle(project, lookup, unit, current.symbol)?;
     }
+}
+
+fn resolve_class_member_alias_target<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    owner: SymbolHandle,
+    alias_name: &str,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let unit = &project.units[owner.unit.as_usize()];
+    let alias = unit.member_aliases.iter().find(|alias| {
+        alias.owner_symbol == owner.symbol && alias.alias_name.as_ref() == alias_name
+    })?;
+    let target = resolve_exposed_interface_handle(
+        project,
+        lookup,
+        owner,
+        alias.target_interface_name.as_ref(),
+    )?;
+    let target_unit = &project.units[target.unit.as_usize()];
+    target_unit
+        .class_member(target.symbol, alias.target_member_name.as_ref())
+        .map(|member| (target_unit, member))
 }
 
 fn resolve_inherited_attribute_symbol<'a>(
