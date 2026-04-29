@@ -1091,7 +1091,9 @@ impl<'a> FormParam<'a> {
                 let text = token.text(source)?;
                 if text.eq_ignore_ascii_case("type") {
                     Some(TypeClauseKind::Type)
-                } else if text.eq_ignore_ascii_case("like") {
+                } else if text.eq_ignore_ascii_case("like")
+                    || text.eq_ignore_ascii_case("structure")
+                {
                     Some(TypeClauseKind::Like)
                 } else {
                     None

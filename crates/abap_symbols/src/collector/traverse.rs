@@ -1,4 +1,8 @@
-use abap_ast::{SyntaxKind, arena::NodeId};
+use abap_ast::{
+    SyntaxKind,
+    arena::NodeId,
+    ast::{AstNode, FormParam},
+};
 
 use super::Collector;
 use super::context::CollectorContext;
@@ -178,6 +182,18 @@ impl<'a> Collector<'a> {
                 .collect_delete_db_table_stmt(node, scope),
             SyntaxKind::DeleteStmt => self.stmt_lowering().collect_delete_stmt(node, scope),
             SyntaxKind::SortStmt => self.control_lowering().collect_sort_stmt(node, scope),
+            SyntaxKind::FormParam => {
+                let hint = FormParam::cast(self.syntax(node))
+                    .and_then(|param| param.type_clause_kind(self.source))
+                    .map(|kind| self.namespace_from_type_clause_kind(kind));
+                if let Some(ns) = hint {
+                    self.type_clause_ns_stack.push(ns);
+                }
+                self.walk_children(node, scope);
+                if hint.is_some() {
+                    self.type_clause_ns_stack.pop();
+                }
+            }
             SyntaxKind::TypeRefSimple => self.decl_lowering().collect_type_ref(node, scope),
             SyntaxKind::ExprIdent
             | SyntaxKind::SelectorExpr

@@ -546,6 +546,42 @@ PERFORM process_data TABLES lt_rows USING 'demo' CHANGING lv_count.
 }
 
 #[test]
+fn resolves_form_tables_structure_param_as_value_ref() {
+    let src = r#"
+TYPES: BEGIN OF ty_rep_evt,
+         rep_evtid TYPE string,
+         evtid     TYPE string,
+       END OF ty_rep_evt.
+
+DATA gs_rep_evt TYPE ty_rep_evt.
+
+FORM f_process_sequence TABLES ft_rep_evt_seq STRUCTURE gs_rep_evt
+                        CHANGING fv_dummy_msg TYPE string.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///form_tables_structure_param.abap");
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Value
+                && reference.name.as_ref() == "gs_rep_evt"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected STRUCTURE gs_rep_evt to resolve in value namespace: {:?}",
+        unit.references
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("gs_rep_evt")),
+        "unexpected gs_rep_evt diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn dynamic_perform_in_program_collects_target_refs_without_unknown_routine_diag() {
     let src = r#"
 FORM process_data
