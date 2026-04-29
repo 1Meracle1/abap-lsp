@@ -671,6 +671,7 @@ pub struct AssignmentSiteData {
     pub lhs: TypeFactData,
     pub rhs: TypeFactData,
     pub rhs_is_top_level_sum: bool,
+    pub assigns_table_line: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

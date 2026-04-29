@@ -494,7 +494,7 @@ impl<'a> FactBuilder<'a> {
         unit_idx: usize,
         assignment: &crate::AssignmentSiteData,
     ) -> TypeFactData {
-        if is_table_line_mutation_assignment(&self.units[unit_idx], &assignment.range) {
+        if assignment.assigns_table_line {
             return self.enrich_existing_type_fact(
                 unit_idx,
                 assignment.scope,
@@ -647,7 +647,7 @@ impl<'a> FactBuilder<'a> {
         assignment: &crate::AssignmentSiteData,
     ) -> TypeFactData {
         if let Some(access) = assignment.lhs_target_access.as_ref()
-            && is_table_line_mutation_assignment(&self.units[unit_idx], &assignment.range)
+            && assignment.assigns_table_line
         {
             let access_fact = self.type_fact_for_access(unit_idx, access);
             if let Some(line_fact) = access_fact.table_line.as_deref() {
@@ -1806,15 +1806,6 @@ fn is_table_like_type_display(display: &str) -> bool {
 
 fn is_line_of_type_display(display: &str) -> bool {
     display.trim().to_ascii_uppercase().starts_with("LINE OF ")
-}
-
-fn is_table_line_mutation_assignment(unit: &UnitAnalysis, range: &abap_lexer::TextRange) -> bool {
-    unit.system_field_updates.iter().any(|update| {
-        matches!(
-            update.statement,
-            crate::SystemFieldStatementKind::Append | crate::SystemFieldStatementKind::InsertTable
-        ) && &update.range == range
-    })
 }
 
 fn method_parameter_section(section: crate::MethodParameterSection) -> MethodParameterSection {

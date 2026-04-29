@@ -1090,6 +1090,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 [rhs] => Some(self.type_fact_from_assignment_node(*rhs, scope)),
                 _ => None,
             },
+            false,
         );
     }
 
@@ -1101,6 +1102,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         rhs_nodes: &[NodeId],
         lhs_fact: Option<TypeFactData>,
         rhs_fact: Option<TypeFactData>,
+        assigns_table_line: bool,
     ) {
         let lhs_range = self.collector.file.range(lhs);
         let rhs_range = rhs_nodes
@@ -1120,6 +1122,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             lhs: lhs_fact,
             rhs: rhs_fact,
             rhs_is_top_level_sum: matches!(rhs_nodes, [rhs] if self.collector.rhs_is_top_level_sum(*rhs)),
+            assigns_table_line,
         });
     }
 
@@ -1150,19 +1153,6 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             structure,
             declared_type,
             type_clause_display,
-            table_line: None,
-        }
-    }
-
-    fn type_fact_from_table_line_node(&self, node: NodeId, scope: ScopeId) -> TypeFactData {
-        let fact = self.type_fact_from_assignment_node(node, scope);
-        let (structure, declared_type) =
-            self.collector
-                .internal_table_line_metadata(scope, fact.structure, fact.declared_type);
-        TypeFactData {
-            structure,
-            declared_type,
-            type_clause_display: None,
             table_line: None,
         }
     }
@@ -1300,6 +1290,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             lhs: TypeFactData::default(),
             rhs: TypeFactData::default(),
             rhs_is_top_level_sum: false,
+            assigns_table_line: false,
         });
     }
 
@@ -2300,16 +2291,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         if let Some(target_expr) = target_expr {
             let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
-            let rhs_fact = source_expr
-                .filter(|_| source_is_lines_of)
-                .map(|expr| self.type_fact_from_table_line_node(expr, scope));
             self.emit_assignment_site_with_type_facts(
                 scope,
                 stmt_range,
                 target_expr,
                 &rhs_nodes,
                 None,
-                rhs_fact,
+                None,
+                !source_is_lines_of,
             );
         }
     }
@@ -2345,6 +2334,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 &[],
                 None,
                 None,
+                false,
             );
         }
     }
@@ -2591,6 +2581,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     lhs: TypeFactData::default(),
                     rhs: TypeFactData::default(),
                     rhs_is_top_level_sum: false,
+                    assigns_table_line: false,
                 });
             }
         }
@@ -2713,16 +2704,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         if let Some(target_expr) = target_expr {
             let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
-            let rhs_fact = source_expr
-                .filter(|_| source_is_lines_of)
-                .map(|expr| self.type_fact_from_table_line_node(expr, scope));
             self.emit_assignment_site_with_type_facts(
                 scope,
                 stmt_range,
                 target_expr,
                 &rhs_nodes,
                 None,
-                rhs_fact,
+                None,
+                !source_is_lines_of,
             );
         }
     }

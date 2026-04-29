@@ -7714,6 +7714,54 @@ APPEND LINES OF lt_dm_obj_arc TO et_dm_obj_arc.
 }
 
 #[test]
+fn append_lines_of_cross_unit_table_type_keeps_table_target_type() {
+    let main_src = r#"
+DATA lt_files_and_offset TYPE aind_t_arkey.
+DATA lt_files_and_offset_all TYPE aind_t_arkey.
+
+APPEND LINES OF lt_files_and_offset TO lt_files_and_offset_all.
+"#;
+    let table_src = "TYPES aind_t_arkey TYPE STANDARD TABLE OF aind_arkey WITH EMPTY KEY.";
+    let line_src = r#"
+TYPES: BEGIN OF aind_arkey,
+         archivekey TYPE string,
+         archiveofs TYPE i,
+       END OF aind_arkey.
+"#;
+    let main_parse = parse(main_src);
+    let table_parse = parse(table_src);
+    let line_parse = parse(line_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///main.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+        ProjectInput {
+            uri: "file:///aind_t_arkey.abap",
+            source: table_src,
+            parse: &table_parse,
+        },
+        ProjectInput {
+            uri: "file:///aind_arkey.abap",
+            source: line_src,
+            parse: &line_parse,
+        },
+    ]);
+    let unit = project.unit_by_uri("file:///main.abap").expect("main unit");
+
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("aind_arkey")
+                && diag.message.contains("aind_t_arkey")
+        }),
+        "{:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn recovers_after_syntax_errors_and_keeps_later_resolution() {
     let src = "DATA broken TYPE string\nDATA ok TYPE i.\nok = 1.";
     let parsed = parse(src);

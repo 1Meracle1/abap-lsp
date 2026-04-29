@@ -786,6 +786,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             },
             rhs_is_top_level_sum: rhs_expr
                 .is_some_and(|rhs_expr| self.ctx.rhs_is_top_level_sum(rhs_expr)),
+            assigns_table_line: false,
         });
     }
 

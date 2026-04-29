@@ -2796,6 +2796,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             lhs: lhs_fact,
             rhs: rhs_fact,
             rhs_is_top_level_sum: self.ctx.rhs_is_top_level_sum(rhs),
+            assigns_table_line: false,
         });
     }
 
