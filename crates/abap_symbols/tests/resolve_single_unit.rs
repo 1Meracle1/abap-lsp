@@ -557,6 +557,7 @@ DATA gs_rep_evt TYPE ty_rep_evt.
 
 FORM f_process_sequence TABLES ft_rep_evt_seq STRUCTURE gs_rep_evt
                         CHANGING fv_dummy_msg TYPE string.
+  WRITE ft_rep_evt_seq.
 ENDFORM.
 "#;
     let unit = analyze_ok(src, "file:///form_tables_structure_param.abap");
@@ -577,6 +578,89 @@ ENDFORM.
             .iter()
             .any(|diag| diag.message.contains("gs_rep_evt")),
         "unexpected gs_rep_evt diagnostic: {:?}",
+        unit.diagnostics
+    );
+
+    let table_param = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::Parameter && symbol.name.as_ref() == "ft_rep_evt_seq"
+        })
+        .expect("ft_rep_evt_seq parameter");
+    assert_eq!(
+        table_param.type_clause_display.as_deref(),
+        Some("STANDARD TABLE OF ty_rep_evt")
+    );
+    assert_eq!(
+        table_param
+            .declared_type
+            .as_ref()
+            .map(|type_ref| (type_ref.namespace, type_ref.base_name.as_ref())),
+        Some((Namespace::Value, "gs_rep_evt"))
+    );
+    let row_structure = table_param.structure.expect("table row structure");
+    assert!(
+        unit.structure_field_info(row_structure, "rep_evtid")
+            .is_some(),
+        "expected row structure from gs_rep_evt: {:?}",
+        unit.structure(row_structure)
+    );
+    let semantic = unit.semantic();
+    let fact = semantic
+        .facts()
+        .expression_fact_at_offset(src.rfind("ft_rep_evt_seq").expect("table parameter use"))
+        .expect("expression fact for ft_rep_evt_seq");
+    assert!(
+        fact.type_fact.table_line.is_some(),
+        "expected internal table type fact: {fact:?}"
+    );
+    assert_eq!(
+        fact.type_fact.type_clause_display.as_deref(),
+        Some("STANDARD TABLE OF ty_rep_evt")
+    );
+}
+
+#[test]
+fn accepts_form_tables_structure_assignment_from_project_work_area() {
+    let top_src = r#"
+TYPES: BEGIN OF ty_rep_evt,
+         rep_evtid TYPE string,
+         evtid     TYPE string,
+       END OF ty_rep_evt.
+
+DATA gs_rep_evt TYPE ty_rep_evt.
+"#;
+    let f01_src = r#"
+FORM f_process_sequence TABLES ft_rep_evt_seq STRUCTURE gs_rep_evt.
+  DATA lt_rep_evt_aux TYPE STANDARD TABLE OF ty_rep_evt.
+  lt_rep_evt_aux[] = ft_rep_evt_seq[].
+ENDFORM.
+"#;
+
+    let top_parsed = parse(top_src);
+    let f01_parsed = parse(f01_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///zrep_top.abap",
+            source: top_src,
+            parse: &top_parsed,
+        },
+        ProjectInput {
+            uri: "file:///zrep_f01.abap",
+            source: f01_src,
+            parse: &f01_parsed,
+        },
+    ]);
+    let unit = project
+        .unit_by_uri("file:///zrep_f01.abap")
+        .expect("f01 unit");
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::IncompatibleAssignmentType),
+        "{:?}",
         unit.diagnostics
     );
 }

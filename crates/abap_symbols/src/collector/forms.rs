@@ -118,11 +118,11 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         ))
     }
 
-    fn function_table_parameter_type_display(
-        section: FunctionModuleParameterSection,
+    fn table_parameter_type_display(
+        is_tables: bool,
         type_clause_display: Option<Arc<str>>,
     ) -> Option<Arc<str>> {
-        if section != FunctionModuleParameterSection::Tables {
+        if !is_tables {
             return type_clause_display;
         }
         let display = type_clause_display?;
@@ -130,6 +130,35 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
             return Some(display);
         }
         Some(Arc::from(format!("STANDARD TABLE OF {display}")))
+    }
+
+    fn table_parameter_line_type_display(
+        &self,
+        scope: ScopeId,
+        declared_type: Option<&crate::FieldTypeRefData>,
+        fallback: Option<Arc<str>>,
+    ) -> Option<Arc<str>> {
+        let Some(type_ref) = declared_type else {
+            return fallback;
+        };
+        if type_ref.namespace != Namespace::Value
+            || type_ref.is_ref
+            || !type_ref.field_path.is_empty()
+        {
+            return fallback;
+        }
+        let Some(symbol_id) = self.collector.lookup_symbol_in_scope_chain(
+            scope,
+            Namespace::Value,
+            type_ref.base_name.as_ref(),
+        ) else {
+            return fallback;
+        };
+        self.collector
+            .symbol(symbol_id)
+            .type_clause_display
+            .clone()
+            .or(fallback)
     }
 
     fn first_non_comment_range(tokens: &[SyntaxTokenInfo]) -> Option<abap_lexer::TextRange> {
@@ -388,10 +417,25 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                     }
                     None => None,
                 };
-                let type_clause_display = param
+                let structure = declared_type.as_ref().and_then(|type_ref| {
+                    self.collector.resolve_field_type_ref(form_scope, type_ref)
+                });
+                let type_ref_display = param
                     .type_ref()
                     .and_then(|type_ref| type_ref.display_text(self.collector.source))
                     .map(Arc::from);
+                let type_clause_display = Self::table_parameter_type_display(
+                    section_kind == FormParameterSection::Tables,
+                    if section_kind == FormParameterSection::Tables {
+                        self.table_parameter_line_type_display(
+                            form_scope,
+                            declared_type.as_ref(),
+                            type_ref_display,
+                        )
+                    } else {
+                        type_ref_display
+                    },
+                );
                 let passing = match param.passing_kind(self.collector.source) {
                     AstFormParamPassingKind::Direct => FormParameterPassingKind::Direct,
                     AstFormParamPassingKind::Value => FormParameterPassingKind::Value,
@@ -402,6 +446,7 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                     name_node.range(),
                     section_kind,
                     passing,
+                    structure,
                     declared_type,
                     type_clause_display,
                 ));
@@ -409,13 +454,15 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
         }
 
         let mut parameters = Vec::new();
-        for (name, range, section, passing, declared_type, type_clause_display) in param_infos {
+        for (name, range, section, passing, structure, declared_type, type_clause_display) in
+            param_infos
+        {
             let symbol = self.collector.declare_symbol(
                 form_scope,
                 name,
                 SymbolKind::Parameter,
                 range,
-                None,
+                structure,
                 declared_type,
                 type_clause_display,
                 None,
@@ -666,8 +713,8 @@ impl<'ctx, 'a> FormsLowering<'ctx, 'a> {
                             }
                             None => None,
                         };
-                        let type_clause_display = Self::function_table_parameter_type_display(
-                            section_kind,
+                        let type_clause_display = Self::table_parameter_type_display(
+                            section_kind == FunctionModuleParameterSection::Tables,
                             param
                                 .type_ref()
                                 .and_then(|type_ref| type_ref.display_text(self.collector.source))

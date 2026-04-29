@@ -180,16 +180,35 @@ fn classify_normalized_type_fact(
                 declared_type.base_name.as_ref(),
             )));
         }
-        if matches!(declared_type.namespace, Namespace::Type | Namespace::Value)
-            && let Some((resolved_unit, resolved_fact)) =
-                resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
-        {
-            return classify_normalized_type_fact(
-                project,
-                resolved_unit,
-                &resolved_fact,
-                depth + 1,
-            );
+        match declared_type.namespace {
+            Namespace::Type => {
+                if let Some((resolved_unit, resolved_fact)) =
+                    resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
+                {
+                    return classify_normalized_type_fact(
+                        project,
+                        resolved_unit,
+                        &resolved_fact,
+                        depth + 1,
+                    );
+                }
+            }
+            Namespace::Value => {
+                if let Some((resolved_unit, resolved_fact)) =
+                    resolve_named_value_fact(project, unit, declared_type.base_name.as_ref())
+                        .or_else(|| {
+                            resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
+                        })
+                {
+                    return classify_normalized_type_fact(
+                        project,
+                        resolved_unit,
+                        &resolved_fact,
+                        depth + 1,
+                    );
+                }
+            }
+            Namespace::Routine => {}
         }
     }
     if fact.structure.is_some() {
@@ -429,6 +448,32 @@ fn resolve_named_type_fact<'a>(
                         | SymbolKind::Interface
                         | SymbolKind::BuiltinType
                 )
+                && symbol.name.as_ref() == name
+        }) else {
+            continue;
+        };
+        return Some((
+            unit,
+            TypeFactData {
+                structure: symbol.structure,
+                declared_type: symbol.declared_type.clone(),
+                type_clause_display: symbol.type_clause_display.clone(),
+                table_line: None,
+            },
+        ));
+    }
+    None
+}
+
+fn resolve_named_value_fact<'a>(
+    project: &'a ProjectAnalysis,
+    preferred_unit: &'a UnitAnalysis,
+    name: &str,
+) -> Option<(&'a UnitAnalysis, TypeFactData)> {
+    for unit in std::iter::once(preferred_unit).chain(project.units.iter()) {
+        let Some(symbol) = unit.symbols.iter().find(|symbol| {
+            symbol.scope == unit.root_scope
+                && symbol.kind.occupies(Namespace::Value)
                 && symbol.name.as_ref() == name
         }) else {
             continue;
