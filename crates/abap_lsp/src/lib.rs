@@ -6304,7 +6304,7 @@ fn dependency_method_target_at_offset(
                 dependency_document_snapshot_from_record(&target_uri, &record)
             }
         };
-        let member_range = target_snapshot
+        let member = target_snapshot
             .symbols
             .class_members
             .iter()
@@ -6313,12 +6313,39 @@ fn dependency_method_target_at_offset(
                     .name
                     .as_ref()
                     .eq_ignore_ascii_case(method_name.as_ref())
-            })
-            .map(|member| member.decl_range.clone())?;
-        return Some((target_snapshot, member_range));
+            })?;
+        let decl_range = member.decl_range.clone();
+        let Some(implementation) = member.implementation.clone() else {
+            return Some((target_snapshot, decl_range));
+        };
+        let implementation_unit = &target_snapshot.project.units[implementation.unit.as_usize()];
+        let implementation_snapshot = if implementation_unit.uri.as_ref() == target_uri.as_str() {
+            Arc::clone(&target_snapshot)
+        } else {
+            match snapshot_for_uri(state, implementation_unit.uri.as_ref()) {
+                Some(snapshot) => snapshot,
+                None => return Some((target_snapshot, decl_range)),
+            }
+        };
+        return Some((
+            implementation_snapshot,
+            method_implementation_name_range(method_name.as_ref(), implementation.range),
+        ));
     }
 
     None
+}
+
+fn method_implementation_name_range(
+    method_name: &str,
+    range: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let name = method_name.rsplit('~').next().unwrap_or(method_name);
+    if range.end.saturating_sub(range.start) >= name.len() {
+        range.end - name.len()..range.end
+    } else {
+        range
+    }
 }
 
 pub fn definition(
@@ -9309,6 +9336,64 @@ ENDCLASS.";
         };
         assert_eq!(implementation_location.range.start.line, 2);
         assert_eq!(implementation_location.range.start.character, 12);
+    }
+
+    #[test]
+    fn definition_on_method_call_returns_method_implementation() {
+        let state = ServerState::default();
+        let text = "\
+CLASS zcl_program DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS add_statement.
+ENDCLASS.
+
+CLASS zcl_program IMPLEMENTATION.
+  METHOD add_statement.
+  ENDMETHOD.
+ENDCLASS.
+
+zcl_program=>add_statement( ).";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///method_call_definition.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let call_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("=>add_statement"))
+            .expect("method call line");
+        let call_col = call_line.1.find("add_statement").expect("method call") as u32;
+
+        let result = definition(
+            &state,
+            &GotoDefinitionParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///method_call_definition.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: call_line.0 as u32,
+                        character: call_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("definition");
+        let GotoDefinitionResponse::Scalar(location) = result else {
+            panic!("expected scalar location");
+        };
+        assert_eq!(location.range.start.line, 6);
+        assert_eq!(location.range.start.character, 9);
     }
 
     #[test]
@@ -22995,8 +23080,8 @@ START-OF-SELECTION.
         let GotoDefinitionResponse::Scalar(location) = definition_result else {
             panic!("expected scalar location");
         };
-        assert_eq!(location.range.start.line, 2);
-        assert_eq!(location.range.start.character, 12);
+        assert_eq!(location.range.start.line, 6);
+        assert_eq!(location.range.start.character, 9);
 
         let completion_line = text
             .lines()

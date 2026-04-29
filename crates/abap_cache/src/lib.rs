@@ -1436,6 +1436,20 @@ impl AnalysisSnapshot {
             if let Some((member_unit, member)) =
                 resolve_class_selector_member(self, access, segment_index, unit, symbol_id)
             {
+                if member.kind == ClassMemberKind::Method
+                    && self
+                        .symbols
+                        .semantic()
+                        .decls()
+                        .symbol_at_offset(offset)
+                        .is_none()
+                {
+                    return Some(definition_target_for_class_member_implementation_or_decl(
+                        self.project.as_ref(),
+                        member_unit,
+                        member,
+                    ));
+                }
                 return Some(definition_target_for_class_member(member_unit, member));
             }
             if segment_index == 1
@@ -1510,7 +1524,11 @@ impl AnalysisSnapshot {
 
     fn definition_target_for_call_target_at(&self, offset: usize) -> Option<DefinitionTarget> {
         let (_, member_unit, member) = self.call_target_member_at(offset)?;
-        Some(definition_target_for_class_member(member_unit, member))
+        Some(definition_target_for_class_member_implementation_or_decl(
+            self.project.as_ref(),
+            member_unit,
+            member,
+        ))
     }
 
     fn reference_search_target_for_component_at(
@@ -4967,6 +4985,36 @@ fn definition_target_for_class_member(
     DefinitionTarget {
         uri: Arc::clone(&unit.uri),
         range: member.decl_range.clone(),
+    }
+}
+
+fn definition_target_for_class_member_implementation_or_decl(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    member: &ClassMemberData,
+) -> DefinitionTarget {
+    match &member.implementation {
+        Some(implementation) => definition_target_for_range(
+            &project.units[implementation.unit.as_usize()],
+            implementation_name_range_for_method(member, implementation.range.clone()),
+        ),
+        None => definition_target_for_class_member(unit, member),
+    }
+}
+
+fn implementation_name_range_for_method(
+    member: &ClassMemberData,
+    range: Range<usize>,
+) -> Range<usize> {
+    let name = member
+        .name
+        .rsplit('~')
+        .next()
+        .unwrap_or(member.name.as_ref());
+    if range.end.saturating_sub(range.start) >= name.len() {
+        range.end - name.len()..range.end
+    } else {
+        range
     }
 }
 
@@ -18529,6 +18577,33 @@ some_class=>exec( iv_value = 1 ).";
     }
 
     #[test]
+    fn definition_at_returns_selector_method_implementation() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS some_class DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS exec.
+ENDCLASS.
+
+CLASS some_class IMPLEMENTATION.
+  METHOD exec.
+  ENDMETHOD.
+ENDCLASS.
+
+some_class=>exec( ).";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+        let method_use = src.rfind("exec").expect("method use");
+        let implementation =
+            src.find("METHOD exec").expect("method implementation") + "METHOD ".len();
+
+        let target = snapshot
+            .definition_at(method_use + 1)
+            .expect("definition target");
+        assert_target_slice(&target, "file:///demo.abap", src, "exec");
+        assert_eq!(target.range.start, implementation);
+    }
+
+    #[test]
     fn definition_at_returns_interface_qualifier_declaration_for_selector() {
         let store = DocumentStore::default();
         let src = "\
@@ -18562,7 +18637,7 @@ lo_obj->i1~meth( ).";
     }
 
     #[test]
-    fn definition_at_returns_interface_method_declaration_for_selector() {
+    fn definition_at_returns_interface_method_implementation_for_selector() {
         let store = DocumentStore::default();
         let src = "\
 INTERFACE i1.
@@ -18586,11 +18661,13 @@ lo_obj->i1~meth( ).";
 
         let target = snapshot
             .definition_at(method_use + 1)
-            .expect("interface method definition target");
+            .expect("interface method implementation target");
         assert_target_slice(&target, "file:///demo.abap", src, "meth");
         assert_eq!(
             target.range.start,
-            src.find("meth").expect("interface method declaration")
+            src.find("METHOD i1~meth")
+                .expect("interface method implementation")
+                + "METHOD i1~".len()
         );
     }
 
