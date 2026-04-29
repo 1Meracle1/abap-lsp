@@ -14971,6 +14971,50 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_allows_read_table_inline_data_after_sy_subrc_success_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    TYPES: BEGIN OF ty_legisl,
+             ruleid TYPE string,
+             ifname TYPE string,
+           END OF ty_legisl.
+    DATA lt_legisl TYPE STANDARD TABLE OF ty_legisl WITH EMPTY KEY.
+    DATA lv_ruleid TYPE string.
+    lv_ruleid = 'A'.
+    SORT lt_legisl BY ruleid ASCENDING.
+    READ TABLE lt_legisl INTO DATA(ls_legisl) WITH KEY ruleid = lv_ruleid BINARY SEARCH.
+    IF sy-subrc = 0.
+      DATA lv_ifname TYPE string.
+      lv_ifname = ls_legisl-ifname.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish(
+            "file:///routine_read_table_inline_data_guarded.abap",
+            1,
+            src,
+        );
+        let use_before = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::UseBeforeDefiniteAssignment,
+        );
+
+        assert!(
+            !use_before.iter().any(|slice| slice.contains("ls_legisl")),
+            "{use_before:?}"
+        );
+    }
+
+    #[test]
     fn routine_analysis_flags_read_table_assigning_field_symbol_as_possibly_unbound() {
         let store = DocumentStore::default();
         let src = "\

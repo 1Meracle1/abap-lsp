@@ -4058,11 +4058,13 @@ fn conditional_assignment_targets_for_subrc_success_update(
         SystemFieldStatementKind::ReadTable => unit
             .routine_sites
             .iter()
-            .find(|site| {
+            .filter(|site| {
                 site.kind == RoutineSiteKind::ReadTable
                     && site.scope == update.scope
-                    && site.range == update.range
+                    && update.range.start <= site.range.start
+                    && site.range.end <= update.range.end
             })
+            .max_by_key(|site| (site.range.start, site.range.end))
             .and_then(|site| {
                 site.target_range.as_ref().and_then(|target_range| {
                     conditional_assignment_target_for_range(

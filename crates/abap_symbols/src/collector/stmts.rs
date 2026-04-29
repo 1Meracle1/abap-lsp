@@ -738,6 +738,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let mut target_kind = None;
         let mut named_into_target = None;
         let mut named_field_symbol_target = None;
+        let mut inline_into_target_range = None;
 
         for &child in entry_children {
             match self.collector.file.kind(child) {
@@ -792,6 +793,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
                     && let Some((name, range)) = self.collector.node_name(name_node)
                 {
+                    if inline_into_target_range.is_none() {
+                        inline_into_target_range = Some(range.clone());
+                    }
                     self.collector.declare_symbol(
                         decl_scope,
                         name,
@@ -811,7 +815,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 scope,
                 range: self.collector.file.range(source_expr),
                 kind: RoutineSiteKind::ReadTable,
-                target_range: named_into_target.map(|target| self.collector.file.range(target)),
+                target_range: inline_into_target_range
+                    .or_else(|| named_into_target.map(|target| self.collector.file.range(target))),
             });
             if let Some(source_access) = self.collector.value_access_from_node(source_expr, scope) {
                 let significant = self.significant_infos_from_children(entry_children);
