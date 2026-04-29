@@ -34,7 +34,7 @@ use abap_dependency_store::{
 use abap_parser::{parse, parse_error_is_include_fragment_boundary};
 use abap_symbols::{
     DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution, SqlResolution,
-    UnitId, analyze_unit,
+    SymbolKind, UnitId, analyze_unit,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CodeDescription,
@@ -2855,7 +2855,8 @@ fn hydrate_workspace_dependency_documents_with_metrics(
 
     let build_plan = workspace_committed_build_plan(workspace);
     let mut queried_candidates = HashSet::<String>::new();
-    let mut hydrated = HashMap::new();
+    let mut scanned_candidate_sources = HashSet::<String>::new();
+    let mut hydrated_uris = HashSet::<Arc<str>>::new();
 
     loop {
         metrics.iterations += 1;
@@ -2873,14 +2874,22 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                 metrics.dependency_snapshots_skipped += 1;
                 continue;
             }
+            if !scanned_candidate_sources.insert(uri.to_string()) {
+                continue;
+            }
 
             metrics.source_snapshots_examined += 1;
             let candidate_start = Instant::now();
-            let candidates = collect_remote_dependency_candidates_for_hydration(
+            let mut candidates =
+                if snapshot.is_dependency && workspace.open_documents.contains_key(uri.as_ref()) {
+                    cached_dependency_batch_candidates(workspace, snapshot.as_ref())
+                } else {
+                    collect_remote_dependency_candidates_for_include_component(snapshot.as_ref())
+                };
+            candidates.extend(resolved_dependency_inheritance_candidates(
                 workspace,
                 snapshot.as_ref(),
-                uri.as_ref(),
-            );
+            ));
             metrics.candidate_collection_micros += candidate_start.elapsed().as_micros();
             metrics.candidate_count += candidates.len();
             for candidate in candidates {
@@ -2903,15 +2912,48 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                     continue;
                 };
                 metrics.artifact_hits += 1;
-                let input = workspace_dependency_document_input(workspace, &record);
-                record_dependency_parent_uri(workspace, input.uri.as_ref(), uri.as_ref());
-                if workspace.cache.get(input.uri.as_ref()).is_some()
-                    || !input_uris.insert(input.uri.to_string())
-                {
-                    metrics.existing_or_duplicate_inputs += 1;
-                    continue;
+                let mut records = VecDeque::from([(record, uri.to_string())]);
+                let mut expanded_artifacts = HashSet::new();
+                while let Some((record, parent_uri)) = records.pop_front() {
+                    let input = workspace_dependency_document_input(workspace, &record);
+                    record_dependency_parent_uri(workspace, input.uri.as_ref(), &parent_uri);
+                    if workspace.cache.get(input.uri.as_ref()).is_some()
+                        || !input_uris.insert(input.uri.to_string())
+                    {
+                        metrics.existing_or_duplicate_inputs += 1;
+                    } else {
+                        hydrated_uris.insert(Arc::clone(&input.uri));
+                        inputs.push(input.clone());
+                    }
+                    if !expanded_artifacts.insert(record.artifact_id) {
+                        continue;
+                    }
+                    let inheritance_candidates =
+                        dependency_inheritance_candidates_from_record(&record);
+                    metrics.candidate_count += inheritance_candidates.len();
+                    for candidate in inheritance_candidates {
+                        let candidate_key = remote_candidate_key(&candidate);
+                        if !queried_candidates.insert(candidate_key) {
+                            continue;
+                        }
+                        metrics.unique_candidate_queries += 1;
+                        let lookup_start = Instant::now();
+                        let inherited_record = reader
+                            .find_artifact_for_candidate(
+                                &profile,
+                                candidate.name.as_str(),
+                                candidate.kind.as_str(),
+                            )
+                            .ok()
+                            .flatten();
+                        metrics.store_lookup_micros += lookup_start.elapsed().as_micros();
+                        let Some(inherited_record) = inherited_record else {
+                            continue;
+                        };
+                        metrics.artifact_hits += 1;
+                        records.push_back((inherited_record, input.uri.to_string()));
+                    }
                 }
-                inputs.push(input);
             }
         }
 
@@ -2922,13 +2964,117 @@ fn hydrate_workspace_dependency_documents_with_metrics(
         metrics.hydrated_input_count += inputs.len();
         metrics.published_batch_count += 1;
         let publish_start = Instant::now();
-        hydrated = workspace
+        workspace
             .cache
             .publish_inputs_with_build_plan(inputs, build_plan);
         metrics.publish_micros += publish_start.elapsed().as_micros();
     }
 
+    let mut hydrated = HashMap::new();
+    for uri in hydrated_uris {
+        if let Some(snapshot) = workspace.cache.get(uri.as_ref()) {
+            hydrated.insert(Arc::clone(&snapshot.uri), snapshot);
+        }
+    }
     hydrated
+}
+
+fn resolved_dependency_inheritance_candidates(
+    workspace: &WorkspaceState,
+    snapshot: &AnalysisSnapshot,
+) -> Vec<RemoteDependencyCandidate> {
+    let mut deduped = HashMap::new();
+    for reference in snapshot.symbols.semantic().refs().all() {
+        if !matches!(
+            reference.kind,
+            ReferenceKind::TypeRef | ReferenceKind::StaticTarget
+        ) {
+            continue;
+        }
+        let Some(Resolution::Symbol(handle)) = reference.resolution else {
+            continue;
+        };
+        let Some(target_unit) = snapshot.project.units.get(handle.unit.as_usize()) else {
+            continue;
+        };
+        if !workspace_uri_is_dependency_source(workspace, target_unit.uri.as_ref()) {
+            continue;
+        }
+        let target_symbol = target_unit.symbol(handle.symbol);
+        if !matches!(
+            target_symbol.kind,
+            SymbolKind::Class | SymbolKind::Interface
+        ) {
+            continue;
+        }
+        insert_dependency_inheritance_candidates(target_unit, handle.symbol, &mut deduped);
+    }
+    deduped.into_values().collect()
+}
+
+fn dependency_inheritance_candidates_from_record(
+    record: &StoredArtifactRecord,
+) -> Vec<RemoteDependencyCandidate> {
+    if !matches!(
+        record.object_kind.as_str(),
+        "global-class" | "global-interface"
+    ) {
+        return Vec::new();
+    }
+    let analysis_text = analysis_text_for_document(record.source_text.as_str(), true);
+    let parsed = parse(analysis_text.as_ref());
+    let unit = analyze_unit(
+        Arc::from(record.object_uri.as_str()),
+        analysis_text.as_ref(),
+        &parsed,
+    );
+    let mut deduped = HashMap::new();
+    for inheritance in &unit.class_inheritance {
+        insert_remote_candidate(
+            &mut deduped,
+            RemoteDependencyCandidate {
+                name: inheritance.superclass_name.to_string(),
+                kind: "type".to_string(),
+            },
+        );
+    }
+    for interface in &unit.implemented_interfaces {
+        insert_remote_candidate(
+            &mut deduped,
+            RemoteDependencyCandidate {
+                name: interface.interface_name.to_string(),
+                kind: "type".to_string(),
+            },
+        );
+    }
+    deduped.into_values().collect()
+}
+
+fn insert_dependency_inheritance_candidates(
+    unit: &abap_symbols::UnitAnalysis,
+    owner_symbol: abap_symbols::SymbolId,
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    if let Some(inheritance) = unit.class_superclass(owner_symbol) {
+        insert_remote_candidate(
+            deduped,
+            RemoteDependencyCandidate {
+                name: inheritance.superclass_name.to_string(),
+                kind: "type".to_string(),
+            },
+        );
+    }
+    for interface in &unit.implemented_interfaces {
+        if interface.owner_symbol == owner_symbol {
+            insert_remote_candidate(
+                deduped,
+                RemoteDependencyCandidate {
+                    name: interface.interface_name.to_string(),
+                    kind: "type".to_string(),
+                },
+            );
+        }
+    }
 }
 
 fn rebuild_workspace_cache_with_progress(
@@ -3949,18 +4095,6 @@ fn collect_remote_dependency_candidates_for_batch(
     if document_uses_local_exports(workspace, source_uri) {
         return collect_remote_dependency_candidates_for_local_export_chain(workspace, source_uri);
     }
-    collect_remote_dependency_candidates_for_include_component(snapshot)
-}
-
-fn collect_remote_dependency_candidates_for_hydration(
-    workspace: &mut WorkspaceState,
-    snapshot: &AnalysisSnapshot,
-    source_uri: &str,
-) -> Vec<RemoteDependencyCandidate> {
-    if snapshot.is_dependency {
-        return cached_dependency_batch_candidates(workspace, snapshot);
-    }
-    let _ = source_uri;
     collect_remote_dependency_candidates_for_include_component(snapshot)
 }
 
@@ -15890,6 +16024,164 @@ dependency_mode = "remote-on-demand"
         assert!(
             build_remote_dependency_request(&mut state, &source_uri).is_none(),
             "hydrated cached type should not be re-requested remotely"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn opened_cached_dependency_hydrates_inherited_member_owner() {
+        let workspace_path = temp_workspace_path("opened_cached_dependency_inherited_member");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "REPORT zmain.\nDATA lo_target TYPE REF TO zcl_target.\n",
+        )
+        .expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            for (name, source_text) in [
+                (
+                    "ZCL_TARGET",
+                    "\
+CLASS zcl_target DEFINITION PUBLIC.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_target IMPLEMENTATION.
+  METHOD run.
+    DATA lo_messages TYPE REF TO zcl_messages.
+    lo_messages->set_message( ).
+  ENDMETHOD.
+ENDCLASS.",
+                ),
+                (
+                    "ZCL_MESSAGES",
+                    "\
+CLASS zcl_messages DEFINITION PUBLIC INHERITING FROM zcl_base_messages.
+ENDCLASS.
+CLASS zcl_messages IMPLEMENTATION.
+  METHOD constructor.
+    DATA lo_noise TYPE REF TO zcl_noise.
+  ENDMETHOD.
+ENDCLASS.",
+                ),
+                (
+                    "ZCL_BASE_MESSAGES",
+                    "\
+CLASS zcl_base_messages DEFINITION PUBLIC.
+  PUBLIC SECTION.
+    METHODS set_message.
+ENDCLASS.
+CLASS zcl_base_messages IMPLEMENTATION.
+ENDCLASS.",
+                ),
+                (
+                    "ZCL_NOISE",
+                    "\
+CLASS zcl_noise DEFINITION PUBLIC.
+ENDCLASS.
+CLASS zcl_noise IMPLEMENTATION.
+ENDCLASS.",
+                ),
+            ] {
+                store
+                    .put_artifact(
+                        &profile,
+                        &StoredArtifactInput {
+                            package_name: "ZPKG".to_string(),
+                            object_kind: "global-class".to_string(),
+                            object_name: name.to_string(),
+                            object_uri: format!("/sap/bc/adt/oo/classes/{}", name.to_lowercase()),
+                            object_type: "CLAS/OC".to_string(),
+                            description: "Remote class".to_string(),
+                            file_extension: "abap".to_string(),
+                            source_text: source_text.to_string(),
+                            fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                            symbols: extract_stored_dependency_symbols(
+                                &format!("/sap/bc/adt/oo/classes/{}", name.to_lowercase()),
+                                source_text,
+                            ),
+                        },
+                    )
+                    .expect("store artifact");
+            }
+        }
+
+        refresh_workspace(&mut state, &workspace_uri);
+        let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_TARGET");
+        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
+        let opened = publish_open_document_mut(
+            &mut state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: dependency_text,
+                },
+            },
+        );
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        assert!(
+            workspace.cache.uris().into_iter().any(|uri| {
+                workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                    snapshot
+                        .object_name
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("zcl_base_messages"))
+                })
+            }),
+            "base class should be hydrated through the opened dependency chain"
+        );
+        assert!(
+            workspace.cache.uris().into_iter().all(|uri| {
+                workspace.cache.get(uri.as_ref()).is_none_or(|snapshot| {
+                    snapshot
+                        .object_name
+                        .as_ref()
+                        .is_none_or(|name| !name.eq_ignore_ascii_case("zcl_noise"))
+                })
+            }),
+            "closed dependency implementation references should not fan out during hydration"
+        );
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), opened.as_ref());
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| { !diagnostic.message.contains("unknown member 'set_message'") }),
+            "{diagnostics:#?}"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
