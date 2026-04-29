@@ -15043,6 +15043,35 @@ ENDCLASS.";
     }
 
     #[test]
+    fn routine_analysis_unassign_clears_field_symbol_without_reading_it() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lt_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    READ TABLE lt_values ASSIGNING FIELD-SYMBOL(<lv_value>) INDEX 1.
+    UNASSIGN <lv_value>.
+    DATA lv_copy TYPE i.
+    lv_copy = <lv_value>.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///routine_unassign_field_symbol.abap", 1, src);
+        let unbound = diagnostic_slices(
+            src,
+            &snapshot.symbols.diagnostics,
+            DiagnosticKind::PossiblyUnboundFieldSymbol,
+        );
+
+        assert_eq!(unbound, vec!["<lv_value>".to_string()]);
+    }
+
+    #[test]
     fn routine_analysis_allows_read_table_assigning_field_symbol_after_sy_subrc_success_guard() {
         let store = DocumentStore::default();
         let src = "\

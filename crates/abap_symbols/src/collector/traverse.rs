@@ -239,11 +239,11 @@ impl<'a> Collector<'a> {
             SyntaxKind::RefreshStmt => self.stmt_lowering().collect_refresh_stmt(node, scope),
             SyntaxKind::CollectStmt
             | SyntaxKind::FreeStmt
-            | SyntaxKind::UnassignStmt
             | SyntaxKind::ImportMemoryStmt
             | SyntaxKind::ExportMemoryStmt => self
                 .stmt_lowering()
                 .collect_structured_effect_stmt(node, scope),
+            SyntaxKind::UnassignStmt => self.stmt_lowering().collect_unassign_stmt(node, scope),
             SyntaxKind::ConvertStmt => self.stmt_lowering().collect_convert_stmt(node, scope),
             SyntaxKind::DescribeStmt => self.stmt_lowering().collect_describe_stmt(node, scope),
             SyntaxKind::FindStmt => self.stmt_lowering().collect_find_stmt(node, scope),

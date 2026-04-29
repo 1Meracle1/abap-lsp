@@ -274,6 +274,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             let instruction_site = match site.kind {
                 RoutineSiteKind::UnknownEffect => RoutineInstructionSite::UnknownEffect,
                 RoutineSiteKind::Clear => RoutineInstructionSite::Clear { index: idx as u32 },
+                RoutineSiteKind::Unassign => RoutineInstructionSite::Unassign { index: idx as u32 },
                 RoutineSiteKind::Delete => RoutineInstructionSite::Delete { index: idx as u32 },
                 RoutineSiteKind::ReadTable => {
                     RoutineInstructionSite::ReadTable { index: idx as u32 }
@@ -949,6 +950,7 @@ impl<'a> CfgBuilder<'a> {
                 | RoutineInstructionSite::Perform { .. }
                 | RoutineInstructionSite::SqlQuery { .. }
                 | RoutineInstructionSite::Clear { .. }
+                | RoutineInstructionSite::Unassign { .. }
                 | RoutineInstructionSite::Delete { .. }
                 | RoutineInstructionSite::ReadTable { .. }
                 | RoutineInstructionSite::Find { .. }
@@ -1711,6 +1713,11 @@ fn build_routine_dataflow(
                     mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, &site.range);
                 }
             }
+            RoutineInstructionSite::Unassign { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize) {
+                    mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, &site.range);
+                }
+            }
             RoutineInstructionSite::Delete { index } => {
                 if let Some(site) = unit.routine_sites.get(index as usize) {
                     mark_reference_ids_in_range(&mut suppressed_refs, &reference_uses, &site.range);
@@ -1946,6 +1953,19 @@ fn build_routine_dataflow(
                     transfer.writes.push(write_value);
                     transfer.assigned_writes.push(write_value);
                     transfer.non_initial_kills.push(write_value);
+                }
+            }
+            RoutineInstructionSite::Unassign { index } => {
+                if let Some(site) = unit.routine_sites.get(index as usize) {
+                    for value in
+                        direct_field_symbol_values_in_range(&reference_uses, &site.range, &values)
+                    {
+                        candidate_field_symbols.insert(value);
+                        transfer.writes.push(value);
+                        transfer
+                            .field_symbol_binding
+                            .push(FieldSymbolBindingTransfer::Clear(value));
+                    }
                 }
             }
             RoutineInstructionSite::Delete { .. } => {}
@@ -2788,6 +2808,7 @@ fn build_dead_store_tracked_values(
             RoutineInstructionSite::Assignment { .. }
             | RoutineInstructionSite::SqlQuery { .. }
             | RoutineInstructionSite::Clear { .. }
+            | RoutineInstructionSite::Unassign { .. }
             | RoutineInstructionSite::Delete { .. }
             | RoutineInstructionSite::ReadTable { .. }
             | RoutineInstructionSite::Find { .. }
@@ -3133,6 +3154,7 @@ fn build_dead_store_instruction_summaries(
             }
             RoutineInstructionSite::Perform { .. }
             | RoutineInstructionSite::SqlQuery { .. }
+            | RoutineInstructionSite::Unassign { .. }
             | RoutineInstructionSite::Delete { .. }
             | RoutineInstructionSite::FieldSymbolBind { .. }
             | RoutineInstructionSite::UnknownEffect
@@ -5626,15 +5648,16 @@ fn instruction_kind_sort_key(kind: RoutineInstructionKind) -> u8 {
         RoutineInstructionKind::Perform => 2,
         RoutineInstructionKind::SqlQuery => 3,
         RoutineInstructionKind::Clear => 4,
-        RoutineInstructionKind::Delete => 5,
-        RoutineInstructionKind::ReadTable => 6,
-        RoutineInstructionKind::Find => 7,
-        RoutineInstructionKind::FieldSymbolBind => 8,
-        RoutineInstructionKind::ValueRead => 9,
-        RoutineInstructionKind::UnknownEffect => 10,
-        RoutineInstructionKind::Branch => 11,
-        RoutineInstructionKind::LoopHeader => 12,
-        RoutineInstructionKind::Terminator => 13,
+        RoutineInstructionKind::Unassign => 5,
+        RoutineInstructionKind::Delete => 6,
+        RoutineInstructionKind::ReadTable => 7,
+        RoutineInstructionKind::Find => 8,
+        RoutineInstructionKind::FieldSymbolBind => 9,
+        RoutineInstructionKind::ValueRead => 10,
+        RoutineInstructionKind::UnknownEffect => 11,
+        RoutineInstructionKind::Branch => 12,
+        RoutineInstructionKind::LoopHeader => 13,
+        RoutineInstructionKind::Terminator => 14,
     }
 }
 
@@ -5645,6 +5668,7 @@ fn instruction_site_sort_key(site: RoutineInstructionSite) -> u32 {
         | RoutineInstructionSite::Perform { index }
         | RoutineInstructionSite::SqlQuery { index }
         | RoutineInstructionSite::Clear { index }
+        | RoutineInstructionSite::Unassign { index }
         | RoutineInstructionSite::Delete { index }
         | RoutineInstructionSite::ReadTable { index }
         | RoutineInstructionSite::Find { index }

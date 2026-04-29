@@ -3225,6 +3225,15 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         self.collector.walk_children(node, scope);
     }
 
+    pub(super) fn collect_unassign_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_routine_site(
+            scope,
+            self.collector.file.range(node),
+            RoutineSiteKind::Unassign,
+        );
+        self.collector.walk_children(node, scope);
+    }
+
     pub(super) fn collect_describe_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         self.record_system_field_updates(

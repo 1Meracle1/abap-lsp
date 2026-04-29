@@ -771,6 +771,7 @@ pub enum RoutineLoopKind {
 pub enum RoutineSiteKind {
     UnknownEffect,
     Clear,
+    Unassign,
     Delete,
     ReadTable,
     Return,
