@@ -16347,6 +16347,28 @@ SELECT carrid
     }
 
     #[test]
+    fn local_lint_pack_accepts_for_all_entries_lines_zero_return_guard() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_keys TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+IF lines( lt_keys ) = 0.
+  RETURN.
+ENDIF.
+
+SELECT carrid
+  FROM scarr
+  INTO TABLE @DATA(lt_scarr)
+  FOR ALL ENTRIES IN @lt_keys
+  WHERE carrid = @lt_keys.";
+
+        let snapshot = store.publish("file:///lint_fae_lines_zero_guarded.abap", 1, src);
+        let fae = lint_slices(src, &snapshot, ABAP_LSP_FOR_ALL_ENTRIES_WITHOUT_GUARD);
+
+        assert!(fae.is_empty(), "{fae:?}");
+    }
+
+    #[test]
     fn local_lint_pack_flags_dynamic_open_sql_fragments() {
         let store = DocumentStore::default();
         let src = "\
