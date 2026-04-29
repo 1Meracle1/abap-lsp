@@ -1660,6 +1660,16 @@ fn build_routine_dataflow(
         &mut block_bound_entry_bits,
         &sy_subrc_guard_bound_block_refinements,
     );
+    union_dense_scope_refinements(
+        &mut block_bound_entry_bits,
+        &resolve_field_symbol_assigned_guard_block_refinements(
+            unit,
+            routine,
+            &reference_uses,
+            &value_ids_by_symbol,
+            values.len(),
+        ),
+    );
     let mut safe_read_refs = safe_field_symbol_checks;
     safe_read_refs.extend(safe_value_state_checks);
     safe_read_refs.extend(safe_loop_field_refs);
@@ -3679,27 +3689,99 @@ fn resolve_is_assigned_bound_scope_refinements(
         let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
             continue;
         };
-        for use_site in reference_uses_in_range(reference_uses, &check.symbol_range) {
-            if use_site.range != check.symbol_range {
-                continue;
-            }
-            let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
-                continue;
-            };
-            let Some(Resolution::Symbol(handle)) = reference.resolution else {
-                continue;
-            };
-            if handle.unit != unit.unit_id
-                || !value_ids_by_symbol.contains_key(&handle)
-                || reference.scope != check.scope
-                || reference.name != check.symbol_name
-            {
-                continue;
-            }
-            scope_bits.insert(use_site.value);
+        if let Some(value) =
+            field_symbol_check_value_id(unit, check, reference_uses, value_ids_by_symbol)
+        {
+            scope_bits.insert(value);
         }
     }
     out
+}
+
+fn resolve_field_symbol_assigned_guard_block_refinements(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    value_count: usize,
+) -> Vec<DenseBitSet> {
+    let mut out = vec![DenseBitSet::new(value_count); routine.cfg.blocks.len()];
+    for block in &routine.cfg.blocks {
+        let Some(last_instruction_id) = block.instructions.last() else {
+            continue;
+        };
+        let instruction = &routine.ir.instructions[last_instruction_id.as_usize()];
+        let RoutineInstructionSite::Branch {
+            kind: RoutineBranchKind::If,
+        } = instruction.site
+        else {
+            continue;
+        };
+        let Some(region) = if_region_for_instruction(unit, instruction) else {
+            continue;
+        };
+        if region.else_scope.is_some() || !region.elseif_scopes.is_empty() {
+            continue;
+        }
+        let Some(check) =
+            single_unassigned_field_symbol_guard_check_for_scope(unit, region.then_scope)
+        else {
+            continue;
+        };
+        let Some(continuation_block) = unique_fallthrough_successor(routine, block.id) else {
+            continue;
+        };
+        let Some(continuation) = routine.cfg.blocks.get(continuation_block.as_usize()) else {
+            continue;
+        };
+        if continuation.predecessors.len() != 1 || continuation.predecessors[0] != block.id {
+            continue;
+        }
+        let Some(scope_bits) = out.get_mut(continuation_block.as_usize()) else {
+            continue;
+        };
+        if let Some(value) =
+            field_symbol_check_value_id(unit, check, reference_uses, value_ids_by_symbol)
+        {
+            scope_bits.insert(value);
+        }
+    }
+    out
+}
+
+fn single_unassigned_field_symbol_guard_check_for_scope(
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+) -> Option<&crate::FieldSymbolStateCheckData> {
+    let mut checks = unit
+        .field_symbol_state_checks
+        .iter()
+        .filter(|candidate| candidate.scope == scope)
+        .filter(|candidate| candidate.kind == FieldSymbolStateCheckKind::IsNotAssigned);
+    let check = checks.next()?;
+    checks.next().is_none().then_some(check)
+}
+
+fn field_symbol_check_value_id(
+    unit: &UnitAnalysis,
+    check: &crate::FieldSymbolStateCheckData,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+) -> Option<DataflowValueId> {
+    reference_uses_in_range(reference_uses, &check.symbol_range).find_map(|use_site| {
+        if use_site.range != check.symbol_range {
+            return None;
+        }
+        let reference = unit.references.get(use_site.reference.as_usize())?;
+        let Resolution::Symbol(handle) = reference.resolution? else {
+            return None;
+        };
+        (handle.unit == unit.unit_id
+            && value_ids_by_symbol.contains_key(&handle)
+            && reference.scope == check.scope
+            && reference.name == check.symbol_name)
+            .then_some(use_site.value)
+    })
 }
 
 fn resolve_sy_subrc_success_assigned_scope_refinements(

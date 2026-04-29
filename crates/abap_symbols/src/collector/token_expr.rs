@@ -317,20 +317,27 @@ impl<'a> Collector<'a> {
         if !Self::is_field_symbol_name(token.text.as_ref()) {
             return None;
         }
+        let is_negated = self.preceded_by_not(tokens, idx);
         let next = tokens.get(idx + 1)?;
         if !next.text.eq_ignore_ascii_case("is") {
             return None;
         }
         let third = tokens.get(idx + 2)?;
         if third.text.eq_ignore_ascii_case("assigned") {
-            return Some(FieldSymbolStateCheckKind::IsAssigned);
+            return Some(self.negate_field_symbol_state_check_kind(
+                FieldSymbolStateCheckKind::IsAssigned,
+                is_negated,
+            ));
         }
         if third.text.eq_ignore_ascii_case("not")
             && tokens
                 .get(idx + 3)
                 .is_some_and(|token| token.text.eq_ignore_ascii_case("assigned"))
         {
-            return Some(FieldSymbolStateCheckKind::IsNotAssigned);
+            return Some(self.negate_field_symbol_state_check_kind(
+                FieldSymbolStateCheckKind::IsNotAssigned,
+                is_negated,
+            ));
         }
         None
     }
@@ -476,6 +483,20 @@ impl<'a> Collector<'a> {
             ValueStateCheckKind::EqualsZero => ValueStateCheckKind::NotEqualsZero,
             ValueStateCheckKind::NotEqualsZero => ValueStateCheckKind::EqualsZero,
             ValueStateCheckKind::ConditionProbe => ValueStateCheckKind::ConditionProbe,
+        }
+    }
+
+    fn negate_field_symbol_state_check_kind(
+        &self,
+        kind: FieldSymbolStateCheckKind,
+        negated: bool,
+    ) -> FieldSymbolStateCheckKind {
+        if !negated {
+            return kind;
+        }
+        match kind {
+            FieldSymbolStateCheckKind::IsAssigned => FieldSymbolStateCheckKind::IsNotAssigned,
+            FieldSymbolStateCheckKind::IsNotAssigned => FieldSymbolStateCheckKind::IsAssigned,
         }
     }
 

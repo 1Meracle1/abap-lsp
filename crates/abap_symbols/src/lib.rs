@@ -1346,6 +1346,47 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn assign_field_symbol_is_bound_after_negative_is_assigned_guard_exits() {
+        let src = "\
+FORM run.\n\
+  TYPES: BEGIN OF ty_row,\n\
+           text TYPE string,\n\
+         END OF ty_row.\n\
+  DATA ls_row TYPE ty_row.\n\
+  DATA lt_names TYPE STANDARD TABLE OF string WITH EMPTY KEY.\n\
+  FIELD-SYMBOLS <text> TYPE string.\n\
+  LOOP AT lt_names INTO DATA(lv_name).\n\
+    ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO <text>.\n\
+    IF NOT <text> IS ASSIGNED.\n\
+      CONTINUE.\n\
+    ENDIF.\n\
+    WRITE: / <text>.\n\
+  ENDLOOP.\n\
+ENDFORM.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///assign_field_symbol_negative_guard_exits.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::PossiblyUnboundFieldSymbol
+                        || !src[diagnostic.range.clone()].contains("<text>")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn loop_assigning_field_symbol_target_is_bound_inside_loop_body() {
         let src = "\
 FORM run.\n\
