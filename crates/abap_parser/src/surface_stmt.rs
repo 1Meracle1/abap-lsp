@@ -4370,6 +4370,59 @@ fn insert_into_table_tail_clause_starts(source: &str, tokens: &[Token], idx: usi
                     .is_some_and(|next| is_keyword(source, next, "into"))))
 }
 
+fn push_insert_lines_of_source_clause(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> bool {
+    if !tokens
+        .get(start)
+        .is_some_and(|token| is_keyword(source, token, "lines"))
+        || !tokens
+            .get(start + 1)
+            .is_some_and(|token| is_keyword(source, token, "of"))
+    {
+        return false;
+    }
+
+    children.push(token_leaf(b, &tokens[start]));
+    children.push(token_leaf(b, &tokens[start + 1]));
+
+    let mut cursor = start + 2;
+    let mut prev = &tokens[start + 1];
+    while cursor < end_exclusive {
+        let next = find_top_level_keyword_in(
+            source,
+            tokens,
+            cursor,
+            end_exclusive,
+            &["from", "to", "using"],
+        )
+        .unwrap_or(end_exclusive);
+        push_expr_child(b, children, source, tokens, cursor, next, Some(prev));
+        if next == end_exclusive {
+            break;
+        }
+
+        let token = &tokens[next];
+        children.push(token_leaf(b, token));
+        cursor = next + 1;
+        prev = token;
+        if is_keyword(source, token, "using") {
+            while cursor < end_exclusive {
+                children.push(token_leaf(b, &tokens[cursor]));
+                cursor += 1;
+            }
+            break;
+        }
+    }
+
+    true
+}
+
 fn insert_db_table_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
     let Some(token) = tokens.get(idx) else {
         return false;
@@ -9628,19 +9681,28 @@ pub fn try_parse_insert_table_stmt(
             }
             let mut children = Vec::with_capacity(period_i - idx + 1);
             children.push(token_leaf(b, insert_tok));
-            let source_clause = |tokens: &[Token], i: usize| {
-                insert_internal_source_clause_starts(source, tokens, i)
-            };
-            scan_and_push_expr_clause(
+            if !push_insert_lines_of_source_clause(
                 b,
                 &mut children,
                 source,
                 tokens,
                 idx + 1,
                 into_idx,
-                Some(insert_tok),
-                &source_clause,
-            );
+            ) {
+                let source_clause = |tokens: &[Token], i: usize| {
+                    insert_internal_source_clause_starts(source, tokens, i)
+                };
+                scan_and_push_expr_clause(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 1,
+                    into_idx,
+                    Some(insert_tok),
+                    &source_clause,
+                );
+            }
             children.push(token_leaf(b, &tokens[into_idx]));
             let (table_expr_start, prev_before_itab): (usize, &Token) = if has_table_kw {
                 children.push(token_leaf(b, &tokens[into_idx + 1]));
@@ -14528,12 +14590,28 @@ SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_p
     fn parses_insert_lines_of_into_table() {
         let parsed = crate::parse("INSERT LINES OF lt_src INTO TABLE lt_dst.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(
-            parsed
-                .file
-                .count_kind(parsed.file.root(), SyntaxKind::InsertTableStmt),
-            1
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertTableStmt)
+            .expect("insert lines of stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 2);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_insert_lines_of_bounds_and_key_operands_as_ast_children() {
+        let parsed = crate::parse(
+            "INSERT LINES OF <lt_table> FROM lv_from TO lv_to USING KEY primary_key INTO TABLE et_obj.",
         );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let stmt = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::InsertTableStmt)
+            .expect("insert lines of stmt");
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TemplateExpr), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::ExprIdent), 4);
+        assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -1459,6 +1459,54 @@ APPEND LINES OF lt_src TO lt_dst.
 }
 
 #[test]
+fn resolves_insert_lines_of_source_bounds_and_target() {
+    let src = r#"
+TYPES ty_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+FIELD-SYMBOLS <lt_table> TYPE ty_tab.
+DATA et_obj TYPE ty_tab.
+DATA lv_from TYPE i.
+DATA lv_to TYPE i.
+
+INSERT LINES OF <lt_table> FROM lv_from TO lv_to USING KEY primary_key INTO TABLE et_obj.
+"#;
+    let unit = analyze(src, "file:///insert_lines_stmt.abap");
+
+    for name in ["<lt_table>", "lv_from", "lv_to", "et_obj"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved INSERT LINES OF reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in ["lines", "of", "from", "to", "using", "key", "primary_key"] {
+        assert!(
+            !unit
+                .references
+                .iter()
+                .any(|reference| reference.name.as_ref() == keyword),
+            "unexpected INSERT LINES OF keyword reference `{keyword}`, refs={:?}",
+            unit.references
+        );
+    }
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_append_initial_line_target_and_assigning_field_symbol() {
     let src = r#"
 TYPES ty_evt_tab TYPE STANDARD TABLE OF string WITH DEFAULT KEY.

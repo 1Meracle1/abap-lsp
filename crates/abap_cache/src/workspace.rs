@@ -2224,6 +2224,7 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
 
     let mut stack = vec![root.to_path_buf()];
     while let Some(current) = stack.pop() {
+        let kind_hint = infer_local_export_kind_hint(&current);
         let mut entries: Vec<_> = match fs::read_dir(&current) {
             Ok(entries) => entries.flatten().collect(),
             Err(_) => continue,
@@ -2246,7 +2247,7 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
                 continue;
             };
             let artifact = LocalExportArtifact {
-                kind_hint: infer_local_export_kind_hint(&path),
+                kind_hint: kind_hint.clone(),
                 object_name: infer_object_name_from_manifest_path(file_name)
                     .unwrap_or_else(|| percent_decode(file_name)),
                 path: path.clone(),
@@ -2262,10 +2263,9 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
     index
 }
 
-fn infer_local_export_kind_hint(path: &Path) -> String {
-    let ancestor_keys: Vec<_> = path
+fn infer_local_export_kind_hint(dir: &Path) -> String {
+    let ancestor_keys: Vec<_> = dir
         .ancestors()
-        .skip(1)
         .filter_map(|ancestor| ancestor.file_name().and_then(|name| name.to_str()))
         .map(local_export_path_segment_key)
         .collect();
