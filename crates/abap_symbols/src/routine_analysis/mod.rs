@@ -5810,12 +5810,14 @@ fn value_is_definitely_assigned_on_entry(
             if value_is_constructor_expression_binding(unit, value) {
                 return true;
             }
+            if value_symbol_is_internal_table(project, unit, value.id, values) {
+                return true;
+            }
             unit.symbols
                 .get(value.symbol.symbol.as_usize())
                 .is_some_and(|symbol| {
                     symbol.type_clause_display.is_some()
-                        && (structure_assignment_trackers[value.id.as_usize()].is_none()
-                            || value_symbol_is_internal_table(project, unit, value.id, values))
+                        && structure_assignment_trackers[value.id.as_usize()].is_none()
                 })
         }
         DataflowValueKind::FieldSymbol | DataflowValueKind::Other => false,
