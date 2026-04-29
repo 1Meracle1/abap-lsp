@@ -1612,6 +1612,13 @@ fn build_routine_dataflow(
         &is_not_initial_scope_refinements,
         values.len(),
     );
+    let initial_guard_edge_refinements = resolve_initial_guard_edge_refinements(
+        unit,
+        routine,
+        &reference_uses,
+        &value_ids_by_symbol,
+        values.len(),
+    );
     let block_non_initial_field_masks = block_non_initial_field_entry_refinements(
         unit,
         routine,
@@ -2360,6 +2367,14 @@ fn build_routine_dataflow(
                     values.len(),
                 )
             };
+            if block.reachable && block.kind != RoutineBlockKind::Entry {
+                next_entry_non_initial.union_from(&intersect_predecessor_non_initial_bits(
+                    &block.predecessors,
+                    &block_exit_non_initial,
+                    &initial_guard_edge_refinements[block_idx],
+                    values.len(),
+                ));
+            }
             next_entry_non_initial.union_from(&block_non_initial_entry_bits[block_idx]);
             let mut next_entry_non_initial_fields = if !block.reachable {
                 vec![0u64; values.len()]
@@ -2463,6 +2478,7 @@ fn build_routine_dataflow(
                     DataflowValueKind::FieldSymbol => {
                         if candidate_field_symbols.contains(read.value)
                             && !bound.contains(read.value)
+                            && !known_non_initial.contains(read.value)
                         {
                             diagnostics.push(Diagnostic {
                                 kind: DiagnosticKind::PossiblyUnboundFieldSymbol,
@@ -3572,6 +3588,62 @@ fn resolve_is_not_initial_field_scope_refinements(
     out
 }
 
+fn resolve_initial_guard_edge_refinements(
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    value_count: usize,
+) -> Vec<Vec<(RoutineBlockId, DenseBitSet)>> {
+    let mut out = vec![Vec::new(); routine.cfg.blocks.len()];
+    for block in &routine.cfg.blocks {
+        let Some(last_instruction_id) = block.instructions.last() else {
+            continue;
+        };
+        let instruction = &routine.ir.instructions[last_instruction_id.as_usize()];
+        let RoutineInstructionSite::Branch {
+            kind: RoutineBranchKind::If,
+        } = instruction.site
+        else {
+            continue;
+        };
+        let Some(region) = if_region_for_instruction(unit, instruction) else {
+            continue;
+        };
+        if region.else_scope.is_some() || !region.elseif_scopes.is_empty() {
+            continue;
+        }
+        let Some(check) = single_initial_value_guard_check_for_scope(unit, region.then_scope)
+        else {
+            continue;
+        };
+        let Some(continuation_block) = unique_fallthrough_successor(routine, block.id) else {
+            continue;
+        };
+        if let Some(value) =
+            value_state_check_value_id(unit, check, reference_uses, value_ids_by_symbol)
+        {
+            let mut bits = DenseBitSet::new(value_count);
+            bits.insert(value);
+            out[continuation_block.as_usize()].push((block.id, bits));
+        }
+    }
+    out
+}
+
+fn single_initial_value_guard_check_for_scope(
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+) -> Option<&crate::ValueStateCheckData> {
+    let mut checks = unit.value_state_checks.iter().filter(|candidate| {
+        candidate.scope == scope
+            && candidate.field_name.is_none()
+            && candidate.kind == ValueStateCheckKind::IsInitial
+    });
+    let check = checks.next()?;
+    checks.next().is_none().then_some(check)
+}
+
 fn non_initial_refinement_scope_for_check(
     unit: &UnitAnalysis,
     check: &crate::ValueStateCheckData,
@@ -3765,6 +3837,28 @@ fn single_unassigned_field_symbol_guard_check_for_scope(
 fn field_symbol_check_value_id(
     unit: &UnitAnalysis,
     check: &crate::FieldSymbolStateCheckData,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+) -> Option<DataflowValueId> {
+    reference_uses_in_range(reference_uses, &check.symbol_range).find_map(|use_site| {
+        if use_site.range != check.symbol_range {
+            return None;
+        }
+        let reference = unit.references.get(use_site.reference.as_usize())?;
+        let Resolution::Symbol(handle) = reference.resolution? else {
+            return None;
+        };
+        (handle.unit == unit.unit_id
+            && value_ids_by_symbol.contains_key(&handle)
+            && reference.scope == check.scope
+            && reference.name == check.symbol_name)
+            .then_some(use_site.value)
+    })
+}
+
+fn value_state_check_value_id(
+    unit: &UnitAnalysis,
+    check: &crate::ValueStateCheckData,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
 ) -> Option<DataflowValueId> {
@@ -5205,6 +5299,40 @@ fn union_predecessor_bits(
     out
 }
 
+fn intersect_predecessor_non_initial_bits(
+    predecessors: &[RoutineBlockId],
+    block_exit_non_initial: &[DenseBitSet],
+    edge_refinements: &[(RoutineBlockId, DenseBitSet)],
+    bit_count: usize,
+) -> DenseBitSet {
+    let Some((first, rest)) = predecessors.split_first() else {
+        return DenseBitSet::new(bit_count);
+    };
+    let mut out = predecessor_non_initial_bits(*first, block_exit_non_initial, edge_refinements);
+    for predecessor in rest {
+        let bits =
+            predecessor_non_initial_bits(*predecessor, block_exit_non_initial, edge_refinements);
+        for (slot, other) in out.words.iter_mut().zip(&bits.words) {
+            *slot &= *other;
+        }
+    }
+    out
+}
+
+fn predecessor_non_initial_bits(
+    predecessor: RoutineBlockId,
+    block_exit_non_initial: &[DenseBitSet],
+    edge_refinements: &[(RoutineBlockId, DenseBitSet)],
+) -> DenseBitSet {
+    let mut bits = block_exit_non_initial[predecessor.as_usize()].clone();
+    for (refinement_predecessor, refinement_bits) in edge_refinements {
+        if *refinement_predecessor == predecessor {
+            bits.union_from(refinement_bits);
+        }
+    }
+    bits
+}
+
 fn union_structure_field_masks(target: &mut [u64], source: &[u64]) {
     for (slot, other) in target.iter_mut().zip(source) {
         *slot |= *other;
@@ -5306,6 +5434,13 @@ fn apply_instruction_transfer(
         known_non_initial_fields[value.as_usize()] = 0;
     }
     for binding in &transfer.field_symbol_binding {
+        let target = match *binding {
+            FieldSymbolBindingTransfer::Set(target)
+            | FieldSymbolBindingTransfer::Clear(target)
+            | FieldSymbolBindingTransfer::Copy { target, .. } => target,
+        };
+        known_non_initial.remove(target);
+        known_non_initial_fields[target.as_usize()] = 0;
         match *binding {
             FieldSymbolBindingTransfer::Set(target) => bound.insert(target),
             FieldSymbolBindingTransfer::Copy { target, source } => {

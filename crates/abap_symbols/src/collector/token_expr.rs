@@ -348,9 +348,7 @@ impl<'a> Collector<'a> {
         idx: usize,
     ) -> Option<ValueStateCheckKind> {
         let token = tokens.get(idx)?;
-        if Self::is_field_symbol_name(token.text.as_ref())
-            || !self.syntax_token_is_ident_like(token)
-        {
+        if !self.syntax_token_is_ident_like(token) {
             return None;
         }
         let next = tokens.get(idx + 1)?;

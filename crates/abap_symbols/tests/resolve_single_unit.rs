@@ -4,7 +4,7 @@ use abap_symbols::{
     DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId,
     SqlDynamicFragmentKind, SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlSourceKind,
     SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, ValueFlowKind, analyze_project,
-    analyze_project_from_units, analyze_unit,
+    analyze_project_from_units, analyze_unit, build_project_routine_analysis,
 };
 
 fn analyze(src: &str, uri: &str) -> abap_symbols::UnitAnalysis {
@@ -13664,6 +13664,116 @@ FIELD-SYMBOLS: <lt_records> TYPE STANDARD TABLE.
         }),
         "generic STANDARD TABLE should not create a fake type reference: {:?}",
         unit.references
+    );
+}
+
+#[test]
+fn initial_continue_guard_keeps_field_symbol_bound_on_fallthrough() {
+    let src = r#"
+TYPES ty_string_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+TYPES: BEGIN OF ty_holder,
+         records TYPE ty_string_tab,
+       END OF ty_holder.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA ls_holder TYPE ty_holder.
+    DATA lv_name TYPE string VALUE 'RECORDS'.
+    FIELD-SYMBOLS: <lt_records> TYPE ty_string_tab,
+                   <lv_record> TYPE string.
+
+    DO 1 TIMES.
+      ASSIGN COMPONENT lv_name OF STRUCTURE ls_holder TO <lt_records>.
+
+      IF <lt_records> IS INITIAL.
+        CONTINUE.
+      ENDIF.
+
+      LOOP AT <lt_records> ASSIGNING <lv_record>.
+      ENDLOOP.
+    ENDDO.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///field_symbol_initial_continue_guard.abap");
+    let project = analyze_project_from_units(vec![unit.clone()]);
+    let routine_analysis = build_project_routine_analysis(&project);
+    let diagnostics = routine_analysis.diagnostics_for_unit(unit.unit_id);
+
+    assert!(
+        !diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::PossiblyUnboundFieldSymbol
+                && diag.message.contains("<lt_records>")
+        }),
+        "{:?}",
+        diagnostics
+    );
+}
+
+#[test]
+fn nested_initial_continue_guard_allows_field_symbol_from_dataref_component_at_join() {
+    let src = r#"
+TYPES ty_string_tab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+TYPES: BEGIN OF ty_object_data,
+         tabname TYPE string,
+         tabref TYPE REF TO data,
+       END OF ty_object_data.
+TYPES ty_object_data_tab TYPE STANDARD TABLE OF ty_object_data WITH EMPTY KEY.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS touch CHANGING ct_records TYPE ty_string_tab.
+    CLASS-METHODS delete IMPORTING it_records TYPE ty_string_tab.
+    CLASS-METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD touch.
+  ENDMETHOD.
+  METHOD delete.
+  ENDMETHOD.
+
+  METHOD run.
+    DATA lt_data_object TYPE ty_object_data_tab.
+    FIELD-SYMBOLS: <ls_data_object> TYPE ty_object_data,
+                   <lt_records> TYPE ty_string_tab.
+
+    LOOP AT lt_data_object ASSIGNING <ls_data_object>.
+      ASSIGN <ls_data_object>-tabref->* TO <lt_records>.
+
+      IF <ls_data_object>-tabname = 'REL'.
+        touch( CHANGING ct_records = <lt_records> ).
+
+        IF <lt_records> IS INITIAL.
+          CONTINUE.
+        ENDIF.
+      ENDIF.
+
+      delete( <lt_records> ).
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(
+        src,
+        "file:///field_symbol_dataref_component_initial_continue_guard.abap",
+    );
+    let project = analyze_project_from_units(vec![unit.clone()]);
+    let routine_analysis = build_project_routine_analysis(&project);
+    let diagnostics = routine_analysis.diagnostics_for_unit(unit.unit_id);
+    let final_use = src.rfind("<lt_records>").expect("final use");
+
+    assert!(
+        !diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::PossiblyUnboundFieldSymbol && diag.range.start == final_use
+        }),
+        "{:?}",
+        diagnostics
     );
 }
 

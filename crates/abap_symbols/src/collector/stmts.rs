@@ -1181,7 +1181,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let Some(access) = self.collector.value_access_from_node(source_expr, scope) else {
             return ValueFlowKind::ConditionalFieldSymbolAssignment;
         };
-        if access.base_namespace == Namespace::Value && access.field_path.is_empty() {
+        if access.base_namespace == Namespace::Value
+            && (access.field_path.is_empty() || Self::is_field_symbol_name(&access.base_name))
+        {
             ValueFlowKind::FieldSymbolAssignment
         } else {
             ValueFlowKind::ConditionalFieldSymbolAssignment
