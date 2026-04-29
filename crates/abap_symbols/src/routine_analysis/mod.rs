@@ -186,100 +186,65 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                 // Structured instruction sites already model execution of nested references.
                 && !call_range_index.contains(reference.scope, &reference.range)
         }) {
-            let Some(routine_id) = scope_map.get(reference.scope.as_usize()).copied().flatten()
-            else {
-                continue;
-            };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: reference.scope,
-                    range: reference.range.clone(),
-                    site: RoutineInstructionSite::ValueRead {
-                        reference: reference.id,
-                    },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                reference.scope,
+                reference.range.clone(),
+                RoutineInstructionSite::ValueRead {
+                    reference: reference.id,
+                },
+            );
         }
 
         for (idx, assignment) in unit.assignment_sites.iter().enumerate() {
-            let Some(routine_id) = scope_map
-                .get(assignment.scope.as_usize())
-                .copied()
-                .flatten()
-            else {
-                continue;
-            };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: assignment.scope,
-                    range: assignment.range.clone(),
-                    site: RoutineInstructionSite::Assignment { index: idx as u32 },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                assignment.scope,
+                assignment.range.clone(),
+                RoutineInstructionSite::Assignment { index: idx as u32 },
+            );
         }
 
         for (idx, call_site) in unit.call_sites.iter().enumerate() {
-            let Some(routine_id) = scope_map.get(call_site.scope.as_usize()).copied().flatten()
-            else {
-                continue;
-            };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: call_site.scope,
-                    range: call_site.range.clone(),
-                    site: RoutineInstructionSite::Call { index: idx as u32 },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                call_site.scope,
+                call_site.range.clone(),
+                RoutineInstructionSite::Call { index: idx as u32 },
+            );
         }
 
         for (idx, perform_call) in unit.perform_calls.iter().enumerate() {
-            let Some(routine_id) = scope_map
-                .get(perform_call.scope.as_usize())
-                .copied()
-                .flatten()
-            else {
-                continue;
-            };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: perform_call.scope,
-                    range: perform_call.range.clone(),
-                    site: RoutineInstructionSite::Perform { index: idx as u32 },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                perform_call.scope,
+                perform_call.range.clone(),
+                RoutineInstructionSite::Perform { index: idx as u32 },
+            );
         }
 
         for (idx, find_site) in unit.find_sites.iter().enumerate() {
-            let Some(routine_id) = scope_map.get(find_site.scope.as_usize()).copied().flatten()
-            else {
-                continue;
-            };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: find_site.scope,
-                    range: find_site.range.clone(),
-                    site: RoutineInstructionSite::Find { index: idx as u32 },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                find_site.scope,
+                find_site.range.clone(),
+                RoutineInstructionSite::Find { index: idx as u32 },
+            );
         }
 
         for (idx, query) in unit.sql_queries.iter().enumerate() {
-            let Some(routine_id) = scope_map.get(query.scope.as_usize()).copied().flatten() else {
-                continue;
-            };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: query.scope,
-                    range: query.range.clone(),
-                    site: RoutineInstructionSite::SqlQuery { index: idx as u32 },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                query.scope,
+                query.range.clone(),
+                RoutineInstructionSite::SqlQuery { index: idx as u32 },
+            );
         }
 
         for (idx, edge) in unit.value_flow_edges.iter().enumerate() {
@@ -290,29 +255,22 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
             ) {
                 continue;
             }
-            let Some(routine_id) = scope_map.get(edge.scope.as_usize()).copied().flatten() else {
-                continue;
-            };
             let target_range = match &edge.target {
                 crate::ValueFlowTargetData::FieldSymbol { range, .. } => range,
                 _ => continue,
             };
             let range = edge.source_range.start.min(target_range.start)
                 ..edge.source_range.end.max(target_range.end);
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: edge.scope,
-                    range,
-                    site: RoutineInstructionSite::FieldSymbolBind { index: idx as u32 },
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                edge.scope,
+                range,
+                RoutineInstructionSite::FieldSymbolBind { index: idx as u32 },
+            );
         }
 
         for (idx, site) in unit.routine_sites.iter().enumerate() {
-            let Some(routine_id) = scope_map.get(site.scope.as_usize()).copied().flatten() else {
-                continue;
-            };
             let instruction_site = match site.kind {
                 RoutineSiteKind::UnknownEffect => RoutineInstructionSite::UnknownEffect,
                 RoutineSiteKind::Clear => RoutineInstructionSite::Clear { index: idx as u32 },
@@ -342,21 +300,16 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                     kind: RoutineTerminatorKind::Stop,
                 },
             };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: site.scope,
-                    range: site.range.clone(),
-                    site: instruction_site,
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                site.scope,
+                site.range.clone(),
+                instruction_site,
+            );
         }
 
         for region in &unit.routine_control_regions {
-            let Some(routine_id) = scope_map.get(region.scope().as_usize()).copied().flatten()
-            else {
-                continue;
-            };
             let instruction_site = match region {
                 RoutineControlRegionData::If(_) => RoutineInstructionSite::Branch {
                     kind: RoutineBranchKind::If,
@@ -374,14 +327,13 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
                     RoutineInstructionSite::LoopHeader { kind: data.kind }
                 }
             };
-            if let Some(routine) = out.routines.get_mut(routine_id.as_usize()) {
-                routine.ir.instructions.push(RoutineInstruction {
-                    id: RoutineInstrId(0),
-                    scope: region.scope(),
-                    range: region.range().clone(),
-                    site: instruction_site,
-                });
-            }
+            push_routine_instruction(
+                &mut out.routines,
+                scope_map,
+                region.scope(),
+                region.range().clone(),
+                instruction_site,
+            );
         }
     }
 
@@ -437,16 +389,6 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         out.unit_diagnostics[descriptor.unit.as_usize()].extend(diagnostics.iter().cloned());
         out.routines[routine_idx].cfg = cfg;
         out.routines[routine_idx].diagnostics = diagnostics;
-    }
-    for diagnostics in &mut out.unit_diagnostics {
-        diagnostics.sort_by(|left, right| {
-            left.range
-                .start
-                .cmp(&right.range.start)
-                .then(left.range.end.cmp(&right.range.end))
-                .then(left.message.cmp(&right.message))
-        });
-        diagnostics.dedup();
     }
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
@@ -524,25 +466,7 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         out.routines[routine_id]
             .diagnostics
             .extend(diagnostics.iter().cloned());
-        out.routines[routine_id].diagnostics.sort_by(|left, right| {
-            left.range
-                .start
-                .cmp(&right.range.start)
-                .then(left.range.end.cmp(&right.range.end))
-                .then(left.message.cmp(&right.message))
-        });
-        out.routines[routine_id].diagnostics.dedup();
         out.unit_diagnostics[descriptor.unit.as_usize()].extend(diagnostics);
-    }
-    for diagnostics in &mut out.unit_diagnostics {
-        diagnostics.sort_by(|left, right| {
-            left.range
-                .start
-                .cmp(&right.range.start)
-                .then(left.range.end.cmp(&right.range.end))
-                .then(left.message.cmp(&right.message))
-        });
-        diagnostics.dedup();
     }
     out.metrics.dataflow_micros = dataflow_timer.elapsed().as_micros();
 
@@ -554,25 +478,13 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         };
         let unit_idx = routine.descriptor.unit.as_usize();
         routine.diagnostics.push(diagnostic.clone());
-        routine.diagnostics.sort_by(|left, right| {
-            left.range
-                .start
-                .cmp(&right.range.start)
-                .then(left.range.end.cmp(&right.range.end))
-                .then(left.message.cmp(&right.message))
-        });
-        routine.diagnostics.dedup();
         out.unit_diagnostics[unit_idx].push(diagnostic);
     }
+    for routine in &mut out.routines {
+        sort_diagnostics(&mut routine.diagnostics);
+    }
     for diagnostics in &mut out.unit_diagnostics {
-        diagnostics.sort_by(|left, right| {
-            left.range
-                .start
-                .cmp(&right.range.start)
-                .then(left.range.end.cmp(&right.range.end))
-                .then(left.message.cmp(&right.message))
-        });
-        diagnostics.dedup();
+        sort_diagnostics(diagnostics);
     }
 
     out.metrics.routine_count = out.routines.len();
@@ -593,6 +505,40 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         .sum();
     out.metrics.total_micros = total_timer.elapsed().as_micros();
     out
+}
+
+fn push_routine_instruction(
+    routines: &mut [RoutineAnalysis],
+    scope_map: &[Option<RoutineId>],
+    scope: ScopeId,
+    range: TextRange,
+    site: RoutineInstructionSite,
+) {
+    let Some(routine_id) = scope_map.get(scope.as_usize()).copied().flatten() else {
+        return;
+    };
+    routines[routine_id.as_usize()]
+        .ir
+        .instructions
+        .push(RoutineInstruction {
+            id: RoutineInstrId(0),
+            scope,
+            range,
+            site,
+        });
+}
+
+fn compare_diagnostics(left: &Diagnostic, right: &Diagnostic) -> std::cmp::Ordering {
+    left.range
+        .start
+        .cmp(&right.range.start)
+        .then(left.range.end.cmp(&right.range.end))
+        .then(left.message.cmp(&right.message))
+}
+
+fn sort_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.sort_by(compare_diagnostics);
+    diagnostics.dedup();
 }
 
 #[derive(Debug, Clone)]
@@ -1522,13 +1468,7 @@ fn unreachable_diagnostics_for_cfg(routine: &RoutineAnalysis, cfg: &RoutineCfg) 
             message: format!("unreachable code in routine '{}'", routine.descriptor.name),
         });
     }
-    diagnostics.sort_by(|left, right| {
-        left.range
-            .start
-            .cmp(&right.range.start)
-            .then(left.range.end.cmp(&right.range.end))
-            .then(left.message.cmp(&right.message))
-    });
+    diagnostics.sort_by(compare_diagnostics);
     diagnostics
 }
 
@@ -2574,14 +2514,7 @@ fn build_routine_dataflow(
         &instruction_summaries,
         call_argument_effects,
     ));
-    diagnostics.sort_by(|left, right| {
-        left.range
-            .start
-            .cmp(&right.range.start)
-            .then(left.range.end.cmp(&right.range.end))
-            .then(left.message.cmp(&right.message))
-    });
-    diagnostics.dedup();
+    sort_diagnostics(&mut diagnostics);
 
     let block_entry = routine
         .cfg
@@ -2712,14 +2645,7 @@ fn build_dead_store_diagnostics(
         }
     }
 
-    diagnostics.sort_by(|left, right| {
-        left.range
-            .start
-            .cmp(&right.range.start)
-            .then(left.range.end.cmp(&right.range.end))
-            .then(left.message.cmp(&right.message))
-    });
-    diagnostics.dedup();
+    sort_diagnostics(&mut diagnostics);
     diagnostics
 }
 
