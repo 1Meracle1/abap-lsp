@@ -86,6 +86,7 @@ pub use workspace::{
     manifest_document_metadata, manifest_supports_remote_resolution, normalize_dependency_mode,
     normalize_workspace_performance_mode, path_to_file_uri,
     resolve_local_export_dependency_document, resolve_local_export_dependency_document_profiled,
+    resolve_local_export_dependency_documents, resolve_local_export_dependency_documents_profiled,
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace, workspace_relative_path,
 };

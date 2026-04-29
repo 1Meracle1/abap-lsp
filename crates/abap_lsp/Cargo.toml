@@ -14,3 +14,4 @@ abap_symbols = { path = "../abap_symbols" }
 lsp-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true

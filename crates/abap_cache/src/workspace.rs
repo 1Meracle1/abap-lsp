@@ -1662,61 +1662,31 @@ fn refresh_local_export_index_for_root_profiled(
     index
 }
 
-fn resolve_local_export_dependency_document_in_index(
-    index: &LocalExportIndex,
-    file_names: &[String],
-    candidate_name: &str,
-    candidate_kind: &str,
-) -> Option<WorkspaceDocument> {
-    resolve_local_export_dependency_document_in_index_profiled(
-        index,
-        file_names,
-        candidate_name,
-        candidate_kind,
-        None,
-    )
-}
-
-fn resolve_local_export_dependency_document_in_index_profiled(
+fn resolve_local_export_dependency_documents_in_index_profiled(
     index: &LocalExportIndex,
     file_names: &[String],
     candidate_name: &str,
     candidate_kind: &str,
     mut profile: Option<&mut LocalExportResolveProfile>,
-) -> Option<WorkspaceDocument> {
+) -> Vec<WorkspaceDocument> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for file_name in file_names {
         let Some(artifacts) = index.artifacts_by_file_name.get(file_name) else {
             continue;
         };
         for artifact in artifacts {
-            let mut source_text = None;
-            if !local_export_artifact_matches_candidate(artifact, candidate_name, candidate_kind) {
-                source_text = local_export_fallback_source_if_matches_profiled(
-                    artifact,
-                    candidate_name,
-                    candidate_kind,
-                    profile.as_deref_mut(),
-                );
-                if source_text.is_none() {
-                    continue;
-                }
-            }
-            let source_text = match source_text {
-                Some(source_text) => source_text,
-                None => {
-                    match read_local_export_artifact_source(&artifact.path, profile.as_deref_mut())
-                    {
-                        Ok(source_text) => source_text,
-                        Err(_) => continue,
-                    }
-                }
-            };
-            let text = if artifact
+            let source_text =
+                match read_local_export_artifact_source(&artifact.path, profile.as_deref_mut()) {
+                    Ok(source_text) => source_text,
+                    Err(_) => continue,
+                };
+            let is_xml = artifact
                 .path
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-            {
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"));
+            let text = if is_xml {
                 ddic_xml_to_abap_source(
                     artifact.object_name.as_str(),
                     artifact.kind_hint.as_str(),
@@ -1726,8 +1696,20 @@ fn resolve_local_export_dependency_document_in_index_profiled(
             } else {
                 source_text
             };
-            return Some(WorkspaceDocument {
-                uri: Arc::from(path_to_file_uri(&artifact.path)),
+            if !local_export_artifact_source_matches_candidate(
+                artifact,
+                candidate_name,
+                candidate_kind,
+                text.as_str(),
+            ) {
+                continue;
+            }
+            let uri = path_to_file_uri(&artifact.path);
+            if !seen.insert(uri.clone()) {
+                continue;
+            }
+            out.push(WorkspaceDocument {
+                uri: Arc::from(uri),
                 version: 0,
                 text,
                 is_dependency: true,
@@ -1736,7 +1718,7 @@ fn resolve_local_export_dependency_document_in_index_profiled(
         }
     }
 
-    None
+    out
 }
 
 fn read_local_export_artifact_source(
@@ -1783,60 +1765,29 @@ fn read_local_export_artifact_source(
     result
 }
 
-fn resolve_local_export_dependency_document_in_root(
-    root: &Path,
-    resolver: &mut LocalExportResolver,
-    file_names: &[String],
-    candidate_name: &str,
-    candidate_kind: &str,
-) -> Option<WorkspaceDocument> {
-    let key = normalized_local_export_path_key(root);
-    let index = local_export_index_for_root(root, resolver);
-    if let Some(document) = resolve_local_export_dependency_document_in_index(
-        index.as_ref(),
-        file_names,
-        candidate_name,
-        candidate_kind,
-    ) {
-        return Some(document);
-    }
-    if resolver.fresh_indices.contains(&key) {
-        return None;
-    }
-    let refreshed = refresh_local_export_index_for_root(root, resolver);
-    resolve_local_export_dependency_document_in_index(
-        refreshed.as_ref(),
-        file_names,
-        candidate_name,
-        candidate_kind,
-    )
-}
-
-fn resolve_local_export_dependency_document_in_root_profiled(
+fn resolve_local_export_dependency_documents_in_root_profiled(
     root: &Path,
     resolver: &mut LocalExportResolver,
     file_names: &[String],
     candidate_name: &str,
     candidate_kind: &str,
     mut profile: Option<&mut LocalExportResolveProfile>,
-) -> Option<WorkspaceDocument> {
+) -> Vec<WorkspaceDocument> {
     let key = normalized_local_export_path_key(root);
     let index = local_export_index_for_root_profiled(root, resolver, profile.as_deref_mut());
-    if let Some(document) = resolve_local_export_dependency_document_in_index_profiled(
+    let documents = resolve_local_export_dependency_documents_in_index_profiled(
         index.as_ref(),
         file_names,
         candidate_name,
         candidate_kind,
         profile.as_deref_mut(),
-    ) {
-        return Some(document);
-    }
-    if resolver.fresh_indices.contains(&key) {
-        return None;
+    );
+    if !documents.is_empty() || resolver.fresh_indices.contains(&key) {
+        return documents;
     }
     let refreshed =
         refresh_local_export_index_for_root_profiled(root, resolver, profile.as_deref_mut());
-    resolve_local_export_dependency_document_in_index_profiled(
+    resolve_local_export_dependency_documents_in_index_profiled(
         refreshed.as_ref(),
         file_names,
         candidate_name,
@@ -1851,24 +1802,40 @@ pub fn resolve_local_export_dependency_document(
     candidate_name: &str,
     candidate_kind: &str,
 ) -> Option<WorkspaceDocument> {
+    resolve_local_export_dependency_documents(roots, resolver, candidate_name, candidate_kind)
+        .into_iter()
+        .next()
+}
+
+pub fn resolve_local_export_dependency_documents(
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> Vec<WorkspaceDocument> {
     let file_names = local_export_candidate_file_names(candidate_name, candidate_kind);
     if file_names.is_empty() {
-        return None;
+        return Vec::new();
     }
 
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for root in roots {
-        if let Some(document) = resolve_local_export_dependency_document_in_root(
+        for document in resolve_local_export_dependency_documents_in_root_profiled(
             root,
             resolver,
             &file_names,
             candidate_name,
             candidate_kind,
+            None,
         ) {
-            return Some(document);
+            if seen.insert(document.uri.to_string()) {
+                out.push(document);
+            }
         }
     }
 
-    None
+    out
 }
 
 pub fn resolve_local_export_dependency_document_profiled(
@@ -1878,13 +1845,33 @@ pub fn resolve_local_export_dependency_document_profiled(
     candidate_kind: &str,
     mut profile: Option<&mut LocalExportResolveProfile>,
 ) -> Option<WorkspaceDocument> {
+    resolve_local_export_dependency_documents_profiled(
+        roots,
+        resolver,
+        candidate_name,
+        candidate_kind,
+        profile.as_deref_mut(),
+    )
+    .into_iter()
+    .next()
+}
+
+pub fn resolve_local_export_dependency_documents_profiled(
+    roots: &[PathBuf],
+    resolver: &mut LocalExportResolver,
+    candidate_name: &str,
+    candidate_kind: &str,
+    mut profile: Option<&mut LocalExportResolveProfile>,
+) -> Vec<WorkspaceDocument> {
     let file_names = local_export_candidate_file_names(candidate_name, candidate_kind);
     if file_names.is_empty() {
-        return None;
+        return Vec::new();
     }
 
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
     for root in roots {
-        if let Some(document) = resolve_local_export_dependency_document_in_root_profiled(
+        for document in resolve_local_export_dependency_documents_in_root_profiled(
             root,
             resolver,
             &file_names,
@@ -1892,11 +1879,13 @@ pub fn resolve_local_export_dependency_document_profiled(
             candidate_kind,
             profile.as_deref_mut(),
         ) {
-            return Some(document);
+            if seen.insert(document.uri.to_string()) {
+                out.push(document);
+            }
         }
     }
 
-    None
+    out
 }
 
 pub fn resolve_local_export_function_module_documents_by_prefix(
@@ -2034,43 +2023,6 @@ fn resolve_local_export_function_module_documents_by_prefix_in_root(
         prefix_lower,
         limit,
     )
-}
-
-fn local_export_fallback_source_if_matches_profiled(
-    artifact: &LocalExportArtifact,
-    candidate_name: &str,
-    candidate_kind: &str,
-    profile: Option<&mut LocalExportResolveProfile>,
-) -> Option<String> {
-    match candidate_kind.trim().to_ascii_lowercase().as_str() {
-        "function" => local_export_flat_function_module_source_if_matches_profiled(
-            artifact,
-            candidate_name,
-            profile,
-        ),
-        _ => None,
-    }
-}
-
-fn local_export_flat_function_module_source_if_matches_profiled(
-    artifact: &LocalExportArtifact,
-    candidate_name: &str,
-    profile: Option<&mut LocalExportResolveProfile>,
-) -> Option<String> {
-    if !artifact
-        .path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("abap"))
-    {
-        return None;
-    }
-
-    let source_text = read_local_export_artifact_source(&artifact.path, profile).ok()?;
-    let function_name = first_abap_function_module_name(source_text.as_str())?;
-    function_name
-        .eq_ignore_ascii_case(candidate_name.trim())
-        .then_some(source_text)
 }
 
 fn first_abap_function_module_name(text: &str) -> Option<&str> {
@@ -2347,7 +2299,6 @@ fn canonical_local_export_kind_for_ancestor(
 
 fn local_export_artifact_matches_candidate(
     artifact: &LocalExportArtifact,
-    candidate_name: &str,
     candidate_kind: &str,
 ) -> bool {
     let kind = artifact.kind_hint.trim().to_ascii_lowercase();
@@ -2356,24 +2307,16 @@ fn local_export_artifact_matches_candidate(
         "function" => kind == "function-module",
         "report" => matches!(kind.as_str(), "program" | "report"),
         "message-class" => kind == "message-class",
-        "symbol" | "static" | "type" => {
-            local_export_artifact_matches_type_like_candidate(kind.as_str(), candidate_name)
-        }
+        "static" => matches!(
+            kind.as_str(),
+            "class" | "global-class" | "interface" | "global-interface"
+        ),
+        "symbol" | "type" => local_export_artifact_matches_type_like_candidate(kind.as_str()),
         _ => false,
     }
 }
 
-fn local_export_artifact_matches_type_like_candidate(
-    kind_hint: &str,
-    candidate_name: &str,
-) -> bool {
-    if is_class_like_remote_type_name(candidate_name) {
-        return matches!(
-            kind_hint,
-            "class" | "global-class" | "interface" | "global-interface"
-        );
-    }
-
+fn local_export_artifact_matches_type_like_candidate(kind_hint: &str) -> bool {
     matches!(
         kind_hint,
         "ddic-data-element"
@@ -2387,20 +2330,6 @@ fn local_export_artifact_matches_type_like_candidate(
             | "type-group"
             | "type-pool"
     )
-}
-
-fn is_class_like_remote_type_name(name: &str) -> bool {
-    let lower = name.trim().to_ascii_lowercase();
-    let tail = lower.rsplit('/').next().unwrap_or(lower.as_str());
-    tail.starts_with("cl_")
-        || tail.starts_with("cx_")
-        || tail.starts_with("if_")
-        || tail.starts_with("ycl_")
-        || tail.starts_with("ycx_")
-        || tail.starts_with("yif_")
-        || tail.starts_with("zcl_")
-        || tail.starts_with("zcx_")
-        || tail.starts_with("zif_")
 }
 
 fn local_export_candidate_file_names(candidate_name: &str, candidate_kind: &str) -> Vec<String> {
@@ -3733,6 +3662,151 @@ fn ddic_short_text(xml: &str) -> Option<String> {
     None
 }
 
+fn local_export_artifact_source_matches_candidate(
+    artifact: &LocalExportArtifact,
+    candidate_name: &str,
+    candidate_kind: &str,
+    source_text: &str,
+) -> bool {
+    let kind = artifact.kind_hint.trim().to_ascii_lowercase();
+    if matches!(
+        kind.as_str(),
+        "class" | "global-class" | "interface" | "global-interface"
+    ) {
+        return matches!(
+            candidate_kind.trim().to_ascii_lowercase().as_str(),
+            "static" | "symbol" | "type"
+        ) && local_export_class_or_interface_source_defines_candidate(
+            source_text,
+            candidate_name,
+        );
+    }
+
+    if local_export_source_defines_candidate(
+        &path_to_file_uri(&artifact.path),
+        source_text,
+        candidate_name,
+        candidate_kind,
+    ) {
+        return true;
+    }
+
+    if matches!(
+        candidate_kind.trim().to_ascii_lowercase().as_str(),
+        "static" | "function" | "report"
+    ) || matches!(
+        kind.as_str(),
+        "class" | "global-class" | "interface" | "global-interface"
+    ) {
+        return false;
+    }
+
+    local_export_artifact_matches_candidate(artifact, candidate_kind)
+}
+
+fn local_export_class_or_interface_source_defines_candidate(
+    source_text: &str,
+    candidate_name: &str,
+) -> bool {
+    let candidate_name = candidate_name.trim();
+    if candidate_name.is_empty() {
+        return false;
+    }
+
+    for line in source_text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('*') || trimmed.starts_with('"') {
+            continue;
+        }
+        let mut parts = trimmed.split_whitespace();
+        let Some(keyword) = parts.next() else {
+            continue;
+        };
+        let Some(name) = parts.next().map(trim_abap_decl_token) else {
+            continue;
+        };
+        if keyword.eq_ignore_ascii_case("interface") && name.eq_ignore_ascii_case(candidate_name) {
+            return true;
+        }
+        if keyword.eq_ignore_ascii_case("class")
+            && name.eq_ignore_ascii_case(candidate_name)
+            && parts
+                .next()
+                .map(trim_abap_decl_token)
+                .is_some_and(|token| token.eq_ignore_ascii_case("definition"))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn trim_abap_decl_token(token: &str) -> &str {
+    token.trim_end_matches(&['.', ':'][..])
+}
+
+fn local_export_source_defines_candidate(
+    uri: &str,
+    source_text: &str,
+    candidate_name: &str,
+    candidate_kind: &str,
+) -> bool {
+    let candidate_name = candidate_name.trim();
+    if candidate_name.is_empty() {
+        return false;
+    }
+
+    if candidate_kind.eq_ignore_ascii_case("function")
+        && first_abap_function_module_name(source_text)
+            .is_some_and(|name| name.eq_ignore_ascii_case(candidate_name))
+    {
+        return true;
+    }
+
+    let parsed = abap_parser::parse(source_text);
+    let unit = abap_symbols::analyze_unit(Arc::from(uri), source_text, &parsed);
+    unit.symbols.iter().any(|symbol| {
+        symbol.name.as_ref().eq_ignore_ascii_case(candidate_name)
+            && local_export_symbol_kind_matches_candidate(symbol.kind, candidate_kind)
+    })
+}
+
+fn local_export_symbol_kind_matches_candidate(
+    symbol_kind: abap_symbols::SymbolKind,
+    candidate_kind: &str,
+) -> bool {
+    match candidate_kind.trim().to_ascii_lowercase().as_str() {
+        "include" => symbol_kind == abap_symbols::SymbolKind::Include,
+        "function" => symbol_kind == abap_symbols::SymbolKind::Module,
+        "report" => symbol_kind == abap_symbols::SymbolKind::Report,
+        "static" => matches!(
+            symbol_kind,
+            abap_symbols::SymbolKind::Class | abap_symbols::SymbolKind::Interface
+        ),
+        "symbol" => matches!(
+            symbol_kind,
+            abap_symbols::SymbolKind::Class
+                | abap_symbols::SymbolKind::Interface
+                | abap_symbols::SymbolKind::TypeDef
+                | abap_symbols::SymbolKind::Report
+                | abap_symbols::SymbolKind::Include
+                | abap_symbols::SymbolKind::Form
+                | abap_symbols::SymbolKind::Module
+                | abap_symbols::SymbolKind::Variable
+                | abap_symbols::SymbolKind::Constant
+        ),
+        "type" => matches!(
+            symbol_kind,
+            abap_symbols::SymbolKind::Class
+                | abap_symbols::SymbolKind::Interface
+                | abap_symbols::SymbolKind::TypeDef
+                | abap_symbols::SymbolKind::Report
+        ),
+        _ => false,
+    }
+}
+
 fn normalize_ddic_comment_text(value: &str) -> String {
     value
         .split_whitespace()
@@ -3919,7 +3993,8 @@ mod tests {
         load_workspace_documents, local_export_config_for_source, manifest_declares_uri,
         manifest_document_metadata, manifest_supports_remote_resolution, path_to_file_uri,
         resolve_local_export_dependency_document,
-        resolve_local_export_dependency_document_profiled, resolve_workspace_performance_mode,
+        resolve_local_export_dependency_document_profiled,
+        resolve_local_export_dependency_documents, resolve_workspace_performance_mode,
     };
 
     #[test]
@@ -4464,6 +4539,16 @@ mode = "full-workspace"
             "CLASS zcl_demo DEFINITION. ENDCLASS.",
         )
         .expect("class");
+        fs::write(
+            root.join("packages/ZPKG/global-class/ZATTP_CL_REP_UTILS.abap"),
+            "CLASS zattp_cl_rep_utils DEFINITION. ENDCLASS.",
+        )
+        .expect("source-defined class");
+        fs::write(
+            root.join("packages/ZPKG/global-class/ZATTP_REP_UTILS.abap"),
+            "CLASS zattp_rep_utils DEFINITION. ENDCLASS.",
+        )
+        .expect("non-prefix class");
 
         let mut resolver = LocalExportResolver::default();
         let roots = vec![root.clone()];
@@ -4479,6 +4564,24 @@ mode = "full-workspace"
         assert!(
             resolve_local_export_dependency_document(&roots, &mut resolver, "zcl_demo", "type")
                 .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(
+                &roots,
+                &mut resolver,
+                "zattp_cl_rep_utils",
+                "type"
+            )
+            .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(
+                &roots,
+                &mut resolver,
+                "zattp_rep_utils",
+                "type"
+            )
+            .is_some()
         );
 
         let _ = fs::remove_dir_all(&root);
@@ -4501,6 +4604,16 @@ mode = "full-workspace"
             "CLASS zcl_demo DEFINITION. ENDCLASS.",
         )
         .expect("class");
+        fs::write(
+            root.join("ZPKG/Source Code Library/Classes/ZATTP_CL_REP_UTILS.abap"),
+            "CLASS zattp_cl_rep_utils DEFINITION. ENDCLASS.",
+        )
+        .expect("source-defined class");
+        fs::write(
+            root.join("ZPKG/Source Code Library/Classes/ZATTP_REP_UTILS.abap"),
+            "CLASS zattp_rep_utils DEFINITION. ENDCLASS.",
+        )
+        .expect("non-prefix class");
         fs::write(
             root.join("ZPKG/Dictionary/Data Elements/ZZD_STATUS.xml"),
             r#"<?xml version="1.0" encoding="utf-8"?><dataElement />"#,
@@ -4532,6 +4645,24 @@ mode = "full-workspace"
                 .is_some()
         );
         assert!(
+            resolve_local_export_dependency_document(
+                &roots,
+                &mut resolver,
+                "zattp_cl_rep_utils",
+                "static"
+            )
+            .is_some()
+        );
+        assert!(
+            resolve_local_export_dependency_document(
+                &roots,
+                &mut resolver,
+                "zattp_rep_utils",
+                "static"
+            )
+            .is_some()
+        );
+        assert!(
             resolve_local_export_dependency_document(&roots, &mut resolver, "zzd_status", "type")
                 .is_some()
         );
@@ -4551,6 +4682,48 @@ mode = "full-workspace"
                 "function"
             )
             .is_some()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_resolver_returns_all_matching_class_filename_artifacts() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-all-class-matches");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ZPKG/Source Code Library/Classes")).expect("class dir");
+        fs::create_dir_all(root.join("YALT/Source Code Library/Classes")).expect("alt class dir");
+        fs::create_dir_all(root.join("ZBAD/Source Code Library/Classes")).expect("bad class dir");
+        fs::write(
+            root.join("ZPKG/Source Code Library/Classes/ZATTP_CL_REP_UTILS.abap"),
+            "CLASS zattp_cl_rep_utils DEFINITION. ENDCLASS.",
+        )
+        .expect("class");
+        fs::write(
+            root.join("YALT/Source Code Library/Classes/ZATTP_CL_REP_UTILS.abap"),
+            "INTERFACE zattp_cl_rep_utils. ENDINTERFACE.",
+        )
+        .expect("interface");
+        fs::write(
+            root.join("ZBAD/Source Code Library/Classes/ZATTP_CL_REP_UTILS.abap"),
+            "CLASS zattp_cl_other DEFINITION. ENDCLASS.",
+        )
+        .expect("wrong class");
+
+        let mut resolver = LocalExportResolver::default();
+        let roots = vec![root.clone()];
+        let documents = resolve_local_export_dependency_documents(
+            &roots,
+            &mut resolver,
+            "zattp_cl_rep_utils",
+            "static",
+        );
+
+        assert_eq!(documents.len(), 2, "{documents:#?}");
+        assert!(
+            documents
+                .iter()
+                .all(|document| !document.text.contains("zattp_cl_other"))
         );
 
         let _ = fs::remove_dir_all(&root);

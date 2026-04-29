@@ -47,6 +47,9 @@ CREATE INDEX IF NOT EXISTS idx_dependency_artifacts_lookup
 CREATE INDEX IF NOT EXISTS idx_dependency_symbol_lookup
     ON dependency_symbol_index(symbol_name, symbol_kind, priority DESC, artifact_id);
 
+CREATE INDEX IF NOT EXISTS idx_dependency_symbol_artifact_lookup
+    ON dependency_symbol_index(artifact_id, symbol_name, symbol_kind, priority DESC);
+
 CREATE TABLE IF NOT EXISTS dependency_negative_lookups (
     profile_key TEXT NOT NULL,
     product_version TEXT NOT NULL,
@@ -253,6 +256,16 @@ impl DependencyStore {
     ) -> Result<Option<SymbolLookupResult>, DependencyStoreError> {
         self.reader()?
             .lookup_symbol(profile, symbol_name, candidate_kind)
+    }
+
+    pub fn lookup_artifact_symbol(
+        &self,
+        artifact_id: i64,
+        symbol_name: &str,
+        symbol_kinds: &[&str],
+    ) -> Result<Option<SymbolLookupResult>, DependencyStoreError> {
+        self.reader()?
+            .lookup_artifact_symbol(artifact_id, symbol_name, symbol_kinds)
     }
 
     pub fn read_artifact_source(
@@ -541,6 +554,66 @@ WHERE artifact.product_version = ?
         Ok(row)
     }
 
+    pub fn lookup_artifact_symbol(
+        &self,
+        artifact_id: i64,
+        symbol_name: &str,
+        symbol_kinds: &[&str],
+    ) -> Result<Option<SymbolLookupResult>, DependencyStoreError> {
+        let normalized_symbol_name = normalize_name(symbol_name);
+        let symbol_kinds = symbol_kinds
+            .iter()
+            .map(|kind| normalize_name(kind))
+            .filter(|kind| !kind.is_empty())
+            .collect::<Vec<_>>();
+        if normalized_symbol_name.is_empty() || symbol_kinds.is_empty() {
+            return Ok(None);
+        }
+
+        let mut sql = String::from(
+            r#"
+SELECT
+    artifact.id,
+    artifact.package_name,
+    artifact.package_version,
+    artifact.object_kind,
+    artifact.object_name,
+    artifact.file_extension,
+    symbol.range_start,
+    symbol.range_end
+FROM dependency_symbol_index AS symbol
+JOIN dependency_artifacts AS artifact
+    ON artifact.id = symbol.artifact_id
+WHERE artifact.id = ?
+  AND symbol.symbol_name = ?
+  AND symbol.symbol_kind IN ("#,
+        );
+        append_placeholders(&mut sql, symbol_kinds.len());
+        sql.push_str(") ORDER BY symbol.priority DESC LIMIT 1");
+
+        let mut params = Vec::with_capacity(2 + symbol_kinds.len());
+        params.push(Value::from(artifact_id));
+        params.push(Value::from(normalized_symbol_name));
+        params.extend(symbol_kinds.into_iter().map(Value::from));
+
+        let mut statement = self.connection.prepare(&sql)?;
+        statement
+            .query_row(params_from_iter(params), |row| {
+                Ok(SymbolLookupResult {
+                    artifact_id: row.get(0)?,
+                    package_name: row.get(1)?,
+                    package_version: row.get(2)?,
+                    object_kind: row.get(3)?,
+                    object_name: row.get(4)?,
+                    file_extension: row.get(5)?,
+                    range_start: row.get::<_, i64>(6)? as usize,
+                    range_end: row.get::<_, i64>(7)? as usize,
+                })
+            })
+            .optional()
+            .map_err(DependencyStoreError::from)
+    }
+
     pub fn read_artifact_source(
         &self,
         artifact_id: i64,
@@ -720,7 +793,12 @@ pub fn resolve_dependency_store_path(override_path: Option<&Path>) -> Option<Pat
     if let Some(path) = override_path {
         let trimmed = path.as_os_str().to_string_lossy().trim().to_string();
         if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
+            let path = PathBuf::from(trimmed);
+            return Some(if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir().ok()?.join(path)
+            });
         }
     }
 
@@ -1025,6 +1103,14 @@ mod tests {
             uri,
             "file:///C:/Users/demo/AppData/Local/abap-ls/dependency%20cache.sqlite3?mode=ro&immutable=1"
         );
+    }
+
+    #[test]
+    fn override_store_path_is_absolute() {
+        let path =
+            resolve_dependency_store_path(Some(Path::new("target/cache.sqlite3"))).expect("path");
+        assert!(path.is_absolute(), "{path:?}");
+        assert!(path.ends_with("target/cache.sqlite3"));
     }
 
     #[test]

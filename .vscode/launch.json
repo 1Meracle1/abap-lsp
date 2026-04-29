@@ -34,7 +34,8 @@
         "<node_internals>/**/*.js"
       ],
       "env": {
-        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/target/debug/abap_lsp_server.exe"
+        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/target/debug/abap_lsp_server.exe",
+        "RUST_LOG": "abap_lsp_server=debug,abap_lsp=debug"
       }
     },
     {
@@ -51,8 +52,8 @@
         // "--folder-uri=D:/dev/abap/archiving/"
         // "--folder-uri=D:/dev/abap/us_sn_reset/"
         // "--folder-uri=D:/dev/abap/lsp_development_examples/"
-        "--folder-uri=D:/dev/abap/lsp_development_examples2/"
-        // "--folder-uri=D:/dev/abap/reprocessing_report/"
+        // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
+        "--folder-uri=D:/dev/abap/reprocessing_report/"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"
@@ -62,7 +63,8 @@
         "<node_internals>/**/*.js"
       ],
       "env": {
-        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/target/release/abap_lsp_server.exe"
+        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/target/release/abap_lsp_server.exe",
+        "RUST_LOG": "abap_lsp_server=debug,abap_lsp=debug"
       }
     },
     {

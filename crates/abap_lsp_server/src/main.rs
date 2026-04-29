@@ -11,13 +11,14 @@ use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CodeActionParams, CompletionParams, DEPENDENCY_CACHE_REFRESH_REQUESTED,
     DependencyCacheInitializationOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, HoverParams, InlayHintParams, READ_DEPENDENCY_DOCUMENT,
-    REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, ReferenceParams, RenameParams,
-    SAP_ATC_RESULTS_UPDATED, STORE_REMOTE_DEPENDENCY_ARTIFACTS, SapAtcResultsUpdatedParams,
-    SemanticTokensParams, ServerConfig, ServerState, StoreRemoteDependencyArtifactsParams,
-    TextDocumentPositionParams, WORKSPACE_ANALYSIS_STATUS, WORKSPACE_MANIFEST_UPDATED,
-    WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams, WorkspaceManifestUpdatedParams,
-    WorkspacePerformanceMode, WorkspaceState, build_remote_dependency_batch_for_workspace,
+    GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InlayHintParams,
+    READ_DEPENDENCY_DOCUMENT, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
+    ReferenceParams, RenameParams, SAP_ATC_RESULTS_UPDATED, STORE_REMOTE_DEPENDENCY_ARTIFACTS,
+    SapAtcResultsUpdatedParams, SemanticTokensParams, ServerConfig, ServerState,
+    StoreRemoteDependencyArtifactsParams, TextDocumentPositionParams, WORKSPACE_ANALYSIS_STATUS,
+    WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
+    WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
+    build_remote_dependency_batch_for_workspace,
     build_remote_dependency_batch_for_workspace_filtered,
     build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
     build_remote_dependency_request_retrying_negatives, code_actions, completion, definition,
@@ -31,7 +32,7 @@ use abap_lsp::{
     workspace_manifest_diagnostics_params, workspace_uri_is_dependency_source,
 };
 use serde_json::{Value, json};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
@@ -102,6 +103,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(io::stderr)
         .without_time()
         .init();
+
+    info!(
+        exe = %std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|error| format!("<unavailable: {error}>")),
+        cwd = %std::env::current_dir()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|error| format!("<unavailable: {error}>")),
+        build_profile = if cfg!(debug_assertions) { "debug" } else { "release" },
+        "starting abap_lsp_server"
+    );
 
     if let Some(addr) = listen_address_from_cli_or_env()? {
         let listener = TcpListener::bind(addr)?;
@@ -1046,17 +1058,49 @@ fn serve(
     })
 }
 
+fn definition_response_summary(
+    result: &Option<GotoDefinitionResponse>,
+) -> (&'static str, Option<String>) {
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            ("scalar", Some(location.uri.to_string()))
+        }
+        Some(GotoDefinitionResponse::Array(locations)) => (
+            "array",
+            locations.first().map(|location| location.uri.to_string()),
+        ),
+        Some(GotoDefinitionResponse::Link(links)) => (
+            "link",
+            links
+                .first()
+                .map(|location| location.target_uri.to_string()),
+        ),
+        None => ("none", None),
+    }
+}
+
 fn send_response(
     writer: &mut impl Write,
     response: &Response,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let serialize_start = Instant::now();
     let payload = serde_json::to_vec(&json!({
         "jsonrpc": JSON_RPC_VERSION,
         "id": response.id,
         "result": response.result,
         "error": response.error,
     }))?;
+    let serialize_elapsed = serialize_start.elapsed();
+    let write_start = Instant::now();
     write_frame(writer, &payload)?;
+    let write_elapsed = write_start.elapsed();
+    debug!(
+        id = %response.id,
+        payload_bytes = payload.len(),
+        serialize_elapsed = ?serialize_elapsed,
+        write_elapsed = ?write_elapsed,
+        "sent LSP response"
+    );
     Ok(())
 }
 
@@ -1634,6 +1678,7 @@ fn handle_did_open_notifications(
         workspace_uri = workspace_uri.as_deref().unwrap_or("<none>"),
         text_bytes = params.text_document.text.len(),
         line_count,
+        snapshot_is_dependency = snapshot.is_dependency,
         unchanged_workspace_open,
         opened_dependency_source,
         dirty_uri_count = dirty_uris.as_ref().map(HashSet::len).unwrap_or(0),
@@ -1659,6 +1704,7 @@ fn handle_did_change_notifications(
     params: &DidChangeTextDocumentParams,
     progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let total_start = Instant::now();
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
     let progress_notifications = Mutex::new(Vec::new());
@@ -1666,12 +1712,18 @@ fn handle_did_change_notifications(
         .workspace_for_uri(normalized_uri.as_str())
         .map(|workspace| workspace.root_uri.clone());
     let change = params.content_changes.last();
+    let change_text_len = change.map(|change| change.text.len()).unwrap_or(0);
+    let line_count = change
+        .map(|change| change.text.lines().count())
+        .unwrap_or(0);
+    let unchanged_start = Instant::now();
     let unchanged_workspace_change = change.and_then(|change| {
         state
             .workspace_for_uri(&normalized_uri)
             .and_then(|workspace| workspace.cache.get(&normalized_uri))
             .map(|snapshot| snapshot.text.as_ref() == change.text.as_str())
     }) == Some(true);
+    let unchanged_elapsed = unchanged_start.elapsed();
     let progress = |processed: usize, total: usize| {
         if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
             emit_workspace_analysis_progress(
@@ -1684,18 +1736,25 @@ fn handle_did_change_notifications(
             );
         }
     };
+    let publish_start = Instant::now();
     if let Some(snapshot) =
         publish_changed_document_mut_with_progress(state, params, Some(&progress))
     {
+        let publish_elapsed = publish_start.elapsed();
         notifications.extend(
             progress_notifications
                 .into_inner()
                 .expect("progress notification collection should not be poisoned"),
         );
+        let workspace_lookup_start = Instant::now();
         let workspace_uri = workspace_uri_for_cached_snapshot(state, snapshot.uri.as_ref());
+        let workspace_lookup_elapsed = workspace_lookup_start.elapsed();
+        let dirty_start = Instant::now();
         let dirty_uris = workspace_uri
             .as_deref()
             .map(|workspace_uri| workspace_dirty_uris(state, workspace_uri));
+        let dirty_elapsed = dirty_start.elapsed();
+        let diagnostics_start = Instant::now();
         push_document_update_diagnostics(
             state,
             workspace_uri.as_deref(),
@@ -1705,6 +1764,8 @@ fn handle_did_change_notifications(
             "change",
             &mut notifications,
         )?;
+        let diagnostics_elapsed = diagnostics_start.elapsed();
+        let manifest_start = Instant::now();
         if let Some(workspace_uri) = workspace_uri.as_deref() {
             push_workspace_manifest_diagnostics_notification(
                 state,
@@ -1712,6 +1773,10 @@ fn handle_did_change_notifications(
                 &mut notifications,
             );
         }
+        let manifest_elapsed = manifest_start.elapsed();
+        let remote_request_start = Instant::now();
+        let mut remote_request_candidate_count = 0usize;
+        let mut remote_request_source_uri_count = 0usize;
         if !unchanged_workspace_change
             && let Some(request) = build_dirty_remote_dependency_batch(
                 state,
@@ -1721,11 +1786,46 @@ fn handle_did_change_notifications(
                 "change",
             )
         {
+            remote_request_candidate_count = request.candidates.len();
+            remote_request_source_uri_count = request.source_uris.len();
             notifications.push((
                 RESOLVE_REMOTE_DEPENDENCIES.to_owned(),
                 serde_json::to_value(request)?,
             ));
         }
+        let remote_request_elapsed = remote_request_start.elapsed();
+        debug!(
+            uri = %snapshot.uri,
+            workspace_uri = workspace_uri.as_deref().unwrap_or("<none>"),
+            text_bytes = change_text_len,
+            line_count,
+            snapshot_is_dependency = snapshot.is_dependency,
+            unchanged_workspace_change,
+            dirty_uri_count = dirty_uris.as_ref().map(HashSet::len).unwrap_or(0),
+            notification_count = notifications.len(),
+            remote_request_candidate_count,
+            remote_request_source_uri_count,
+            unchanged_elapsed = ?unchanged_elapsed,
+            publish_elapsed = ?publish_elapsed,
+            workspace_lookup_elapsed = ?workspace_lookup_elapsed,
+            dirty_elapsed = ?dirty_elapsed,
+            diagnostics_elapsed = ?diagnostics_elapsed,
+            manifest_elapsed = ?manifest_elapsed,
+            remote_request_elapsed = ?remote_request_elapsed,
+            total_elapsed = ?total_start.elapsed(),
+            "handled textDocument/didChange publish path"
+        );
+    } else {
+        debug!(
+            uri = %normalized_uri,
+            text_bytes = change_text_len,
+            line_count,
+            unchanged_workspace_change,
+            unchanged_elapsed = ?unchanged_elapsed,
+            publish_elapsed = ?publish_start.elapsed(),
+            total_elapsed = ?total_start.elapsed(),
+            "ignored textDocument/didChange without a full-content change"
+        );
     }
     Ok(notifications)
 }
@@ -1996,10 +2096,11 @@ fn stage_workspace_open_overlay(
     state: &mut ServerState,
     params: &DidOpenTextDocumentParams,
 ) -> Option<String> {
+    let start = Instant::now();
     let uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
     let workspace = state.workspace_for_uri_mut(&uri)?;
     workspace.open_documents.insert(
-        uri,
+        uri.clone(),
         abap_lsp::OpenDocumentOverlay {
             version: params.text_document.version,
             text: Arc::from(params.text_document.text.as_str()),
@@ -2007,11 +2108,24 @@ fn stage_workspace_open_overlay(
     );
     let root_uri = workspace.root_uri.clone();
     let _ = workspace;
-    let _ = stage_workspace_preview_snapshot(
+    let preview_staged = stage_workspace_preview_snapshot(
         state,
         params.text_document.uri.as_str(),
         params.text_document.version,
         &params.text_document.text,
+    );
+    let preview = state
+        .workspaces
+        .get(&root_uri)
+        .and_then(|workspace| workspace.preview_snapshots.get(&uri));
+    debug!(
+        uri,
+        workspace_uri = %root_uri,
+        text_bytes = params.text_document.text.len(),
+        preview_staged,
+        preview_is_dependency = preview.is_some_and(|snapshot| snapshot.is_dependency),
+        elapsed = ?start.elapsed(),
+        "staged textDocument/didOpen overlay"
     );
     Some(root_uri)
 }
@@ -2020,11 +2134,12 @@ fn stage_workspace_change_overlay(
     state: &mut ServerState,
     params: &DidChangeTextDocumentParams,
 ) -> Option<String> {
+    let start = Instant::now();
     let change = params.content_changes.last()?;
     let uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
     let workspace = state.workspace_for_uri_mut(&uri)?;
     workspace.open_documents.insert(
-        uri,
+        uri.clone(),
         abap_lsp::OpenDocumentOverlay {
             version: params.text_document.version,
             text: Arc::from(change.text.as_str()),
@@ -2032,11 +2147,24 @@ fn stage_workspace_change_overlay(
     );
     let root_uri = workspace.root_uri.clone();
     let _ = workspace;
-    let _ = stage_workspace_preview_snapshot(
+    let preview_staged = stage_workspace_preview_snapshot(
         state,
         params.text_document.uri.as_str(),
         params.text_document.version,
         &change.text,
+    );
+    let preview = state
+        .workspaces
+        .get(&root_uri)
+        .and_then(|workspace| workspace.preview_snapshots.get(&uri));
+    debug!(
+        uri,
+        workspace_uri = %root_uri,
+        text_bytes = change.text.len(),
+        preview_staged,
+        preview_is_dependency = preview.is_some_and(|snapshot| snapshot.is_dependency),
+        elapsed = ?start.elapsed(),
+        "staged textDocument/didChange overlay"
     );
     Some(root_uri)
 }
@@ -2051,6 +2179,16 @@ fn handle_message(
     match method {
         Some("initialize") => {
             if let Some(params) = parse_params::<InitializeParamsLite>(&message)? {
+                let workspace_folder_count = params.workspace_folders.len();
+                let root_uri_for_log = params.root_uri.as_deref().unwrap_or("<none>").to_string();
+                let dependency_cache_path_for_log = params
+                    .initialization_options
+                    .dependency_cache_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .unwrap_or("<default>")
+                    .to_string();
                 state.client_capabilities.completion_snippet_support = params
                     .capabilities
                     .text_document
@@ -2077,6 +2215,13 @@ fn handle_message(
                 {
                     state.register_workspace_folder(root_uri);
                 }
+                info!(
+                    workspace_folder_count,
+                    root_uri = %root_uri_for_log,
+                    dependency_cache_path = %dependency_cache_path_for_log,
+                    registered_workspace_count = state.workspaces.len(),
+                    "handled initialize"
+                );
             }
             let result = serde_json::to_value(initialize_result(config))?;
             Ok(HandledMessage {
@@ -2196,7 +2341,28 @@ fn handle_message(
                     notifications: Vec::new(),
                 });
             };
-            let result = serde_json::to_value(definition(state, &definition_params))?;
+            let uri = abap_lsp::normalize_lsp_uri(
+                definition_params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .as_str(),
+            );
+            let position = definition_params.text_document_position_params.position;
+            let start = Instant::now();
+            let definition_result = definition(state, &definition_params);
+            let elapsed = start.elapsed();
+            let (result_kind, target_uri) = definition_response_summary(&definition_result);
+            debug!(
+                uri,
+                line = position.line,
+                character = position.character,
+                result_kind,
+                target_uri = target_uri.as_deref().unwrap_or("<none>"),
+                elapsed = ?elapsed,
+                "handled textDocument/definition"
+            );
+            let result = serde_json::to_value(definition_result)?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
                 notifications: Vec::new(),
@@ -2243,6 +2409,8 @@ fn handle_message(
                     notifications: Vec::new(),
                 });
             };
+            let uri = abap_lsp::normalize_lsp_uri(&read_params.uri);
+            let start = Instant::now();
             let result = match read_dependency_document(state, &read_params) {
                 Ok(result) => result,
                 Err(message) => {
@@ -2256,6 +2424,13 @@ fn handle_message(
                     });
                 }
             };
+            debug!(
+                uri,
+                found = result.is_some(),
+                source_bytes = result.as_ref().map(|result| result.source_text.len()).unwrap_or(0),
+                elapsed = ?start.elapsed(),
+                "handled abapls/readDependencyDocument"
+            );
             let result = serde_json::to_value(result)?;
             Ok(HandledMessage {
                 response: Some(Response::success(id.unwrap_or(Value::Null), result)),
