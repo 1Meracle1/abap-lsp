@@ -97,7 +97,15 @@ pub(crate) fn type_facts_compatibility(
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
 ) -> TypeCompatibility {
-    type_facts_compatibility_inner(project, expected_unit, expected, actual_unit, actual, true)
+    type_facts_compatibility_inner(
+        project,
+        expected_unit,
+        expected,
+        actual_unit,
+        actual,
+        true,
+        true,
+    )
 }
 
 pub(crate) fn type_facts_parameter_compatibility(
@@ -107,7 +115,15 @@ pub(crate) fn type_facts_parameter_compatibility(
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
 ) -> TypeCompatibility {
-    type_facts_compatibility_inner(project, expected_unit, expected, actual_unit, actual, false)
+    type_facts_compatibility_inner(
+        project,
+        expected_unit,
+        expected,
+        actual_unit,
+        actual,
+        false,
+        false,
+    )
 }
 
 fn type_facts_compatibility_inner(
@@ -117,6 +133,7 @@ fn type_facts_compatibility_inner(
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
     allow_table_kind_conversion: bool,
+    allow_scalar_conversion: bool,
 ) -> TypeCompatibility {
     let Some((expected_unit, expected)) = normalize_type_fact(project, expected_unit, expected, 0)
     else {
@@ -131,7 +148,18 @@ fn type_facts_compatibility_inner(
     if normalized_internal_table_displays_match(&expected, &actual) {
         return TypeCompatibility::Compatible;
     }
-    if normalized_type_facts_match_by_name(&expected, &actual) {
+    if resolved_internal_table_displays_match(
+        project,
+        expected_unit,
+        &expected,
+        actual_unit,
+        &actual,
+    ) {
+        return TypeCompatibility::Compatible;
+    }
+    if normalized_type_facts_match_by_name(&expected, &actual)
+        && !internal_table_kinds_differ(project, expected_unit, &expected, actual_unit, &actual)
+    {
         return TypeCompatibility::Compatible;
     }
     let Some(expected) = classify_normalized_type_fact(project, expected_unit, &expected, 0) else {
@@ -140,7 +168,13 @@ fn type_facts_compatibility_inner(
     let Some(actual) = classify_normalized_type_fact(project, actual_unit, &actual, 0) else {
         return TypeCompatibility::Unknown;
     };
-    types_compatibility(project, &expected, &actual, allow_table_kind_conversion)
+    types_compatibility(
+        project,
+        &expected,
+        &actual,
+        allow_table_kind_conversion,
+        allow_scalar_conversion,
+    )
 }
 
 fn types_compatibility(
@@ -148,10 +182,16 @@ fn types_compatibility(
     expected: &ClassifiedType,
     actual: &ClassifiedType,
     allow_table_kind_conversion: bool,
+    allow_scalar_conversion: bool,
 ) -> TypeCompatibility {
     match (expected, actual) {
         (ClassifiedType::Scalar(expected), ClassifiedType::Scalar(actual)) => {
-            scalar_kinds_compatibility(*expected, *actual)
+            let compatibility = scalar_kinds_compatibility(*expected, *actual);
+            if compatibility == TypeCompatibility::Convertible && !allow_scalar_conversion {
+                TypeCompatibility::Incompatible
+            } else {
+                compatibility
+            }
         }
         (ClassifiedType::Scalar(ScalarCompatibilityKind::Any), _) => TypeCompatibility::Compatible,
         (_, ClassifiedType::Scalar(ScalarCompatibilityKind::Any)) => TypeCompatibility::Unknown,
@@ -180,6 +220,7 @@ fn types_compatibility(
                     expected_line,
                     actual_line,
                     allow_table_kind_conversion,
+                    allow_scalar_conversion,
                 ),
                 _ => TypeCompatibility::Compatible,
             };
@@ -291,7 +332,9 @@ fn classify_normalized_type_fact(
         };
         return Some(ClassifiedType::Table {
             kind: table_display
+                .as_ref()
                 .map(|display| display.kind)
+                .or_else(|| internal_table_fact_kind(project, unit, fact, 0))
                 .unwrap_or(InternalTableDisplayKind::Any),
             line,
         });
@@ -409,6 +452,12 @@ fn scalar_kinds_compatibility(
     if expected == actual || scalar_kind_covers(expected, actual) {
         return TypeCompatibility::Compatible;
     }
+    if matches!(
+        (expected, actual),
+        (ScalarCompatibilityKind::Elementary, _) | (_, ScalarCompatibilityKind::Elementary)
+    ) {
+        return TypeCompatibility::Unknown;
+    }
     if scalar_kind_is_generic(expected) {
         return TypeCompatibility::Incompatible;
     }
@@ -506,6 +555,19 @@ fn normalized_type_facts_match_by_name(expected: &TypeFactData, actual: &TypeFac
     if expected_is_table != actual_is_table {
         return false;
     }
+    if let (Some(expected), Some(actual)) = (
+        expected
+            .type_clause_display
+            .as_deref()
+            .and_then(parse_internal_table_display),
+        actual
+            .type_clause_display
+            .as_deref()
+            .and_then(parse_internal_table_display),
+    ) && expected.kind != actual.kind
+    {
+        return false;
+    }
 
     match (expected.table_line.as_deref(), actual.table_line.as_deref()) {
         (Some(expected_line), Some(actual_line)) => {
@@ -516,6 +578,106 @@ fn normalized_type_facts_match_by_name(expected: &TypeFactData, actual: &TypeFac
             actual.declared_type.as_ref(),
         ),
     }
+}
+
+fn internal_table_kinds_differ(
+    project: &ProjectAnalysis,
+    expected_unit: &UnitAnalysis,
+    expected: &TypeFactData,
+    actual_unit: &UnitAnalysis,
+    actual: &TypeFactData,
+) -> bool {
+    matches!(
+        (
+            internal_table_fact_kind(project, expected_unit, expected, 0),
+            internal_table_fact_kind(project, actual_unit, actual, 0),
+        ),
+        (Some(expected), Some(actual)) if expected != actual
+    )
+}
+
+fn resolved_internal_table_displays_match(
+    project: &ProjectAnalysis,
+    expected_unit: &UnitAnalysis,
+    expected: &TypeFactData,
+    actual_unit: &UnitAnalysis,
+    actual: &TypeFactData,
+) -> bool {
+    let Some((expected_kind, expected_line)) =
+        internal_table_display_parts(project, expected_unit, expected, 0)
+    else {
+        return false;
+    };
+    let Some((actual_kind, actual_line)) =
+        internal_table_display_parts(project, actual_unit, actual, 0)
+    else {
+        return false;
+    };
+    expected_kind == actual_kind
+        && match (expected_line, actual_line) {
+            (Some(expected_line), Some(actual_line)) => {
+                expected_line.eq_ignore_ascii_case(&actual_line)
+            }
+            _ => true,
+        }
+}
+
+fn internal_table_display_parts(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    fact: &TypeFactData,
+    depth: usize,
+) -> Option<(InternalTableDisplayKind, Option<String>)> {
+    if depth >= 8 {
+        return None;
+    }
+    if let Some(display) = fact
+        .type_clause_display
+        .as_deref()
+        .and_then(parse_internal_table_display)
+    {
+        return Some((
+            display.kind,
+            display.line_display.map(|line| line.to_string()),
+        ));
+    }
+    let declared_type = fact.declared_type.as_ref()?;
+    if declared_type.namespace != Namespace::Type
+        || declared_type.is_ref
+        || !declared_type.field_path.is_empty()
+    {
+        return None;
+    }
+    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
+    internal_table_display_parts(project, unit, &fact, depth + 1)
+}
+
+fn internal_table_fact_kind(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    fact: &TypeFactData,
+    depth: usize,
+) -> Option<InternalTableDisplayKind> {
+    if depth >= 8 {
+        return None;
+    }
+    if let Some(kind) = fact
+        .type_clause_display
+        .as_deref()
+        .and_then(parse_internal_table_display)
+        .map(|display| display.kind)
+    {
+        return Some(kind);
+    }
+    let declared_type = fact.declared_type.as_ref()?;
+    if declared_type.namespace != Namespace::Type
+        || declared_type.is_ref
+        || !declared_type.field_path.is_empty()
+    {
+        return None;
+    }
+    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
+    internal_table_fact_kind(project, unit, &fact, depth + 1)
 }
 
 fn named_type_refs_match(
@@ -594,6 +756,7 @@ fn parse_internal_table_display(display: &str) -> Option<InternalTableDisplay<'_
         ("HASHED TABLE OF ", InternalTableDisplayKind::Hashed),
         ("ANY TABLE OF ", InternalTableDisplayKind::Any),
         ("INDEX TABLE OF ", InternalTableDisplayKind::Index),
+        ("RANGE OF ", InternalTableDisplayKind::Standard),
     ] {
         if upper.starts_with(prefix) {
             let line_display = trimmed[prefix.len()..].trim();
@@ -881,11 +1044,21 @@ mod tests {
     use super::{
         InternalTableDisplayKind, ScalarCompatibilityKind, TypeCompatibility,
         named_type_refs_match, normalized_internal_table_displays_match,
-        parse_internal_table_display, scalar_kinds_compatibility, table_kinds_compatibility,
+        normalized_type_facts_match_by_name, parse_internal_table_display,
+        scalar_kinds_compatibility, table_kinds_compatibility,
     };
     use crate::def_map::{FieldTypeRefData, TypeFactData};
     use crate::scope::Namespace;
     use std::sync::Arc;
+
+    fn type_ref(name: &str) -> FieldTypeRefData {
+        FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from(name),
+            field_path: Vec::new(),
+        }
+    }
 
     #[test]
     fn matches_plain_named_type_and_like_references_with_same_base_name() {
@@ -927,6 +1100,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_range_display_as_standard_table_display() {
+        let parsed =
+            parse_internal_table_display("RANGE OF zattp_param_value").expect("range display");
+        assert_eq!(parsed.kind, InternalTableDisplayKind::Standard);
+        assert_eq!(parsed.line_display, Some("zattp_param_value"));
+    }
+
+    #[test]
     fn matches_standard_and_bare_table_displays_case_insensitively() {
         let expected = TypeFactData {
             structure: None,
@@ -942,6 +1123,34 @@ mod tests {
         };
 
         assert!(normalized_internal_table_displays_match(&expected, &actual));
+    }
+
+    #[test]
+    fn does_not_match_table_facts_by_line_type_when_kinds_differ() {
+        let expected = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("STANDARD TABLE OF i")),
+            table_line: Some(Box::new(TypeFactData {
+                structure: None,
+                declared_type: Some(type_ref("i")),
+                type_clause_display: None,
+                table_line: None,
+            })),
+        };
+        let actual = TypeFactData {
+            structure: None,
+            declared_type: None,
+            type_clause_display: Some(Arc::from("SORTED TABLE OF i WITH UNIQUE KEY table_line")),
+            table_line: Some(Box::new(TypeFactData {
+                structure: None,
+                declared_type: Some(type_ref("i")),
+                type_clause_display: None,
+                table_line: None,
+            })),
+        };
+
+        assert!(!normalized_type_facts_match_by_name(&expected, &actual));
     }
 
     #[test]
@@ -963,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn allows_elementary_scalar_conversions_except_between_date_and_time() {
+    fn treats_unresolved_elementary_scalar_differences_as_unknown() {
         assert_eq!(
             scalar_kinds_compatibility(
                 ScalarCompatibilityKind::Elementary,
@@ -976,14 +1185,14 @@ mod tests {
                 ScalarCompatibilityKind::Date,
                 ScalarCompatibilityKind::Elementary,
             ),
-            TypeCompatibility::Convertible
+            TypeCompatibility::Unknown
         );
         assert_eq!(
             scalar_kinds_compatibility(
                 ScalarCompatibilityKind::Time,
                 ScalarCompatibilityKind::Elementary,
             ),
-            TypeCompatibility::Convertible
+            TypeCompatibility::Unknown
         );
         assert_eq!(
             scalar_kinds_compatibility(

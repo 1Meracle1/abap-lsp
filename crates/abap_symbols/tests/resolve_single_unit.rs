@@ -13644,6 +13644,57 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn rejects_sorted_and_hashed_table_for_function_module_tables_parameter() {
+    let dep_src = r#"
+FUNCTION z_table_param
+  TABLES
+    it_rows TYPE i.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+TYPES ty_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+TYPES ty_hashed TYPE HASHED TABLE OF i WITH UNIQUE KEY table_line.
+
+START-OF-SELECTION.
+  DATA lt_sorted TYPE ty_sorted.
+  DATA lt_hashed TYPE ty_hashed.
+  CALL FUNCTION 'Z_TABLE_PARAM'
+    TABLES
+      it_rows = lt_sorted.
+  CALL FUNCTION 'Z_TABLE_PARAM'
+    TABLES
+      it_rows = lt_hashed.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_main_sorted_table.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_dep_sorted_table.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_sorted_table.abap")
+        .expect("main unit");
+    let diags: Vec<_> = main_unit
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleArgumentType
+                && diag.message.contains("it_rows")
+        })
+        .collect();
+    assert_eq!(diags.len(), 2, "{:?}", main_unit.diagnostics);
+}
+
+#[test]
 fn treats_structure_typed_function_module_tables_parameters_as_standard_tables() {
     let row_src = r#"
 TYPES: BEGIN OF tline,
@@ -17289,6 +17340,87 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn reports_incompatible_convertible_scalar_method_arguments_by_reference_and_value() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS take_ref IMPORTING iv_value TYPE i.
+    CLASS-METHODS take_val IMPORTING VALUE(iv_value) TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take_ref.
+  ENDMETHOD.
+  METHOD take_val.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lv_int TYPE i.
+DATA lv_text TYPE string.
+
+START-OF-SELECTION.
+  lcl_demo=>take_ref( iv_value = lv_int ).
+  lcl_demo=>take_ref( iv_value = lv_text ).
+  lcl_demo=>take_val( iv_value = lv_text ).
+"#;
+    let unit = analyze(src, "file:///method_scalar_arg_ref_value.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().all(|diag| diag.message.contains("iv_value")));
+}
+
+#[test]
+fn skips_incompatible_method_argument_for_unresolved_elementary_aliases() {
+    let src = r#"
+CLASS lcl_document DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create_document
+      IMPORTING i_type TYPE so_obj_tp
+      RETURNING VALUE(ro_document) TYPE REF TO lcl_document.
+ENDCLASS.
+
+CLASS lcl_sapuser DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create
+      IMPORTING i_user TYPE uname
+      RETURNING VALUE(ro_user) TYPE REF TO lcl_sapuser.
+ENDCLASS.
+
+CLASS lcl_document IMPLEMENTATION.
+  METHOD create_document.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_sapuser IMPLEMENTATION.
+  METHOD create.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_document TYPE REF TO lcl_document.
+DATA lo_user TYPE REF TO lcl_sapuser.
+
+START-OF-SELECTION.
+  lo_document = lcl_document=>create_document( i_type = 'HTM' ).
+  lo_user = lcl_sapuser=>create( sy-uname ).
+"#;
+    let unit = analyze(src, "file:///method_unresolved_elementary_alias_args.abap");
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || (!diag.message.contains("i_type") && !diag.message.contains("i_user"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_incompatible_standard_sorted_table_method_arguments_by_reference() {
     let src = r#"
 TYPES ty_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
@@ -17360,6 +17492,166 @@ START-OF-SELECTION.
         .collect();
     assert_eq!(diags.len(), 2, "{diags:#?}");
     assert!(diags.iter().all(|diag| diag.message.contains("it_values")));
+}
+
+#[test]
+fn reports_incompatible_standard_sorted_table_form_arguments_by_reference_and_value() {
+    let src = r#"
+TYPES ty_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+TYPES ty_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+FORM take_standard_ref USING it_values TYPE ty_standard.
+ENDFORM.
+
+FORM take_sorted_ref USING it_values TYPE ty_sorted.
+ENDFORM.
+
+FORM take_standard_val USING VALUE(it_values) TYPE ty_standard.
+ENDFORM.
+
+FORM take_sorted_val USING VALUE(it_values) TYPE ty_sorted.
+ENDFORM.
+
+FORM change_standard_ref CHANGING ct_values TYPE ty_standard.
+ENDFORM.
+
+FORM change_sorted_ref CHANGING ct_values TYPE ty_sorted.
+ENDFORM.
+
+FORM change_standard_val CHANGING VALUE(ct_values) TYPE ty_standard.
+ENDFORM.
+
+FORM change_sorted_val CHANGING VALUE(ct_values) TYPE ty_sorted.
+ENDFORM.
+
+DATA lt_standard TYPE ty_standard.
+DATA lt_sorted TYPE ty_sorted.
+
+START-OF-SELECTION.
+  PERFORM take_standard_ref USING lt_sorted.
+  PERFORM take_sorted_ref USING lt_standard.
+  PERFORM take_standard_val USING lt_sorted.
+  PERFORM take_sorted_val USING lt_standard.
+  PERFORM change_standard_ref CHANGING lt_sorted.
+  PERFORM change_sorted_ref CHANGING lt_standard.
+  PERFORM change_standard_val CHANGING lt_sorted.
+  PERFORM change_sorted_val CHANGING lt_standard.
+"#;
+    let unit = analyze(src, "file:///form_table_kind_arg_ref_value.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 8, "{diags:#?}");
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|diag| diag.message.contains("it_values"))
+            .count(),
+        4,
+        "{diags:#?}"
+    );
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|diag| diag.message.contains("ct_values"))
+            .count(),
+        4,
+        "{diags:#?}"
+    );
+}
+
+#[test]
+fn accepts_inline_range_actual_for_named_range_form_parameter() {
+    let src = r#"
+TYPES zattp_param_value TYPE string.
+TYPES ty_range_param_value TYPE RANGE OF zattp_param_value.
+
+FORM f_get_param CHANGING fr_err_types TYPE ty_range_param_value
+                          fr_rule_types TYPE ty_range_param_value.
+ENDFORM.
+
+DATA gr_err_types TYPE RANGE OF zattp_param_value.
+DATA gr_rule_types TYPE RANGE OF zattp_param_value.
+
+START-OF-SELECTION.
+  PERFORM f_get_param CHANGING gr_err_types
+                               gr_rule_types.
+"#;
+    let unit = analyze(
+        src,
+        "file:///form_named_range_param_inline_range_actual.abap",
+    );
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || (!diag.message.contains("fr_err_types")
+                    && !diag.message.contains("fr_rule_types"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_selector_perform_arguments_when_component_types_match_form_parameters() {
+    let src = r#"
+TYPES: BEGIN OF ty_rep_evt,
+         msguid_out TYPE string,
+         rep_evtid TYPE i,
+       END OF ty_rep_evt.
+
+FORM f_modify_table_rep_conn USING fv_msguid TYPE string
+                                   fv_rep_evtid TYPE i.
+ENDFORM.
+
+DATA ls_rep_evt TYPE ty_rep_evt.
+
+START-OF-SELECTION.
+  PERFORM f_modify_table_rep_conn USING ls_rep_evt-msguid_out
+                                        ls_rep_evt-rep_evtid.
+"#;
+    let unit = analyze(src, "file:///form_selector_argument_type.abap");
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || (!diag.message.contains("fv_msguid") && !diag.message.contains("fv_rep_evtid"))
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_incompatible_convertible_scalar_form_arguments_by_reference_and_value() {
+    let src = r#"
+FORM take_ref USING iv_value TYPE i.
+ENDFORM.
+
+FORM take_val USING VALUE(iv_value) TYPE i.
+ENDFORM.
+
+DATA lv_int TYPE i.
+DATA lv_text TYPE string.
+
+START-OF-SELECTION.
+  PERFORM take_ref USING lv_int.
+  PERFORM take_ref USING lv_text.
+  PERFORM take_val USING lv_text.
+"#;
+    let unit = analyze(src, "file:///form_scalar_arg_ref_value.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().all(|diag| diag.message.contains("iv_value")));
 }
 
 #[test]

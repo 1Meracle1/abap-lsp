@@ -1936,6 +1936,24 @@ fn count_perform_section(
         .count()
 }
 
+fn perform_section_to_form_section(section: PerformParameterSection) -> FormParameterSection {
+    match section {
+        PerformParameterSection::Tables => FormParameterSection::Tables,
+        PerformParameterSection::Using => FormParameterSection::Using,
+        PerformParameterSection::Changing => FormParameterSection::Changing,
+    }
+}
+
+fn form_parameter_for_perform_argument<'a>(
+    parameters: &'a [FormParameterData],
+    argument: &crate::PerformArgumentData,
+) -> Option<&'a FormParameterData> {
+    parameters
+        .iter()
+        .filter(|parameter| parameter.section == perform_section_to_form_section(argument.section))
+        .nth(argument.ordinal_in_section)
+}
+
 fn format_perform_signature(using_count: usize, changing_count: usize) -> String {
     let mut parts = Vec::new();
     if using_count > 0 {
@@ -1965,6 +1983,27 @@ fn type_fact_label(fact: &TypeFactData) -> String {
         return "structure".to_string();
     }
     "value".to_string()
+}
+
+fn form_parameter_type_fact(
+    unit: &crate::UnitAnalysis,
+    parameter: &FormParameterData,
+) -> TypeFactData {
+    let symbol = unit.symbol(parameter.symbol);
+    TypeFactData {
+        structure: symbol.structure,
+        declared_type: symbol.declared_type.clone(),
+        type_clause_display: symbol.type_clause_display.clone(),
+        table_line: None,
+    }
+}
+
+fn perform_argument_type_fact(
+    unit: &crate::UnitAnalysis,
+    argument: &crate::PerformArgumentData,
+) -> Option<TypeFactData> {
+    unit.expression_fact_at_offset(argument.range.end.checked_sub(1)?)
+        .map(|fact| fact.type_fact.clone())
 }
 
 fn method_parameter_type_fact(parameter: &crate::ClassMemberParameterData) -> TypeFactData {
@@ -4588,23 +4627,33 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if function_module_parameter_is_required(parameter) {
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
-                    if !parameter.is_untyped
-                        && type_facts_compatibility(
-                            project,
-                            target_unit,
-                            &function_module_parameter_type_fact(parameter),
-                            unit,
-                            &argument.type_fact,
-                        )
-                        .is_incompatible()
-                    {
+                    let expected = function_module_parameter_type_fact(parameter);
+                    let compatibility =
+                        if parameter.section == FunctionModuleParameterSection::Tables {
+                            type_facts_parameter_compatibility(
+                                project,
+                                target_unit,
+                                &expected,
+                                unit,
+                                &argument.type_fact,
+                            )
+                        } else {
+                            type_facts_compatibility(
+                                project,
+                                target_unit,
+                                &expected,
+                                unit,
+                                &argument.type_fact,
+                            )
+                        };
+                    if !parameter.is_untyped && compatibility.is_incompatible() {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::IncompatibleArgumentType,
                             range: argument.range.clone(),
                             message: format!(
                                 "argument '{}' expects '{}', got '{}'",
                                 parameter.name,
-                                type_fact_label(&function_module_parameter_type_fact(parameter)),
+                                type_fact_label(&expected),
                                 type_fact_label(&argument.type_fact)
                             ),
                         });
@@ -4874,12 +4923,11 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             let Some(handle) = project.resolve_perform_call_target(unit, perform_call) else {
                 continue;
             };
-            let Some(parameters) = project.units[handle.unit.as_usize()]
-                .form_routine(handle.symbol)
-                .map(|routine| routine.parameters.as_slice())
-            else {
+            let target_unit = &project.units[handle.unit.as_usize()];
+            let Some(routine) = target_unit.form_routine(handle.symbol) else {
                 continue;
             };
+            let parameters = routine.parameters.as_slice();
 
             let expected_using = count_form_section(parameters, FormParameterSection::Using);
             let expected_changing = count_form_section(parameters, FormParameterSection::Changing);
@@ -4888,21 +4936,52 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             let actual_changing =
                 count_perform_section(&perform_call.parameters, PerformParameterSection::Changing);
 
-            if expected_using == actual_using && expected_changing == actual_changing {
+            if expected_using != actual_using || expected_changing != actual_changing {
+                unit_diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::InvalidPerformCall,
+                    range: perform_call.range.clone(),
+                    message: format!(
+                        "PERFORM '{}' expects {}, but call provides USING {} and CHANGING {} argument(s)",
+                        perform_call.routine_name,
+                        format_perform_signature(expected_using, expected_changing),
+                        actual_using,
+                        actual_changing
+                    ),
+                });
                 continue;
             }
 
-            unit_diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::InvalidPerformCall,
-                range: perform_call.range.clone(),
-                message: format!(
-                    "PERFORM '{}' expects {}, but call provides USING {} and CHANGING {} argument(s)",
-                    perform_call.routine_name,
-                    format_perform_signature(expected_using, expected_changing),
-                    actual_using,
-                    actual_changing
-                ),
-            });
+            for argument in &perform_call.arguments {
+                let Some(parameter) = form_parameter_for_perform_argument(parameters, argument)
+                else {
+                    continue;
+                };
+                let Some(actual) = perform_argument_type_fact(unit, argument) else {
+                    continue;
+                };
+                let expected = form_parameter_type_fact(target_unit, parameter);
+                if type_facts_parameter_compatibility(
+                    project,
+                    target_unit,
+                    &expected,
+                    unit,
+                    &actual,
+                )
+                .is_incompatible()
+                {
+                    let parameter_name = &target_unit.symbol(parameter.symbol).name;
+                    unit_diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::IncompatibleArgumentType,
+                        range: argument.range.clone(),
+                        message: format!(
+                            "argument '{}' expects '{}', got '{}'",
+                            parameter_name,
+                            type_fact_label(&expected),
+                            type_fact_label(&actual)
+                        ),
+                    });
+                }
+            }
         }
 
         unit_diagnostics.extend(validate_open_sql_sources(&lookup, unit, &scope_index));
