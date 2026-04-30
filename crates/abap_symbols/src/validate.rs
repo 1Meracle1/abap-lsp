@@ -402,6 +402,20 @@ fn resolve_field_access_base_symbol(
         return Some(handle);
     }
 
+    if let Some(handle) = unit.references.iter().find_map(|reference| {
+        (reference.range == access.base_range
+            && reference.namespace == access.base_namespace
+            && reference.name == access.base_name)
+            .then_some(reference.resolution)
+            .flatten()
+            .and_then(|resolution| match resolution {
+                Resolution::Symbol(handle) => Some(handle),
+                _ => None,
+            })
+    }) {
+        return Some(handle);
+    }
+
     if access.in_type_position {
         let fallback_namespace = match access.base_namespace {
             Namespace::Type => Namespace::Value,

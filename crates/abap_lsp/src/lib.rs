@@ -14255,6 +14255,99 @@ ENDCLASS.
     }
 
     #[test]
+    fn cached_dependency_static_struct_constant_reports_bad_member_and_component() {
+        let workspace_path = temp_workspace_path("dependency_static_struct_constant");
+        fs::create_dir_all(workspace_path.join("src")).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "ZMAIN"
+kind = "report"
+root_file = "src/ZMAIN.abap"
+"#,
+        )
+        .expect("manifest");
+        let main_src = "\
+DATA p_legisl TYPE string.
+IF p_legisl EQ zattp_cl_rep_constants=>gcs_legislationx-cn.
+ENDIF.
+IF p_legisl EQ zattp_cl_rep_constants=>gcs_legislation-bogus.
+ENDIF.
+";
+        fs::write(workspace_path.join("src/ZMAIN.abap"), main_src).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZMAIN.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZATTP_CL_REP_CONSTANTS".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zattp_cl_rep_constants".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote constants".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "\
+CLASS zattp_cl_rep_constants DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_legislation,
+        cn TYPE string VALUE 'CN',
+      END OF gcs_legislation.
+ENDCLASS.
+
+CLASS zattp_cl_rep_constants IMPLEMENTATION.
+ENDCLASS.
+"
+                    .to_string(),
+                    fetched_at: "2026-04-30T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifact");
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let snapshot = snapshot_for_uri(&state, &source_uri).expect("source snapshot");
+        assert!(
+            snapshot.symbols.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnknownField
+                    && diag.message.contains("gcs_legislationx")
+            }),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+        assert!(
+            snapshot.symbols.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnknownField && diag.message.contains("bogus")
+            }),
+            "{:#?}",
+            snapshot.symbols.diagnostics
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn cached_dependency_file_suppresses_remote_request_even_if_still_unresolved() {
         let workspace_path = temp_workspace_path("cached_dependency_short_circuit");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
