@@ -16904,6 +16904,48 @@ ENDCLASS.
 }
 
 #[test]
+fn accepts_class_reference_for_implemented_interface_argument() {
+    let src = r#"
+INTERFACE if_document_bcs.
+ENDINTERFACE.
+
+CLASS cl_document_bcs DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_document_bcs.
+ENDCLASS.
+
+CLASS cl_document_bcs IMPLEMENTATION.
+ENDCLASS.
+
+CLASS lcl_sender DEFINITION.
+  PUBLIC SECTION.
+    METHODS send IMPORTING i_document TYPE REF TO if_document_bcs.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_sender IMPLEMENTATION.
+  METHOD send.
+  ENDMETHOD.
+
+  METHOD run.
+    DATA lo_document TYPE REF TO cl_document_bcs.
+    send( i_document = lo_document ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///class_ref_to_interface_arg.abap");
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("i_document")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_incompatible_method_argument_types_for_scalar_and_table_parameters() {
     let src = r#"
 CLASS lcl_demo DEFINITION.

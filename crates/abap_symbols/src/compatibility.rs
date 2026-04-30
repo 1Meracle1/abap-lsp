@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::def_map::{
     FieldTypeRefData, MethodParameterSection, NamedArgumentSection, TypeFactData,
@@ -522,26 +522,45 @@ fn symbol_handle_is_same_or_subtype(
     actual: SymbolHandle,
     expected: SymbolHandle,
 ) -> bool {
+    symbol_handle_is_same_or_subtype_inner(project, actual, expected, &mut HashSet::new())
+}
+
+fn symbol_handle_is_same_or_subtype_inner(
+    project: &ProjectAnalysis,
+    actual: SymbolHandle,
+    expected: SymbolHandle,
+    visited: &mut HashSet<SymbolHandle>,
+) -> bool {
     if actual == expected {
         return true;
     }
-    let mut current = actual;
-    for _ in 0..16 {
-        if current == expected {
+    if !visited.insert(actual) {
+        return false;
+    }
+
+    let unit = &project.units[actual.unit.as_usize()];
+    for implemented in unit
+        .implemented_interfaces
+        .iter()
+        .filter(|implemented| implemented.owner_symbol == actual.symbol)
+    {
+        let Some(interface) =
+            resolve_type_symbol_handle(project, unit, implemented.interface_name.as_ref())
+        else {
+            continue;
+        };
+        if symbol_handle_is_same_or_subtype_inner(project, interface, expected, visited) {
             return true;
         }
-        let unit = &project.units[current.unit.as_usize()];
-        let Some(inheritance) = unit.class_superclass(current.symbol) else {
-            return false;
-        };
-        let Some(next) =
-            resolve_type_symbol_handle(project, unit, inheritance.superclass_name.as_ref())
-        else {
-            return false;
-        };
-        current = next;
     }
-    false
+
+    unit.class_superclass(actual.symbol)
+        .and_then(|inheritance| {
+            resolve_type_symbol_handle(project, unit, inheritance.superclass_name.as_ref())
+        })
+        .is_some_and(|superclass| {
+            symbol_handle_is_same_or_subtype_inner(project, superclass, expected, visited)
+        })
 }
 
 fn is_internal_table_type_display(display: &str) -> bool {
