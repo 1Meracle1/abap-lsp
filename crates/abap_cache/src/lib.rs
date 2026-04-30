@@ -2336,7 +2336,7 @@ impl AnalysisSnapshot {
                     })
                     .collect()
             } else {
-                collect_class_methods_in_hierarchy(self, unit, class_symbol_id)
+                collect_class_value_members_in_hierarchy(self, unit, class_symbol_id)
                     .into_iter()
                     .filter(|member| {
                         let (member_unit, member) = member;
@@ -2354,9 +2354,13 @@ impl AnalysisSnapshot {
                         name: Arc::clone(&member.name),
                         declared_type: None,
                         declaration: Some(format_class_member_signature(member_unit, member)),
-                        kind: HoveredComponentKind::Method,
+                        kind: hovered_component_kind_for_class_member(member),
                         field_owner_structure_name: None,
-                        insertion: callable_completion_insertion(member),
+                        insertion: if member.kind == ClassMemberKind::Method {
+                            callable_completion_insertion(member)
+                        } else {
+                            identifier_completion_insertion(member.name.as_ref())
+                        },
                     })
                     .collect()
             };
@@ -7778,7 +7782,7 @@ fn method_implementation_signature_member_at_offset(
     None
 }
 
-fn collect_class_methods_in_hierarchy<'a>(
+fn collect_class_value_members_in_hierarchy<'a>(
     snapshot: &'a AnalysisSnapshot,
     class_unit: &'a UnitAnalysis,
     class_symbol: SymbolId,
@@ -7793,8 +7797,10 @@ fn collect_class_methods_in_hierarchy<'a>(
         }
         let unit = &snapshot.project.units[current.0.as_usize()];
         for member in unit.semantic().decls().class_members_for(current.1) {
-            if member.kind != ClassMemberKind::Method
-                || !seen_names.insert(Arc::clone(&member.name))
+            if !matches!(
+                member.kind,
+                ClassMemberKind::Attribute | ClassMemberKind::Method
+            ) || !seen_names.insert(Arc::clone(&member.name))
             {
                 continue;
             }
@@ -21667,6 +21673,52 @@ some_class=>e";
                 .as_deref()
                 .is_some_and(|decl| decl.contains("CLASS-METHODS"))
         }));
+    }
+
+    #[test]
+    fn lists_public_static_grouped_constants_after_bare_fat_arrow() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS z_demo DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS:
+      BEGIN OF gcs_aif_ifname,
+        BEGIN OF europe,
+          aggregation_epa_32    TYPE string  VALUE 'ZEU_EPA_32' ##no_text,
+          dispatch_edp_33       TYPE string  VALUE 'ZEU_EDP_33' ##no_text,
+        END OF europe,
+      END OF gcs_aif_ifname.
+ENDCLASS.
+
+z_demo=>";
+        let snapshot = store.publish("file:///demo.abap", 1, src);
+
+        let completion = snapshot
+            .selector_completion_at(src.len())
+            .expect("selector completion");
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["gcs_aif_ifname"]
+        );
+        assert!(completion.replace_range.is_empty());
+        assert!(matches!(
+            completion.items[0].kind,
+            HoveredComponentKind::Attribute
+        ));
+        assert_eq!(
+            completion.items[0].insertion.plain_text.as_str(),
+            "gcs_aif_ifname"
+        );
+        assert!(
+            completion.items[0]
+                .declaration
+                .as_deref()
+                .is_some_and(|decl| decl.contains("BEGIN OF gcs_aif_ifname"))
+        );
     }
 
     #[test]
