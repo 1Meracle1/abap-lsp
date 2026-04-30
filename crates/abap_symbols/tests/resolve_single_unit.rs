@@ -13695,6 +13695,86 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn reports_incompatible_standard_sorted_function_module_importing_changing_tables() {
+    let dep_src = r#"
+TYPES ty_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+TYPES ty_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+FUNCTION z_type_compat_fm_kind
+  IMPORTING
+    it_standard_ref TYPE ty_standard
+    it_sorted_ref TYPE ty_sorted
+    VALUE(it_standard_val) TYPE ty_standard
+    VALUE(it_sorted_val) TYPE ty_sorted
+  CHANGING
+    ct_standard_ref TYPE ty_standard
+    ct_sorted_ref TYPE ty_sorted
+    VALUE(ct_standard_val) TYPE ty_standard
+    VALUE(ct_sorted_val) TYPE ty_sorted.
+ENDFUNCTION.
+"#;
+    let main_src = r#"
+TYPES ty_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+TYPES ty_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+START-OF-SELECTION.
+  DATA lt_standard TYPE ty_standard.
+  DATA lt_sorted TYPE ty_sorted.
+  CALL FUNCTION 'Z_TYPE_COMPAT_FM_KIND'
+    EXPORTING
+      it_standard_ref = lt_sorted
+      it_sorted_ref = lt_standard
+      it_standard_val = lt_sorted
+      it_sorted_val = lt_standard
+    CHANGING
+      ct_standard_ref = lt_sorted
+      ct_sorted_ref = lt_standard
+      ct_standard_val = lt_sorted
+      ct_sorted_val = lt_standard.
+"#;
+
+    let dep_parsed = parse(dep_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///fm_dep_importing_changing_table_kind.abap",
+            source: dep_src,
+            parse: &dep_parsed,
+        },
+        ProjectInput {
+            uri: "file:///fm_main_importing_changing_table_kind.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///fm_main_importing_changing_table_kind.abap")
+        .expect("main unit");
+    let diags: Vec<_> = main_unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 8, "{diags:#?}");
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|diag| diag.message.contains("it_"))
+            .count(),
+        4,
+        "{diags:#?}"
+    );
+    assert_eq!(
+        diags
+            .iter()
+            .filter(|diag| diag.message.contains("ct_"))
+            .count(),
+        4,
+        "{diags:#?}"
+    );
+}
+
+#[test]
 fn treats_structure_typed_function_module_tables_parameters_as_standard_tables() {
     let row_src = r#"
 TYPES: BEGIN OF tline,

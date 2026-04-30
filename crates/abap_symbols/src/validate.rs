@@ -7,6 +7,7 @@ use crate::builtins::builtin_routine_spec;
 use crate::compatibility::{
     call_section_matches_parameter, parameter_is_required, positional_parameter_section,
     type_facts_compatibility, type_facts_parameter_compatibility,
+    type_facts_strict_table_kind_compatibility,
 };
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
@@ -4628,8 +4629,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
                     let expected = function_module_parameter_type_fact(parameter);
-                    let compatibility =
-                        if parameter.section == FunctionModuleParameterSection::Tables {
+                    let compatibility = match parameter.section {
+                        FunctionModuleParameterSection::Tables => {
                             type_facts_parameter_compatibility(
                                 project,
                                 target_unit,
@@ -4637,15 +4638,25 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                                 unit,
                                 &argument.type_fact,
                             )
-                        } else {
-                            type_facts_compatibility(
+                        }
+                        FunctionModuleParameterSection::Importing
+                        | FunctionModuleParameterSection::Changing => {
+                            type_facts_strict_table_kind_compatibility(
                                 project,
                                 target_unit,
                                 &expected,
                                 unit,
                                 &argument.type_fact,
                             )
-                        };
+                        }
+                        FunctionModuleParameterSection::Exporting => type_facts_compatibility(
+                            project,
+                            target_unit,
+                            &expected,
+                            unit,
+                            &argument.type_fact,
+                        ),
+                    };
                     if !parameter.is_untyped && compatibility.is_incompatible() {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::IncompatibleArgumentType,

@@ -126,6 +126,24 @@ pub(crate) fn type_facts_parameter_compatibility(
     )
 }
 
+pub(crate) fn type_facts_strict_table_kind_compatibility(
+    project: &ProjectAnalysis,
+    expected_unit: &UnitAnalysis,
+    expected: &TypeFactData,
+    actual_unit: &UnitAnalysis,
+    actual: &TypeFactData,
+) -> TypeCompatibility {
+    type_facts_compatibility_inner(
+        project,
+        expected_unit,
+        expected,
+        actual_unit,
+        actual,
+        false,
+        true,
+    )
+}
+
 fn type_facts_compatibility_inner(
     project: &ProjectAnalysis,
     expected_unit: &UnitAnalysis,
