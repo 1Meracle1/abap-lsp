@@ -11301,11 +11301,11 @@ CLASS lcl_demo DEFINITION.
       IMPORTING iv_raw TYPE string
       RETURNING VALUE(rv_text) TYPE string.
     METHODS get_object_hry
-      IMPORTING it_objid TYPE STANDARD TABLE OF string
-      RETURNING VALUE(rt_objid) TYPE STANDARD TABLE OF string.
+      IMPORTING it_objid TYPE stringtab
+      RETURNING VALUE(rt_objid) TYPE stringtab.
     METHODS get_unavailable_obj_pda
-      IMPORTING it_child_obj TYPE STANDARD TABLE OF string
-      RETURNING VALUE(rt_objid) TYPE STANDARD TABLE OF string.
+      IMPORTING it_child_obj TYPE stringtab
+      RETURNING VALUE(rt_objid) TYPE stringtab.
 ENDCLASS.
 
 CLASS lcl_demo IMPLEMENTATION.
@@ -16948,10 +16948,12 @@ ENDCLASS.
 #[test]
 fn reports_incompatible_method_argument_types_for_scalar_and_table_parameters() {
     let src = r#"
+TYPES ty_inttab TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
 CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
     METHODS take_value IMPORTING iv_value TYPE i.
-    METHODS take_table IMPORTING it_values TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+    METHODS take_table IMPORTING it_values TYPE ty_inttab.
 ENDCLASS.
 
 CLASS lcl_demo IMPLEMENTATION.
@@ -16979,6 +16981,53 @@ START-OF-SELECTION.
     assert_eq!(diags.len(), 2, "{diags:#?}");
     assert!(diags.iter().any(|diag| diag.message.contains("iv_value")));
     assert!(diags.iter().any(|diag| diag.message.contains("it_values")));
+}
+
+#[test]
+fn reports_invalid_inline_table_type_sections_in_method_parameters() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS take_standard IMPORTING it_values TYPE STANDARD TABLE OF i.
+    CLASS-METHODS take_sorted IMPORTING VALUE(it_values) TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///invalid_method_table_param_type.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::InvalidParameterType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().any(|diag| {
+        diag.message
+            .contains("inline table type 'STANDARD TABLE OF i'")
+    }));
+    assert!(diags.iter().any(|diag| {
+        diag.message
+            .contains("inline table type 'SORTED TABLE OF i WITH UNIQUE KEY table_line'")
+    }));
+}
+
+#[test]
+fn reports_invalid_inline_table_type_sections_in_form_parameters() {
+    let src = r#"
+FORM take
+  USING it_values TYPE STANDARD TABLE OF i
+  CHANGING ct_values TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+ENDFORM.
+"#;
+    let unit = analyze(src, "file:///invalid_form_table_param_type.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::InvalidParameterType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().any(|diag| diag.message.contains("it_values")));
+    assert!(diags.iter().any(|diag| diag.message.contains("ct_values")));
 }
 
 #[test]
@@ -17052,6 +17101,27 @@ START-OF-SELECTION.
         diag.message
             .contains("assignment target 't' is incompatible with source 'd'")
     }));
+}
+
+#[test]
+fn accepts_assignment_between_standard_and_sorted_tables() {
+    let src = r#"
+DATA lt_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA lt_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+START-OF-SELECTION.
+  lt_standard = lt_sorted.
+  lt_sorted = lt_standard.
+"#;
+    let unit = analyze(src, "file:///standard_sorted_table_assignment.abap");
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::IncompatibleAssignmentType),
+        "{:#?}",
+        unit.diagnostics
+    );
 }
 
 #[test]
@@ -17216,6 +17286,80 @@ START-OF-SELECTION.
         .collect();
     assert_eq!(diags.len(), 1, "{diags:#?}");
     assert!(diags[0].message.contains("it_values"));
+}
+
+#[test]
+fn reports_incompatible_standard_sorted_table_method_arguments_by_reference() {
+    let src = r#"
+TYPES ty_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+TYPES ty_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS take_standard IMPORTING it_values TYPE ty_standard.
+    CLASS-METHODS take_sorted IMPORTING it_values TYPE ty_sorted.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take_standard.
+  ENDMETHOD.
+  METHOD take_sorted.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lt_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA lt_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+START-OF-SELECTION.
+  lcl_demo=>take_standard( it_values = lt_sorted ).
+  lcl_demo=>take_sorted( it_values = lt_standard ).
+"#;
+    let unit = analyze(src, "file:///method_table_kind_arg_ref.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().all(|diag| diag.message.contains("it_values")));
+}
+
+#[test]
+fn reports_incompatible_standard_sorted_table_method_arguments_by_value() {
+    let src = r#"
+TYPES ty_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+TYPES ty_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS take_standard IMPORTING VALUE(it_values) TYPE ty_standard.
+    CLASS-METHODS take_sorted IMPORTING VALUE(it_values) TYPE ty_sorted.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take_standard.
+  ENDMETHOD.
+  METHOD take_sorted.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lt_standard TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA lt_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+
+START-OF-SELECTION.
+  lcl_demo=>take_standard( it_values = lt_sorted ).
+  lcl_demo=>take_sorted( it_values = lt_standard ).
+"#;
+    let unit = analyze(src, "file:///method_table_kind_arg_value.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+    assert!(diags.iter().all(|diag| diag.message.contains("it_values")));
 }
 
 #[test]

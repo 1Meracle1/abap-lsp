@@ -6,7 +6,7 @@ use abap_lexer::TextRange;
 use crate::builtins::builtin_routine_spec;
 use crate::compatibility::{
     call_section_matches_parameter, parameter_is_required, positional_parameter_section,
-    type_facts_compatibility,
+    type_facts_compatibility, type_facts_parameter_compatibility,
 };
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
@@ -3730,6 +3730,65 @@ fn validate_object_type_references(
     diagnostics
 }
 
+fn parameter_type_uses_inline_table_type(display: &str) -> bool {
+    let upper = display
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    upper.starts_with("TABLE OF ") || upper.contains(" TABLE OF ")
+}
+
+fn invalid_parameter_type_diagnostic(name: &str, range: &TextRange, display: &str) -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::InvalidParameterType,
+        range: range.clone(),
+        message: format!(
+            "parameter '{name}' uses inline table type '{display}'; define a table type and reference it with TYPE"
+        ),
+    }
+}
+
+fn validate_parameter_types(unit: &crate::UnitAnalysis) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for member in &unit.class_members {
+        if member.kind != ClassMemberKind::Method {
+            continue;
+        }
+        for parameter in &member.parameters {
+            let Some(display) = parameter.type_clause_display.as_deref() else {
+                continue;
+            };
+            if parameter_type_uses_inline_table_type(display) {
+                diagnostics.push(invalid_parameter_type_diagnostic(
+                    parameter.name.as_ref(),
+                    &parameter.range,
+                    display,
+                ));
+            }
+        }
+    }
+    for routine in &unit.form_routines {
+        for parameter in &routine.parameters {
+            if parameter.section == FormParameterSection::Tables {
+                continue;
+            }
+            let symbol = unit.symbol(parameter.symbol);
+            let Some(display) = symbol.type_clause_display.as_deref() else {
+                continue;
+            };
+            if parameter_type_uses_inline_table_type(display) {
+                diagnostics.push(invalid_parameter_type_diagnostic(
+                    symbol.name.as_ref(),
+                    &symbol.decl_range,
+                    display,
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
 pub(crate) fn validate_project_with_scope_indexes(
     project: &mut ProjectAnalysis,
     scope_indexes: &[ScopeIndex],
@@ -3857,6 +3916,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             scope_indexes,
             original_symbol_count,
         );
+        let parameter_type_diagnostics = validate_parameter_types(&project.units[unit_idx]);
         let abstract_instantiation_diagnostics = validate_abstract_class_instantiations(
             project,
             &lookup,
@@ -4608,7 +4668,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if event_parameter_is_required(parameter) {
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
-                    if type_facts_compatibility(
+                    if type_facts_parameter_compatibility(
                         project,
                         target_unit,
                         &method_parameter_type_fact(parameter),
@@ -4713,7 +4773,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if parameter_is_required(parameter.section, parameter.is_optional) {
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
-                    if type_facts_compatibility(
+                    if type_facts_parameter_compatibility(
                         project,
                         target_unit,
                         &method_parameter_type_fact(parameter),
@@ -4743,7 +4803,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 if parameter_is_required(parameter.section, parameter.is_optional) {
                     matched_required.insert(Arc::clone(&parameter.name));
                 }
-                if type_facts_compatibility(
+                if type_facts_parameter_compatibility(
                     project,
                     target_unit,
                     &method_parameter_type_fact(parameter),
@@ -4866,6 +4926,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             unit,
         ));
         unit_diagnostics.extend(object_type_diagnostics);
+        unit_diagnostics.extend(parameter_type_diagnostics);
         unit_diagnostics.extend(abstract_instantiation_diagnostics);
         unit_diagnostics.extend(validate_missing_method_implementations(unit));
         unit_diagnostics.extend(constructor_diagnostics);

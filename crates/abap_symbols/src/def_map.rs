@@ -311,6 +311,7 @@ pub enum DiagnosticKind {
     MissingMethodImplementation,
     MissingSuperConstructorCall,
     InvalidObjectTypeReference,
+    InvalidParameterType,
     IncompatibleAssignmentType,
     IncompatibleArgumentType,
     UnknownNamedParameter,

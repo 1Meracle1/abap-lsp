@@ -97,6 +97,27 @@ pub(crate) fn type_facts_compatibility(
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
 ) -> TypeCompatibility {
+    type_facts_compatibility_inner(project, expected_unit, expected, actual_unit, actual, true)
+}
+
+pub(crate) fn type_facts_parameter_compatibility(
+    project: &ProjectAnalysis,
+    expected_unit: &UnitAnalysis,
+    expected: &TypeFactData,
+    actual_unit: &UnitAnalysis,
+    actual: &TypeFactData,
+) -> TypeCompatibility {
+    type_facts_compatibility_inner(project, expected_unit, expected, actual_unit, actual, false)
+}
+
+fn type_facts_compatibility_inner(
+    project: &ProjectAnalysis,
+    expected_unit: &UnitAnalysis,
+    expected: &TypeFactData,
+    actual_unit: &UnitAnalysis,
+    actual: &TypeFactData,
+    allow_table_kind_conversion: bool,
+) -> TypeCompatibility {
     let Some((expected_unit, expected)) = normalize_type_fact(project, expected_unit, expected, 0)
     else {
         return TypeCompatibility::Unknown;
@@ -119,13 +140,14 @@ pub(crate) fn type_facts_compatibility(
     let Some(actual) = classify_normalized_type_fact(project, actual_unit, &actual, 0) else {
         return TypeCompatibility::Unknown;
     };
-    types_compatibility(project, &expected, &actual)
+    types_compatibility(project, &expected, &actual, allow_table_kind_conversion)
 }
 
 fn types_compatibility(
     project: &ProjectAnalysis,
     expected: &ClassifiedType,
     actual: &ClassifiedType,
+    allow_table_kind_conversion: bool,
 ) -> TypeCompatibility {
     match (expected, actual) {
         (ClassifiedType::Scalar(expected), ClassifiedType::Scalar(actual)) => {
@@ -144,14 +166,21 @@ fn types_compatibility(
                 line: actual_line,
             },
         ) => {
-            let table = table_kinds_compatibility(*expected_kind, *actual_kind);
+            let table = table_kinds_compatibility(
+                *expected_kind,
+                *actual_kind,
+                allow_table_kind_conversion,
+            );
             if table.is_incompatible() {
                 return table;
             }
             let line = match (expected_line.as_deref(), actual_line.as_deref()) {
-                (Some(expected_line), Some(actual_line)) => {
-                    types_compatibility(project, expected_line, actual_line)
-                }
+                (Some(expected_line), Some(actual_line)) => types_compatibility(
+                    project,
+                    expected_line,
+                    actual_line,
+                    allow_table_kind_conversion,
+                ),
                 _ => TypeCompatibility::Compatible,
             };
             combine_compatibility(table, line)
@@ -344,6 +373,7 @@ fn combine_compatibility(left: TypeCompatibility, right: TypeCompatibility) -> T
 fn table_kinds_compatibility(
     expected: InternalTableDisplayKind,
     actual: InternalTableDisplayKind,
+    allow_conversion: bool,
 ) -> TypeCompatibility {
     if expected == actual || expected == InternalTableDisplayKind::Any {
         return TypeCompatibility::Compatible;
@@ -362,6 +392,12 @@ fn table_kinds_compatibility(
             InternalTableDisplayKind::Standard | InternalTableDisplayKind::Sorted,
             InternalTableDisplayKind::Index,
         ) => TypeCompatibility::Unknown,
+        (InternalTableDisplayKind::Standard, InternalTableDisplayKind::Sorted)
+        | (InternalTableDisplayKind::Sorted, InternalTableDisplayKind::Standard)
+            if allow_conversion =>
+        {
+            TypeCompatibility::Convertible
+        }
         _ => TypeCompatibility::Incompatible,
     }
 }
@@ -1017,6 +1053,7 @@ mod tests {
             table_kinds_compatibility(
                 InternalTableDisplayKind::Any,
                 InternalTableDisplayKind::Hashed,
+                true,
             ),
             TypeCompatibility::Compatible
         );
@@ -1024,6 +1061,7 @@ mod tests {
             table_kinds_compatibility(
                 InternalTableDisplayKind::Index,
                 InternalTableDisplayKind::Sorted,
+                true,
             ),
             TypeCompatibility::Compatible
         );
@@ -1031,6 +1069,7 @@ mod tests {
             table_kinds_compatibility(
                 InternalTableDisplayKind::Index,
                 InternalTableDisplayKind::Hashed,
+                true,
             ),
             TypeCompatibility::Incompatible
         );
@@ -1038,8 +1077,41 @@ mod tests {
             table_kinds_compatibility(
                 InternalTableDisplayKind::Sorted,
                 InternalTableDisplayKind::Index,
+                true,
             ),
             TypeCompatibility::Unknown
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Standard,
+                InternalTableDisplayKind::Sorted,
+                true,
+            ),
+            TypeCompatibility::Convertible
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Sorted,
+                InternalTableDisplayKind::Standard,
+                true,
+            ),
+            TypeCompatibility::Convertible
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Standard,
+                InternalTableDisplayKind::Sorted,
+                false,
+            ),
+            TypeCompatibility::Incompatible
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Sorted,
+                InternalTableDisplayKind::Standard,
+                false,
+            ),
+            TypeCompatibility::Incompatible
         );
     }
 }
