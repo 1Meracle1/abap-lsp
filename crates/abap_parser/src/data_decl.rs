@@ -657,6 +657,17 @@ fn parse_value_clause_keywords(
     idx: usize,
     keywords: &[&str],
 ) -> Option<(NodeId, usize)> {
+    parse_value_clause_keywords_until(b, source, tokens, idx, keywords, &[])
+}
+
+fn parse_value_clause_keywords_until(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    keywords: &[&str],
+    stop_keywords: &[&str],
+) -> Option<(NodeId, usize)> {
     let value_tok = tokens.get(idx)?;
     if !keywords
         .iter()
@@ -665,7 +676,7 @@ fn parse_value_clause_keywords(
         return None;
     }
     let value_kw = token_leaf(b, value_tok);
-    let (expr, next) = parse_type_ref_tokens(b, source, tokens, idx + 1, &[])?;
+    let (expr, next) = parse_type_ref_tokens(b, source, tokens, idx + 1, stop_keywords)?;
     let range = value_tok.range.start..b.span(expr).end;
     Some((
         b.branch(SyntaxKind::ValueClause, range, &[value_kw, expr]),
@@ -988,9 +999,14 @@ fn parse_parameters_clause(
             }
             TokenKind::Comma | TokenKind::Period | TokenKind::Eof => break,
             _ => {
-                if let Some((value, j)) =
-                    parse_value_clause_keywords(b, source, tokens, i, &["default"])
-                {
+                if let Some((value, j)) = parse_value_clause_keywords_until(
+                    b,
+                    source,
+                    tokens,
+                    i,
+                    &["default"],
+                    PARAMETERS_TYPE_STOP_KEYWORDS,
+                ) {
                     children.push(value);
                     i = j;
                 } else {
@@ -2028,6 +2044,18 @@ mod tests {
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ParametersDecl), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::DataTypedClause), 1);
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 0);
+    }
+
+    #[test]
+    fn parameters_default_stops_before_user_command_addition() {
+        let src = "\
+PARAMETERS: p_backgr RADIOBUTTON GROUP g01 DEFAULT 'X' USER-COMMAND upd,
+            p_manual RADIOBUTTON GROUP g01.";
+        let file = tree_ok(src);
+        let value = file
+            .find_first_kind(file.root(), SyntaxKind::ValueClause)
+            .expect("default value");
+        assert_eq!(&src[file.range(value)], "DEFAULT 'X'");
     }
 
     #[test]

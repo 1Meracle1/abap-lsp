@@ -2166,6 +2166,44 @@ SELECT-OPTIONS:
     }
 
     #[test]
+    fn radio_parameter_user_command_addition_is_not_a_reference() {
+        let src = "\
+SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-b01.\n\
+PARAMETERS: p_backgr RADIOBUTTON GROUP g01 DEFAULT 'X' USER-COMMAND upd,\n\
+            p_manual RADIOBUTTON GROUP g01.\n\
+SELECTION-SCREEN END OF BLOCK b01.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///radio_user_command.abap", src, &parsed);
+
+        let symbol = unit
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "p_backgr"
+            })
+            .expect("radio parameter");
+        assert_eq!(symbol.value_clause_display.as_deref(), Some("'X'"));
+
+        for name in ["user", "command", "upd"] {
+            assert!(
+                unit.references
+                    .iter()
+                    .all(|reference| reference.name.as_ref() != name),
+                "unexpected `{name}` reference: {:#?}",
+                unit.references
+            );
+            assert!(
+                unit.diagnostics
+                    .iter()
+                    .all(|diagnostic| !diagnostic.message.contains(&format!("'{name}'"))),
+                "{:#?}",
+                unit.diagnostics
+            );
+        }
+    }
+
+    #[test]
     fn leave_list_processing_does_not_collect_list_as_identifier() {
         let src = r#"
 CLASS lcl_demo DEFINITION.
