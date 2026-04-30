@@ -1663,8 +1663,15 @@ APPEND INITIAL LINE TO lt_dst ASSIGNING <ls_evt>.
 #[test]
 fn resolves_move_corresponding_source_and_target() {
     let src = r#"
-DATA ls_general TYPE string.
-DATA ls_ord_head TYPE string.
+TYPES: BEGIN OF ty_general,
+         value TYPE i,
+       END OF ty_general.
+TYPES: BEGIN OF ty_ord_head,
+         value TYPE i,
+       END OF ty_ord_head.
+
+DATA ls_general TYPE ty_general.
+DATA ls_ord_head TYPE ty_ord_head.
 
 MOVE-CORRESPONDING ls_general TO ls_ord_head.
 "#;
@@ -1690,6 +1697,142 @@ MOVE-CORRESPONDING ls_general TO ls_ord_head.
             unit.diagnostics
         );
     }
+}
+
+#[test]
+fn reports_invalid_move_corresponding_operand_shapes() {
+    let src = r#"
+TYPES: BEGIN OF ty_line,
+         value TYPE i,
+       END OF ty_line.
+
+DATA lv_source TYPE string.
+DATA lv_target TYPE string.
+DATA lt_source TYPE STANDARD TABLE OF ty_line WITH EMPTY KEY.
+DATA ls_target TYPE ty_line.
+
+MOVE-CORRESPONDING lv_source TO lv_target.
+MOVE-CORRESPONDING lt_source TO ls_target.
+"#;
+    let unit = analyze(src, "file:///invalid_move_corresponding_operands.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("MOVE-CORRESPONDING operands")
+        })
+        .collect();
+    assert_eq!(diags.len(), 2, "{diags:#?}");
+}
+
+#[test]
+fn reports_incompatible_move_corresponding_structure_components() {
+    let src = r#"
+TYPES: BEGIN OF ty_source,
+         value TYPE t,
+         text  TYPE string,
+       END OF ty_source.
+TYPES: BEGIN OF ty_target,
+         value TYPE d,
+         text  TYPE i,
+       END OF ty_target.
+
+DATA ls_source TYPE ty_source.
+DATA ls_target TYPE ty_target.
+
+MOVE-CORRESPONDING ls_source TO ls_target.
+"#;
+    let unit = analyze(src, "file:///move_corresponding_component_types.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("component 'value'")
+        })
+        .collect();
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+}
+
+#[test]
+fn validates_move_corresponding_table_line_components() {
+    let src = r#"
+TYPES: BEGIN OF ty_source,
+         value TYPE t,
+       END OF ty_source.
+TYPES: BEGIN OF ty_target,
+         value TYPE d,
+       END OF ty_target.
+TYPES ty_source_tab TYPE STANDARD TABLE OF ty_source WITH EMPTY KEY.
+TYPES ty_target_tab TYPE SORTED TABLE OF ty_target WITH UNIQUE KEY value.
+
+DATA lt_source TYPE ty_source_tab.
+DATA lt_target TYPE ty_target_tab.
+
+MOVE-CORRESPONDING lt_source TO lt_target.
+"#;
+    let unit = analyze(src, "file:///move_corresponding_table_line_components.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag.message.contains("component 'value'")
+        })
+        .collect();
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+}
+
+#[test]
+fn validates_move_corresponding_scalar_table_lines() {
+    let src = r#"
+DATA lt_source TYPE STANDARD TABLE OF t WITH EMPTY KEY.
+DATA lt_target TYPE STANDARD TABLE OF d WITH EMPTY KEY.
+
+MOVE-CORRESPONDING lt_source TO lt_target.
+"#;
+    let unit = analyze(src, "file:///move_corresponding_scalar_table_lines.abap");
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::IncompatibleAssignmentType
+                && diag
+                    .message
+                    .contains("table line target 'd' is incompatible with source 't'")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_move_corresponding_between_structured_and_scalar_table_lines() {
+    let src = r#"
+TYPES: BEGIN OF ty_source,
+         value TYPE t,
+       END OF ty_source.
+
+DATA lt_source TYPE STANDARD TABLE OF ty_source WITH EMPTY KEY.
+DATA lt_target TYPE STANDARD TABLE OF d WITH EMPTY KEY.
+
+MOVE-CORRESPONDING lt_source TO lt_target.
+"#;
+    let unit = analyze(
+        src,
+        "file:///move_corresponding_structured_scalar_table_lines.abap",
+    );
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::IncompatibleAssignmentType),
+        "{:#?}",
+        unit.diagnostics
+    );
 }
 
 #[test]

@@ -62,7 +62,19 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         if let Some(target_expr) = target_expr {
             let rhs_nodes = source_expr.into_iter().collect::<Vec<_>>();
-            self.emit_assignment_site_from_ranges(scope, stmt_range, target_expr, &rhs_nodes);
+            self.emit_assignment_site_with_type_facts(
+                scope,
+                stmt_range,
+                target_expr,
+                &rhs_nodes,
+                None,
+                match rhs_nodes.as_slice() {
+                    [rhs] => Some(self.type_fact_from_assignment_node(*rhs, scope)),
+                    _ => None,
+                },
+                false,
+                self.collector.file.kind(node) == SyntaxKind::MoveCorrespondingStmt,
+            );
         }
     }
 
@@ -1096,6 +1108,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 _ => None,
             },
             false,
+            false,
         );
     }
 
@@ -1108,6 +1121,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         lhs_fact: Option<TypeFactData>,
         rhs_fact: Option<TypeFactData>,
         assigns_table_line: bool,
+        is_corresponding: bool,
     ) {
         let lhs_range = self.collector.file.range(lhs);
         let rhs_range = rhs_nodes
@@ -1128,6 +1142,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             rhs: rhs_fact,
             rhs_is_top_level_sum: matches!(rhs_nodes, [rhs] if self.collector.rhs_is_top_level_sum(*rhs)),
             assigns_table_line,
+            is_corresponding,
         });
     }
 
@@ -1298,6 +1313,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             rhs: TypeFactData::default(),
             rhs_is_top_level_sum: false,
             assigns_table_line: false,
+            is_corresponding: false,
         });
     }
 
@@ -2320,6 +2336,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 None,
                 None,
                 !source_is_lines_of,
+                false,
             );
         }
 
@@ -2367,6 +2384,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 &[],
                 None,
                 None,
+                false,
                 false,
             );
         }
@@ -2615,6 +2633,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     rhs: TypeFactData::default(),
                     rhs_is_top_level_sum: false,
                     assigns_table_line: false,
+                    is_corresponding: false,
                 });
             }
         }
@@ -2745,6 +2764,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 None,
                 None,
                 !source_is_lines_of,
+                false,
             );
         }
     }

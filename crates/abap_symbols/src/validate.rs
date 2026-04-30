@@ -1986,6 +1986,376 @@ fn type_fact_label(fact: &TypeFactData) -> String {
     "value".to_string()
 }
 
+enum MoveCorrespondingOperand<'a> {
+    Structure(&'a crate::UnitAnalysis, StructureId),
+    Table(TypeFactData),
+    Dynamic,
+    Other,
+    Unknown,
+}
+
+fn move_corresponding_operand<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope: ScopeId,
+    fact: &TypeFactData,
+    depth: usize,
+) -> MoveCorrespondingOperand<'a> {
+    if !fact.is_known() || depth >= 8 {
+        return MoveCorrespondingOperand::Unknown;
+    }
+    if fact
+        .declared_type
+        .as_ref()
+        .is_some_and(symbol_is_generic_dynamic_type)
+    {
+        return MoveCorrespondingOperand::Dynamic;
+    }
+    if fact.table_line.is_some()
+        || fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(type_display_suggests_internal_table)
+    {
+        return MoveCorrespondingOperand::Table(
+            fact.table_line.as_deref().cloned().unwrap_or_default(),
+        );
+    }
+    if let Some((structure_unit, structure)) =
+        move_corresponding_structure(project, lookup, unit, scope_indexes, scope, fact, depth)
+    {
+        return MoveCorrespondingOperand::Structure(structure_unit, structure);
+    }
+    MoveCorrespondingOperand::Other
+}
+
+fn move_corresponding_structure<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    scope: ScopeId,
+    fact: &TypeFactData,
+    depth: usize,
+) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
+    if let Some(structure) = fact.structure {
+        return Some((unit, structure));
+    }
+    let type_ref = fact.declared_type.as_ref()?;
+    if type_ref.is_ref || !type_ref.field_path.is_empty() {
+        return None;
+    }
+    let handle =
+        resolve_type_like_symbol_handle(project, lookup, unit, scope_indexes, scope, type_ref)?;
+    let resolved_unit = &project.units[handle.unit.as_usize()];
+    let symbol = resolved_unit.symbol(handle.symbol);
+    if symbol_type_clause_suggests_internal_table(symbol) {
+        return None;
+    }
+    if let Some(structure) = symbol.structure {
+        return Some((resolved_unit, structure));
+    }
+    let next = TypeFactData {
+        structure: None,
+        declared_type: symbol.declared_type.clone(),
+        type_clause_display: symbol.type_clause_display.clone(),
+        table_line: None,
+    };
+    move_corresponding_structure(
+        project,
+        lookup,
+        resolved_unit,
+        scope_indexes,
+        scope_for_unit(resolved_unit, scope),
+        &next,
+        depth + 1,
+    )
+}
+
+fn move_corresponding_field_fact(field: &crate::StructureFieldInfo) -> TypeFactData {
+    TypeFactData {
+        structure: match field.shape {
+            StructureFieldShape::Structured { structure } => Some(structure),
+            StructureFieldShape::Scalar => None,
+        },
+        declared_type: field.type_ref.clone(),
+        type_clause_display: None,
+        table_line: None,
+    }
+}
+
+fn move_corresponding_operand_diagnostic(assignment: &crate::AssignmentSiteData) -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::IncompatibleAssignmentType,
+        range: assignment.range.clone(),
+        message: format!(
+            "MOVE-CORRESPONDING operands must both be structures or both be internal tables, got '{}' and '{}'",
+            type_fact_label(&assignment.rhs),
+            type_fact_label(&assignment.lhs)
+        ),
+    }
+}
+
+fn validate_move_corresponding_components(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    scope_indexes: &[ScopeIndex],
+    target_unit: &crate::UnitAnalysis,
+    source_unit: &crate::UnitAnalysis,
+    scope: ScopeId,
+    target_structure: StructureId,
+    source_structure: StructureId,
+    range: &TextRange,
+    out: &mut Vec<Diagnostic>,
+) {
+    let source_fields = structure_field_infos_project(
+        project,
+        lookup,
+        scope_indexes,
+        source_unit,
+        scope_for_unit(source_unit, scope),
+        source_structure,
+    );
+    let source_by_name: HashMap<_, _> = source_fields
+        .iter()
+        .map(|field| (field.name.to_ascii_lowercase(), field))
+        .collect();
+
+    for target in structure_field_infos_project(
+        project,
+        lookup,
+        scope_indexes,
+        target_unit,
+        scope_for_unit(target_unit, scope),
+        target_structure,
+    ) {
+        let Some(source) = source_by_name.get(&target.name.to_ascii_lowercase()) else {
+            continue;
+        };
+        validate_move_corresponding_component_pair(
+            project,
+            lookup,
+            scope_indexes,
+            &target,
+            source,
+            scope,
+            range,
+            out,
+        );
+    }
+}
+
+fn validate_move_corresponding_component_pair(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    scope_indexes: &[ScopeIndex],
+    target: &crate::StructureFieldInfo,
+    source: &crate::StructureFieldInfo,
+    scope: ScopeId,
+    range: &TextRange,
+    out: &mut Vec<Diagnostic>,
+) {
+    let target_unit = &project.units[target.owner_unit.as_usize()];
+    let source_unit = &project.units[source.owner_unit.as_usize()];
+    let target_fact = move_corresponding_field_fact(target);
+    let source_fact = move_corresponding_field_fact(source);
+    match (
+        move_corresponding_operand(
+            project,
+            lookup,
+            target_unit,
+            scope_indexes,
+            scope_for_unit(target_unit, scope),
+            &target_fact,
+            0,
+        ),
+        move_corresponding_operand(
+            project,
+            lookup,
+            source_unit,
+            scope_indexes,
+            scope_for_unit(source_unit, scope),
+            &source_fact,
+            0,
+        ),
+    ) {
+        (
+            MoveCorrespondingOperand::Structure(next_target_unit, next_target),
+            MoveCorrespondingOperand::Structure(next_source_unit, next_source),
+        ) => validate_move_corresponding_components(
+            project,
+            lookup,
+            scope_indexes,
+            next_target_unit,
+            next_source_unit,
+            scope,
+            next_target,
+            next_source,
+            range,
+            out,
+        ),
+        (MoveCorrespondingOperand::Structure(_, _), _)
+        | (_, MoveCorrespondingOperand::Structure(_, _)) => {}
+        _ if type_facts_compatibility(
+            project,
+            target_unit,
+            &target_fact,
+            source_unit,
+            &source_fact,
+        )
+        .is_incompatible() =>
+        {
+            out.push(Diagnostic {
+                kind: DiagnosticKind::IncompatibleAssignmentType,
+                range: range.clone(),
+                message: format!(
+                    "MOVE-CORRESPONDING component '{}' target '{}' is incompatible with source '{}'",
+                    target.name,
+                    type_fact_label(&target_fact),
+                    type_fact_label(&source_fact)
+                ),
+            });
+        }
+        _ => {}
+    }
+}
+
+fn validate_move_corresponding_assignment(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    assignment: &crate::AssignmentSiteData,
+) -> Vec<Diagnostic> {
+    let target = move_corresponding_operand(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        assignment.scope,
+        &assignment.lhs,
+        0,
+    );
+    let source = move_corresponding_operand(
+        project,
+        lookup,
+        unit,
+        scope_indexes,
+        assignment.scope,
+        &assignment.rhs,
+        0,
+    );
+    let mut out = Vec::new();
+    match (target, source) {
+        (
+            MoveCorrespondingOperand::Structure(target_unit, target_structure),
+            MoveCorrespondingOperand::Structure(source_unit, source_structure),
+        ) => validate_move_corresponding_components(
+            project,
+            lookup,
+            scope_indexes,
+            target_unit,
+            source_unit,
+            assignment.scope,
+            target_structure,
+            source_structure,
+            &assignment.range,
+            &mut out,
+        ),
+        (
+            MoveCorrespondingOperand::Table(target_line),
+            MoveCorrespondingOperand::Table(source_line),
+        ) => {
+            validate_move_corresponding_table_lines(
+                project,
+                lookup,
+                unit,
+                scope_indexes,
+                assignment,
+                &target_line,
+                &source_line,
+                &mut out,
+            );
+        }
+        (MoveCorrespondingOperand::Dynamic, _)
+        | (_, MoveCorrespondingOperand::Dynamic)
+        | (MoveCorrespondingOperand::Unknown, _)
+        | (_, MoveCorrespondingOperand::Unknown) => {}
+        _ => out.push(move_corresponding_operand_diagnostic(assignment)),
+    }
+    out
+}
+
+fn validate_move_corresponding_table_lines(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_indexes: &[ScopeIndex],
+    assignment: &crate::AssignmentSiteData,
+    target_line: &TypeFactData,
+    source_line: &TypeFactData,
+    out: &mut Vec<Diagnostic>,
+) {
+    match (
+        move_corresponding_operand(
+            project,
+            lookup,
+            unit,
+            scope_indexes,
+            assignment.scope,
+            target_line,
+            0,
+        ),
+        move_corresponding_operand(
+            project,
+            lookup,
+            unit,
+            scope_indexes,
+            assignment.scope,
+            source_line,
+            0,
+        ),
+    ) {
+        (
+            MoveCorrespondingOperand::Structure(target_unit, target_structure),
+            MoveCorrespondingOperand::Structure(source_unit, source_structure),
+        ) => validate_move_corresponding_components(
+            project,
+            lookup,
+            scope_indexes,
+            target_unit,
+            source_unit,
+            assignment.scope,
+            target_structure,
+            source_structure,
+            &assignment.range,
+            out,
+        ),
+        (MoveCorrespondingOperand::Structure(_, _), _)
+        | (_, MoveCorrespondingOperand::Structure(_, _))
+        | (MoveCorrespondingOperand::Dynamic, _)
+        | (_, MoveCorrespondingOperand::Dynamic)
+        | (MoveCorrespondingOperand::Unknown, _)
+        | (_, MoveCorrespondingOperand::Unknown) => {}
+        _ if type_facts_compatibility(project, unit, target_line, unit, source_line)
+            .is_incompatible() =>
+        {
+            out.push(Diagnostic {
+                kind: DiagnosticKind::IncompatibleAssignmentType,
+                range: assignment.range.clone(),
+                message: format!(
+                    "MOVE-CORRESPONDING table line target '{}' is incompatible with source '{}'",
+                    type_fact_label(target_line),
+                    type_fact_label(source_line)
+                ),
+            });
+        }
+        _ => {}
+    }
+}
+
 fn form_parameter_type_fact(
     unit: &crate::UnitAnalysis,
     parameter: &FormParameterData,
@@ -2738,9 +3108,13 @@ fn is_client_column_name(field_name: &str) -> bool {
 }
 
 fn symbol_type_clause_suggests_internal_table(symbol: &crate::SymbolData) -> bool {
-    let Some(display) = symbol.type_clause_display.as_deref() else {
-        return false;
-    };
+    symbol
+        .type_clause_display
+        .as_deref()
+        .is_some_and(type_display_suggests_internal_table)
+}
+
+fn type_display_suggests_internal_table(display: &str) -> bool {
     let upper = display.to_ascii_uppercase();
     upper.contains("STANDARD TABLE")
         || upper.contains("HASHED TABLE")
@@ -4546,6 +4920,16 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         }
 
         for assignment in &unit.assignment_sites {
+            if assignment.is_corresponding {
+                unit_diagnostics.extend(validate_move_corresponding_assignment(
+                    project,
+                    &lookup,
+                    unit,
+                    scope_indexes,
+                    assignment,
+                ));
+                continue;
+            }
             if type_facts_compatibility(project, unit, &assignment.lhs, unit, &assignment.rhs)
                 .is_incompatible()
             {

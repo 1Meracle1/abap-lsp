@@ -49,11 +49,11 @@
         // "--folder-uri=D:/dev/abap/prod_rep_check/"
         // "--folder-uri=D:/dev/abap/po_creation/"
         // "--folder-uri=D:/dev/abap/rsa_encryption/"
-        // "--folder-uri=D:/dev/abap/archiving/"
+        "--folder-uri=D:/dev/abap/archiving/"
         // "--folder-uri=D:/dev/abap/us_sn_reset/"
         // "--folder-uri=D:/dev/abap/lsp_development_examples/"
         // "--folder-uri=D:/dev/abap/lsp_development_examples2/"
-        "--folder-uri=D:/dev/abap/reprocessing_report/"
+        // "--folder-uri=D:/dev/abap/reprocessing_report/"
       ],
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"
