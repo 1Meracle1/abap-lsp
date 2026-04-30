@@ -180,6 +180,17 @@ fn type_facts_compatibility_inner(
     {
         return TypeCompatibility::Compatible;
     }
+    if let Some(compatibility) = range_table_element_compatibility(
+        project,
+        expected_unit,
+        &expected,
+        actual_unit,
+        &actual,
+        allow_table_kind_conversion,
+        allow_scalar_conversion,
+    ) {
+        return compatibility;
+    }
     let Some(expected) = classify_normalized_type_fact(project, expected_unit, &expected, 0) else {
         return TypeCompatibility::Unknown;
     };
@@ -409,11 +420,12 @@ fn classify_normalized_type_fact(
             }
             Namespace::Routine => {}
         }
+        return None;
     }
     if fact.structure.is_some() {
         return Some(ClassifiedType::Structure);
     }
-    Some(ClassifiedType::Scalar(ScalarCompatibilityKind::Elementary))
+    None
 }
 
 fn combine_compatibility(left: TypeCompatibility, right: TypeCompatibility) -> TypeCompatibility {
@@ -654,9 +666,19 @@ fn internal_table_display_parts(
         .as_deref()
         .and_then(parse_internal_table_display)
     {
+        let is_range = fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(|display| display.trim().to_ascii_uppercase().starts_with("RANGE OF "));
         return Some((
             display.kind,
-            display.line_display.map(|line| line.to_string()),
+            display.line_display.map(|line| {
+                if is_range {
+                    range_line_display(project, unit, fact, line)
+                } else {
+                    line.to_string()
+                }
+            }),
         ));
     }
     let declared_type = fact.declared_type.as_ref()?;
@@ -696,6 +718,209 @@ fn internal_table_fact_kind(
     }
     let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
     internal_table_fact_kind(project, unit, &fact, depth + 1)
+}
+
+fn range_table_element_compatibility(
+    project: &ProjectAnalysis,
+    expected_unit: &UnitAnalysis,
+    expected: &TypeFactData,
+    actual_unit: &UnitAnalysis,
+    actual: &TypeFactData,
+    allow_table_kind_conversion: bool,
+    allow_scalar_conversion: bool,
+) -> Option<TypeCompatibility> {
+    let (expected_unit, expected_line) =
+        range_table_element_fact(project, expected_unit, expected, 0)?;
+    let (actual_unit, actual_line) = range_table_element_fact(project, actual_unit, actual, 0)?;
+    let compatibility = type_facts_compatibility_inner(
+        project,
+        expected_unit,
+        &expected_line,
+        actual_unit,
+        &actual_line,
+        allow_table_kind_conversion,
+        allow_scalar_conversion,
+    );
+    (!compatibility.is_incompatible()).then_some(compatibility)
+}
+
+fn range_table_element_fact<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a UnitAnalysis,
+    fact: &TypeFactData,
+    depth: usize,
+) -> Option<(&'a UnitAnalysis, TypeFactData)> {
+    if depth >= 8 {
+        return None;
+    }
+    if fact
+        .type_clause_display
+        .as_deref()
+        .is_some_and(|display| display.trim().to_ascii_uppercase().starts_with("RANGE OF "))
+    {
+        if let Some(line) = range_structure_low_fact(unit, fact) {
+            return Some((unit, line));
+        }
+        let line = fact
+            .type_clause_display
+            .as_deref()
+            .and_then(parse_internal_table_display)?
+            .line_display?;
+        if let Some((unit, fact)) = resolve_named_value_fact(project, unit, line) {
+            return Some((unit, fact));
+        }
+        return Some((unit, named_type_fact(line)));
+    }
+    if named_range_table_fact(unit, fact) && fact_is_table_shape(fact) {
+        return internal_table_line_fact(project, unit, fact, depth);
+    }
+
+    let declared_type = fact.declared_type.as_ref()?;
+    if declared_type.namespace != Namespace::Type
+        || declared_type.is_ref
+        || !declared_type.field_path.is_empty()
+    {
+        return None;
+    }
+    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
+    range_table_element_fact(project, unit, &fact, depth + 1)
+}
+
+fn internal_table_line_fact<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &'a UnitAnalysis,
+    fact: &TypeFactData,
+    depth: usize,
+) -> Option<(&'a UnitAnalysis, TypeFactData)> {
+    if depth >= 8 {
+        return None;
+    }
+    if let Some(line) = fact.table_line.as_deref() {
+        return Some((unit, line.clone()));
+    }
+    if let Some(line) = fact
+        .type_clause_display
+        .as_deref()
+        .and_then(parse_internal_table_display)
+        .and_then(|display| display.line_display)
+    {
+        if let Some((unit, fact)) = resolve_named_value_fact(project, unit, line) {
+            return Some((unit, fact));
+        }
+        return Some((unit, named_type_fact(line)));
+    }
+    let declared_type = fact.declared_type.as_ref()?;
+    if declared_type.namespace != Namespace::Type
+        || declared_type.is_ref
+        || !declared_type.field_path.is_empty()
+    {
+        return None;
+    }
+    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
+    internal_table_line_fact(project, unit, &fact, depth + 1)
+}
+
+fn named_range_table_fact(unit: &UnitAnalysis, fact: &TypeFactData) -> bool {
+    fact.declared_type
+        .as_ref()
+        .is_some_and(|type_ref| range_table_type_name(type_ref.base_name.as_ref()))
+        || fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(range_table_type_name)
+        || unit
+            .provided_names
+            .iter()
+            .any(|name| range_table_type_name(name.as_ref()))
+}
+
+fn range_table_type_name(name: &str) -> bool {
+    name.to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| matches!(part, "rng" | "range"))
+}
+
+fn range_structure_low_fact(unit: &UnitAnalysis, fact: &TypeFactData) -> Option<TypeFactData> {
+    let structure = fact
+        .table_line
+        .as_deref()
+        .and_then(|line| line.structure)
+        .or(fact.structure)?;
+    let field = unit
+        .structure(structure)
+        .fields
+        .iter()
+        .find(|field| field.name.as_ref() == "low")?;
+    Some(TypeFactData {
+        structure: field.structure,
+        declared_type: field.type_ref.clone(),
+        type_clause_display: None,
+        table_line: None,
+    })
+}
+
+fn named_type_fact(name: &str) -> TypeFactData {
+    TypeFactData {
+        structure: None,
+        declared_type: Some(FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from(name.trim().to_ascii_lowercase()),
+            field_path: Vec::new(),
+        }),
+        type_clause_display: None,
+        table_line: None,
+    }
+}
+
+fn range_line_display(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    fact: &TypeFactData,
+    fallback: &str,
+) -> String {
+    if let Some(type_ref) = fact.structure.and_then(|structure| {
+        unit.structure(structure)
+            .fields
+            .iter()
+            .find(|field| field.name.as_ref() == "low")
+            .and_then(|field| field.type_ref.as_ref())
+    }) {
+        return resolved_type_ref_display(project, unit, type_ref)
+            .unwrap_or_else(|| fallback.to_string());
+    }
+    resolve_named_value_fact(project, unit, fallback)
+        .and_then(|(_, fact)| {
+            fact.declared_type
+                .map(|type_ref| type_ref_display(&type_ref))
+        })
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn resolved_type_ref_display(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    type_ref: &FieldTypeRefData,
+) -> Option<String> {
+    if type_ref.namespace == Namespace::Value && !type_ref.is_ref && type_ref.field_path.is_empty()
+    {
+        return resolve_named_value_fact(project, unit, type_ref.base_name.as_ref()).and_then(
+            |(_, fact)| {
+                fact.declared_type
+                    .map(|type_ref| type_ref_display(&type_ref))
+            },
+        );
+    }
+    Some(type_ref_display(type_ref))
+}
+
+fn type_ref_display(type_ref: &FieldTypeRefData) -> String {
+    let mut display = type_ref.base_name.to_string();
+    for field in &type_ref.field_path {
+        display.push('-');
+        display.push_str(field);
+    }
+    display
 }
 
 fn named_type_refs_match(

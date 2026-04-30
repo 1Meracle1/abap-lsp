@@ -17820,6 +17820,188 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn accepts_select_options_actual_for_named_range_method_parameter() {
+    let src = r#"
+TYPES zattp_gln TYPE string.
+TYPES ty_range_gln TYPE RANGE OF zattp_gln.
+
+DATA lv_rogln TYPE zattp_gln.
+SELECT-OPTIONS s_rogln FOR lv_rogln.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING lt_rogln TYPE ty_range_gln.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  lcl_demo=>run( lt_rogln = s_rogln[] ).
+"#;
+    let unit = analyze(src, "file:///method_select_options_range_arg.abap");
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("lt_rogln")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_select_options_actual_for_range_parameter_with_resolved_scalar_line() {
+    let src = r#"
+TYPES zattp_gln TYPE string.
+TYPES ty_range_gln TYPE RANGE OF string.
+
+DATA lv_rogln TYPE zattp_gln.
+SELECT-OPTIONS s_rogln FOR lv_rogln.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING lt_rogln TYPE ty_range_gln.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  lcl_demo=>run( lt_rogln = s_rogln[] ).
+"#;
+    let unit = analyze(src, "file:///method_select_options_scalar_range_arg.abap");
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("lt_rogln")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_select_options_actual_for_named_range_table_with_scalar_line() {
+    let src = r#"
+TYPES zattp_gln TYPE string.
+TYPES ty_rng_gln TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+DATA lv_rogln TYPE zattp_gln.
+SELECT-OPTIONS s_rogln FOR lv_rogln.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING lt_rogln TYPE ty_rng_gln.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  lcl_demo=>run( lt_rogln = s_rogln[] ).
+"#;
+    let unit = analyze(
+        src,
+        "file:///method_select_options_named_scalar_range_table_arg.abap",
+    );
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("lt_rogln")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_select_options_actual_for_structured_range_method_parameter() {
+    let src = r#"
+TYPES zattp_gln TYPE string.
+TYPES: BEGIN OF ty_rng_gln,
+         sign TYPE c,
+         option TYPE c,
+         low TYPE zattp_gln,
+         high TYPE zattp_gln,
+       END OF ty_rng_gln.
+TYPES ty_range_gln TYPE STANDARD TABLE OF ty_rng_gln.
+
+DATA lv_rogln TYPE zattp_gln.
+SELECT-OPTIONS s_rogln FOR lv_rogln.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING lt_rogln TYPE ty_range_gln.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  lcl_demo=>run( lt_rogln = s_rogln[] ).
+"#;
+    let unit = analyze(
+        src,
+        "file:///method_select_options_structured_range_arg.abap",
+    );
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("lt_rogln")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn skips_select_options_argument_error_when_named_range_type_is_unresolved() {
+    let src = r#"
+DATA lv_rogln TYPE /sttp/e_gs1_gln.
+SELECT-OPTIONS s_rogln FOR lv_rogln.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING lt_rogln TYPE /sttp/t_rng_gln.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  lcl_demo=>run( lt_rogln = s_rogln[] ).
+"#;
+    let unit = analyze(
+        src,
+        "file:///method_select_options_unresolved_range_arg.abap",
+    );
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("lt_rogln")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn accepts_selector_perform_arguments_when_component_types_match_form_parameters() {
     let src = r#"
 TYPES: BEGIN OF ty_rep_evt,

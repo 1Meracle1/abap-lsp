@@ -2885,6 +2885,35 @@ mod tests {
         .expect("store dependency artifacts");
     }
 
+    fn assert_source_has_no_lt_rogln_argument_error(
+        notifications: &[(String, Value)],
+        source_uri: &str,
+    ) {
+        let mut saw_source_diagnostics = false;
+        for (_, payload) in notifications.iter().filter(|(method, payload)| {
+            method == "textDocument/publishDiagnostics"
+                && payload.get("uri").and_then(Value::as_str) == Some(source_uri)
+        }) {
+            saw_source_diagnostics = true;
+            let diagnostics = payload
+                .get("diagnostics")
+                .and_then(Value::as_array)
+                .expect("diagnostics");
+            assert!(
+                diagnostics.iter().all(|diagnostic| {
+                    !diagnostic
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .is_some_and(|message| {
+                            message.contains("argument 'lt_rogln'") && message.contains("s_rogln")
+                        })
+                }),
+                "unexpected source diagnostics: {diagnostics:#?}"
+            );
+        }
+        assert!(saw_source_diagnostics, "missing source diagnostics");
+    }
+
     fn write_manifest_workspace(
         workspace_path: &std::path::Path,
         performance_mode: Option<&str>,
@@ -6113,6 +6142,214 @@ ENDCLASS."
         assert!(!follow_up_candidates.iter().any(|candidate| {
             candidate.get("name").and_then(Value::as_str) == Some("zcl_noise")
         }));
+    }
+
+    #[test]
+    fn full_workspace_reopening_source_after_dependency_definition_keeps_range_argument_clean() {
+        let workspace_path = temp_workspace_path("full_workspace_reopen_after_dependency");
+        let source_dir = workspace_path.join("src");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "ZATTP_AR_DM_OBJ_PRE"
+kind = "report"
+root_file = "src/ZATTP_AR_DM_OBJ_PRE.abap"
+
+[[unit.member]]
+role = "root"
+file = "src/ZATTP_AR_DM_OBJ_PRE.abap"
+object_name = "ZATTP_AR_DM_OBJ_PRE"
+"#,
+        )
+        .expect("manifest");
+        let source_text = "\
+REPORT zattp_ar_dm_obj_pre.
+DATA lv_rogln TYPE /sttp/e_gs1_gln.
+SELECT-OPTIONS s_rogln FOR lv_rogln.
+
+START-OF-SELECTION.
+  zattp_cl_ar_dm_object=>main_processing_pre_step(
+    EXPORTING
+      lt_rogln = s_rogln[] ).
+";
+        fs::write(source_dir.join("ZATTP_AR_DM_OBJ_PRE.abap"), source_text).expect("source");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri =
+            normalize_lsp_uri(&format!("{workspace_uri}/src/ZATTP_AR_DM_OBJ_PRE.abap"));
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+        store_dependency_artifacts(
+            &mut state,
+            &workspace_uri,
+            vec![DependencyArtifactPayload {
+                package_name: "ZPKG".to_string(),
+                object_kind: "global-class".to_string(),
+                object_name: "ZATTP_CL_AR_DM_OBJECT".to_string(),
+                object_uri: "/sap/bc/adt/oo/classes/zattp_cl_ar_dm_object".to_string(),
+                object_type: "CLAS/OC".to_string(),
+                description: "Remote class".to_string(),
+                file_extension: "abap".to_string(),
+                source_text: "\
+CLASS zattp_cl_ar_dm_object DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS main_processing_pre_step
+      IMPORTING lt_rogln TYPE /sttp/t_rng_gln.
+ENDCLASS.
+CLASS zattp_cl_ar_dm_object IMPLEMENTATION.
+  METHOD main_processing_pre_step.
+  ENDMETHOD.
+ENDCLASS."
+                    .to_string(),
+                fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            }],
+        );
+        let range_type_artifacts = vec![
+            DependencyArtifactPayload {
+                package_name: "/STTP/CORE".to_string(),
+                object_kind: "ddic-table-type".to_string(),
+                object_name: "/STTP/T_RNG_GLN".to_string(),
+                object_uri: "/sap/bc/adt/ddic/tabletypes/%2FSTTP%2FT_RNG_GLN".to_string(),
+                object_type: "TTYP/DA".to_string(),
+                description: "GLN range table".to_string(),
+                file_extension: "abap".to_string(),
+                source_text: "TYPES /sttp/t_rng_gln TYPE STANDARD TABLE OF string WITH EMPTY KEY."
+                    .to_string(),
+                fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            },
+            DependencyArtifactPayload {
+                package_name: "/STTP/CORE".to_string(),
+                object_kind: "ddic-data-element".to_string(),
+                object_name: "/STTP/E_GS1_GLN".to_string(),
+                object_uri: "/sap/bc/adt/ddic/dataelements/%2FSTTP%2FE_GS1_GLN".to_string(),
+                object_type: "DTEL/DE".to_string(),
+                description: "GLN".to_string(),
+                file_extension: "abap".to_string(),
+                source_text: "TYPES /sttp/e_gs1_gln TYPE c LENGTH 18.".to_string(),
+                fetched_at: "2026-04-23T00:00:00Z".to_string(),
+            },
+        ];
+
+        let opened_source = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": source_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen source");
+        assert_source_has_no_lt_rogln_argument_error(&opened_source.notifications, &source_uri);
+
+        let definition_offset = source_text
+            .find("zattp_cl_ar_dm_object")
+            .expect("class reference");
+        let definition_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/definition",
+                "params": {
+                    "textDocument": { "uri": source_uri },
+                    "position": lsp_position_for_offset(source_text, definition_offset)
+                }
+            }),
+        )
+        .expect("definition");
+        let dependency_uri = definition_msg
+            .response
+            .as_ref()
+            .and_then(|response| response.result.as_ref())
+            .and_then(|result| result.get("uri"))
+            .and_then(Value::as_str)
+            .expect("dependency uri")
+            .to_string();
+        let dependency_text =
+            dependency_text_for_object_name(&state, &workspace_uri, "ZATTP_CL_AR_DM_OBJECT");
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": dependency_uri,
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": dependency_text
+                    }
+                }
+            }),
+        )
+        .expect("didOpen dependency");
+
+        store_dependency_artifacts(&mut state, &workspace_uri, range_type_artifacts);
+        let refreshed = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": REMOTE_DEPENDENCIES_UPDATED,
+                "params": {
+                    "workspaceUri": workspace_uri,
+                    "sourceUri": dependency_uri,
+                    "sourceUris": [dependency_uri, source_uri],
+                    "fetched": ["/sttp/t_rng_gln", "/sttp/e_gs1_gln"],
+                    "failed": []
+                }
+            }),
+        )
+        .expect("remote dependencies updated");
+        assert_source_has_no_lt_rogln_argument_error(&refreshed.notifications, &source_uri);
+
+        let reopened_source = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": source_uri,
+                        "languageId": "abap",
+                        "version": 2,
+                        "text": source_text
+                    }
+                }
+            }),
+        )
+        .expect("reopen source");
+        assert_source_has_no_lt_rogln_argument_error(&reopened_source.notifications, &source_uri);
     }
 
     #[test]
