@@ -6,7 +6,7 @@ use abap_lexer::TextRange;
 use crate::builtins::builtin_routine_spec;
 use crate::compatibility::{
     call_section_matches_parameter, parameter_is_required, positional_parameter_section,
-    type_facts_compatible,
+    type_facts_compatibility,
 };
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
@@ -4446,10 +4446,9 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         }
 
         for assignment in &unit.assignment_sites {
-            if matches!(
-                type_facts_compatible(project, unit, &assignment.lhs, unit, &assignment.rhs),
-                Some(false)
-            ) {
+            if type_facts_compatibility(project, unit, &assignment.lhs, unit, &assignment.rhs)
+                .is_incompatible()
+            {
                 unit_diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::IncompatibleAssignmentType,
                     range: assignment.range.clone(),
@@ -4530,16 +4529,14 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
                     if !parameter.is_untyped
-                        && matches!(
-                            type_facts_compatible(
-                                project,
-                                target_unit,
-                                &function_module_parameter_type_fact(parameter),
-                                unit,
-                                &argument.type_fact,
-                            ),
-                            Some(false)
+                        && type_facts_compatibility(
+                            project,
+                            target_unit,
+                            &function_module_parameter_type_fact(parameter),
+                            unit,
+                            &argument.type_fact,
                         )
+                        .is_incompatible()
                     {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::IncompatibleArgumentType,
@@ -4611,16 +4608,15 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if event_parameter_is_required(parameter) {
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
-                    if matches!(
-                        type_facts_compatible(
-                            project,
-                            target_unit,
-                            &method_parameter_type_fact(parameter),
-                            unit,
-                            &argument.type_fact,
-                        ),
-                        Some(false)
-                    ) {
+                    if type_facts_compatibility(
+                        project,
+                        target_unit,
+                        &method_parameter_type_fact(parameter),
+                        unit,
+                        &argument.type_fact,
+                    )
+                    .is_incompatible()
+                    {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::IncompatibleArgumentType,
                             range: argument.range.clone(),
@@ -4717,16 +4713,15 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     if parameter_is_required(parameter.section, parameter.is_optional) {
                         matched_required.insert(Arc::clone(&parameter.name));
                     }
-                    if matches!(
-                        type_facts_compatible(
-                            project,
-                            target_unit,
-                            &method_parameter_type_fact(parameter),
-                            unit,
-                            &argument.type_fact,
-                        ),
-                        Some(false)
-                    ) {
+                    if type_facts_compatibility(
+                        project,
+                        target_unit,
+                        &method_parameter_type_fact(parameter),
+                        unit,
+                        &argument.type_fact,
+                    )
+                    .is_incompatible()
+                    {
                         unit_diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::IncompatibleArgumentType,
                             range: argument.range.clone(),
@@ -4748,16 +4743,15 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 if parameter_is_required(parameter.section, parameter.is_optional) {
                     matched_required.insert(Arc::clone(&parameter.name));
                 }
-                if matches!(
-                    type_facts_compatible(
-                        project,
-                        target_unit,
-                        &method_parameter_type_fact(parameter),
-                        unit,
-                        &argument.type_fact,
-                    ),
-                    Some(false)
-                ) {
+                if type_facts_compatibility(
+                    project,
+                    target_unit,
+                    &method_parameter_type_fact(parameter),
+                    unit,
+                    &argument.type_fact,
+                )
+                .is_incompatible()
+                {
                     unit_diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::IncompatibleArgumentType,
                         range: argument.range.clone(),

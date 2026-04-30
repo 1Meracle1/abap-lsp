@@ -17151,6 +17151,149 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn reports_incompatible_argument_for_generic_numeric_method_parameter() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS take IMPORTING iv_value TYPE numeric.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lv_int TYPE i.
+DATA lv_text TYPE string.
+
+START-OF-SELECTION.
+  lo_demo->take( iv_value = lv_int ).
+  lo_demo->take( iv_value = lv_text ).
+"#;
+    let unit = analyze(src, "file:///generic_numeric_arg.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert!(diags[0].message.contains("iv_value"));
+}
+
+#[test]
+fn reports_incompatible_hashed_table_for_index_table_method_parameter() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS take_any IMPORTING it_values TYPE ANY TABLE.
+    METHODS take_index IMPORTING it_values TYPE INDEX TABLE.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take_any.
+  ENDMETHOD.
+  METHOD take_index.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lt_sorted TYPE SORTED TABLE OF i WITH UNIQUE KEY table_line.
+DATA lt_hashed TYPE HASHED TABLE OF i WITH UNIQUE KEY table_line.
+
+START-OF-SELECTION.
+  lo_demo->take_any( it_values = lt_hashed ).
+  lo_demo->take_index( it_values = lt_sorted ).
+  lo_demo->take_index( it_values = lt_hashed ).
+"#;
+    let unit = analyze(src, "file:///generic_table_arg.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert!(diags[0].message.contains("it_values"));
+}
+
+#[test]
+fn accepts_class_reference_for_object_reference_method_parameter() {
+    let src = r#"
+CLASS lcl_doc DEFINITION.
+ENDCLASS.
+
+CLASS lcl_doc IMPLEMENTATION.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS take IMPORTING io_value TYPE REF TO object.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lo_doc TYPE REF TO lcl_doc.
+
+START-OF-SELECTION.
+  lo_demo->take( io_value = lo_doc ).
+"#;
+    let unit = analyze(src, "file:///object_ref_arg.abap");
+
+    assert!(
+        unit.diagnostics.iter().all(|diag| {
+            diag.kind != DiagnosticKind::IncompatibleArgumentType
+                || !diag.message.contains("io_value")
+        }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_incompatible_object_reference_for_data_reference_method_parameter() {
+    let src = r#"
+CLASS lcl_doc DEFINITION.
+ENDCLASS.
+
+CLASS lcl_doc IMPLEMENTATION.
+ENDCLASS.
+
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS take IMPORTING ir_value TYPE REF TO data.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD take.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lr_value TYPE REF TO i.
+DATA lo_doc TYPE REF TO lcl_doc.
+
+START-OF-SELECTION.
+  lo_demo->take( ir_value = lr_value ).
+  lo_demo->take( ir_value = lo_doc ).
+"#;
+    let unit = analyze(src, "file:///data_ref_arg.abap");
+
+    let diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| diag.kind == DiagnosticKind::IncompatibleArgumentType)
+        .collect();
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    assert!(diags[0].message.contains("ir_value"));
+}
+
+#[test]
 fn accepts_project_table_type_alias_for_typed_function_module_table_parameter() {
     let dep_src = r#"
 TYPES: BEGIN OF bapiret2,

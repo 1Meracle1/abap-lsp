@@ -5740,14 +5740,14 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         DiagnosticKind::DuplicateDeclaration | DiagnosticKind::ShadowedSymbol => {
             DiagnosticSeverity::WARNING
         }
-        DiagnosticKind::IncompatibleArgumentType
-        | DiagnosticKind::UnknownFunctionModuleException
+        DiagnosticKind::UnknownFunctionModuleException
         | DiagnosticKind::UseBeforeDefiniteAssignment
         | DiagnosticKind::PossiblyUnboundFieldSymbol
         | DiagnosticKind::UnreachableCode
         | DiagnosticKind::DeadStore
         | DiagnosticKind::UnsortedReadTableBinarySearch => DiagnosticSeverity::WARNING,
         DiagnosticKind::IncompatibleAssignmentType
+        | DiagnosticKind::IncompatibleArgumentType
         | DiagnosticKind::MissingMethodImplementation => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnverifiedOpenSqlSource => DiagnosticSeverity::ERROR,
         DiagnosticKind::UnresolvedReference
@@ -23749,7 +23749,7 @@ START-OF-SELECTION.
                 && diag.severity == Some(DiagnosticSeverity::ERROR)
         }));
         assert!(diagnostics.iter().any(|diag| {
-            diag.message.contains("it_values") && diag.severity == Some(DiagnosticSeverity::WARNING)
+            diag.message.contains("it_values") && diag.severity == Some(DiagnosticSeverity::ERROR)
         }));
     }
 

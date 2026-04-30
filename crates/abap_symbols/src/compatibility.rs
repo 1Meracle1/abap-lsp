@@ -11,7 +11,10 @@ use crate::{Namespace, SymbolKind, UnitAnalysis};
 enum ClassifiedType {
     Scalar(ScalarCompatibilityKind),
     Structure,
-    Table(Option<Box<ClassifiedType>>),
+    Table {
+        kind: InternalTableDisplayKind,
+        line: Option<Box<ClassifiedType>>,
+    },
     Ref {
         target_name: Arc<str>,
         target_handle: Option<SymbolHandle>,
@@ -20,10 +23,35 @@ enum ClassifiedType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScalarCompatibilityKind {
-    Generic,
+    Any,
+    Simple,
+    Numeric,
+    DecFloat,
+    CharacterLike,
+    TextLike,
+    ByteLike,
+    NumericConcrete,
+    DecFloatConcrete,
+    TextConcrete,
+    CharacterConcrete,
+    ByteConcrete,
     Date,
     Time,
     Elementary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeCompatibility {
+    Compatible,
+    Convertible,
+    Incompatible,
+    Unknown,
+}
+
+impl TypeCompatibility {
+    pub(crate) fn is_incompatible(self) -> bool {
+        self == Self::Incompatible
+    }
 }
 
 pub fn parameter_is_required(section: MethodParameterSection, is_optional: bool) -> bool {
@@ -62,46 +90,101 @@ pub(crate) fn positional_parameter_section(section: MethodParameterSection) -> b
     )
 }
 
-pub(crate) fn type_facts_compatible(
+pub(crate) fn type_facts_compatibility(
     project: &ProjectAnalysis,
     expected_unit: &UnitAnalysis,
     expected: &TypeFactData,
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
-) -> Option<bool> {
-    let (expected_unit, expected) = normalize_type_fact(project, expected_unit, expected, 0)?;
-    let (actual_unit, actual) = normalize_type_fact(project, actual_unit, actual, 0)?;
+) -> TypeCompatibility {
+    let Some((expected_unit, expected)) = normalize_type_fact(project, expected_unit, expected, 0)
+    else {
+        return TypeCompatibility::Unknown;
+    };
+    let Some((actual_unit, actual)) = normalize_type_fact(project, actual_unit, actual, 0) else {
+        return TypeCompatibility::Unknown;
+    };
     if !expected.is_known() || !actual.is_known() {
-        return None;
+        return TypeCompatibility::Unknown;
     }
     if normalized_internal_table_displays_match(&expected, &actual) {
-        return Some(true);
+        return TypeCompatibility::Compatible;
     }
     if normalized_type_facts_match_by_name(&expected, &actual) {
-        return Some(true);
+        return TypeCompatibility::Compatible;
     }
-    let expected = classify_normalized_type_fact(project, expected_unit, &expected, 0)?;
-    let actual = classify_normalized_type_fact(project, actual_unit, &actual, 0)?;
-    types_compatible(project, &expected, &actual)
+    let Some(expected) = classify_normalized_type_fact(project, expected_unit, &expected, 0) else {
+        return TypeCompatibility::Unknown;
+    };
+    let Some(actual) = classify_normalized_type_fact(project, actual_unit, &actual, 0) else {
+        return TypeCompatibility::Unknown;
+    };
+    types_compatibility(project, &expected, &actual)
 }
 
-fn types_compatible(
+fn types_compatibility(
     project: &ProjectAnalysis,
     expected: &ClassifiedType,
     actual: &ClassifiedType,
-) -> Option<bool> {
+) -> TypeCompatibility {
     match (expected, actual) {
         (ClassifiedType::Scalar(expected), ClassifiedType::Scalar(actual)) => {
-            scalar_kinds_compatible(*expected, *actual)
+            scalar_kinds_compatibility(*expected, *actual)
         }
-        (ClassifiedType::Structure, ClassifiedType::Structure) => Some(true),
-        (ClassifiedType::Table(expected_line), ClassifiedType::Table(actual_line)) => {
-            match (expected_line.as_deref(), actual_line.as_deref()) {
-                (Some(expected_line), Some(actual_line)) => {
-                    types_compatible(project, expected_line, actual_line)
-                }
-                _ => Some(true),
+        (ClassifiedType::Scalar(ScalarCompatibilityKind::Any), _) => TypeCompatibility::Compatible,
+        (_, ClassifiedType::Scalar(ScalarCompatibilityKind::Any)) => TypeCompatibility::Unknown,
+        (ClassifiedType::Structure, ClassifiedType::Structure) => TypeCompatibility::Compatible,
+        (
+            ClassifiedType::Table {
+                kind: expected_kind,
+                line: expected_line,
+            },
+            ClassifiedType::Table {
+                kind: actual_kind,
+                line: actual_line,
+            },
+        ) => {
+            let table = table_kinds_compatibility(*expected_kind, *actual_kind);
+            if table.is_incompatible() {
+                return table;
             }
+            let line = match (expected_line.as_deref(), actual_line.as_deref()) {
+                (Some(expected_line), Some(actual_line)) => {
+                    types_compatibility(project, expected_line, actual_line)
+                }
+                _ => TypeCompatibility::Compatible,
+            };
+            combine_compatibility(table, line)
+        }
+        (ClassifiedType::Scalar(expected), ClassifiedType::Structure)
+            if matches!(
+                expected,
+                ScalarCompatibilityKind::Any
+                    | ScalarCompatibilityKind::Simple
+                    | ScalarCompatibilityKind::CharacterLike
+            ) =>
+        {
+            TypeCompatibility::Unknown
+        }
+        (ClassifiedType::Scalar(expected), _)
+            if scalar_kind_is_generic(*expected)
+                && !matches!(expected, ScalarCompatibilityKind::Any) =>
+        {
+            TypeCompatibility::Incompatible
+        }
+        (_, ClassifiedType::Scalar(actual)) if scalar_kind_is_generic(*actual) => {
+            TypeCompatibility::Unknown
+        }
+        (ClassifiedType::Structure, ClassifiedType::Scalar(_)) => TypeCompatibility::Incompatible,
+        (ClassifiedType::Scalar(_), ClassifiedType::Structure) => TypeCompatibility::Incompatible,
+        (ClassifiedType::Table { .. }, _) | (_, ClassifiedType::Table { .. }) => {
+            TypeCompatibility::Incompatible
+        }
+        (ClassifiedType::Ref { .. }, ClassifiedType::Scalar(_))
+        | (ClassifiedType::Scalar(_), ClassifiedType::Ref { .. })
+        | (ClassifiedType::Structure, ClassifiedType::Ref { .. })
+        | (ClassifiedType::Ref { .. }, ClassifiedType::Structure) => {
+            TypeCompatibility::Incompatible
         }
         (
             ClassifiedType::Ref {
@@ -114,16 +197,36 @@ fn types_compatible(
             },
         ) => {
             if expected_name == actual_name {
-                return Some(true);
+                return TypeCompatibility::Compatible;
+            }
+            if expected_name.as_ref() == "data" {
+                return match ref_is_object(project, actual_name.as_ref(), *actual_handle) {
+                    Some(false) => TypeCompatibility::Compatible,
+                    Some(true) => TypeCompatibility::Incompatible,
+                    None => TypeCompatibility::Unknown,
+                };
+            }
+            if expected_name.as_ref() == "object" {
+                return match ref_is_object(project, actual_name.as_ref(), *actual_handle) {
+                    Some(true) => TypeCompatibility::Compatible,
+                    Some(false) => TypeCompatibility::Incompatible,
+                    None => TypeCompatibility::Unknown,
+                };
+            }
+            if actual_name.as_ref() == "data" || actual_name.as_ref() == "object" {
+                return TypeCompatibility::Incompatible;
             }
             match (expected_handle, actual_handle) {
-                (Some(expected_handle), Some(actual_handle)) => Some(
-                    symbol_handle_is_same_or_subtype(project, *actual_handle, *expected_handle),
-                ),
-                _ => None,
+                (Some(expected_handle), Some(actual_handle)) => {
+                    if symbol_handle_is_same_or_subtype(project, *actual_handle, *expected_handle) {
+                        TypeCompatibility::Compatible
+                    } else {
+                        TypeCompatibility::Incompatible
+                    }
+                }
+                _ => TypeCompatibility::Unknown,
             }
         }
-        _ => Some(false),
     }
 }
 
@@ -136,16 +239,17 @@ fn classify_normalized_type_fact(
     if depth >= 8 {
         return None;
     }
-    if let Some(line_fact) = fact.table_line.as_deref() {
-        let line = classify_normalized_type_fact(project, unit, line_fact, depth + 1).map(Box::new);
-        return Some(ClassifiedType::Table(line));
-    }
-    if let Some(table_display) = fact
+    let table_display = fact
         .type_clause_display
         .as_deref()
-        .and_then(parse_internal_table_display)
-    {
-        let line = if table_display.line_display.is_some() {
+        .and_then(parse_internal_table_display);
+    if fact.table_line.is_some() || table_display.is_some() {
+        let line = if let Some(line_fact) = fact.table_line.as_deref() {
+            classify_normalized_type_fact(project, unit, line_fact, depth + 1).map(Box::new)
+        } else if table_display
+            .as_ref()
+            .is_some_and(|display| display.line_display.is_some())
+        {
             let line_fact = TypeFactData {
                 structure: fact.structure,
                 declared_type: fact.declared_type.clone(),
@@ -156,7 +260,12 @@ fn classify_normalized_type_fact(
         } else {
             None
         };
-        return Some(ClassifiedType::Table(line));
+        return Some(ClassifiedType::Table {
+            kind: table_display
+                .map(|display| display.kind)
+                .unwrap_or(InternalTableDisplayKind::Any),
+            line,
+        });
     }
 
     let Some(declared_type) = fact.declared_type.as_ref() else {
@@ -217,27 +326,140 @@ fn classify_normalized_type_fact(
     Some(ClassifiedType::Scalar(ScalarCompatibilityKind::Elementary))
 }
 
-fn scalar_kinds_compatible(
+fn combine_compatibility(left: TypeCompatibility, right: TypeCompatibility) -> TypeCompatibility {
+    match (left, right) {
+        (TypeCompatibility::Incompatible, _) | (_, TypeCompatibility::Incompatible) => {
+            TypeCompatibility::Incompatible
+        }
+        (TypeCompatibility::Unknown, _) | (_, TypeCompatibility::Unknown) => {
+            TypeCompatibility::Unknown
+        }
+        (TypeCompatibility::Convertible, _) | (_, TypeCompatibility::Convertible) => {
+            TypeCompatibility::Convertible
+        }
+        _ => TypeCompatibility::Compatible,
+    }
+}
+
+fn table_kinds_compatibility(
+    expected: InternalTableDisplayKind,
+    actual: InternalTableDisplayKind,
+) -> TypeCompatibility {
+    if expected == actual || expected == InternalTableDisplayKind::Any {
+        return TypeCompatibility::Compatible;
+    }
+    if actual == InternalTableDisplayKind::Any {
+        return TypeCompatibility::Unknown;
+    }
+    match (expected, actual) {
+        (
+            InternalTableDisplayKind::Index,
+            InternalTableDisplayKind::Standard
+            | InternalTableDisplayKind::Sorted
+            | InternalTableDisplayKind::Index,
+        ) => TypeCompatibility::Compatible,
+        (
+            InternalTableDisplayKind::Standard | InternalTableDisplayKind::Sorted,
+            InternalTableDisplayKind::Index,
+        ) => TypeCompatibility::Unknown,
+        _ => TypeCompatibility::Incompatible,
+    }
+}
+
+fn scalar_kinds_compatibility(
     expected: ScalarCompatibilityKind,
     actual: ScalarCompatibilityKind,
-) -> Option<bool> {
-    match (expected, actual) {
-        (ScalarCompatibilityKind::Generic, _)
-        | (_, ScalarCompatibilityKind::Generic)
-        | (ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Date)
-        | (ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Time)
-        | (ScalarCompatibilityKind::Elementary, _)
-        | (_, ScalarCompatibilityKind::Elementary) => Some(true),
+) -> TypeCompatibility {
+    if expected == actual || scalar_kind_covers(expected, actual) {
+        return TypeCompatibility::Compatible;
+    }
+    if scalar_kind_is_generic(expected) {
+        return TypeCompatibility::Incompatible;
+    }
+    if scalar_kind_is_generic(actual) {
+        return TypeCompatibility::Unknown;
+    }
+    if matches!(
+        (expected, actual),
         (ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Time)
-        | (ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date) => Some(false),
+            | (ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date)
+    ) {
+        TypeCompatibility::Incompatible
+    } else {
+        TypeCompatibility::Convertible
+    }
+}
+
+fn scalar_kind_is_generic(kind: ScalarCompatibilityKind) -> bool {
+    matches!(
+        kind,
+        ScalarCompatibilityKind::Any
+            | ScalarCompatibilityKind::Simple
+            | ScalarCompatibilityKind::Numeric
+            | ScalarCompatibilityKind::DecFloat
+            | ScalarCompatibilityKind::CharacterLike
+            | ScalarCompatibilityKind::TextLike
+            | ScalarCompatibilityKind::ByteLike
+    )
+}
+
+fn scalar_kind_covers(expected: ScalarCompatibilityKind, actual: ScalarCompatibilityKind) -> bool {
+    match expected {
+        ScalarCompatibilityKind::Any => true,
+        ScalarCompatibilityKind::Simple => actual != ScalarCompatibilityKind::Any,
+        ScalarCompatibilityKind::Numeric => matches!(
+            actual,
+            ScalarCompatibilityKind::Numeric
+                | ScalarCompatibilityKind::DecFloat
+                | ScalarCompatibilityKind::NumericConcrete
+                | ScalarCompatibilityKind::DecFloatConcrete
+        ),
+        ScalarCompatibilityKind::DecFloat => matches!(
+            actual,
+            ScalarCompatibilityKind::DecFloat | ScalarCompatibilityKind::DecFloatConcrete
+        ),
+        ScalarCompatibilityKind::CharacterLike => matches!(
+            actual,
+            ScalarCompatibilityKind::CharacterLike
+                | ScalarCompatibilityKind::TextLike
+                | ScalarCompatibilityKind::TextConcrete
+                | ScalarCompatibilityKind::CharacterConcrete
+                | ScalarCompatibilityKind::Date
+                | ScalarCompatibilityKind::Time
+        ),
+        ScalarCompatibilityKind::TextLike => matches!(
+            actual,
+            ScalarCompatibilityKind::TextLike | ScalarCompatibilityKind::TextConcrete
+        ),
+        ScalarCompatibilityKind::ByteLike => matches!(
+            actual,
+            ScalarCompatibilityKind::ByteLike | ScalarCompatibilityKind::ByteConcrete
+        ),
+        _ => false,
     }
 }
 
 fn scalar_compatibility_kind(name: &str) -> ScalarCompatibilityKind {
     match name {
-        "any" | "data" => ScalarCompatibilityKind::Generic,
+        "any" | "data" => ScalarCompatibilityKind::Any,
+        "simple" => ScalarCompatibilityKind::Simple,
+        "numeric" => ScalarCompatibilityKind::Numeric,
+        "decfloat" => ScalarCompatibilityKind::DecFloat,
+        "clike" => ScalarCompatibilityKind::CharacterLike,
+        "csequence" => ScalarCompatibilityKind::TextLike,
+        "xsequence" => ScalarCompatibilityKind::ByteLike,
+        "i" | "int1" | "int2" | "int4" | "int8" | "f" | "p" => {
+            ScalarCompatibilityKind::NumericConcrete
+        }
+        "decfloat16" | "decfloat34" => ScalarCompatibilityKind::DecFloatConcrete,
+        "c" | "string" => ScalarCompatibilityKind::TextConcrete,
+        "n" | "abap_bool" | "flag" | "xfeld" => ScalarCompatibilityKind::CharacterConcrete,
         "d" => ScalarCompatibilityKind::Date,
         "t" => ScalarCompatibilityKind::Time,
+        "x" | "xstring" => ScalarCompatibilityKind::ByteConcrete,
+        _ if name.starts_with("char") && name[4..].chars().all(|ch| ch.is_ascii_digit()) => {
+            ScalarCompatibilityKind::TextConcrete
+        }
         _ => ScalarCompatibilityKind::Elementary,
     }
 }
@@ -517,6 +739,25 @@ fn resolve_type_symbol_handle(
     })
 }
 
+fn ref_is_object(
+    project: &ProjectAnalysis,
+    name: &str,
+    handle: Option<SymbolHandle>,
+) -> Option<bool> {
+    match name {
+        "object" => return Some(true),
+        "data" => return Some(false),
+        _ => {}
+    }
+    let handle = handle?;
+    project.units.get(handle.unit.as_usize()).map(|unit| {
+        matches!(
+            unit.symbol(handle.symbol).kind,
+            SymbolKind::Class | SymbolKind::Interface
+        )
+    })
+}
+
 fn symbol_handle_is_same_or_subtype(
     project: &ProjectAnalysis,
     actual: SymbolHandle,
@@ -587,6 +828,12 @@ fn is_builtin_scalar_name(name: &str) -> bool {
             | "xstring"
             | "data"
             | "any"
+            | "simple"
+            | "numeric"
+            | "decfloat"
+            | "clike"
+            | "csequence"
+            | "xsequence"
             | "abap_bool"
             | "flag"
             | "xfeld"
@@ -596,9 +843,9 @@ fn is_builtin_scalar_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        InternalTableDisplayKind, ScalarCompatibilityKind, named_type_refs_match,
-        normalized_internal_table_displays_match, parse_internal_table_display,
-        scalar_kinds_compatible,
+        InternalTableDisplayKind, ScalarCompatibilityKind, TypeCompatibility,
+        named_type_refs_match, normalized_internal_table_displays_match,
+        parse_internal_table_display, scalar_kinds_compatibility, table_kinds_compatibility,
     };
     use crate::def_map::{FieldTypeRefData, TypeFactData};
     use crate::scope::Namespace;
@@ -682,33 +929,117 @@ mod tests {
     #[test]
     fn allows_elementary_scalar_conversions_except_between_date_and_time() {
         assert_eq!(
-            scalar_kinds_compatible(
+            scalar_kinds_compatibility(
                 ScalarCompatibilityKind::Elementary,
                 ScalarCompatibilityKind::Elementary,
             ),
-            Some(true)
+            TypeCompatibility::Compatible
         );
         assert_eq!(
-            scalar_kinds_compatible(
+            scalar_kinds_compatibility(
                 ScalarCompatibilityKind::Date,
                 ScalarCompatibilityKind::Elementary,
             ),
-            Some(true)
+            TypeCompatibility::Convertible
         );
         assert_eq!(
-            scalar_kinds_compatible(
+            scalar_kinds_compatibility(
                 ScalarCompatibilityKind::Time,
                 ScalarCompatibilityKind::Elementary,
             ),
-            Some(true)
+            TypeCompatibility::Convertible
         );
         assert_eq!(
-            scalar_kinds_compatible(ScalarCompatibilityKind::Date, ScalarCompatibilityKind::Time),
-            Some(false)
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::Date,
+                ScalarCompatibilityKind::Time
+            ),
+            TypeCompatibility::Incompatible
         );
         assert_eq!(
-            scalar_kinds_compatible(ScalarCompatibilityKind::Time, ScalarCompatibilityKind::Date),
-            Some(false)
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::Time,
+                ScalarCompatibilityKind::Date
+            ),
+            TypeCompatibility::Incompatible
+        );
+    }
+
+    #[test]
+    fn classifies_generic_scalar_subsets() {
+        assert_eq!(
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::Numeric,
+                ScalarCompatibilityKind::NumericConcrete,
+            ),
+            TypeCompatibility::Compatible
+        );
+        assert_eq!(
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::Numeric,
+                ScalarCompatibilityKind::TextConcrete,
+            ),
+            TypeCompatibility::Incompatible
+        );
+        assert_eq!(
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::CharacterLike,
+                ScalarCompatibilityKind::Date,
+            ),
+            TypeCompatibility::Compatible
+        );
+        assert_eq!(
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::Simple,
+                ScalarCompatibilityKind::TextLike,
+            ),
+            TypeCompatibility::Compatible
+        );
+        assert_eq!(
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::TextLike,
+                ScalarCompatibilityKind::CharacterConcrete,
+            ),
+            TypeCompatibility::Incompatible
+        );
+        assert_eq!(
+            scalar_kinds_compatibility(
+                ScalarCompatibilityKind::ByteLike,
+                ScalarCompatibilityKind::ByteConcrete,
+            ),
+            TypeCompatibility::Compatible
+        );
+    }
+
+    #[test]
+    fn classifies_generic_table_categories() {
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Any,
+                InternalTableDisplayKind::Hashed,
+            ),
+            TypeCompatibility::Compatible
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Index,
+                InternalTableDisplayKind::Sorted,
+            ),
+            TypeCompatibility::Compatible
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Index,
+                InternalTableDisplayKind::Hashed,
+            ),
+            TypeCompatibility::Incompatible
+        );
+        assert_eq!(
+            table_kinds_compatibility(
+                InternalTableDisplayKind::Sorted,
+                InternalTableDisplayKind::Index,
+            ),
+            TypeCompatibility::Unknown
         );
     }
 }
