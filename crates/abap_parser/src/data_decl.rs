@@ -1666,14 +1666,191 @@ fn parse_structured_types_component_run(
     }
 }
 
+fn structured_decl_marker_name(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    keyword: &str,
+) -> Option<usize> {
+    if is_keyword(source, tokens.get(idx)?, keyword)
+        && tokens
+            .get(idx + 1)
+            .is_some_and(|tok| is_keyword(source, tok, "of"))
+        && tokens.get(idx + 2)?.kind == TokenKind::Ident
+    {
+        Some(idx + 2)
+    } else {
+        None
+    }
+}
+
+fn skip_structured_decl_continuation_prefix(
+    source: &str,
+    tokens: &[Token],
+    mut idx: usize,
+) -> Option<usize> {
+    while tokens.get(idx).map(|t| t.kind) == Some(TokenKind::Comment) {
+        idx += 1;
+    }
+    if !tokens
+        .get(idx)
+        .is_some_and(|tok| is_structured_decl_continuation_keyword(source, tok))
+    {
+        return None;
+    }
+    idx += 1;
+    if tokens.get(idx).map(|t| t.kind) == Some(TokenKind::Colon) {
+        idx += 1;
+    }
+    Some(idx)
+}
+
+fn previous_non_comment_kind(tokens: &[Token], mut idx: usize) -> Option<TokenKind> {
+    loop {
+        idx = idx.checked_sub(1)?;
+        let kind = tokens.get(idx)?.kind;
+        if kind != TokenKind::Comment {
+            return Some(kind);
+        }
+    }
+}
+
+fn validate_structured_decl_marker_separator(
+    tokens: &[Token],
+    idx: usize,
+    saw_marker: bool,
+    marker: &str,
+    name: &str,
+) -> Result<(), String> {
+    if !saw_marker
+        || matches!(
+            previous_non_comment_kind(tokens, idx),
+            Some(TokenKind::Colon | TokenKind::Comma | TokenKind::Period)
+        )
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "syntax error: expected ',' before {marker} OF {name}"
+    ))
+}
+
+fn validate_structured_decl_nesting(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Result<bool, String> {
+    let mut stack: Vec<usize> = Vec::new();
+    let mut saw_marker = false;
+    let mut i = start;
+
+    while i < end_exclusive {
+        let Some(tok) = tokens.get(i) else {
+            break;
+        };
+        if tok.kind == TokenKind::Comment {
+            i += 1;
+            continue;
+        }
+
+        if let Some(name_i) = structured_decl_marker_name(source, tokens, i, "begin") {
+            let name = tokens[name_i].lexeme(source);
+            validate_structured_decl_marker_separator(tokens, i, saw_marker, "BEGIN", name)?;
+            saw_marker = true;
+            stack.push(name_i);
+            i = name_i + 1;
+            continue;
+        }
+
+        if let Some(name_i) = structured_decl_marker_name(source, tokens, i, "end") {
+            let close_name = tokens[name_i].lexeme(source);
+            validate_structured_decl_marker_separator(tokens, i, saw_marker, "END", close_name)?;
+            saw_marker = true;
+            let Some(&open_i) = stack.last() else {
+                return Err(format!("syntax error: unexpected END OF {close_name}"));
+            };
+            let open_name = tokens[open_i].lexeme(source);
+            if !open_name.eq_ignore_ascii_case(close_name) {
+                return Err(format!(
+                    "syntax error: expected END OF {open_name} before END OF {close_name}"
+                ));
+            }
+            stack.pop();
+            i = name_i + 1;
+            continue;
+        }
+
+        if tok.kind == TokenKind::Period
+            && let Some(&open_i) = stack.last()
+        {
+            if let Some(next_i) = skip_structured_decl_continuation_prefix(source, tokens, i + 1) {
+                i = next_i;
+                continue;
+            }
+            let open_name = tokens[open_i].lexeme(source);
+            return Err(format!(
+                "syntax error: expected END OF {open_name} before '.'"
+            ));
+        }
+
+        i += 1;
+    }
+
+    if let Some(&open_i) = stack.last() {
+        let open_name = tokens[open_i].lexeme(source);
+        return Err(format!("syntax error: expected END OF {open_name}"));
+    }
+    Ok(saw_marker)
+}
+
+fn token_end_before_eof(tokens: &[Token], end_exclusive: usize, fallback: usize) -> usize {
+    tokens
+        .get(end_exclusive.saturating_sub(1))
+        .filter(|tok| tok.kind != TokenKind::Eof)
+        .map_or(fallback, |tok| tok.range.end)
+}
+
+fn parse_malformed_constants_decl(
+    b: &mut SyntaxTreeBuilder,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+    message: String,
+    end_exclusive: usize,
+) -> Option<(NodeId, usize)> {
+    let constants_tok = tokens.get(idx)?;
+    let err_end = token_end_before_eof(tokens, end_exclusive, constants_tok.range.end);
+
+    errors.push(crate::ParseError {
+        message,
+        range: constants_tok.range.start..err_end,
+    });
+    let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
+    for tok in &tokens[idx..end_exclusive] {
+        children.push(token_leaf(b, tok));
+    }
+    let node = b.branch(
+        SyntaxKind::Error,
+        constants_tok.range.start..err_end,
+        &children,
+    );
+    let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
+        tokens.len()
+    } else {
+        end_exclusive
+    };
+    Some((node, next))
+}
+
 pub fn try_parse_constants_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
+    errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    try_parse_chained_decl(
+    let parsed = try_parse_chained_decl(
         b,
         source,
         tokens,
@@ -1684,7 +1861,32 @@ pub fn try_parse_constants_decl(
         true,
         true,
         true,
-    )
+    );
+    let validation = parsed
+        .as_ref()
+        .map(|(_, next)| {
+            (
+                *next,
+                validate_structured_decl_nesting(source, tokens, idx, *next),
+            )
+        })
+        .or_else(|| {
+            let scan = scan_until_statement_period(tokens, source, idx);
+            let end_exclusive = match scan {
+                StmtPeriodScan::Found(period_i) => period_i + 1,
+                StmtPeriodScan::Unterminated { end_exclusive } => end_exclusive,
+            };
+            match validate_structured_decl_nesting(source, tokens, idx, end_exclusive) {
+                Ok(false) => None,
+                result => Some((end_exclusive, result)),
+            }
+        });
+
+    if let Some((end_exclusive, Err(message))) = validation {
+        return parse_malformed_constants_decl(b, tokens, idx, errors, message, end_exclusive);
+    }
+
+    parsed
 }
 
 pub fn try_parse_field_symbols_decl(
@@ -2368,6 +2570,118 @@ ENDMETHOD.";
             "CONSTANTS: BEGIN OF gc_pair, a TYPE i VALUE 1, b TYPE i VALUE 2, END OF gc_pair.",
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::ConstantsDecl), 1);
+    }
+
+    fn constants_class_src(body: &str) -> String {
+        format!("CLASS z_demo DEFINITION.\n  PUBLIC SECTION.\n    CONSTANTS:\n{body}\nENDCLASS.")
+    }
+
+    fn nested_constants_body(dispatch_suffix: &str, tail: &str) -> String {
+        format!(
+            "      BEGIN OF gcs_aif_ifname,\n\
+        BEGIN OF europe,\n\
+          aggregation_epa_32    TYPE string  VALUE 'ZEU_EPA_32' ##no_text,\n\
+          dispatch_edp_33       TYPE string  VALUE 'ZEU_EDP_33' ##no_text{dispatch_suffix}\n\
+{tail}"
+        )
+    }
+
+    fn assert_malformed_constants_class(body: &str, message_fragment: &str) {
+        let src = constants_class_src(body);
+        let parsed = crate::parse(&src);
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|err| err.message.contains(message_fragment)),
+            "expected parser error containing {message_fragment:?}, got {:?}",
+            parsed.errors
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ClassDecl),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ConstantsDecl),
+            0,
+            "malformed structured CONSTANTS should not produce a ConstantsDecl"
+        );
+        assert!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                >= 1
+        );
+    }
+
+    #[test]
+    fn nested_constants_begin_end_of_clause() {
+        let body =
+            nested_constants_body(",", "        END OF europe,\n      END OF gcs_aif_ifname.");
+        let src = constants_class_src(&body);
+        let parsed = crate::parse(&src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::ConstantsDecl),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
+    }
+
+    #[test]
+    fn malformed_nested_constants_report_structural_errors() {
+        for (dispatch_suffix, tail, message) in [
+            (
+                ",",
+                "        END OF europe.",
+                "expected END OF gcs_aif_ifname before '.'",
+            ),
+            (".", "", "expected END OF europe before '.'"),
+            (
+                ",",
+                "      END OF gcs_aif_ifname.",
+                "expected END OF europe before END OF gcs_aif_ifname",
+            ),
+            (
+                ",",
+                "        END OF asia,\n      END OF gcs_aif_ifname.",
+                "expected END OF europe before END OF asia",
+            ),
+            (
+                ",",
+                "        END OF europe,\n      END OF gcs_aif_name.",
+                "expected END OF gcs_aif_ifname before END OF gcs_aif_name",
+            ),
+            (
+                ",",
+                "        END OF europe,\n      END OF gcs_aif_ifname,\n      END OF extra.",
+                "unexpected END OF extra",
+            ),
+            (
+                "",
+                "        END OF europe,\n      END OF gcs_aif_ifname.",
+                "expected ',' before END OF europe",
+            ),
+            (
+                ",",
+                "        END OF europe\n      END OF gcs_aif_ifname.",
+                "expected ',' before END OF gcs_aif_ifname",
+            ),
+        ] {
+            let body = nested_constants_body(dispatch_suffix, tail);
+            assert_malformed_constants_class(&body, message);
+        }
     }
 
     #[test]
