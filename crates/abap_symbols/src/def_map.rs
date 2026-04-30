@@ -314,6 +314,7 @@ pub enum DiagnosticKind {
     IncompatibleAssignmentType,
     IncompatibleArgumentType,
     UnknownNamedParameter,
+    UnknownFunctionModuleException,
     DuplicateNamedParameter,
     MissingRequiredParameter,
     /// Open SQL `FROM` / join source not confirmed against SAP DDIC/repository (no backend lookup).

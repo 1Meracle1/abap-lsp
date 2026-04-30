@@ -5741,6 +5741,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
             DiagnosticSeverity::WARNING
         }
         DiagnosticKind::IncompatibleArgumentType
+        | DiagnosticKind::UnknownFunctionModuleException
         | DiagnosticKind::UseBeforeDefiniteAssignment
         | DiagnosticKind::PossiblyUnboundFieldSymbol
         | DiagnosticKind::UnreachableCode
@@ -23750,6 +23751,50 @@ START-OF-SELECTION.
         assert!(diagnostics.iter().any(|diag| {
             diag.message.contains("it_values") && diag.severity == Some(DiagnosticSeverity::WARNING)
         }));
+    }
+
+    #[test]
+    fn unknown_call_function_exception_is_reported_as_warning() {
+        let state = ServerState::default();
+        let dep_text = "\
+FUNCTION BAL_DB_SAVE
+  EXCEPTIONS
+    log_not_found.
+ENDFUNCTION.
+";
+        let main_text = "\
+START-OF-SELECTION.
+  CALL FUNCTION 'BAL_DB_SAVE'
+    EXCEPTIONS
+      error_message = 1.
+";
+        for (uri, text) in [
+            ("file:///fm_exception_warning_dep.abap", dep_text),
+            ("file:///fm_exception_warning_main.abap", main_text),
+        ] {
+            publish_open_document(
+                &state,
+                &DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: Uri::from_str(uri).expect("uri"),
+                        language_id: "abap".to_string(),
+                        version: 1,
+                        text: text.to_string(),
+                    },
+                },
+            );
+        }
+
+        let snapshot = state
+            .cache
+            .get("file:///fm_exception_warning_main.abap")
+            .expect("snapshot");
+        let diagnostics = build_lsp_diagnostics(snapshot.as_ref());
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diag| diag.message.contains("unknown exception 'error_message'"))
+            .expect("unknown exception diagnostic");
+        assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::WARNING));
     }
 
     #[test]

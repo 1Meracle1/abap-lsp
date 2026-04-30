@@ -4492,7 +4492,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                             .any(|exception| exception.name == *name)
                         {
                             unit_diagnostics.push(Diagnostic {
-                                kind: DiagnosticKind::UnknownNamedParameter,
+                                kind: DiagnosticKind::UnknownFunctionModuleException,
                                 range: argument.range.clone(),
                                 message: format!(
                                     "unknown exception '{}' for function module '{}'",

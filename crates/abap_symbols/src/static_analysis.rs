@@ -250,6 +250,7 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         | DiagnosticKind::IncompatibleAssignmentType
         | DiagnosticKind::IncompatibleArgumentType
         | DiagnosticKind::UnknownNamedParameter
+        | DiagnosticKind::UnknownFunctionModuleException
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::UnverifiedOpenSqlSource

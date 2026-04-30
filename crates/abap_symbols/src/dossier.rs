@@ -1675,6 +1675,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::IncompatibleAssignmentType => "incompatible_assignment_type",
         DiagnosticKind::IncompatibleArgumentType => "incompatible_argument_type",
         DiagnosticKind::UnknownNamedParameter => "unknown_named_parameter",
+        DiagnosticKind::UnknownFunctionModuleException => "unknown_function_module_exception",
         DiagnosticKind::DuplicateNamedParameter => "duplicate_named_parameter",
         DiagnosticKind::MissingRequiredParameter => "missing_required_parameter",
         DiagnosticKind::UnverifiedOpenSqlSource => "unverified_open_sql_source",

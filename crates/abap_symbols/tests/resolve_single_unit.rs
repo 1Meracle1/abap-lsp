@@ -13331,7 +13331,7 @@ START-OF-SELECTION.
     );
     assert!(
         main_unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::UnknownNamedParameter
+            diag.kind == DiagnosticKind::UnknownFunctionModuleException
                 && diag
                     .message
                     .contains("unknown exception 'unknown_exc' for function module")
@@ -13378,10 +13378,10 @@ START-OF-SELECTION.
         .expect("main unit");
 
     assert!(
-        !main_unit.diagnostics.iter().any(|diag| {
-            diag.kind == DiagnosticKind::UnknownNamedParameter
-                && diag.message.contains("unknown exception 'others'")
-        }),
+        !main_unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("unknown exception 'others'")),
         "{:?}",
         main_unit.diagnostics
     );
