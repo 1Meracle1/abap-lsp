@@ -76,6 +76,9 @@ See [docs/semantic-dossier.md](docs/semantic-dossier.md),
 [docs/call-graph.md](docs/call-graph.md), and
 [docs/call-dataflow.md](docs/call-dataflow.md).
 
+For ABAP syntax and semantics notes aimed at both developers and AI agents,
+see [docs/abap-language/README.md](docs/abap-language/README.md).
+
 ### `abap-adt`
 
 Use this when live SAP information is needed:
