@@ -209,22 +209,32 @@ pub enum SyntaxKind {
     UnassignStmt,
     /// Field-symbol operand inside `UNASSIGN`.
     UnassignOperand,
-    /// `IMPORT ... FROM MEMORY ID ... .` or `IMPORT ... FROM DATA BUFFER ... .`
+    /// `IMPORT ... FROM MEMORY ID ... .`, `IMPORT ... FROM DATA BUFFER ... .`, or `IMPORT ... FROM DATABASE ... .`
     ImportMemoryStmt,
-    /// Imported cluster/object name before `TO` in `IMPORT ... FROM MEMORY ID`.
+    /// Imported cluster/object name before `=` or `TO` in `IMPORT ...`.
     ImportMemorySourceOperand,
-    /// Target operand after `TO` in `IMPORT ... FROM MEMORY ID`.
+    /// Target operand after `=` or `TO` in `IMPORT ...`.
     ImportMemoryTargetOperand,
-    /// `EXPORT ... TO MEMORY ID ... .` or `EXPORT ... TO DATA BUFFER ... .`
+    /// `EXPORT ... TO MEMORY ID ... .`, `EXPORT ... TO DATA BUFFER ... .`, or `EXPORT ... TO DATABASE ... .`
     ExportMemoryStmt,
-    /// Exported cluster/object name before `FROM` in `EXPORT ... TO MEMORY ID`.
+    /// Exported cluster/object name before `=` or `FROM` in `EXPORT ...`.
     ExportMemoryNameOperand,
-    /// Source operand after `FROM` in `EXPORT ... TO MEMORY ID`.
+    /// Source operand after `=` or `FROM` in `EXPORT ...`.
     ExportMemorySourceOperand,
     /// Memory ID operand after `MEMORY ID`.
     MemoryIdOperand,
     /// Data buffer operand after `DATA BUFFER`.
     DataBufferOperand,
+    /// Directory target after `IMPORT DIRECTORY INTO`.
+    ImportDirectoryTargetOperand,
+    /// Database export/import table in `DATABASE dbtab(ar)`.
+    DatabaseClusterTableOperand,
+    /// Database export/import area in `DATABASE dbtab(ar)`.
+    DatabaseClusterAreaOperand,
+    /// Database export/import work area after `FROM` or `TO`.
+    DatabaseClusterWorkAreaOperand,
+    /// Database export/import ID operand after `ID`.
+    DatabaseClusterIdOperand,
     /// `CONVERT ... .`
     ConvertStmt,
     /// Source operand inside `CONVERT`.
@@ -849,6 +859,11 @@ impl SyntaxKind {
             Self::ExportMemorySourceOperand => "ExportMemorySourceOperand",
             Self::MemoryIdOperand => "MemoryIdOperand",
             Self::DataBufferOperand => "DataBufferOperand",
+            Self::ImportDirectoryTargetOperand => "ImportDirectoryTargetOperand",
+            Self::DatabaseClusterTableOperand => "DatabaseClusterTableOperand",
+            Self::DatabaseClusterAreaOperand => "DatabaseClusterAreaOperand",
+            Self::DatabaseClusterWorkAreaOperand => "DatabaseClusterWorkAreaOperand",
+            Self::DatabaseClusterIdOperand => "DatabaseClusterIdOperand",
             Self::ConvertStmt => "ConvertStmt",
             Self::ConvertOperand => "ConvertOperand",
             Self::ConvertTargetOperand => "ConvertTargetOperand",

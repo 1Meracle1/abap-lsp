@@ -11000,12 +11000,37 @@ fn push_cluster_sequence_and_operand(
     );
 }
 
+fn push_token_operand_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    wrapper_kind: SyntaxKind,
+) {
+    if start >= end_exclusive {
+        return;
+    }
+    let inner = token_children(b, tokens, start, end_exclusive);
+    children.push(b.branch(
+        wrapper_kind,
+        tokens[start].range.start..tokens[end_exclusive - 1].range.end,
+        &inner,
+    ));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClusterMediumKind {
+    Operand(SyntaxKind),
+    Database,
+}
+
 fn find_import_cluster_sequence_index(
     source: &str,
     tokens: &[Token],
     start: usize,
     end_exclusive: usize,
-) -> Option<(usize, usize, SyntaxKind)> {
+) -> Option<(usize, usize, ClusterMediumKind)> {
     find_top_level_keyword_sequence_index(
         source,
         tokens,
@@ -11014,7 +11039,11 @@ fn find_import_cluster_sequence_index(
         &["from", "memory", "id"],
     )
     .map(|(sequence_start, operand_start)| {
-        (sequence_start, operand_start, SyntaxKind::MemoryIdOperand)
+        (
+            sequence_start,
+            operand_start,
+            ClusterMediumKind::Operand(SyntaxKind::MemoryIdOperand),
+        )
     })
     .or_else(|| {
         find_top_level_keyword_sequence_index(
@@ -11025,7 +11054,23 @@ fn find_import_cluster_sequence_index(
             &["from", "data", "buffer"],
         )
         .map(|(sequence_start, operand_start)| {
-            (sequence_start, operand_start, SyntaxKind::DataBufferOperand)
+            (
+                sequence_start,
+                operand_start,
+                ClusterMediumKind::Operand(SyntaxKind::DataBufferOperand),
+            )
+        })
+    })
+    .or_else(|| {
+        find_top_level_keyword_sequence_index(
+            source,
+            tokens,
+            start,
+            end_exclusive,
+            &["from", "database"],
+        )
+        .map(|(sequence_start, operand_start)| {
+            (sequence_start, operand_start, ClusterMediumKind::Database)
         })
     })
 }
@@ -11035,7 +11080,7 @@ fn find_export_cluster_sequence_index(
     tokens: &[Token],
     start: usize,
     end_exclusive: usize,
-) -> Option<(usize, usize, SyntaxKind)> {
+) -> Option<(usize, usize, ClusterMediumKind)> {
     find_top_level_keyword_sequence_index(
         source,
         tokens,
@@ -11044,7 +11089,11 @@ fn find_export_cluster_sequence_index(
         &["to", "memory", "id"],
     )
     .map(|(sequence_start, operand_start)| {
-        (sequence_start, operand_start, SyntaxKind::MemoryIdOperand)
+        (
+            sequence_start,
+            operand_start,
+            ClusterMediumKind::Operand(SyntaxKind::MemoryIdOperand),
+        )
     })
     .or_else(|| {
         find_top_level_keyword_sequence_index(
@@ -11055,9 +11104,348 @@ fn find_export_cluster_sequence_index(
             &["to", "data", "buffer"],
         )
         .map(|(sequence_start, operand_start)| {
-            (sequence_start, operand_start, SyntaxKind::DataBufferOperand)
+            (
+                sequence_start,
+                operand_start,
+                ClusterMediumKind::Operand(SyntaxKind::DataBufferOperand),
+            )
         })
     })
+    .or_else(|| {
+        find_top_level_keyword_sequence_index(
+            source,
+            tokens,
+            start,
+            end_exclusive,
+            &["to", "database"],
+        )
+        .map(|(sequence_start, operand_start)| {
+            (sequence_start, operand_start, ClusterMediumKind::Database)
+        })
+    })
+}
+
+fn find_top_level_cluster_param_operator(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keyword: &str,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    for idx in start..end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if token.kind == TokenKind::Eq || is_keyword(source, token, keyword) {
+                return Some(idx);
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_next_cluster_param_entry(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keyword: &str,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    for idx in start..end_exclusive {
+        let token = &tokens[idx];
+        if paren == 0 && bracket == 0 && brace == 0 && idx > start {
+            if token.kind == TokenKind::Eq
+                || (is_keyword(source, token, keyword)
+                    && tokens.get(idx.saturating_sub(1)).is_some_and(|prev| {
+                        prev.kind == TokenKind::Ident || prev.kind == TokenKind::RParen
+                    }))
+            {
+                return idx.checked_sub(1);
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn push_cluster_parameter_list_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keyword: &str,
+    name_kind: SyntaxKind,
+    data_kind: SyntaxKind,
+) {
+    let mut cursor = start;
+    while cursor < end_exclusive {
+        if matches!(
+            tokens[cursor].kind,
+            TokenKind::Colon | TokenKind::Comma | TokenKind::Comment
+        ) {
+            children.push(token_leaf(b, &tokens[cursor]));
+            cursor += 1;
+            continue;
+        }
+
+        let entry_end =
+            find_next_cluster_param_entry(source, tokens, cursor + 1, end_exclusive, keyword)
+                .unwrap_or(end_exclusive);
+        if let Some(op_idx) =
+            find_top_level_cluster_param_operator(source, tokens, cursor, entry_end, keyword)
+        {
+            push_token_operand_child(b, children, tokens, cursor, op_idx, name_kind);
+            children.push(token_leaf(b, &tokens[op_idx]));
+            push_wrapped_expr_child(
+                b,
+                children,
+                source,
+                tokens,
+                op_idx + 1,
+                entry_end,
+                Some(&tokens[op_idx]),
+                data_kind,
+            );
+        } else {
+            push_wrapped_expr_child(
+                b,
+                children,
+                source,
+                tokens,
+                cursor,
+                entry_end,
+                tokens.get(cursor.saturating_sub(1)),
+                data_kind,
+            );
+        }
+        cursor = entry_end;
+    }
+}
+
+fn push_import_cluster_parameter_list_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) {
+    push_cluster_parameter_list_children(
+        b,
+        children,
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        "to",
+        SyntaxKind::ImportMemorySourceOperand,
+        SyntaxKind::ImportMemoryTargetOperand,
+    );
+}
+
+fn push_export_cluster_parameter_list_children(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) {
+    push_cluster_parameter_list_children(
+        b,
+        children,
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        "from",
+        SyntaxKind::ExportMemoryNameOperand,
+        SyntaxKind::ExportMemorySourceOperand,
+    );
+}
+
+fn find_database_cluster_clause_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<usize> {
+    find_top_level_clause_index(
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        &[
+            "from",
+            "to",
+            "client",
+            "id",
+            "compression",
+            "accepting",
+            "ignoring",
+            "in",
+            "code",
+            "endian",
+        ],
+    )
+}
+
+fn find_database_cluster_id_tail_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> Option<usize> {
+    find_top_level_clause_index(
+        source,
+        tokens,
+        start,
+        end_exclusive,
+        &[
+            "compression",
+            "accepting",
+            "ignoring",
+            "in",
+            "code",
+            "endian",
+        ],
+    )
+}
+
+fn push_database_cluster_table_area(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+) -> usize {
+    let clause_start = find_top_level_token_kind(tokens, start, end_exclusive, TokenKind::LParen)
+        .unwrap_or_else(|| {
+            find_database_cluster_clause_index(source, tokens, start, end_exclusive)
+                .unwrap_or(end_exclusive)
+        });
+    push_token_operand_child(
+        b,
+        children,
+        tokens,
+        start,
+        clause_start,
+        SyntaxKind::DatabaseClusterTableOperand,
+    );
+
+    if clause_start < end_exclusive && tokens[clause_start].kind == TokenKind::LParen {
+        children.push(token_leaf(b, &tokens[clause_start]));
+        if let Some(close_idx) = find_matching_delim_in_range(
+            tokens,
+            clause_start,
+            end_exclusive,
+            TokenKind::LParen,
+            TokenKind::RParen,
+        ) {
+            push_token_operand_child(
+                b,
+                children,
+                tokens,
+                clause_start + 1,
+                close_idx,
+                SyntaxKind::DatabaseClusterAreaOperand,
+            );
+            children.push(token_leaf(b, &tokens[close_idx]));
+            return close_idx + 1;
+        }
+    }
+
+    clause_start
+}
+
+fn push_database_cluster_medium(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    sequence_start: usize,
+    dbtab_start: usize,
+    period_i: usize,
+) {
+    push_token_children(b, children, tokens, sequence_start, dbtab_start);
+    let mut cursor =
+        push_database_cluster_table_area(b, children, source, tokens, dbtab_start, period_i);
+    while cursor < period_i {
+        let token = &tokens[cursor];
+        if token.kind == TokenKind::Comment {
+            children.push(token_leaf(b, token));
+            cursor += 1;
+            continue;
+        }
+
+        if is_keyword(source, token, "from") || is_keyword(source, token, "to") {
+            children.push(token_leaf(b, token));
+            let operand_start = cursor + 1;
+            let operand_end =
+                find_database_cluster_clause_index(source, tokens, operand_start, period_i)
+                    .unwrap_or(period_i);
+            push_wrapped_expr_child(
+                b,
+                children,
+                source,
+                tokens,
+                operand_start,
+                operand_end,
+                Some(token),
+                SyntaxKind::DatabaseClusterWorkAreaOperand,
+            );
+            cursor = operand_end;
+            continue;
+        }
+
+        if is_keyword(source, token, "id") {
+            children.push(token_leaf(b, token));
+            let operand_start = cursor + 1;
+            let operand_end =
+                find_database_cluster_id_tail_index(source, tokens, operand_start, period_i)
+                    .unwrap_or(period_i);
+            push_wrapped_expr_child(
+                b,
+                children,
+                source,
+                tokens,
+                operand_start,
+                operand_end,
+                Some(token),
+                SyntaxKind::DatabaseClusterIdOperand,
+            );
+            cursor = operand_end;
+            continue;
+        }
+
+        children.push(token_leaf(b, token));
+        cursor += 1;
+    }
 }
 
 pub fn try_parse_refresh_stmt(
@@ -11249,6 +11637,11 @@ pub fn try_parse_free_stmt(
                     memory_id_start,
                     period_i,
                 );
+            } else if tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .is_some_and(|token| is_keyword(source, token, "memory"))
+            {
+                push_token_children(b, &mut children, tokens, idx + 1, period_i);
             } else {
                 push_chained_classic_operands(
                     b,
@@ -11331,55 +11724,63 @@ pub fn try_parse_import_memory_stmt(
 
     match scan_until_statement_period_with_named_args(tokens, source, idx + 1, true) {
         StmtPeriodScan::Found(period_i) => {
-            let (from_idx, operand_start, operand_kind) =
+            let (from_idx, operand_start, medium_kind) =
                 find_import_cluster_sequence_index(source, tokens, idx + 1, period_i)?;
             let mut children = vec![token_leaf(b, import_tok)];
-            if let Some(to_idx) =
-                find_top_level_keyword_index(source, tokens, idx + 1, from_idx, "to")
+            let payload_start = skip_trivia(tokens, idx + 1);
+            if tokens
+                .get(payload_start)
+                .is_some_and(|token| is_keyword(source, token, "directory"))
             {
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
+                let into_idx = find_top_level_keyword_index(
                     source,
                     tokens,
-                    idx + 1,
-                    to_idx,
-                    Some(import_tok),
-                    SyntaxKind::ImportMemorySourceOperand,
-                );
-                children.push(token_leaf(b, &tokens[to_idx]));
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    to_idx + 1,
+                    payload_start + 1,
                     from_idx,
-                    Some(&tokens[to_idx]),
-                    SyntaxKind::ImportMemoryTargetOperand,
+                    "into",
+                )?;
+                push_token_children(b, &mut children, tokens, idx + 1, into_idx + 1);
+                push_wrapped_expr_child(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    into_idx + 1,
+                    from_idx,
+                    Some(&tokens[into_idx]),
+                    SyntaxKind::ImportDirectoryTargetOperand,
                 );
             } else {
-                push_wrapped_expr_child(
+                push_import_cluster_parameter_list_children(
                     b,
                     &mut children,
                     source,
                     tokens,
                     idx + 1,
                     from_idx,
-                    Some(import_tok),
-                    SyntaxKind::ImportMemoryTargetOperand,
                 );
             }
-            push_cluster_sequence_and_operand(
-                b,
-                &mut children,
-                source,
-                tokens,
-                from_idx,
-                operand_start,
-                period_i,
-                operand_kind,
-            );
+            match medium_kind {
+                ClusterMediumKind::Operand(operand_kind) => push_cluster_sequence_and_operand(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    from_idx,
+                    operand_start,
+                    period_i,
+                    operand_kind,
+                ),
+                ClusterMediumKind::Database => push_database_cluster_medium(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    from_idx,
+                    operand_start,
+                    period_i,
+                ),
+            }
             children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
                 SyntaxKind::ImportMemoryStmt,
@@ -11392,9 +11793,8 @@ pub fn try_parse_import_memory_stmt(
             find_import_cluster_sequence_index(source, tokens, idx + 1, end_exclusive)?;
             let err_end = unterminated_err_end(tokens, end_exclusive, import_tok.range.end);
             errors.push(crate::ParseError {
-                message:
-                    "syntax error: expected '.' after IMPORT FROM MEMORY ID/DATA BUFFER statement"
-                        .to_string(),
+                message: "syntax error: expected '.' after IMPORT data cluster statement"
+                    .to_string(),
                 range: import_tok.range.start..err_end,
             });
             let children = token_children(b, tokens, idx, end_exclusive);
@@ -11422,55 +11822,38 @@ pub fn try_parse_export_memory_stmt(
 
     match scan_until_statement_period_with_named_args(tokens, source, idx + 1, true) {
         StmtPeriodScan::Found(period_i) => {
-            let (to_idx, operand_start, operand_kind) =
+            let (to_idx, operand_start, medium_kind) =
                 find_export_cluster_sequence_index(source, tokens, idx + 1, period_i)?;
             let mut children = vec![token_leaf(b, export_tok)];
-            if let Some(from_idx) =
-                find_top_level_keyword_index(source, tokens, idx + 1, to_idx, "from")
-            {
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    idx + 1,
-                    from_idx,
-                    Some(export_tok),
-                    SyntaxKind::ExportMemoryNameOperand,
-                );
-                children.push(token_leaf(b, &tokens[from_idx]));
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    from_idx + 1,
-                    to_idx,
-                    Some(&tokens[from_idx]),
-                    SyntaxKind::ExportMemorySourceOperand,
-                );
-            } else {
-                push_wrapped_expr_child(
-                    b,
-                    &mut children,
-                    source,
-                    tokens,
-                    idx + 1,
-                    to_idx,
-                    Some(export_tok),
-                    SyntaxKind::ExportMemorySourceOperand,
-                );
-            }
-            push_cluster_sequence_and_operand(
+            push_export_cluster_parameter_list_children(
                 b,
                 &mut children,
                 source,
                 tokens,
+                idx + 1,
                 to_idx,
-                operand_start,
-                period_i,
-                operand_kind,
             );
+            match medium_kind {
+                ClusterMediumKind::Operand(operand_kind) => push_cluster_sequence_and_operand(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    to_idx,
+                    operand_start,
+                    period_i,
+                    operand_kind,
+                ),
+                ClusterMediumKind::Database => push_database_cluster_medium(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    to_idx,
+                    operand_start,
+                    period_i,
+                ),
+            }
             children.push(token_leaf(b, &tokens[period_i]));
             let node = b.branch(
                 SyntaxKind::ExportMemoryStmt,
@@ -11483,9 +11866,8 @@ pub fn try_parse_export_memory_stmt(
             find_export_cluster_sequence_index(source, tokens, idx + 1, end_exclusive)?;
             let err_end = unterminated_err_end(tokens, end_exclusive, export_tok.range.end);
             errors.push(crate::ParseError {
-                message:
-                    "syntax error: expected '.' after EXPORT TO MEMORY ID/DATA BUFFER statement"
-                        .to_string(),
+                message: "syntax error: expected '.' after EXPORT data cluster statement"
+                    .to_string(),
                 range: export_tok.range.start..err_end,
             });
             let children = token_children(b, tokens, idx, end_exclusive);
@@ -14721,6 +15103,7 @@ CONCATENATE lv_evttime+6(4) '-'\n\
 COLLECT ls_archstats_del_line INTO gt_archstats_del.\n\
 FREE lt_data_ext.\n\
 FREE MEMORY ID MEMORY_ID.\n\
+FREE MEMORY.\n\
 UNASSIGN <fs_choice>.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -14740,7 +15123,7 @@ UNASSIGN <fs_choice>.",
                 .count_kind(root, SyntaxKind::CollectTargetOperand),
             1
         );
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FreeStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FreeStmt), 3);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::FreeOperand), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::MemoryIdOperand), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnassignStmt), 1);
@@ -14845,6 +15228,18 @@ EXPORT ls_aup_parent_evt\n\
             parsed
                 .file
                 .count_kind(root, SyntaxKind::ExportMemorySourceOperand),
+            3
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ExportMemoryNameOperand),
+            3
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportMemorySourceOperand),
             1
         );
         assert_eq!(
@@ -14854,6 +15249,113 @@ EXPORT ls_aup_parent_evt\n\
             1
         );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_import_export_database_cluster_statements() {
+        let parsed = crate::parse(
+            "EXPORT value = value TO DATABASE indx(st) ID id.\n\
+IMPORT value = value FROM DATABASE indx(st) ID id.\n\
+EXPORT value FROM value TO DATABASE indx(st) FROM wa ID id.\n\
+IMPORT value TO value FROM DATABASE indx(st) TO wa ID id.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ExportMemoryStmt),
+            2
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ImportMemoryStmt),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterTableOperand),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterAreaOperand),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterIdOperand),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterWorkAreaOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ExportMemoryNameOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ExportMemorySourceOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportMemorySourceOperand),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportMemoryTargetOperand),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_import_directory_from_database_cluster() {
+        let parsed = crate::parse("IMPORT DIRECTORY INTO directory FROM DATABASE indx(st) ID id.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::ImportMemoryStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ImportDirectoryTargetOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterTableOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterAreaOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatabaseClusterIdOperand),
+            1
+        );
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }

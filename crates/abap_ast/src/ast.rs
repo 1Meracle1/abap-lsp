@@ -667,6 +667,26 @@ ast_node!(
 );
 ast_node!(MemoryIdOperand, SyntaxKind::MemoryIdOperand);
 ast_node!(DataBufferOperand, SyntaxKind::DataBufferOperand);
+ast_node!(
+    ImportDirectoryTargetOperand,
+    SyntaxKind::ImportDirectoryTargetOperand
+);
+ast_node!(
+    DatabaseClusterTableOperand,
+    SyntaxKind::DatabaseClusterTableOperand
+);
+ast_node!(
+    DatabaseClusterAreaOperand,
+    SyntaxKind::DatabaseClusterAreaOperand
+);
+ast_node!(
+    DatabaseClusterWorkAreaOperand,
+    SyntaxKind::DatabaseClusterWorkAreaOperand
+);
+ast_node!(
+    DatabaseClusterIdOperand,
+    SyntaxKind::DatabaseClusterIdOperand
+);
 ast_node!(ConvertStmt, SyntaxKind::ConvertStmt);
 ast_value_node!(ConvertOperand, SyntaxKind::ConvertOperand);
 ast_value_node!(ConvertTargetOperand, SyntaxKind::ConvertTargetOperand);

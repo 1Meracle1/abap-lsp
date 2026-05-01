@@ -3604,6 +3604,67 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         self.collector.walk_children(node, scope);
     }
 
+    fn collect_data_cluster_read_operand(&mut self, node: NodeId, scope: ScopeId) {
+        if let Some(value) = self.collector.first_non_token_child(node) {
+            self.collector.walk_node(value, scope);
+        }
+    }
+
+    fn collect_data_cluster_write_operand(
+        &mut self,
+        stmt: NodeId,
+        operand: NodeId,
+        scope: ScopeId,
+    ) {
+        if let Some(value) = self.collector.first_non_token_child(operand) {
+            self.collector.walk_node(value, scope);
+            self.emit_assignment_site_from_ranges(
+                scope,
+                self.collector.file.range(stmt),
+                value,
+                &[],
+            );
+        }
+    }
+
+    pub(super) fn collect_data_cluster_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        let is_import = self.collector.file.kind(node) == SyntaxKind::ImportMemoryStmt;
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::ImportMemorySourceOperand
+                | SyntaxKind::ExportMemoryNameOperand
+                | SyntaxKind::DatabaseClusterTableOperand
+                | SyntaxKind::DatabaseClusterAreaOperand => {}
+                SyntaxKind::ImportMemoryTargetOperand
+                | SyntaxKind::ImportDirectoryTargetOperand => {
+                    self.collect_data_cluster_write_operand(node, child, scope)
+                }
+                SyntaxKind::ExportMemorySourceOperand
+                | SyntaxKind::MemoryIdOperand
+                | SyntaxKind::DatabaseClusterIdOperand => {
+                    self.collect_data_cluster_read_operand(child, scope)
+                }
+                SyntaxKind::DataBufferOperand => {
+                    if is_import {
+                        self.collect_data_cluster_read_operand(child, scope);
+                    } else {
+                        self.collect_data_cluster_write_operand(node, child, scope);
+                    }
+                }
+                SyntaxKind::DatabaseClusterWorkAreaOperand => {
+                    if is_import {
+                        self.collect_data_cluster_write_operand(node, child, scope);
+                    } else {
+                        self.collect_data_cluster_read_operand(child, scope);
+                    }
+                }
+                SyntaxKind::Token => {}
+                _ => self.collector.walk_node(child, scope),
+            }
+        }
+    }
+
     pub(super) fn collect_unassign_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_routine_site(
             scope,

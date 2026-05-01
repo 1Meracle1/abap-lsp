@@ -15236,6 +15236,62 @@ GET REFERENCE OF ls_xmlparse INTO lo_xmlparse.
 }
 
 #[test]
+fn data_cluster_memory_database_and_directory_operands_resolve() {
+    let src = r#"
+DATA id TYPE c LENGTH 10 VALUE 'DEMO'.
+DATA lv_value TYPE string.
+DATA wa TYPE string.
+DATA directory TYPE string.
+DATA buffer TYPE xstring.
+
+EXPORT value = lv_value TO MEMORY ID id.
+IMPORT value = lv_value FROM MEMORY ID id.
+FREE MEMORY ID id.
+FREE MEMORY.
+
+EXPORT value = lv_value TO DATA BUFFER buffer.
+IMPORT value = lv_value FROM DATA BUFFER buffer.
+
+EXPORT value = lv_value TO DATABASE indx(st) FROM wa ID id.
+IMPORT value = lv_value FROM DATABASE indx(st) TO wa ID id.
+IMPORT DIRECTORY INTO directory FROM DATABASE indx(st) ID id.
+"#;
+    let unit = analyze_ok(src, "file:///data_cluster_interfaces.abap");
+
+    for name in ["lv_value", "id", "wa", "directory", "buffer"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier
+                    && reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && reference.resolution.is_some()
+            }),
+            "expected resolved value reference for {name}, refs={:?}",
+            unit.references
+        );
+    }
+
+    for static_cluster_part in ["indx", "st"] {
+        assert!(
+            !unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == static_cluster_part
+            }),
+            "static cluster table/area should not be value refs: {:?}",
+            unit.references
+        );
+    }
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn delete_dbtab_from_work_area_collects_open_sql_source_instead_of_value_ref() {
     let src = r#"
 TYPES zattp_rs_represp TYPE STANDARD TABLE OF i WITH EMPTY KEY.

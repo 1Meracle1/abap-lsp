@@ -247,12 +247,12 @@ impl<'a> Collector<'a> {
             SyntaxKind::AliasesStmt => self.stmt_lowering().collect_aliases_stmt(node, scope),
             SyntaxKind::ClearStmt => self.stmt_lowering().collect_clear_stmt(node, scope),
             SyntaxKind::RefreshStmt => self.stmt_lowering().collect_refresh_stmt(node, scope),
-            SyntaxKind::CollectStmt
-            | SyntaxKind::FreeStmt
-            | SyntaxKind::ImportMemoryStmt
-            | SyntaxKind::ExportMemoryStmt => self
+            SyntaxKind::CollectStmt | SyntaxKind::FreeStmt => self
                 .stmt_lowering()
                 .collect_structured_effect_stmt(node, scope),
+            SyntaxKind::ImportMemoryStmt | SyntaxKind::ExportMemoryStmt => {
+                self.stmt_lowering().collect_data_cluster_stmt(node, scope)
+            }
             SyntaxKind::UnassignStmt => self.stmt_lowering().collect_unassign_stmt(node, scope),
             SyntaxKind::ConvertStmt => self.stmt_lowering().collect_convert_stmt(node, scope),
             SyntaxKind::DescribeStmt => self.stmt_lowering().collect_describe_stmt(node, scope),
