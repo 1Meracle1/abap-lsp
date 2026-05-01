@@ -3367,7 +3367,8 @@ fn collect_message_class_messages(xml: &str) -> Vec<(String, String)> {
                 let Some(msgno) = attr_local_text(&start, b"msgno") else {
                     continue;
                 };
-                let msgtext = attr_local_text(&start, b"msgtext").unwrap_or_default();
+                let msgtext =
+                    xml_entity_unescape(&attr_local_text(&start, b"msgtext").unwrap_or_default());
                 messages.push((msgno, msgtext));
             }
             Ok(Event::Eof) => break,
@@ -3377,6 +3378,14 @@ fn collect_message_class_messages(xml: &str) -> Vec<(String, String)> {
     }
 
     messages
+}
+
+fn xml_entity_unescape(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 fn collect_ddic_fields(xml: &str) -> Vec<DdicField> {

@@ -257,6 +257,7 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         | DiagnosticKind::UnverifiedOpenSqlSource
         | DiagnosticKind::InvalidOpenSqlIntoTarget
         | DiagnosticKind::InvalidOpenSqlSyntax
+        | DiagnosticKind::InvalidMessage
         | DiagnosticKind::InvalidConstructorForIteratorReuse
         | DiagnosticKind::MissingTablesDeclaration
         | DiagnosticKind::UnsortedReadTableBinarySearch => return None,

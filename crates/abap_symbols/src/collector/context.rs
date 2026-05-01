@@ -4,10 +4,10 @@ use abap_ast::ast::SyntaxNodeRef;
 
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, ConstructorForBindingData, FieldAccess, FieldTypeRefData,
-    FormRoutineData, IncludeEdge, NamedArgumentAccess, NamedArgumentSection, NamedArgumentTarget,
-    ReferenceKind, SqlDynamicFragmentData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
-    SqlQueryData, SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind, TableWorkAreaData,
-    ValueStateCheckData,
+    FormRoutineData, IncludeEdge, MessageClassUseData, NamedArgumentAccess, NamedArgumentSection,
+    NamedArgumentTarget, ReferenceKind, SqlDynamicFragmentData, SqlNameRefData, SqlPredicateData,
+    SqlProjectionData, SqlQueryData, SqlSourceData, SqlTargetData, StructureFieldData, SymbolKind,
+    TableWorkAreaData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::Namespace;
@@ -511,6 +511,10 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
     ) {
         self.collector
             .add_reference(scope, name, namespace, kind, range);
+    }
+
+    pub(super) fn set_message_default_class(&mut self, message_class: MessageClassUseData) {
+        self.collector.message_default_class = Some(message_class);
     }
 
     pub(super) fn push_scope(

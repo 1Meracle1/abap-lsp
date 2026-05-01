@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::def_map::{
     AssignmentSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData, FormRoutineData,
-    IncludeEdge, ReferenceKind, SymbolKind, TableWorkAreaData, TypeFactData,
+    IncludeEdge, MessageClassUseData, ReferenceKind, SymbolKind, TableWorkAreaData, TypeFactData,
 };
 use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
@@ -371,11 +371,13 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         };
         self.ctx.add_reference(
             scope,
-            name,
+            Arc::clone(&name),
             Namespace::Type,
             ReferenceKind::MessageClass,
-            range,
+            range.clone(),
         );
+        self.ctx
+            .set_message_default_class(MessageClassUseData { name, range });
     }
 
     pub(super) fn walk_block_decl(

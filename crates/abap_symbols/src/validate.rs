@@ -36,6 +36,104 @@ struct OpenSqlOrderByValidation {
     resolved_primary_key_fields: Vec<(usize, Vec<Arc<str>>)>,
 }
 
+fn validate_message_uses(project: &ProjectAnalysis, unit: &crate::UnitAnalysis) -> Vec<Diagnostic> {
+    let mut by_class = HashMap::<String, HashMap<String, &crate::MessageClassEntryData>>::new();
+    for entry in project
+        .units
+        .iter()
+        .flat_map(|unit| unit.message_class_entries.iter())
+    {
+        by_class
+            .entry(entry.class_name.to_ascii_lowercase())
+            .or_default()
+            .insert(entry.id.to_string(), entry);
+    }
+
+    let mut diagnostics = Vec::new();
+    for message in &unit.message_uses {
+        let class_name = message
+            .class_name
+            .as_ref()
+            .or_else(|| unit.message_default_class.as_ref().map(|class| &class.name));
+        let Some(class_name) = class_name else {
+            continue;
+        };
+        let Some(id) = &message.id else {
+            continue;
+        };
+        let Some(entries) = by_class.get(&class_name.to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(entry) = entries.get(id.as_ref()) else {
+            diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidMessage,
+                range: message
+                    .id_range
+                    .clone()
+                    .or_else(|| message.class_range.clone())
+                    .unwrap_or_else(|| message.range.clone()),
+                message: format!(
+                    "unknown message id '{}' in message class '{}'",
+                    id, class_name
+                ),
+            });
+            continue;
+        };
+
+        let expected = message_parameter_count(entry.text.as_ref());
+        let actual = message.with_arg_ranges.len();
+        if expected == actual {
+            continue;
+        }
+        diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::InvalidMessage,
+            range: if actual > expected {
+                message
+                    .with_arg_ranges
+                    .get(expected)
+                    .cloned()
+                    .unwrap_or_else(|| message.range.clone())
+            } else {
+                message
+                    .id_range
+                    .clone()
+                    .or_else(|| message.class_range.clone())
+                    .unwrap_or_else(|| message.range.clone())
+            },
+            message: format!(
+                "message {} in class {} expects {} parameter(s), but MESSAGE WITH provides {}",
+                id, class_name, expected, actual
+            ),
+        });
+    }
+    diagnostics
+}
+
+fn message_parameter_count(text: &str) -> usize {
+    let mut indexed = 0usize;
+    let mut highest = 0usize;
+    let mut bare = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            continue;
+        }
+        match chars.peek().and_then(|next| next.to_digit(10)) {
+            Some(digit @ 1..=9) => {
+                indexed += 1;
+                highest = highest.max(digit as usize);
+                chars.next();
+            }
+            _ => bare += 1,
+        }
+    }
+    if highest > 0 {
+        highest.max(indexed + bare)
+    } else {
+        bare
+    }
+}
+
 #[derive(Clone, Copy)]
 struct LoopFieldContextView<'a> {
     scope: ScopeId,
@@ -4496,10 +4594,11 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     ),
                 )
             } else {
-                let subject = match reference.namespace {
-                    Namespace::Type => "type",
-                    Namespace::Routine => "routine",
-                    Namespace::Value => "symbol",
+                let subject = match (reference.kind, reference.namespace) {
+                    (ReferenceKind::MessageClass, _) => "message class",
+                    (_, Namespace::Type) => "type",
+                    (_, Namespace::Routine) => "routine",
+                    (_, Namespace::Value) => "symbol",
                 };
                 (
                     DiagnosticKind::UnresolvedReference,
@@ -4513,6 +4612,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 message,
             });
         }
+
+        unit_diagnostics.extend(validate_message_uses(project, unit));
 
         for (access, base_info) in unit.field_accesses.iter().zip(&field_access_bases) {
             let Some(((base_unit_idx, base_symbol_id), class_selector_base)) = *base_info else {

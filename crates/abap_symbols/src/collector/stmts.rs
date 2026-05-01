@@ -12,9 +12,9 @@ use abap_lexer::TextRange;
 
 use crate::def_map::{
     AssignmentSiteData, CallSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
-    FindSiteData, FindWriteTargetData, NamedArgumentTarget, ReferenceKind, RoutineSiteData,
-    RoutineSiteKind, SymbolKind, SystemFieldStatementKind, TypeFactData, ValueFlowEdgeData,
-    ValueFlowKind, ValueFlowTargetData,
+    FindSiteData, FindWriteTargetData, MessageUseData, NamedArgumentTarget, ReferenceKind,
+    RoutineSiteData, RoutineSiteKind, SymbolKind, SystemFieldStatementKind, TypeFactData,
+    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -2914,6 +2914,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         if let Some(head_clause_id) = head_clause_id {
             self.collect_message_head_clause_infos(head_clause_id, scope);
         }
+        self.collect_message_use_info(node, head_clause_id, with_clause_id);
 
         if let Some(with_clause_id) = with_clause_id {
             for child in self.collector.file.children(with_clause_id) {
@@ -3153,6 +3154,156 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn collect_message_use_info(
+        &mut self,
+        stmt: NodeId,
+        head_clause_id: Option<NodeId>,
+        with_clause_id: Option<NodeId>,
+    ) {
+        let mut message = MessageUseData {
+            range: self.collector.file.range(stmt),
+            class_name: None,
+            class_range: None,
+            id: None,
+            id_range: None,
+            with_arg_ranges: with_clause_id
+                .into_iter()
+                .flat_map(|clause| self.collector.file.children(clause))
+                .filter(|&child| {
+                    matches!(
+                        self.collector.file.kind(child),
+                        SyntaxKind::MessageOperand | SyntaxKind::MessageTextPoolId
+                    )
+                })
+                .map(|child| self.collector.file.range(child))
+                .collect(),
+        };
+
+        let Some(head_clause_id) = head_clause_id else {
+            return;
+        };
+        for child in self.collector.file.children(head_clause_id) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::MessageCodeOperand => {
+                    let sig = self.collector.significant_stmt_token_infos(child);
+                    if let Some((id, id_range, class_name, class_range)) =
+                        self.compact_message_parts(&sig)
+                    {
+                        message.id = Some(id);
+                        message.id_range = Some(id_range);
+                        message.class_name = class_name;
+                        message.class_range = class_range;
+                    }
+                }
+                SyntaxKind::MessageIdOperand => {
+                    if let Some((name, range)) = self.static_message_class_operand(child) {
+                        message.class_name = Some(name);
+                        message.class_range = Some(range);
+                    }
+                }
+                SyntaxKind::MessageNumberOperand => {
+                    if let Some((id, range)) = self.static_message_id_operand(child) {
+                        message.id = Some(id);
+                        message.id_range = Some(range);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if message.class_name.is_some()
+            || message.id.is_some()
+            || !message.with_arg_ranges.is_empty()
+        {
+            self.collector.message_uses.push(message);
+        }
+    }
+
+    fn compact_message_parts(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<(Arc<str>, TextRange, Option<Arc<str>>, Option<TextRange>)> {
+        let head = tokens.first()?;
+        let mut chars = head.text.chars();
+        let msgty = chars.next()?.to_ascii_lowercase();
+        if !matches!(msgty, 'a' | 'e' | 'i' | 's' | 'w' | 'x') {
+            return None;
+        }
+        let id = chars.as_str();
+        if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        let id_range = head.range.start + 1..head.range.end;
+        let Some(lparen_idx) = tokens.iter().position(|token| token.text.as_ref() == "(") else {
+            return Some((
+                Arc::from(super::normalize_message_id(id)),
+                id_range,
+                None,
+                None,
+            ));
+        };
+        let rparen_idx = self
+            .collector
+            .find_matching_group_end_infos(tokens, lparen_idx, "(", ")")?;
+        let (class_name, class_range) = self
+            .collector
+            .simple_type_ref_base_from_infos(&tokens[lparen_idx + 1..rparen_idx])?;
+        Some((
+            Arc::from(super::normalize_message_id(id)),
+            id_range,
+            Some(class_name),
+            Some(class_range),
+        ))
+    }
+
+    fn static_message_class_operand(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
+        let sig = self.collector.significant_stmt_token_infos(node);
+        if let Some((value, range)) = self.static_message_literal_or_number(&sig) {
+            return Some((Arc::from(value.to_ascii_lowercase()), range));
+        }
+        if self
+            .collector
+            .file
+            .children(node)
+            .all(|child| self.collector.file.kind(child) == SyntaxKind::Token)
+        {
+            return self.collector.simple_type_ref_base_from_infos(&sig);
+        }
+        None
+    }
+
+    fn static_message_id_operand(&self, node: NodeId) -> Option<(Arc<str>, TextRange)> {
+        let sig = self.collector.significant_stmt_token_infos(node);
+        let (value, range) = self.static_message_literal_or_number(&sig)?;
+        if value.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some((
+                Arc::from(super::normalize_message_id(value.as_str())),
+                range,
+            ));
+        }
+        None
+    }
+
+    fn static_message_literal_or_number(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+    ) -> Option<(String, TextRange)> {
+        let [token] = tokens else {
+            return None;
+        };
+        let text = token.text.as_ref();
+        if text.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some((text.to_string(), token.range.clone()));
+        }
+        if text.len() >= 2 && text.starts_with('\'') && text.ends_with('\'') {
+            return Some((
+                text[1..text.len() - 1].replace("''", "'"),
+                token.range.clone(),
+            ));
+        }
+        None
+    }
+
     fn message_into_rhs_range(
         &self,
         stmt: NodeId,
@@ -3178,6 +3329,18 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             && self.is_compact_message_short_form(&sig)
         {
             // Short MESSAGE forms like `MESSAGE i043.` are not identifiers.
+            return;
+        }
+        if self.collector.file.kind(node) == SyntaxKind::MessageIdOperand
+            && let Some((name, range)) = self.static_message_class_operand(node)
+        {
+            self.collector.add_reference(
+                scope,
+                name,
+                Namespace::Type,
+                ReferenceKind::MessageClass,
+                range,
+            );
             return;
         }
 

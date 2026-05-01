@@ -532,6 +532,71 @@ enum ReferenceSearchTarget {
     },
 }
 
+fn message_class_entries<'a>(
+    project: &'a ProjectAnalysis,
+    class_name: &str,
+) -> Vec<&'a abap_symbols::MessageClassEntryData> {
+    let class_name = class_name.to_ascii_lowercase();
+    let mut entries = project
+        .units
+        .iter()
+        .flat_map(|unit| unit.message_class_entries.iter())
+        .filter(|entry| {
+            entry
+                .class_name
+                .as_ref()
+                .eq_ignore_ascii_case(class_name.as_str())
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.id.cmp(&right.id).then(left.text.cmp(&right.text)));
+    entries.dedup_by(|left, right| left.id == right.id && left.text == right.text);
+    entries
+}
+
+fn message_class_entry<'a>(
+    project: &'a ProjectAnalysis,
+    class_name: &str,
+    id: &str,
+) -> Option<&'a abap_symbols::MessageClassEntryData> {
+    message_class_entries(project, class_name)
+        .into_iter()
+        .find(|entry| entry.id.as_ref() == id)
+}
+
+fn hovered_message_class(
+    snapshot: &AnalysisSnapshot,
+    class_name: &Arc<str>,
+    range: Range<usize>,
+) -> HoveredSymbolInfo {
+    HoveredSymbolInfo {
+        range,
+        display_name: Arc::clone(class_name),
+        markdown_lines: markdown_lines_for_message_class(snapshot.project.as_ref(), class_name),
+    }
+}
+
+fn markdown_lines_for_message_class(project: &ProjectAnalysis, class_name: &str) -> Vec<String> {
+    let entries = message_class_entries(project, class_name);
+    let mut lines = vec![format!("Message class `{class_name}`")];
+    if entries.is_empty() {
+        return lines;
+    }
+    lines.push(String::new());
+    lines.push("Messages:".to_string());
+    for entry in entries {
+        lines.push(format!("`{}` {}", entry.id, entry.text));
+    }
+    lines
+}
+
+fn markdown_lines_for_message_entry(entry: &abap_symbols::MessageClassEntryData) -> Vec<String> {
+    vec![
+        format!("Message `{}` in class `{}`", entry.id, entry.class_name),
+        String::new(),
+        entry.text.to_string(),
+    ]
+}
+
 fn markdown_lines_for_sql_name_ref(
     snapshot: &AnalysisSnapshot,
     sql_ref: &SqlNameRefData,
@@ -1215,6 +1280,44 @@ impl AnalysisSnapshot {
             display_name: Arc::clone(&sql_ref.name),
             markdown_lines: markdown_lines_for_sql_name_ref(self, sql_ref),
         })
+    }
+
+    pub fn hovered_message_at(&self, offset: usize) -> Option<HoveredSymbolInfo> {
+        for message in &self.symbols.message_uses {
+            if let (Some(class_name), Some(range)) = (&message.class_name, &message.class_range)
+                && range.start <= offset
+                && offset < range.end
+            {
+                return Some(hovered_message_class(self, class_name, range.clone()));
+            }
+            if let (Some(id), Some(range)) = (&message.id, &message.id_range)
+                && range.start <= offset
+                && offset < range.end
+            {
+                let class_name = message.class_name.as_ref().or_else(|| {
+                    self.symbols
+                        .message_default_class
+                        .as_ref()
+                        .map(|class| &class.name)
+                })?;
+                let entry = message_class_entry(self.project.as_ref(), class_name, id)?;
+                return Some(HoveredSymbolInfo {
+                    range: range.clone(),
+                    display_name: Arc::clone(&entry.id),
+                    markdown_lines: markdown_lines_for_message_entry(entry),
+                });
+            }
+        }
+
+        let default = self.symbols.message_default_class.as_ref()?;
+        if default.range.start <= offset && offset < default.range.end {
+            return Some(hovered_message_class(
+                self,
+                &default.name,
+                default.range.clone(),
+            ));
+        }
+        None
     }
 
     pub fn definition_at(&self, offset: usize) -> Option<DefinitionTarget> {
@@ -17561,6 +17664,174 @@ START-OF-SELECTION.
             }),
             "{:?}",
             snapshot.symbols.diagnostics
+        );
+    }
+
+    #[test]
+    fn validates_message_id_and_parameter_count_from_message_class_dependency() {
+        let xml = r#"
+<mc:messageClass adtcore:name="/STTP/INT_MSG"
+    xmlns:mc="http://www.sap.com/adt/MessageClass"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <mc:messages mc:msgno="043" mc:msgtext="Received &amp;1 documents for &amp;2 maintenance (&amp;3)"/>
+  <mc:messages mc:msgno="044" mc:msgtext="Done"/>
+</mc:messageClass>
+"#;
+        let dependency_text =
+            ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml).expect("dependency");
+        let main_src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING lv_lines TYPE i iv_logsys TYPE string.
+ENDCLASS.
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    MESSAGE ID '/STTP/INT_MSG' TYPE 'I' NUMBER '043' WITH lv_lines iv_logsys sy-msgv3.
+    MESSAGE i043(/sttp/int_msg) WITH lv_lines iv_logsys.
+    MESSAGE i999(/sttp/int_msg).
+    MESSAGE i044(/sttp/int_msg) WITH lv_lines.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FINT_MSG.xml"),
+                version: 1,
+                text: Arc::from(dependency_text),
+                is_dependency: true,
+                object_name: Some(Arc::from("/STTP/INT_MSG")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/duplicate-%2FSTTP%2FINT_MSG.xml"),
+                version: 1,
+                text: Arc::from(
+                    ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml)
+                        .expect("duplicate dependency"),
+                ),
+                is_dependency: true,
+                object_name: Some(Arc::from("/STTP/INT_MSG")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let invalid_messages = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .filter(|diag| diag.kind == DiagnosticKind::InvalidMessage)
+            .map(|diag| diag.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(invalid_messages.len(), 3, "{invalid_messages:?}");
+        assert!(
+            invalid_messages
+                .iter()
+                .any(|message| message.contains("expects 3 parameter(s)")),
+            "{invalid_messages:?}"
+        );
+        assert!(
+            invalid_messages
+                .iter()
+                .any(|message| message.contains("unknown message id '999'")),
+            "{invalid_messages:?}"
+        );
+        assert!(
+            invalid_messages
+                .iter()
+                .any(|message| message.contains("expects 0 parameter(s)")),
+            "{invalid_messages:?}"
+        );
+    }
+
+    #[test]
+    fn hovers_message_class_and_id_from_message_class_dependency() {
+        let xml = r#"
+<mc:messageClass adtcore:name="/STTP/INT_MSG"
+    xmlns:mc="http://www.sap.com/adt/MessageClass"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <mc:messages mc:msgno="043" mc:msgtext="Received &amp;1 documents for &amp;2 maintenance (&amp;3)"/>
+</mc:messageClass>
+"#;
+        let dependency_text =
+            ddic_xml_to_abap_source("/STTP/INT_MSG", "message-class", xml).expect("dependency");
+        let main_src = "\
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    MESSAGE i043(/sttp/int_msg) WITH sy-msgv1 sy-msgv2 sy-msgv3.
+  ENDMETHOD.
+ENDCLASS.";
+
+        let store = DocumentStore::default();
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/%2FSTTP%2FINT_MSG.xml"),
+                version: 1,
+                text: Arc::from(dependency_text),
+                is_dependency: true,
+                object_name: Some(Arc::from("/STTP/INT_MSG")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+
+        let class_offset = main_src.find("/sttp/int_msg").expect("message class") + 1;
+        let class_hover = snapshot
+            .hovered_message_at(class_offset)
+            .expect("message class hover");
+        assert!(
+            class_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("Message class `/sttp/int_msg`")),
+            "{:?}",
+            class_hover.markdown_lines
+        );
+        assert!(
+            class_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("043") && line.contains("Received")),
+            "{:?}",
+            class_hover.markdown_lines
+        );
+        assert_eq!(
+            class_hover
+                .markdown_lines
+                .iter()
+                .filter(|line| line.contains("043") && line.contains("Received"))
+                .count(),
+            1,
+            "{:?}",
+            class_hover.markdown_lines
+        );
+        assert!(
+            snapshot.definition_at(class_offset).is_some(),
+            "expected definition target for message class"
+        );
+
+        let id_offset = main_src.find("043(/sttp").expect("message id") + 1;
+        let id_hover = snapshot
+            .hovered_message_at(id_offset)
+            .expect("message id hover");
+        assert!(
+            id_hover
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("Received &1 documents")),
+            "{:?}",
+            id_hover.markdown_lines
         );
     }
 

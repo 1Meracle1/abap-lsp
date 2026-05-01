@@ -29,12 +29,12 @@ use crate::def_map::{
     ConstructorForBindingData, Diagnostic, DiagnosticKind, ExpressionFactData, FieldAccess,
     FieldSymbolStateCheckData, FieldTypeRefData, FindSiteData, FormRoutineData, FunctionModuleData,
     ImplementedInterfaceData, IncludeEdge, InternalTableOrderData, LoopAtFieldContext,
-    LoopWhereFieldContext, MemberAliasData, NamedArgumentAccess, PerformCallData,
-    ReadTableBinarySearchData, ReferenceData, ReferenceKind, RoutineControlRegionData,
-    RoutineSiteData, SqlDynamicFragmentData, SqlNameRefData, SqlPredicateData, SqlProjectionData,
-    SqlQueryData, SqlSourceData, SqlTargetData, StructureData, StructureFieldData, SymbolData,
-    SymbolKind, SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis, ValueFlowEdgeData,
-    ValueStateCheckData,
+    LoopWhereFieldContext, MemberAliasData, MessageClassEntryData, MessageClassUseData,
+    MessageUseData, NamedArgumentAccess, PerformCallData, ReadTableBinarySearchData, ReferenceData,
+    ReferenceKind, RoutineControlRegionData, RoutineSiteData, SqlDynamicFragmentData,
+    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
+    SqlTargetData, StructureData, StructureFieldData, SymbolData, SymbolKind,
+    SystemFieldUpdateData, TableWorkAreaData, UnitAnalysis, ValueFlowEdgeData, ValueStateCheckData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolId, UnitId};
 use crate::scope::{Namespace, ScopeData, ScopeKind};
@@ -109,6 +109,80 @@ pub(super) struct SyntaxTokenInfo {
     kind: TokenKind,
 }
 
+fn collect_message_class_entries(source: &str) -> Vec<MessageClassEntryData> {
+    let Some(class_name) = message_class_name_from_source(source) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    let mut line_start = 0usize;
+    for line in source.split_inclusive('\n') {
+        let line_body = line.trim_end_matches(['\r', '\n']);
+        if let Some((id, text, rel_start, rel_end)) = message_class_comment_entry(line_body) {
+            entries.push(MessageClassEntryData {
+                class_name: Arc::clone(&class_name),
+                id: Arc::from(id),
+                text: Arc::from(text),
+                range: line_start + rel_start..line_start + rel_end,
+            });
+        }
+        line_start += line.len();
+    }
+    entries
+}
+
+fn message_class_name_from_source(source: &str) -> Option<Arc<str>> {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed
+            .get(..6)
+            .is_some_and(|head| head.eq_ignore_ascii_case("TYPES "))
+        {
+            continue;
+        }
+        let rest = &trimmed[6..];
+        let name = rest.split_ascii_whitespace().next()?;
+        return Some(Arc::from(name.trim_end_matches('.').to_ascii_lowercase()));
+    }
+    None
+}
+
+fn message_class_comment_entry(line: &str) -> Option<(String, String, usize, usize)> {
+    let quote = line.find('"')?;
+    let after_quote = &line[quote + 1..];
+    let message = after_quote.trim_start();
+    let skipped = after_quote.len() - message.len();
+    if !message
+        .get(..8)
+        .is_some_and(|head| head.eq_ignore_ascii_case("MESSAGE "))
+    {
+        return None;
+    }
+    let rest = &message[8..];
+    let colon = rest.find(':')?;
+    let id = rest[..colon].trim();
+    if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let text = rest[colon + 1..].trim();
+    let id_rel_start = quote + 1 + skipped + "MESSAGE ".len() + rest[..colon].len()
+        - rest[..colon].trim_start().len();
+    let id_rel_end = id_rel_start + id.len();
+    Some((
+        normalize_message_id(id),
+        text.to_string(),
+        id_rel_start,
+        id_rel_end,
+    ))
+}
+
+fn normalize_message_id(id: &str) -> String {
+    if id.chars().all(|ch| ch.is_ascii_digit()) && id.len() < 3 {
+        format!("{id:0>3}")
+    } else {
+        id.to_ascii_lowercase()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SqlClauseKind {
     Where,
@@ -136,6 +210,8 @@ pub struct Collector<'a> {
     symbols: Vec<SymbolData>,
     structures: Vec<StructureData>,
     references: Vec<ReferenceData>,
+    message_default_class: Option<MessageClassUseData>,
+    message_uses: Vec<MessageUseData>,
     diagnostics: Vec<Diagnostic>,
     include_edges: Vec<IncludeEdge>,
     table_work_areas: Vec<TableWorkAreaData>,
@@ -206,6 +282,8 @@ impl<'a> Collector<'a> {
             symbols: Vec::new(),
             structures: Vec::new(),
             references: Vec::new(),
+            message_default_class: None,
+            message_uses: Vec::new(),
             diagnostics: Vec::new(),
             include_edges: Vec::new(),
             table_work_areas: Vec::new(),
@@ -263,6 +341,7 @@ impl<'a> Collector<'a> {
         traverse::walk_root(&mut ctx, root, root_scope);
         self.materialize_alias_members();
         let provided_names = self.provided_names();
+        let message_class_entries = collect_message_class_entries(self.source);
         let class_inheritance = self
             .class_superclasses
             .into_iter()
@@ -288,6 +367,9 @@ impl<'a> Collector<'a> {
             symbols: self.symbols,
             structures: self.structures,
             references: self.references,
+            message_default_class: self.message_default_class,
+            message_uses: self.message_uses,
+            message_class_entries,
             diagnostics: self.diagnostics,
             include_edges: self.include_edges,
             table_work_areas: self.table_work_areas,

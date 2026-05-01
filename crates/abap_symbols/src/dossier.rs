@@ -1682,6 +1682,7 @@ fn diagnostic_kind_name(kind: DiagnosticKind) -> &'static str {
         DiagnosticKind::UnverifiedOpenSqlSource => "unverified_open_sql_source",
         DiagnosticKind::InvalidOpenSqlIntoTarget => "invalid_open_sql_into_target",
         DiagnosticKind::InvalidOpenSqlSyntax => "invalid_open_sql_syntax",
+        DiagnosticKind::InvalidMessage => "invalid_message",
         DiagnosticKind::InvalidConstructorForIteratorReuse => {
             "invalid_constructor_for_iterator_reuse"
         }

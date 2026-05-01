@@ -3285,7 +3285,7 @@ pub fn stage_workspace_preview_snapshot(
             incremental_workspace_document_input(workspace, &normalized_uri, version, text)
                 .map(|input| workspace.cache.preview_publish_input(input))
                 .unwrap_or_else(|| {
-                    DocumentStore::default().publish(normalized_uri.clone(), version, text)
+                    standalone_preview_snapshot(workspace, &normalized_uri, version, text)
                 });
         let workspace_uri = workspace.root_uri.clone();
         workspace
@@ -3298,6 +3298,71 @@ pub fn stage_workspace_preview_snapshot(
     let _ = preview;
     state.index_workspace_uri(&workspace_uri, &normalized_uri);
     true
+}
+
+fn standalone_preview_snapshot(
+    workspace: &WorkspaceState,
+    uri: &str,
+    version: i32,
+    text: &str,
+) -> Arc<AnalysisSnapshot> {
+    let store = DocumentStore::default();
+    let preview = store.publish(uri.to_string(), version, text);
+    let deps = message_class_preview_dependency_inputs(workspace, preview.as_ref());
+    if deps.is_empty() {
+        return preview;
+    }
+
+    let mut inputs = Vec::with_capacity(deps.len() + 1);
+    inputs.push(DocumentInput {
+        uri: Arc::from(uri),
+        version,
+        text: Arc::from(text),
+        is_dependency: false,
+        object_name: None,
+    });
+    inputs.extend(deps);
+    store
+        .replace_all_with_build_plan(inputs, workspace_committed_build_plan(workspace))
+        .get(uri)
+        .cloned()
+        .unwrap_or(preview)
+}
+
+fn message_class_preview_dependency_inputs(
+    workspace: &WorkspaceState,
+    preview: &AnalysisSnapshot,
+) -> Vec<DocumentInput> {
+    if !workspace_supports_dependency_store_resolution(workspace) {
+        return Vec::new();
+    }
+    let Some(profile) = workspace_dependency_profile(workspace) else {
+        return Vec::new();
+    };
+    let Some(reader) = workspace_dependency_store(workspace).and_then(|store| store.reader().ok())
+    else {
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::new();
+    let mut inputs = Vec::new();
+    for candidate in collect_remote_dependency_candidates(preview) {
+        if candidate.kind != "message-class" {
+            continue;
+        }
+        let Ok(Some(record)) = reader.find_artifact_for_candidate(
+            &profile,
+            candidate.name.as_str(),
+            candidate.kind.as_str(),
+        ) else {
+            continue;
+        };
+        let input = workspace_dependency_document_input(workspace, &record);
+        if seen.insert(input.uri.to_string()) {
+            inputs.push(input);
+        }
+    }
+    inputs
 }
 
 pub fn prune_workspace_preview_snapshots(workspace: &mut WorkspaceState) {
@@ -4601,6 +4666,7 @@ fn collect_remote_dependency_candidates_for_unit(
             insert_remote_candidate(&mut deduped, candidate);
         }
     }
+    insert_message_class_dependency_candidates(&mut deduped, unit);
 
     for sql_source in &unit.sql_sources {
         if let Some(candidate) = remote_dependency_candidate_for_sql_source(sql_source) {
@@ -4669,6 +4735,7 @@ fn collect_remote_dependency_refresh_candidates_for_unit(
             insert_remote_candidate(&mut deduped, candidate);
         }
     }
+    insert_message_class_dependency_candidates(&mut deduped, unit);
 
     for sql_source in &unit.sql_sources {
         if let Some(candidate) = remote_dependency_candidate_for_sql_source(sql_source) {
@@ -4683,6 +4750,35 @@ fn collect_remote_dependency_refresh_candidates_for_unit(
     }
 
     deduped.into_values().collect()
+}
+
+fn insert_message_class_dependency_candidates(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    unit: &abap_symbols::UnitAnalysis,
+) {
+    if let Some(message_class) = &unit.message_default_class {
+        insert_message_class_dependency_candidate(deduped, message_class.name.as_ref());
+    }
+    for message in &unit.message_uses {
+        if let Some(message_class) = &message.class_name {
+            insert_message_class_dependency_candidate(deduped, message_class.as_ref());
+        }
+    }
+}
+
+fn insert_message_class_dependency_candidate(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    name: &str,
+) {
+    if is_remote_lookup_candidate(name, "message-class") {
+        insert_remote_candidate(
+            deduped,
+            RemoteDependencyCandidate {
+                name: name.to_string(),
+                kind: "message-class".to_string(),
+            },
+        );
+    }
 }
 
 fn remote_dependency_candidate_for_reference(
@@ -5767,6 +5863,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::MissingRequiredParameter
         | DiagnosticKind::InvalidOpenSqlIntoTarget
         | DiagnosticKind::InvalidOpenSqlSyntax
+        | DiagnosticKind::InvalidMessage
         | DiagnosticKind::InvalidConstructorForIteratorReuse
         | DiagnosticKind::MissingTablesDeclaration => DiagnosticSeverity::ERROR,
     }
@@ -6346,6 +6443,9 @@ pub fn hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
     if let Some(sql_ref) = snapshot.hovered_sql_name_ref_at(offset) {
         return resolved_symbol_hover(&snapshot, sql_ref);
     }
+    if let Some(message) = snapshot.hovered_message_at(offset) {
+        return resolved_symbol_hover(&snapshot, message);
+    }
     if let Some(symbol) = snapshot.hovered_resolved_symbol_at(offset) {
         return resolved_symbol_hover(&snapshot, symbol);
     }
@@ -6391,7 +6491,7 @@ fn remote_dependency_candidate_at_offset(
         .semantic()
         .refs()
         .reference_at_offset(offset)
-        && reference.resolution.is_none()
+        && (reference.resolution.is_none() || reference.kind == ReferenceKind::MessageClass)
     {
         let kind = match reference.kind {
             ReferenceKind::Include => None,
@@ -10518,6 +10618,135 @@ ENDCLASS.";
                 .iter()
                 .any(|candidate| { candidate.name == "00" && candidate.kind == "message-class" })
         );
+    }
+
+    #[test]
+    fn workspace_refresh_hydrates_message_classes_before_diagnostics() {
+        let workspace_path = temp_workspace_path("message_class_startup_hydration");
+        let source_dir = workspace_path.join("src");
+        let _ = fs::remove_dir_all(&workspace_path);
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[performance]
+mode = "full-workspace"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[[unit]]
+name = "ZMSG"
+kind = "report"
+root_file = "src/ZMSG.abap"
+"#,
+        )
+        .expect("manifest");
+        let source_text = "\
+REPORT zmsg MESSAGE-ID zmsgcls.
+
+START-OF-SELECTION.
+  MESSAGE e999(zmsgcls).
+";
+        fs::write(source_dir.join("ZMSG.abap"), source_text).expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let source_uri = normalize_lsp_uri(&format!("{workspace_uri}/src/ZMSG.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("default".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "message-class".to_string(),
+                    object_name: "ZMSGCLS".to_string(),
+                    object_uri: "/sap/bc/adt/messageclasses/zmsgcls".to_string(),
+                    object_type: "MSAG".to_string(),
+                    description: "Messages".to_string(),
+                    file_extension: "xml".to_string(),
+                    source_text: r#"
+<mc:messageClass adtcore:name="ZMSGCLS"
+    xmlns:mc="http://www.sap.com/adt/MessageClass"
+    xmlns:adtcore="http://www.sap.com/adt/core">
+  <mc:messages mc:msgno="001" mc:msgtext="Existing message"/>
+</mc:messageClass>
+"#
+                    .to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store message class");
+
+        assert!(stage_workspace_preview_snapshot(
+            &mut state,
+            &source_uri,
+            1,
+            source_text
+        ));
+        let preview = snapshot_for_uri(&state, &source_uri).expect("preview snapshot");
+        let preview_messages: Vec<_> = preview
+            .symbols
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            !preview_messages
+                .iter()
+                .any(|message| message.contains("unknown message class")),
+            "{preview_messages:#?}"
+        );
+        assert!(
+            preview_messages
+                .iter()
+                .any(|message| message.contains("unknown message id '999'")),
+            "{preview_messages:#?}"
+        );
+        state
+            .workspaces
+            .get_mut(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace")
+            .preview_snapshots
+            .clear();
+
+        refresh_workspace(&mut state, &workspace_uri);
+        let snapshot = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .and_then(|workspace| workspace.cache.get(&source_uri))
+            .expect("source snapshot");
+        let messages: Vec<_> = snapshot
+            .symbols
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.contains("unknown message class")),
+            "{messages:#?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("unknown message id '999'")),
+            "{messages:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

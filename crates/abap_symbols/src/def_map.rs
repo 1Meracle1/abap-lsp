@@ -297,6 +297,30 @@ pub struct ReferenceData {
     pub resolution: Option<Resolution>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageClassUseData {
+    pub name: Arc<str>,
+    pub range: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageUseData {
+    pub range: TextRange,
+    pub class_name: Option<Arc<str>>,
+    pub class_range: Option<TextRange>,
+    pub id: Option<Arc<str>>,
+    pub id_range: Option<TextRange>,
+    pub with_arg_ranges: Vec<TextRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageClassEntryData {
+    pub class_name: Arc<str>,
+    pub id: Arc<str>,
+    pub text: Arc<str>,
+    pub range: TextRange,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticKind {
     DuplicateDeclaration,
@@ -326,6 +350,7 @@ pub enum DiagnosticKind {
     InvalidOpenSqlIntoTarget,
     /// Open SQL statement mixes legacy and strict/new syntax forms.
     InvalidOpenSqlSyntax,
+    InvalidMessage,
     InvalidConstructorForIteratorReuse,
     MissingTablesDeclaration,
     UnreachableCode,
@@ -990,6 +1015,9 @@ pub struct UnitAnalysis {
     pub symbols: Vec<SymbolData>,
     pub structures: Vec<StructureData>,
     pub references: Vec<ReferenceData>,
+    pub message_default_class: Option<MessageClassUseData>,
+    pub message_uses: Vec<MessageUseData>,
+    pub message_class_entries: Vec<MessageClassEntryData>,
     pub diagnostics: Vec<Diagnostic>,
     pub include_edges: Vec<IncludeEdge>,
     pub table_work_areas: Vec<TableWorkAreaData>,
