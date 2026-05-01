@@ -493,15 +493,12 @@ fn select_header_has_into_table_target(
         if !(is_keyword(source, token, "into") || is_keyword(source, token, "appending")) {
             return false;
         }
-        let mut target_idx = advance_select_target_prefix(source, tokens, idx + 1);
-        if tokens.get(target_idx).map(|token| token.kind) == Some(TokenKind::At) {
-            target_idx = skip_trivia(tokens, target_idx + 1);
-        }
+        let target_prefix_end = advance_select_target_prefix(source, tokens, idx + 1);
         tokens
             .get(skip_trivia(tokens, idx + 1))
             .is_some_and(|next| is_keyword(source, next, "table"))
             || tokens
-                .get(target_idx.saturating_sub(1))
+                .get(target_prefix_end.saturating_sub(1))
                 .is_some_and(|prev| is_keyword(source, prev, "table"))
     })
 }
@@ -16722,6 +16719,20 @@ ENDFORM.",
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
             1
+        );
+    }
+
+    #[test]
+    fn parses_host_escaped_into_corresponding_table_as_flat_select() {
+        let parsed = crate::parse(
+            "SELECT a~objid\n  INTO CORRESPONDING FIELDS OF TABLE @lt_rows\n  FROM ztab AS a.\nIF ok = abap_true.\n  WRITE ok.\nENDIF.\nSELECT * FROM demo INTO wa.\n  WRITE wa.\nENDSELECT.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::SelectStmt),
+            2
         );
     }
 
