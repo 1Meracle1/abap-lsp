@@ -94,6 +94,18 @@ cargo run -p abap_adt_cli -- children package zpackage
 Connection values can come from CLI flags, environment variables, or a
 repository-local `.env` file. See [docs/abap-adt-cli.md](docs/abap-adt-cli.md).
 
+### LSP Replay
+
+Use `tools/lsp_replay/lsp_replay.py` to reproduce editor workflows over LSP:
+
+```bat
+python tools\lsp_replay\lsp_replay.py repro.json
+```
+
+The JSON scenario can initialize a workspace, wait for ABAP analysis, open or
+change documents, and request hover, completion, definition, references, or raw
+LSP/custom methods. See [tools/lsp_replay/README.md](tools/lsp_replay/README.md).
+
 ## Workspace Model
 
 The preferred local layout is:
