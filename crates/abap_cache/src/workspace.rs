@@ -2181,7 +2181,7 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
             Ok(entries) => entries.flatten().collect(),
             Err(_) => continue,
         };
-        entries.sort_by_key(|entry| entry.path());
+        entries.sort_by_key(|entry| entry.file_name());
 
         for entry in entries {
             let path = entry.path();
@@ -2198,15 +2198,16 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
             let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
+            let file_key = file_name.to_ascii_lowercase();
             let artifact = LocalExportArtifact {
                 kind_hint: kind_hint.clone(),
                 object_name: infer_object_name_from_manifest_path(file_name)
                     .unwrap_or_else(|| percent_decode(file_name)),
-                path: path.clone(),
+                path,
             };
             index
                 .artifacts_by_file_name
-                .entry(file_name.to_ascii_lowercase())
+                .entry(file_key)
                 .or_default()
                 .push(artifact);
         }
