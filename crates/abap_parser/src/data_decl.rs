@@ -75,7 +75,14 @@ const SELECT_OPTIONS_FOR_STOP_KEYWORDS: &[&str] = &[
     "VISIBLE",
 ];
 
-const DATA_TYPE_REF_STOP_KEYWORDS: &[&str] = &["OCCURS", "VALUE"];
+const DATA_TYPE_REF_STOP_KEYWORDS: &[&str] = &["OCCURS", "VALUE", "ASSOCIATION"];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StructuredDeclFlavor {
+    Struct,
+    Enum,
+    Mesh,
+}
 
 /// If `tokens[idx]` begins a classic `DATA` declaration (optionally `DATA:` and
 /// comma-separated clauses),
@@ -568,6 +575,7 @@ fn collect_raw_decl_tail(
     mut idx: usize,
     children: &mut Vec<NodeId>,
 ) -> usize {
+    let mut saw_association = false;
     while let Some(tok) = tokens.get(idx) {
         if matches!(
             tok.kind,
@@ -575,7 +583,10 @@ fn collect_raw_decl_tail(
         ) {
             break;
         }
-        if token_begins_line(tok) {
+        if tok.kind == TokenKind::Ident && is_keyword(source, tok, "association") {
+            saw_association = true;
+        }
+        if token_begins_line(tok) && !saw_association {
             let next_kind = tokens.get(idx + 1).map(|next| next.kind);
             if is_definite_stmt_lead_keyword(source, tok)
                 || matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
@@ -1146,25 +1157,7 @@ fn parse_structured_decl(
     allow_value: bool,
 ) -> Option<(NodeId, usize)> {
     let begin_tok = tokens.get(idx)?;
-    if !is_keyword(source, begin_tok, "begin") {
-        return None;
-    }
-    if !tokens
-        .get(idx + 1)
-        .is_some_and(|tok| is_keyword(source, tok, "of"))
-    {
-        return None;
-    }
-    if tokens.get(idx + 2)?.kind != TokenKind::Ident {
-        return None;
-    }
-
-    let mut children = vec![
-        token_leaf(b, begin_tok),
-        token_leaf(b, tokens.get(idx + 1)?),
-        token_leaf(b, tokens.get(idx + 2)?),
-    ];
-    let mut i = idx + 3;
+    let (mut children, mut i, flavor) = parse_structured_decl_header(b, source, tokens, idx)?;
     while let Some(tok) = tokens.get(i) {
         if matches!(
             tok.kind,
@@ -1191,26 +1184,19 @@ fn parse_structured_decl(
         if tok.kind == TokenKind::Eof {
             return None;
         }
-        if is_keyword(source, tok, "end")
-            && tokens
-                .get(i + 1)
-                .is_some_and(|next| is_keyword(source, next, "of"))
+        if let Some((end_children, next_i)) =
+            parse_structured_decl_end(b, source, tokens, i, flavor)
         {
-            let end_name = tokens.get(i + 2)?;
-            if end_name.kind != TokenKind::Ident {
-                return None;
-            }
-            children.push(token_leaf(b, tok));
-            children.push(token_leaf(b, tokens.get(i + 1)?));
-            children.push(token_leaf(b, end_name));
+            children.extend(end_children);
             let node = b.branch(
                 node_kind,
-                begin_tok.range.start..end_name.range.end,
+                begin_tok.range.start..b.span(*children.last().unwrap()).end,
                 &children,
             );
-            return Some((node, i + 3));
+            return Some((node, next_i));
         }
 
+        let component_allow_value = allow_value || flavor == StructuredDeclFlavor::Enum;
         let (component, next_i) = parse_structured_decl(
             b,
             source,
@@ -1218,10 +1204,12 @@ fn parse_structured_decl(
             i,
             SyntaxKind::StructuredDecl,
             allow_like,
-            allow_value,
+            component_allow_value,
         )
         .or_else(|| parse_structured_include_clause(b, source, tokens, i))
-        .or_else(|| parse_structured_field_clause(b, source, tokens, i, allow_like, allow_value))?;
+        .or_else(|| {
+            parse_structured_field_clause(b, source, tokens, i, allow_like, component_allow_value)
+        })?;
         children.push(component);
         i = next_i;
 
@@ -1239,6 +1227,146 @@ fn parse_structured_decl(
         }
     }
     None
+}
+
+fn parse_structured_decl_header(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(Vec<NodeId>, usize, StructuredDeclFlavor)> {
+    let begin_tok = tokens.get(idx)?;
+    if !is_keyword(source, begin_tok, "begin")
+        || !tokens
+            .get(idx + 1)
+            .is_some_and(|tok| is_keyword(source, tok, "of"))
+    {
+        return None;
+    }
+
+    let mut children = vec![
+        token_leaf(b, begin_tok),
+        token_leaf(b, tokens.get(idx + 1)?),
+    ];
+    let mut i = idx + 2;
+    let flavor = if tokens
+        .get(i + 1)
+        .is_some_and(|tok| tok.kind == TokenKind::Ident)
+        && tokens
+            .get(i)
+            .is_some_and(|tok| is_keyword(source, tok, "enum"))
+    {
+        children.push(token_leaf(b, tokens.get(i)?));
+        i += 1;
+        StructuredDeclFlavor::Enum
+    } else if tokens
+        .get(i + 1)
+        .is_some_and(|tok| tok.kind == TokenKind::Ident)
+        && tokens
+            .get(i)
+            .is_some_and(|tok| is_keyword(source, tok, "mesh"))
+    {
+        children.push(token_leaf(b, tokens.get(i)?));
+        i += 1;
+        StructuredDeclFlavor::Mesh
+    } else {
+        StructuredDeclFlavor::Struct
+    };
+
+    if tokens.get(i)?.kind != TokenKind::Ident {
+        return None;
+    }
+    children.push(token_leaf(b, tokens.get(i)?));
+    i += 1;
+
+    while let Some(tok) = tokens.get(i) {
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
+            break;
+        }
+        if flavor == StructuredDeclFlavor::Enum
+            && is_keyword(source, tok, "base")
+            && tokens
+                .get(i + 1)
+                .is_some_and(|next| is_keyword(source, next, "type"))
+        {
+            children.push(token_leaf(b, tok));
+            children.push(token_leaf(b, tokens.get(i + 1)?));
+            let (type_ref, next_i) =
+                parse_type_ref_tokens(b, source, tokens, i + 2, &["STRUCTURE"])?;
+            children.push(type_ref);
+            i = next_i;
+            continue;
+        }
+        children.push(token_leaf(b, tok));
+        i += 1;
+    }
+
+    Some((children, i, flavor))
+}
+
+fn parse_structured_decl_end(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    flavor: StructuredDeclFlavor,
+) -> Option<(Vec<NodeId>, usize)> {
+    let end_tok = tokens.get(idx)?;
+    if !is_keyword(source, end_tok, "end")
+        || !tokens
+            .get(idx + 1)
+            .is_some_and(|tok| is_keyword(source, tok, "of"))
+    {
+        return None;
+    }
+
+    let mut children = vec![token_leaf(b, end_tok), token_leaf(b, tokens.get(idx + 1)?)];
+    let mut i = idx + 2;
+    match flavor {
+        StructuredDeclFlavor::Enum => {
+            if !tokens
+                .get(i)
+                .is_some_and(|tok| is_keyword(source, tok, "enum"))
+            {
+                return None;
+            }
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+        }
+        StructuredDeclFlavor::Mesh => {
+            if !tokens
+                .get(i)
+                .is_some_and(|tok| is_keyword(source, tok, "mesh"))
+            {
+                return None;
+            }
+            children.push(token_leaf(b, tokens.get(i)?));
+            i += 1;
+        }
+        StructuredDeclFlavor::Struct => {}
+    }
+
+    if tokens.get(i)?.kind != TokenKind::Ident {
+        return None;
+    }
+    children.push(token_leaf(b, tokens.get(i)?));
+    i += 1;
+
+    while let Some(tok) = tokens.get(i) {
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
+            break;
+        }
+        children.push(token_leaf(b, tok));
+        i += 1;
+    }
+
+    Some((children, i))
 }
 
 fn consume_structured_decl_period_separator(
@@ -1546,24 +1674,13 @@ fn parse_types_structured_block(
     idx: usize,
 ) -> Option<(NodeId, usize)> {
     let begin_tok = tokens.get(idx)?;
-    let of_tok = tokens.get(idx + 1)?;
-    let name_tok = tokens.get(idx + 2)?;
-    let begin_period = tokens.get(idx + 3)?;
-    if !is_keyword(source, begin_tok, "begin")
-        || !is_keyword(source, of_tok, "of")
-        || name_tok.kind != TokenKind::Ident
-        || begin_period.kind != TokenKind::Period
-    {
+    let (mut children, header_i, flavor) = parse_structured_decl_header(b, source, tokens, idx)?;
+    if tokens.get(header_i).map(|t| t.kind) != Some(TokenKind::Period) {
         return None;
     }
 
-    let mut children = vec![
-        token_leaf(b, begin_tok),
-        token_leaf(b, of_tok),
-        token_leaf(b, name_tok),
-        token_leaf(b, begin_period),
-    ];
-    let mut i = idx + 4;
+    children.push(token_leaf(b, tokens.get(header_i)?));
+    let mut i = header_i + 1;
 
     loop {
         while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
@@ -1575,23 +1692,18 @@ fn parse_types_structured_block(
         if tok.kind == TokenKind::Eof {
             return None;
         }
-        if is_keyword(source, tok, "end")
-            && tokens
-                .get(i + 1)
-                .is_some_and(|next| is_keyword(source, next, "of"))
-            && tokens.get(i + 2)?.kind == TokenKind::Ident
-            && tokens.get(i + 3).map(|t| t.kind) == Some(TokenKind::Period)
+        if let Some((end_children, next_i)) =
+            parse_structured_decl_end(b, source, tokens, i, flavor)
+            && tokens.get(next_i).map(|t| t.kind) == Some(TokenKind::Period)
         {
-            children.push(token_leaf(b, tok));
-            children.push(token_leaf(b, tokens.get(i + 1)?));
-            children.push(token_leaf(b, tokens.get(i + 2)?));
-            children.push(token_leaf(b, tokens.get(i + 3)?));
+            children.extend(end_children);
+            children.push(token_leaf(b, tokens.get(next_i)?));
             let node = b.branch(
                 SyntaxKind::StructuredDecl,
-                begin_tok.range.start..tokens.get(i + 3)?.range.end,
+                begin_tok.range.start..tokens.get(next_i)?.range.end,
                 &children,
             );
-            return Some((node, i + 4));
+            return Some((node, next_i + 1));
         }
 
         if is_keyword(source, tok, "include") {
@@ -1610,7 +1722,8 @@ fn parse_types_structured_block(
             if tokens.get(i).map(|t| t.kind) == Some(TokenKind::Colon) {
                 i += 1;
             }
-            let next_i = parse_structured_types_component_run(b, source, tokens, i, &mut children)?;
+            let next_i =
+                parse_structured_types_component_run(b, source, tokens, i, flavor, &mut children)?;
             i = next_i;
             continue;
         }
@@ -1624,6 +1737,7 @@ fn parse_structured_types_component_run(
     source: &str,
     tokens: &[Token],
     mut idx: usize,
+    flavor: StructuredDeclFlavor,
     out: &mut Vec<NodeId>,
 ) -> Option<usize> {
     loop {
@@ -1644,6 +1758,7 @@ fn parse_structured_types_component_run(
             return Some(idx);
         }
 
+        let allow_value = flavor == StructuredDeclFlavor::Enum;
         let (component, next_i) = parse_structured_decl(
             b,
             source,
@@ -1651,10 +1766,10 @@ fn parse_structured_types_component_run(
             idx,
             SyntaxKind::StructuredDecl,
             true,
-            false,
+            allow_value,
         )
         .or_else(|| parse_structured_include_clause(b, source, tokens, idx))
-        .or_else(|| parse_structured_field_clause(b, source, tokens, idx, true, false))?;
+        .or_else(|| parse_structured_field_clause(b, source, tokens, idx, true, allow_value))?;
         out.push(component);
         idx = next_i;
 
@@ -2590,6 +2705,63 @@ ENDMETHOD.";
             1
         );
         assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 1);
+    }
+
+    #[test]
+    fn types_enum_chained_accepts_base_type_and_value_initial() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF ENUM ty_flag BASE TYPE abap_bool, false VALUE IS INITIAL, true VALUE abap_true, END OF ENUM ty_flag.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::TypesTypedClause),
+            1
+        );
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::ValueClause), 2);
+    }
+
+    #[test]
+    fn types_enum_block_form_accepts_types_prefixes() {
+        let src = "\
+TYPES BEGIN OF ENUM ty_status.\n\
+TYPES open.\n\
+TYPES closed.\n\
+TYPES END OF ENUM ty_status.";
+        let file = tree_ok(src);
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
+    }
+
+    #[test]
+    fn types_enum_accepts_structure_addition_on_begin_and_end() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF ENUM ty_status STRUCTURE status, open VALUE IS INITIAL, closed VALUE 1, END OF ENUM ty_status STRUCTURE status.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
+    }
+
+    #[test]
+    fn types_mesh_chained_accepts_association_using_key() {
+        let file = tree_ok(
+            "TYPES: BEGIN OF MESH ty_graph, nodes TYPE tt_node ASSOCIATION to_edges TO edges ON id = source USING KEY by_source, edges TYPE tt_edge, END OF MESH ty_graph.",
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypesDecl), 1);
+        assert_eq!(
+            file.count_kind(file.root(), SyntaxKind::StructuredFieldClause),
+            2
+        );
+        assert_eq!(file.count_kind(file.root(), SyntaxKind::TypeRefSimple), 2);
     }
 
     #[test]

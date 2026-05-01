@@ -13,7 +13,9 @@ use abap_ast::{
 use abap_lexer::{TextRange, TokenKind};
 
 use super::context::DeclContext;
-use super::{Collector, PendingStructure, SyntaxTokenInfo};
+use super::{
+    Collector, PendingStructure, PendingStructureField, PendingStructureMember, SyntaxTokenInfo,
+};
 
 pub(super) struct DeclLowering<'ctx, 'a> {
     ctx: DeclContext<'ctx, 'a>,
@@ -590,6 +592,12 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
                         }
                     }
                     SyntaxKind::StructuredDecl => {
+                        if kind == SymbolKind::TypeDef
+                            && self.declare_enum_decl_symbol(child_id, decl_scope)
+                        {
+                            self.ctx.walk_children(child_id, scope);
+                            continue;
+                        }
                         self.declare_structured_decl_symbol(child_id, decl_scope, kind);
                         self.ctx.walk_children(child_id, scope);
                     }
@@ -665,6 +673,10 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         scope: ScopeId,
         kind: SymbolKind,
     ) {
+        if kind == SymbolKind::TypeDef && self.declare_enum_decl_symbol(node, scope) {
+            return;
+        }
+
         if let Some((name, range, members)) = self.ctx.begin_of_clause_parts(node, scope) {
             let structure = self.ctx.register_structure(
                 scope,
@@ -724,6 +736,163 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             self.ctx
                 .add_structured_decl_end_reference(node, scope, kind);
         }
+    }
+
+    fn declare_enum_decl_symbol(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) -> bool {
+        let Some((enum_name, enum_range)) = self.enum_decl_name(node) else {
+            return false;
+        };
+        self.ctx.declare_symbol(
+            scope,
+            Arc::clone(&enum_name),
+            SymbolKind::TypeDef,
+            enum_range,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let enum_type = FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::clone(&enum_name),
+            field_path: Vec::new(),
+        };
+
+        if let Some((structure_name, structure_range)) = self.enum_structure_name(node) {
+            let members = self
+                .enum_member_clauses(node)
+                .into_iter()
+                .filter_map(|member| self.enum_structure_member(member, &enum_type))
+                .collect::<Vec<_>>();
+            let structure = self.ctx.register_structure(
+                scope,
+                PendingStructure {
+                    name: Arc::clone(&structure_name),
+                    members,
+                },
+            );
+            self.ctx.declare_symbol(
+                scope,
+                structure_name,
+                SymbolKind::Constant,
+                structure_range,
+                Some(structure),
+                None,
+                None,
+                None,
+            );
+        } else {
+            for member in self.enum_member_clauses(node) {
+                self.declare_enum_constant(member, scope, &enum_name, &enum_type);
+            }
+        }
+
+        self.ctx
+            .add_structured_decl_end_reference(node, scope, SymbolKind::TypeDef);
+        true
+    }
+
+    fn enum_decl_name(&self, node: abap_ast::arena::NodeId) -> Option<(Arc<str>, TextRange)> {
+        let tokens = self.direct_non_comment_tokens(node);
+        if !self.token_text_is(tokens.first().copied(), "begin")
+            || !self.token_text_is(tokens.get(1).copied(), "of")
+            || !self.token_text_is(tokens.get(2).copied(), "enum")
+        {
+            return None;
+        }
+        self.ctx.node_name(tokens.get(3).copied()?)
+    }
+
+    fn enum_structure_name(&self, node: abap_ast::arena::NodeId) -> Option<(Arc<str>, TextRange)> {
+        let tokens = self.direct_non_comment_tokens(node);
+        let stop = tokens
+            .iter()
+            .position(|&token| {
+                self.token_text_is(Some(token), ".") || self.token_text_is(Some(token), ",")
+            })
+            .unwrap_or(tokens.len());
+        for idx in 4..stop {
+            if self.token_text_is(tokens.get(idx).copied(), "structure")
+                && let Some(name) = tokens.get(idx + 1).copied()
+            {
+                return self.ctx.node_name(name);
+            }
+        }
+        None
+    }
+
+    fn enum_member_clauses(&self, node: abap_ast::arena::NodeId) -> Vec<abap_ast::arena::NodeId> {
+        self.ctx
+            .file()
+            .children(node)
+            .filter(|&child| self.ctx.file().kind(child) == SyntaxKind::StructuredFieldClause)
+            .collect()
+    }
+
+    fn enum_structure_member(
+        &self,
+        node: abap_ast::arena::NodeId,
+        enum_type: &FieldTypeRefData,
+    ) -> Option<PendingStructureMember> {
+        let clause = DeclClause::cast(self.ctx.syntax(node))?;
+        let name_node = clause.name()?;
+        Some(PendingStructureMember::Field(PendingStructureField {
+            name: name_node.name(self.ctx.source())?,
+            decl_range: name_node.range(),
+            structure: None,
+            type_ref: Some(enum_type.clone()),
+            is_key: false,
+            value_clause_display: self.ctx.value_clause_display_from_typed_clause(node),
+        }))
+    }
+
+    fn declare_enum_constant(
+        &mut self,
+        node: abap_ast::arena::NodeId,
+        scope: ScopeId,
+        enum_name: &Arc<str>,
+        enum_type: &FieldTypeRefData,
+    ) {
+        let Some(clause) = DeclClause::cast(self.ctx.syntax(node)) else {
+            return;
+        };
+        let Some(name_node) = clause.name() else {
+            return;
+        };
+        let Some(name) = name_node.name(self.ctx.source()) else {
+            return;
+        };
+        self.ctx.declare_symbol(
+            scope,
+            name,
+            SymbolKind::Constant,
+            name_node.range(),
+            None,
+            Some(enum_type.clone()),
+            Some(Arc::clone(enum_name)),
+            self.ctx.value_clause_display_from_typed_clause(node),
+        );
+    }
+
+    fn direct_non_comment_tokens(
+        &self,
+        node: abap_ast::arena::NodeId,
+    ) -> Vec<abap_ast::arena::NodeId> {
+        self.ctx
+            .file()
+            .children(node)
+            .filter(|&child| {
+                self.ctx.file().kind(child) == SyntaxKind::Token
+                    && self.ctx.syntax(child).token_kind() != Some(TokenKind::Comment)
+            })
+            .collect()
+    }
+
+    fn token_text_is(&self, node: Option<abap_ast::arena::NodeId>, expected: &str) -> bool {
+        node.and_then(|node| self.ctx.syntax(node).text(self.ctx.source()))
+            .is_some_and(|text| text.eq_ignore_ascii_case(expected))
     }
 
     pub(super) fn walk_inline_decl(&mut self, node: abap_ast::arena::NodeId, scope: ScopeId) {

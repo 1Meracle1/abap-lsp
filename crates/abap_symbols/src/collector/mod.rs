@@ -1243,14 +1243,10 @@ impl<'a> Collector<'a> {
         &self,
         node: NodeId,
     ) -> Option<((Arc<str>, TextRange), (Arc<str>, TextRange))> {
-        let tokens: Vec<_> = self
-            .file
-            .children(node)
-            .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
-            .collect();
+        let tokens = self.structured_decl_token_nodes(node);
         let begin_tok = tokens.first().copied()?;
         let of_tok = tokens.get(1).copied()?;
-        let name_tok = tokens.get(2).copied()?;
+        let name_tok = self.structured_decl_name_token(&tokens)?;
         let begin_text = self.syntax(begin_tok).text(self.source)?;
         let of_text = self.syntax(of_tok).text(self.source)?;
         if !begin_text.eq_ignore_ascii_case("begin") || !of_text.eq_ignore_ascii_case("of") {
@@ -1261,12 +1257,7 @@ impl<'a> Collector<'a> {
             return None;
         }
 
-        let end_name_tok = tokens.windows(3).rev().find_map(|window| {
-            let end_text = self.syntax(window[0]).text(self.source)?;
-            let of_text = self.syntax(window[1]).text(self.source)?;
-            (end_text.eq_ignore_ascii_case("end") && of_text.eq_ignore_ascii_case("of"))
-                .then_some(window[2])
-        })?;
+        let end_name_tok = self.structured_decl_end_name_token(&tokens)?;
         if !self.syntax_token_is_identifier_node(end_name_tok) {
             return None;
         }
@@ -1326,29 +1317,25 @@ impl<'a> Collector<'a> {
     }
 
     fn structured_decl_name_range(&self, node: NodeId) -> Option<TextRange> {
-        let mut tokens = self
-            .file
-            .children(node)
-            .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
-            .map(|child| self.syntax(child));
-        let begin_tok = tokens.next()?;
-        let of_tok = tokens.next()?;
-        let name_tok = tokens.next()?;
-        let begin_text = begin_tok.text(self.source)?;
-        let of_text = of_tok.text(self.source)?;
-        let name_text = name_tok.text(self.source)?;
+        let tokens = self.structured_decl_token_nodes(node);
+        let begin_tok = tokens.first().copied()?;
+        let of_tok = tokens.get(1).copied()?;
+        let name_tok = self.structured_decl_name_token(&tokens)?;
+        let part_tok = tokens.get(3).copied();
+        let begin_text = self.syntax(begin_tok).text(self.source)?;
+        let of_text = self.syntax(of_tok).text(self.source)?;
+        let name_text = self.syntax(name_tok).text(self.source)?;
         if !begin_text.eq_ignore_ascii_case("begin")
             || !of_text.eq_ignore_ascii_case("of")
             || (name_text.eq_ignore_ascii_case("common")
-                && tokens
-                    .next()
-                    .and_then(|token| token.text(self.source))
+                && part_tok
+                    .and_then(|token| self.syntax(token).text(self.source))
                     .is_some_and(|text| text.eq_ignore_ascii_case("part")))
             || matches!(name_text, "." | "," | ":" | "-")
         {
             return None;
         }
-        Some(name_tok.range())
+        Some(self.file.range(name_tok))
     }
 
     fn pending_structure_from_node(
@@ -1356,12 +1343,8 @@ impl<'a> Collector<'a> {
         node: NodeId,
         scope: ScopeId,
     ) -> Option<PendingStructure> {
-        let (name, _) = self.node_name(
-            self.file
-                .children(node)
-                .filter(|&child| self.file.kind(child) == SyntaxKind::Token)
-                .nth(2)?,
-        )?;
+        let tokens = self.structured_decl_token_nodes(node);
+        let (name, _) = self.node_name(self.structured_decl_name_token(&tokens)?)?;
         let mut members = Vec::new();
         for child in self.file.children(node) {
             match self.file.kind(child) {
@@ -1389,6 +1372,60 @@ impl<'a> Collector<'a> {
             }
         }
         Some(PendingStructure { name, members })
+    }
+
+    fn structured_decl_token_nodes(&self, node: NodeId) -> Vec<NodeId> {
+        self.file
+            .children(node)
+            .filter(|&child| {
+                self.file.kind(child) == SyntaxKind::Token
+                    && self.syntax(child).token_kind() != Some(TokenKind::Comment)
+            })
+            .collect()
+    }
+
+    fn structured_decl_marker(&self, tokens: &[NodeId]) -> Option<&'static str> {
+        let marker = tokens.get(2).copied()?;
+        let name = tokens.get(3).copied()?;
+        if !self.syntax_token_is_identifier_node(name) {
+            return None;
+        }
+        let marker_text = self.syntax(marker).text(self.source)?;
+        if marker_text.eq_ignore_ascii_case("enum") {
+            Some("enum")
+        } else if marker_text.eq_ignore_ascii_case("mesh") {
+            Some("mesh")
+        } else {
+            None
+        }
+    }
+
+    fn structured_decl_name_token(&self, tokens: &[NodeId]) -> Option<NodeId> {
+        if self.structured_decl_marker(tokens).is_some() {
+            tokens.get(3).copied()
+        } else {
+            tokens.get(2).copied()
+        }
+    }
+
+    fn structured_decl_end_name_token(&self, tokens: &[NodeId]) -> Option<NodeId> {
+        if let Some(marker) = self.structured_decl_marker(tokens) {
+            return tokens.windows(4).rev().find_map(|window| {
+                let end_text = self.syntax(window[0]).text(self.source)?;
+                let of_text = self.syntax(window[1]).text(self.source)?;
+                let marker_text = self.syntax(window[2]).text(self.source)?;
+                (end_text.eq_ignore_ascii_case("end")
+                    && of_text.eq_ignore_ascii_case("of")
+                    && marker_text.eq_ignore_ascii_case(marker))
+                .then_some(window[3])
+            });
+        }
+        tokens.windows(3).rev().find_map(|window| {
+            let end_text = self.syntax(window[0]).text(self.source)?;
+            let of_text = self.syntax(window[1]).text(self.source)?;
+            (end_text.eq_ignore_ascii_case("end") && of_text.eq_ignore_ascii_case("of"))
+                .then_some(window[2])
+        })
     }
 
     fn pending_structure_field_from_clause(

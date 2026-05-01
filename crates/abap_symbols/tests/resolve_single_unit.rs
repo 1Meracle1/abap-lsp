@@ -8638,6 +8638,122 @@ TYPES: BEGIN OF ts_obj_ids,\n\
 }
 
 #[test]
+fn enum_type_declares_type_and_constants() {
+    let src = "\
+TYPES: BEGIN OF ENUM ty_status,\n\
+         open,\n\
+         closed,\n\
+       END OF ENUM ty_status.\n\
+DATA gv_status TYPE ty_status.\n\
+gv_status = open.";
+    let unit = analyze_ok(src, "file:///enum_constants.abap");
+
+    assert!(unit.symbols.iter().any(|symbol| {
+        symbol.kind == SymbolKind::TypeDef && symbol.name.as_ref() == "ty_status"
+    }));
+    assert!(
+        unit.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Constant && symbol.name.as_ref() == "open"
+        })
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn enum_structure_addition_declares_constant_structure() {
+    let src = "\
+TYPES: BEGIN OF ENUM ty_status STRUCTURE status,\n\
+         open VALUE IS INITIAL,\n\
+         closed VALUE 1,\n\
+       END OF ENUM ty_status STRUCTURE status.\n\
+DATA gv_status TYPE ty_status.\n\
+gv_status = status-closed.";
+    let unit = analyze_ok(src, "file:///enum_structure.abap");
+
+    let status = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Constant && symbol.name.as_ref() == "status")
+        .expect("enum structure constant");
+    let structure = unit.structure(status.structure.expect("structure metadata"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "open")
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "closed")
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                || diag.kind == DiagnosticKind::UnknownField
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn mesh_type_declares_mesh_nodes_as_structure_fields() {
+    let src = "\
+TYPES: BEGIN OF ty_node,\n\
+         id TYPE i,\n\
+       END OF ty_node.\n\
+TYPES: BEGIN OF ty_edge,\n\
+         source TYPE i,\n\
+         target TYPE i,\n\
+       END OF ty_edge.\n\
+TYPES tt_node TYPE SORTED TABLE OF ty_node WITH UNIQUE KEY id.\n\
+TYPES tt_edge TYPE STANDARD TABLE OF ty_edge WITH EMPTY KEY.\n\
+TYPES: BEGIN OF MESH ty_graph,\n\
+         nodes TYPE tt_node ASSOCIATION to_edges TO edges ON id = source USING KEY id,\n\
+         edges TYPE tt_edge,\n\
+       END OF MESH ty_graph.\n\
+DATA graph TYPE ty_graph.\n\
+graph-nodes = graph-nodes.";
+    let unit = analyze_ok(src, "file:///mesh_type.abap");
+
+    let graph_type = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::TypeDef && symbol.name.as_ref() == "ty_graph")
+        .expect("mesh type");
+    let structure = unit.structure(graph_type.structure.expect("mesh structure"));
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "nodes")
+    );
+    assert!(
+        structure
+            .fields
+            .iter()
+            .any(|field| field.name.as_ref() == "edges")
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                || diag.kind == DiagnosticKind::UnknownField
+        }),
+        "unexpected diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn reports_type_reference_to_type_declared_later_in_same_unit() {
     let src = "\
 DATA: ls_object_src TYPE ts_obj_ids.\n\

@@ -1443,7 +1443,12 @@ impl<'a> DeclClause<'a> {
             .filter(|token| token.token_kind() != Some(TokenKind::Comment));
         let begin = tokens.next()?;
         let of = tokens.next()?;
-        let name = tokens.next()?;
+        let mut name = tokens.next()?;
+        if name.text(source).is_some_and(|text| {
+            text.eq_ignore_ascii_case("enum") || text.eq_ignore_ascii_case("mesh")
+        }) {
+            name = tokens.next()?;
+        }
         let part = tokens.next();
         if !begin
             .text(source)
