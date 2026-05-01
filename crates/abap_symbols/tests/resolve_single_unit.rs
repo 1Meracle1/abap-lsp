@@ -2,9 +2,9 @@ use abap_parser::parse;
 
 use abap_symbols::{
     DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId,
-    SqlDynamicFragmentKind, SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlSourceKind,
-    SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, ValueFlowKind, analyze_project,
-    analyze_project_from_units, analyze_unit, build_project_routine_analysis,
+    SqlDynamicFragmentKind, SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlResolution,
+    SqlSourceKind, SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, ValueFlowKind,
+    analyze_project, analyze_project_from_units, analyze_unit, build_project_routine_analysis,
 };
 
 fn analyze(src: &str, uri: &str) -> abap_symbols::UnitAnalysis {
@@ -3045,6 +3045,91 @@ WRITE lt_flights.
         }),
         "unexpected CTE source verification diagnostic: {:?}",
         unit.diagnostics
+    );
+}
+
+#[test]
+fn collects_open_sql_755_data_source_semantics() {
+    let src = r#"
+TYPES: BEGIN OF ty_carrier,
+         carrid TYPE c LENGTH 3,
+       END OF ty_carrier.
+DATA carriers TYPE STANDARD TABLE OF ty_carrier WITH EMPTY KEY.
+DATA lv_tz TYPE string.
+DATA lv_currcode TYPE string.
+
+SELECT FROM @carriers AS c
+       FIELDS c~carrid
+       INTO TABLE @DATA(result_itab).
+
+SELECT FROM demo_cds_assoc_sairport_tz( tz = @lv_tz )
+            \_spfli
+            \_scarr[ currcode = @lv_currcode ] AS scarr
+       FIELDS carrname
+       INTO TABLE @DATA(result_cds).
+
+WITH
+  +cte AS ( SELECT *
+              FROM demo_cds_assoc_spfli_scarr )
+       WITH ASSOCIATIONS ( \_scarr )
+  SELECT carrid
+         FROM +cte\_scarr AS scarr
+         INTO TABLE @DATA(result_cte).
+
+SELECT hierarchy~*, hierarchy_level
+       FROM HIERARCHY( SOURCE demo_cds_parent_child_source
+                       CHILD TO PARENT ASSOCIATION _relat
+                       START WHERE id = 'A'
+                       MULTIPLE PARENTS ALLOWED ) AS hierarchy
+       INTO TABLE @DATA(result_hierarchy).
+"#;
+    let unit = analyze_ok(src, "file:///sql_755_sources.abap");
+
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "carriers"
+            && source.alias.as_deref() == Some("c")
+            && source.resolution == SqlResolution::InternalTable
+    }));
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "demo_cds_assoc_sairport_tz"
+            && source.alias.as_deref() == Some("scarr")
+            && source.resolution == SqlResolution::External
+    }));
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "+cte" && source.resolution == SqlResolution::LocalCte
+    }));
+    assert!(unit.sql_sources.iter().any(|source| {
+        source.name.as_ref() == "hierarchy"
+            && source.alias.as_deref() == Some("hierarchy")
+            && source.resolution == SqlResolution::Hierarchy
+    }));
+    for name in ["carriers", "lv_tz", "lv_currcode"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved host reference {name}: {:?}",
+            unit.references
+        );
+    }
+    for local_source in ["carriers", "+cte", "hierarchy"] {
+        assert!(
+            !unit.sql_name_refs.iter().any(|reference| {
+                reference.kind == SqlNameRefKind::Source && reference.name.as_ref() == local_source
+            }),
+            "local data source should not be emitted as DDIC source ref: {:?}",
+            unit.sql_name_refs
+        );
+    }
+    assert!(
+        unit.sql_name_refs.iter().any(|reference| {
+            reference.kind == SqlNameRefKind::Source
+                && reference.name.as_ref() == "demo_cds_assoc_sairport_tz"
+        }),
+        "expected CDS base entity source ref: {:?}",
+        unit.sql_name_refs
     );
 }
 

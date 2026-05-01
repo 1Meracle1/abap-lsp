@@ -3559,55 +3559,34 @@ impl<'a> SqlDataSource<'a> {
     pub fn source_name(self, source: &'a str) -> Option<(&'a str, TextRange)> {
         let alias_clause_range = self.alias_clause().map(|alias| alias.syntax().range());
         let tokens = self.syntax.token_descendants();
-        let token_texts = tokens
+        let source_end = tokens
             .iter()
-            .map(|token| token.text(source))
-            .collect::<Option<Vec<_>>>()?;
-        let mut start = None;
-        let mut end = None;
-        let mut paren = 0i32;
-        let mut bracket = 0i32;
-        let mut brace = 0i32;
-        for (idx, token) in tokens.into_iter().enumerate() {
-            let range = token.range();
-            if alias_clause_range
-                .as_ref()
-                .is_some_and(|alias| range.start >= alias.start)
+            .position(|token| {
+                alias_clause_range
+                    .as_ref()
+                    .is_some_and(|alias| token.range().start >= alias.start)
+            })
+            .unwrap_or(tokens.len());
+        for idx in 0..source_end {
+            let text = tokens[idx].text(source)?;
+            if text.eq_ignore_ascii_case("as")
+                || text.eq_ignore_ascii_case("with")
+                || text.eq_ignore_ascii_case("client")
             {
                 break;
             }
-            let text = token_texts[idx];
-            let is_source_modifier = paren == 0
-                && bracket == 0
-                && brace == 0
-                && ((text.eq_ignore_ascii_case("with")
-                    && token_texts
-                        .get(idx + 1)
-                        .is_some_and(|next| next.eq_ignore_ascii_case("privileged")))
-                    || (text.eq_ignore_ascii_case("client")
-                        && token_texts
-                            .get(idx + 1)
-                            .is_some_and(|next| next.eq_ignore_ascii_case("specified"))));
-            if text.eq_ignore_ascii_case("as") || is_source_modifier {
-                break;
+            if matches!(text, "(" | ")" | "[" | "]" | "{" | "}" | "," | ".") {
+                continue;
             }
-            start.get_or_insert(range.start);
-            end = Some(range.end);
-            match text {
-                "(" => paren += 1,
-                ")" => paren -= 1,
-                "[" => bracket += 1,
-                "]" => bracket -= 1,
-                "{" => brace += 1,
-                "}" => brace -= 1,
-                _ => {}
-            }
+            let end = if text == "@" || text == "+" {
+                tokens.get(idx + 1)?.range().end
+            } else {
+                tokens[idx].range().end
+            };
+            let range = tokens[idx].range().start..end;
+            return source.get(range.clone()).map(|text| (text, range));
         }
-        let start = start?;
-        let end = end?;
-        let range = start..end;
-        let text = source.get(range.clone())?.trim();
-        (!text.is_empty()).then_some((text, range))
+        None
     }
 }
 

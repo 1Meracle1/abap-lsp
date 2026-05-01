@@ -14477,6 +14477,58 @@ SELECT carrid FROM +flights INTO TABLE @DATA(lt_flights).
     }
 
     #[test]
+    fn parses_open_sql_755_data_source_forms() {
+        for src in [
+            r#"
+DATA carriers TYPE STANDARD TABLE OF scarr WITH EMPTY KEY.
+SELECT FROM @carriers AS c
+       FIELDS c~carrid
+       INTO TABLE @DATA(result).
+"#,
+            r#"
+SELECT FROM demo_cds_assoc_sairport_tz( tz = 'UTC+1' )
+            \_spfli
+            \_scarr[ currcode = 'EUR' ] AS scarr
+       FIELDS carrname
+       INTO TABLE @DATA(result).
+"#,
+            r#"
+SELECT *
+       FROM demo_cds_auth_literal WITH PRIVILEGED ACCESS
+       INTO TABLE @DATA(result).
+"#,
+            r#"
+WITH
+  +cte AS ( SELECT *
+              FROM demo_cds_assoc_spfli_scarr )
+       WITH ASSOCIATIONS ( \_scarr )
+  SELECT carrid
+         FROM +cte\_scarr AS scarr
+         INTO TABLE @DATA(result).
+"#,
+            r#"
+SELECT hierarchy~*, hierarchy_level
+       FROM HIERARCHY( SOURCE demo_cds_parent_child_source
+                       CHILD TO PARENT ASSOCIATION _relat
+                       START WHERE id = 'A'
+                       MULTIPLE PARENTS ALLOWED ) AS hierarchy
+       INTO TABLE @DATA(result).
+"#,
+        ] {
+            let parsed = crate::parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            let root = parsed.file.root();
+            assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 1);
+            assert!(
+                parsed.file.count_kind(root, SyntaxKind::SqlDataSource) >= 1,
+                "{src}"
+            );
+            assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+            assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+        }
+    }
+
+    #[test]
     fn parses_leave_list_processing_stmt() {
         let parsed = crate::parse("LEAVE LIST-PROCESSING.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);

@@ -1816,5 +1816,7 @@ fn sql_resolution_name(resolution: SqlResolution) -> &'static str {
         SqlResolution::Unresolved => "unresolved",
         SqlResolution::External => "external",
         SqlResolution::LocalCte => "local_cte",
+        SqlResolution::InternalTable => "internal_table",
+        SqlResolution::Hierarchy => "hierarchy",
     }
 }

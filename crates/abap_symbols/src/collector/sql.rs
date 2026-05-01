@@ -1417,14 +1417,31 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             }
             return;
         }
+        let source_tokens = self.sql_data_source_tokens_before_alias(node);
+        self.collect_sql_host_refs_from_syntax_tokens(&source_tokens, scope);
         let Some((name_text, name_range)) = SqlDataSource::cast(self.ctx.syntax(node))
             .and_then(|source| source.source_name(self.ctx.source()))
         else {
             return;
         };
-        let name = Arc::<str>::from(name_text.to_ascii_lowercase());
+        let is_internal_table = name_text.starts_with('@');
+        let is_hierarchy = self.sql_data_source_is_hierarchy(&source_tokens);
+        let normalized_name = name_text
+            .strip_prefix('@')
+            .unwrap_or(name_text)
+            .to_ascii_lowercase();
+        let name = Arc::<str>::from(normalized_name);
         let alias = alias_info.as_ref().map(|(name, _)| Arc::clone(name));
         let is_local_cte_source = local_cte_names.iter().any(|cte| cte == &name);
+        let resolution = if is_internal_table {
+            SqlResolution::InternalTable
+        } else if is_hierarchy {
+            SqlResolution::Hierarchy
+        } else if is_local_cte_source {
+            SqlResolution::LocalCte
+        } else {
+            SqlResolution::External
+        };
 
         let source_range = self.ctx.file().range(node);
         self.ctx.emit_sql_source(SqlSourceData {
@@ -1434,13 +1451,9 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             name: Arc::clone(&name),
             alias: alias.clone(),
             join_kind,
-            resolution: if is_local_cte_source {
-                SqlResolution::LocalCte
-            } else {
-                SqlResolution::External
-            },
+            resolution,
         });
-        if !is_local_cte_source {
+        if resolution == SqlResolution::External {
             self.push_sql_name_ref(
                 query_id,
                 scope,
@@ -1464,6 +1477,31 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 SqlNameRefKind::Alias,
             );
         }
+    }
+
+    fn sql_data_source_tokens_before_alias(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
+        let alias_clause_range = SqlDataSource::cast(self.ctx.syntax(node))
+            .and_then(|source| source.alias_clause())
+            .map(|alias| alias.syntax().range());
+        self.ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| {
+                !self.ctx.syntax_token_is_comment(token)
+                    && !alias_clause_range
+                        .as_ref()
+                        .is_some_and(|alias| token.range.start >= alias.start)
+            })
+            .collect()
+    }
+
+    fn sql_data_source_is_hierarchy(&self, tokens: &[SyntaxTokenInfo]) -> bool {
+        tokens
+            .first()
+            .is_some_and(|token| token.text.eq_ignore_ascii_case("hierarchy"))
+            && tokens
+                .get(1)
+                .is_some_and(|token| token.text.as_ref() == "(")
     }
 
     fn collect_select_into_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {

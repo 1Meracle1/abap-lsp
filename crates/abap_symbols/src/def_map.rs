@@ -126,6 +126,8 @@ pub enum SqlResolution {
     Unresolved,
     External,
     LocalCte,
+    InternalTable,
+    Hierarchy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
