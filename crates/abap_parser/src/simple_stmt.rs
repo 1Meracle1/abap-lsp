@@ -106,6 +106,8 @@ const KEYWORD_SIMPLE_STMT_KINDS: &[(&str, SyntaxKind)] = &[
     ("uline", SyntaxKind::UlineStmt),
     ("unpack", SyntaxKind::UnpackStmt),
     ("replace", SyntaxKind::ReplaceStmt),
+    ("resume", SyntaxKind::ResumeStmt),
+    ("retry", SyntaxKind::RetryStmt),
     ("wait", SyntaxKind::WaitStmt),
 ];
 

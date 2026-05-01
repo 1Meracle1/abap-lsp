@@ -308,6 +308,8 @@ impl<'a> Collector<'a> {
             | SyntaxKind::GenerateDynproStmt
             | SyntaxKind::CommitWorkStmt
             | SyntaxKind::RollbackWorkStmt
+            | SyntaxKind::ResumeStmt
+            | SyntaxKind::RetryStmt
             | SyntaxKind::EndAtStmt => self
                 .stmt_lowering()
                 .collect_generic_simple_stmt(node, scope),

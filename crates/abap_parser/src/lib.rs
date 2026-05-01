@@ -77,6 +77,7 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
         &["selection"],
         surface_stmt::try_parse_selection_screen_stmt,
     ),
+    IdentLeadParserRegistration::new(&["test"], surface_stmt::try_parse_test_block_stmt),
     IdentLeadParserRegistration::new(
         &["at", "initialization", "load", "start", "end", "top"],
         surface_stmt::try_parse_event_block,
@@ -253,11 +254,19 @@ const STRAY_BLOCK_BOUNDARIES: &[(&str, &str)] = &[
     ("ENDSELECT", "SELECT"),
 ];
 
-const STRAY_HYPHENATED_BLOCK_BOUNDARIES: &[(&[&str], &str, &str)] = &[(
-    &["end", "enhancement", "section"],
-    "END-ENHANCEMENT-SECTION",
-    "ENHANCEMENT-SECTION",
-)];
+const STRAY_HYPHENATED_BLOCK_BOUNDARIES: &[(&[&str], &str, &str)] = &[
+    (
+        &["end", "enhancement", "section"],
+        "END-ENHANCEMENT-SECTION",
+        "ENHANCEMENT-SECTION",
+    ),
+    (&["end", "test", "seam"], "END-TEST-SEAM", "TEST-SEAM"),
+    (
+        &["end", "test", "injection"],
+        "END-TEST-INJECTION",
+        "TEST-INJECTION",
+    ),
+];
 
 fn stray_block_boundary(
     source: &str,
@@ -393,6 +402,8 @@ const MISSING_FRAGMENT_BOUNDARIES: &[&str] = &[
     "ENDDO",
     "ENDENHANCEMENT",
     "END-ENHANCEMENT-SECTION",
+    "END-TEST-SEAM",
+    "END-TEST-INJECTION",
     "ENDFORM",
     "ENDFUNCTION",
     "ENDIF",

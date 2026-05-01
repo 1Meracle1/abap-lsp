@@ -10419,6 +10419,86 @@ ENDCLASS.
 }
 
 #[test]
+fn resumable_exception_and_test_seam_keywords_do_not_emit_unresolved_diagnostics() {
+    let src = r#"
+CLASS cx_static_check DEFINITION.
+ENDCLASS.
+
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+FORM run.
+  DATA lv_value TYPE i.
+
+  TRY.
+      RAISE RESUMABLE EXCEPTION TYPE cx_demo.
+    CATCH BEFORE UNWIND cx_demo.
+      RESUME.
+    CATCH cx_demo.
+      RETRY.
+  ENDTRY.
+
+  TEST-SEAM demo.
+    lv_value = 1.
+  END-TEST-SEAM.
+
+  TEST-INJECTION demo.
+    lv_value = 2.
+  END-TEST-INJECTION.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///resumable_test_seam.abap");
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+    for keyword in [
+        "resumable",
+        "before",
+        "unwind",
+        "resume",
+        "retry",
+        "test",
+        "seam",
+        "injection",
+    ] {
+        assert!(
+            !unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier
+                    && reference.name.eq_ignore_ascii_case(keyword)
+            }),
+            "keyword `{keyword}` became an identifier reference: {:?}",
+            unit.references
+        );
+    }
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "cx_demo"
+        })
+        .collect();
+    assert_eq!(
+        refs.len(),
+        3,
+        "expected raise/catch type refs, refs={refs:?}"
+    );
+    assert!(
+        refs.iter()
+            .all(|reference| matches!(reference.resolution, Some(Resolution::Symbol(_)))),
+        "expected resolved raise/catch type refs, refs={refs:?}"
+    );
+}
+
+#[test]
 fn resolves_constructor_arguments_and_token_only_statement_references() {
     let src = r#"
 CLASS zcl_ast_node DEFINITION ABSTRACT.

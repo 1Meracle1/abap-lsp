@@ -169,6 +169,10 @@ pub enum SyntaxKind {
     SelectOptionsDecl,
     /// `SELECTION-SCREEN ... .`
     SelectionScreenStmt,
+    /// `TEST-SEAM name. ... END-TEST-SEAM.`
+    TestSeamStmt,
+    /// `TEST-INJECTION name. ... END-TEST-INJECTION.`
+    TestInjectionStmt,
     /// `INCLUDE ... .`
     IncludeStmt,
     /// One include program name inside `INCLUDE ... .`
@@ -625,6 +629,10 @@ pub enum SyntaxKind {
     RollbackWorkStmt,
     /// `RAISE ... .`
     RaiseStmt,
+    /// `RESUME.`
+    ResumeStmt,
+    /// `RETRY.`
+    RetryStmt,
     /// `RAISE EVENT ... .`
     RaiseEventStmt,
     /// `MESSAGE ... .`
@@ -849,6 +857,8 @@ impl SyntaxKind {
             Self::ParametersDecl => "ParametersDecl",
             Self::SelectOptionsDecl => "SelectOptionsDecl",
             Self::SelectionScreenStmt => "SelectionScreenStmt",
+            Self::TestSeamStmt => "TestSeamStmt",
+            Self::TestInjectionStmt => "TestInjectionStmt",
             Self::IncludeStmt => "IncludeStmt",
             Self::IncludeName => "IncludeName",
             Self::TypePoolsStmt => "TypePoolsStmt",
@@ -1077,6 +1087,8 @@ impl SyntaxKind {
             Self::CommitWorkStmt => "CommitWorkStmt",
             Self::RollbackWorkStmt => "RollbackWorkStmt",
             Self::RaiseStmt => "RaiseStmt",
+            Self::ResumeStmt => "ResumeStmt",
+            Self::RetryStmt => "RetryStmt",
             Self::RaiseEventStmt => "RaiseEventStmt",
             Self::MessageStmt => "MessageStmt",
             Self::MessageHeadClause => "MessageHeadClause",

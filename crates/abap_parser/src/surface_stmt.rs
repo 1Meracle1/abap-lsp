@@ -5092,6 +5092,120 @@ fn try_parse_block_stmt(
     Some((node, next_after))
 }
 
+fn test_block_start(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(SyntaxKind, &'static [&'static str], &'static str, usize)> {
+    if let Some(end) = match_hyphenated_keyword(source, tokens, idx, &["test", "seam"]) {
+        return Some((
+            SyntaxKind::TestSeamStmt,
+            &["end", "test", "seam"],
+            "END-TEST-SEAM",
+            end,
+        ));
+    }
+    match_hyphenated_keyword(source, tokens, idx, &["test", "injection"]).map(|end| {
+        (
+            SyntaxKind::TestInjectionStmt,
+            &["end", "test", "injection"][..],
+            "END-TEST-INJECTION",
+            end,
+        )
+    })
+}
+
+fn parse_test_block_end_keyword(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    start_tok: &Token,
+    end_parts: &[&str],
+    end_text: &str,
+    errors: &mut Vec<crate::ParseError>,
+) -> (Vec<NodeId>, usize, usize) {
+    let end_idx = skip_trivia(tokens, idx);
+    let Some(end_tok) = tokens.get(end_idx) else {
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected {end_text}"),
+            range: start_tok.range.clone(),
+        });
+        return (Vec::new(), tokens.len(), start_tok.range.end);
+    };
+    let Some(end_parts_end) = match_hyphenated_keyword(source, tokens, end_idx, end_parts) else {
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected {end_text}"),
+            range: start_tok.range.start..end_tok.range.end,
+        });
+        return (Vec::new(), end_idx + 1, end_tok.range.end);
+    };
+
+    let mut children = token_children(b, tokens, end_idx, end_parts_end);
+    let period_idx = skip_trivia(tokens, end_parts_end);
+    let Some(period_tok) = tokens.get(period_idx) else {
+        let end_pos = children
+            .last()
+            .copied()
+            .map(|node| b.span(node).end)
+            .unwrap_or(end_tok.range.end);
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected '.' after {end_text}"),
+            range: end_tok.range.start..end_pos,
+        });
+        return (children, tokens.len(), end_pos);
+    };
+    if period_tok.kind != TokenKind::Period {
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected '.' after {end_text}"),
+            range: end_tok.range.start..period_tok.range.end,
+        });
+        return (children, period_idx + 1, period_tok.range.end);
+    }
+
+    children.push(token_leaf(b, period_tok));
+    (children, period_idx + 1, period_tok.range.end)
+}
+
+pub fn try_parse_test_block_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let start_tok = tokens.get(idx)?;
+    let (kind, end_parts, end_text, body_start_idx) = test_block_start(source, tokens, idx)?;
+    let (mut children, next) = parse_header_until_period(
+        b,
+        source,
+        tokens,
+        idx,
+        body_start_idx,
+        errors,
+        "syntax error: expected '.' after test block header",
+    );
+    let mut after_body = next;
+    loop {
+        let boundary_idx = skip_trivia(tokens, after_body);
+        if match_hyphenated_keyword(source, tokens, boundary_idx, end_parts).is_some()
+            || after_body >= tokens.len()
+            || tokens[after_body].kind == TokenKind::Eof
+        {
+            break;
+        }
+        let (node, next) = crate::parse_file_level_item(b, source, tokens, after_body, errors);
+        children.push(node);
+        after_body = crate::block_helpers::ensure_forward_progress(tokens, after_body, next);
+    }
+    let (end_children, next_after, end_pos) = parse_test_block_end_keyword(
+        b, source, tokens, after_body, start_tok, end_parts, end_text, errors,
+    );
+    children.extend(end_children);
+    let node = b.branch(kind, start_tok.range.start..end_pos, &children);
+    Some((node, next_after))
+}
+
 fn form_header_section_keyword(source: &str, token: &Token) -> bool {
     is_keyword(source, token, "tables")
         || is_keyword(source, token, "using")
@@ -17074,6 +17188,23 @@ ENDFORM.",
             .expect("raise stmt");
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::TypeRefSimple), 1);
         assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_test_seam_and_injection_blocks() {
+        let parsed = crate::parse(
+            "DATA lv_value TYPE i.\nTEST-SEAM demo.\n  lv_value = 1.\nEND-TEST-SEAM.\nTEST-INJECTION demo.\n  lv_value = 2.\nEND-TEST-INJECTION.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TestSeamStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::TestInjectionStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AssignStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

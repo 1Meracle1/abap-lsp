@@ -1451,6 +1451,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_resumable_exception_flow() {
+        let parsed = crate::parse(
+            "TRY. RAISE RESUMABLE EXCEPTION TYPE cx_demo. CATCH BEFORE UNWIND cx_demo. RESUME. CATCH cx_root. RETRY. ENDTRY.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TryStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CatchClause), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RaiseStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ResumeStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::RetryStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn parses_catch_system_exceptions_block() {
         let parsed =
             crate::parse("CATCH SYSTEM-EXCEPTIONS move_cast_error = 1.\n  lv = 1.\nENDCATCH.");
