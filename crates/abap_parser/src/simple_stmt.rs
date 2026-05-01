@@ -2992,6 +2992,106 @@ fn build_get_parameter_stmt_children(
     children
 }
 
+fn runtime_env_target_end(source: &str, tokens: &[Token], start: usize, end: usize) -> usize {
+    let start = next_non_comment(tokens, start, end);
+    if start >= end {
+        return end;
+    }
+    if (token_matches_keyword(source, &tokens[start], "data")
+        || token_matches_keyword(source, &tokens[start], "final"))
+        && tokens.get(start + 1).map(|token| token.kind) == Some(TokenKind::LParen)
+        && let Some(close_idx) = find_matching_rparen_token(tokens, start + 1, end)
+    {
+        return close_idx + 1;
+    }
+
+    let mut idx = start + 1;
+    while idx + 1 < end
+        && matches!(
+            tokens[idx].kind,
+            TokenKind::Minus | TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
+        )
+    {
+        idx += 2;
+    }
+    idx
+}
+
+fn build_get_locale_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let clauses = ["language", "country", "modifier"];
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let mut cursor = idx;
+    while cursor < period_i {
+        if clauses
+            .iter()
+            .any(|keyword| token_matches_keyword(source, &tokens[cursor], keyword))
+        {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let target_start = cursor + 1;
+            let target_end = runtime_env_target_end(source, tokens, target_start, period_i);
+            push_maybe_inline_target_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                target_end,
+            );
+            cursor = target_end;
+        } else {
+            children.push(token_leaf(b, &tokens[cursor]));
+            cursor += 1;
+        }
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_get_pf_status_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::with_capacity(period_i - idx + 1);
+    let status_start = idx + 4;
+    push_token_range(b, &mut children, tokens, idx, status_start);
+    let status_end = runtime_env_target_end(source, tokens, status_start, period_i);
+    push_maybe_inline_target_child(b, &mut children, source, tokens, status_start, status_end);
+
+    let mut cursor = status_end;
+    while cursor < period_i {
+        if token_matches_keyword(source, &tokens[cursor], "program")
+            || token_matches_keyword(source, &tokens[cursor], "excluding")
+        {
+            children.push(token_leaf(b, &tokens[cursor]));
+            let target_start = cursor + 1;
+            let target_end = runtime_env_target_end(source, tokens, target_start, period_i);
+            push_maybe_inline_target_child(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                target_end,
+            );
+            cursor = target_end;
+        } else {
+            children.push(token_leaf(b, &tokens[cursor]));
+            cursor += 1;
+        }
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
 fn class_section_statement(source: &str, significant: &[&Token]) -> bool {
     let Some(first) = significant.first() else {
         return false;
@@ -3408,12 +3508,25 @@ fn classify_get_runtime_stmt(source: &str, significant: &[&Token]) -> Option<Syn
         return None;
     }
 
-    if token_matches_keyword(source, significant[1], "badi") {
+    if significant.len() >= 5
+        && token_matches_keyword(source, significant[1], "pf")
+        && significant[2].kind == TokenKind::Minus
+        && token_matches_keyword(source, significant[3], "status")
+    {
+        Some(SyntaxKind::GetPfStatusStmt)
+    } else if token_matches_keyword(source, significant[1], "badi") {
         Some(SyntaxKind::GetBadiStmt)
     } else if token_matches_keyword(source, significant[1], "cursor") {
         Some(SyntaxKind::GetCursorStmt)
+    } else if token_matches_keyword(source, significant[1], "locale") {
+        Some(SyntaxKind::GetLocaleStmt)
     } else if token_matches_keyword(source, significant[1], "parameter") {
         Some(SyntaxKind::GetParameterStmt)
+    } else if significant.len() >= 5
+        && token_matches_keyword(source, significant[1], "run")
+        && token_matches_keyword(source, significant[2], "time")
+    {
+        Some(SyntaxKind::GetRunTimeStmt)
     } else if token_matches_keyword(source, significant[1], "time")
         && !significant
             .get(2)
@@ -3432,6 +3545,44 @@ fn classify_set_gui_stmt(source: &str, significant: &[&Token]) -> Option<SyntaxK
     }
 
     if significant.len() >= 6
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "run")
+        && token_matches_keyword(source, significant[2], "time")
+        && (token_matches_keyword(source, significant[3], "clock")
+            || token_matches_keyword(source, significant[3], "analyzer"))
+    {
+        Some(SyntaxKind::SetRunTimeStmt)
+    } else if significant.len() >= 5
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "update")
+        && token_matches_keyword(source, significant[2], "task")
+        && token_matches_keyword(source, significant[3], "local")
+    {
+        Some(SyntaxKind::SetUpdateTaskStmt)
+    } else if significant.len() >= 5
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "user")
+        && significant[2].kind == TokenKind::Minus
+        && token_matches_keyword(source, significant[3], "command")
+    {
+        Some(SyntaxKind::SetUserCommandStmt)
+    } else if significant.len() >= 4
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "locale")
+        && token_matches_keyword(source, significant[2], "language")
+    {
+        Some(SyntaxKind::SetLocaleStmt)
+    } else if significant.len() >= 3
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "country")
+    {
+        Some(SyntaxKind::SetCountryStmt)
+    } else if significant.len() >= 3
+        && token_matches_keyword(source, significant[0], "set")
+        && token_matches_keyword(source, significant[1], "language")
+    {
+        Some(SyntaxKind::SetLanguageStmt)
+    } else if significant.len() >= 6
         && token_matches_keyword(source, significant[0], "set")
         && token_matches_keyword(source, significant[1], "pf")
         && significant[2].kind == TokenKind::Minus
@@ -3946,11 +4097,17 @@ pub fn try_parse_simple_stmt(
                     build_replace_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::WaitStmt => build_wait_stmt_children(b, source, tokens, idx, period_i),
-                SyntaxKind::GetTimeStmt => {
+                SyntaxKind::GetTimeStmt | SyntaxKind::GetRunTimeStmt => {
                     build_get_time_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::GetParameterStmt => {
                     build_get_parameter_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::GetLocaleStmt => {
+                    build_get_locale_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::GetPfStatusStmt => {
+                    build_get_pf_status_stmt_children(b, source, tokens, idx, period_i)
                 }
                 SyntaxKind::AddStmt
                 | SyntaxKind::SubtractStmt
@@ -5037,6 +5194,44 @@ SET TITLEBAR lv_title OF PROGRAM lv_prog WITH lv_text1 lv_text2.";
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetPfStatusStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetTitlebarStmt), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+    }
+
+    #[test]
+    fn classifies_runtime_environment_statements_specifically() {
+        let src = "\
+GET RUN TIME FIELD DATA(runtime).\n\
+SET RUN TIME CLOCK RESOLUTION HIGH.\n\
+SET RUN TIME ANALYZER ON.\n\
+SET RUN TIME ANALYZER OFF.\n\
+GET LOCALE LANGUAGE DATA(lang) COUNTRY DATA(country) MODIFIER DATA(modifier).\n\
+SET LOCALE LANGUAGE lang COUNTRY country MODIFIER modifier.\n\
+SET COUNTRY country.\n\
+SET LANGUAGE lang.\n\
+SET USER-COMMAND ucomm.\n\
+SET UPDATE TASK LOCAL.\n\
+GET PF-STATUS DATA(status) PROGRAM prog EXCLUDING excl.";
+        let parsed = crate::parse(src);
+        let root = parsed.file.root();
+
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetRunTimeStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetRunTimeStmt), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetLocaleStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetLocaleStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetCountryStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetLanguageStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SetUserCommandStmt),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SetUpdateTaskStmt),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetPfStatusStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 5);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

@@ -13310,6 +13310,95 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn runtime_environment_statement_operands_resolve() {
+    let src = r#"
+START-OF-SELECTION.
+  DATA runtime TYPE i.
+  DATA lang TYPE sy-langu.
+  DATA country TYPE c LENGTH 3.
+  DATA modifier TYPE string.
+  DATA ucomm TYPE sy-ucomm.
+  DATA status TYPE string.
+  DATA prog TYPE string.
+  DATA excl TYPE STANDARD TABLE OF sy-ucomm WITH EMPTY KEY.
+
+  GET RUN TIME FIELD runtime.
+  GET LOCALE LANGUAGE lang COUNTRY country MODIFIER modifier.
+  SET LOCALE LANGUAGE lang COUNTRY country MODIFIER modifier.
+  SET COUNTRY country.
+  SET LANGUAGE lang.
+  SET USER-COMMAND ucomm.
+  SET UPDATE TASK LOCAL.
+  SET RUN TIME CLOCK RESOLUTION HIGH.
+  SET RUN TIME ANALYZER ON.
+  GET PF-STATUS status PROGRAM prog EXCLUDING excl.
+"#;
+    let unit = analyze_ok(src, "file:///runtime_environment.abap");
+
+    for name in [
+        "runtime", "lang", "country", "modifier", "ucomm", "status", "prog", "excl",
+    ] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected runtime/environment reference for `{name}` to resolve, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    for keyword in [
+        "RUN",
+        "TIME",
+        "FIELD",
+        "LOCALE",
+        "LANGUAGE",
+        "COUNTRY",
+        "MODIFIER",
+        "USER",
+        "COMMAND",
+        "UPDATE",
+        "TASK",
+        "LOCAL",
+        "CLOCK",
+        "RESOLUTION",
+        "HIGH",
+        "ANALYZER",
+        "ON",
+        "PF",
+        "STATUS",
+        "PROGRAM",
+        "EXCLUDING",
+    ] {
+        assert!(
+            !unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(keyword)
+            }),
+            "unexpected unresolved keyword diagnostic for `{keyword}`: {:?}",
+            unit.diagnostics
+        );
+    }
+
+    let assignment_targets = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    for target in [
+        "runtime", "lang", "country", "modifier", "status", "prog", "excl",
+    ] {
+        assert!(
+            assignment_targets.iter().any(|found| found == target),
+            "expected runtime/environment write target `{target}`, targets={assignment_targets:?}"
+        );
+    }
+}
+
+#[test]
 fn set_gui_statements_resolve_operands_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.

@@ -691,6 +691,24 @@ pub enum SyntaxKind {
     SetParameterStmt,
     /// `GET TIME [FIELD ...] .`
     GetTimeStmt,
+    /// `GET RUN TIME FIELD ... .`
+    GetRunTimeStmt,
+    /// `GET LOCALE LANGUAGE ... .`
+    GetLocaleStmt,
+    /// `GET PF-STATUS ... .`
+    GetPfStatusStmt,
+    /// `SET RUN TIME ... .`
+    SetRunTimeStmt,
+    /// `SET COUNTRY ... .`
+    SetCountryStmt,
+    /// `SET LANGUAGE ... .`
+    SetLanguageStmt,
+    /// `SET LOCALE LANGUAGE ... .`
+    SetLocaleStmt,
+    /// `SET USER-COMMAND ... .`
+    SetUserCommandStmt,
+    /// `SET UPDATE TASK LOCAL .`
+    SetUpdateTaskStmt,
     /// `LOG-POINT ID ... [SUBKEY ...] [FIELDS ...] .`
     LogPointStmt,
     /// `GET REFERENCE OF ... INTO ... .`
@@ -1092,6 +1110,15 @@ impl SyntaxKind {
             Self::GetParameterStmt => "GetParameterStmt",
             Self::SetParameterStmt => "SetParameterStmt",
             Self::GetTimeStmt => "GetTimeStmt",
+            Self::GetRunTimeStmt => "GetRunTimeStmt",
+            Self::GetLocaleStmt => "GetLocaleStmt",
+            Self::GetPfStatusStmt => "GetPfStatusStmt",
+            Self::SetRunTimeStmt => "SetRunTimeStmt",
+            Self::SetCountryStmt => "SetCountryStmt",
+            Self::SetLanguageStmt => "SetLanguageStmt",
+            Self::SetLocaleStmt => "SetLocaleStmt",
+            Self::SetUserCommandStmt => "SetUserCommandStmt",
+            Self::SetUpdateTaskStmt => "SetUpdateTaskStmt",
             Self::LogPointStmt => "LogPointStmt",
             Self::GetReferenceStmt => "GetReferenceStmt",
             Self::GetBitStmt => "GetBitStmt",

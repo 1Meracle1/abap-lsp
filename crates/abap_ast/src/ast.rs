@@ -823,6 +823,15 @@ ast_value_node!(
 );
 ast_node!(GetBadiStmt, SyntaxKind::GetBadiStmt);
 ast_node!(GetCursorStmt, SyntaxKind::GetCursorStmt);
+ast_node!(GetRunTimeStmt, SyntaxKind::GetRunTimeStmt);
+ast_node!(GetLocaleStmt, SyntaxKind::GetLocaleStmt);
+ast_node!(GetPfStatusStmt, SyntaxKind::GetPfStatusStmt);
+ast_node!(SetRunTimeStmt, SyntaxKind::SetRunTimeStmt);
+ast_node!(SetCountryStmt, SyntaxKind::SetCountryStmt);
+ast_node!(SetLanguageStmt, SyntaxKind::SetLanguageStmt);
+ast_node!(SetLocaleStmt, SyntaxKind::SetLocaleStmt);
+ast_node!(SetUserCommandStmt, SyntaxKind::SetUserCommandStmt);
+ast_node!(SetUpdateTaskStmt, SyntaxKind::SetUpdateTaskStmt);
 ast_node!(SetPfStatusStmt, SyntaxKind::SetPfStatusStmt);
 ast_node!(SetTitlebarStmt, SyntaxKind::SetTitlebarStmt);
 ast_node!(SetScreenStmt, SyntaxKind::SetScreenStmt);

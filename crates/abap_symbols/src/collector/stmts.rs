@@ -1454,6 +1454,30 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .unwrap_or(period_idx)
     }
 
+    fn runtime_env_operand_end_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        period_idx: usize,
+    ) -> usize {
+        if start >= period_idx {
+            return period_idx;
+        }
+        if tokens.get(start).is_some_and(|token| {
+            token.text.eq_ignore_ascii_case("data") || token.text.eq_ignore_ascii_case("final")
+        }) && tokens
+            .get(start + 1)
+            .is_some_and(|token| token.text.as_ref() == "(")
+            && let Some(close_idx) =
+                self.collector
+                    .find_matching_group_end_infos(tokens, start + 1, "(", ")")
+        {
+            return (close_idx + 1).min(period_idx);
+        }
+        self.consume_simple_operand_tokens(tokens, start)
+            .min(period_idx)
+    }
+
     fn trim_comment_bounds_infos(
         &self,
         tokens: &[SyntaxTokenInfo],
@@ -1703,6 +1727,114 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 &tokens[field_idx + 1..period_idx],
                 false,
             );
+        }
+    }
+
+    pub(super) fn collect_get_locale_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let period_idx = self.period_index_infos(&tokens);
+        let mut idx = 2usize;
+        while idx < period_idx {
+            if ["LANGUAGE", "COUNTRY", "MODIFIER"]
+                .iter()
+                .any(|keyword| tokens[idx].text.eq_ignore_ascii_case(keyword))
+            {
+                let start = idx + 1;
+                let end = self.runtime_env_operand_end_infos(&tokens, start, period_idx);
+                self.collect_or_assign_runtime_target_infos(node, scope, &tokens[start..end], true);
+                idx = end;
+            } else {
+                idx += 1;
+            }
+        }
+    }
+
+    pub(super) fn collect_get_pf_status_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        if tokens.len() < 6
+            || !Self::tokens_match_keyword_sequence(&tokens, &["get", "pf", "-", "status"])
+        {
+            return;
+        }
+
+        let period_idx = self.period_index_infos(&tokens);
+        let status_start = 4usize;
+        let program_idx = self.find_top_level_keyword_infos(&tokens, status_start, &["PROGRAM"]);
+        let excluding_idx =
+            self.find_top_level_keyword_infos(&tokens, status_start, &["EXCLUDING"]);
+        let status_end = program_idx
+            .into_iter()
+            .chain(excluding_idx)
+            .chain(std::iter::once(period_idx))
+            .min()
+            .unwrap_or(period_idx);
+        self.collect_or_assign_runtime_target_infos(
+            node,
+            scope,
+            &tokens[status_start..status_end],
+            true,
+        );
+
+        if let Some(program_idx) = program_idx {
+            let end = excluding_idx
+                .filter(|&idx| idx > program_idx)
+                .unwrap_or(period_idx);
+            self.collect_or_assign_runtime_target_infos(
+                node,
+                scope,
+                &tokens[program_idx + 1..end],
+                true,
+            );
+        }
+
+        if let Some(excluding_idx) = excluding_idx {
+            self.collect_or_assign_runtime_target_infos(
+                node,
+                scope,
+                &tokens[excluding_idx + 1..period_idx],
+                true,
+            );
+        }
+    }
+
+    pub(super) fn collect_set_runtime_environment_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        let tokens = self.collector.significant_stmt_token_infos(node);
+        let period_idx = self.period_index_infos(&tokens);
+
+        if Self::tokens_match_keyword_sequence(&tokens, &["set", "run", "time"])
+            || Self::tokens_match_keyword_sequence(&tokens, &["set", "update", "task", "local"])
+        {
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(&tokens, &["set", "user", "-", "command"]) {
+            self.collect_token_expression_refs_range(&tokens, 4, period_idx, scope);
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(&tokens, &["set", "country"])
+            || Self::tokens_match_keyword_sequence(&tokens, &["set", "language"])
+        {
+            self.collect_token_expression_refs_range(&tokens, 2, period_idx, scope);
+            return;
+        }
+
+        if Self::tokens_match_keyword_sequence(&tokens, &["set", "locale", "language"]) {
+            let mut idx = 2usize;
+            while idx < period_idx {
+                if ["LANGUAGE", "COUNTRY", "MODIFIER"]
+                    .iter()
+                    .any(|keyword| tokens[idx].text.eq_ignore_ascii_case(keyword))
+                {
+                    let start = idx + 1;
+                    let end = self.runtime_env_operand_end_infos(&tokens, start, period_idx);
+                    self.collect_token_expression_refs_range(&tokens, start, end, scope);
+                    idx = end;
+                } else {
+                    idx += 1;
+                }
+            }
         }
     }
 

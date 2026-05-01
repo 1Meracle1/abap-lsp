@@ -230,6 +230,19 @@ impl<'a> Collector<'a> {
                 self.stmt_lowering().collect_set_parameter_stmt(node, scope)
             }
             SyntaxKind::GetTimeStmt => self.stmt_lowering().collect_get_time_stmt(node, scope),
+            SyntaxKind::GetRunTimeStmt => self.stmt_lowering().collect_get_time_stmt(node, scope),
+            SyntaxKind::GetLocaleStmt => self.stmt_lowering().collect_get_locale_stmt(node, scope),
+            SyntaxKind::GetPfStatusStmt => {
+                self.stmt_lowering().collect_get_pf_status_stmt(node, scope)
+            }
+            SyntaxKind::SetRunTimeStmt
+            | SyntaxKind::SetCountryStmt
+            | SyntaxKind::SetLanguageStmt
+            | SyntaxKind::SetLocaleStmt
+            | SyntaxKind::SetUserCommandStmt
+            | SyntaxKind::SetUpdateTaskStmt => self
+                .stmt_lowering()
+                .collect_set_runtime_environment_stmt(node, scope),
             SyntaxKind::LogPointStmt => self.stmt_lowering().collect_log_point_stmt(node, scope),
             SyntaxKind::SyntaxCheckStmt => {
                 self.stmt_lowering().collect_syntax_check_stmt(node, scope)
