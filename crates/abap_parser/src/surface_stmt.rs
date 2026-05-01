@@ -34,19 +34,24 @@ enum EventBlockLead {
     Single(&'static str),
     Hyphenated(&'static [&'static str]),
     AtHyphenated(&'static [&'static str]),
+    AtPfKey,
 }
 
 const EVENT_BLOCK_LEADS: &[EventBlockLead] = &[
     EventBlockLead::Single("initialization"),
+    EventBlockLead::Hyphenated(&["load", "of", "program"]),
     EventBlockLead::Hyphenated(&["start", "of", "selection"]),
     EventBlockLead::Hyphenated(&["end", "of", "selection"]),
     EventBlockLead::Hyphenated(&["top", "of", "page"]),
     EventBlockLead::Hyphenated(&["end", "of", "page"]),
     EventBlockLead::AtHyphenated(&["selection", "screen"]),
     EventBlockLead::AtHyphenated(&["line", "selection"]),
+    EventBlockLead::AtHyphenated(&["user", "command"]),
+    EventBlockLead::AtPfKey,
 ];
 
 const EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS: &[&str] = &[
+    "LOAD",
     "START",
     "END",
     "AT",
@@ -6013,10 +6018,35 @@ fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<
                     return Some(next);
                 }
             }
+            EventBlockLead::AtPfKey => {
+                if is_keyword(source, start_tok, "at")
+                    && tokens
+                        .get(idx + 1)
+                        .is_some_and(|token| is_pf_event_key(source, token))
+                {
+                    return Some(idx + 2);
+                }
+            }
         }
     }
 
     None
+}
+
+fn is_pf_event_key(source: &str, token: &Token) -> bool {
+    if token.kind != TokenKind::Ident {
+        return false;
+    }
+    let text = token.lexeme(source);
+    let bytes = text.as_bytes();
+    if bytes.len() != 4 || !matches!(bytes[0], b'p' | b'P') || !matches!(bytes[1], b'f' | b'F') {
+        return false;
+    }
+    if !bytes[2].is_ascii_digit() || !bytes[3].is_ascii_digit() {
+        return false;
+    }
+    let n = (bytes[2] - b'0') * 10 + (bytes[3] - b'0');
+    (1..=24).contains(&n)
 }
 
 fn macro_end_keyword_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
@@ -12956,16 +12986,31 @@ mod tests {
     fn parses_all_supported_event_block_leads() {
         let parsed = crate::parse(
             "INITIALIZATION.\nWRITE 'a'.\n\
+LOAD-OF-PROGRAM.\nWRITE 'load'.\n\
 START-OF-SELECTION.\nWRITE 'b'.\n\
 END-OF-SELECTION.\nWRITE 'c'.\n\
 TOP-OF-PAGE.\nWRITE 'd'.\n\
+TOP-OF-PAGE DURING LINE-SELECTION.\nWRITE 'detail'.\n\
 END-OF-PAGE.\nWRITE 'e'.\n\
-AT LINE-SELECTION.\nWRITE 'f'.",
+AT LINE-SELECTION.\nWRITE 'f'.\n\
+AT USER-COMMAND.\nWRITE 'u'.\n\
+AT PF05.\nWRITE 'pf'.\n\
+FORM after_events.\nWRITE 'after'.\nENDFORM.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::EventBlock), 6);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 6);
+        let event_blocks = parsed
+            .file
+            .children(root)
+            .filter(|&node| parsed.file.kind(node) == SyntaxKind::EventBlock)
+            .collect::<Vec<_>>();
+        assert_eq!(event_blocks.len(), 10);
+        for block in event_blocks {
+            assert_eq!(parsed.file.count_kind(block, SyntaxKind::WriteStmt), 1);
+        }
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::FormDecl), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 11);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }
 
     #[test]

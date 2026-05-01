@@ -78,7 +78,7 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
         surface_stmt::try_parse_selection_screen_stmt,
     ),
     IdentLeadParserRegistration::new(
-        &["at", "initialization", "start", "end", "top"],
+        &["at", "initialization", "load", "start", "end", "top"],
         surface_stmt::try_parse_event_block,
     ),
     IdentLeadParserRegistration::new(&["at"], control_stmt::try_parse_at_stmt),
