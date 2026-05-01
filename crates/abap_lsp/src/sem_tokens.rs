@@ -21,6 +21,7 @@ struct SemanticTokenTypeIndices {
     method: u32,
     event: u32,
     namespace: u32,
+    enum_member: u32,
 }
 
 const TOKEN_TYPE_INDICES: SemanticTokenTypeIndices = SemanticTokenTypeIndices {
@@ -33,6 +34,7 @@ const TOKEN_TYPE_INDICES: SemanticTokenTypeIndices = SemanticTokenTypeIndices {
     method: 7,
     event: 8,
     namespace: 9,
+    enum_member: 10,
 };
 
 #[derive(Clone, Copy)]
@@ -60,6 +62,7 @@ fn semantic_tokens_legend_static() -> &'static lsp_types::SemanticTokensLegend {
             SemanticTokenType::METHOD,
             SemanticTokenType::EVENT,
             SemanticTokenType::NAMESPACE,
+            SemanticTokenType::ENUM_MEMBER,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -89,6 +92,7 @@ fn symbol_kind_type_index(kind: SymbolKind, ix: SemanticTokenTypeIndices) -> u32
         SymbolKind::Form | SymbolKind::Module | SymbolKind::BuiltinRoutine => ix.function,
         SymbolKind::Event => ix.event,
         SymbolKind::Field => ix.property,
+        SymbolKind::EnumMember => ix.enum_member,
         SymbolKind::Variable
         | SymbolKind::FieldSymbol
         | SymbolKind::Constant
@@ -177,7 +181,7 @@ fn collect_pending(
         let mut mods = mod_ix.declaration;
         if matches!(
             symbol.kind,
-            SymbolKind::Constant | SymbolKind::BuiltinConstant
+            SymbolKind::Constant | SymbolKind::EnumMember | SymbolKind::BuiltinConstant
         ) {
             mods |= mod_ix.readonly;
         }
@@ -731,6 +735,44 @@ DATA lt_data TYPE lcl_repro=>tr_errors.
             Some(type_idx),
             "expected class type selector to highlight as type"
         );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_direct_enum_members_as_enum_member() {
+        let store = DocumentStore::default();
+        let src = "\
+REPORT zsyntax_enum.
+
+TYPES:
+  BEGIN OF ENUM ty_status,
+    open,
+    closed,
+  END OF ENUM ty_status.
+
+DATA gv_status TYPE ty_status.
+gv_status = open.
+";
+        let snapshot = store.publish("file:///semantic_enum_member.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let enum_member_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::ENUM_MEMBER)
+            .expect("legend has enum member") as u32;
+
+        for offset in [
+            src.find("open,").expect("enum member declaration"),
+            src.find("= open").expect("enum member use") + 2,
+        ] {
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, offset).expect("position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(enum_member_idx),
+                "expected `open` to highlight as an enum member"
+            );
+        }
     }
 
     #[test]

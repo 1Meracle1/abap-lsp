@@ -869,7 +869,7 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
         self.ctx.declare_symbol(
             scope,
             name,
-            SymbolKind::Constant,
+            SymbolKind::EnumMember,
             name_node.range(),
             None,
             Some(enum_type.clone()),

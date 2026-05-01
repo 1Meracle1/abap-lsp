@@ -5844,6 +5844,7 @@ fn trackable_symbol_kind(kind: SymbolKind) -> bool {
             | SymbolKind::Parameter
             | SymbolKind::FieldSymbol
             | SymbolKind::Constant
+            | SymbolKind::EnumMember
     )
 }
 
@@ -5940,7 +5941,7 @@ fn dataflow_value_kind(kind: SymbolKind) -> DataflowValueKind {
         SymbolKind::Parameter => DataflowValueKind::Parameter,
         SymbolKind::Variable => DataflowValueKind::Variable,
         SymbolKind::FieldSymbol => DataflowValueKind::FieldSymbol,
-        SymbolKind::Constant => DataflowValueKind::Constant,
+        SymbolKind::Constant | SymbolKind::EnumMember => DataflowValueKind::Constant,
         SymbolKind::BuiltinType
         | SymbolKind::BuiltinRoutine
         | SymbolKind::BuiltinConstant

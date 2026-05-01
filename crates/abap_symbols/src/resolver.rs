@@ -136,7 +136,7 @@ fn inherited_class_scope_symbol(
     let symbol = unit.symbol(symbol_id);
     if !matches!(
         symbol.kind,
-        crate::SymbolKind::Variable | crate::SymbolKind::Constant
+        crate::SymbolKind::Variable | crate::SymbolKind::Constant | crate::SymbolKind::EnumMember
     ) {
         return Some(symbol_id);
     }

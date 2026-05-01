@@ -8738,7 +8738,7 @@ gv_status = open.";
     }));
     assert!(
         unit.symbols.iter().any(|symbol| {
-            symbol.kind == SymbolKind::Constant && symbol.name.as_ref() == "open"
+            symbol.kind == SymbolKind::EnumMember && symbol.name.as_ref() == "open"
         })
     );
     assert!(

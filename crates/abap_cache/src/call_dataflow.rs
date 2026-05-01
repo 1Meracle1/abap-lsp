@@ -926,7 +926,10 @@ impl<'a> TraceBuilder<'a> {
 
         let unit = &self.snapshot.project.units[access.handle.unit.as_usize()];
         let symbol = unit.symbol(access.handle.symbol);
-        if symbol.kind == SymbolKind::Constant || symbol.kind == SymbolKind::BuiltinConstant {
+        if matches!(
+            symbol.kind,
+            SymbolKind::Constant | SymbolKind::EnumMember | SymbolKind::BuiltinConstant
+        ) {
             field_mappings.push(CallDataflowFieldMapping {
                 target_path: target_path.to_string(),
                 source_kind: "constant".to_string(),
@@ -2181,9 +2184,12 @@ impl<'a> TraceBuilder<'a> {
                         let input_unit =
                             &self.snapshot.project.units[input_access.handle.unit.as_usize()];
                         let input_symbol = input_unit.symbol(input_access.handle.symbol);
-                        let input_kind = if input_symbol.kind == SymbolKind::Constant
-                            || input_symbol.kind == SymbolKind::BuiltinConstant
-                        {
+                        let input_kind = if matches!(
+                            input_symbol.kind,
+                            SymbolKind::Constant
+                                | SymbolKind::EnumMember
+                                | SymbolKind::BuiltinConstant
+                        ) {
                             "constant".to_string()
                         } else {
                             classify_terminal_symbol(input_unit, input_symbol).to_string()

@@ -15,6 +15,7 @@ pub enum SymbolKind {
     BuiltinVariable,
     Variable,
     Constant,
+    EnumMember,
     TypeDef,
     FieldSymbol,
     Form,
@@ -67,6 +68,7 @@ impl SymbolKind {
             | Self::BuiltinVariable
             | Self::Variable
             | Self::Constant
+            | Self::EnumMember
             | Self::FieldSymbol
             | Self::Parameter
             | Self::Field
@@ -90,6 +92,7 @@ impl SymbolKind {
             | Self::BuiltinVariable
             | Self::Variable
             | Self::Constant
+            | Self::EnumMember
             | Self::FieldSymbol
             | Self::Parameter
             | Self::Field

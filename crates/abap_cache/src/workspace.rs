@@ -3804,6 +3804,7 @@ fn local_export_symbol_kind_matches_candidate(
                 | abap_symbols::SymbolKind::Form
                 | abap_symbols::SymbolKind::Module
                 | abap_symbols::SymbolKind::Variable
+                | abap_symbols::SymbolKind::EnumMember
                 | abap_symbols::SymbolKind::Constant
         ),
         "type" => matches!(

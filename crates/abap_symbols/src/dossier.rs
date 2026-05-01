@@ -1580,6 +1580,7 @@ fn symbol_kind_name(kind: SymbolKind) -> &'static str {
         SymbolKind::BuiltinVariable => "builtin_variable",
         SymbolKind::Variable => "variable",
         SymbolKind::Constant => "constant",
+        SymbolKind::EnumMember => "enum_member",
         SymbolKind::TypeDef => "type_def",
         SymbolKind::FieldSymbol => "field_symbol",
         SymbolKind::Form => "form",

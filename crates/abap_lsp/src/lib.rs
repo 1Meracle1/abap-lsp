@@ -4011,6 +4011,7 @@ fn should_index_dependency_symbol(
             | abap_symbols::SymbolKind::Report
             | abap_symbols::SymbolKind::Variable
             | abap_symbols::SymbolKind::Constant
+            | abap_symbols::SymbolKind::EnumMember
             | abap_symbols::SymbolKind::Event
     )
 }
@@ -4039,7 +4040,11 @@ fn extract_stored_dependency_symbols(object_uri: &str, text: &str) -> Vec<Stored
         }
         out.push(StoredSymbolInput {
             symbol_name,
-            symbol_kind: format!("{:?}", symbol.kind).to_ascii_lowercase(),
+            symbol_kind: if symbol.kind == abap_symbols::SymbolKind::EnumMember {
+                "constant".to_string()
+            } else {
+                format!("{:?}", symbol.kind).to_ascii_lowercase()
+            },
             range_start: symbol.decl_range.start,
             range_end: symbol.decl_range.end,
             priority: stored_symbol_priority(symbol.kind),
@@ -7746,6 +7751,7 @@ fn symbol_completion_item_kind(kind: abap_symbols::SymbolKind) -> CompletionItem
         }
         abap_symbols::SymbolKind::Class => CompletionItemKind::CLASS,
         abap_symbols::SymbolKind::Interface => CompletionItemKind::INTERFACE,
+        abap_symbols::SymbolKind::EnumMember => CompletionItemKind::ENUM_MEMBER,
         abap_symbols::SymbolKind::Constant | abap_symbols::SymbolKind::BuiltinConstant => {
             CompletionItemKind::CONSTANT
         }
@@ -7766,6 +7772,7 @@ fn symbol_completion_kind_label(kind: abap_symbols::SymbolKind) -> &'static str 
         abap_symbols::SymbolKind::BuiltinVariable => "built-in variable",
         abap_symbols::SymbolKind::Variable => "variable",
         abap_symbols::SymbolKind::Constant => "constant",
+        abap_symbols::SymbolKind::EnumMember => "enum member",
         abap_symbols::SymbolKind::TypeDef => "type definition",
         abap_symbols::SymbolKind::FieldSymbol => "field symbol",
         abap_symbols::SymbolKind::Form => "form",

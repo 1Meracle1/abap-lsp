@@ -1218,8 +1218,10 @@ fn resolve_inherited_attribute_symbol<'a>(
             continue;
         }
         let symbol = unit.symbols.iter().find(|symbol| {
-            matches!(symbol.kind, SymbolKind::Variable | SymbolKind::Constant)
-                && symbol.name.as_ref() == name
+            matches!(
+                symbol.kind,
+                SymbolKind::Variable | SymbolKind::Constant | SymbolKind::EnumMember
+            ) && symbol.name.as_ref() == name
                 && unit.scope(symbol.scope).kind == ScopeKind::Class
                 && unit.scope(symbol.scope).owner == Some(current.symbol)
         })?;

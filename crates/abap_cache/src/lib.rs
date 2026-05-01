@@ -4293,6 +4293,7 @@ fn symbol_completion_kind_supported(kind: SymbolKind, namespace: Namespace) -> b
                 | SymbolKind::BuiltinVariable
                 | SymbolKind::Variable
                 | SymbolKind::Constant
+                | SymbolKind::EnumMember
                 | SymbolKind::FieldSymbol
                 | SymbolKind::Parameter
                 | SymbolKind::Control
@@ -4337,10 +4338,12 @@ fn symbol_completion_declaration(
             Some(declared_type) => format!("DATA {} {}.", symbol.name, declared_type),
             None => symbol.name.to_string(),
         },
-        SymbolKind::Constant | SymbolKind::BuiltinConstant => match declared_type {
-            Some(declared_type) => format!("CONSTANTS {} {}.", symbol.name, declared_type),
-            None => symbol.name.to_string(),
-        },
+        SymbolKind::Constant | SymbolKind::EnumMember | SymbolKind::BuiltinConstant => {
+            match declared_type {
+                Some(declared_type) => format!("CONSTANTS {} {}.", symbol.name, declared_type),
+                None => symbol.name.to_string(),
+            }
+        }
         SymbolKind::FieldSymbol => match declared_type {
             Some(declared_type) => format!("FIELD-SYMBOLS {} {}.", symbol.name, declared_type),
             None => symbol.name.to_string(),
@@ -4421,6 +4424,7 @@ fn symbol_kind_label(kind: SymbolKind) -> &'static str {
         SymbolKind::BuiltinVariable => "Built-in variable",
         SymbolKind::Variable => "Variable",
         SymbolKind::Constant => "Constant",
+        SymbolKind::EnumMember => "Enum member",
         SymbolKind::TypeDef => "Type definition",
         SymbolKind::FieldSymbol => "Field symbol",
         SymbolKind::Form => "Form",
@@ -4438,7 +4442,7 @@ fn symbol_kind_label(kind: SymbolKind) -> &'static str {
 }
 
 fn symbol_value_line(symbol: &SymbolData) -> Option<String> {
-    if symbol.kind != SymbolKind::Constant {
+    if !matches!(symbol.kind, SymbolKind::Constant | SymbolKind::EnumMember) {
         return None;
     }
     let value = symbol.value_clause_display.as_ref()?;
@@ -5710,6 +5714,7 @@ fn rename_supported_symbol_kind(kind: SymbolKind) -> bool {
         kind,
         SymbolKind::Variable
             | SymbolKind::Constant
+            | SymbolKind::EnumMember
             | SymbolKind::TypeDef
             | SymbolKind::FieldSymbol
             | SymbolKind::Form
