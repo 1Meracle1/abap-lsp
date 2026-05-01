@@ -3123,28 +3123,20 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_selection_screen_title_refs(
+    fn collect_selection_screen_text_refs(
         &mut self,
         tokens: &[SyntaxTokenInfo],
         start: usize,
+        end: usize,
         scope: ScopeId,
     ) {
-        let period_idx = tokens
-            .iter()
-            .position(|token| token.text.as_ref() == ".")
-            .unwrap_or(tokens.len());
-        let title_end = tokens[start..period_idx]
-            .iter()
-            .position(|token| token.text.as_ref() == ",")
-            .map(|offset| start + offset)
-            .unwrap_or(period_idx);
-        if start >= title_end {
+        if start >= end {
             return;
         }
 
         let mut batch_start = start;
         let mut idx = start;
-        while idx < title_end {
+        while idx < end {
             let is_text_pool = tokens[idx].text.eq_ignore_ascii_case("text")
                 && tokens
                     .get(idx + 1)
@@ -3160,12 +3152,96 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
             idx += 1;
         }
-        self.collect_token_expression_refs_range(tokens, batch_start, title_end, scope);
+        self.collect_token_expression_refs_range(tokens, batch_start, end, scope);
+    }
+
+    fn find_selection_screen_sequence(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        keywords: &[&str],
+    ) -> Option<usize> {
+        (start..end).find(|&idx| Self::tokens_match_keyword_sequence(&tokens[idx..end], keywords))
+    }
+
+    fn collect_selection_screen_block_title_refs(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) {
+        let Some(title_idx) =
+            self.find_selection_screen_sequence(tokens, start, end, &["with", "frame", "title"])
+        else {
+            return;
+        };
+        let title_start = title_idx + 3;
+        let title_end = self
+            .consume_simple_operand_tokens(tokens, title_start)
+            .min(end);
+        self.collect_selection_screen_text_refs(tokens, title_start, title_end, scope);
+    }
+
+    fn collect_selection_screen_for_field_ref(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) {
+        let Some(for_idx) =
+            self.find_selection_screen_sequence(tokens, start, end, &["for", "field"])
+        else {
+            return;
+        };
+        self.collect_positional_operand_tokens(tokens, for_idx + 2, 1, scope);
+    }
+
+    fn collect_selection_screen_item(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+        scope: ScopeId,
+    ) {
+        if Self::tokens_match_keyword_sequence(&tokens[start..end], &["begin", "of", "block"]) {
+            self.collect_selection_screen_block_title_refs(tokens, start + 3, end, scope);
+        } else if Self::tokens_match_keyword_sequence(&tokens[start..end], &["comment"]) {
+            self.collect_selection_screen_for_field_ref(tokens, start + 1, end, scope);
+        }
+    }
+
+    fn selection_screen_item_end(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        start: usize,
+        end: usize,
+    ) -> usize {
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        let mut idx = start;
+        while idx < end {
+            match tokens[idx].text.as_ref() {
+                "(" => paren += 1,
+                ")" => paren -= 1,
+                "[" => bracket += 1,
+                "]" => bracket -= 1,
+                "{" => brace += 1,
+                "}" => brace -= 1,
+                "," if paren == 0 && bracket == 0 && brace == 0 => break,
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
     }
 
     pub(super) fn collect_selection_screen_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let tokens = self.collector.significant_stmt_token_infos(node);
-        if tokens.len() < 6
+        if tokens.len() < 4
             || !Self::tokens_match_keyword_sequence(&tokens, &["selection", "-", "screen"])
         {
             return;
@@ -3179,13 +3255,12 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         } else {
             3
         };
-
-        if Self::tokens_match_keyword_sequence(&tokens[body_start..], &["begin", "of", "block"])
-            && let Some(with_idx) =
-                self.find_top_level_keyword_infos(&tokens, body_start + 3, &["WITH"])
-            && Self::tokens_match_keyword_sequence(&tokens[with_idx..], &["with", "frame", "title"])
-        {
-            self.collect_selection_screen_title_refs(&tokens, with_idx + 3, scope);
+        let period_idx = self.period_index_infos(&tokens);
+        let mut item_start = body_start;
+        while item_start < period_idx {
+            let item_end = self.selection_screen_item_end(&tokens, item_start, period_idx);
+            self.collect_selection_screen_item(&tokens, item_start, item_end, scope);
+            item_start = item_end + 1;
         }
     }
 

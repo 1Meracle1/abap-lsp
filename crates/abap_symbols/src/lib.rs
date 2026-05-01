@@ -2059,6 +2059,60 @@ END OF BLOCK b02.\n";
     }
 
     #[test]
+    fn selection_screen_layout_operands_resolve_without_keyword_refs() {
+        let src = "\
+REPORT zsyntax_selection_screen.\n\
+DATA gv_title TYPE string.\n\
+PARAMETERS p_carr TYPE c LENGTH 3.\n\
+\n\
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE gv_title.\n\
+SELECTION-SCREEN BEGIN OF LINE.\n\
+SELECTION-SCREEN COMMENT 1(10) TEXT-002 FOR FIELD p_carr.\n\
+PARAMETERS p_flag AS CHECKBOX.\n\
+SELECTION-SCREEN END OF LINE.\n\
+SELECTION-SCREEN PUSHBUTTON /1(20) TEXT-003 USER-COMMAND go.\n\
+SELECTION-SCREEN ULINE /1(30).\n\
+SELECTION-SCREEN SKIP 1.\n\
+SELECTION-SCREEN POSITION 33.\n\
+SELECTION-SCREEN END OF BLOCK b1.\n\
+SELECTION-SCREEN FUNCTION KEY 1.\n\
+SELECTION-SCREEN: BEGIN OF TABBED BLOCK tabs FOR 5 LINES,\n\
+  TAB (20) tab1 USER-COMMAND tabgo DEFAULT SCREEN 100,\n\
+  END OF BLOCK tabs.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit("file:///selection_screen_layout.abap", src, &parsed);
+
+        for needle in ["TITLE gv_title", "FOR FIELD p_carr"] {
+            let offset = src.find(needle).expect(needle) + needle.rfind(' ').unwrap() + 2;
+            let reference = unit
+                .semantic()
+                .refs()
+                .reference_at_offset(offset)
+                .unwrap_or_else(|| panic!("missing reference for {needle}"));
+            assert!(matches!(reference.resolution, Some(Resolution::Symbol(_))));
+        }
+
+        for name in ["go", "tabgo", "b1", "tabs", "tab1"] {
+            assert!(
+                unit.references
+                    .iter()
+                    .all(|reference| !reference.name.eq_ignore_ascii_case(name)),
+                "unexpected `{name}` reference: {:#?}",
+                unit.references
+            );
+        }
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+            "{:#?}",
+            unit.diagnostics
+        );
+    }
+
+    #[test]
     fn select_options_declare_range_table_symbol_and_resolve_for_operand() {
         let src = "\
 DATA lv_rogln TYPE string.\n\

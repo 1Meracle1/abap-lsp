@@ -13785,6 +13785,39 @@ END OF BLOCK b02.",
     }
 
     #[test]
+    fn parses_selection_screen_layout_variants() {
+        let parsed = crate::parse(
+            "REPORT zsyntax_selection_screen.\n\
+PARAMETERS p_carr TYPE c LENGTH 3.\n\
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.\n\
+SELECTION-SCREEN BEGIN OF LINE.\n\
+SELECTION-SCREEN COMMENT 1(10) TEXT-002 FOR FIELD p_carr.\n\
+PARAMETERS p_flag AS CHECKBOX.\n\
+SELECTION-SCREEN END OF LINE.\n\
+SELECTION-SCREEN PUSHBUTTON /1(20) TEXT-003 USER-COMMAND go.\n\
+SELECTION-SCREEN ULINE /1(30).\n\
+SELECTION-SCREEN SKIP 1.\n\
+SELECTION-SCREEN POSITION 33.\n\
+SELECTION-SCREEN END OF BLOCK b1.\n\
+SELECTION-SCREEN FUNCTION KEY 1.\n\
+SELECTION-SCREEN: BEGIN OF TABBED BLOCK tabs FOR 5 LINES,\n\
+  TAB (20) tab1 USER-COMMAND tabgo DEFAULT SCREEN 100,\n\
+  END OF BLOCK tabs.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::SelectionScreenStmt),
+            11
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ParametersDecl), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
     fn parses_form_header_type_refs_structurally() {
         let parsed =
             crate::parse("FORM run USING VALUE(iv_row) TYPE REF TO zif_demo=>ty_row. ENDFORM.");
