@@ -14,6 +14,11 @@ import time
 ANALYSIS_STATUS = "abapls/workspaceAnalysisStatus"
 RESOLVE_REMOTE = "abapls/resolveRemoteDependencies"
 REMOTE_UPDATED = "abapls/remoteDependenciesUpdated"
+ANALYSIS_NOTIFICATIONS = {
+    "abapls/workspaceManifestUpdated",
+    "abapls/dependencyCacheRefreshRequested",
+    REMOTE_UPDATED,
+}
 
 
 def read_frame(stream):
@@ -102,6 +107,8 @@ def op_payload(step):
         "references",
         "semanticTokens",
         "inlayHint",
+        "readDependencyDocument",
+        "diagnostics",
         "waitAnalysis",
         "sleep",
     ):
@@ -119,6 +126,7 @@ class Replay:
         self.cwd = cwd.resolve() if cwd.is_absolute() else (self.base_dir / cwd).resolve()
         self.timeout = int(scenario.get("timeoutMs", args.timeout_ms))
         self.trace = args.trace or bool(scenario.get("trace", False))
+        self.max_transcript_string = int(scenario.get("maxTranscriptStringChars", 2000))
         self.auto_fail_remote = bool(scenario.get("autoFailRemoteDependencies", False))
         self.server_cmd = (
             as_command(args.server)
@@ -130,10 +138,15 @@ class Replay:
         self.proc = None
         self.messages = queue.Queue()
         self.next_id = 1
+        self.message_seq = 0
+        self.analysis_wait_seq = 0
         self.versions = {}
         self.latest_analysis = {}
+        self.latest_analysis_seq = {}
         self.notification_counts = {}
         self.notifications = []
+        self.latest_diagnostics = {}
+        self.diagnostic_history = []
         self.records = []
         self.saved = {}
         self.stderr = []
@@ -202,6 +215,7 @@ class Replay:
             raise RuntimeError(value)
         if kind == "eof":
             raise RuntimeError("server closed stdout")
+        self.message_seq += 1
         self.record_message(value)
         return value
 
@@ -222,7 +236,16 @@ class Replay:
         self.notification_counts[method] = self.notification_counts.get(method, 0) + 1
         params = message.get("params")
         if method == ANALYSIS_STATUS and isinstance(params, dict):
-            self.latest_analysis[params.get("workspaceUri", "")] = params
+            workspace_uri = params.get("workspaceUri", "")
+            self.latest_analysis[workspace_uri] = params
+            self.latest_analysis_seq[workspace_uri] = self.message_seq
+        if method == "textDocument/publishDiagnostics" and isinstance(params, dict):
+            uri = normalize_uri(params.get("uri", ""))
+            diagnostics = params.get("diagnostics", [])
+            self.latest_diagnostics[uri] = diagnostics
+            self.diagnostic_history.append(
+                {"seq": self.message_seq, "uri": uri, "diagnostics": diagnostics}
+            )
         if self.trace or method == ANALYSIS_STATUS:
             self.notifications.append(message)
         if method == RESOLVE_REMOTE and self.auto_fail_remote and isinstance(params, dict):
@@ -239,11 +262,24 @@ class Replay:
             )
 
     def document_uri(self, payload):
+        if "uriFromSaved" in payload:
+            return normalize_uri(str(self.saved_value(payload["uriFromSaved"])))
         if "uri" in payload:
             return normalize_uri(payload["uri"])
         if "path" in payload:
             return path_uri(self.base_dir, payload["path"])
         raise ValueError("step needs uri or path")
+
+    def saved_value(self, ref):
+        value = self.saved
+        for part in str(ref).split("."):
+            if isinstance(value, dict):
+                value = value[part]
+            elif isinstance(value, list):
+                value = value[int(part)]
+            else:
+                raise KeyError(f"cannot resolve saved value {ref!r}")
+        return value
 
     def position_params(self, payload):
         return {
@@ -292,17 +328,26 @@ class Replay:
             if workspace:
                 workspace_uri = path_uri(self.base_dir, workspace)
         require_idle = bool(payload.get("remoteIdle", True))
+        trigger = payload.get("trigger")
         accept_complete_progress = bool(payload.get("acceptCompleteProgress", True))
         settle_ms = int(payload.get("settleMs", 100))
         timeout_ms = int(payload.get("timeoutMs", self.timeout))
         deadline = time.monotonic() + timeout_ms / 1000
         while True:
             status = self.latest_analysis.get(workspace_uri or "")
+            status_seq = self.latest_analysis_seq.get(workspace_uri or "", 0)
+            status = status if status_seq > self.analysis_wait_seq else None
+            if trigger and status and status.get("trigger") != trigger:
+                status = None
             if self.analysis_ready(status, require_idle):
                 return status
             if accept_complete_progress and self.analysis_complete_progress(status, require_idle):
                 self.drain_quiet(settle_ms)
                 status = self.latest_analysis.get(workspace_uri or "")
+                status_seq = self.latest_analysis_seq.get(workspace_uri or "", 0)
+                status = status if status_seq > self.analysis_wait_seq else None
+                if trigger and status and status.get("trigger") != trigger:
+                    status = None
                 if self.analysis_ready(status, require_idle):
                     return status
                 if self.analysis_complete_progress(status, require_idle):
@@ -351,9 +396,12 @@ class Replay:
             record["response"] = response
         elif op == "initialized":
             self.notify("initialized")
+            self.analysis_wait_seq = self.message_seq
         elif op == "open":
             uri = self.document_uri(payload)
             text = payload.get("text")
+            if text is None and "textFromSaved" in payload:
+                text = str(self.saved_value(payload["textFromSaved"]))
             if text is None:
                 text = load_text(self.base_dir, payload["path"])
             version = int(payload.get("version", self.versions.get(uri, 0) + 1))
@@ -371,9 +419,12 @@ class Replay:
             )
             record["uri"] = uri
             record["version"] = version
+            self.analysis_wait_seq = self.message_seq
         elif op == "change":
             uri = self.document_uri(payload)
             text = payload.get("text")
+            if text is None and "textFromSaved" in payload:
+                text = str(self.saved_value(payload["textFromSaved"]))
             if text is None:
                 text = load_text(self.base_dir, payload["path"])
             version = int(payload.get("version", self.versions.get(uri, 0) + 1))
@@ -387,8 +438,11 @@ class Replay:
             )
             record["uri"] = uri
             record["version"] = version
+            self.analysis_wait_seq = self.message_seq
         elif op == "notify":
             self.notify(payload["method"], payload.get("params"))
+            if payload["method"] in ANALYSIS_NOTIFICATIONS:
+                self.analysis_wait_seq = self.message_seq
         elif op == "request":
             response = self.request(
                 payload["method"],
@@ -425,6 +479,28 @@ class Replay:
                     "range": payload["range"],
                 },
             )
+        elif op == "readDependencyDocument":
+            record["response"] = self.request(
+                "abapls/readDependencyDocument",
+                {"uri": self.document_uri(payload)},
+                payload.get("timeoutMs"),
+                bool(payload.get("allowError", False)),
+            )
+        elif op == "diagnostics":
+            uri = self.document_uri(payload)
+            record["uri"] = uri
+            if payload.get("history"):
+                history = [
+                    entry
+                    for entry in self.diagnostic_history
+                    if entry["uri"] == uri
+                ]
+                record["history"] = history
+                record["counts"] = [len(entry["diagnostics"]) for entry in history]
+            else:
+                diagnostics = self.latest_diagnostics.get(uri, [])
+                record["count"] = len(diagnostics)
+                record["diagnostics"] = diagnostics
         elif op == "waitAnalysis":
             record["status"] = self.wait_analysis(payload)
         elif op == "sleep":
@@ -478,17 +554,31 @@ class Replay:
             "ok": ok,
             "server": self.server_cmd,
             "cwd": str(self.cwd),
-            "records": self.records,
-            "saved": self.saved,
+            "records": self.summarize(self.records),
+            "saved": self.summarize(self.saved),
             "notificationCounts": self.notification_counts,
             "analysisStatuses": list(self.latest_analysis.values()),
         }
         if self.trace:
-            out["notifications"] = self.notifications
+            out["notifications"] = self.summarize(self.notifications)
         if error:
             out["error"] = str(error)
             out["serverStderrTail"] = self.stderr[-50:]
         return out
+
+    def summarize(self, value):
+        if self.max_transcript_string <= 0:
+            return value
+        if isinstance(value, str):
+            if len(value) <= self.max_transcript_string:
+                return value
+            kept = value[: self.max_transcript_string]
+            return f"{kept}...<truncated {len(value) - self.max_transcript_string} chars>"
+        if isinstance(value, list):
+            return [self.summarize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self.summarize(item) for key, item in value.items()}
+        return value
 
 
 def load_scenario(path):

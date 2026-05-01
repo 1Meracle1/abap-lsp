@@ -63,17 +63,30 @@ Supported steps:
 - `waitAnalysis`
 - `hover`, `definition` / `gotoDefinition`, `completion`, `references`,
   `semanticTokens`, `inlayHint`
+- `readDependencyDocument` for `abapls/readDependencyDocument`
+- `diagnostics` to snapshot the latest `publishDiagnostics` for a URI, or add
+  `"history": true` to include every diagnostic publication seen for that URI
 - `request` and `notify` for raw LSP/custom methods
 - `sleep`
 
 Each run prints a JSON transcript with per-step responses, saved results,
 analysis statuses, and notification counts. Add `"trace": true` or pass
-`--trace` to include all received notifications.
+`--trace` to include all received notifications. Long strings are truncated in
+the printed transcript by default; set `"maxTranscriptStringChars": 0` to print
+full payloads.
 
-`waitAnalysis` waits for a `finished` analysis status. It also accepts a
-complete `progress` status by default because eager `initialized` analysis can
-finish that way today; set `"acceptCompleteProgress": false` on the step to
-require an explicit `finished` phase.
+`waitAnalysis` waits for the next `finished` analysis status after the most
+recent `initialized`, `open`, `change`, or known workspace-analysis
+notification. It also accepts a complete `progress` status by default because
+eager `initialized` analysis can finish that way today; set
+`"acceptCompleteProgress": false` on the step to require an explicit `finished`
+phase. Add `"trigger": "open"` or another trigger name to require a specific
+analysis trigger.
+
+Steps with a response can use `"saveAs": "name"`. Later steps can refer to
+nested saved values with `"uriFromSaved": "name.uri"` or
+`"textFromSaved": "name.sourceText"`, which is useful for jumping to and opening
+`abapls-cache` dependency documents returned by go-to-definition.
 
 If a workspace requests remote dependencies and there is no client-side ADT
 fetcher in the replay, set `"autoFailRemoteDependencies": true` to answer
