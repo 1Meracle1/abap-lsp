@@ -3073,6 +3073,39 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             .collect_token_expression_refs_infos(tail, scope, true);
     }
 
+    pub(super) fn collect_dataset_stmt(&mut self, node: NodeId, scope: ScopeId) {
+        self.record_unknown_effect(node, scope);
+        for child in self.collector.file.children(node) {
+            match self.collector.file.kind(child) {
+                SyntaxKind::DatasetReadOperand => {
+                    if let Some(value) = self.collector.first_non_token_child(child) {
+                        self.collector.walk_node(value, scope);
+                    }
+                }
+                SyntaxKind::DatasetWriteOperand => {
+                    let Some(value) = self.collector.first_non_token_child(child) else {
+                        continue;
+                    };
+                    if self.collector.file.kind(value) == SyntaxKind::DataInlineDecl {
+                        self.collector
+                            .decl_lowering()
+                            .walk_inline_decl(value, scope);
+                    } else {
+                        self.collector.walk_node(value, scope);
+                        self.emit_assignment_site_from_ranges(
+                            scope,
+                            self.collector.file.range(child),
+                            value,
+                            &[],
+                        );
+                    }
+                }
+                SyntaxKind::Token => {}
+                _ => self.collector.walk_node(child, scope),
+            }
+        }
+    }
+
     fn collect_refresh_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
         let mut idx = 0usize;
         while idx < tokens.len() {

@@ -12876,6 +12876,602 @@ pub fn try_parse_close_cursor_stmt(
     Some((node, period_i + 1))
 }
 
+fn dataset_stmt_lead_kind(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+) -> Option<(SyntaxKind, usize)> {
+    let first = tokens.get(idx)?;
+    if is_keyword(source, first, "transfer") {
+        return Some((SyntaxKind::TransferStmt, idx + 1));
+    }
+
+    for (keyword, kind) in [
+        ("open", SyntaxKind::OpenDatasetStmt),
+        ("close", SyntaxKind::CloseDatasetStmt),
+        ("delete", SyntaxKind::DeleteDatasetStmt),
+        ("read", SyntaxKind::ReadDatasetStmt),
+        ("get", SyntaxKind::GetDatasetStmt),
+        ("set", SyntaxKind::SetDatasetStmt),
+        ("truncate", SyntaxKind::TruncateDatasetStmt),
+    ] {
+        if is_keyword(source, first, keyword)
+            && tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .is_some_and(|token| is_keyword(source, token, "dataset"))
+        {
+            return Some((kind, skip_trivia(tokens, idx + 1) + 1));
+        }
+    }
+
+    None
+}
+
+fn dataset_next_clause(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keywords: &[&str],
+) -> usize {
+    find_top_level_keyword_in(source, tokens, start, end_exclusive, keywords)
+        .unwrap_or(end_exclusive)
+}
+
+fn push_dataset_read_operand(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+) {
+    push_wrapped_expr_child(
+        b,
+        children,
+        source,
+        tokens,
+        skip_trivia(tokens, start),
+        end_exclusive,
+        prev_before_first,
+        SyntaxKind::DatasetReadOperand,
+    );
+}
+
+fn push_dataset_write_operand(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    prev_before_first: Option<&Token>,
+) {
+    let start = skip_trivia(tokens, start);
+    if start >= end_exclusive {
+        return;
+    }
+    if let Some((inline_decl, next_i)) = try_parse_data_inline_decl(b, source, tokens, start)
+        && skip_trivia(tokens, next_i) == end_exclusive
+    {
+        children.push(b.branch(
+            SyntaxKind::DatasetWriteOperand,
+            tokens[start].range.start..tokens[next_i - 1].range.end,
+            &[inline_decl],
+        ));
+    } else {
+        push_wrapped_expr_child(
+            b,
+            children,
+            source,
+            tokens,
+            start,
+            end_exclusive,
+            prev_before_first,
+            SyntaxKind::DatasetWriteOperand,
+        );
+    }
+}
+
+fn build_simple_dataset_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_end: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, lead_end);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        lead_end,
+        period_i,
+        tokens.get(lead_end.saturating_sub(1)),
+    );
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_open_dataset_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_end: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, lead_end);
+    let clause_keywords = [
+        "for",
+        "in",
+        "at",
+        "type",
+        "filter",
+        "message",
+        "ignoring",
+        "replacement",
+        "with",
+    ];
+    let dset_end = dataset_next_clause(source, tokens, lead_end, period_i, &clause_keywords);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        lead_end,
+        dset_end,
+        tokens.get(lead_end.saturating_sub(1)),
+    );
+
+    let mut i = dset_end;
+    while i < period_i {
+        if match_keyword_sequence_at(source, tokens, i, period_i, &["at", "position"]).is_some() {
+            push_token_children(b, &mut children, tokens, i, i + 2);
+            let value_start = skip_trivia(tokens, i + 2);
+            let value_end =
+                dataset_next_clause(source, tokens, value_start, period_i, &clause_keywords);
+            push_dataset_read_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                value_start,
+                value_end,
+                tokens.get(i + 1),
+            );
+            i = value_end;
+            continue;
+        }
+        if is_keyword(source, &tokens[i], "message") {
+            children.push(token_leaf(b, &tokens[i]));
+            let value_start = skip_trivia(tokens, i + 1);
+            let value_end =
+                dataset_next_clause(source, tokens, value_start, period_i, &clause_keywords);
+            push_dataset_write_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                value_start,
+                value_end,
+                Some(&tokens[i]),
+            );
+            i = value_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_read_dataset_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_end: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, lead_end);
+    let clause_keywords = ["into", "maximum", "actual", "length"];
+    let dset_end = dataset_next_clause(source, tokens, lead_end, period_i, &clause_keywords);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        lead_end,
+        dset_end,
+        tokens.get(lead_end.saturating_sub(1)),
+    );
+
+    let mut i = dset_end;
+    while i < period_i {
+        if is_keyword(source, &tokens[i], "into") {
+            children.push(token_leaf(b, &tokens[i]));
+            let target_start = skip_trivia(tokens, i + 1);
+            let target_end =
+                dataset_next_clause(source, tokens, target_start, period_i, &clause_keywords);
+            push_dataset_write_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                target_end,
+                Some(&tokens[i]),
+            );
+            i = target_end;
+            continue;
+        }
+        if match_keyword_sequence_at(source, tokens, i, period_i, &["maximum", "length"]).is_some()
+        {
+            push_token_children(b, &mut children, tokens, i, i + 2);
+            let value_start = skip_trivia(tokens, i + 2);
+            let value_end =
+                dataset_next_clause(source, tokens, value_start, period_i, &clause_keywords);
+            push_dataset_read_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                value_start,
+                value_end,
+                tokens.get(i + 1),
+            );
+            i = value_end;
+            continue;
+        }
+        if match_keyword_sequence_at(source, tokens, i, period_i, &["actual", "length"]).is_some() {
+            push_token_children(b, &mut children, tokens, i, i + 2);
+            let target_start = skip_trivia(tokens, i + 2);
+            let target_end =
+                dataset_next_clause(source, tokens, target_start, period_i, &clause_keywords);
+            push_dataset_write_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                target_end,
+                tokens.get(i + 1),
+            );
+            i = target_end;
+            continue;
+        }
+        if is_keyword(source, &tokens[i], "length") {
+            children.push(token_leaf(b, &tokens[i]));
+            let target_start = skip_trivia(tokens, i + 1);
+            let target_end =
+                dataset_next_clause(source, tokens, target_start, period_i, &clause_keywords);
+            push_dataset_write_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                target_end,
+                Some(&tokens[i]),
+            );
+            i = target_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_transfer_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = vec![token_leaf(b, &tokens[idx])];
+    let Some(to_idx) = find_top_level_keyword(source, tokens, idx + 1, period_i, "to") else {
+        push_token_children(b, &mut children, tokens, idx + 1, period_i + 1);
+        return children;
+    };
+    let clause_keywords = ["length", "no"];
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        idx + 1,
+        to_idx,
+        Some(&tokens[idx]),
+    );
+    children.push(token_leaf(b, &tokens[to_idx]));
+    let dset_start = skip_trivia(tokens, to_idx + 1);
+    let dset_end = dataset_next_clause(source, tokens, dset_start, period_i, &clause_keywords);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        dset_start,
+        dset_end,
+        Some(&tokens[to_idx]),
+    );
+
+    let mut i = dset_end;
+    while i < period_i {
+        if is_keyword(source, &tokens[i], "length") {
+            children.push(token_leaf(b, &tokens[i]));
+            let value_start = skip_trivia(tokens, i + 1);
+            let value_end =
+                dataset_next_clause(source, tokens, value_start, period_i, &clause_keywords);
+            push_dataset_read_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                value_start,
+                value_end,
+                Some(&tokens[i]),
+            );
+            i = value_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_get_dataset_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_end: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, lead_end);
+    let clause_keywords = ["position", "attributes"];
+    let dset_end = dataset_next_clause(source, tokens, lead_end, period_i, &clause_keywords);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        lead_end,
+        dset_end,
+        tokens.get(lead_end.saturating_sub(1)),
+    );
+
+    let mut i = dset_end;
+    while i < period_i {
+        if is_keyword(source, &tokens[i], "position")
+            || is_keyword(source, &tokens[i], "attributes")
+        {
+            children.push(token_leaf(b, &tokens[i]));
+            let target_start = skip_trivia(tokens, i + 1);
+            let target_end =
+                dataset_next_clause(source, tokens, target_start, period_i, &clause_keywords);
+            push_dataset_write_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                target_start,
+                target_end,
+                Some(&tokens[i]),
+            );
+            i = target_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_set_dataset_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_end: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, lead_end);
+    let clause_keywords = ["position", "attributes"];
+    let dset_end = dataset_next_clause(source, tokens, lead_end, period_i, &clause_keywords);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        lead_end,
+        dset_end,
+        tokens.get(lead_end.saturating_sub(1)),
+    );
+
+    let mut i = dset_end;
+    while i < period_i {
+        if is_keyword(source, &tokens[i], "position") {
+            children.push(token_leaf(b, &tokens[i]));
+            let value_start = skip_trivia(tokens, i + 1);
+            if match_keyword_sequence_at(
+                source,
+                tokens,
+                value_start,
+                period_i,
+                &["end", "of", "file"],
+            )
+            .is_some()
+            {
+                push_token_children(b, &mut children, tokens, value_start, value_start + 3);
+                i = value_start + 3;
+            } else {
+                let value_end =
+                    dataset_next_clause(source, tokens, value_start, period_i, &clause_keywords);
+                push_dataset_read_operand(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    value_start,
+                    value_end,
+                    Some(&tokens[i]),
+                );
+                i = value_end;
+            }
+            continue;
+        }
+        if is_keyword(source, &tokens[i], "attributes") {
+            children.push(token_leaf(b, &tokens[i]));
+            let value_start = skip_trivia(tokens, i + 1);
+            let value_end =
+                dataset_next_clause(source, tokens, value_start, period_i, &clause_keywords);
+            push_dataset_read_operand(
+                b,
+                &mut children,
+                source,
+                tokens,
+                value_start,
+                value_end,
+                Some(&tokens[i]),
+            );
+            i = value_end;
+            continue;
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+fn build_truncate_dataset_stmt_children(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    lead_end: usize,
+    period_i: usize,
+) -> Vec<NodeId> {
+    let mut children = Vec::new();
+    push_token_children(b, &mut children, tokens, idx, lead_end);
+    let at_idx = find_top_level_keyword(source, tokens, lead_end, period_i, "at");
+    let dset_end = at_idx.unwrap_or(period_i);
+    push_dataset_read_operand(
+        b,
+        &mut children,
+        source,
+        tokens,
+        lead_end,
+        dset_end,
+        tokens.get(lead_end.saturating_sub(1)),
+    );
+
+    let mut i = dset_end;
+    while i < period_i {
+        if is_keyword(source, &tokens[i], "at") {
+            children.push(token_leaf(b, &tokens[i]));
+            let next = skip_trivia(tokens, i + 1);
+            if match_keyword_sequence_at(source, tokens, next, period_i, &["current", "position"])
+                .is_some()
+            {
+                push_token_children(b, &mut children, tokens, next, next + 2);
+                i = next + 2;
+                continue;
+            }
+            if is_keyword(source, &tokens[next], "position") {
+                children.push(token_leaf(b, &tokens[next]));
+                push_dataset_read_operand(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    next + 1,
+                    period_i,
+                    Some(&tokens[next]),
+                );
+                i = period_i;
+                continue;
+            }
+        }
+        children.push(token_leaf(b, &tokens[i]));
+        i += 1;
+    }
+    children.push(token_leaf(b, &tokens[period_i]));
+    children
+}
+
+pub fn try_parse_dataset_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let start_tok = tokens.get(idx)?;
+    let (kind, lead_end) = dataset_stmt_lead_kind(source, tokens, idx)?;
+
+    Some(parse_stmt_with_period_scan(
+        b,
+        source,
+        tokens,
+        idx,
+        lead_end,
+        start_tok,
+        "syntax error: expected '.' after dataset statement",
+        errors,
+        next_after_unterminated_scan,
+        |b, period_i, _errors| {
+            let children = match kind {
+                SyntaxKind::OpenDatasetStmt => {
+                    build_open_dataset_stmt_children(b, source, tokens, idx, lead_end, period_i)
+                }
+                SyntaxKind::CloseDatasetStmt | SyntaxKind::DeleteDatasetStmt => {
+                    build_simple_dataset_stmt_children(b, source, tokens, idx, lead_end, period_i)
+                }
+                SyntaxKind::ReadDatasetStmt => {
+                    build_read_dataset_stmt_children(b, source, tokens, idx, lead_end, period_i)
+                }
+                SyntaxKind::TransferStmt => {
+                    build_transfer_stmt_children(b, source, tokens, idx, period_i)
+                }
+                SyntaxKind::GetDatasetStmt => {
+                    build_get_dataset_stmt_children(b, source, tokens, idx, lead_end, period_i)
+                }
+                SyntaxKind::SetDatasetStmt => {
+                    build_set_dataset_stmt_children(b, source, tokens, idx, lead_end, period_i)
+                }
+                SyntaxKind::TruncateDatasetStmt => {
+                    build_truncate_dataset_stmt_children(b, source, tokens, idx, lead_end, period_i)
+                }
+                _ => token_children(b, tokens, idx, period_i + 1),
+            };
+            let node = b.branch(
+                kind,
+                start_tok.range.start..tokens[period_i].range.end,
+                &children,
+            );
+            (node, period_i + 1)
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use abap_ast::SyntaxKind;
@@ -12914,6 +13510,70 @@ mod tests {
                 .count_kind(root, SyntaxKind::EnhancementPointStmt),
             1
         );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_dataset_position_attributes_variants() {
+        let parsed = crate::parse(
+            "GET DATASET file POSITION DATA(pos) ATTRIBUTES DATA(attrs).\n\
+             SET DATASET file POSITION END OF FILE ATTRIBUTES attrs.\n\
+             SET DATASET file POSITION pos.\n\
+             TRUNCATE DATASET file AT CURRENT POSITION.\n\
+             TRUNCATE DATASET file AT POSITION pos.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::GetDatasetStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::SetDatasetStmt), 2);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::TruncateDatasetStmt),
+            2
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatasetWriteOperand),
+            2
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn parses_dataset_message_and_length_operands() {
+        let parsed = crate::parse(
+            "OPEN DATASET file FOR OUTPUT IN TEXT MODE ENCODING DEFAULT AT POSITION pos MESSAGE msg.\n\
+             READ DATASET file INTO text MAXIMUM LENGTH max_len ACTUAL LENGTH DATA(len).\n\
+             READ DATASET file INTO text LENGTH len.\n\
+             TRANSFER text TO file LENGTH len.\n\
+             CLOSE DATASET file.\n\
+             DELETE DATASET file.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::OpenDatasetStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ReadDatasetStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TransferStmt), 1);
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::CloseDatasetStmt),
+            1
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::DeleteDatasetStmt),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::DatasetWriteOperand),
+            5
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }

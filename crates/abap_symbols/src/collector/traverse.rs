@@ -234,6 +234,16 @@ impl<'a> Collector<'a> {
             SyntaxKind::SyntaxCheckStmt => {
                 self.stmt_lowering().collect_syntax_check_stmt(node, scope)
             }
+            SyntaxKind::OpenDatasetStmt
+            | SyntaxKind::CloseDatasetStmt
+            | SyntaxKind::DeleteDatasetStmt
+            | SyntaxKind::ReadDatasetStmt
+            | SyntaxKind::TransferStmt
+            | SyntaxKind::GetDatasetStmt
+            | SyntaxKind::SetDatasetStmt
+            | SyntaxKind::TruncateDatasetStmt => {
+                self.stmt_lowering().collect_dataset_stmt(node, scope)
+            }
             SyntaxKind::AliasesStmt => self.stmt_lowering().collect_aliases_stmt(node, scope),
             SyntaxKind::ClearStmt => self.stmt_lowering().collect_clear_stmt(node, scope),
             SyntaxKind::RefreshStmt => self.stmt_lowering().collect_refresh_stmt(node, scope),
@@ -276,16 +286,11 @@ impl<'a> Collector<'a> {
             | SyntaxKind::GetBadiStmt
             | SyntaxKind::GetCursorStmt
             | SyntaxKind::ReadLineStmt
-            | SyntaxKind::ReadDatasetStmt
             | SyntaxKind::ReadTextpoolStmt
-            | SyntaxKind::OpenDatasetStmt
-            | SyntaxKind::CloseDatasetStmt
-            | SyntaxKind::DeleteDatasetStmt
             | SyntaxKind::ModifyLineStmt
             | SyntaxKind::FieldStmt
             | SyntaxKind::FieldGroupsStmt
             | SyntaxKind::InsertExtractStmt
-            | SyntaxKind::TransferStmt
             | SyntaxKind::GenerateSubroutinePoolStmt
             | SyntaxKind::GenerateDynproStmt
             | SyntaxKind::CommitWorkStmt

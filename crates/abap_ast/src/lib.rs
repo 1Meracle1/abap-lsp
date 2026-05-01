@@ -355,6 +355,16 @@ pub enum SyntaxKind {
     OpenDatasetStmt,
     /// `CLOSE DATASET ... .`
     CloseDatasetStmt,
+    /// `GET DATASET ... .`
+    GetDatasetStmt,
+    /// `SET DATASET ... .`
+    SetDatasetStmt,
+    /// `TRUNCATE DATASET ... .`
+    TruncateDatasetStmt,
+    /// Read operand inside dataset file-interface statements.
+    DatasetReadOperand,
+    /// Write operand inside dataset file-interface statements.
+    DatasetWriteOperand,
     /// Cursor handle operand in `OPEN CURSOR ...`, `FETCH NEXT CURSOR ...`, etc.
     CursorHandleOperand,
     /// Structured SQL query payload inside `SELECT`.
@@ -904,6 +914,11 @@ impl SyntaxKind {
             Self::CloseCursorStmt => "CloseCursorStmt",
             Self::OpenDatasetStmt => "OpenDatasetStmt",
             Self::CloseDatasetStmt => "CloseDatasetStmt",
+            Self::GetDatasetStmt => "GetDatasetStmt",
+            Self::SetDatasetStmt => "SetDatasetStmt",
+            Self::TruncateDatasetStmt => "TruncateDatasetStmt",
+            Self::DatasetReadOperand => "DatasetReadOperand",
+            Self::DatasetWriteOperand => "DatasetWriteOperand",
             Self::CursorHandleOperand => "CursorHandleOperand",
             Self::SelectQuery => "SelectQuery",
             Self::SelectWithClause => "SelectWithClause",

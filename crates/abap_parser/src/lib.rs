@@ -103,6 +103,12 @@ const IDENT_LEAD_PARSER_REGISTRATIONS: &[IdentLeadParserRegistration] = &[
     IdentLeadParserRegistration::new(&["open"], surface_stmt::try_parse_open_cursor_stmt),
     IdentLeadParserRegistration::new(&["fetch"], surface_stmt::try_parse_fetch_cursor_stmt),
     IdentLeadParserRegistration::new(&["close"], surface_stmt::try_parse_close_cursor_stmt),
+    IdentLeadParserRegistration::new(
+        &[
+            "open", "close", "delete", "read", "transfer", "get", "set", "truncate",
+        ],
+        surface_stmt::try_parse_dataset_stmt,
+    ),
     IdentLeadParserRegistration::new(&["read"], surface_stmt::try_parse_read_report_stmt),
     IdentLeadParserRegistration::new(&["read"], surface_stmt::try_parse_read_table_stmt),
     IdentLeadParserRegistration::new(&["authority"], surface_stmt::try_parse_authority_check_stmt),
@@ -527,19 +533,19 @@ mod tests {
             super::ident_lead_parser_attempts("get")
                 .expect("GET parsers")
                 .len(),
-            3
+            4
         );
         assert_eq!(
             super::ident_lead_parser_attempts("GET")
                 .expect("GET parsers")
                 .len(),
-            3
+            4
         );
         assert_eq!(
             super::ident_lead_parser_attempts("GeT")
                 .expect("GET parsers")
                 .len(),
-            3
+            4
         );
         assert!(super::ident_lead_parser_attempts("lv_value").is_none());
     }

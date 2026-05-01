@@ -18345,3 +18345,104 @@ START-OF-SELECTION.
         main_unit.diagnostics
     );
 }
+
+#[test]
+fn dataset_file_interface_operands_resolve_without_keyword_refs() {
+    let src = r#"
+FORM run.
+  DATA file TYPE string.
+  DATA text TYPE string.
+  DATA msg TYPE string.
+  DATA pos TYPE i.
+  DATA len TYPE i.
+  DATA max_len TYPE i.
+  DATA attrs TYPE string.
+
+  OPEN DATASET file FOR OUTPUT IN TEXT MODE ENCODING DEFAULT AT POSITION pos MESSAGE msg.
+  TRANSFER text TO file LENGTH len.
+  READ DATASET file INTO text MAXIMUM LENGTH max_len LENGTH len.
+  GET DATASET file POSITION pos ATTRIBUTES attrs.
+  SET DATASET file POSITION pos ATTRIBUTES attrs.
+  TRUNCATE DATASET file AT POSITION pos.
+  CLOSE DATASET file.
+  DELETE DATASET file.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///dataset_file_interface.abap");
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    for name in ["file", "text", "msg", "pos", "len", "max_len", "attrs"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved dataset operand reference for `{name}`, refs={:?}",
+            unit.references
+        );
+    }
+
+    for keyword in ["dataset", "position", "attributes", "length", "message"] {
+        assert!(
+            !unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Identifier && reference.name.as_ref() == keyword
+            }),
+            "dataset keyword `{keyword}` became a reference: {:?}",
+            unit.references
+        );
+    }
+
+    let assigned: Vec<_> = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect();
+    for target in ["msg", "text", "len", "pos", "attrs"] {
+        assert!(
+            assigned.iter().any(|name| name == target),
+            "expected dataset write target `{target}`, assignments={assigned:?}"
+        );
+    }
+}
+
+#[test]
+fn dataset_inline_write_targets_are_declared() {
+    let src = r#"
+FORM run.
+  DATA file TYPE string.
+  DATA text TYPE string.
+
+  READ DATASET file INTO text LENGTH DATA(len).
+  GET DATASET file POSITION DATA(pos) ATTRIBUTES DATA(attrs).
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///dataset_inline_targets.abap");
+
+    for name in ["len", "pos", "attrs"] {
+        assert!(
+            unit.symbols.iter().any(|symbol| {
+                symbol.name.as_ref() == name && symbol.kind == SymbolKind::Variable
+            }),
+            "expected inline dataset target `{name}` to be declared, symbols={:?}",
+            unit.symbols
+        );
+    }
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+}

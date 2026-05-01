@@ -805,6 +805,8 @@ ast_node!(SetCursorStmt, SyntaxKind::SetCursorStmt);
 ast_node!(SetHandlerStmt, SyntaxKind::SetHandlerStmt);
 ast_node!(WriteStmt, SyntaxKind::WriteStmt);
 ast_node!(TransferStmt, SyntaxKind::TransferStmt);
+ast_value_node!(DatasetReadOperand, SyntaxKind::DatasetReadOperand);
+ast_value_node!(DatasetWriteOperand, SyntaxKind::DatasetWriteOperand);
 ast_node!(
     GenerateSubroutinePoolStmt,
     SyntaxKind::GenerateSubroutinePoolStmt
@@ -833,6 +835,9 @@ ast_node!(FetchCursorStmt, SyntaxKind::FetchCursorStmt);
 ast_node!(CloseCursorStmt, SyntaxKind::CloseCursorStmt);
 ast_node!(OpenDatasetStmt, SyntaxKind::OpenDatasetStmt);
 ast_node!(CloseDatasetStmt, SyntaxKind::CloseDatasetStmt);
+ast_node!(GetDatasetStmt, SyntaxKind::GetDatasetStmt);
+ast_node!(SetDatasetStmt, SyntaxKind::SetDatasetStmt);
+ast_node!(TruncateDatasetStmt, SyntaxKind::TruncateDatasetStmt);
 ast_node!(CursorHandleOperand, SyntaxKind::CursorHandleOperand);
 ast_node!(SelectQuery, SyntaxKind::SelectQuery);
 ast_node!(SelectWithClause, SyntaxKind::SelectWithClause);
