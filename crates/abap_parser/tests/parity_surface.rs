@@ -286,3 +286,22 @@ ENDCLASS.
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 0);
     assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
 }
+
+#[test]
+fn parses_native_sql_exec_block_as_island() {
+    let src = r#"
+EXEC SQL.
+  SELECT SINGLE mandt INTO :lv_mandt FROM t000 WHERE mandt = :sy-mandt
+ENDEXEC.
+WRITE lv_mandt.
+"#;
+
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let root = parsed.file.root();
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::ExecSqlStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::NativeSqlIsland), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::SelectStmt), 0);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::WriteStmt), 1);
+    assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+}

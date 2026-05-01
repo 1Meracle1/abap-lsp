@@ -5920,6 +5920,74 @@ fn parse_sqlscript_island_until_endmethod(
     (vec![island], end)
 }
 
+pub fn try_parse_exec_sql_stmt(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)> {
+    let exec_tok = tokens.get(idx)?;
+    if !is_keyword(source, exec_tok, "exec") {
+        return None;
+    }
+    let sql_idx = skip_trivia(tokens, idx + 1);
+    if !tokens
+        .get(sql_idx)
+        .is_some_and(|token| is_keyword(source, token, "sql"))
+    {
+        return None;
+    }
+
+    let (mut children, body_start) = parse_header_until_period(
+        b,
+        source,
+        tokens,
+        idx,
+        sql_idx + 1,
+        errors,
+        "syntax error: expected '.' after EXEC SQL",
+    );
+    let mut endexec_idx = body_start;
+    while tokens
+        .get(endexec_idx)
+        .is_some_and(|token| token.kind != TokenKind::Eof && !is_keyword(source, token, "endexec"))
+    {
+        endexec_idx += 1;
+    }
+    if body_start < endexec_idx {
+        let body = token_children(b, tokens, body_start, endexec_idx);
+        children.push(b.branch(
+            SyntaxKind::NativeSqlIsland,
+            tokens[body_start].range.start..tokens[endexec_idx - 1].range.end,
+            &body,
+        ));
+    }
+    let (end_children, next_after, end_pos) = parse_end_keyword(
+        b,
+        source,
+        tokens,
+        endexec_idx,
+        exec_tok,
+        "ENDEXEC",
+        "syntax error: expected ENDEXEC",
+        errors,
+    );
+    children.extend(end_children);
+    let end = children
+        .last()
+        .copied()
+        .map(|id| b.span(id).end)
+        .unwrap_or(exec_tok.range.end)
+        .max(end_pos);
+    let node = b.branch(
+        SyntaxKind::ExecSqlStmt,
+        exec_tok.range.start..end,
+        &children,
+    );
+    Some((node, next_after))
+}
+
 fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
     let start_tok = tokens.get(idx)?;
     if start_tok.kind != TokenKind::Ident {

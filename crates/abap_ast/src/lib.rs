@@ -339,6 +339,10 @@ pub enum SyntaxKind {
     MethodDeclTarget,
     /// Opaque SQLScript body inside an AMDP `METHOD ... BY DATABASE ... LANGUAGE SQLSCRIPT ...`.
     SqlScriptIsland,
+    /// `EXEC SQL ... ENDEXEC.` native SQL block.
+    ExecSqlStmt,
+    /// Opaque native SQL body inside `EXEC SQL`.
+    NativeSqlIsland,
     /// `SELECT ... .` or `SELECT ... . ... ENDSELECT.`
     SelectStmt,
     /// `OPEN CURSOR ... FOR SELECT ... .`
@@ -892,6 +896,8 @@ impl SyntaxKind {
             Self::MethodDecl => "MethodDecl",
             Self::MethodDeclTarget => "MethodDeclTarget",
             Self::SqlScriptIsland => "SqlScriptIsland",
+            Self::ExecSqlStmt => "ExecSqlStmt",
+            Self::NativeSqlIsland => "NativeSqlIsland",
             Self::SelectStmt => "SelectStmt",
             Self::OpenCursorStmt => "OpenCursorStmt",
             Self::FetchCursorStmt => "FetchCursorStmt",
