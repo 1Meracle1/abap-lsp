@@ -82,7 +82,12 @@ pub enum CallStmtKind {
     Transformation,
     Badi,
     Screen,
+    SelectionScreen,
     Transaction,
+    Dialog,
+    DatabaseProcedure,
+    CustomerFunction,
+    Subscreen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3012,14 +3017,33 @@ impl<'a> CallStmt<'a> {
         let text = token.text(source)?;
         if text.eq_ignore_ascii_case("function") {
             Some(CallStmtKind::Function)
+        } else if text.eq_ignore_ascii_case("customer") {
+            let dash = tokens.next()?.text(source)?;
+            let function = tokens.next()?.text(source)?;
+            (dash == "-" && function.eq_ignore_ascii_case("function"))
+                .then_some(CallStmtKind::CustomerFunction)
+        } else if text.eq_ignore_ascii_case("database") {
+            let procedure = tokens.next()?.text(source)?;
+            procedure
+                .eq_ignore_ascii_case("procedure")
+                .then_some(CallStmtKind::DatabaseProcedure)
         } else if text.eq_ignore_ascii_case("transformation") {
             Some(CallStmtKind::Transformation)
         } else if text.eq_ignore_ascii_case("badi") {
             Some(CallStmtKind::Badi)
         } else if text.eq_ignore_ascii_case("screen") {
             Some(CallStmtKind::Screen)
+        } else if text.eq_ignore_ascii_case("selection") {
+            let dash = tokens.next()?.text(source)?;
+            let screen = tokens.next()?.text(source)?;
+            (dash == "-" && screen.eq_ignore_ascii_case("screen"))
+                .then_some(CallStmtKind::SelectionScreen)
         } else if text.eq_ignore_ascii_case("transaction") {
             Some(CallStmtKind::Transaction)
+        } else if text.eq_ignore_ascii_case("dialog") {
+            Some(CallStmtKind::Dialog)
+        } else if text.eq_ignore_ascii_case("subscreen") {
+            Some(CallStmtKind::Subscreen)
         } else {
             Some(CallStmtKind::SystemFunction)
         }

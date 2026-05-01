@@ -475,6 +475,231 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn collect_call_selection_screen_stmt_infos(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.len() < 5
+            || !Self::tokens_match_keyword_sequence(tokens, &["call", "selection", "-", "screen"])
+        {
+            return;
+        }
+
+        let period_idx = self.period_index_infos(tokens);
+        let mut idx = 4usize;
+        let clause_idx = tokens
+            .iter()
+            .enumerate()
+            .skip(idx)
+            .take(period_idx.saturating_sub(idx))
+            .find_map(|(i, token)| {
+                (token.text.eq_ignore_ascii_case("starting")
+                    || token.text.eq_ignore_ascii_case("ending")
+                    || token.text.eq_ignore_ascii_case("using"))
+                .then_some(i)
+            })
+            .unwrap_or(period_idx);
+        if idx < clause_idx {
+            self.collector.collect_token_expression_refs_infos(
+                &tokens[idx..clause_idx],
+                scope,
+                true,
+            );
+            idx = clause_idx;
+        }
+
+        while idx < period_idx {
+            if tokens[idx].text.eq_ignore_ascii_case("starting")
+                || tokens[idx].text.eq_ignore_ascii_case("ending")
+            {
+                idx += 1;
+                if tokens
+                    .get(idx)
+                    .is_some_and(|token| token.text.eq_ignore_ascii_case("at"))
+                {
+                    idx += 1;
+                }
+                idx = self.collect_positional_operand_tokens(tokens, idx, 2, scope);
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["using", "selection", "-", "set"],
+            ) {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 4, 1, scope);
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    fn collect_call_subscreen_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 3 || !Self::tokens_match_keyword_sequence(tokens, &["call", "subscreen"])
+        {
+            return;
+        }
+
+        let period_idx = self.period_index_infos(tokens);
+        let mut idx = 2usize;
+        while idx < period_idx {
+            if tokens[idx].text.eq_ignore_ascii_case("including") {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 1, 2, scope);
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    fn collect_call_dialog_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
+        if tokens.len() < 3 || !Self::tokens_match_keyword_sequence(tokens, &["call", "dialog"]) {
+            return;
+        }
+
+        let period_idx = self.period_index_infos(tokens);
+        let mut idx = self.collect_positional_operand_tokens(tokens, 2, 1, scope);
+        while idx < period_idx {
+            if Self::tokens_match_keyword_sequence(
+                &tokens[idx..],
+                &["and", "skip", "first", "screen"],
+            ) {
+                idx += 4;
+                continue;
+            }
+            if tokens[idx].text.eq_ignore_ascii_case("using") {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 1, 1, scope);
+                continue;
+            }
+            if tokens[idx].text.eq_ignore_ascii_case("mode") {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 1, 1, scope);
+                continue;
+            }
+            if tokens[idx].text.eq_ignore_ascii_case("exporting")
+                || tokens[idx].text.eq_ignore_ascii_case("importing")
+            {
+                let assign = tokens[idx].text.eq_ignore_ascii_case("importing");
+                let section_end = self.call_dialog_section_end(tokens, idx + 1);
+                self.collect_call_dialog_parameters(tokens, idx + 1, section_end, scope, assign);
+                idx = section_end;
+                continue;
+            }
+            idx += 1;
+        }
+    }
+
+    fn call_dialog_section_end(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+        let period_idx = self.period_index_infos(tokens);
+        (start..period_idx)
+            .find(|&idx| {
+                tokens[idx].text.eq_ignore_ascii_case("exporting")
+                    || tokens[idx].text.eq_ignore_ascii_case("importing")
+            })
+            .unwrap_or(period_idx)
+    }
+
+    fn collect_call_dialog_parameters(
+        &mut self,
+        tokens: &[SyntaxTokenInfo],
+        mut idx: usize,
+        end: usize,
+        scope: ScopeId,
+        assign: bool,
+    ) {
+        while idx < end {
+            if self.collector.syntax_token_is_comment(&tokens[idx])
+                || matches!(tokens[idx].text.as_ref(), "," | ":")
+            {
+                idx += 1;
+                continue;
+            }
+
+            let direction = (idx..end).find(|&at| {
+                tokens[at].text.eq_ignore_ascii_case("from")
+                    || tokens[at].text.eq_ignore_ascii_case("to")
+            });
+            let value_start = direction.map_or(idx, |at| at + 1);
+            let value_end = self
+                .consume_simple_operand_tokens(tokens, value_start)
+                .min(end);
+            if value_end <= value_start {
+                idx += 1;
+                continue;
+            }
+            if assign || direction.is_some_and(|at| tokens[at].text.eq_ignore_ascii_case("to")) {
+                self.emit_assignment_site_from_token_infos(
+                    scope,
+                    self.token_infos_range(tokens)
+                        .unwrap_or(tokens[idx].range.clone()),
+                    &tokens[value_start..value_end],
+                );
+            } else {
+                self.collector.collect_token_expression_refs_infos(
+                    &tokens[value_start..value_end],
+                    scope,
+                    true,
+                );
+            }
+            idx = value_end;
+        }
+    }
+
+    fn collect_call_database_procedure_stmt_infos(
+        &mut self,
+        node: NodeId,
+        tokens: &[SyntaxTokenInfo],
+        scope: ScopeId,
+    ) {
+        if tokens.len() < 4
+            || !Self::tokens_match_keyword_sequence(tokens, &["call", "database", "procedure"])
+        {
+            return;
+        }
+
+        let period_idx = self.period_index_infos(tokens);
+        let proxy_end = self.call_database_next_clause(tokens, 3);
+        self.collect_dynamic_id_operand_infos(tokens, 3, proxy_end, scope, true);
+
+        let mut idx = proxy_end;
+        while idx < period_idx {
+            if tokens[idx].text.eq_ignore_ascii_case("connection") {
+                let end = self.call_database_next_clause(tokens, idx + 1);
+                self.collect_dynamic_id_operand_infos(tokens, idx + 1, end, scope, true);
+                idx = end;
+                continue;
+            }
+            if Self::tokens_match_keyword_sequence(&tokens[idx..], &["parameter", "-", "table"]) {
+                idx = self.collect_positional_operand_tokens(tokens, idx + 3, 1, scope);
+                continue;
+            }
+            idx += 1;
+        }
+
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) == SyntaxKind::CallArgList {
+                self.collector
+                    .expr_lowering()
+                    .collect_structured_argument_values_from_children(child, scope);
+            }
+        }
+    }
+
+    fn call_database_next_clause(&self, tokens: &[SyntaxTokenInfo], start: usize) -> usize {
+        let period_idx = self.period_index_infos(tokens);
+        (start..period_idx)
+            .find(|&idx| {
+                tokens[idx].text.eq_ignore_ascii_case("connection")
+                    || tokens[idx].text.eq_ignore_ascii_case("exporting")
+                    || tokens[idx].text.eq_ignore_ascii_case("importing")
+                    || tokens[idx].text.eq_ignore_ascii_case("changing")
+                    || tokens[idx].text.eq_ignore_ascii_case("tables")
+                    || Self::tokens_match_keyword_sequence(
+                        &tokens[idx..],
+                        &["parameter", "-", "table"],
+                    )
+            })
+            .unwrap_or(period_idx)
+    }
+
     fn collect_modify_screen_stmt_infos(&mut self, tokens: &[SyntaxTokenInfo], scope: ScopeId) {
         if tokens.len() < 2 || !Self::tokens_match_keyword_sequence(tokens, &["modify", "screen"]) {
             return;
@@ -4221,13 +4446,49 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
 
         let call_kind = stmt.call_kind(self.collector.source);
 
-        if call_kind == Some(CallStmtKind::Screen) || call_kind == Some(CallStmtKind::Transaction) {
+        if matches!(
+            call_kind,
+            Some(
+                CallStmtKind::Screen
+                    | CallStmtKind::SelectionScreen
+                    | CallStmtKind::Transaction
+                    | CallStmtKind::Dialog
+                    | CallStmtKind::DatabaseProcedure
+                    | CallStmtKind::CustomerFunction
+                    | CallStmtKind::Subscreen
+            )
+        ) {
             self.record_unknown_effect(node, scope);
             let significant = self.collector.significant_stmt_token_infos(node);
-            if call_kind == Some(CallStmtKind::Screen) {
-                self.collect_call_screen_stmt_infos(&significant, scope);
-            } else {
-                self.collect_call_transaction_stmt_infos(&significant, scope);
+            match call_kind {
+                Some(CallStmtKind::Screen) => {
+                    self.collect_call_screen_stmt_infos(&significant, scope)
+                }
+                Some(CallStmtKind::SelectionScreen) => {
+                    self.collect_call_selection_screen_stmt_infos(&significant, scope)
+                }
+                Some(CallStmtKind::Transaction) => {
+                    self.collect_call_transaction_stmt_infos(&significant, scope)
+                }
+                Some(CallStmtKind::Dialog) => {
+                    self.collect_call_dialog_stmt_infos(&significant, scope)
+                }
+                Some(CallStmtKind::DatabaseProcedure) => {
+                    self.collect_call_database_procedure_stmt_infos(node, &significant, scope)
+                }
+                Some(CallStmtKind::CustomerFunction) => {
+                    for child in self.collector.file.children(node) {
+                        if self.collector.file.kind(child) == SyntaxKind::CallArgList {
+                            self.collector
+                                .expr_lowering()
+                                .collect_structured_argument_values_from_children(child, scope);
+                        }
+                    }
+                }
+                Some(CallStmtKind::Subscreen) => {
+                    self.collect_call_subscreen_stmt_infos(&significant, scope)
+                }
+                _ => {}
             }
             return;
         }

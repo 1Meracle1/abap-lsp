@@ -81,10 +81,24 @@ enum CallLikeLeadKind {
 const CALL_LIKE_LEADS: &[(&[&str], CallLikeLeadKind)] = &[
     (&["call", "method"], CallLikeLeadKind::CallMethod),
     (&["call", "function"], CallLikeLeadKind::CallStmt),
+    (
+        &["call", "customer", "-", "function"],
+        CallLikeLeadKind::CallStmt,
+    ),
+    (
+        &["call", "database", "procedure"],
+        CallLikeLeadKind::CallStmt,
+    ),
     (&["call", "transformation"], CallLikeLeadKind::CallStmt),
     (&["call", "badi"], CallLikeLeadKind::CallStmt),
     (&["call", "screen"], CallLikeLeadKind::CallStmt),
+    (
+        &["call", "selection", "-", "screen"],
+        CallLikeLeadKind::CallStmt,
+    ),
     (&["call", "transaction"], CallLikeLeadKind::CallStmt),
+    (&["call", "dialog"], CallLikeLeadKind::CallStmt),
+    (&["call", "subscreen"], CallLikeLeadKind::CallStmt),
     (&["create", "object"], CallLikeLeadKind::CreateObject),
     (&["create", "data"], CallLikeLeadKind::CreateData),
 ];
@@ -2593,13 +2607,34 @@ fn match_keyword_sequence(
     Some(i)
 }
 
+fn match_call_lead_sequence(
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    parts: &[&str],
+) -> Option<usize> {
+    let mut i = idx;
+    for part in parts {
+        let tok = tokens.get(i)?;
+        if *part == "-" {
+            if tok.kind != TokenKind::Minus {
+                return None;
+            }
+        } else if !is_keyword(source, tok, part) {
+            return None;
+        }
+        i += 1;
+    }
+    Some(i)
+}
+
 fn call_like_lead_kind(
     source: &str,
     tokens: &[Token],
     idx: usize,
 ) -> Option<(CallLikeLeadKind, usize)> {
     for (parts, kind) in CALL_LIKE_LEADS {
-        if let Some(next) = match_keyword_sequence(source, tokens, idx, parts) {
+        if let Some(next) = match_call_lead_sequence(source, tokens, idx, parts) {
             return Some((*kind, next));
         }
     }
@@ -2614,6 +2649,18 @@ fn call_like_lead_kind(
         return Some((CallLikeLeadKind::SystemFunctionCall, idx + 1));
     }
     None
+}
+
+fn call_stmt_uses_token_children(source: &str, tokens: &[Token], idx: usize) -> bool {
+    [
+        &["call", "screen"][..],
+        &["call", "selection", "-", "screen"][..],
+        &["call", "transaction"][..],
+        &["call", "dialog"][..],
+        &["call", "subscreen"][..],
+    ]
+    .iter()
+    .any(|parts| match_call_lead_sequence(source, tokens, idx, parts).is_some())
 }
 
 fn token_children(
@@ -9226,14 +9273,10 @@ pub fn try_parse_call_like_stmt(
                 children.push(token_leaf(b, &tokens[period_i]));
             }
             CallLikeLeadKind::CallStmt => {
-                if tokens
-                    .get(idx + 1)
-                    .is_some_and(|token| is_keyword(source, token, "screen"))
-                {
+                if call_stmt_uses_token_children(source, tokens, idx) {
                     children = token_children(b, tokens, idx, period_i + 1);
                 } else {
-                    children.push(token_leaf(b, &tokens[idx]));
-                    children.push(token_leaf(b, &tokens[idx + 1]));
+                    push_token_children(b, &mut children, tokens, idx, lead_end);
                     let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
                         tokens
                             .get(at)
@@ -16957,7 +17000,13 @@ ENDFORM.",
             "CALL BADI lo_badi->run.",
             "CALL SCREEN 9000.",
             "CALL SCREEN 9000 STARTING AT 10 5 ENDING AT 40 20.",
+            "CALL SELECTION-SCREEN 1000 STARTING AT 10 5 USING SELECTION-SET variant.",
             "CALL TRANSACTION u_tcode WITH AUTHORITY-CHECK AND SKIP FIRST SCREEN.",
+            "CALL TRANSACTION u_tcode WITHOUT AUTHORITY-CHECK USING bdc_tab OPTIONS FROM opt MESSAGES INTO msg_tab.",
+            "CALL DIALOG dialog USING bdc_tab MODE mode EXPORTING p1 FROM lv_in IMPORTING p2 TO lv_out.",
+            "CALL DATABASE PROCEDURE z_proxy EXPORTING in_date = in_date IMPORTING out_items = out_items.",
+            "CALL CUSTOMER-FUNCTION '001' EXPORTING value = lv_in IMPORTING result = lv_out.",
+            "CALL SUBSCREEN area INCLUDING sy-repid dynnr.",
         ] {
             let parsed = crate::parse(src);
             assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
@@ -16982,6 +17031,54 @@ ENDFORM.",
             .expect("call transaction stmt");
         let stmt = CallStmt::cast(SyntaxNodeRef::new(&parsed.file, stmt_id)).expect("call stmt");
         assert_eq!(stmt.call_kind(src), Some(CallStmtKind::Transaction));
+    }
+
+    #[test]
+    fn parses_new_call_statement_kinds() {
+        for (src, expected) in [
+            (
+                "CALL SELECTION-SCREEN 1000 USING SELECTION-SET variant.",
+                CallStmtKind::SelectionScreen,
+            ),
+            ("CALL DIALOG dialog.", CallStmtKind::Dialog),
+            (
+                "CALL DATABASE PROCEDURE (proxy_name) PARAMETER-TABLE ptab.",
+                CallStmtKind::DatabaseProcedure,
+            ),
+            (
+                "CALL CUSTOMER-FUNCTION '001' EXPORTING value = lv_value.",
+                CallStmtKind::CustomerFunction,
+            ),
+            ("CALL SUBSCREEN area.", CallStmtKind::Subscreen),
+        ] {
+            let parsed = crate::parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            let stmt_id = parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+                .expect("call stmt");
+            let stmt =
+                CallStmt::cast(SyntaxNodeRef::new(&parsed.file, stmt_id)).expect("call stmt");
+            assert_eq!(stmt.call_kind(src), Some(expected), "{src}");
+        }
+    }
+
+    #[test]
+    fn parses_database_and_customer_call_parameters_as_arg_lists() {
+        for src in [
+            "CALL DATABASE PROCEDURE z_proxy EXPORTING in_date = in_date IMPORTING out_items = out_items.",
+            "CALL CUSTOMER-FUNCTION '001' EXPORTING value = lv_in IMPORTING result = lv_out.",
+        ] {
+            let parsed = crate::parse(src);
+            assert!(parsed.errors.is_empty(), "{src}: {:?}", parsed.errors);
+            let stmt = parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::CallStmt)
+                .expect("call stmt");
+            assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgList), 1);
+            assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallArgSection), 2);
+            assert_eq!(parsed.file.count_kind(stmt, SyntaxKind::CallNamedArg), 2);
+        }
     }
 
     #[test]

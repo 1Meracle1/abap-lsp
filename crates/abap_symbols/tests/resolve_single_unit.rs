@@ -12981,6 +12981,74 @@ START-OF-SELECTION.
 }
 
 #[test]
+fn call_statement_variants_resolve_operands_without_keyword_diagnostics() {
+    let src = r#"
+REPORT zsyntax_call_variants.
+
+DATA dynnr TYPE sy-dynnr VALUE '0100'.
+DATA col1 TYPE i VALUE 5.
+DATA lin1 TYPE i VALUE 5.
+DATA col2 TYPE i VALUE 80.
+DATA lin2 TYPE i VALUE 20.
+DATA variant TYPE string VALUE 'DEFAULT'.
+DATA tcode TYPE string VALUE 'SE38'.
+DATA bdc_tab TYPE string.
+DATA mode TYPE c LENGTH 1.
+DATA upd TYPE c LENGTH 1.
+DATA opt TYPE string.
+DATA msg_tab TYPE string.
+DATA dialog TYPE string VALUE 'DEMO_DIALOG'.
+DATA lv_in TYPE string.
+DATA lv_out TYPE string.
+DATA db_proc TYPE string.
+DATA conn TYPE string.
+DATA ptab TYPE string.
+
+START-OF-SELECTION.
+  CALL SELECTION-SCREEN dynnr STARTING AT col1 lin1 ENDING AT col2 lin2 USING SELECTION-SET variant.
+  CALL TRANSACTION tcode WITH AUTHORITY-CHECK USING bdc_tab MODE mode UPDATE upd MESSAGES INTO msg_tab.
+  CALL TRANSACTION tcode WITHOUT AUTHORITY-CHECK USING bdc_tab OPTIONS FROM opt MESSAGES INTO msg_tab.
+  CALL DIALOG dialog USING bdc_tab MODE mode EXPORTING p1 FROM lv_in IMPORTING p2 TO lv_out.
+  CALL DATABASE PROCEDURE (db_proc) CONNECTION (conn) PARAMETER-TABLE ptab.
+  CALL CUSTOMER-FUNCTION '001' EXPORTING value = lv_in IMPORTING result = lv_out.
+  CALL SUBSCREEN area INCLUDING sy-repid dynnr.
+"#;
+    let unit = analyze_ok(src, "file:///call_statement_variants.abap");
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::UnresolvedReference),
+        "unexpected unresolved diagnostics: {:?}",
+        unit.diagnostics
+    );
+
+    for name in [
+        "dynnr", "col1", "lin1", "col2", "lin2", "variant", "tcode", "bdc_tab", "mode", "upd",
+        "opt", "msg_tab", "dialog", "lv_in", "db_proc", "conn", "ptab",
+    ] {
+        assert!(
+            unit.references
+                .iter()
+                .any(|reference| reference.name.as_ref() == name && reference.resolution.is_some()),
+            "missing resolved reference `{name}`: refs={:?}",
+            unit.references
+        );
+    }
+
+    let assignment_targets = unit
+        .assignment_sites
+        .iter()
+        .map(|site| src[site.lhs_range.clone()].trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    assert!(
+        assignment_targets.iter().any(|target| target == "lv_out"),
+        "CALL DIALOG IMPORTING target was not recorded as a write: {assignment_targets:?}"
+    );
+}
+
+#[test]
 fn system_function_call_resolves_operands_without_keyword_diagnostics() {
     let src = r#"
 START-OF-SELECTION.
