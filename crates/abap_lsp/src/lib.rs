@@ -687,8 +687,12 @@ enum RemoteDependencyBatchPhase {
     OtherLocal,
 }
 
-/// Normalizes `file:` URIs so `DocumentStore` lookups stay stable (e.g. Windows `file:///C:/` vs `file:///c:/`).
+/// Normalizes URIs so `DocumentStore` lookups stay stable (e.g. Windows `file:///C:/` vs `file:///c:/`).
 pub fn normalize_lsp_uri(raw: &str) -> String {
+    if raw.to_ascii_lowercase().starts_with("abapls-cache:") {
+        return normalize_dependency_document_uri(raw).unwrap_or_else(|| raw.to_owned());
+    }
+
     const PREFIX: &str = "file:///";
     let lower = raw.to_ascii_lowercase();
     if !lower.starts_with(PREFIX) {
@@ -713,6 +717,32 @@ pub fn normalize_lsp_uri(raw: &str) -> String {
         return out;
     }
     raw.to_owned()
+}
+
+fn normalize_dependency_document_uri(raw: &str) -> Option<String> {
+    let rest = raw
+        .get(DEPENDENCY_DOCUMENT_SCHEME.len()..)?
+        .strip_prefix(':')?;
+    let (_, query) = rest.trim_start_matches('/').split_once('?')?;
+    let workspace = dependency_document_query_value(query, "workspace")?;
+    let artifact = dependency_document_query_value(query, "artifact")?
+        .parse::<i64>()
+        .ok()?;
+    let name = dependency_document_query_value(query, "name")?;
+    let kind = dependency_document_query_value(query, "kind");
+    Some(dependency_document_uri_with_kind(
+        &workspace,
+        artifact,
+        &name,
+        kind.as_deref(),
+    ))
+}
+
+fn dependency_document_query_value(query: &str, key: &str) -> Option<String> {
+    dependency_document_query_param_from_pairs(query, key).or_else(|| {
+        decode_uri_component(query)
+            .and_then(|decoded| dependency_document_query_param_from_pairs(&decoded, key))
+    })
 }
 
 fn uri_belongs_to_workspace(uri: &str, workspace_uri: &str) -> bool {
@@ -3241,6 +3271,11 @@ fn rebuild_workspace_cache_with_progress(
     let hydrated = hydrate_workspace_dependency_documents(workspace);
     if !hydrated.is_empty() {
         snapshots.extend(hydrated);
+        for uri in snapshots.keys().cloned().collect::<Vec<_>>() {
+            if let Some(snapshot) = workspace.cache.get(uri.as_ref()) {
+                snapshots.insert(uri, snapshot);
+            }
+        }
     }
     snapshots
 }
@@ -8213,6 +8248,23 @@ check_variant = "DEFAULT""#,
     }
 
     #[test]
+    fn normalize_lsp_uri_canonicalizes_dependency_documents() {
+        let canonical = "abapls-cache:///zattp_cl_ar_dm_object.abap?workspace=file%3A%2F%2F%2Fd%3A%2Fdev%2Fabap%2Farchiving&artifact=1&name=zattp_cl_ar_dm_object&kind=global-class";
+        assert_eq!(
+            normalize_lsp_uri(
+                "abapls-cache:/zattp_cl_ar_dm_object.abap?workspace=file:///d:/dev/abap/archiving&artifact=1&name=zattp_cl_ar_dm_object&kind=global-class"
+            ),
+            canonical
+        );
+        assert_eq!(
+            normalize_lsp_uri(
+                "abapls-cache:/zattp_cl_ar_dm_object.abap?workspace%3Dfile%3A%2F%2F%2Fd%3A%2Fdev%2Fabap%2Farchiving%26artifact%3D1%26name%3Dzattp_cl_ar_dm_object%26kind%3Dglobal-class"
+            ),
+            canonical
+        );
+    }
+
+    #[test]
     fn initialize_result_exposes_server_capabilities() {
         let result = initialize_result(&Default::default());
 
@@ -10721,7 +10773,28 @@ START-OF-SELECTION.
             .preview_snapshots
             .clear();
 
-        refresh_workspace(&mut state, &workspace_uri);
+        let refreshed = refresh_workspace(&mut state, &workspace_uri);
+        let returned_messages: Vec<_> = refreshed
+            .iter()
+            .find(|snapshot| snapshot.uri.as_ref() == source_uri)
+            .expect("returned source snapshot")
+            .symbols
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            !returned_messages
+                .iter()
+                .any(|message| message.contains("unknown message class")),
+            "{returned_messages:#?}"
+        );
+        assert!(
+            returned_messages
+                .iter()
+                .any(|message| message.contains("unknown message id '999'")),
+            "{returned_messages:#?}"
+        );
         let snapshot = state
             .workspaces
             .get(&normalize_lsp_uri(&workspace_uri))
@@ -17991,6 +18064,12 @@ ENDCLASS."
         )
         .expect("store dependency artifact");
         let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
+        let dependency_alias_uri = dependency_uri
+            .replace("abapls-cache:///", "abapls-cache:/")
+            .replace("?workspace=", "?workspace%3D")
+            .replace("&artifact=", "%26artifact%3D")
+            .replace("&name=", "%26name%3D")
+            .replace("&kind=", "%26kind%3D");
         state
             .workspaces
             .get_mut(&normalize_lsp_uri(&workspace_uri))
@@ -17998,12 +18077,12 @@ ENDCLASS."
             .dependency_parent_uris
             .clear();
 
-        let dependency_text = dependency_text_for_uri(&state, &dependency_uri);
+        let dependency_text = dependency_text_for_uri(&state, &dependency_alias_uri);
         let opened = publish_open_document_mut(
             &mut state,
             &DidOpenTextDocumentParams {
                 text_document: TextDocumentItem {
-                    uri: Uri::from_str(&dependency_uri).expect("uri"),
+                    uri: Uri::from_str(&dependency_alias_uri).expect("uri"),
                     language_id: "abap".to_string(),
                     version: 1,
                     text: dependency_text,
@@ -18011,6 +18090,27 @@ ENDCLASS."
             },
         );
         assert!(!opened.is_dependency);
+        assert_eq!(opened.uri.as_ref(), dependency_uri);
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        assert!(workspace.open_documents.contains_key(&dependency_uri));
+        assert!(!workspace.open_documents.contains_key(&dependency_alias_uri));
+        let dependency_cache_uris: Vec<_> = workspace
+            .cache
+            .uris()
+            .into_iter()
+            .filter(|uri| {
+                workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                    snapshot
+                        .object_name
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("ZCL_DEP"))
+                })
+            })
+            .collect();
+        assert_eq!(dependency_cache_uris.len(), 1, "{dependency_cache_uris:#?}");
 
         let request = build_remote_dependency_request(&mut state, &dependency_uri)
             .expect("opened dependency request should use inferred parent sidecar context");

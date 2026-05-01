@@ -9,3 +9,4 @@ editors/vscode/client/node_modules/
 *.svg
 tmp
 *.zip
+tools/lsp_replay/__pycache__/
