@@ -40,12 +40,13 @@ use abap_symbols::{
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CodeDescription,
     CompletionItem, CompletionItemKind, CompletionOptions, Diagnostic, DiagnosticSeverity,
-    DiagnosticTag, Documentation, Hover, HoverContents, HoverProviderCapability, InitializeResult,
-    InlayHint, InlayHintKind, InlayHintOptions, InlayHintServerCapabilities, InsertTextFormat,
-    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse,
-    PublishDiagnosticsParams, Range, RenameOptions, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    DiagnosticTag, Documentation, FoldingRange, FoldingRangeProviderCapability, Hover,
+    HoverContents, HoverProviderCapability, InitializeResult, InlayHint, InlayHintKind,
+    InlayHintOptions, InlayHintServerCapabilities, InsertTextFormat, Location, MarkupContent,
+    MarkupKind, NumberOrString, OneOf, Position, PrepareRenameResponse, PublishDiagnosticsParams,
+    Range, RenameOptions, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -53,9 +54,9 @@ use tracing::debug;
 pub use abap_cache::{AnalysisSnapshot, OpenDocumentOverlay, WorkspacePerformanceMode};
 pub use lsp_types::{
     CodeActionParams, CodeActionResponse, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, GotoDefinitionParams,
-    GotoDefinitionResponse, HoverParams, InlayHintParams, ReferenceParams, RenameParams,
-    SemanticTokensParams, TextDocumentPositionParams,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, FoldingRangeParams,
+    GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InlayHintParams, ReferenceParams,
+    RenameParams, SemanticTokensParams, TextDocumentPositionParams,
 };
 pub use sem_tokens::build_semantic_tokens;
 pub use serde;
@@ -163,6 +164,21 @@ pub struct CachedDependencyBatchCandidates {
     pub text_hash: u64,
     pub object_name: Option<Arc<str>>,
     pub candidates: Vec<RemoteDependencyCandidate>,
+}
+
+#[derive(Debug, Clone)]
+struct FoldingBlock {
+    kind: FoldingBlockKind,
+    start_line: u32,
+    end_keyword: &'static str,
+    current_arm_start_line: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoldingBlockKind {
+    Simple,
+    If,
+    Case,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7366,6 +7382,207 @@ pub fn semantic_tokens(
     Some(sem_tokens::build_semantic_tokens(snapshot.as_ref()))
 }
 
+pub fn folding_ranges(
+    state: &ServerState,
+    params: &FoldingRangeParams,
+) -> Option<Vec<FoldingRange>> {
+    let uri = normalize_lsp_uri(params.text_document.uri.as_str());
+    let snapshot = snapshot_for_uri(state, &uri)?;
+    Some(folding_ranges_from_text(snapshot.text.as_ref()))
+}
+
+fn folding_ranges_from_text(text: &str) -> Vec<FoldingRange> {
+    let lines: Vec<_> = text.lines().collect();
+    let mut ranges = Vec::new();
+    let mut stack = Vec::new();
+
+    for (line_idx, raw_line) in lines.iter().enumerate() {
+        let code = raw_line.trim();
+        if code.is_empty() || code.starts_with('"') {
+            continue;
+        }
+        let Some(keyword) = leading_abap_keyword(code) else {
+            continue;
+        };
+        let line = line_idx as u32;
+
+        match keyword.as_str() {
+            "IF" => stack.push(FoldingBlock {
+                kind: FoldingBlockKind::If,
+                start_line: line,
+                end_keyword: "ENDIF",
+                current_arm_start_line: Some(line),
+            }),
+            "ELSEIF" => {
+                if let Some(entry) = find_nearest_folding_block(&mut stack, FoldingBlockKind::If) {
+                    push_folding_range(
+                        &mut ranges,
+                        entry.current_arm_start_line.unwrap_or(entry.start_line),
+                        line.saturating_sub(1),
+                    );
+                    entry.current_arm_start_line = Some(line);
+                }
+            }
+            "ELSE" => {
+                if let Some(entry) = find_nearest_arm_folding_block(&mut stack) {
+                    push_folding_range(
+                        &mut ranges,
+                        entry.current_arm_start_line.unwrap_or(entry.start_line),
+                        line.saturating_sub(1),
+                    );
+                    entry.current_arm_start_line = Some(line);
+                }
+            }
+            "ENDIF" => {
+                if let Some(entry) =
+                    pop_nearest_folding_block(&mut stack, FoldingBlockKind::If, "ENDIF")
+                {
+                    push_folding_range(
+                        &mut ranges,
+                        entry.current_arm_start_line.unwrap_or(entry.start_line),
+                        line.saturating_sub(1),
+                    );
+                }
+            }
+            "CLASS" if starts_with_keyword_not_component(code, "CLASS") => {
+                stack.push(simple_folding_block(line, "ENDCLASS"));
+            }
+            "METHOD" => stack.push(simple_folding_block(line, "ENDMETHOD")),
+            "CASE" => stack.push(FoldingBlock {
+                kind: FoldingBlockKind::Case,
+                start_line: line,
+                end_keyword: "ENDCASE",
+                current_arm_start_line: None,
+            }),
+            "WHEN" => {
+                if let Some(entry) = find_nearest_folding_block(&mut stack, FoldingBlockKind::Case)
+                {
+                    push_folding_range(
+                        &mut ranges,
+                        entry.current_arm_start_line.unwrap_or(entry.start_line),
+                        line.saturating_sub(1),
+                    );
+                    entry.current_arm_start_line = Some(line);
+                } else if let Some(entry) =
+                    find_nearest_folding_block(&mut stack, FoldingBlockKind::If)
+                {
+                    push_folding_range(
+                        &mut ranges,
+                        entry.current_arm_start_line.unwrap_or(entry.start_line),
+                        line.saturating_sub(1),
+                    );
+                    entry.current_arm_start_line = Some(line);
+                }
+            }
+            "ENDCASE" => {
+                if let Some(entry) =
+                    pop_nearest_folding_block(&mut stack, FoldingBlockKind::Case, "ENDCASE")
+                {
+                    push_folding_range(
+                        &mut ranges,
+                        entry.current_arm_start_line.unwrap_or(entry.start_line),
+                        line.saturating_sub(1),
+                    );
+                    push_folding_range(&mut ranges, entry.start_line, line.saturating_sub(1));
+                }
+            }
+            "INTERFACE" if starts_with_keyword_not_component(code, "INTERFACE") => {
+                stack.push(simple_folding_block(line, "ENDINTERFACE"));
+            }
+            "TRY" => stack.push(simple_folding_block(line, "ENDTRY")),
+            "LOOP" => stack.push(simple_folding_block(line, "ENDLOOP")),
+            "DO" => stack.push(simple_folding_block(line, "ENDDO")),
+            "WHILE" => stack.push(simple_folding_block(line, "ENDWHILE")),
+            _ => {
+                if let Some(entry) = pop_nearest_simple_folding_block(&mut stack, &keyword) {
+                    push_folding_range(&mut ranges, entry.start_line, line.saturating_sub(1));
+                }
+            }
+        }
+    }
+
+    ranges
+}
+
+fn simple_folding_block(start_line: u32, end_keyword: &'static str) -> FoldingBlock {
+    FoldingBlock {
+        kind: FoldingBlockKind::Simple,
+        start_line,
+        end_keyword,
+        current_arm_start_line: None,
+    }
+}
+
+fn leading_abap_keyword(line: &str) -> Option<String> {
+    let end = line
+        .char_indices()
+        .take_while(|(idx, ch)| {
+            (*idx == 0 && ch.is_ascii_alphabetic())
+                || (*idx > 0 && (ch.is_ascii_alphanumeric() || *ch == '-'))
+        })
+        .last()
+        .map(|(idx, ch)| idx + ch.len_utf8())?;
+    let keyword = &line[..end];
+    keyword
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+        .then(|| keyword.to_ascii_uppercase())
+}
+
+fn starts_with_keyword_not_component(line: &str, keyword: &str) -> bool {
+    let rest = line.get(keyword.len()..).unwrap_or_default();
+    rest.is_empty() || !rest.starts_with('-')
+}
+
+fn find_nearest_folding_block(
+    stack: &mut [FoldingBlock],
+    kind: FoldingBlockKind,
+) -> Option<&mut FoldingBlock> {
+    stack.iter_mut().rev().find(|entry| entry.kind == kind)
+}
+
+fn find_nearest_arm_folding_block(stack: &mut [FoldingBlock]) -> Option<&mut FoldingBlock> {
+    stack
+        .iter_mut()
+        .rev()
+        .find(|entry| matches!(entry.kind, FoldingBlockKind::If | FoldingBlockKind::Case))
+}
+
+fn pop_nearest_folding_block(
+    stack: &mut Vec<FoldingBlock>,
+    kind: FoldingBlockKind,
+    end_keyword: &str,
+) -> Option<FoldingBlock> {
+    let idx = stack
+        .iter()
+        .rposition(|entry| entry.kind == kind && entry.end_keyword == end_keyword)?;
+    Some(stack.remove(idx))
+}
+
+fn pop_nearest_simple_folding_block(
+    stack: &mut Vec<FoldingBlock>,
+    keyword: &str,
+) -> Option<FoldingBlock> {
+    let idx = stack.iter().rposition(|entry| {
+        entry.kind == FoldingBlockKind::Simple && entry.end_keyword == keyword
+    })?;
+    Some(stack.remove(idx))
+}
+
+fn push_folding_range(ranges: &mut Vec<FoldingRange>, start_line: u32, end_line: u32) {
+    if end_line > start_line {
+        ranges.push(FoldingRange {
+            start_line,
+            start_character: None,
+            end_line,
+            end_character: None,
+            kind: None,
+            collapsed_text: None,
+        });
+    }
+}
+
 pub fn inlay_hints(state: &ServerState, params: &InlayHintParams) -> Option<Vec<InlayHint>> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let snapshot = snapshot_for_uri(state, &uri)?;
@@ -7475,6 +7692,7 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
                     work_done_progress_options: Default::default(),
                 }),
             ),
+            folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
             code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
             ..ServerCapabilities::default()
         },
@@ -7869,8 +8087,8 @@ mod tests {
     use lsp_types::{
         CodeActionContext, CodeActionOrCommand, CompletionContext, CompletionTriggerKind,
         DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Documentation,
-        GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel, InlayHintTooltip,
-        InsertTextFormat, NumberOrString, Position, PrepareRenameResponse, Range,
+        FoldingRange, GotoDefinitionResponse, HoverContents, InlayHintKind, InlayHintLabel,
+        InlayHintTooltip, InsertTextFormat, NumberOrString, Position, PrepareRenameResponse, Range,
         SemanticTokensParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
         TextDocumentItem, TextDocumentPositionParams, Uri, VersionedTextDocumentIdentifier,
     };
@@ -7895,15 +8113,16 @@ mod tests {
         collect_local_export_dependency_candidates_profiled, collect_remote_dependency_candidates,
         collect_remote_dependency_candidates_for_workspace_batch, completion, definition,
         dependency_document_input_from_payload_with_kind, dependency_document_uri,
-        extract_stored_dependency_symbols, handle_dependency_cache_refresh_requested,
-        handle_remote_dependencies_updated, handle_sap_atc_results_updated, hover,
-        hydrate_workspace_dependency_documents, initialize_result, inlay_hints, normalize_lsp_uri,
-        offset_to_position, prepare_rename, publish_changed_document, publish_changed_document_mut,
-        publish_open_document, publish_open_document_mut, read_dependency_document, references,
-        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
-        stage_workspace_preview_snapshot, store_local_export_dependency_candidates,
-        store_remote_dependency_artifacts, workspace_committed_build_plan,
-        workspace_dependency_store, workspace_manifest_diagnostics_params,
+        extract_stored_dependency_symbols, folding_ranges_from_text,
+        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated,
+        handle_sap_atc_results_updated, hover, hydrate_workspace_dependency_documents,
+        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
+        publish_changed_document, publish_changed_document_mut, publish_open_document,
+        publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
+        semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
+        store_local_export_dependency_candidates, store_remote_dependency_artifacts,
+        workspace_committed_build_plan, workspace_dependency_store,
+        workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -7914,6 +8133,13 @@ mod tests {
             .as_nanos();
         path.push(format!("abap_lsp_{name}_{unique}"));
         path
+    }
+
+    fn folding_line_ranges(ranges: &[FoldingRange]) -> Vec<(u32, u32)> {
+        ranges
+            .iter()
+            .map(|range| (range.start_line, range.end_line))
+            .collect()
     }
 
     fn configure_test_dependency_store(state: &mut ServerState, workspace_path: &Path) {
@@ -8310,7 +8536,52 @@ check_variant = "DEFAULT""#,
             result.capabilities.code_action_provider,
             Some(lsp_types::CodeActionProviderCapability::Simple(true))
         ));
+        assert!(matches!(
+            result.capabilities.folding_range_provider,
+            Some(lsp_types::FoldingRangeProviderCapability::Simple(true))
+        ));
         assert!(result.server_info.is_some());
+    }
+
+    #[test]
+    fn folding_ranges_split_if_branches() {
+        let text = [
+            "IF foo = 1.",
+            "  WRITE / 'one'.",
+            "ELSEIF foo = 2.",
+            "  WRITE / 'two'.",
+            "ELSE.",
+            "  WRITE / 'other'.",
+            "ENDIF.",
+        ]
+        .join("\n");
+        let ranges = folding_ranges_from_text(&text);
+
+        assert_eq!(folding_line_ranges(&ranges), vec![(0, 1), (2, 3), (4, 5)]);
+    }
+
+    #[test]
+    fn folding_ranges_keep_nested_case_branches_separate() {
+        let text = [
+            "CASE outer.",
+            "  WHEN 1.",
+            "    CASE inner.",
+            "      WHEN 'A'.",
+            "        WRITE / 'a'.",
+            "      ELSE.",
+            "        WRITE / 'b'.",
+            "    ENDCASE.",
+            "  ELSE.",
+            "    WRITE / 'other'.",
+            "ENDCASE.",
+        ]
+        .join("\n");
+        let ranges = folding_ranges_from_text(&text);
+
+        assert_eq!(
+            folding_line_ranges(&ranges),
+            vec![(3, 4), (5, 6), (2, 6), (1, 7), (8, 9), (0, 9)]
+        );
     }
 
     #[test]

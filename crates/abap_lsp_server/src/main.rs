@@ -11,7 +11,7 @@ use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
     CodeActionParams, CompletionParams, DEPENDENCY_CACHE_REFRESH_REQUESTED,
     DependencyCacheInitializationOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InlayHintParams,
+    FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InlayHintParams,
     READ_DEPENDENCY_DOCUMENT, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
     ReferenceParams, RenameParams, SAP_ATC_RESULTS_UPDATED, STORE_REMOTE_DEPENDENCY_ARTIFACTS,
     SapAtcResultsUpdatedParams, SemanticTokensParams, ServerConfig, ServerState,
@@ -22,7 +22,7 @@ use abap_lsp::{
     build_remote_dependency_batch_for_workspace_filtered,
     build_remote_dependency_refresh_for_workspace, build_remote_dependency_request,
     build_remote_dependency_request_retrying_negatives, code_actions, completion, definition,
-    handle_dependency_cache_refresh_requested_with_progress,
+    folding_ranges, handle_dependency_cache_refresh_requested_with_progress,
     handle_remote_dependencies_updated_with_progress, handle_sap_atc_results_updated,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     prepare_rename, prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
@@ -2569,6 +2569,23 @@ fn handle_message(
                 notifications: Vec::new(),
             })
         }
+        Some("textDocument/foldingRange") => {
+            let Some(folding_params) = parse_params::<FoldingRangeParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "textDocument/foldingRange requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = serde_json::to_value(folding_ranges(state, &folding_params))?;
+            Ok(HandledMessage {
+                response: Some(Response::success(id.unwrap_or(Value::Null), result)),
+                notifications: Vec::new(),
+            })
+        }
         Some("$/progress") | Some("$/cancelRequest") => Ok(HandledMessage {
             response: None,
             notifications: Vec::new(),
@@ -3131,6 +3148,54 @@ START-OF-SELECTION.
             .expect("inlay hint result");
         assert!(result.to_string().contains("iv_input:"));
         assert!(result.to_string().contains("cv_text:"));
+    }
+
+    #[test]
+    fn handles_folding_ranges_after_open_document() {
+        let mut state = ServerState::default();
+        let config = ServerConfig::default();
+
+        handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "file:///folding.abap",
+                        "languageId": "abap",
+                        "version": 1,
+                        "text": "IF foo = 1.\n  WRITE / 'one'.\nELSE.\n  WRITE / 'other'.\nENDIF."
+                    }
+                }
+            }),
+        )
+        .expect("didOpen");
+
+        let folding_msg = handle_message(
+            &mut state,
+            &config,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "textDocument/foldingRange",
+                "params": {
+                    "textDocument": { "uri": "file:///folding.abap" }
+                }
+            }),
+        )
+        .expect("folding ranges");
+
+        let result = folding_msg
+            .response
+            .expect("folding response")
+            .result
+            .expect("folding result");
+        assert_eq!(result[0]["startLine"], 0);
+        assert_eq!(result[0]["endLine"], 1);
+        assert_eq!(result[1]["startLine"], 2);
+        assert_eq!(result[1]["endLine"], 3);
     }
 
     #[test]
