@@ -1510,6 +1510,63 @@ fn resolve_inherited_redefinition_method_context<'a>(
     )
 }
 
+fn root_class_definition_handle_in_unit(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit_id: UnitId,
+    class_name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    let unit = project.units.get(unit_id.as_usize())?;
+    lookup
+        .per_unit_root_index
+        .get(unit_id.as_usize())?
+        .get(&(Namespace::Type, Arc::clone(class_name)))?
+        .iter()
+        .rev()
+        .copied()
+        .find(|&symbol_id| {
+            unit.symbol(symbol_id).kind == SymbolKind::Class
+                && unit.class_definition(symbol_id).is_some()
+        })
+        .map(|symbol| SymbolHandle {
+            unit: unit_id,
+            symbol,
+        })
+}
+
+fn resolve_declared_method_context<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
+    let method_symbol = enclosing_method_owner(unit, scope)?;
+    let method_name = unit.symbol(method_symbol).name.as_ref();
+    if method_name.contains('~') {
+        return None;
+    }
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let class_name = Arc::clone(&unit.symbol(class_symbol).name);
+    let handle = if let Some(handle) =
+        root_class_definition_handle_in_unit(project, lookup, unit.unit_id, &class_name)
+    {
+        handle
+    } else {
+        lookup
+            .include_predecessors
+            .get(unit.unit_id.as_usize())?
+            .iter()
+            .rev()
+            .find_map(|&unit_id| {
+                root_class_definition_handle_in_unit(project, lookup, unit_id, &class_name)
+            })?
+    };
+    let method_unit = &project.units[handle.unit.as_usize()];
+    let member = method_unit.class_member(handle.symbol, method_name)?;
+    (member.kind == ClassMemberKind::Method && !member.parameters.is_empty())
+        .then_some((method_unit, member))
+}
+
 fn inject_symbol_into_scope_index(
     scope_index: &mut ScopeIndex,
     scope: ScopeId,
@@ -1535,7 +1592,6 @@ fn qualified_interface_method_scope_symbol_specs(
         .map(|scope| scope.id)
         .collect();
     let mut out = Vec::new();
-    let mut next_symbol_id = unit.symbols.len() as u32;
 
     for scope_id in method_scopes {
         let Some((_, member)) =
@@ -1559,12 +1615,10 @@ fn qualified_interface_method_scope_symbol_specs(
                 && symbol.name.as_ref() == "me"
         });
         if !member_is_static && !has_me {
-            let id = SymbolId(next_symbol_id);
-            next_symbol_id += 1;
             out.push((
                 scope_id,
                 crate::SymbolData {
-                    id,
+                    id: SymbolId(0),
                     name: Arc::from("me"),
                     kind: SymbolKind::Variable,
                     scope: scope_id,
@@ -1591,12 +1645,10 @@ fn qualified_interface_method_scope_symbol_specs(
             if has_param {
                 continue;
             }
-            let id = SymbolId(next_symbol_id);
-            next_symbol_id += 1;
             out.push((
                 scope_id,
                 crate::SymbolData {
-                    id,
+                    id: SymbolId(0),
                     name: Arc::clone(&param.name),
                     kind: SymbolKind::Parameter,
                     scope: scope_id,
@@ -1624,7 +1676,6 @@ fn inherited_redefinition_method_scope_symbol_specs(
         .map(|scope| scope.id)
         .collect();
     let mut out = Vec::new();
-    let mut next_symbol_id = unit.symbols.len() as u32;
 
     for scope_id in method_scopes {
         let Some((_, member)) =
@@ -1641,12 +1692,10 @@ fn inherited_redefinition_method_scope_symbol_specs(
             if has_param {
                 continue;
             }
-            let id = SymbolId(next_symbol_id);
-            next_symbol_id += 1;
             out.push((
                 scope_id,
                 crate::SymbolData {
-                    id,
+                    id: SymbolId(0),
                     name: Arc::clone(&param.name),
                     kind: SymbolKind::Parameter,
                     scope: scope_id,
@@ -1654,6 +1703,53 @@ fn inherited_redefinition_method_scope_symbol_specs(
                     structure: None,
                     declared_type: param.declared_type.clone(),
                     type_clause_display: None,
+                    value_clause_display: None,
+                },
+            ));
+        }
+    }
+
+    out
+}
+
+fn declared_method_scope_symbol_specs(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+) -> Vec<(ScopeId, crate::SymbolData)> {
+    let method_scopes: Vec<_> = unit
+        .scopes
+        .iter()
+        .filter(|scope| scope.kind == ScopeKind::Method)
+        .map(|scope| scope.id)
+        .collect();
+    let mut out = Vec::new();
+
+    for scope_id in method_scopes {
+        let Some((_, member)) = resolve_declared_method_context(project, lookup, unit, scope_id)
+        else {
+            continue;
+        };
+        for param in &member.parameters {
+            let has_param = unit.symbols.iter().any(|symbol| {
+                symbol.scope == scope_id
+                    && symbol.kind == SymbolKind::Parameter
+                    && symbol.name == param.name
+            });
+            if has_param {
+                continue;
+            }
+            out.push((
+                scope_id,
+                crate::SymbolData {
+                    id: SymbolId(0),
+                    name: Arc::clone(&param.name),
+                    kind: SymbolKind::Parameter,
+                    scope: scope_id,
+                    decl_range: 0..0,
+                    structure: None,
+                    declared_type: param.declared_type.clone(),
+                    type_clause_display: param.type_clause_display.clone(),
                     value_clause_display: None,
                 },
             ));
@@ -1694,7 +1790,6 @@ fn event_handler_method_scope_symbol_specs(
         .map(|scope| scope.id)
         .collect();
     let mut out = Vec::new();
-    let mut next_symbol_id = unit.symbols.len() as u32;
 
     for scope_id in method_scopes {
         let Some((_, member)) =
@@ -1711,12 +1806,10 @@ fn event_handler_method_scope_symbol_specs(
             if has_param {
                 continue;
             }
-            let id = SymbolId(next_symbol_id);
-            next_symbol_id += 1;
             out.push((
                 scope_id,
                 crate::SymbolData {
-                    id,
+                    id: SymbolId(0),
                     name: Arc::clone(&param.name),
                     kind: SymbolKind::Parameter,
                     scope: scope_id,
@@ -1741,7 +1834,6 @@ fn loop_field_scope_symbol_specs<'a>(
     contexts: impl IntoIterator<Item = LoopFieldContextView<'a>>,
 ) -> Vec<(ScopeId, crate::SymbolData)> {
     let mut out = Vec::new();
-    let mut next_symbol_id = unit.symbols.len() as u32;
     let mut seen: HashSet<(u32, Arc<str>)> = HashSet::new();
 
     for context in contexts {
@@ -1767,12 +1859,10 @@ fn loop_field_scope_symbol_specs<'a>(
                         continue;
                     }
 
-                    let id = SymbolId(next_symbol_id);
-                    next_symbol_id += 1;
                     out.push((
                         scope,
                         crate::SymbolData {
-                            id,
+                            id: SymbolId(0),
                             name,
                             kind: crate::SymbolKind::Field,
                             scope,
@@ -4332,6 +4422,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             symbols.extend(inherited_redefinition_method_scope_symbol_specs(
                 project, &lookup, unit,
             ));
+            symbols.extend(declared_method_scope_symbol_specs(project, &lookup, unit));
             symbols.extend(event_handler_method_scope_symbol_specs(
                 project, &lookup, unit,
             ));
@@ -4347,6 +4438,11 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 unit,
                 scope_indexes,
             ));
+            let mut next_symbol_id = unit.symbols.len() as u32;
+            for (_, symbol) in &mut symbols {
+                symbol.id = SymbolId(next_symbol_id);
+                next_symbol_id += 1;
+            }
             symbols
         };
         {

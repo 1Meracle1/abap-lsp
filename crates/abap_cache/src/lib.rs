@@ -5297,6 +5297,23 @@ fn synthetic_method_scope_definition_target(
             ));
         }
 
+        if let Some((definition_unit_id, member)) = snapshot
+            .project
+            .class_member_definition_for_method_symbol(unit.unit_id, method_symbol)
+        {
+            let definition_unit = &snapshot.project.units[definition_unit_id.as_usize()];
+            if let Some(parameter) = member
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == symbol.name)
+            {
+                return Some(definition_target_for_range(
+                    definition_unit,
+                    parameter.range.clone(),
+                ));
+            }
+        }
+
         let (super_unit, super_symbol) = resolve_direct_superclass_from_scope_with_scope_index(
             snapshot,
             snapshot.scope_index(),

@@ -14534,6 +14534,39 @@ ENDFORM.
 }
 
 #[test]
+fn append_initial_line_inline_assigning_field_symbol_is_definitely_bound() {
+    let src = r#"
+TYPES: BEGIN OF ty_fcat,
+         fieldname TYPE string,
+         coltext TYPE string,
+       END OF ty_fcat.
+DATA mt_fieldcat TYPE STANDARD TABLE OF ty_fcat WITH EMPTY KEY.
+
+FORM display_alv.
+  APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+  <fs_fcat>-fieldname = 'DOCNUM'.
+  <fs_fcat>-coltext = 'Doc. Num.'.
+
+  APPEND INITIAL LINE TO mt_fieldcat ASSIGNING <fs_fcat>.
+  <fs_fcat>-fieldname = 'STATUS'.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///append_inline_assigning_field_symbol.abap");
+    let project = analyze_project_from_units(vec![unit.clone()]);
+    let routine_analysis = build_project_routine_analysis(&project);
+    let diagnostics = routine_analysis.diagnostics_for_unit(unit.unit_id);
+
+    assert!(
+        !diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::PossiblyUnboundFieldSymbol
+                && diag.message.contains("<fs_fcat>")
+        }),
+        "{:?}",
+        diagnostics
+    );
+}
+
+#[test]
 fn not_assigned_if_guard_marks_elseif_field_symbol_bound() {
     let src = r#"
 TYPES: BEGIN OF ty_rule_aux,

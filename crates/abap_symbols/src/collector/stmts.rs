@@ -2609,6 +2609,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let mut source_is_lines_of = false;
         let mut source_expr = None;
         let mut target_expr = None;
+        let mut inline_assigning_targets = Vec::new();
         let mut assigning_target = None;
 
         for child in self.collector.file.children(node) {
@@ -2665,7 +2666,10 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     }
                 }
                 AppendClause::Assigning => {
-                    if assigning_target.is_none() {
+                    if self.collector.file.kind(child) == SyntaxKind::FieldSymbolInlineDecl {
+                        inline_assigning_targets.push(child);
+                        continue;
+                    } else if assigning_target.is_none() {
                         assigning_target = self.direct_field_symbol_target(child, scope);
                     }
                 }
@@ -2695,6 +2699,35 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 !source_is_lines_of,
                 false,
             );
+        }
+
+        for target in inline_assigning_targets {
+            let target_name = self
+                .collector
+                .file
+                .children(target)
+                .find(|&child| self.collector.file.kind(child) == SyntaxKind::DataDeclName)
+                .and_then(|child| self.collector.node_name(child));
+            self.collector
+                .decl_lowering()
+                .declare_inline_field_symbol_decl(
+                    target,
+                    scope,
+                    target_line_metadata.0,
+                    target_line_metadata.1.clone(),
+                    None,
+                );
+            if let Some((target_name, target_range)) = target_name {
+                self.emit_field_symbol_binding_edge(
+                    scope,
+                    ValueFlowKind::FieldSymbolAssignment,
+                    None,
+                    target_line_metadata.0,
+                    target_line_metadata.1.clone(),
+                    target_name,
+                    target_range,
+                );
+            }
         }
 
         if let Some((target_name, target_range)) = assigning_target {

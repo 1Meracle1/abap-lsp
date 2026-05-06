@@ -4744,8 +4744,11 @@ fn symbol_is_internal_table(
         || unit.sql_targets.iter().any(|target| {
             target.is_inline
                 && target.is_table
-                && target.scope == symbol.scope
                 && target.target_name.as_deref() == Some(symbol.name.as_ref())
+                && (target.scope == symbol.scope
+                    || target.target_range.as_ref().is_some_and(|range| {
+                        symbol.decl_range.start >= range.start && symbol.decl_range.end <= range.end
+                    }))
         })
     {
         return true;

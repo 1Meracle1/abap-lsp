@@ -648,6 +648,98 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_method_parameters_from_definition_include_inside_implementation_include_methods() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+"#;
+    let top_src = r#"
+CLASS lcl_obj_epcis_repr DEFINITION.
+  PUBLIC SECTION.
+    METHODS extract_data
+      RETURNING VALUE(rv_ok) TYPE c.
+  PROTECTED SECTION.
+    METHODS status_from_rep_evt_status
+      IMPORTING iv_status_rep_evt TYPE i
+      RETURNING VALUE(rv_status) TYPE string.
+ENDCLASS.
+"#;
+    let f01_src = r#"
+CLASS lcl_obj_epcis_repr IMPLEMENTATION.
+  METHOD extract_data.
+    rv_ok = 'X'.
+  ENDMETHOD.
+
+  METHOD status_from_rep_evt_status.
+    CASE iv_status_rep_evt.
+      WHEN 0.
+        rv_status = 'warning'.
+      WHEN 1.
+        rv_status = 'success'.
+      WHEN OTHERS.
+        rv_status = 'error'.
+    ENDCASE.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let f01 = project
+        .unit_by_uri("zf01.abap")
+        .expect("implementation include");
+    for name in ["rv_ok", "iv_status_rep_evt", "rv_status"] {
+        assert!(
+            !f01.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+            }),
+            "unexpected unresolved diagnostic for {name}: {:?}",
+            f01.diagnostics
+        );
+
+        let refs: Vec<_> = f01
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Value && reference.name.as_ref() == name
+            })
+            .collect();
+        assert!(!refs.is_empty(), "expected references for {name}");
+        assert!(
+            refs.iter().all(|reference| {
+                matches!(
+                    reference.resolution,
+                    Some(Resolution::Symbol(handle))
+                        if handle.unit == f01.unit_id
+                            && f01.symbol(handle.symbol).kind == SymbolKind::Parameter
+                )
+            }),
+            "expected {name} references to resolve to method parameters, got {refs:?}"
+        );
+    }
+}
+
+#[test]
 fn classic_open_sql_where_globals_from_top_include_are_not_collected_as_sql_columns() {
     let root_src = r#"
 REPORT zmain.
