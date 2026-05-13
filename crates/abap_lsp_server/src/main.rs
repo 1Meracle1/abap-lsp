@@ -1,20 +1,29 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use abap_cache::{
+    LocalDependencySourceMode, LocalExportConfig, LocalExportResolver, file_uri_to_path,
+    local_export_config_for_source, path_to_file_uri, resolve_local_export_dependency_document,
+};
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
-    CodeActionParams, CompletionParams, DEPENDENCY_CACHE_REFRESH_REQUESTED,
+    AdtObjectRefPayload, CodeActionParams, CompletionParams, DEPENDENCY_CACHE_REFRESH_REQUESTED,
     DependencyCacheInitializationOptions, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InlayHintParams,
+    EditableAdtObjectTarget, FoldingRangeParams, GotoDefinitionParams, GotoDefinitionResponse,
+    HoverParams, InlayHintParams, MATERIALIZE_EDITABLE_ADT_OBJECT,
+    MaterializeEditableAdtObjectParams, MaterializeEditableAdtObjectResult,
     READ_DEPENDENCY_DOCUMENT, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
-    ReferenceParams, RenameParams, SAP_ATC_RESULTS_UPDATED, STORE_REMOTE_DEPENDENCY_ARTIFACTS,
-    SapAtcResultsUpdatedParams, SemanticTokensParams, ServerConfig, ServerState,
+    ReferenceParams, RenameParams, SAP_ATC_RESULTS_UPDATED, SEARCH_REPOSITORY_OBJECTS,
+    STORE_REMOTE_DEPENDENCY_ARTIFACTS, SapAtcResultsUpdatedParams, SearchRepositoryObjectsParams,
+    SearchRepositoryObjectsResult, SemanticTokensParams, ServerConfig, ServerState,
     StoreRemoteDependencyArtifactsParams, TextDocumentPositionParams, WORKSPACE_ANALYSIS_STATUS,
     WORKSPACE_MANIFEST_UPDATED, WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams,
     WorkspaceManifestUpdatedParams, WorkspacePerformanceMode, WorkspaceState,
@@ -25,11 +34,12 @@ use abap_lsp::{
     folding_ranges, handle_dependency_cache_refresh_requested_with_progress,
     handle_remote_dependencies_updated_with_progress, handle_sap_atc_results_updated,
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
-    prepare_rename, prune_workspace_preview_snapshots, publish_changed_document_mut_with_progress,
-    publish_diagnostics_params, publish_open_document_mut_with_progress, read_dependency_document,
-    references, refresh_workspace_with_progress, rename, semantic_tokens,
-    stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
-    workspace_manifest_diagnostics_params, workspace_uri_is_dependency_source,
+    local_export_document_artifact_payload, prepare_rename, prune_workspace_preview_snapshots,
+    publish_changed_document_mut_with_progress, publish_diagnostics_params,
+    publish_open_document_mut_with_progress, read_dependency_document, references,
+    refresh_workspace_with_progress, rename, semantic_tokens, stage_workspace_preview_snapshot,
+    store_remote_dependency_artifacts, workspace_manifest_diagnostics_params,
+    workspace_uri_is_dependency_source,
 };
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
@@ -196,6 +206,19 @@ struct AnalysisProgress {
     workspace_uri: String,
     generation: u64,
     params: WorkspaceAnalysisStatusParams,
+}
+
+struct RemoteDependencyTask {
+    request: abap_lsp::RemoteDependencyResolveParams,
+}
+
+struct RemoteDependencyCompletion {
+    request: abap_lsp::RemoteDependencyResolveParams,
+    connection_key: Option<String>,
+    artifacts: Vec<abap_lsp::DependencyArtifactPayload>,
+    negative: Vec<abap_lsp::RemoteDependencyCandidate>,
+    fetched: Vec<String>,
+    failed: Vec<abap_lsp::RemoteDependencyCandidate>,
 }
 
 struct ScheduledBackgroundWork {
@@ -674,6 +697,7 @@ fn flush_analysis_completions(
     writer: &mut impl Write,
     completion_rx: &Receiver<AnalysisCompletion>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
+    remote_task_tx: &SyncSender<RemoteDependencyTask>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     while let Ok(completion) = completion_rx.try_recv() {
         if completion.generation
@@ -695,7 +719,7 @@ fn flush_analysis_completions(
         state.index_workspace_members(&completion.workspace_uri);
 
         for (method, params) in completion.notifications {
-            send_notification(writer, &method, params)?;
+            send_or_enqueue_notification(writer, remote_task_tx, &method, params)?;
         }
         if let Some(params) = completion
             .started
@@ -718,6 +742,422 @@ fn send_analysis_completion(
 ) -> Result<(), mpsc::SendError<AnalysisCompletion>> {
     // Stale completions can still carry diagnostics for unchanged open documents.
     completion_tx.send(completion)
+}
+
+fn send_or_enqueue_notification(
+    writer: &mut impl Write,
+    remote_task_tx: &SyncSender<RemoteDependencyTask>,
+    method: &str,
+    params: Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if method == RESOLVE_REMOTE_DEPENDENCIES {
+        let request = serde_json::from_value::<abap_lsp::RemoteDependencyResolveParams>(params)?;
+        remote_task_tx.send(RemoteDependencyTask { request })?;
+        return Ok(());
+    }
+    send_notification(writer, method, params)
+}
+
+fn run_remote_dependency_task(task: RemoteDependencyTask) -> RemoteDependencyCompletion {
+    let request = task.request;
+    let workspace_root = file_uri_to_path(&request.workspace_uri);
+    let mut resolver = LocalExportResolver::default();
+    let mut connection = workspace_root
+        .as_deref()
+        .and_then(|root| abap_adt::ConnectionConfig::from_env_and_dotenv(Some(root)).ok());
+    let mut client = connection
+        .clone()
+        .and_then(|connection| abap_adt::AdtClient::new(connection).ok());
+    let connection_key = connection
+        .as_ref()
+        .map(abap_adt::ConnectionConfig::connection_key);
+    let mut artifacts = Vec::new();
+    let mut negative = Vec::new();
+    let mut fetched = Vec::new();
+    let mut failed = Vec::new();
+    let source_uris_by_candidate = remote_dependency_candidate_source_uris(&request);
+    let mut seen = HashSet::new();
+    let mut last_remote_request = None::<Instant>;
+
+    for candidate in request
+        .candidates
+        .iter()
+        .filter(|candidate| seen.insert(remote_dependency_candidate_key(candidate)))
+    {
+        let source_uris = source_uris_by_candidate
+            .get(&remote_dependency_candidate_key(candidate))
+            .cloned()
+            .unwrap_or_else(|| remote_dependency_fallback_source_uris(&request));
+        let local_config = workspace_root
+            .as_deref()
+            .map(|root| local_export_config_for_source_uris(root, &source_uris))
+            .unwrap_or_default();
+
+        if local_config.mode != LocalDependencySourceMode::AdtFirst
+            && let Some(artifact) =
+                resolve_remote_local_export(candidate, &local_config, &mut resolver)
+        {
+            fetched.push(candidate.name.clone());
+            artifacts.push(artifact);
+            continue;
+        }
+        if local_config.mode == LocalDependencySourceMode::LocalOnly {
+            continue;
+        }
+
+        if client.is_none() {
+            if connection.is_none()
+                && let Some(root) = workspace_root.as_deref()
+            {
+                match abap_adt::ConnectionConfig::from_env_and_dotenv(Some(root)) {
+                    Ok(config) => {
+                        connection = Some(config.clone());
+                        client = abap_adt::AdtClient::new(config).ok();
+                    }
+                    Err(error) => {
+                        warn!(
+                            workspace_uri = %request.workspace_uri,
+                            candidate = %candidate.name,
+                            error = %error,
+                            "skipping ADT dependency fetch because credentials are missing"
+                        );
+                    }
+                }
+            }
+            if client.is_none() {
+                if local_config.mode == LocalDependencySourceMode::AdtFirst
+                    && let Some(artifact) =
+                        resolve_remote_local_export(candidate, &local_config, &mut resolver)
+                {
+                    fetched.push(candidate.name.clone());
+                    artifacts.push(artifact);
+                }
+                continue;
+            }
+        }
+
+        rate_limit_remote_request(&mut last_remote_request, request.remote_requests_per_second);
+        let result =
+            fetch_remote_dependency_candidate(client.as_mut().expect("ADT client"), candidate);
+        match result {
+            Ok(candidate_artifacts) => {
+                fetched.push(candidate.name.clone());
+                artifacts.extend(candidate_artifacts);
+            }
+            Err(error) => {
+                if local_config.mode == LocalDependencySourceMode::AdtFirst
+                    && let Some(artifact) =
+                        resolve_remote_local_export(candidate, &local_config, &mut resolver)
+                {
+                    fetched.push(candidate.name.clone());
+                    artifacts.push(artifact);
+                    continue;
+                }
+                warn!(
+                    workspace_uri = %request.workspace_uri,
+                    candidate = %candidate.name,
+                    kind = %candidate.kind,
+                    error = %error,
+                    "ADT dependency lookup failed"
+                );
+                negative.push(candidate.clone());
+                failed.push(candidate.clone());
+            }
+        }
+    }
+
+    RemoteDependencyCompletion {
+        request,
+        connection_key,
+        artifacts,
+        negative,
+        fetched,
+        failed,
+    }
+}
+
+fn rate_limit_remote_request(last: &mut Option<Instant>, requests_per_second: Option<usize>) {
+    let Some(rate) = requests_per_second.filter(|rate| *rate > 0) else {
+        return;
+    };
+    let delay = Duration::from_secs_f64(1.0 / rate as f64);
+    if let Some(previous) = *last {
+        let elapsed = previous.elapsed();
+        if elapsed < delay {
+            thread::sleep(delay - elapsed);
+        }
+    }
+    *last = Some(Instant::now());
+}
+
+fn fetch_remote_dependency_candidate(
+    client: &mut abap_adt::AdtClient,
+    candidate: &abap_lsp::RemoteDependencyCandidate,
+) -> Result<Vec<abap_lsp::DependencyArtifactPayload>, String> {
+    let direct_refs =
+        abap_adt::direct_dependency_object_refs(&candidate.name, Some(&candidate.kind));
+    if !direct_refs.is_empty() {
+        for object_ref in &direct_refs {
+            if let Ok(fetched) = client.fetch_dependency_object(object_ref) {
+                return Ok(dependency_payloads_from_fetch(object_ref, fetched));
+            }
+        }
+        if !should_search_after_direct_fetch_failure(candidate) {
+            return Err("direct ADT fetch failed".to_string());
+        }
+    }
+
+    let objects = client.search_repository_objects(&candidate.name, 25)?;
+    let object_refs =
+        abap_adt::select_dependency_objects(&candidate.name, &objects, Some(&candidate.kind));
+    if object_refs.is_empty() {
+        return Err("no supported ADT object match".to_string());
+    }
+    for object_ref in &object_refs {
+        if let Ok(fetched) = client.fetch_dependency_object(object_ref) {
+            return Ok(dependency_payloads_from_fetch(object_ref, fetched));
+        }
+    }
+    Err("ADT object fetch failed".to_string())
+}
+
+fn dependency_payloads_from_fetch(
+    object_ref: &abap_adt::AdtObjectRef,
+    fetched: abap_adt::AdtDependencyFetchResult,
+) -> Vec<abap_lsp::DependencyArtifactPayload> {
+    let mut out = vec![dependency_payload_from_parts(
+        object_ref,
+        fetched.manifest_kind.as_str(),
+        fetched.file_extension.as_str(),
+        fetched.body,
+    )];
+    out.extend(fetched.shared_dependencies.into_iter().map(|shared| {
+        dependency_payload_from_parts(
+            &shared.object_ref,
+            shared.manifest_kind.as_str(),
+            shared.file_extension.as_str(),
+            shared.body,
+        )
+    }));
+    out
+}
+
+fn dependency_payload_from_parts(
+    object_ref: &abap_adt::AdtObjectRef,
+    object_kind: &str,
+    file_extension: &str,
+    source_text: String,
+) -> abap_lsp::DependencyArtifactPayload {
+    abap_lsp::DependencyArtifactPayload {
+        package_name: object_ref.package_name.clone(),
+        object_kind: object_kind.to_string(),
+        object_name: object_ref.name.clone(),
+        object_uri: object_ref.uri.clone(),
+        object_type: object_ref.object_type.clone(),
+        description: object_ref.description.clone(),
+        file_extension: file_extension.to_string(),
+        source_text,
+        fetched_at: current_timestamp_string(),
+    }
+}
+
+fn current_timestamp_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| format!("server-{}", duration.as_secs()))
+        .unwrap_or_else(|_| "server".to_string())
+}
+
+fn should_search_after_direct_fetch_failure(
+    candidate: &abap_lsp::RemoteDependencyCandidate,
+) -> bool {
+    matches!(
+        candidate.kind.trim().to_ascii_lowercase().as_str(),
+        "static" | "type"
+    )
+}
+
+fn resolve_remote_local_export(
+    candidate: &abap_lsp::RemoteDependencyCandidate,
+    config: &LocalExportConfig,
+    resolver: &mut LocalExportResolver,
+) -> Option<abap_lsp::DependencyArtifactPayload> {
+    if config.roots.is_empty() {
+        return None;
+    }
+    let document = resolve_local_export_dependency_document(
+        &config.roots,
+        resolver,
+        &candidate.name,
+        &candidate.kind,
+    )?;
+    local_export_document_artifact_payload(candidate, &document)
+}
+
+fn local_export_config_for_source_uris(
+    workspace_root: &Path,
+    source_uris: &[String],
+) -> LocalExportConfig {
+    let mut out = None::<LocalExportConfig>;
+    for source_uri in source_uris {
+        let incoming = local_export_config_for_source(workspace_root, source_uri);
+        if incoming.roots.is_empty()
+            && !matches!(incoming.mode, LocalDependencySourceMode::LocalOnly)
+        {
+            continue;
+        }
+        if let Some(out) = out.as_mut() {
+            merge_local_export_config(out, &incoming);
+        } else {
+            out = Some(incoming);
+        }
+        if out
+            .as_ref()
+            .is_some_and(|config| config.mode == LocalDependencySourceMode::LocalOnly)
+        {
+            break;
+        }
+    }
+    out.unwrap_or_default()
+}
+
+fn merge_local_export_config(target: &mut LocalExportConfig, incoming: &LocalExportConfig) {
+    let mut seen = target
+        .roots
+        .iter()
+        .map(|path| normalized_path_key(path))
+        .collect::<HashSet<_>>();
+    for root in &incoming.roots {
+        if seen.insert(normalized_path_key(root)) {
+            target.roots.push(root.clone());
+        }
+    }
+    target.mode = match (target.mode, incoming.mode) {
+        (_, LocalDependencySourceMode::LocalOnly) => LocalDependencySourceMode::LocalOnly,
+        (LocalDependencySourceMode::LocalOnly, _) => LocalDependencySourceMode::LocalOnly,
+        (_, LocalDependencySourceMode::LocalFirst) => LocalDependencySourceMode::LocalFirst,
+        (LocalDependencySourceMode::LocalFirst, _) => LocalDependencySourceMode::LocalFirst,
+        _ => LocalDependencySourceMode::AdtFirst,
+    };
+}
+
+fn normalized_path_key(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        text.to_ascii_lowercase()
+    } else {
+        text
+    }
+}
+
+fn remote_dependency_candidate_source_uris(
+    request: &abap_lsp::RemoteDependencyResolveParams,
+) -> HashMap<String, Vec<String>> {
+    let fallback = remote_dependency_fallback_source_uris(request);
+    let mut by_candidate = HashMap::<String, Vec<String>>::new();
+    for (source_uri, candidates) in &request.source_candidates {
+        for candidate in candidates {
+            by_candidate
+                .entry(remote_dependency_candidate_key(candidate))
+                .or_default()
+                .push(source_uri.clone());
+        }
+    }
+    for candidate in &request.candidates {
+        by_candidate
+            .entry(remote_dependency_candidate_key(candidate))
+            .or_insert_with(|| fallback.clone());
+    }
+    for source_uris in by_candidate.values_mut() {
+        source_uris.sort();
+        source_uris.dedup();
+    }
+    by_candidate
+}
+
+fn remote_dependency_fallback_source_uris(
+    request: &abap_lsp::RemoteDependencyResolveParams,
+) -> Vec<String> {
+    if request.source_uris.is_empty() {
+        vec![request.source_uri.clone()]
+    } else {
+        request.source_uris.clone()
+    }
+}
+
+fn remote_dependency_candidate_key(candidate: &abap_lsp::RemoteDependencyCandidate) -> String {
+    format!(
+        "{}:{}",
+        candidate.kind.trim().to_ascii_lowercase(),
+        candidate.name.trim().to_ascii_lowercase()
+    )
+}
+
+fn flush_remote_dependency_completions(
+    state: &mut ServerState,
+    writer: &mut impl Write,
+    completion_rx: &Receiver<RemoteDependencyCompletion>,
+    task_tx: &SyncSender<String>,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+    generations: &Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while let Ok(completion) = completion_rx.try_recv() {
+        if !completion.artifacts.is_empty() || !completion.negative.is_empty() {
+            if let Err(error) = store_remote_dependency_artifacts(
+                state,
+                &StoreRemoteDependencyArtifactsParams {
+                    workspace_uri: completion.request.workspace_uri.clone(),
+                    connection_key: completion.connection_key.clone(),
+                    artifacts: completion.artifacts,
+                    negative: completion.negative,
+                },
+            ) {
+                warn!(
+                    workspace_uri = %completion.request.workspace_uri,
+                    error = %error,
+                    "failed to store server-resolved dependency artifacts"
+                );
+            }
+        }
+
+        let params = abap_lsp::RemoteDependenciesUpdatedParams {
+            workspace_uri: completion.request.workspace_uri.clone(),
+            source_uri: completion.request.source_uri.clone(),
+            source_uris: completion.request.source_uris.clone(),
+            fetched: completion.fetched,
+            failed: completion.failed,
+        };
+        let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
+        let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
+            continue;
+        };
+        let started = WorkspaceAnalysisStatusParams {
+            workspace_uri: workspace_uri.clone(),
+            phase: WorkspaceAnalysisPhase::Started,
+            trigger: "remote-dependencies-updated".to_string(),
+            processed_document_count: 0,
+            total_document_count: 0,
+            analyzed_document_count: 0,
+            remote_resolution_in_flight: false,
+        };
+        send_notification(
+            writer,
+            WORKSPACE_ANALYSIS_STATUS,
+            serde_json::to_value(&started)?,
+        )?;
+        enqueue_background_task(
+            AnalysisTask {
+                workspace_uri: workspace_uri.clone(),
+                generation: next_workspace_generation(generations, &workspace_uri),
+                started: Some(started),
+                workspace,
+                kind: AnalysisTaskKind::RemoteDependenciesUpdated(params),
+            },
+            task_tx,
+            queue_state,
+        )?;
+    }
+    Ok(())
 }
 
 fn forward_current_stale_diagnostics(
@@ -808,6 +1248,9 @@ fn serve(
     let task_rx = Arc::new(Mutex::new(task_rx));
     let (completion_tx, completion_rx) = mpsc::channel();
     let (progress_tx, progress_rx) = mpsc::channel();
+    let (remote_task_tx, remote_task_rx) = mpsc::sync_channel::<RemoteDependencyTask>(64);
+    let (remote_completion_tx, remote_completion_rx) =
+        mpsc::channel::<RemoteDependencyCompletion>();
     let mut debounced_tasks = HashMap::<String, DebouncedAnalysisTask>::new();
 
     thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -938,6 +1381,15 @@ fn serve(
             });
         }
 
+        scope.spawn(move || {
+            while let Ok(task) = remote_task_rx.recv() {
+                let completion = run_remote_dependency_task(task);
+                if remote_completion_tx.send(completion).is_err() {
+                    break;
+                }
+            }
+        });
+
         let mut reader_closed = false;
         loop {
             for params in flush_due_debounced_tasks(
@@ -953,7 +1405,21 @@ fn serve(
                 )?;
             }
             flush_analysis_progress(writer, &progress_rx, &generations)?;
-            flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
+            flush_remote_dependency_completions(
+                &mut state,
+                writer,
+                &remote_completion_rx,
+                &task_tx,
+                &queue_state,
+                &generations,
+            )?;
+            flush_analysis_completions(
+                &mut state,
+                writer,
+                &completion_rx,
+                &generations,
+                &remote_task_tx,
+            )?;
 
             match message_rx.recv_timeout(Duration::from_millis(10)) {
                 Ok(InboundMessage::Message(message)) => {
@@ -970,7 +1436,7 @@ fn serve(
                         &mut debounced_tasks,
                     )? {
                         for (method, params) in started_statuses.notifications {
-                            send_notification(writer, &method, params)?;
+                            send_or_enqueue_notification(writer, &remote_task_tx, &method, params)?;
                         }
                         for params in started_statuses.started_statuses {
                             send_notification(
@@ -990,7 +1456,7 @@ fn serve(
                         }
                         let handled = handle_message(&mut state, &config, message)?;
                         for (method, params) in handled.notifications {
-                            send_notification(writer, &method, params)?;
+                            send_or_enqueue_notification(writer, &remote_task_tx, &method, params)?;
                         }
                         if let Some(response) = handled.response {
                             send_response(writer, &response)?;
@@ -1020,7 +1486,21 @@ fn serve(
                         )?;
                     }
                     flush_analysis_progress(writer, &progress_rx, &generations)?;
-                    flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
+                    flush_remote_dependency_completions(
+                        &mut state,
+                        writer,
+                        &remote_completion_rx,
+                        &task_tx,
+                        &queue_state,
+                        &generations,
+                    )?;
+                    flush_analysis_completions(
+                        &mut state,
+                        writer,
+                        &completion_rx,
+                        &generations,
+                        &remote_task_tx,
+                    )?;
 
                     if state.shutdown_requested && method.as_deref() == Some("exit") {
                         break;
@@ -1051,9 +1531,24 @@ fn serve(
                 serde_json::to_value(params)?,
             )?;
         }
-        drop(task_tx);
         flush_analysis_progress(writer, &progress_rx, &generations)?;
-        flush_analysis_completions(&mut state, writer, &completion_rx, &generations)?;
+        flush_remote_dependency_completions(
+            &mut state,
+            writer,
+            &remote_completion_rx,
+            &task_tx,
+            &queue_state,
+            &generations,
+        )?;
+        flush_analysis_completions(
+            &mut state,
+            writer,
+            &completion_rx,
+            &generations,
+            &remote_task_tx,
+        )?;
+        drop(task_tx);
+        drop(remote_task_tx);
         Ok(())
     })
 }
@@ -2169,6 +2664,403 @@ fn stage_workspace_change_overlay(
     Some(root_uri)
 }
 
+fn search_repository_objects(
+    params: &SearchRepositoryObjectsParams,
+) -> Result<SearchRepositoryObjectsResult, String> {
+    let workspace_root = workspace_root_path(&params.workspace_uri)?;
+    let connection = abap_adt::ConnectionConfig::from_env_and_dotenv(Some(&workspace_root))?;
+    let mut client = abap_adt::AdtClient::new(connection)?;
+    let objects = client
+        .search_repository_objects(&params.query, params.max_results.unwrap_or(51))?
+        .into_iter()
+        .map(adt_object_ref_payload)
+        .collect();
+    Ok(SearchRepositoryObjectsResult { objects })
+}
+
+fn materialize_editable_adt_object(
+    params: &MaterializeEditableAdtObjectParams,
+) -> Result<MaterializeEditableAdtObjectResult, String> {
+    let workspace_root = workspace_root_path(&params.workspace_uri)?;
+    let connection = abap_adt::ConnectionConfig::from_env_and_dotenv(Some(&workspace_root))?;
+    let mut client = abap_adt::AdtClient::new(connection)?;
+    let object_ref = adt_object_ref_from_payload(&params.object_ref);
+
+    let result = if object_ref.object_type.to_ascii_uppercase() == "FUGR/F"
+        || abap_adt::is_function_module_object(&object_ref)
+    {
+        let EditableAdtObjectTarget::Directory { directory_path } = &params.target else {
+            return Err(format!(
+                "function group objects require a target directory: {}",
+                object_ref.name
+            ));
+        };
+        materialize_editable_function_group(
+            &workspace_root,
+            &mut client,
+            &object_ref,
+            directory_path,
+        )?
+    } else {
+        if !is_supported_editable_workspace_object(&object_ref) {
+            return Err(format!(
+                "unsupported editable object type for {} ({})",
+                object_ref.name, object_ref.object_type
+            ));
+        }
+        if !is_custom_editable_object_name(&object_ref.name) {
+            return Err(format!(
+                "only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: {}",
+                object_ref.name
+            ));
+        }
+        let EditableAdtObjectTarget::File { file_path } = &params.target else {
+            return Err(format!(
+                "editable object requires a target ABAP file: {}",
+                object_ref.name
+            ));
+        };
+        materialize_editable_single_file(&workspace_root, &mut client, &object_ref, file_path)?
+    };
+
+    ensure_workspace_manifest_file(&workspace_root)?;
+    Ok(result)
+}
+
+fn materialize_editable_single_file(
+    workspace_root: &Path,
+    client: &mut abap_adt::AdtClient,
+    object_ref: &abap_adt::AdtObjectRef,
+    file_path: &str,
+) -> Result<MaterializeEditableAdtObjectResult, String> {
+    let target = resolve_workspace_target_path(workspace_root, file_path)?;
+    if target.extension().and_then(|ext| ext.to_str()) != Some("abap") {
+        return Err("target file must use the .abap extension".to_string());
+    }
+    fs::create_dir_all(
+        target
+            .parent()
+            .ok_or_else(|| format!("target has no parent directory: {}", target.display()))?,
+    )
+    .map_err(|e| format!("failed to create target directory: {e}"))?;
+
+    let mut created = Vec::new();
+    if !target.is_file() {
+        let source = client.fetch_object_source(&object_ref.uri)?;
+        fs::write(&target, source)
+            .map_err(|e| format!("failed to write {}: {e}", target.display()))?;
+        created.push(path_to_file_uri(&target));
+    }
+
+    Ok(MaterializeEditableAdtObjectResult {
+        opened_file_uri: path_to_file_uri(&target),
+        created_file_uris: created,
+        message: format!(
+            "Added {} to {}.",
+            object_ref.name,
+            workspace_relative_path(workspace_root, &target)
+        ),
+    })
+}
+
+fn materialize_editable_function_group(
+    workspace_root: &Path,
+    client: &mut abap_adt::AdtClient,
+    selected_ref: &abap_adt::AdtObjectRef,
+    directory_path: &str,
+) -> Result<MaterializeEditableAdtObjectResult, String> {
+    let group_ref = editable_function_group_object_ref(selected_ref)?;
+    if !is_custom_editable_object_name(&group_ref.name) {
+        return Err(format!(
+            "only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: {}",
+            group_ref.name
+        ));
+    }
+
+    let base_dir = resolve_workspace_target_path(workspace_root, directory_path)?;
+    fs::create_dir_all(&base_dir)
+        .map_err(|e| format!("failed to create {}: {e}", base_dir.display()))?;
+    let children = client.list_function_group_children(&group_ref.name)?;
+    let layout = editable_function_group_layout(&base_dir, &group_ref, &children, selected_ref);
+    let mut created = Vec::new();
+
+    if !layout.root_file_path.is_file() {
+        let source = client.fetch_object_source(&group_ref.uri)?;
+        fs::write(&layout.root_file_path, source)
+            .map_err(|e| format!("failed to write {}: {e}", layout.root_file_path.display()))?;
+        created.push(path_to_file_uri(&layout.root_file_path));
+    }
+    for member in &layout.members {
+        if member.file_path.is_file() {
+            continue;
+        }
+        if let Some(parent) = member.file_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+        }
+        let source = client.fetch_object_source(&member.object_ref.uri)?;
+        fs::write(&member.file_path, source)
+            .map_err(|e| format!("failed to write {}: {e}", member.file_path.display()))?;
+        created.push(path_to_file_uri(&member.file_path));
+    }
+
+    let open_path = layout
+        .open_member
+        .as_ref()
+        .map(|member| member.file_path.clone())
+        .unwrap_or_else(|| layout.root_file_path.clone());
+    Ok(MaterializeEditableAdtObjectResult {
+        opened_file_uri: path_to_file_uri(&open_path),
+        created_file_uris: created,
+        message: format!(
+            "Added function group {} to {}.",
+            group_ref.name,
+            workspace_relative_path(workspace_root, &layout.base_dir)
+        ),
+    })
+}
+
+struct EditableFunctionGroupLayout {
+    base_dir: PathBuf,
+    root_file_path: PathBuf,
+    open_member: Option<EditableFunctionGroupMember>,
+    members: Vec<EditableFunctionGroupMember>,
+}
+
+#[derive(Clone)]
+struct EditableFunctionGroupMember {
+    object_ref: abap_adt::AdtObjectRef,
+    file_path: PathBuf,
+}
+
+fn editable_function_group_layout(
+    base_dir: &Path,
+    group_ref: &abap_adt::AdtObjectRef,
+    children: &[abap_adt::AdtRepositoryChild],
+    selected_ref: &abap_adt::AdtObjectRef,
+) -> EditableFunctionGroupLayout {
+    let root_file_path = base_dir.join(format!(
+        "{}.abap",
+        encode_workspace_object_file_name(&group_ref.name)
+    ));
+    let mut include_children = children
+        .iter()
+        .filter(|child| child.object_ref.object_type.to_ascii_uppercase() == "FUGR/I")
+        .collect::<Vec<_>>();
+    include_children.sort_by(|left, right| left.object_ref.name.cmp(&right.object_ref.name));
+    let mut function_module_children = children
+        .iter()
+        .filter(|child| child.object_ref.object_type.to_ascii_uppercase() == "FUGR/FF")
+        .collect::<Vec<_>>();
+    function_module_children
+        .sort_by(|left, right| left.object_ref.name.cmp(&right.object_ref.name));
+
+    let mut members = Vec::new();
+    members.extend(
+        include_children
+            .into_iter()
+            .map(|child| EditableFunctionGroupMember {
+                object_ref: child.object_ref.clone(),
+                file_path: base_dir.join("includes").join(format!(
+                    "{}.abap",
+                    encode_workspace_object_file_name(&child.object_ref.name)
+                )),
+            }),
+    );
+    members.extend(
+        function_module_children
+            .into_iter()
+            .map(|child| EditableFunctionGroupMember {
+                object_ref: child.object_ref.clone(),
+                file_path: base_dir.join("function-modules").join(format!(
+                    "{}.abap",
+                    encode_workspace_object_file_name(&child.object_ref.name)
+                )),
+            }),
+    );
+    let open_member = members
+        .iter()
+        .find(|member| {
+            member.object_ref.uri == selected_ref.uri
+                || normalized_adt_object_name(&member.object_ref.name)
+                    == normalized_adt_object_name(&selected_ref.name)
+        })
+        .cloned();
+
+    EditableFunctionGroupLayout {
+        base_dir: base_dir.to_path_buf(),
+        root_file_path,
+        open_member,
+        members,
+    }
+}
+
+fn editable_function_group_object_ref(
+    object_ref: &abap_adt::AdtObjectRef,
+) -> Result<abap_adt::AdtObjectRef, String> {
+    if object_ref.object_type.to_ascii_uppercase() == "FUGR/F" {
+        let mut out = object_ref.clone();
+        out.name = normalized_adt_object_name(&out.name);
+        return Ok(out);
+    }
+    let function_group_uri = abap_adt::infer_function_group_uri(object_ref)
+        .ok_or_else(|| format!("cannot derive function group for {}", object_ref.name))?;
+    Ok(abap_adt::AdtObjectRef {
+        uri: function_group_uri.clone(),
+        object_type: "FUGR/F".to_string(),
+        name: normalized_adt_object_name(&last_adt_uri_segment(&function_group_uri)),
+        package_name: object_ref.package_name.clone(),
+        description: "Function group".to_string(),
+    })
+}
+
+fn ensure_workspace_manifest_file(workspace_root: &Path) -> Result<(), String> {
+    let manifest_path = workspace_root.join("abapls.toml");
+    if manifest_path.is_file() {
+        return Ok(());
+    }
+    fs::write(&manifest_path, default_workspace_manifest_text())
+        .map_err(|e| format!("failed to write {}: {e}", manifest_path.display()))
+}
+
+fn default_workspace_manifest_text() -> &'static str {
+    "version = 1\nconnection = \"default\"\n\n[resolution]\ndependency_mode = \"remote-on-demand\"\nremote_requests_per_second = 24\n\n"
+}
+
+fn workspace_root_path(workspace_uri: &str) -> Result<PathBuf, String> {
+    file_uri_to_path(workspace_uri)
+        .ok_or_else(|| format!("workspace URI is not a local file URI: {workspace_uri}"))
+}
+
+fn resolve_workspace_target_path(workspace_root: &Path, value: &str) -> Result<PathBuf, String> {
+    let raw = PathBuf::from(value.trim());
+    let target = if raw.is_absolute() {
+        raw
+    } else {
+        workspace_root.join(raw)
+    };
+    let target = normalize_path_components(&target);
+    if !path_is_inside_workspace(workspace_root, &target) {
+        return Err("target must be inside the selected workspace folder".to_string());
+    }
+    Ok(target)
+}
+
+fn normalize_path_components(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => out.push(component.as_os_str()),
+        }
+    }
+    out
+}
+
+fn path_is_inside_workspace(workspace_root: &Path, target: &Path) -> bool {
+    let root = normalized_path_key(&normalize_path_components(workspace_root));
+    let target = normalized_path_key(target);
+    target == root || target.starts_with(&format!("{root}/"))
+}
+
+fn workspace_relative_path(workspace_root: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(workspace_root)
+        .unwrap_or(target)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn is_supported_editable_workspace_object(object_ref: &abap_adt::AdtObjectRef) -> bool {
+    let object_type = object_ref.object_type.to_ascii_uppercase();
+    if object_type.starts_with("CLAS/") || object_type.starts_with("INTF/") {
+        return true;
+    }
+    let uri = object_ref.uri.to_ascii_lowercase();
+    uri.contains("/programs/includes/")
+        || uri.contains("/programs/programs/")
+        || uri.contains("/functions/groups/")
+        || object_type == "PROG/I"
+        || object_type == "PROG/P"
+}
+
+fn is_custom_editable_object_name(name: &str) -> bool {
+    let name = name.trim().to_ascii_uppercase();
+    name.starts_with('Z')
+        || name.starts_with('Y')
+        || (name.starts_with('/')
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_')))
+}
+
+fn encode_workspace_object_file_name(name: &str) -> String {
+    abap_adt::encode_path_segment(&normalized_adt_object_name(name))
+}
+
+fn normalized_adt_object_name(name: &str) -> String {
+    percent_decode_path_segment(name.trim()).to_ascii_uppercase()
+}
+
+fn last_adt_uri_segment(uri: &str) -> String {
+    uri.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(uri)
+        .to_string()
+}
+
+fn percent_decode_path_segment(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx] == b'%'
+            && idx + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_value(bytes[idx + 1]), hex_value(bytes[idx + 2]))
+        {
+            out.push((hi << 4) | lo);
+            idx += 3;
+            continue;
+        }
+        out.push(bytes[idx]);
+        idx += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn adt_object_ref_payload(object_ref: abap_adt::AdtObjectRef) -> AdtObjectRefPayload {
+    AdtObjectRefPayload {
+        uri: object_ref.uri,
+        object_type: object_ref.object_type,
+        name: object_ref.name,
+        package_name: object_ref.package_name,
+        description: object_ref.description,
+    }
+}
+
+fn adt_object_ref_from_payload(payload: &AdtObjectRefPayload) -> abap_adt::AdtObjectRef {
+    abap_adt::AdtObjectRef {
+        uri: payload.uri.clone(),
+        object_type: payload.object_type.clone(),
+        name: payload.name.clone(),
+        package_name: payload.package_name.clone(),
+        description: payload.description.clone(),
+    }
+}
+
 fn handle_message(
     state: &mut ServerState,
     config: &ServerConfig,
@@ -2586,6 +3478,77 @@ fn handle_message(
                 notifications: Vec::new(),
             })
         }
+        Some(SEARCH_REPOSITORY_OBJECTS) => {
+            let Some(params) = parse_params::<SearchRepositoryObjectsParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "abapls/searchRepositoryObjects requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = match search_repository_objects(&params) {
+                Ok(result) => result,
+                Err(message) => {
+                    return Ok(HandledMessage {
+                        response: Some(Response::failure(
+                            id.unwrap_or(Value::Null),
+                            INVALID_PARAMS,
+                            message,
+                        )),
+                        notifications: Vec::new(),
+                    });
+                }
+            };
+            Ok(HandledMessage {
+                response: Some(Response::success(
+                    id.unwrap_or(Value::Null),
+                    serde_json::to_value(result)?,
+                )),
+                notifications: Vec::new(),
+            })
+        }
+        Some(MATERIALIZE_EDITABLE_ADT_OBJECT) => {
+            let Some(params) = parse_params::<MaterializeEditableAdtObjectParams>(&message)? else {
+                return Ok(HandledMessage {
+                    response: Some(Response::failure(
+                        id.unwrap_or(Value::Null),
+                        INVALID_REQUEST,
+                        "abapls/materializeEditableAdtObject requires params",
+                    )),
+                    notifications: Vec::new(),
+                });
+            };
+            let result = match materialize_editable_adt_object(&params) {
+                Ok(result) => result,
+                Err(message) => {
+                    return Ok(HandledMessage {
+                        response: Some(Response::failure(
+                            id.unwrap_or(Value::Null),
+                            INVALID_PARAMS,
+                            message,
+                        )),
+                        notifications: Vec::new(),
+                    });
+                }
+            };
+            let notifications = handle_workspace_manifest_updated_notifications(
+                state,
+                &WorkspaceManifestUpdatedParams {
+                    workspace_uri: params.workspace_uri.clone(),
+                },
+                None,
+            )?;
+            Ok(HandledMessage {
+                response: Some(Response::success(
+                    id.unwrap_or(Value::Null),
+                    serde_json::to_value(result)?,
+                )),
+                notifications,
+            })
+        }
         Some("$/progress") | Some("$/cancelRequest") => Ok(HandledMessage {
             response: None,
             notifications: Vec::new(),
@@ -2790,11 +3753,11 @@ mod tests {
     use super::{
         AnalysisCompletion, AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE,
         EDITOR_FIRST_DIAGNOSTIC_LIMIT, PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED,
-        RESOLVE_REMOTE_DEPENDENCIES, finish_background_task, flush_analysis_completions,
-        flush_due_debounced_tasks, handle_did_change_notifications, handle_message,
-        run_analysis_task, send_analysis_completion, take_pending_background_task,
-        try_schedule_background_analysis, workspace_analysis_status_finished,
-        workspace_analysis_status_started,
+        RESOLVE_REMOTE_DEPENDENCIES, RemoteDependencyTask, finish_background_task,
+        flush_analysis_completions, flush_due_debounced_tasks, handle_did_change_notifications,
+        handle_message, run_analysis_task, run_remote_dependency_task, send_analysis_completion,
+        take_pending_background_task, try_schedule_background_analysis,
+        workspace_analysis_status_finished, workspace_analysis_status_started,
     };
     use abap_lsp::{
         DependencyArtifactPayload, DidChangeTextDocumentParams, SAP_ATC_RESULTS_UPDATED,
@@ -2976,6 +3939,111 @@ mod tests {
             manifest.push_str(&format!("object_name = \"ZCL_DEP_{idx:04}\"\n\n"));
         }
         fs::write(workspace_path.join("abapls.toml"), manifest).expect("manifest");
+    }
+
+    #[test]
+    fn remote_dependency_worker_resolves_local_export_without_adt() {
+        let workspace_path = temp_workspace_path("remote_worker_local_export");
+        let source_dir = workspace_path.join("src");
+        let export_dir = workspace_path.join("exports").join("classes");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(&export_dir).expect("export dir");
+        fs::write(
+            source_dir.join("main.abap"),
+            "DATA lo_dep TYPE REF TO zcl_dep.",
+        )
+        .expect("source");
+        fs::write(
+            source_dir.join("abapls-unit.toml"),
+            "[local_export]\nroots = [\"../exports\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+        )
+        .expect("sidecar");
+        fs::write(
+            export_dir.join("ZCL_DEP.abap"),
+            "CLASS zcl_dep DEFINITION.\nENDCLASS.\nCLASS zcl_dep IMPLEMENTATION.\nENDCLASS.\n",
+        )
+        .expect("export");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/main.abap");
+        let completion = run_remote_dependency_task(RemoteDependencyTask {
+            request: abap_lsp::RemoteDependencyResolveParams {
+                workspace_uri,
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                retry_negative_candidates: false,
+                remote_request_parallelism: None,
+                remote_requests_per_second: None,
+                source_candidates: HashMap::from([(
+                    source_uri,
+                    vec![abap_lsp::RemoteDependencyCandidate {
+                        name: "ZCL_DEP".to_string(),
+                        kind: "static".to_string(),
+                    }],
+                )]),
+                candidates: vec![abap_lsp::RemoteDependencyCandidate {
+                    name: "ZCL_DEP".to_string(),
+                    kind: "static".to_string(),
+                }],
+            },
+        });
+
+        assert_eq!(completion.fetched, vec!["ZCL_DEP"]);
+        assert!(completion.failed.is_empty());
+        assert!(completion.negative.is_empty());
+        assert_eq!(completion.artifacts.len(), 1);
+        assert_eq!(completion.artifacts[0].object_name, "zcl_dep");
+        assert_eq!(completion.artifacts[0].object_kind, "global-class");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_worker_local_only_skips_adt_and_negative_cache() {
+        let workspace_path = temp_workspace_path("remote_worker_local_only");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::write(
+            source_dir.join("main.abap"),
+            "DATA lo_dep TYPE REF TO zcl_dep.",
+        )
+        .expect("source");
+        fs::write(
+            source_dir.join("abapls-unit.toml"),
+            "[dependencies]\nsource = \"local-only\"\n",
+        )
+        .expect("sidecar");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let source_uri = format!("{workspace_uri}/src/main.abap");
+        let completion = run_remote_dependency_task(RemoteDependencyTask {
+            request: abap_lsp::RemoteDependencyResolveParams {
+                workspace_uri,
+                source_uri: source_uri.clone(),
+                source_uris: vec![source_uri.clone()],
+                retry_negative_candidates: false,
+                remote_request_parallelism: None,
+                remote_requests_per_second: None,
+                source_candidates: HashMap::from([(
+                    source_uri,
+                    vec![abap_lsp::RemoteDependencyCandidate {
+                        name: "ZCL_DEP".to_string(),
+                        kind: "static".to_string(),
+                    }],
+                )]),
+                candidates: vec![abap_lsp::RemoteDependencyCandidate {
+                    name: "ZCL_DEP".to_string(),
+                    kind: "static".to_string(),
+                }],
+            },
+        });
+
+        assert!(completion.artifacts.is_empty());
+        assert!(completion.fetched.is_empty());
+        assert!(completion.failed.is_empty());
+        assert!(completion.negative.is_empty());
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     fn did_change_params(
@@ -3866,8 +4934,15 @@ lo_helper->r";
         drop(completion_tx);
 
         let mut writer = Vec::new();
-        flush_analysis_completions(&mut state, &mut writer, &completion_rx, &generations)
-            .expect("flush completions");
+        let (remote_task_tx, _remote_task_rx) = mpsc::sync_channel(1);
+        flush_analysis_completions(
+            &mut state,
+            &mut writer,
+            &completion_rx,
+            &generations,
+            &remote_task_tx,
+        )
+        .expect("flush completions");
 
         let output = String::from_utf8(writer).expect("utf8 output");
         assert!(

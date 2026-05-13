@@ -3,10 +3,18 @@
 version = 4
 
 [[package]]
-name = "abap_adt_cli"
+name = "abap_adt"
 version = "0.1.0"
 dependencies = [
  "reqwest",
+ "serde",
+]
+
+[[package]]
+name = "abap_adt_cli"
+version = "0.1.0"
+dependencies = [
+ "abap_adt",
  "serde_json",
 ]
 
@@ -101,6 +109,8 @@ dependencies = [
 name = "abap_lsp_server"
 version = "0.1.0"
 dependencies = [
+ "abap_adt",
+ "abap_cache",
  "abap_jsonrpc",
  "abap_lsp",
  "crossbeam-channel",

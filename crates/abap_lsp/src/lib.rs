@@ -68,6 +68,8 @@ pub const DEPENDENCY_CACHE_REFRESH_REQUESTED: &str = "abapls/dependencyCacheRefr
 pub const WORKSPACE_ANALYSIS_STATUS: &str = "abapls/workspaceAnalysisStatus";
 pub const STORE_REMOTE_DEPENDENCY_ARTIFACTS: &str = "abapls/storeRemoteDependencyArtifacts";
 pub const READ_DEPENDENCY_DOCUMENT: &str = "abapls/readDependencyDocument";
+pub const SEARCH_REPOSITORY_OBJECTS: &str = "abapls/searchRepositoryObjects";
+pub const MATERIALIZE_EDITABLE_ADT_OBJECT: &str = "abapls/materializeEditableAdtObject";
 pub const SAP_ATC_RESULTS_UPDATED: &str = "abapls/sapAtcResultsUpdated";
 const LOCAL_EXPORT_FUNCTION_MODULE_COMPLETION_LIMIT: usize = 64;
 const DIAGNOSTIC_CODE_MISSING_METHOD_IMPLEMENTATION: &str = "missing-method-implementation";
@@ -333,6 +335,65 @@ pub struct ReadDependencyDocumentParams {
 pub struct ReadDependencyDocumentResult {
     #[serde(rename = "sourceText")]
     pub source_text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdtObjectRefPayload {
+    pub uri: String,
+    #[serde(rename = "type", alias = "objectType")]
+    pub object_type: String,
+    pub name: String,
+    #[serde(default, alias = "package_name")]
+    pub package_name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRepositoryObjectsParams {
+    pub workspace_uri: String,
+    pub query: String,
+    #[serde(default)]
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRepositoryObjectsResult {
+    pub objects: Vec<AdtObjectRefPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterializeEditableAdtObjectParams {
+    pub workspace_uri: String,
+    pub object_ref: AdtObjectRefPayload,
+    pub target: EditableAdtObjectTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EditableAdtObjectTarget {
+    File {
+        #[serde(rename = "filePath")]
+        file_path: String,
+    },
+    Directory {
+        #[serde(rename = "directoryPath")]
+        directory_path: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaterializeEditableAdtObjectResult {
+    pub opened_file_uri: String,
+    #[serde(default)]
+    pub created_file_uris: Vec<String>,
+    #[serde(default)]
+    pub message: String,
 }
 
 fn workspace_lint_policy(workspace: &WorkspaceState) -> LintPolicy {
@@ -1561,6 +1622,24 @@ fn local_export_document_artifact(
         source_text: document.text.clone(),
         fetched_at: local_export_dependency_fetched_at(),
         symbols: extract_stored_dependency_symbols(object_uri.as_str(), document.text.as_str()),
+    })
+}
+
+pub fn local_export_document_artifact_payload(
+    candidate: &RemoteDependencyCandidate,
+    document: &WorkspaceDocument,
+) -> Option<DependencyArtifactPayload> {
+    let artifact = local_export_document_artifact(candidate, document)?;
+    Some(DependencyArtifactPayload {
+        package_name: artifact.package_name,
+        object_kind: artifact.object_kind,
+        object_name: artifact.object_name,
+        object_uri: artifact.object_uri,
+        object_type: artifact.object_type,
+        description: artifact.description,
+        file_extension: artifact.file_extension,
+        source_text: artifact.source_text,
+        fetched_at: artifact.fetched_at,
     })
 }
 

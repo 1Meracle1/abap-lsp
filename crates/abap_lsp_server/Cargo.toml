@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+abap_adt = { path = "../abap_adt" }
+abap_cache = { path = "../abap_cache" }
 abap_jsonrpc = { path = "../abap_jsonrpc" }
 abap_lsp = { path = "../abap_lsp" }
 crossbeam-channel.workspace = true

@@ -169,12 +169,16 @@ Override the location with:
 ```
 
 Remote dependency fetches require an `abapls.toml` manifest with
-`[dependency_store]` configured. Use `ABAP LSP: Refresh Dependency Cache` after
-changing SAP connection settings, cache paths, dependency source preferences, or
-local exported SAP roots.
+`[dependency_store]` configured. SAP ADT credentials are read by the server from
+the process environment or a workspace/repository `.env` file using
+`ABAP_ADT_URL` / `ABAP_ADT_BASE_URL` / `SAPBASE_URL`,
+`ABAP_ADT_USER` / `ABAP_ADT_USERNAME` / `SAPUSER`,
+`ABAP_ADT_PASSWORD` / `SAPPASS`, and optionally
+`ABAP_ADT_CLIENT` / `SAPCLIENT`. Use `ABAP LSP: Refresh Dependency Cache` after
+changing cache paths, dependency source preferences, or local exported SAP roots.
 
 Local exported SAP source can be searched before or instead of ADT by setting
-`abap-ls.sap.localDependencyRoots` or by adding sidecar configuration:
+sidecar configuration next to source files or in an ancestor folder:
 
 ```toml
 [local_export]
@@ -196,9 +200,6 @@ Supported dependency sources are `local-first`, `local-only`, and `adt-first`.
 | `abap-ls.trace.server` | `verbose` | LSP protocol tracing level. |
 | `abap-ls.maxNumberOfProblems` | `100` | Maximum problems reported by the server. |
 | `abap-ls.dependencyCache.path` | empty | Optional centralized dependency cache path override. |
-| `abap-ls.sap.baseUrl` | empty | SAP system base URL or ADT root URL. |
-| `abap-ls.sap.username` | empty | SAP username. Passwords use VS Code Secret Storage. |
-| `abap-ls.sap.localDependencyRoots` | `[]` | Local exported SAP roots searched for dependencies. |
 
 ## Troubleshooting
 
@@ -214,17 +215,17 @@ Start the server with `--listen 127.0.0.1:9472` or set `ABAP_LSP_LISTEN` before
 switching the extension to TCP mode. Make sure `abap-ls.serverTcpAddress` or
 `__ABAP_LSP_CONNECT` matches the address the server printed.
 
-### SAP prompts keep appearing
+### SAP credentials are missing
 
-Run `ABAP LSP: Configure SAP Connection` for the active workspace folder, or set
-the accepted `ABAP_ADT_*` environment variables. Passwords saved by the command
-are scoped to the workspace folder in VS Code Secret Storage.
+Set the accepted `ABAP_ADT_*` / `SAP*` environment variables before starting the
+server, or put them in an untracked `.env` file in the workspace or repository.
 
 ### Remote dependencies are not fetched
 
 Confirm that the workspace has `abapls.toml`, that `[dependency_store]` is
-configured, and that the SAP connection works. The extension logs skipped fetch
-waves and ADT request failures in the `ABAP Language Server` output channel.
+configured, and that the server process has SAP credentials. Skipped fetches and
+ADT request failures are logged by the server in the `ABAP Language Server`
+output channel.
 
 ### Cache documents are stale
 

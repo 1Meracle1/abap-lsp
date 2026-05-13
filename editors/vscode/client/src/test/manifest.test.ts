@@ -11,9 +11,9 @@ import {
 	manifestUsesCentralDependencyStore,
 	targetEditableWorkspaceFilePath,
 	targetLocalWorkspaceFilePath,
+	type AdtObjectRef,
 	workspaceManifestPath,
 } from "../manifest";
-import type { AdtObjectRef } from "../adt";
 
 suite("Manifest helpers", () => {
 	test("Creates a settings-only workspace manifest with central-store guidance", async () => {

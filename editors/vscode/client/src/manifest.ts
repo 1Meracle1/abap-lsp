@@ -1,13 +1,14 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import {
-	inferDdicManifestKind,
-	isDdicDependencyObject,
-	isFunctionModuleObject,
-	isMessageClassDependencyObject,
-	type AdtObjectRef,
-} from "./adt";
+
+export interface AdtObjectRef {
+	uri: string;
+	type: string;
+	name: string;
+	packageName: string;
+	description: string;
+}
 
 export interface ManifestUnitSpec {
 	name: string;
@@ -165,6 +166,50 @@ remote_requests_per_second = ${defaultRemoteRequestsPerSecond}
 # [dependency_store]
 # product_version = "SAP NETWEAVER"
 # default_package_version = "7.50"`;
+}
+
+function isDdicDependencyObject(objectRef: AdtObjectRef): boolean {
+	const type = objectRef.type.toUpperCase();
+	return type === "DTEL/DE" ||
+		type.startsWith("DOMA/") ||
+		type === "TABL/DS" ||
+		type === "TABL/DT" ||
+		type === "TABL/DA" ||
+		type === "TTYP/DA" ||
+		type === "VIEW/DV";
+}
+
+function isMessageClassDependencyObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase() === "MSAG/N" ||
+		objectRef.uri.toLowerCase().includes("/sap/bc/adt/messageclass/");
+}
+
+function isFunctionModuleObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase() === "FUGR/FF" ||
+		objectRef.uri.toLowerCase().includes("/functions/groups/") &&
+		objectRef.uri.toLowerCase().includes("/fmodules/");
+}
+
+function inferDdicManifestKind(objectRef: AdtObjectRef): string {
+	const type = objectRef.type.toUpperCase();
+	if (type.startsWith("DOMA/")) {
+		return "ddic-domain";
+	}
+	switch (type) {
+		case "DTEL/DE":
+			return "ddic-data-element";
+		case "TABL/DS":
+			return "ddic-structure";
+		case "TABL/DT":
+			return "ddic-table";
+		case "TABL/DA":
+		case "TTYP/DA":
+			return "ddic-table-type";
+		case "VIEW/DV":
+			return "ddic-view";
+		default:
+			return "ddic-structure";
+	}
 }
 
 export function manifestUsesCentralDependencyStore(text: string): boolean {

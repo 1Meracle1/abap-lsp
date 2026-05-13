@@ -11,5 +11,5 @@ name = "abap-adt"
 path = "src/main.rs"
 
 [dependencies]
-reqwest.workspace = true
+abap_adt = { path = "../abap_adt" }
 serde_json.workspace = true

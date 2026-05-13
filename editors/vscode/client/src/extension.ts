@@ -11,132 +11,51 @@ import {
 	TransportKind,
 } from "vscode-languageclient/node";
 import {
-	AdtClient,
-	AdtDependencyFetchResult,
-	AdtRequestFinishedEvent,
-	AdtRequestStartEvent,
-	AdtRepositoryChild,
-	AdtObjectRef,
-	AdtRequestCancelledError,
-	configureSapConnection,
-	directDependencyObjectRefs,
-	inferFunctionGroupUri,
-	inferLocalExportObjectRef,
-	isDdicDependencyObject,
-	isFunctionModuleObject,
-	isMessageClassDependencyObject,
-	getSapConnectionConfig,
-	parseLocalDdicExportObjectRef,
-	selectDependencyObjects,
-} from "./adt";
-import {
 	dependencyModeRemoteOnDemand,
 	ensureWorkspaceManifest,
-	inferManifestUnitSpec,
 	manifestFileName,
 	targetEditableWorkspaceFilePath,
 	workspaceManifestPath,
 } from "./manifest";
-import {
-	dedupeRemoteDependencyCandidates,
-	RemoteDependencyCandidate,
-	RemoteDependencyFetchPolicy,
-	RemoteDependencyScheduler,
-	resolveRemoteDependencyFetchPolicy,
-} from "./remoteDependencies";
-import {
-	clearLocalExportIndexCache,
-	findLocalExportFileInIndexedRoot,
-} from "./localExportIndex";
 
 let client: LanguageClient;
-let adtRequestGeneration = 0;
 let clientLifecycle = Promise.resolve();
 let workspaceAnalysisStatusBarMessage: vscode.Disposable | undefined;
-const pendingRemoteDependencyFetches = new Map<string, Promise<RemoteDependencyResolutionResult>>();
-const negativeRemoteDependencyCache = new Set<string>();
-const remoteDependencySchedulers = new Map<string, RemoteDependencyScheduler>();
 const pendingWorkspaceConfigPrompts = new Set<string>();
 const dismissedWorkspaceConfigPrompts = new Set<string>();
 const workspaceAnalysisProgress = new Map<string, WorkspaceAnalysisProgressHandle>();
-type UnitDependencySourceMode = "local-first" | "local-only" | "adt-first";
-
-interface RemoteDependencyResolveParams {
-	workspaceUri: string;
-	sourceUri: string;
-	sourceUris?: string[];
-	sourceCandidates?: Record<string, RemoteDependencyCandidate[]>;
-	retryNegativeCandidates?: boolean;
-	remoteRequestParallelism?: number;
-	remoteRequestsPerSecond?: number;
-	candidates: RemoteDependencyCandidate[];
-}
-
-interface RemoteDependenciesUpdatedParams {
-	workspaceUri: string;
-	sourceUri: string;
-	sourceUris?: string[];
-	fetched: string[];
-	failed: RemoteDependencyCandidate[];
-}
-
-interface RemoteDependencyResolutionResult {
-	candidate: RemoteDependencyCandidate;
-	fetchedName?: string;
-	failed?: boolean;
-}
-
-interface RemoteDependencyBatchContext {
-	centralArtifacts: DependencyArtifactPayload[];
-	negativeCandidates: RemoteDependencyCandidate[];
-	sourceUnitSidecarPathsByKey: Map<string, Promise<string[]>>;
-	localDependencyRootsByKey: Map<string, Promise<string[]>>;
-	dependencySourceModeByKey: Map<string, Promise<UnitDependencySourceMode>>;
-	localRootsBySidecarPath: Map<string, Promise<string[]>>;
-	dependencySourceModeBySidecarPath: Map<string, Promise<UnitDependencySourceMode | undefined>>;
-}
 
 interface DependencyCacheInitializationOptions {
 	dependencyCachePath?: string;
-}
-
-interface DependencyArtifactPayload {
-	packageName: string;
-	objectKind: string;
-	objectName: string;
-	objectUri: string;
-	objectType: string;
-	description: string;
-	fileExtension: "abap" | "xml";
-	sourceText: string;
-	fetchedAt: string;
-}
-
-interface StoreRemoteDependencyArtifactsParams {
-	workspaceUri: string;
-	connectionKey?: string;
-	artifacts: DependencyArtifactPayload[];
-	negative: RemoteDependencyCandidate[];
 }
 
 interface ReadDependencyDocumentResult {
 	sourceText: string;
 }
 
-interface RemoteDependencyWaveTelemetry {
-	workspaceLabel: string;
-	totalCandidates: number;
-	configuredRequestsPerSecond: number;
-	configuredParallelism: number;
-	startedAt: number;
-	completedCandidates: number;
-	requestsStarted: number;
-	requestsFinished: number;
-	requestsFailed: number;
-	directFetchCandidates: number;
-	searchCandidates: number;
-	requestKinds: Map<string, number>;
-	progressTimer?: NodeJS.Timeout;
+interface AdtObjectRef {
+	uri: string;
+	type: string;
+	name: string;
+	packageName: string;
+	description: string;
+}
+
+interface AdtRepositoryChild {
+	objectRef: AdtObjectRef;
+	categoryTag: string;
+	objectTypeLabel: string;
+	expandable: boolean;
+}
+
+interface SearchRepositoryObjectsResult {
+	objects: AdtObjectRef[];
+}
+
+interface MaterializeEditableAdtObjectResult {
+	openedFileUri: string;
+	createdFileUris: string[];
+	message: string;
 }
 
 interface WorkspaceManifestUpdatedParams {
@@ -329,7 +248,6 @@ function registerConfigurationListeners(context: vscode.ExtensionContext): void 
 				return;
 			}
 			void runClientLifecycle(async () => {
-				cancelAllAdtFetches();
 				clearProgressUi();
 				await stopLanguageClient();
 				await startLanguageClient();
@@ -374,7 +292,6 @@ export function deactivate(): Thenable<void> | undefined {
 	if (!client) {
 		return undefined;
 	}
-	cancelAllAdtFetches();
 	clearProgressUi();
 	return client.isRunning() ? client.stop() : Promise.resolve();
 }
@@ -396,16 +313,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 					await createLinkedProject(context, workspaceFolder);
 				},
 			);
-		}),
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand("abap-ls.configureSapConnection", async () => {
-			const workspaceFolder = await pickWorkspaceFolder();
-			if (!workspaceFolder) {
-				return;
-			}
-			await configureSapConnection(context, workspaceFolder);
 		}),
 	);
 
@@ -479,7 +386,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 				return;
 			}
 
-			clearRemoteDependencyCaches(workspaceFolder);
 			await client.sendNotification("abapls/dependencyCacheRefreshRequested", {
 				workspaceUri: workspaceFolder.uri.toString(),
 			} satisfies WorkspaceManifestUpdatedParams);
@@ -490,7 +396,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("abap-ls.stopLanguageServer", async () => {
 			await runClientLifecycle(async () => {
-				cancelAllAdtFetches();
 				clearProgressUi();
 				await stopLanguageClient();
 			});
@@ -501,7 +406,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		vscode.commands.registerCommand("abap-ls.restartLanguageServer", async () => {
 			await runClientLifecycle(async () => {
-				cancelAllAdtFetches();
 				clearProgressUi();
 				await stopLanguageClient();
 				await startLanguageClient();
@@ -509,42 +413,6 @@ function registerCommands(context: vscode.ExtensionContext): void {
 			vscode.window.showInformationMessage("ABAP LSP language server restarted.");
 		}),
 	);
-}
-
-function createAdtClient(
-	connection: NonNullable<Awaited<ReturnType<typeof getSapConnectionConfig>>>,
-	options: {
-		beforeRequest?: () => Promise<void>;
-		onRequestStart?: (event: AdtRequestStartEvent) => void;
-		onRequestFinished?: (event: AdtRequestFinishedEvent) => void;
-	} = {},
-): AdtClient {
-	const generation = adtRequestGeneration;
-	return new AdtClient(connection, {
-		beforeRequest: async () => {
-			throwIfAdtFetchesCancelled(generation);
-			await options.beforeRequest?.();
-			throwIfAdtFetchesCancelled(generation);
-		},
-		isCancelled: () => generation !== adtRequestGeneration,
-		onRequestStart: options.onRequestStart,
-		onRequestFinished: options.onRequestFinished,
-	});
-}
-
-function throwIfAdtFetchesCancelled(generation: number): void {
-	if (generation !== adtRequestGeneration) {
-		throw new AdtRequestCancelledError();
-	}
-}
-
-function cancelAllAdtFetches(): void {
-	adtRequestGeneration += 1;
-	AdtClient.cancelAllActiveRequests();
-	for (const scheduler of remoteDependencySchedulers.values()) {
-		scheduler.cancelAll();
-	}
-	pendingRemoteDependencyFetches.clear();
 }
 
 function clearProgressUi(): void {
@@ -595,16 +463,7 @@ function logLanguageClientStartup(): void {
 }
 
 function registerClientNotifications(context: vscode.ExtensionContext): void {
-	client.onNotification(
-		"abapls/resolveRemoteDependencies",
-		(params: RemoteDependencyResolveParams) => {
-			void resolveRemoteDependencies(context, params).catch((error) => {
-				client.outputChannel.appendLine(
-					`[remote-deps] unhandled resolver failure: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-				);
-			});
-		},
-	);
+	void context;
 	client.onNotification(
 		"abapls/workspaceAnalysisStatus",
 		(params: WorkspaceAnalysisStatusParams) => {
@@ -787,296 +646,6 @@ function workspaceAnalysisProgressMessage(params: WorkspaceAnalysisStatusParams)
 	}
 }
 
-async function resolveRemoteDependencies(
-	context: vscode.ExtensionContext,
-	params: RemoteDependencyResolveParams,
-): Promise<void> {
-	if (!params?.workspaceUri || !params.candidates?.length) {
-		return;
-	}
-
-	const sourceUris = params.sourceUris?.length ? params.sourceUris : [params.sourceUri];
-	const updateParams: RemoteDependenciesUpdatedParams = {
-		workspaceUri: params.workspaceUri,
-		sourceUri: params.sourceUri,
-		sourceUris,
-		fetched: [],
-		failed: [],
-	};
-	const workspaceFolder = workspaceFolderForUri(params.workspaceUri);
-	if (!workspaceFolder) {
-		await sendRemoteDependenciesUpdatedSafe(updateParams, "workspace-missing");
-		return;
-	}
-
-	const candidates = dedupeRemoteDependencyCandidates(params.candidates);
-	const fetchCandidates = [...candidates];
-	const candidateSourceUris = candidateSourceUriMap(params, sourceUris);
-	const retryNegativeCandidates = shouldRetryNegativeRemoteDependencyCandidates(
-		params.retryNegativeCandidates,
-	);
-	const batchContext = createRemoteDependencyBatchContext();
-	const fetchPolicy: RemoteDependencyFetchPolicy = {
-		remoteRequestParallelism: params.remoteRequestParallelism,
-		remoteRequestsPerSecond: params.remoteRequestsPerSecond,
-	};
-	const resolvedFetchPolicy = resolveRemoteDependencyFetchPolicy(fetchPolicy);
-	const telemetry = createRemoteDependencyWaveTelemetry(
-		workspaceFolder,
-		fetchCandidates.length,
-		resolvedFetchPolicy.remoteRequestsPerSecond,
-		resolvedFetchPolicy.remoteRequestParallelism,
-	);
-	startRemoteDependencyWaveTelemetry(telemetry);
-
-	const scheduler = remoteDependencySchedulerForWorkspace(workspaceFolder, fetchPolicy);
-	let adtClientPromise: Promise<AdtClient | undefined> | undefined;
-	const getAdtClient = async (): Promise<AdtClient | undefined> => {
-		if (adtClientPromise) {
-			return adtClientPromise;
-		}
-
-		adtClientPromise = (async () => {
-			const connection = await getSapConnectionConfig(context, workspaceFolder, { promptIfMissing: false });
-			if (!connection) {
-				client.outputChannel.appendLine(
-					`[remote-deps] ${workspaceFolder.name}: skipped ADT fetch wave because no SAP connection was found in settings, environment, or .env`,
-				);
-				return undefined;
-			}
-
-			return createAdtClient(connection, {
-				beforeRequest: () => scheduler.beforeRequest(),
-				onRequestStart: (event) => {
-					recordRemoteDependencyRequestStart(telemetry, event);
-				},
-				onRequestFinished: (event) => {
-					recordRemoteDependencyRequestFinished(telemetry, event);
-				},
-			});
-		})();
-
-		return adtClientPromise;
-	};
-
-	let waveError: unknown;
-	const fetched: string[] = [];
-	const failed: RemoteDependencyCandidate[] = [];
-	try {
-		if (fetchCandidates.length > 0) {
-			const total = fetchCandidates.length;
-			try {
-				await vscode.window.withProgress(
-					{
-						location: vscode.ProgressLocation.Notification,
-						title: `ABAP: resolving ${total} external dependenc${total === 1 ? "y" : "ies"}`,
-						cancellable: false,
-					},
-					async (progress) => {
-						let completed = 0;
-						const results = await Promise.all(
-							fetchCandidates.map((candidate) =>
-								scheduler.schedule(async () => {
-									try {
-										return await resolveRemoteDependencyCandidate(
-											workspaceFolder,
-											getAdtClient,
-											candidate,
-											candidateSourceUris.get(remoteDependencyCandidateKey(candidate)) ?? sourceUris,
-											batchContext,
-											telemetry,
-											retryNegativeCandidates,
-										);
-									} finally {
-										completed += 1;
-										recordRemoteDependencyCandidateCompleted(telemetry, completed);
-										progress.report({
-											message: `${completed}/${total}: ${candidate.name} (${candidate.kind})`,
-										});
-									}
-								}),
-							),
-						);
-						for (const result of results) {
-							if (result.fetchedName) {
-								fetched.push(result.fetchedName);
-							} else if (result.failed) {
-								failed.push(result.candidate);
-							}
-						}
-					},
-				);
-			} catch (error) {
-				if (!(error instanceof AdtRequestCancelledError)) {
-					throw error;
-				}
-				waveError = error;
-			}
-		}
-	} catch (error) {
-		waveError = error;
-		client.outputChannel.appendLine(
-			`[remote-deps] ${workspaceFolder.name}: dependency wave failed before completion: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-		);
-	} finally {
-		try {
-			await flushPendingDependencyCacheUnits(workspaceFolder, batchContext);
-		} catch (flushError) {
-			waveError ??= flushError;
-			client.outputChannel.appendLine(
-				`[remote-deps] ${workspaceFolder.name}: failed to flush dependency cache updates: ${flushError instanceof Error ? flushError.stack ?? flushError.message : String(flushError)}`,
-			);
-		}
-		updateParams.fetched = fetched;
-		updateParams.failed = failed;
-		finishRemoteDependencyWaveTelemetry(telemetry, updateParams, waveError);
-		await sendRemoteDependenciesUpdatedSafe(updateParams, "wave-finished");
-	}
-}
-
-async function sendRemoteDependenciesUpdatedSafe(
-	params: RemoteDependenciesUpdatedParams,
-	reason: string,
-): Promise<void> {
-	if (!client.isRunning()) {
-		return;
-	}
-	try {
-		await client.sendNotification("abapls/remoteDependenciesUpdated", params);
-	} catch (error) {
-		client.outputChannel.appendLine(
-			`[remote-deps] failed to notify server (${reason}): ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-		);
-	}
-}
-
-function createRemoteDependencyWaveTelemetry(
-	workspaceFolder: vscode.WorkspaceFolder,
-	totalCandidates: number,
-	configuredRequestsPerSecond: number,
-	configuredParallelism: number,
-): RemoteDependencyWaveTelemetry {
-	return {
-		workspaceLabel: workspaceFolder.name,
-		totalCandidates,
-		configuredRequestsPerSecond,
-		configuredParallelism,
-		startedAt: Date.now(),
-		completedCandidates: 0,
-		requestsStarted: 0,
-		requestsFinished: 0,
-		requestsFailed: 0,
-		directFetchCandidates: 0,
-		searchCandidates: 0,
-		requestKinds: new Map(),
-	};
-}
-
-function startRemoteDependencyWaveTelemetry(telemetry: RemoteDependencyWaveTelemetry): void {
-	client.outputChannel.appendLine(
-		`[remote-deps] ${telemetry.workspaceLabel}: wave start candidates=${telemetry.totalCandidates} configured_rps=${telemetry.configuredRequestsPerSecond} configured_parallelism=${telemetry.configuredParallelism}`,
-	);
-	telemetry.progressTimer = setInterval(() => {
-		client.outputChannel.appendLine(
-			`[remote-deps] ${telemetry.workspaceLabel}: wave progress candidates=${telemetry.completedCandidates}/${telemetry.totalCandidates} requests=${telemetry.requestsFinished}/${telemetry.requestsStarted} avg_req_per_s=${averageRemoteDependencyRequestsPerSecond(telemetry).toFixed(1)}`,
-		);
-	}, 5000);
-}
-
-function recordRemoteDependencyRequestStart(
-	telemetry: RemoteDependencyWaveTelemetry,
-	event: AdtRequestStartEvent,
-): void {
-	telemetry.requestsStarted += 1;
-	const kind = classifyRemoteDependencyRequest(event.pathOrUrl);
-	telemetry.requestKinds.set(kind, (telemetry.requestKinds.get(kind) ?? 0) + 1);
-}
-
-function recordRemoteDependencyRequestFinished(
-	telemetry: RemoteDependencyWaveTelemetry,
-	event: AdtRequestFinishedEvent,
-): void {
-	telemetry.requestsFinished += 1;
-	if (event.error) {
-		telemetry.requestsFailed += 1;
-	}
-}
-
-function recordRemoteDependencyCandidateCompleted(
-	telemetry: RemoteDependencyWaveTelemetry,
-	completedCandidates: number,
-): void {
-	telemetry.completedCandidates = completedCandidates;
-}
-
-function recordRemoteDependencyDirectFetchCandidate(
-	telemetry: RemoteDependencyWaveTelemetry,
-): void {
-	telemetry.directFetchCandidates += 1;
-}
-
-function recordRemoteDependencySearchCandidate(
-	telemetry: RemoteDependencyWaveTelemetry,
-): void {
-	telemetry.searchCandidates += 1;
-}
-
-function finishRemoteDependencyWaveTelemetry(
-	telemetry: RemoteDependencyWaveTelemetry,
-	updateParams: RemoteDependenciesUpdatedParams,
-	error: unknown,
-): void {
-	if (telemetry.progressTimer) {
-		clearInterval(telemetry.progressTimer);
-		telemetry.progressTimer = undefined;
-	}
-	const durationMs = Math.max(Date.now() - telemetry.startedAt, 1);
-	const kinds = [...telemetry.requestKinds.entries()]
-		.sort((left, right) => left[0].localeCompare(right[0]))
-		.map(([kind, count]) => `${kind}=${count}`)
-		.join(", ");
-	client.outputChannel.appendLine(
-		`[remote-deps] ${telemetry.workspaceLabel}: wave finished candidates=${telemetry.completedCandidates}/${telemetry.totalCandidates} fetched=${updateParams.fetched.length} failed=${updateParams.failed.length} direct=${telemetry.directFetchCandidates} searched=${telemetry.searchCandidates} requests=${telemetry.requestsFinished}/${telemetry.requestsStarted} request_failures=${telemetry.requestsFailed} duration=${formatRemoteDependencyDuration(durationMs)} avg_req_per_s=${averageRemoteDependencyRequestsPerSecond(telemetry).toFixed(1)}${kinds ? ` kinds=[${kinds}]` : ""}${error ? " status=error" : " status=ok"}`,
-	);
-}
-
-function classifyRemoteDependencyRequest(pathOrUrl: string): string {
-	const lower = pathOrUrl.toLowerCase();
-	if (lower.includes("/sap/bc/adt/runtime/systemmessages")) {
-		return "bootstrap";
-	}
-	if (lower.includes("/sap/bc/adt/repository/informationsystem/search")) {
-		return "quick-search";
-	}
-	if (lower.includes("/sap/bc/adt/repository/nodestructure")) {
-		return "node-structure";
-	}
-	if (lower.includes("/sap/bc/adt/messageclass/")) {
-		return "message-class";
-	}
-	if (lower.includes("/sap/bc/adt/ddic/") || lower.includes("/sap/bc/adt/elementinfo")) {
-		return "ddic";
-	}
-	if (lower.endsWith("/source/main")) {
-		return "source";
-	}
-	return "other";
-}
-
-function averageRemoteDependencyRequestsPerSecond(
-	telemetry: RemoteDependencyWaveTelemetry,
-): number {
-	const elapsedMs = Math.max(Date.now() - telemetry.startedAt, 1);
-	return (telemetry.requestsFinished * 1000) / elapsedMs;
-}
-
-function formatRemoteDependencyDuration(durationMs: number): string {
-	if (durationMs < 1000) {
-		return `${durationMs}ms`;
-	}
-	return `${(durationMs / 1000).toFixed(1)}s`;
-}
-
 async function maybePromptToCreateWorkspaceManifest(
 	document: vscode.TextDocument,
 ): Promise<void> {
@@ -1154,11 +723,7 @@ async function createLinkedProject(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
 ): Promise<void> {
-	const connection = await getSapConnectionConfig(context, workspaceFolder);
-	if (!connection) {
-		return;
-	}
-
+	void context;
 	await ensureWorkspaceManifest(workspaceFolder, {
 		dependencyMode: dependencyModeRemoteOnDemand,
 	});
@@ -1176,112 +741,19 @@ async function addEditableAdtObjectToWorkspace(
 	objectRef: AdtObjectRef,
 	target: EditableAdtObjectTarget,
 ): Promise<void> {
-	if (!isSupportedEditableWorkspaceObject(objectRef)) {
-		throw new Error(`Unsupported editable object type for ${objectRef.name} (${objectRef.type}).`);
-	}
-	if (objectRef.type.toUpperCase() === "FUGR/F" || isFunctionModuleObject(objectRef)) {
-		if (target.kind !== "directory") {
-			throw new Error(`Function group objects require a target directory: ${objectRef.name}.`);
-		}
-		await addEditableFunctionGroupToWorkspace(context, workspaceFolder, objectRef, target.directoryPath);
-		return;
-	}
-	if (!isCustomEditableObjectName(objectRef.name)) {
-		throw new Error(`Only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: ${objectRef.name}.`);
-	}
-
-	if (target.kind !== "file") {
-		throw new Error(`Editable object requires a target ABAP file: ${objectRef.name}.`);
-	}
-	const filePath = target.filePath;
-	await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-
-	let source: string;
-	let fileExisted = false;
-	if (await fileExists(filePath)) {
-		source = await fs.promises.readFile(filePath, "utf8");
-		fileExisted = true;
-	} else {
-		const connection = await getSapConnectionConfig(context, workspaceFolder);
-		if (!connection) {
-			return;
-		}
-
-		const adtClient = createAdtClient(connection);
-		source = await adtClient.fetchObjectSource(objectRef.uri);
-		await fs.promises.writeFile(filePath, source, "utf8");
-	}
-
-	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeRemoteOnDemand,
-	});
-	// Server only loads abapls.toml at workspace init or on this notification;
-	// without it, remote-on-demand resolution stays disabled until restart.
-	await notifyWorkspaceManifestUpdated(workspaceFolder);
-
-	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+	void context;
+	const result = await client.sendRequest<MaterializeEditableAdtObjectResult>(
+		"abapls/materializeEditableAdtObject",
+		{
+			workspaceUri: workspaceFolder.uri.toString(),
+			objectRef,
+			target,
+		},
+	);
+	const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(result.openedFileUri));
 	await vscode.window.showTextDocument(document, { preview: false });
-
-	if (!fileExisted) {
-		void vscode.window.showInformationMessage(
-			`Added ${objectRef.name} to ${workspaceRelativePath(workspaceFolder, filePath)}.`,
-		);
-	}
-}
-
-async function addEditableFunctionGroupToWorkspace(
-	context: vscode.ExtensionContext,
-	workspaceFolder: vscode.WorkspaceFolder,
-	objectRef: AdtObjectRef,
-	targetDirectoryPath: string,
-): Promise<void> {
-	const functionGroupRef = editableFunctionGroupObjectRef(objectRef);
-	if (!isCustomEditableObjectName(functionGroupRef.name)) {
-		throw new Error(
-			`Only customer objects with Z/Y prefixes or customer namespaces can be added to the workspace: ${functionGroupRef.name}.`,
-		);
-	}
-
-	const connection = await getSapConnectionConfig(context, workspaceFolder);
-	if (!connection) {
-		return;
-	}
-
-	const adtClient = createAdtClient(connection);
-	const groupChildren = await adtClient.listFunctionGroupChildren(functionGroupRef.name);
-	const layout = editableFunctionGroupLayout(targetDirectoryPath, functionGroupRef, groupChildren, objectRef);
-	await fs.promises.mkdir(layout.baseDir, { recursive: true });
-
-	const createdFiles: string[] = [];
-	if (!(await fileExists(layout.rootFilePath))) {
-		const source = await adtClient.fetchObjectSource(functionGroupRef.uri);
-		await fs.promises.writeFile(layout.rootFilePath, source, "utf8");
-		createdFiles.push(layout.rootFilePath);
-	}
-	for (const member of layout.members) {
-		if (await fileExists(member.filePath)) {
-			continue;
-		}
-
-		await fs.promises.mkdir(path.dirname(member.filePath), { recursive: true });
-		const source = await adtClient.fetchObjectSource(member.objectRef.uri);
-		await fs.promises.writeFile(member.filePath, source, "utf8");
-		createdFiles.push(member.filePath);
-	}
-
-	await ensureWorkspaceManifest(workspaceFolder, {
-		dependencyMode: dependencyModeRemoteOnDemand,
-	});
-	await notifyWorkspaceManifestUpdated(workspaceFolder);
-
-	const openPath = layout.openMember?.filePath ?? layout.rootFilePath;
-	const document = await vscode.workspace.openTextDocument(vscode.Uri.file(openPath));
-	await vscode.window.showTextDocument(document, { preview: false });
-
-	if (createdFiles.length > 0) {
-		void vscode.window.showInformationMessage(
-			`Added function group ${functionGroupRef.name} to ${workspaceRelativePath(workspaceFolder, layout.baseDir)}.`,
-		);
+	if (result.createdFileUris.length > 0 && result.message) {
+		void vscode.window.showInformationMessage(result.message);
 	}
 }
 
@@ -1373,324 +845,22 @@ function lastAdtUriSegment(uri: string): string {
 	return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
 }
 
-function dependencyArtifactPayload(
-	objectRef: AdtObjectRef,
-	artifact: { body: string; fileExtension: "abap" | "xml" },
-): DependencyArtifactPayload {
-	const manifestUnit = inferManifestUnitSpec(
-		objectRef,
-		artifact.fileExtension === "xml" ? "dependency.xml" : "dependency.abap",
-	);
-	return {
-		packageName: objectRef.packageName ?? "",
-		objectKind: manifestUnit.kind,
-		objectName: objectRef.name,
-		objectUri: objectRef.uri,
-		objectType: objectRef.type,
-		description: objectRef.description ?? "",
-		fileExtension: artifact.fileExtension,
-		sourceText: artifact.body,
-		fetchedAt: new Date().toISOString(),
-	};
+function isFunctionModuleObject(objectRef: AdtObjectRef): boolean {
+	return objectRef.type.toUpperCase() === "FUGR/FF" ||
+		objectRef.uri.toLowerCase().includes("/functions/groups/") &&
+		objectRef.uri.toLowerCase().includes("/fmodules/");
 }
 
-function workspaceConnectionCacheKey(workspaceFolder: vscode.WorkspaceFolder): string {
-	const baseUrl = vscode.workspace
-		.getConfiguration("abap-ls", workspaceFolder.uri)
-		.get<string>("sap.baseUrl", "")
-		.trim()
-		.toLowerCase();
-	return baseUrl || "default";
-}
-
-export function shouldRetryNegativeRemoteDependencyCandidates(
-	retryNegativeCandidates: boolean | undefined,
-): boolean {
-	return retryNegativeCandidates === true;
-}
-
-async function recordNegativeRemoteDependencyCandidate(
-	workspaceFolder: vscode.WorkspaceFolder,
-	batchContext: RemoteDependencyBatchContext,
-	candidate: RemoteDependencyCandidate,
-	reason: string,
-): Promise<void> {
-	void workspaceFolder;
-	void reason;
-	negativeRemoteDependencyCache.add(remoteDependencyCacheKey(workspaceFolder, candidate));
-	batchContext.negativeCandidates.push(candidate);
-}
-
-async function persistFetchedDependencyArtifact(
-	workspaceFolder: vscode.WorkspaceFolder,
-	batchContext: RemoteDependencyBatchContext,
-	objectRef: AdtObjectRef,
-	artifact: { body: string; fileExtension: "abap" | "xml" },
-	sourceUris: readonly string[],
-): Promise<void> {
-	void workspaceFolder;
-	void sourceUris;
-	batchContext.centralArtifacts.push(dependencyArtifactPayload(objectRef, artifact));
-}
-
-async function resolveRemoteDependencyCandidate(
-	workspaceFolder: vscode.WorkspaceFolder,
-	getAdtClient: () => Promise<AdtClient | undefined>,
-	candidate: RemoteDependencyCandidate,
-	sourceUris: readonly string[],
-	batchContext: RemoteDependencyBatchContext,
-	telemetry: RemoteDependencyWaveTelemetry,
-	retryNegativeCandidates: boolean,
-): Promise<RemoteDependencyResolutionResult> {
-	const cacheKey = remoteDependencyCacheKey(workspaceFolder, candidate);
-	if (retryNegativeCandidates) {
-		negativeRemoteDependencyCache.delete(cacheKey);
-	}
-
-	const existing = pendingRemoteDependencyFetches.get(cacheKey);
-	if (existing) {
-		const result = await existing;
-		if (result.fetchedName) {
-			await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-		}
-		return result;
-	}
-
-	const pending = (async (): Promise<RemoteDependencyResolutionResult> => {
-		try {
-			const dependencySourceMode = await dependencySourceModeForSources(
-				batchContext,
-				workspaceFolder,
-				sourceUris,
-			);
-			const localDependencyRoots = await localDependencyRootsForSources(
-				batchContext,
-				workspaceFolder,
-				sourceUris,
-			);
-			const persistLocalDependency = async (): Promise<RemoteDependencyResolutionResult | undefined> => {
-				const localDependency = await resolveLocalDependencyFromExport(
-					workspaceFolder,
-					candidate,
-					sourceUris,
-					localDependencyRoots,
-				);
-				if (!localDependency) {
-					return undefined;
-				}
-
-				await persistFetchedDependencyArtifact(
-					workspaceFolder,
-					batchContext,
-					localDependency.objectRef,
-					localDependency.artifact,
-					sourceUris,
-				);
-				await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-				return { candidate, fetchedName: localDependency.objectRef.name };
-			};
-
-			if (dependencySourceMode !== "adt-first") {
-				const localResult = await persistLocalDependency();
-				if (localResult) {
-					return localResult;
-				}
-			}
-
-			const hasNegativeCandidate = !retryNegativeCandidates
-				&& negativeRemoteDependencyCache.has(cacheKey);
-			if (hasNegativeCandidate) {
-				negativeRemoteDependencyCache.add(cacheKey);
-				const localResult = dependencySourceMode === "adt-first"
-					? await persistLocalDependency()
-					: undefined;
-				return localResult ?? { candidate, failed: true };
-			}
-
-			if (dependencySourceMode === "local-only") {
-				return { candidate };
-			}
-
-			const directObjectRefs = directDependencyObjectRefs(candidate.name, candidate.kind);
-			if (directObjectRefs.length > 0) {
-				recordRemoteDependencyDirectFetchCandidate(telemetry);
-				const directFetched = await fetchResolvedRemoteDependencyObjects(
-					workspaceFolder,
-					getAdtClient,
-					directObjectRefs,
-					sourceUris,
-					dependencySourceMode,
-					batchContext,
-					localDependencyRoots,
-				);
-				if (directFetched) {
-					await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-					return { candidate, fetchedName: candidate.name };
-				}
-				if (!shouldSearchAfterDirectFetchFailure(candidate)) {
-					await recordNegativeRemoteDependencyCandidate(
-						workspaceFolder,
-						batchContext,
-						candidate,
-						"fetch-failed",
-					);
-					return { candidate, failed: true };
-				}
-			}
-
-			recordRemoteDependencySearchCandidate(telemetry);
-			const adtClient = await getAdtClient();
-			if (!adtClient) {
-				const localResult = await persistLocalDependency();
-				return localResult ?? { candidate };
-			}
-
-			const objects = await adtClient.searchRepositoryObjects(candidate.name, 25);
-			const objectRefs = selectDependencyObjects(candidate.name, objects, candidate.kind);
-			if (objectRefs.length === 0) {
-				await recordNegativeRemoteDependencyCandidate(
-					workspaceFolder,
-					batchContext,
-					candidate,
-					"no-supported-match",
-				);
-				const localResult = dependencySourceMode === "adt-first"
-					? await persistLocalDependency()
-					: undefined;
-				return localResult ?? { candidate, failed: true };
-			}
-
-			const fetchedAny = await fetchResolvedRemoteDependencyObjects(
-				workspaceFolder,
-				getAdtClient,
-				objectRefs,
-				sourceUris,
-				dependencySourceMode,
-				batchContext,
-				localDependencyRoots,
-			);
-			if (!fetchedAny) {
-				await recordNegativeRemoteDependencyCandidate(
-					workspaceFolder,
-					batchContext,
-					candidate,
-					"fetch-failed",
-				);
-				return { candidate, failed: true };
-			}
-			await clearNegativeRemoteDependencyCandidate(workspaceFolder, candidate);
-			return { candidate, fetchedName: candidate.name };
-		} catch (error) {
-			if (error instanceof AdtRequestCancelledError) {
-				return { candidate };
-			}
-			await recordNegativeRemoteDependencyCandidate(
-				workspaceFolder,
-				batchContext,
-				candidate,
-				"fetch-failed",
-			);
-			console.warn(`ABAP LSP remote dependency lookup failed for ${candidate.name}:`, error);
-			return { candidate, failed: true };
-		} finally {
-			pendingRemoteDependencyFetches.delete(cacheKey);
-		}
-	})();
-
-	pendingRemoteDependencyFetches.set(cacheKey, pending);
-	return pending;
-}
-
-function shouldSearchAfterDirectFetchFailure(candidate: RemoteDependencyCandidate): boolean {
-	switch (candidate.kind.trim().toLowerCase()) {
-		case "static":
-		case "type":
-			return true;
-		default:
-			return false;
-	}
-}
-
-async function fetchResolvedRemoteDependencyObjects(
-	workspaceFolder: vscode.WorkspaceFolder,
-	getAdtClient: () => Promise<AdtClient | undefined>,
-	objectRefs: readonly AdtObjectRef[],
-	sourceUris: readonly string[],
-	dependencySourceMode: UnitDependencySourceMode,
-	batchContext: RemoteDependencyBatchContext,
-	localDependencyRoots: readonly string[],
-): Promise<boolean> {
-	let fetchedAny = false;
-	for (const objectRef of objectRefs) {
-		let fetched: AdtDependencyFetchResult;
-		if (dependencySourceMode === "adt-first") {
-			const adtClient = await getAdtClient();
-			if (!adtClient) {
-				return fetchedAny;
-			}
-
-			try {
-				fetched = await adtClient.fetchDependencyObject(objectRef);
-			} catch (error) {
-				const localExport = await findLocalDependencyExport(
-					workspaceFolder,
-					objectRef,
-					sourceUris,
-					localDependencyRoots,
-				);
-				if (!localExport) {
-					console.warn(`ABAP LSP remote dependency fetch failed for ${objectRef.name} [${objectRef.type}]`, error);
-					continue;
-				}
-				fetched = localExport;
-			}
-		} else {
-			const localExport = await findLocalDependencyExport(
-				workspaceFolder,
-				objectRef,
-				sourceUris,
-				localDependencyRoots,
-			);
-			if (localExport) {
-				fetched = localExport;
-			} else {
-				const adtClient = await getAdtClient();
-				if (!adtClient) {
-					return fetchedAny;
-				}
-				try {
-					fetched = await adtClient.fetchDependencyObject(objectRef);
-				} catch (error) {
-					console.warn(`ABAP LSP remote dependency fetch failed for ${objectRef.name} [${objectRef.type}]`, error);
-					continue;
-				}
-			}
-		}
-		await persistFetchedDependencyArtifact(
-			workspaceFolder,
-			batchContext,
-			objectRef,
-			fetched,
-			sourceUris,
-		);
-		for (const sharedDependency of fetched.sharedDependencies ?? []) {
-			await persistFetchedDependencyArtifact(
-				workspaceFolder,
-				batchContext,
-				sharedDependency.objectRef,
-				sharedDependency,
-				sourceUris,
-			);
-		}
-		fetchedAny = true;
-	}
-	return fetchedAny;
+function inferFunctionGroupUri(objectRef: AdtObjectRef): string | undefined {
+	const match = objectRef.uri.match(/^(.*\/functions\/groups\/[^/]+)(?:\/fmodules\/[^/]+)?$/i);
+	return match?.[1];
 }
 
 async function promptForRepositoryObject(
 	context: vscode.ExtensionContext,
 	workspaceFolder: vscode.WorkspaceFolder,
 ): Promise<AdtObjectRef | undefined> {
+	void context;
 	const query = await vscode.window.showInputBox({
 		prompt: "Search SAP repository objects",
 		placeHolder: "ZCL_*",
@@ -1700,19 +870,20 @@ async function promptForRepositoryObject(
 		return undefined;
 	}
 
-	const connection = await getSapConnectionConfig(context, workspaceFolder);
-	if (!connection) {
-		return undefined;
-	}
-
-	const adtClient = createAdtClient(connection);
-	const objects = await vscode.window.withProgress(
+	const result = await vscode.window.withProgress(
 		{
 			location: vscode.ProgressLocation.Notification,
 			title: `Searching SAP repository for ${query.trim()}`,
 		},
-		() => adtClient.searchRepositoryObjects(query.trim()),
+		() => client.sendRequest<SearchRepositoryObjectsResult>(
+			"abapls/searchRepositoryObjects",
+			{
+				workspaceUri: workspaceFolder.uri.toString(),
+				query: query.trim(),
+			},
+		),
 	);
+	const objects = result.objects;
 
 	if (objects.length === 0) {
 		vscode.window.showWarningMessage(`No ADT objects found for "${query.trim()}".`);
@@ -1892,508 +1063,6 @@ function isSupportedEditableWorkspaceObject(objectRef: AdtObjectRef): boolean {
 		normalizedType === "PROG/P";
 }
 
-function remoteDependencyCacheKey(
-	workspaceFolder: vscode.WorkspaceFolder,
-	candidate: RemoteDependencyCandidate,
-): string {
-	return `${workspaceFolder.uri.toString()}:${candidate.name.toLowerCase()}`;
-}
-
-function remoteDependencyCandidateKey(candidate: RemoteDependencyCandidate): string {
-	return `${candidate.kind.toLowerCase()}:${candidate.name.toLowerCase()}`;
-}
-
-function candidateSourceUriMap(
-	params: RemoteDependencyResolveParams,
-	fallbackSourceUris: readonly string[],
-): Map<string, string[]> {
-	const byCandidate = new Map<string, Set<string>>();
-	const sourceCandidates = params.sourceCandidates ?? {};
-
-	for (const [sourceUri, candidates] of Object.entries(sourceCandidates)) {
-		for (const candidate of dedupeRemoteDependencyCandidates(candidates)) {
-			const key = remoteDependencyCandidateKey(candidate);
-			let sourceUris = byCandidate.get(key);
-			if (!sourceUris) {
-				sourceUris = new Set<string>();
-				byCandidate.set(key, sourceUris);
-			}
-			sourceUris.add(sourceUri);
-		}
-	}
-
-	for (const candidate of dedupeRemoteDependencyCandidates(params.candidates)) {
-		const key = remoteDependencyCandidateKey(candidate);
-		if (!byCandidate.has(key)) {
-			byCandidate.set(key, new Set(fallbackSourceUris));
-		}
-	}
-
-	return new Map(
-		[...byCandidate.entries()].map(([key, sourceUris]) => [key, [...sourceUris]]),
-	);
-}
-
-function createRemoteDependencyBatchContext(): RemoteDependencyBatchContext {
-	return {
-		centralArtifacts: [],
-		negativeCandidates: [],
-		sourceUnitSidecarPathsByKey: new Map(),
-		localDependencyRootsByKey: new Map(),
-		dependencySourceModeByKey: new Map(),
-		localRootsBySidecarPath: new Map(),
-		dependencySourceModeBySidecarPath: new Map(),
-	};
-}
-
-function remoteDependencySourceKey(sourceUris: readonly string[]): string {
-	return sourceUris.map((uri) => uri.trim()).filter((uri) => uri.length > 0).join("\n");
-}
-
-async function flushPendingDependencyCacheUnits(
-	workspaceFolder: vscode.WorkspaceFolder,
-	batchContext: RemoteDependencyBatchContext,
-): Promise<void> {
-	if (
-		batchContext.centralArtifacts.length === 0 &&
-		batchContext.negativeCandidates.length === 0
-	) {
-		return;
-	}
-	await client.sendRequest("abapls/storeRemoteDependencyArtifacts", {
-		workspaceUri: workspaceFolder.uri.toString(),
-		connectionKey: workspaceConnectionCacheKey(workspaceFolder),
-		artifacts: batchContext.centralArtifacts,
-		negative: dedupeRemoteDependencyCandidates(batchContext.negativeCandidates),
-	} satisfies StoreRemoteDependencyArtifactsParams);
-	batchContext.centralArtifacts = [];
-	batchContext.negativeCandidates = [];
-}
-
-async function clearNegativeRemoteDependencyCandidate(
-	workspaceFolder: vscode.WorkspaceFolder,
-	candidate: RemoteDependencyCandidate,
-): Promise<void> {
-	void workspaceFolder;
-	negativeRemoteDependencyCache.delete(remoteDependencyCacheKey(workspaceFolder, candidate));
-}
-
-async function findLocalDependencyExport(
-	workspaceFolder: vscode.WorkspaceFolder,
-	objectRef: AdtObjectRef,
-	sourceUris: readonly string[],
-	localDependencyRoots: readonly string[],
-): Promise<AdtDependencyFetchResult | undefined> {
-	const extensions: Array<"abap" | "xml"> = isDdicDependencyObject(objectRef)
-		|| isMessageClassDependencyObject(objectRef)
-		? ["xml"]
-		: ["abap"];
-	return findLocalDependencyExportByName(
-		workspaceFolder,
-		sourceUris,
-		objectRef.name,
-		extensions,
-		objectRef.packageName,
-		localDependencyRoots,
-	);
-}
-
-async function findLocalDependencyExportByName(
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-	objectName: string,
-	extensions: Array<"abap" | "xml">,
-	packageName = "",
-	localDependencyRoots?: readonly string[],
-): Promise<AdtDependencyFetchResult | undefined> {
-	const roots = localDependencyRoots
-		? [...localDependencyRoots]
-		: await localDependencyRootsFromUnitSidecars(workspaceFolder, sourceUris);
-	if (roots.length === 0) {
-		return undefined;
-	}
-
-	const encodedName = encodeURIComponent(objectName.trim().toUpperCase());
-	const encodedPackageName = encodeURIComponent(packageName.trim().toUpperCase());
-	for (const extension of extensions) {
-		let bestMatch: { filePath: string; fileExtension: "abap" | "xml"; score: number } | undefined;
-		for (const root of roots) {
-			const match = await findLocalExportFileInIndexedRoot(
-				root,
-				encodedName,
-				encodedPackageName,
-				[extension],
-			);
-			if (!match) {
-				continue;
-			}
-			if (!bestMatch || match.score > bestMatch.score) {
-				bestMatch = match;
-			}
-		}
-
-		if (!bestMatch) {
-			continue;
-		}
-
-		try {
-			return {
-				body: await fs.promises.readFile(bestMatch.filePath, "utf8"),
-				fileExtension: bestMatch.fileExtension,
-				manifestKind: "",
-			};
-		} catch {
-			clearLocalExportIndexCache();
-		}
-	}
-
-	return undefined;
-}
-
-async function resolveLocalDependencyFromExport(
-	workspaceFolder: vscode.WorkspaceFolder,
-	candidate: RemoteDependencyCandidate,
-	sourceUris: readonly string[],
-	localDependencyRoots: readonly string[],
-): Promise<{ objectRef: AdtObjectRef; artifact: AdtDependencyFetchResult } | undefined> {
-	const extensions = localExportExtensionsForCandidateKind(candidate.kind);
-	if (extensions.length === 0) {
-		return undefined;
-	}
-
-	const artifact = await findLocalDependencyExportByName(
-		workspaceFolder,
-		sourceUris,
-		candidate.name,
-		extensions,
-		"",
-		localDependencyRoots,
-	);
-	if (!artifact) {
-		return undefined;
-	}
-
-	const objectRef = inferLocalExportObjectRef(artifact.body, candidate.name, candidate.kind)
-		?? parseLocalDdicExportObjectRef(artifact.body, candidate.name);
-	if (!objectRef) {
-		return undefined;
-	}
-
-	return { objectRef, artifact };
-}
-
-function localExportExtensionsForCandidateKind(
-	kind: string,
-): Array<"abap" | "xml"> {
-	switch (kind.trim().toLowerCase()) {
-		case "include":
-		case "function":
-		case "static":
-		case "report":
-			return ["abap"];
-		case "message-class":
-			return ["xml"];
-		case "symbol":
-		case "type":
-			return ["xml", "abap"];
-		default:
-			return [];
-	}
-}
-
-async function localDependencyRootsFromUnitSidecars(
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): Promise<string[]> {
-	const roots: string[] = [];
-	const seenRoots = new Set<string>();
-	for (const sidecarPath of await sourceUnitSidecarPaths(workspaceFolder, sourceUris)) {
-		for (const root of await readUnitSidecarLocalRoots(sidecarPath)) {
-			if (seenRoots.has(root)) {
-				continue;
-			}
-			seenRoots.add(root);
-			roots.push(root);
-		}
-	}
-	return roots;
-}
-
-async function dependencySourceModeForSources(
-	batchContext: RemoteDependencyBatchContext,
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): Promise<UnitDependencySourceMode> {
-	const key = remoteDependencySourceKey(sourceUris);
-	let pending = batchContext.dependencySourceModeByKey.get(key);
-	if (!pending) {
-		pending = (async () => {
-			let sawLocalFirst = false;
-			let sawAdtFirst = false;
-			for (const sidecarPath of await sourceUnitSidecarPathsCached(batchContext, workspaceFolder, sourceUris)) {
-				const mode = await readUnitSidecarDependencySourceModeCached(batchContext, sidecarPath);
-				if (mode === "local-only") {
-					return "local-only";
-				}
-				if (mode === "local-first") {
-					sawLocalFirst = true;
-					continue;
-				}
-				if (mode === "adt-first") {
-					sawAdtFirst = true;
-				}
-			}
-			if (sawLocalFirst) {
-				return "local-first";
-			}
-			return sawAdtFirst ? "adt-first" : "local-first";
-		})();
-		batchContext.dependencySourceModeByKey.set(key, pending);
-	}
-	return pending;
-}
-
-async function sourceUnitSidecarPaths(
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): Promise<string[]> {
-	const sidecarPaths: string[] = [];
-	const seenPaths = new Set<string>();
-	for (const sourceUri of sourceUris) {
-		let uri: vscode.Uri;
-		try {
-			uri = vscode.Uri.parse(sourceUri);
-		} catch {
-			continue;
-		}
-		if (uri.scheme !== "file" || !uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) {
-			continue;
-		}
-		const siblingSidecarPath = `${uri.fsPath}.abapls-unit.toml`;
-		if (!seenPaths.has(siblingSidecarPath) && await fileExists(siblingSidecarPath)) {
-			seenPaths.add(siblingSidecarPath);
-			sidecarPaths.push(siblingSidecarPath);
-		}
-		let currentDir = path.dirname(uri.fsPath);
-		while (currentDir.startsWith(workspaceFolder.uri.fsPath)) {
-			const sidecarPath = path.join(currentDir, "abapls-unit.toml");
-			if (!seenPaths.has(sidecarPath) && await fileExists(sidecarPath)) {
-				seenPaths.add(sidecarPath);
-				sidecarPaths.push(sidecarPath);
-			}
-			if (currentDir === workspaceFolder.uri.fsPath) {
-				break;
-			}
-			const parentDir = path.dirname(currentDir);
-			if (parentDir === currentDir) {
-				break;
-			}
-			currentDir = parentDir;
-		}
-	}
-	return sidecarPaths;
-}
-
-async function sourceUnitSidecarPathsCached(
-	batchContext: RemoteDependencyBatchContext,
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): Promise<string[]> {
-	const key = remoteDependencySourceKey(sourceUris);
-	let pending = batchContext.sourceUnitSidecarPathsByKey.get(key);
-	if (!pending) {
-		pending = sourceUnitSidecarPaths(workspaceFolder, sourceUris);
-		batchContext.sourceUnitSidecarPathsByKey.set(key, pending);
-	}
-	return pending;
-}
-
-async function readUnitSidecarLocalRoots(sidecarPath: string): Promise<string[]> {
-	let text: string;
-	try {
-		text = await fs.promises.readFile(sidecarPath, "utf8");
-	} catch {
-		return [];
-	}
-	return parseUnitSidecarLocalRoots(text, sidecarPath);
-}
-
-async function readUnitSidecarLocalRootsCached(
-	batchContext: RemoteDependencyBatchContext,
-	sidecarPath: string,
-): Promise<string[]> {
-	let pending = batchContext.localRootsBySidecarPath.get(sidecarPath);
-	if (!pending) {
-		pending = readUnitSidecarLocalRoots(sidecarPath);
-		batchContext.localRootsBySidecarPath.set(sidecarPath, pending);
-	}
-	return pending;
-}
-
-async function readUnitSidecarDependencySourceModeCached(
-	batchContext: RemoteDependencyBatchContext,
-	sidecarPath: string,
-): Promise<UnitDependencySourceMode | undefined> {
-	let pending = batchContext.dependencySourceModeBySidecarPath.get(sidecarPath);
-	if (!pending) {
-		pending = readUnitSidecarDependencySourceMode(sidecarPath);
-		batchContext.dependencySourceModeBySidecarPath.set(sidecarPath, pending);
-	}
-	return pending;
-}
-
-async function localDependencyRootsForSources(
-	batchContext: RemoteDependencyBatchContext,
-	workspaceFolder: vscode.WorkspaceFolder,
-	sourceUris: readonly string[],
-): Promise<string[]> {
-	const key = remoteDependencySourceKey(sourceUris);
-	let pending = batchContext.localDependencyRootsByKey.get(key);
-	if (!pending) {
-		pending = (async () => {
-			const roots: string[] = [];
-			const seenRoots = new Set<string>();
-			for (const sidecarPath of await sourceUnitSidecarPathsCached(batchContext, workspaceFolder, sourceUris)) {
-				for (const root of await readUnitSidecarLocalRootsCached(batchContext, sidecarPath)) {
-					if (seenRoots.has(root)) {
-						continue;
-					}
-					seenRoots.add(root);
-					roots.push(root);
-				}
-			}
-
-			for (const root of vscode.workspace
-				.getConfiguration("abap-ls", workspaceFolder.uri)
-				.get<string[]>("sap.localDependencyRoots", [])
-				.map((value) => value.trim())
-				.filter((value) => Boolean(value))) {
-				if (seenRoots.has(root)) {
-					continue;
-				}
-				seenRoots.add(root);
-				roots.push(root);
-			}
-
-			return roots;
-		})();
-		batchContext.localDependencyRootsByKey.set(key, pending);
-	}
-	return pending;
-}
-
-export function parseUnitSidecarLocalRoots(text: string, sidecarPath: string): string[] {
-	const localExportBlock = readUnitSidecarSection(text, "local_export");
-	if (localExportBlock === undefined) {
-		return [];
-	}
-
-	const rootsArray = localExportBlock.match(/^\s*roots\s*=\s*\[([\s\S]*?)\]/m)?.[1];
-	if (!rootsArray) {
-		return [];
-	}
-
-	const roots: string[] = [];
-	for (const stringMatch of rootsArray.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
-		const raw = stringMatch[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\").trim();
-		if (!raw) {
-			continue;
-		}
-		roots.push(path.isAbsolute(raw) ? raw : path.resolve(path.dirname(sidecarPath), raw));
-	}
-	return roots;
-}
-
-export function parseUnitSidecarDependencySourceMode(
-	text: string,
-): UnitDependencySourceMode | undefined {
-	const dependenciesBlock = readUnitSidecarSection(text, "dependencies");
-	if (dependenciesBlock === undefined) {
-		return undefined;
-	}
-
-	const match = dependenciesBlock.match(/^\s*source\s*=\s*(?:"([^"]+)"|'([^']+)')\s*$/m);
-	if (!match) {
-		return undefined;
-	}
-	const normalized = (match[1] ?? match[2] ?? "").trim().toLowerCase();
-	if (normalized === "local-only" || normalized === "adt-first") {
-		return normalized;
-	}
-	if (normalized === "local-first") {
-		return normalized;
-	}
-	return undefined;
-}
-
-function readUnitSidecarSection(text: string, sectionName: string): string | undefined {
-	const normalizedSectionName = sectionName.trim().toLowerCase();
-	const lines = text.split(/\r?\n/);
-	let currentSection: string | undefined;
-	const body: string[] = [];
-
-	for (const line of lines) {
-		const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/);
-		if (sectionMatch) {
-			if (currentSection === normalizedSectionName) {
-				break;
-			}
-			currentSection = sectionMatch[1].trim().toLowerCase();
-			continue;
-		}
-		if (currentSection === normalizedSectionName) {
-			body.push(line);
-		}
-	}
-
-	if (currentSection !== normalizedSectionName && body.length === 0) {
-		return undefined;
-	}
-	return body.join("\n");
-}
-
-async function readUnitSidecarDependencySourceMode(
-	sidecarPath: string,
-): Promise<UnitDependencySourceMode | undefined> {
-	let text: string;
-	try {
-		text = await fs.promises.readFile(sidecarPath, "utf8");
-	} catch {
-		return undefined;
-	}
-	return parseUnitSidecarDependencySourceMode(text);
-}
-
-function clearRemoteDependencyCaches(workspaceFolder: vscode.WorkspaceFolder): void {
-	const prefix = `${workspaceFolder.uri.toString()}:`;
-	for (const key of negativeRemoteDependencyCache) {
-		if (key.startsWith(prefix)) {
-			negativeRemoteDependencyCache.delete(key);
-		}
-	}
-	for (const key of pendingRemoteDependencyFetches.keys()) {
-		if (key.startsWith(prefix)) {
-			pendingRemoteDependencyFetches.delete(key);
-		}
-	}
-	remoteDependencySchedulers.delete(workspaceFolder.uri.toString());
-}
-
-function remoteDependencySchedulerForWorkspace(
-	workspaceFolder: vscode.WorkspaceFolder,
-	policy: RemoteDependencyFetchPolicy,
-): RemoteDependencyScheduler {
-	const key = workspaceFolder.uri.toString();
-	let scheduler = remoteDependencySchedulers.get(key);
-	if (!scheduler) {
-		scheduler = new RemoteDependencyScheduler();
-		remoteDependencySchedulers.set(key, scheduler);
-	}
-
-	scheduler.updatePolicy(policy);
-	return scheduler;
-}
-
 async function notifyWorkspaceManifestUpdated(
 	workspaceFolder: vscode.WorkspaceFolder,
 ): Promise<void> {
@@ -2415,18 +1084,3 @@ async function fileExists(filePath: string): Promise<boolean> {
 		return false;
 	}
 }
-
-// function getPythonCommand(): string {
-//   const config = workspace.getConfiguration("abap-ls");
-//   const configured = config.get<string>("pythonPath");
-
-//   if (configured && configured.trim()) {
-//     return configured.trim();
-//   }
-
-//   // Fallbacks if user didn't configure pythonPath
-//   if (process.platform === "win32") {
-//     return "python"; // or "py" depending on your setup
-//   }
-//   return "python3";
-// }
