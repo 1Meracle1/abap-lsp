@@ -997,13 +997,6 @@ pub fn well_known_external_structure_field_type(
     None
 }
 
-pub fn well_known_external_table_line_type(table_type_name: &str) -> Option<&'static str> {
-    if table_type_name.eq_ignore_ascii_case("lvc_t_fcat") {
-        return Some("lvc_s_fcat");
-    }
-    None
-}
-
 pub fn builtin_structure_field_type(
     structure_name: &str,
     field_name: &str,

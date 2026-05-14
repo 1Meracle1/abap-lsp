@@ -799,19 +799,6 @@ impl<'a> Collector<'a> {
         let Some(type_symbol_id) =
             self.lookup_symbol_in_scope_chain(scope, Namespace::Type, type_ref.base_name.as_ref())
         else {
-            if let Some(line_type) =
-                crate::builtins::well_known_external_table_line_type(type_ref.base_name.as_ref())
-            {
-                return (
-                    None,
-                    Some(FieldTypeRefData {
-                        namespace: Namespace::Type,
-                        is_ref: false,
-                        base_name: Arc::from(line_type),
-                        field_path: Vec::new(),
-                    }),
-                );
-            }
             return (structure, declared_type);
         };
         let type_symbol = self.symbol(type_symbol_id);

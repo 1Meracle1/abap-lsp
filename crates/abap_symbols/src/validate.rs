@@ -2109,6 +2109,55 @@ fn normalize_field_metadata(
     (structure, declared_type)
 }
 
+fn normalize_field_metadata_project<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    scope_indexes: &[ScopeIndex],
+    unit: &'a crate::UnitAnalysis,
+    scope: ScopeId,
+    mut structure: Option<StructureId>,
+    mut declared_type: Option<FieldTypeRefData>,
+) -> (
+    &'a crate::UnitAnalysis,
+    Option<StructureId>,
+    Option<FieldTypeRefData>,
+) {
+    let mut current_unit = unit;
+    for _ in 0..8 {
+        if structure.is_some() {
+            break;
+        }
+        let Some(type_ref) = declared_type.as_ref() else {
+            break;
+        };
+        if type_ref.namespace != Namespace::Type
+            || type_ref.is_ref
+            || !type_ref.field_path.is_empty()
+        {
+            break;
+        }
+        let Some(handle) = resolve_type_like_symbol_handle(
+            project,
+            lookup,
+            current_unit,
+            scope_indexes,
+            scope_for_unit(current_unit, scope),
+            type_ref,
+        ) else {
+            break;
+        };
+        let symbol_unit = &project.units[handle.unit.as_usize()];
+        let symbol = symbol_unit.symbol(handle.symbol);
+        if symbol.structure.is_none() && symbol.declared_type.is_none() {
+            break;
+        }
+        current_unit = symbol_unit;
+        structure = symbol.structure;
+        declared_type = symbol.declared_type.clone();
+    }
+    (current_unit, structure, declared_type)
+}
+
 fn count_form_section(parameters: &[FormParameterData], section: FormParameterSection) -> usize {
     parameters
         .iter()
@@ -3104,7 +3153,14 @@ fn validate_open_sql_fields(
             sql_ref.name.as_ref(),
         )
         .is_some()
-            || structure_has_proxy_include_fields(source_unit, structure_id)
+            || structure_has_unresolved_proxy_include_fields(
+                project,
+                lookup,
+                scope_indexes,
+                source_unit,
+                sql_ref.scope,
+                structure_id,
+            )
         {
             continue;
         }
@@ -3383,18 +3439,6 @@ fn field_looks_like_ddic_proxy_include(field: &crate::StructureFieldInfo) -> boo
             .eq_ignore_ascii_case(&derive_ddic_include_field_name(type_ref.base_name.as_ref()))
 }
 
-fn structure_has_proxy_include_fields(
-    current_unit: &crate::UnitAnalysis,
-    structure_id: StructureId,
-) -> bool {
-    current_unit
-        .semantic()
-        .decls()
-        .structure_field_infos(structure_id)
-        .iter()
-        .any(field_looks_like_ddic_proxy_include)
-}
-
 fn included_structure_for_proxy_field<'a>(
     project: &'a ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -3425,6 +3469,94 @@ fn included_structure_for_proxy_field<'a>(
         scope_indexes,
         lookup_scope,
         handle.symbol,
+    )
+}
+
+fn structure_has_unresolved_proxy_include_fields(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    scope_indexes: &[ScopeIndex],
+    current_unit: &crate::UnitAnalysis,
+    scope: ScopeId,
+    structure_id: StructureId,
+) -> bool {
+    fn inner(
+        project: &ProjectAnalysis,
+        lookup: &ValidationLookup<'_>,
+        scope_indexes: &[ScopeIndex],
+        current_unit: &crate::UnitAnalysis,
+        scope: ScopeId,
+        structure_id: StructureId,
+        seen: &mut HashSet<(u32, u32)>,
+    ) -> bool {
+        if !seen.insert((current_unit.unit_id.0, structure_id.0)) {
+            return false;
+        }
+        for field in current_unit
+            .semantic()
+            .decls()
+            .structure_field_infos(structure_id)
+        {
+            if !field_looks_like_ddic_proxy_include(&field) {
+                continue;
+            }
+            let Some(type_ref) = field.type_ref.as_ref() else {
+                continue;
+            };
+            let lookup_scope = if current_unit.scopes.get(scope.as_usize()).is_some() {
+                scope
+            } else {
+                current_unit.root_scope
+            };
+            let Some(handle) = resolve_type_like_symbol_handle(
+                project,
+                lookup,
+                current_unit,
+                scope_indexes,
+                lookup_scope,
+                type_ref,
+            ) else {
+                return true;
+            };
+            let resolved_unit = &project.units[handle.unit.as_usize()];
+            let Some((included_unit, included_structure)) = resolve_symbol_structure_project(
+                project,
+                lookup,
+                resolved_unit,
+                scope_indexes,
+                lookup_scope,
+                handle.symbol,
+            ) else {
+                continue;
+            };
+            let nested_scope = if included_unit.scopes.get(scope.as_usize()).is_some() {
+                scope
+            } else {
+                included_unit.root_scope
+            };
+            if inner(
+                project,
+                lookup,
+                scope_indexes,
+                included_unit,
+                nested_scope,
+                included_structure,
+                seen,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    inner(
+        project,
+        lookup,
+        scope_indexes,
+        current_unit,
+        scope,
+        structure_id,
+        &mut HashSet::new(),
     )
 }
 
@@ -3777,7 +3909,14 @@ fn loop_field_reference_matches_source_field<'a>(
                         reference.name.as_ref(),
                     )
                     .is_some()
-                        || structure_has_proxy_include_fields(structure_unit, structure_id)
+                        || structure_has_unresolved_proxy_include_fields(
+                            project,
+                            lookup,
+                            scope_indexes,
+                            structure_unit,
+                            context.scope,
+                            structure_id,
+                        )
                 });
                 source_matches
                     || context
@@ -3803,7 +3942,14 @@ fn loop_field_reference_matches_source_field<'a>(
                                 reference.name.as_ref(),
                             )
                             .is_some()
-                                || structure_has_proxy_include_fields(structure_unit, structure_id)
+                                || structure_has_unresolved_proxy_include_fields(
+                                    project,
+                                    lookup,
+                                    scope_indexes,
+                                    structure_unit,
+                                    context.scope,
+                                    structure_id,
+                                )
                         })
             }
     })
@@ -4718,7 +4864,6 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 continue;
             };
             let base_unit = &project.units[base_unit_idx];
-            let base_scope_index = &scope_indexes[base_unit_idx];
             let access_scope = scope_for_unit(base_unit, access.scope);
             let base_symbol = base_unit.symbol(base_symbol_id);
             let (has_leading_deref, field_path) = split_leading_deref(access);
@@ -5050,6 +5195,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             if has_leading_deref && field_path.is_empty() {
                 continue;
             }
+            let mut current_unit = base_unit;
             let mut structure_id = base_unit.symbol(base_symbol_id).structure;
             let mut declared_type = base_unit.symbol(base_symbol_id).declared_type.clone();
             let subject = if access.in_type_position {
@@ -5060,10 +5206,11 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             let mut qualifier = access.base_name.to_string();
             for step in &access.field_path {
                 if step.is_deref() {
+                    let current_scope = scope_for_unit(current_unit, access.scope);
                     let Some((next_structure_id, next_declared_type)) = dereference_field_metadata(
-                        base_unit,
-                        base_scope_index,
-                        access_scope,
+                        current_unit,
+                        &scope_indexes[current_unit.unit_id.as_usize()],
+                        current_scope,
                         structure_id,
                         declared_type,
                     ) else {
@@ -5075,9 +5222,11 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     continue;
                 }
 
-                (structure_id, declared_type) = normalize_field_metadata(
-                    base_unit,
-                    base_scope_index,
+                (current_unit, structure_id, declared_type) = normalize_field_metadata_project(
+                    project,
+                    &lookup,
+                    scope_indexes,
+                    current_unit,
                     access_scope,
                     structure_id,
                     declared_type,
@@ -5089,12 +5238,19 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     project,
                     &lookup,
                     scope_indexes,
-                    base_unit,
-                    access_scope,
+                    current_unit,
+                    scope_for_unit(current_unit, access.scope),
                     current_structure_id,
                     step.name.as_ref(),
                 ) else {
-                    if structure_has_proxy_include_fields(base_unit, current_structure_id) {
+                    if structure_has_unresolved_proxy_include_fields(
+                        project,
+                        &lookup,
+                        scope_indexes,
+                        current_unit,
+                        scope_for_unit(current_unit, access.scope),
+                        current_structure_id,
+                    ) {
                         break;
                     }
                     unit_diagnostics.push(Diagnostic {
@@ -5110,6 +5266,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
 
                 qualifier.push('-');
                 qualifier.push_str(field.name.as_ref());
+                current_unit = &project.units[field.owner_unit.as_usize()];
                 structure_id = match field.shape {
                     StructureFieldShape::Structured { structure } => Some(structure),
                     StructureFieldShape::Scalar => None,

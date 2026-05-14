@@ -22103,6 +22103,7 @@ ENDCLASS.
 CLASS lcl_app IMPLEMENTATION.
   METHOD display_alv.
     APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+    <fs_fcat>-fieldname1 = 'DOCNUM'.
     <fs_fcat>-
   ENDMETHOD.
 ENDCLASS.";
@@ -22148,6 +22149,9 @@ ENDCLASS.";
                 .collect::<Vec<_>>(),
             vec!["coltext", "fieldname"]
         );
+        assert!(snapshot.symbols.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("fieldname1")
+        }));
     }
 
     #[test]

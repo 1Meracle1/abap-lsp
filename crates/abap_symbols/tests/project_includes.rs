@@ -900,7 +900,13 @@ REPORT zmain.
 INCLUDE: ztop,
          zf01.
 "#;
-    let top_src = "DATA mt_fieldcat TYPE lvc_t_fcat.";
+    let top_src = r#"
+TYPES: BEGIN OF ty_fcat,
+         fieldname TYPE string,
+       END OF ty_fcat.
+TYPES tt_fcat TYPE STANDARD TABLE OF ty_fcat WITH EMPTY KEY.
+DATA mt_fieldcat TYPE tt_fcat.
+"#;
     let f01_src = r#"
 FORM display_alv.
   APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
@@ -942,7 +948,7 @@ ENDFORM.
         .as_ref()
         .expect("inline field-symbol declared type");
     assert_eq!(declared_type.namespace, Namespace::Type);
-    assert_eq!(declared_type.base_name.as_ref(), "lvc_s_fcat");
+    assert_eq!(declared_type.base_name.as_ref(), "ty_fcat");
 
     assert!(
         f01.value_flow_edges.iter().any(|edge| {
@@ -954,9 +960,9 @@ ENDFORM.
                 .target_type
                 .declared_type
                 .as_ref()
-                .is_some_and(|type_ref| type_ref.base_name.as_ref() == "lvc_s_fcat")
+                .is_some_and(|type_ref| type_ref.base_name.as_ref() == "ty_fcat")
         }),
-        "expected APPEND field-symbol binding to carry lvc_s_fcat, edges={:?}",
+        "expected APPEND field-symbol binding to carry ty_fcat, edges={:?}",
         f01.value_flow_edges
     );
 }

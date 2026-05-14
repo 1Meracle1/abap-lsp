@@ -40,6 +40,7 @@ use abap_lexer::tokenize;
 use abap_lsp::{
     RemoteDependencyCandidate, collect_remote_dependency_candidates, normalize_lsp_uri,
     replace_all_workspace_documents_with_local_exports_for_build_plan,
+    replace_all_workspace_documents_with_manifest_dependencies_for_build_plan,
 };
 use abap_parser::parse;
 use abap_symbols::{
@@ -3471,9 +3472,9 @@ fn load_all_files_lint_report(
 
     let store = DocumentStore::default();
     store.set_lint_policy(lint_workspace_policy(&workspace, show_suppressed));
-    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
+    let snapshots = replace_workspace_documents_for_cli(
         &store,
-        &workspace.root_path,
+        &workspace,
         &workspace.documents,
         SnapshotBuildPlan::SEMANTIC_DOSSIER,
         None,
@@ -3585,13 +3586,8 @@ fn load_call_graph_snapshot(
     }
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
-        &store,
-        &workspace.root_path,
-        &documents,
-        build_plan,
-        None,
-    );
+    let snapshots =
+        replace_workspace_documents_for_cli(&store, &workspace, &documents, build_plan, None);
     snapshots
         .get(snapshot_target_uri.as_str())
         .cloned()
@@ -3642,9 +3638,9 @@ fn load_project_analyze_snapshot(path: Option<&str>) -> Result<AnalyzeSnapshot, 
     }
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
+    let snapshots = replace_workspace_documents_for_cli(
         &store,
-        &workspace.root_path,
+        &workspace,
         &documents,
         SnapshotBuildPlan::SEMANTIC_DOSSIER,
         None,
@@ -3721,9 +3717,9 @@ fn load_project_lint_snapshot(
 
     let store = DocumentStore::default();
     store.set_lint_policy(lint_workspace_policy(&workspace, show_suppressed));
-    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
+    let snapshots = replace_workspace_documents_for_cli(
         &store,
-        &workspace.root_path,
+        &workspace,
         &documents,
         SnapshotBuildPlan::SEMANTIC_DOSSIER,
         None,
@@ -3752,6 +3748,24 @@ fn load_project_lint_snapshot(
         project_unit_count: Some(project_unit_count),
         dependency_unit_count: Some(dependency_unit_count),
     })
+}
+
+fn replace_workspace_documents_for_cli(
+    store: &DocumentStore,
+    workspace: &abap_cache::WorkspaceLoadResult,
+    documents: &[abap_cache::WorkspaceDocument],
+    build_plan: SnapshotBuildPlan,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    replace_all_workspace_documents_with_manifest_dependencies_for_build_plan(
+        store,
+        &workspace.root_path,
+        workspace.root_uri.as_ref(),
+        workspace.manifest.as_ref(),
+        documents,
+        build_plan,
+        progress,
+    )
 }
 
 fn lint_workspace_policy(
@@ -3865,9 +3879,9 @@ fn load_expand_snapshot_set(path: Option<&str>) -> Result<ExpandSnapshotSet, Str
     }
 
     let store = DocumentStore::default();
-    let snapshots = replace_all_workspace_documents_with_local_exports_for_build_plan(
+    let snapshots = replace_workspace_documents_for_cli(
         &store,
-        &workspace.root_path,
+        &workspace,
         &documents,
         SnapshotBuildPlan::EFFECTIVE_SOURCE,
         None,

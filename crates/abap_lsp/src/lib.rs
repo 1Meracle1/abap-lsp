@@ -1432,6 +1432,30 @@ pub fn replace_all_workspace_documents_with_local_exports_for_build_plan(
     )
 }
 
+pub fn replace_all_workspace_documents_with_manifest_dependencies_for_build_plan(
+    store: &DocumentStore,
+    root_path: &Path,
+    root_uri: &str,
+    manifest: Option<&WorkspaceManifest>,
+    documents: &[WorkspaceDocument],
+    build_plan: SnapshotBuildPlan,
+    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    let mut dependency_store = manifest
+        .filter(|manifest| manifest_supports_remote_resolution(Some(manifest)))
+        .and_then(|manifest| manifest.dependency_store.clone())
+        .and_then(|profile| DependencyStoreResolutionContext::from_profile(root_uri, profile));
+    replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
+        store,
+        root_path,
+        dependency_store.as_mut(),
+        None,
+        documents,
+        build_plan,
+        progress,
+    )
+}
+
 pub fn replace_all_workspace_documents_with_local_exports_for_build_plan_profiled(
     store: &DocumentStore,
     root_path: &Path,
@@ -1520,10 +1544,26 @@ struct DependencyStoreResolutionContext {
 impl DependencyStoreResolutionContext {
     fn new(workspace: &WorkspaceState) -> Option<Self> {
         let profile = workspace_dependency_profile(workspace)?;
-        let store = workspace_dependency_store(workspace)?;
+        Self::from_profile_with_override(
+            &workspace.root_uri,
+            profile,
+            workspace.dependency_store_path_override.as_deref(),
+        )
+    }
+
+    fn from_profile(workspace_uri: &str, profile: DependencyProfile) -> Option<Self> {
+        Self::from_profile_with_override(workspace_uri, profile, None)
+    }
+
+    fn from_profile_with_override(
+        workspace_uri: &str,
+        profile: DependencyProfile,
+        override_path: Option<&Path>,
+    ) -> Option<Self> {
+        let store = DependencyStore::from_override_path(override_path).ok()?;
         let reader = store.reader().ok();
         Some(Self {
-            workspace_uri: workspace.root_uri.clone(),
+            workspace_uri: workspace_uri.to_string(),
             profile,
             store,
             reader,
@@ -3072,10 +3112,12 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     let build_plan = workspace_committed_build_plan(workspace);
     let mut queried_candidates = HashSet::<String>::new();
     let mut scanned_candidate_sources = HashSet::<String>::new();
+    let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
 
     loop {
         metrics.iterations += 1;
+        let candidate_dependency_count = candidate_dependency_uris.len();
         let mut inputs = Vec::<DocumentInput>::new();
         let mut input_uris = HashSet::<String>::new();
 
@@ -3086,7 +3128,10 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                 continue;
             };
             let snapshot = Arc::clone(&snapshot);
-            if snapshot.is_dependency && !workspace.open_documents.contains_key(uri.as_ref()) {
+            if snapshot.is_dependency
+                && !workspace.open_documents.contains_key(uri.as_ref())
+                && !candidate_dependency_uris.contains(uri.as_ref())
+            {
                 metrics.dependency_snapshots_skipped += 1;
                 continue;
             }
@@ -3106,6 +3151,30 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                 workspace,
                 snapshot.as_ref(),
             ));
+            for reference in snapshot.symbols.semantic().refs().all() {
+                if !matches!(
+                    reference.kind,
+                    ReferenceKind::TypeRef | ReferenceKind::StaticTarget
+                ) {
+                    continue;
+                }
+                let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                    continue;
+                };
+                let Some(target_unit) = snapshot.project.units.get(handle.unit.as_usize()) else {
+                    continue;
+                };
+                if target_unit.uri == snapshot.uri {
+                    continue;
+                }
+                if workspace
+                    .cache
+                    .get(target_unit.uri.as_ref())
+                    .is_some_and(|target| target.is_dependency)
+                {
+                    candidate_dependency_uris.insert(Arc::clone(&target_unit.uri));
+                }
+            }
             metrics.candidate_collection_micros += candidate_start.elapsed().as_micros();
             metrics.candidate_count += candidates.len();
             for candidate in candidates {
@@ -3133,6 +3202,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                 while let Some((record, parent_uri)) = records.pop_front() {
                     let input = workspace_dependency_document_input(workspace, &record);
                     record_dependency_parent_uri(workspace, input.uri.as_ref(), &parent_uri);
+                    candidate_dependency_uris.insert(Arc::clone(&input.uri));
                     if workspace.cache.get(input.uri.as_ref()).is_some()
                         || !input_uris.insert(input.uri.to_string())
                     {
@@ -3174,6 +3244,9 @@ fn hydrate_workspace_dependency_documents_with_metrics(
         }
 
         if inputs.is_empty() {
+            if candidate_dependency_uris.len() > candidate_dependency_count {
+                continue;
+            }
             break;
         }
 
@@ -4061,7 +4134,10 @@ pub fn handle_remote_dependencies_updated(
 fn canonicalize_dependency_artifact_source(artifact: &DependencyArtifactPayload) -> String {
     let kind = artifact.object_kind.trim().to_ascii_lowercase();
     let file_extension = artifact.file_extension.trim().to_ascii_lowercase();
-    if file_extension == "xml" || kind == "message-class" || kind.starts_with("ddic-") {
+    let looks_xml = artifact.source_text.trim_start().starts_with('<');
+    if (file_extension == "xml" || looks_xml)
+        && (kind == "message-class" || kind.starts_with("ddic-"))
+    {
         ddic_xml_to_abap_source(
             artifact.object_name.as_str(),
             artifact.object_kind.as_str(),
@@ -4866,7 +4942,6 @@ fn collect_remote_dependency_refresh_candidates_for_unit(
         };
         if include {
             insert_remote_candidate(&mut deduped, candidate);
-            insert_remote_dependency_table_line_candidate(&mut deduped, reference);
         }
     }
     insert_message_class_dependency_candidates(&mut deduped, unit);
@@ -4892,29 +4967,6 @@ fn insert_remote_dependency_candidates_for_reference(
 ) {
     if let Some(candidate) = remote_dependency_candidate_for_reference(reference) {
         insert_remote_candidate(deduped, candidate);
-    }
-    insert_remote_dependency_table_line_candidate(deduped, reference);
-}
-
-fn insert_remote_dependency_table_line_candidate(
-    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
-    reference: &abap_symbols::ReferenceData,
-) {
-    if reference.kind != ReferenceKind::TypeRef {
-        return;
-    }
-    let Some(name) = abap_symbols::well_known_external_table_line_type(reference.name.as_ref())
-    else {
-        return;
-    };
-    if is_remote_lookup_candidate_after_local_resolution(name, "type") {
-        insert_remote_candidate(
-            deduped,
-            RemoteDependencyCandidate {
-                name: name.to_string(),
-                kind: "type".to_string(),
-            },
-        );
     }
 }
 
@@ -15252,7 +15304,7 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
-    fn remote_dependency_candidates_include_known_table_line_types() {
+    fn remote_dependency_candidates_do_not_invent_external_table_line_types() {
         let store = DocumentStore::default();
         let snapshot = store.publish(
             "file:///known_table_line_type.abap",
@@ -15271,7 +15323,591 @@ dependency_mode = "remote-on-demand"
                 .collect();
 
         assert!(names.contains("lvc_t_fcat"), "{names:#?}");
-        assert!(names.contains("lvc_s_fcat"), "{names:#?}");
+        assert!(!names.contains("lvc_s_fcat"), "{names:#?}");
+    }
+
+    #[test]
+    fn dependency_store_table_line_structure_reports_invalid_field() {
+        let workspace_path = temp_workspace_path("dependency_store_table_line_field");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let main_src = "\
+DATA mt_fieldcat TYPE lvc_t_fcat.
+APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+<fs_fcat>-fieldname = 'DOCNUM'.";
+        let changed_src = "\
+DATA mt_fieldcat TYPE lvc_t_fcat.
+APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+<fs_fcat>-fieldname1 = 'DOCNUM'.";
+        fs::write(workspace_path.join("main.abap"), main_src).expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = path_to_file_uri(&workspace_path.join("main.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        let table_type_source =
+            "TYPES lvc_t_fcat TYPE STANDARD TABLE OF lvc_s_fcat WITH EMPTY KEY.";
+        let structure_source = "\
+TYPES: BEGIN OF lvc_s_fcat,
+  fieldname TYPE string,
+  coltext TYPE string,
+END OF lvc_s_fcat.";
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "LVC_T_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/lvc_t_fcat".to_string(),
+                        object_type: "local-export".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: table_type_source.to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "LVC_S_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/lvc_s_fcat".to_string(),
+                        object_type: "local-export".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: structure_source.to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&main_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: changed_src.to_string(),
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace
+            .cache
+            .get(&normalize_lsp_uri(&main_uri))
+            .expect("main snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains("fieldname1")
+                    && diagnostic.message.contains("unknown field")
+            }),
+            "{diagnostics:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn resolved_proxy_include_reports_invalid_field() {
+        let workspace_path = temp_workspace_path("resolved_proxy_include_invalid_field");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let main_src = "\
+DATA mt_fieldcat TYPE lvc_t_fcat.
+APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+<fs_fcat>-fieldname = 'DOCNUM'.";
+        let changed_src = "\
+DATA mt_fieldcat TYPE lvc_t_fcat.
+APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+<fs_fcat>-alv_s_ = ''.";
+        fs::write(workspace_path.join("main.abap"), main_src).expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = path_to_file_uri(&workspace_path.join("main.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "LVC_T_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/lvc_t_fcat".to_string(),
+                        object_type: "local-export".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text:
+                            "TYPES lvc_t_fcat TYPE STANDARD TABLE OF lvc_s_fcat WITH EMPTY KEY."
+                                .to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "LVC_S_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/lvc_s_fcat".to_string(),
+                        object_type: "local-export".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+TYPES: BEGIN OF lvc_s_fcat,
+  alv_s_fcat TYPE alv_s_fcat,
+  convexit TYPE convexit,
+  fieldname TYPE string,
+END OF lvc_s_fcat."
+                            .to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "ALV_S_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/alv_s_fcat".to_string(),
+                        object_type: "local-export".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+TYPES: BEGIN OF alv_s_fcat,
+  coltext TYPE string,
+END OF alv_s_fcat."
+                            .to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-data-element".to_string(),
+                        object_name: "CONVEXIT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/dataelements/convexit".to_string(),
+                        object_type: "local-export".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "TYPES convexit TYPE string.".to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&main_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: changed_src.to_string(),
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        let snapshot = workspace
+            .cache
+            .get(&normalize_lsp_uri(&main_uri))
+            .expect("main snapshot");
+        let diagnostics = build_lsp_diagnostics_for_workspace(Some(workspace), snapshot.as_ref());
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains("alv_s_")
+                    && diagnostic.message.contains("unknown field")
+            }),
+            "{diagnostics:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn central_store_hydrates_table_line_structure_for_completion() {
+        let workspace_path = temp_workspace_path("central_store_table_line_completion");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        let main_src = "\
+DATA mt_fieldcat TYPE lvc_t_fcat.
+APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+<fs_fcat>-";
+        fs::write(workspace_path.join("main.abap"), main_src).expect("main");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let main_uri = path_to_file_uri(&workspace_path.join("main.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+
+        {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            let table_type_source =
+                "TYPES lvc_t_fcat TYPE STANDARD TABLE OF lvc_s_fcat WITH EMPTY KEY.";
+            let structure_source = "\
+TYPES: BEGIN OF lvc_s_fcat,
+  fieldname TYPE string,
+  coltext TYPE string,
+END OF lvc_s_fcat.";
+            let artifacts = vec![
+                StoredArtifactInput {
+                    package_name: "SAP".to_string(),
+                    object_kind: "ddic-table-type".to_string(),
+                    object_name: "LVC_T_FCAT".to_string(),
+                    object_uri: "/sap/bc/adt/ddic/tabletypes/lvc_t_fcat".to_string(),
+                    object_type: "TABL/TT".to_string(),
+                    description: String::new(),
+                    file_extension: "abap".to_string(),
+                    source_text: table_type_source.to_string(),
+                    fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    symbols: extract_stored_dependency_symbols(
+                        "/sap/bc/adt/ddic/tabletypes/lvc_t_fcat",
+                        table_type_source,
+                    ),
+                },
+                StoredArtifactInput {
+                    package_name: "SAP".to_string(),
+                    object_kind: "ddic-structure".to_string(),
+                    object_name: "LVC_S_FCAT".to_string(),
+                    object_uri: "/sap/bc/adt/ddic/structures/lvc_s_fcat".to_string(),
+                    object_type: "TABL/DT".to_string(),
+                    description: String::new(),
+                    file_extension: "abap".to_string(),
+                    source_text: structure_source.to_string(),
+                    fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                    symbols: extract_stored_dependency_symbols(
+                        "/sap/bc/adt/ddic/structures/lvc_s_fcat",
+                        structure_source,
+                    ),
+                },
+            ];
+            store
+                .put_artifacts(&profile, &artifacts)
+                .expect("store artifacts");
+        }
+
+        refresh_workspace(&mut state, &workspace_uri);
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        assert!(
+            workspace.cache.uris().into_iter().any(|uri| {
+                workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                    snapshot
+                        .object_name
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("lvc_s_fcat"))
+                })
+            }),
+            "transitive table line structure should be hydrated from the central store"
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&main_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 2,
+                        character: "<fs_fcat>-".len() as u32,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: Some(CompletionContext {
+                    trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                    trigger_character: Some("-".to_string()),
+                }),
+            },
+        )
+        .expect("completion");
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"fieldname"), "{labels:#?}");
+        assert!(labels.contains(&"coltext"), "{labels:#?}");
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn central_store_completion_uses_table_line_type_across_report_includes() {
+        let workspace_path = temp_workspace_path("central_store_include_table_line_completion");
+        let src_dir = workspace_path.join("src");
+        fs::create_dir_all(&src_dir).expect("src dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            src_dir.join("ZREP.abap"),
+            "\
+REPORT zrep.
+INCLUDE zrep_top.
+INCLUDE zrep_f01.",
+        )
+        .expect("root");
+        fs::write(
+            src_dir.join("zrep_top.abap"),
+            "\
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display_alv.
+  PRIVATE SECTION.
+    DATA mt_fieldcat TYPE lvc_t_fcat.
+ENDCLASS.",
+        )
+        .expect("top");
+        let f01_committed_src = "\
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display_alv.
+    APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+    <fs_fcat>-fieldname = 'DOCNUM'.
+    <fs_fcat>-coltext = 'Doc. Num.'.
+
+    APPEND INITIAL LINE TO mt_fieldcat ASSIGNING <fs_fcat>.
+  ENDMETHOD.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display_alv.
+    APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+    <fs_fcat>-fieldname = 'DOCNUM'.
+    <fs_fcat>-coltext = 'Doc. Num.'.
+    <fs_fcat>-
+
+    APPEND INITIAL LINE TO mt_fieldcat ASSIGNING <fs_fcat>.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(src_dir.join("zrep_f01.abap"), f01_committed_src).expect("f01");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let f01_uri = path_to_file_uri(&src_dir.join("zrep_f01.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        let table_type_source =
+            "TYPES lvc_t_fcat TYPE STANDARD TABLE OF lvc_s_fcat WITH EMPTY KEY.";
+        let structure_source = "\
+TYPES: BEGIN OF lvc_s_fcat,
+  fieldname TYPE string,
+  coltext TYPE string,
+END OF lvc_s_fcat.";
+
+        {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            store
+                .put_artifacts(
+                    &profile,
+                    &[StoredArtifactInput {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "LVC_T_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/lvc_t_fcat".to_string(),
+                        object_type: "TABL/TT".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: table_type_source.to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                        symbols: extract_stored_dependency_symbols(
+                            "/sap/bc/adt/ddic/tabletypes/lvc_t_fcat",
+                            table_type_source,
+                        ),
+                    }],
+                )
+                .expect("store table type");
+        }
+
+        refresh_workspace(&mut state, &workspace_uri);
+        {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            assert!(workspace.cache.uris().into_iter().any(|uri| {
+                workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                    snapshot
+                        .object_name
+                        .as_ref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("lvc_t_fcat"))
+                })
+            }));
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            store
+                .put_artifacts(
+                    &profile,
+                    &[StoredArtifactInput {
+                        package_name: "SAP".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "LVC_S_FCAT".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/lvc_s_fcat".to_string(),
+                        object_type: "TABL/DT".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: structure_source.to_string(),
+                        fetched_at: "2026-05-14T00:00:00Z".to_string(),
+                        symbols: extract_stored_dependency_symbols(
+                            "/sap/bc/adt/ddic/structures/lvc_s_fcat",
+                            structure_source,
+                        ),
+                    }],
+                )
+                .expect("store structure");
+        }
+        publish_changed_document_mut(
+            &mut state,
+            &DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: Uri::from_str(&f01_uri).expect("uri"),
+                    version: 2,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: f01_src.to_string(),
+                }],
+            },
+        )
+        .expect("changed snapshot");
+
+        let line = f01_src
+            .lines()
+            .position(|line| line.trim() == "<fs_fcat>-")
+            .expect("completion line") as u32;
+        let character = f01_src
+            .lines()
+            .nth(line as usize)
+            .expect("line text")
+            .find("<fs_fcat>-")
+            .expect("selector") as u32
+            + "<fs_fcat>-".len() as u32;
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&f01_uri).expect("uri"),
+                    },
+                    position: Position { line, character },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: Some(CompletionContext {
+                    trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                    trigger_character: Some("-".to_string()),
+                }),
+            },
+        )
+        .expect("completion");
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected array completion");
+        };
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"fieldname"), "{labels:#?}");
+        assert!(labels.contains(&"coltext"), "{labels:#?}");
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]

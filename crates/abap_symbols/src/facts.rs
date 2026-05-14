@@ -1403,22 +1403,6 @@ impl<'a> FactBuilder<'a> {
         {
             return None;
         }
-        if let Some(line_type) =
-            crate::builtins::well_known_external_table_line_type(declared_type.base_name.as_ref())
-        {
-            return Some(self.type_fact_from_declared_type(
-                site_unit_idx,
-                scope,
-                current_unit_idx,
-                FieldTypeRefData {
-                    namespace: Namespace::Type,
-                    is_ref: false,
-                    base_name: Arc::from(line_type),
-                    field_path: Vec::new(),
-                },
-                None,
-            ));
-        }
         let handle = self.resolve_type_symbol_handle(
             current_unit_idx,
             scope,
