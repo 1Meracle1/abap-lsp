@@ -916,14 +916,18 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
         if let Some(arg_list) = arg_list {
             if constructor_keyword.as_deref() == Some("new")
-                && let Some((type_name, _)) = self.ctx.constructor_type_ref(node)
+                && let Some(target) = self
+                    .ctx
+                    .constructor_type_ref(node)
+                    .map(|(type_name, _)| NamedArgumentTarget::Constructor { type_name })
+                    .or_else(|| self.constructor_target_from_target(value_target_base, scope))
             {
                 let tokens = self.ctx.syntax_token_nodes(arg_list);
                 if tokens.len() >= 2 {
                     self.collect_call_arguments_from_infos(
                         &tokens[1..tokens.len() - 1],
                         scope,
-                        NamedArgumentTarget::Constructor { type_name },
+                        target,
                         self.ctx.file().range(node),
                     );
                 }
@@ -976,6 +980,35 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 self.collect_structured_argument_values_from_children(arg_list, scope);
             }
         }
+    }
+
+    fn constructor_target_from_target(
+        &self,
+        target: Option<&FieldAccess>,
+        scope: ScopeId,
+    ) -> Option<NamedArgumentTarget> {
+        let target = target?;
+        if target.base_namespace != Namespace::Value || !target.field_path.is_empty() {
+            return None;
+        }
+        if let Some(symbol_id) = self.ctx.lookup_symbol_in_scope_chain(
+            scope,
+            Namespace::Value,
+            target.base_name.as_ref(),
+        ) && let Some(declared_type) = self.ctx.symbol_declared_type(symbol_id)
+            && declared_type.is_ref
+            && declared_type.namespace == Namespace::Type
+            && declared_type.field_path.is_empty()
+        {
+            return Some(NamedArgumentTarget::Constructor {
+                type_name: declared_type.base_name,
+            });
+        }
+        Some(NamedArgumentTarget::Method {
+            base_namespace: target.base_namespace,
+            base_name: Arc::clone(&target.base_name),
+            method_name: Arc::from("constructor"),
+        })
     }
 
     fn subtree_token_infos(&self, node: NodeId) -> Vec<super::SyntaxTokenInfo> {

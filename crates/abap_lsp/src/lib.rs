@@ -20182,6 +20182,75 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn hover_returns_constructor_parameter_metadata_for_new_shorthand_target() {
+        let state = ServerState::default();
+        let text = "\
+CLASS lcl_child DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING container_name TYPE string.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display.
+  PRIVATE SECTION.
+    DATA mo_cont TYPE REF TO lcl_child.
+ENDCLASS.
+
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display.
+    mo_cont = NEW #( container_name = 'CCONTAINER' ).
+  ENDMETHOD.
+ENDCLASS.
+";
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: Uri::from_str("file:///hover_new_shorthand.abap").expect("uri"),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let param_line = text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("container_name = 'CCONTAINER'"))
+            .expect("parameter line");
+        let param_col = param_line.1.find("container_name").expect("parameter col") as u32 + 1;
+        let param_hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str("file:///hover_new_shorthand.abap").expect("uri"),
+                    },
+                    position: Position {
+                        line: param_line.0 as u32,
+                        character: param_col,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("parameter hover");
+        let HoverContents::Markup(param_markup) = param_hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(param_markup.value.contains("`container_name`"));
+        assert!(param_markup.value.contains("Parameter"));
+        assert!(param_markup.value.contains("```abap\nTYPE string\n```"));
+    }
+
+    #[test]
     fn builtin_routine_named_parameters_produce_diagnostics_not_hover() {
         use lsp_types::SemanticTokenType;
 

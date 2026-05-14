@@ -7720,7 +7720,8 @@ fn resolve_method_target_from_context_with_scope_index<'a>(
         namespace,
         name,
         false,
-    )?;
+    )
+    .or_else(|| resolved_reference_symbol_in_scope(snapshot, scope, namespace, name))?;
     resolve_method_target_from_base_symbol_with_scope_index(
         snapshot,
         scope_index,
@@ -7729,6 +7730,31 @@ fn resolve_method_target_from_context_with_scope_index<'a>(
         unit,
         symbol_id,
     )
+}
+
+fn resolved_reference_symbol_in_scope<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    scope: ScopeId,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let handle = snapshot
+        .symbols
+        .references
+        .iter()
+        .find(|reference| {
+            reference.scope == scope
+                && reference.namespace == namespace
+                && reference.name.as_ref() == name.as_ref()
+        })
+        .and_then(|reference| match reference.resolution.as_ref()? {
+            Resolution::Symbol(handle) => Some(*handle),
+            _ => None,
+        })?;
+    Some((
+        &snapshot.project.units[handle.unit.as_usize()],
+        handle.symbol,
+    ))
 }
 
 fn resolve_event_target_member_from_context<'a>(
@@ -23099,6 +23125,86 @@ ENDCLASS.";
                 .markdown_lines
                 .iter()
                 .any(|line| line.contains("Variable"))
+        );
+    }
+
+    #[test]
+    fn new_shorthand_constructor_parameter_hover_uses_target_from_top_include() {
+        let store = DocumentStore::default();
+        let main_src = "INCLUDE top.\nINCLUDE f01.";
+        let child_src = "\
+CLASS zcl_child DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING container_name TYPE string.
+ENDCLASS.";
+        let top_src = "\
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display.
+  PRIVATE SECTION.
+    DATA mo_cont TYPE REF TO zcl_child.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display.
+    mo_cont = NEW #( container_name = 'CCONTAINER' ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///top.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("top")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///f01.abap"),
+                version: 1,
+                text: Arc::from(f01_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("f01")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zcl_child.abap"),
+                version: 1,
+                text: Arc::from(child_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zcl_child")),
+            },
+        ]);
+        let f01 = snapshot.get("file:///f01.abap").expect("f01 snapshot");
+        let offset = f01_src.find("container_name").expect("parameter") + 1;
+        let access = f01
+            .symbols
+            .named_arguments
+            .iter()
+            .find(|access| access.name.as_ref() == "container_name")
+            .expect("recorded constructor argument");
+        assert!(f01.has_named_argument_parameter(access));
+        let hovered = f01
+            .hovered_named_argument_at(offset)
+            .expect("constructor parameter hover");
+
+        assert_eq!(hovered.display_name.as_ref(), "container_name");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "Parameter")
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE string\n```")
         );
     }
 
