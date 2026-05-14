@@ -5,8 +5,8 @@ use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
     ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
     MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, Resolution,
-    RoutineControlRegionData, RoutineLoopKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData,
-    ValueFlowKind, ValueFlowTargetData,
+    RoutineControlRegionData, RoutineLoopKind, SymbolKind, TypeFactData, UnitAnalysis,
+    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::resolver::{ScopeIndex, build_scope_index};
@@ -68,20 +68,7 @@ fn apply_inferred_unit_facts(units: &mut [UnitAnalysis], inferred: Vec<InferredU
     let mut rerun = false;
     for (unit, facts) in units.iter_mut().zip(inferred) {
         unit.expression_facts = facts.expression_facts;
-        let mut value_flow_edges = facts.value_flow_edges;
-        value_flow_edges.extend(
-            unit.value_flow_edges
-                .iter()
-                .filter(|edge| {
-                    matches!(
-                        edge.kind,
-                        ValueFlowKind::FieldSymbolAssignment
-                            | ValueFlowKind::ConditionalFieldSymbolAssignment
-                    )
-                })
-                .cloned(),
-        );
-        unit.value_flow_edges = value_flow_edges;
+        unit.value_flow_edges = facts.value_flow_edges;
         for update in facts.symbol_type_facts {
             let symbol = &mut unit.symbols[update.symbol_id.as_usize()];
             if update.overwrite_existing {
@@ -235,6 +222,10 @@ impl<'a> FactBuilder<'a> {
             out.value_flow_edges
                 .extend(self.call_argument_flow_edges(unit_idx, call_site));
         }
+
+        let (field_symbol_edges, field_symbol_updates) = self.field_symbol_binding_facts(unit_idx);
+        out.value_flow_edges.extend(field_symbol_edges);
+        out.symbol_type_facts.extend(field_symbol_updates);
 
         out.symbol_type_facts
             .extend(self.loop_inline_target_type_facts(unit_idx));
@@ -669,6 +660,98 @@ impl<'a> FactBuilder<'a> {
         }
 
         out
+    }
+
+    fn field_symbol_binding_facts(
+        &self,
+        unit_idx: usize,
+    ) -> (Vec<ValueFlowEdgeData>, Vec<SymbolTypeFactUpdate>) {
+        let unit = &self.units[unit_idx];
+        let mut edges = Vec::new();
+        let mut updates = Vec::new();
+
+        for source_edge in unit.value_flow_edges.iter().filter(|edge| {
+            matches!(
+                edge.kind,
+                ValueFlowKind::FieldSymbolAssignment
+                    | ValueFlowKind::ConditionalFieldSymbolAssignment
+            )
+        }) {
+            let mut edge = source_edge.clone();
+            if let Some(fact) = self.field_symbol_binding_type_fact(unit_idx, source_edge)
+                && fact.is_known()
+            {
+                edge.source_type = fact.clone();
+                edge.target_type = fact.clone();
+                if let Some(symbol_id) = inline_field_symbol_target_symbol(unit, source_edge) {
+                    updates.push(SymbolTypeFactUpdate {
+                        symbol_id,
+                        type_fact: fact,
+                        overwrite_existing: true,
+                    });
+                }
+            } else {
+                edge.source_type = self.enrich_existing_type_fact(
+                    unit_idx,
+                    edge.scope,
+                    unit_idx,
+                    &edge.source_type,
+                );
+                edge.target_type = self.enrich_existing_type_fact(
+                    unit_idx,
+                    edge.scope,
+                    unit_idx,
+                    &edge.target_type,
+                );
+            }
+            edges.push(edge);
+        }
+
+        (edges, updates)
+    }
+
+    fn field_symbol_binding_type_fact(
+        &self,
+        unit_idx: usize,
+        edge: &ValueFlowEdgeData,
+    ) -> Option<TypeFactData> {
+        if let Some(fact) = self.enclosing_table_line_assignment_fact(unit_idx, edge) {
+            return Some(fact);
+        }
+        let target_fact =
+            self.enrich_existing_type_fact(unit_idx, edge.scope, unit_idx, &edge.target_type);
+        if target_fact.is_known() {
+            return Some(target_fact);
+        }
+        let source_fact =
+            self.enrich_existing_type_fact(unit_idx, edge.scope, unit_idx, &edge.source_type);
+        source_fact.is_known().then_some(source_fact)
+    }
+
+    fn enclosing_table_line_assignment_fact(
+        &self,
+        unit_idx: usize,
+        edge: &ValueFlowEdgeData,
+    ) -> Option<TypeFactData> {
+        let target_range = field_symbol_edge_target_range(edge)?;
+        self.units[unit_idx]
+            .assignment_sites
+            .iter()
+            .filter(|assignment| {
+                assignment.scope == edge.scope
+                    && assignment.assigns_table_line
+                    && assignment.range.start <= target_range.start
+                    && target_range.end <= assignment.range.end
+            })
+            .min_by_key(|assignment| assignment.range.end - assignment.range.start)
+            .and_then(|assignment| {
+                let access = assignment.lhs_target_access.as_ref()?;
+                self.type_fact_for_access(unit_idx, access)
+                    .table_line
+                    .as_deref()
+                    .filter(|fact| fact.is_known())
+                    .cloned()
+            })
     }
 
     fn assignment_target_type_fact(
@@ -1320,6 +1403,22 @@ impl<'a> FactBuilder<'a> {
         {
             return None;
         }
+        if let Some(line_type) =
+            crate::builtins::well_known_external_table_line_type(declared_type.base_name.as_ref())
+        {
+            return Some(self.type_fact_from_declared_type(
+                site_unit_idx,
+                scope,
+                current_unit_idx,
+                FieldTypeRefData {
+                    namespace: Namespace::Type,
+                    is_ref: false,
+                    base_name: Arc::from(line_type),
+                    field_path: Vec::new(),
+                },
+                None,
+            ));
+        }
         let handle = self.resolve_type_symbol_handle(
             current_unit_idx,
             scope,
@@ -1793,6 +1892,30 @@ fn field_access_range(access: &FieldAccess) -> std::ops::Range<usize> {
             .last()
             .map(|segment| segment.range.end)
             .unwrap_or(access.base_range.end)
+}
+
+fn field_symbol_edge_target_range(edge: &ValueFlowEdgeData) -> Option<&std::ops::Range<usize>> {
+    match &edge.target {
+        ValueFlowTargetData::FieldSymbol { range, .. } => Some(range),
+        _ => None,
+    }
+}
+
+fn inline_field_symbol_target_symbol(
+    unit: &UnitAnalysis,
+    edge: &ValueFlowEdgeData,
+) -> Option<SymbolId> {
+    let ValueFlowTargetData::FieldSymbol { range, name } = &edge.target else {
+        return None;
+    };
+    unit.symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::FieldSymbol
+                && symbol.decl_range == *range
+                && name.as_ref().map_or(true, |name| symbol.name == *name)
+        })
+        .map(|symbol| symbol.id)
 }
 
 fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
