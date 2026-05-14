@@ -20990,10 +20990,13 @@ CLASS lcl_demo DEFINITION.
 ENDCLASS.
 
 TYPES: stringtab TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+TYPES ty_fcat TYPE string.
+DATA mt_fieldcat TYPE STANDARD TABLE OF ty_fcat WITH EMPTY KEY.
 
 START-OF-SELECTION.
   DATA(lt_text) = VALUE stringtab( FOR n = 1 UNTIL n > 3 ( |{ n }| ) ).
   DATA(lo_demo) = NEW lcl_demo( ).
+  APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
 ";
         publish_open_document(
             &state,
@@ -21027,7 +21030,7 @@ START-OF-SELECTION.
             .iter()
             .filter(|hint| matches!(hint.kind, Some(InlayHintKind::TYPE)))
             .collect();
-        assert_eq!(type_hints.len(), 2, "{hints:?}");
+        assert_eq!(type_hints.len(), 3, "{hints:?}");
 
         assert_eq!(
             type_hints[0].position,
@@ -21072,6 +21075,24 @@ START-OF-SELECTION.
                 .value
                 .contains("```abap\nTYPE REF TO lcl_demo\n```")
         );
+
+        assert_eq!(
+            type_hints[2].position,
+            offset_to_position(
+                text,
+                text.find("<fs_fcat>").expect("field-symbol declaration") + "<fs_fcat>".len()
+            )
+            .expect("field-symbol position")
+        );
+        let InlayHintLabel::String(fs_fcat_label) = &type_hints[2].label else {
+            panic!("expected string label");
+        };
+        assert_eq!(fs_fcat_label, "ty_fcat");
+        let Some(InlayHintTooltip::MarkupContent(fs_fcat_tooltip)) = type_hints[2].tooltip.as_ref()
+        else {
+            panic!("expected markdown tooltip");
+        };
+        assert!(fs_fcat_tooltip.value.contains("```abap\nTYPE ty_fcat\n```"));
     }
 
     #[test]

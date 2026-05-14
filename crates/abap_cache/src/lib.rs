@@ -1238,17 +1238,19 @@ impl AnalysisSnapshot {
         let mut hints = Vec::new();
         let mut stack = vec![self.parse.file.root()];
         while let Some(node) = stack.pop() {
-            if self.parse.file.kind(node) == SyntaxKind::DataInlineDecl
-                && let Some(name_range) = self.parse.file.children(node).find_map(|child| {
-                    (self.parse.file.kind(child) == SyntaxKind::DataDeclName)
-                        .then(|| self.parse.file.range(child))
-                })
-            {
+            if let Some(symbol_kind) = match self.parse.file.kind(node) {
+                SyntaxKind::DataInlineDecl => Some(SymbolKind::Variable),
+                SyntaxKind::FieldSymbolInlineDecl => Some(SymbolKind::FieldSymbol),
+                _ => None,
+            } && let Some(name_range) = self.parse.file.children(node).find_map(|child| {
+                (self.parse.file.kind(child) == SyntaxKind::DataDeclName)
+                    .then(|| self.parse.file.range(child))
+            }) {
                 let position = name_range.end;
                 if range.start <= position
                     && position < range.end
                     && let Some(symbol) = self.symbols.symbols.iter().find(|symbol| {
-                        symbol.kind == SymbolKind::Variable && symbol.decl_range == name_range
+                        symbol.kind == symbol_kind && symbol.decl_range == name_range
                     })
                     && let Some(type_presentation) =
                         symbol_inlay_type_presentation(Some(self), symbol)
