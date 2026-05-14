@@ -3092,6 +3092,15 @@ impl AnalysisSnapshot {
     ) -> Option<BareIdentifierCompletionContext> {
         let range = statement_query_range(&self.parse, offset)?;
         let (token_start, token_end) = token_window_for_range(&self.parse, &range)?;
+        if let Some((replace_range, prefix)) =
+            partial_field_symbol_prefix(self.text.as_ref(), range.start, offset)
+        {
+            return Some(BareIdentifierCompletionContext {
+                replace_range,
+                prefix,
+                in_type_position: false,
+            });
+        }
         let prefix_idx = prefix_token_at_offset(&self.parse, token_start, token_end, offset)?;
         let token = &self.parse.tokens[prefix_idx];
         if previous_significant_token(&self.parse, token_start, prefix_idx).is_some_and(
@@ -10541,6 +10550,45 @@ fn prefix_token_at_offset(
         let token = &parse.tokens[idx];
         token.kind.as_str() == "Ident" && token.range.start <= offset && offset <= token.range.end
     })
+}
+
+fn partial_field_symbol_prefix(
+    text: &str,
+    range_start: usize,
+    offset: usize,
+) -> Option<(Range<usize>, Arc<str>)> {
+    let prefix_text = text.get(range_start..offset)?;
+    let mut start = None;
+    for (idx, ch) in prefix_text.char_indices().rev() {
+        if ch == '<' {
+            start = Some(range_start + idx);
+            break;
+        }
+        if !field_symbol_name_char(ch) {
+            return None;
+        }
+    }
+    let start = start?;
+    let prefix = text.get(start..offset)?;
+    let body = &prefix[1..];
+    if body.is_empty() && !text[range_start..start].trim().is_empty() {
+        return None;
+    }
+    if body.chars().next().is_none_or(field_symbol_name_start_char)
+        && body.chars().all(field_symbol_name_char)
+    {
+        Some((start..offset, Arc::<str>::from(prefix.to_ascii_lowercase())))
+    } else {
+        None
+    }
+}
+
+fn field_symbol_name_start_char(ch: char) -> bool {
+    matches!(ch, '_' | '/') || ch.is_ascii_alphabetic()
+}
+
+fn field_symbol_name_char(ch: char) -> bool {
+    field_symbol_name_start_char(ch) || ch.is_ascii_digit()
 }
 
 fn first_token_starting_at_or_after(
@@ -20055,6 +20103,50 @@ SORT lt_obj BY objid.
                 && sort_names.contains(&"lt_loc"),
             "expected global table variables in completion: {sort_names:?}"
         );
+    }
+
+    #[test]
+    fn completion_returns_field_symbol_for_unclosed_angle_prefix() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_rows TYPE STANDARD TABLE OF i.
+APPEND INITIAL LINE TO lt_rows ASSIGNING FIELD-SYMBOL(<fs_row>).
+<fs";
+        let snapshot = store.publish("file:///field_symbol_completion.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("field symbol completion");
+        assert_eq!(&src[completion.replace_range.clone()], "<fs");
+        assert!(completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Symbol(item)
+                    if item.kind == SymbolKind::FieldSymbol && item.name.as_ref() == "<fs_row>"
+            )
+        }));
+    }
+
+    #[test]
+    fn completion_returns_field_symbol_after_lone_angle_at_statement_start() {
+        let store = DocumentStore::default();
+        let src = "\
+DATA lt_rows TYPE STANDARD TABLE OF i.
+APPEND INITIAL LINE TO lt_rows ASSIGNING FIELD-SYMBOL(<fs_row>).
+<";
+        let snapshot = store.publish("file:///field_symbol_angle_completion.abap", 1, src);
+
+        let completion = snapshot
+            .completion_at(src.len())
+            .expect("field symbol completion");
+        assert_eq!(&src[completion.replace_range.clone()], "<");
+        assert!(completion.items.iter().any(|item| {
+            matches!(
+                item,
+                crate::CompletionItem::Symbol(item)
+                    if item.kind == SymbolKind::FieldSymbol && item.name.as_ref() == "<fs_row>"
+            )
+        }));
     }
 
     #[test]

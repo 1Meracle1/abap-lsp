@@ -7744,6 +7744,7 @@ pub fn initialize_result(config: &ServerConfig) -> InitializeResult {
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             completion_provider: Some(CompletionOptions {
                 trigger_characters: Some(vec![
+                    "<".to_string(),
                     "-".to_string(),
                     ">".to_string(),
                     "~".to_string(),
@@ -8582,14 +8583,14 @@ check_variant = "DEFAULT""#,
 
         assert!(result.capabilities.text_document_sync.is_some());
         assert!(result.capabilities.semantic_tokens_provider.is_some());
-        assert!(
-            result
-                .capabilities
-                .completion_provider
-                .as_ref()
-                .and_then(|completion| completion.trigger_characters.as_ref())
-                .is_some_and(|triggers| triggers.iter().any(|trigger| trigger == "("))
-        );
+        let triggers = result
+            .capabilities
+            .completion_provider
+            .as_ref()
+            .and_then(|completion| completion.trigger_characters.as_ref())
+            .expect("completion triggers");
+        assert!(triggers.iter().any(|trigger| trigger == "("));
+        assert!(triggers.iter().any(|trigger| trigger == "<"));
         assert!(matches!(
             result.capabilities.definition_provider,
             Some(lsp_types::OneOf::Left(true))
