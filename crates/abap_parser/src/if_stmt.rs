@@ -72,10 +72,52 @@ fn parse_body_until(
             break;
         }
         let (n, next) = crate::parse_file_level_item(b, source, tokens, idx, errors);
+        if next >= tokens.len()
+            && let Some(boundary) = first_if_stop_boundary_between(
+                source,
+                tokens,
+                idx + 1,
+                next,
+                stop_at_elseif,
+                stop_at_else,
+                stop_at_endif,
+            )
+        {
+            idx = boundary;
+            break;
+        }
         nodes.push(n);
         idx = ensure_forward_progress(tokens, idx, next);
     }
     (nodes, idx)
+}
+
+fn first_if_stop_boundary_between(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    stop_at_elseif: bool,
+    stop_at_else: bool,
+    stop_at_endif: bool,
+) -> Option<usize> {
+    let mut idx = start;
+    let end = end.min(tokens.len());
+    while idx < end {
+        if let Some(boundary) = scan_if_boundary(source, tokens, idx) {
+            let stop = match boundary {
+                IfScan::Elseif => stop_at_elseif,
+                IfScan::Else => stop_at_else,
+                IfScan::Endif => stop_at_endif,
+            };
+            let boundary_idx = skip_trivia(tokens, idx);
+            if stop && boundary_idx < end {
+                return Some(boundary_idx);
+            }
+        }
+        idx += 1;
+    }
+    None
 }
 
 /// If `tokens[idx]` starts `IF cond .`, builds an [`IfStmt`] through `ENDIF .`.

@@ -20229,6 +20229,46 @@ ENDCLASS.";
     }
 
     #[test]
+    fn completion_returns_method_parameter_after_incomplete_block_before_endmethod() {
+        let store = DocumentStore::default();
+        for (uri, incomplete_stmt) in [
+            ("file:///case_param_completion.abap", "    CASE iv"),
+            ("file:///if_param_completion.abap", "    IF iv"),
+        ] {
+            let src = format!(
+                "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS status_from_rep_evt_status
+      IMPORTING iv_status_rep_evt TYPE i
+      RETURNING VALUE(rv_status) TYPE string.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD status_from_rep_evt_status.
+    CASE iv_status_rep_evt.
+      WHEN 0.
+        rv_status = ''.
+    ENDCASE.
+{incomplete_stmt}
+  ENDMETHOD.
+ENDCLASS."
+            );
+            let snapshot = store.publish(uri, 1, &src);
+            let completion_offset = src.rfind(" iv").expect("completion prefix") + " iv".len();
+
+            let completion = snapshot
+                .completion_at(completion_offset)
+                .expect("method parameter completion");
+
+            assert!(completion.items.iter().any(|item| {
+                matches!(item, crate::CompletionItem::NamedArgument(item) if item.name.as_ref() == "iv_status_rep_evt")
+                    || matches!(item, crate::CompletionItem::Symbol(item) if item.name.as_ref() == "iv_status_rep_evt")
+            }));
+        }
+    }
+
+    #[test]
     fn completion_returns_function_module_call_templates_before_following_statement() {
         let store = DocumentStore::default();
         let dep_src = "\

@@ -130,6 +130,30 @@ pub(crate) fn scan_boundary_keywords<'a>(
     Some(Boundary::Eof)
 }
 
+pub(crate) fn first_boundary_keyword_between(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end: usize,
+    keywords: &[&str],
+) -> Option<usize> {
+    let mut idx = start;
+    let end = end.min(tokens.len());
+    while idx < end {
+        if matches!(
+            scan_boundary_keywords(source, tokens, idx, keywords),
+            Some(Boundary::Keyword(_))
+        ) {
+            let boundary = skip_trivia(tokens, idx);
+            if boundary < end {
+                return Some(boundary);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
 pub(crate) fn recover_skip_after_keyword(
     source: &str,
     tokens: &[Token],
@@ -223,6 +247,13 @@ pub(crate) fn parse_body_until_keywords(
             break;
         }
         let (node, next) = crate::parse_file_level_item(b, source, tokens, idx, errors);
+        if next >= tokens.len()
+            && let Some(boundary) =
+                first_boundary_keyword_between(source, tokens, idx + 1, next, stop_keywords)
+        {
+            idx = boundary;
+            break;
+        }
         nodes.push(node);
         idx = ensure_forward_progress(tokens, idx, next);
     }
