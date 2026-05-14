@@ -5,8 +5,8 @@ use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
     ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
     MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, Resolution,
-    RoutineControlRegionData, RoutineLoopKind, SymbolKind, TypeFactData, UnitAnalysis,
-    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    RoutineControlRegionData, RoutineLoopKind, RoutineSiteKind, SymbolKind, TypeFactData,
+    UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
 use crate::resolver::{ScopeIndex, build_scope_index};
@@ -718,6 +718,9 @@ impl<'a> FactBuilder<'a> {
         if let Some(fact) = self.enclosing_table_line_assignment_fact(unit_idx, edge) {
             return Some(fact);
         }
+        if let Some(fact) = self.read_table_source_line_fact(unit_idx, edge) {
+            return Some(fact);
+        }
         let target_fact =
             self.enrich_existing_type_fact(unit_idx, edge.scope, unit_idx, &edge.target_type);
         if target_fact.is_known() {
@@ -726,6 +729,64 @@ impl<'a> FactBuilder<'a> {
         let source_fact =
             self.enrich_existing_type_fact(unit_idx, edge.scope, unit_idx, &edge.source_type);
         source_fact.is_known().then_some(source_fact)
+    }
+
+    fn read_table_source_line_fact(
+        &self,
+        unit_idx: usize,
+        edge: &ValueFlowEdgeData,
+    ) -> Option<TypeFactData> {
+        let unit = &self.units[unit_idx];
+        if !unit.routine_sites.iter().any(|site| {
+            site.kind == RoutineSiteKind::ReadTable
+                && site.scope == edge.scope
+                && site.range == edge.source_range
+        }) {
+            return None;
+        }
+        self.table_line_fact_for_range(unit_idx, edge.scope, &edge.source_range)
+    }
+
+    fn table_line_fact_for_range(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        range: &std::ops::Range<usize>,
+    ) -> Option<TypeFactData> {
+        let unit = &self.units[unit_idx];
+        let accesses = unit
+            .field_accesses
+            .iter()
+            .filter(|access| access.scope == scope && !access.in_type_position)
+            .filter(|access| field_access_range(access) == *range)
+            .collect::<Vec<_>>();
+        if accesses.len() == 1 {
+            return self
+                .type_fact_for_access(unit_idx, accesses[0])
+                .table_line
+                .map(|fact| *fact);
+        }
+
+        let refs = unit
+            .references
+            .iter()
+            .filter(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.scope == scope
+                    && reference.range == *range
+            })
+            .collect::<Vec<_>>();
+        if refs.len() != 1 {
+            return None;
+        }
+        let Some(Resolution::Symbol(handle)) = refs[0].resolution else {
+            return None;
+        };
+        let symbol_unit_idx = self.unit_index(handle.unit)?;
+        let symbol_scope = self.units[symbol_unit_idx].symbol(handle.symbol).scope;
+        self.symbol_type_fact_for_site_with_scope(unit_idx, symbol_scope, handle)
+            .table_line
+            .map(|fact| *fact)
     }
 
     fn enclosing_table_line_assignment_fact(
@@ -1230,6 +1291,15 @@ impl<'a> FactBuilder<'a> {
     }
 
     fn symbol_type_fact_for_site(
+        &self,
+        site_unit_idx: usize,
+        scope: ScopeId,
+        handle: SymbolHandle,
+    ) -> TypeFactData {
+        self.symbol_type_fact_for_site_with_scope(site_unit_idx, scope, handle)
+    }
+
+    fn symbol_type_fact_for_site_with_scope(
         &self,
         site_unit_idx: usize,
         scope: ScopeId,

@@ -968,6 +968,84 @@ ENDFORM.
 }
 
 #[test]
+fn infers_read_table_inline_field_symbol_type_from_class_table_declared_in_prior_include() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+"#;
+    let top_src = r#"
+CLASS lcl_app DEFINITION.
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_row,
+             fieldname TYPE string,
+           END OF ty_row.
+    TYPES tt_row TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+    DATA mt_rows TYPE tt_row.
+    METHODS run.
+ENDCLASS.
+"#;
+    let f01_src = r#"
+CLASS lcl_app IMPLEMENTATION.
+  METHOD run.
+    READ TABLE mt_rows WITH KEY fieldname = 'DOCNUM' ASSIGNING FIELD-SYMBOL(<row>).
+    <row>-fieldname = 'DOCNUM'.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let f01 = project.unit_by_uri("zf01.abap").expect("class include");
+    let row = f01
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::FieldSymbol && symbol.name.as_ref() == "<row>")
+        .expect("inline field-symbol");
+    let declared_type = row
+        .declared_type
+        .as_ref()
+        .expect("inline field-symbol declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_row");
+
+    assert!(
+        f01.value_flow_edges.iter().any(|edge| {
+            matches!(
+                &edge.target,
+                abap_symbols::ValueFlowTargetData::FieldSymbol { name: Some(name), .. }
+                    if name.as_ref() == "<row>"
+            ) && edge
+                .target_type
+                .declared_type
+                .as_ref()
+                .is_some_and(|type_ref| type_ref.base_name.as_ref() == "ty_row")
+        }),
+        "expected READ TABLE field-symbol binding to carry ty_row, edges={:?}",
+        f01.value_flow_edges
+    );
+}
+
+#[test]
 fn infers_loop_inline_target_type_from_select_options_declared_in_prior_include() {
     let root_src = r#"
 REPORT zmain.
