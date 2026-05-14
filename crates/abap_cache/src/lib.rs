@@ -5861,6 +5861,19 @@ fn class_is_or_inherits_from(
     }
 }
 
+fn visible_class_handle(
+    snapshot: &AnalysisSnapshot,
+    unit: &UnitAnalysis,
+    class_symbol: SymbolId,
+) -> (UnitId, SymbolId) {
+    let class_name = &unit.symbol(class_symbol).name;
+    snapshot
+        .project
+        .visible_type_owner_handle(unit.unit_id, class_name)
+        .map(|handle| (handle.unit, handle.symbol))
+        .unwrap_or((unit.unit_id, class_symbol))
+}
+
 fn lookup_scope_chain(
     unit: &UnitAnalysis,
     scope_index: &ScopeIndex,
@@ -7846,8 +7859,11 @@ fn class_member_visible_to(
     match member.visibility {
         Visibility::Public => true,
         Visibility::Private => {
-            caller_unit.unit_id == target_unit.unit_id
-                && enclosing_class_owner(caller_unit, caller_scope) == Some(member.class_symbol)
+            let Some(caller_class_symbol) = enclosing_class_owner(caller_unit, caller_scope) else {
+                return false;
+            };
+            visible_class_handle(snapshot, caller_unit, caller_class_symbol)
+                == visible_class_handle(snapshot, target_unit, member.class_symbol)
         }
         Visibility::Protected => {
             let Some(caller_class_symbol) = enclosing_class_owner(caller_unit, caller_scope) else {
@@ -7855,8 +7871,8 @@ fn class_member_visible_to(
             };
             class_is_or_inherits_from(
                 snapshot,
-                (caller_unit.unit_id, caller_class_symbol),
-                (target_unit.unit_id, member.class_symbol),
+                visible_class_handle(snapshot, caller_unit, caller_class_symbol),
+                visible_class_handle(snapshot, target_unit, member.class_symbol),
             )
         }
     }
@@ -7868,7 +7884,7 @@ fn resolve_class_member_in_hierarchy<'a>(
     class_symbol: SymbolId,
     member_name: &str,
 ) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
-    let mut current = (class_unit.unit_id, class_symbol);
+    let mut current = visible_class_handle(snapshot, class_unit, class_symbol);
     let mut visited = HashSet::new();
     loop {
         if !visited.insert(current) {
@@ -21564,6 +21580,77 @@ ENDCLASS.";
             .expect("declaration target");
         assert_target_slice(&declaration_target, "file:///ztop.abap", top_src, "exec");
         assert_eq!(declaration_target.range.start, declaration_offset);
+    }
+
+    #[test]
+    fn hover_formats_implicit_method_call_signature_from_definition_include() {
+        let store = DocumentStore::default();
+        let main_src = "\
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.";
+        let top_src = "\
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+  PROTECTED SECTION.
+    METHODS status_from_rep_evt_status
+      IMPORTING iv_status_rep_evt TYPE i
+      RETURNING VALUE(rv_status) TYPE string.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA lv_status TYPE string.
+    lv_status = status_from_rep_evt_status( 1 ).
+  ENDMETHOD.
+
+  METHOD status_from_rep_evt_status.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///zmain.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///ztop.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zf01.abap"),
+                version: 1,
+                text: Arc::from(f01_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let f01 = snapshots.get("file:///zf01.abap").expect("f01 snapshot");
+        let offset = f01_src
+            .find("status_from_rep_evt_status(")
+            .expect("method call")
+            + 1;
+
+        let hovered = f01
+            .hovered_call_target_at(offset)
+            .expect("method signature hover");
+
+        assert_eq!(hovered.display_name.as_ref(), "status_from_rep_evt_status");
+        let signature = hovered
+            .markdown_lines
+            .iter()
+            .find(|line| line.contains("status_from_rep_evt_status"))
+            .expect("signature markdown");
+        assert!(signature.contains("IMPORTING"));
+        assert!(signature.contains("iv_status_rep_evt TYPE i"));
+        assert!(signature.contains("RETURNING"));
+        assert!(signature.contains("VALUE(rv_status) TYPE string"));
     }
 
     #[test]
