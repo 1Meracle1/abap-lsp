@@ -2893,13 +2893,19 @@ fn infer_dependency_source_parent_uris(
 
     let mut parent_uris = Vec::new();
     for uri in workspace.cache.uris() {
-        if uri.as_ref() == source_uri || workspace_uri_is_dependency_source(workspace, uri.as_ref())
-        {
+        if uri.as_ref() == source_uri {
             continue;
         }
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
+        if snapshot.is_dependency
+            || (workspace.open_documents.contains_key(uri.as_ref())
+                && (is_dependency_document_uri(uri.as_ref())
+                    || uri_is_manifest_dependency(workspace, uri.as_ref())))
+        {
+            continue;
+        }
         if unit_references_object(snapshot.as_ref(), object_name.as_str()) {
             parent_uris.push(uri.to_string());
         }
@@ -3003,15 +3009,6 @@ fn remote_dependency_manifest_parent_uris(
     }
 
     out
-}
-
-fn source_context_uses_local_exports(workspace: &WorkspaceState, source_uri: &str) -> bool {
-    let Some(root_path) = file_uri_to_path(&workspace.root_uri) else {
-        return false;
-    };
-    remote_dependency_source_context_uris(workspace, source_uri)
-        .into_iter()
-        .any(|uri| local_export_config_for_source(&root_path, &uri).uses_local_exports())
 }
 
 fn extend_remote_dependency_source_candidates(
@@ -5544,7 +5541,11 @@ impl RemoteDependencyMemo {
         if let Some(uses_local_exports) = self.source_context_local_exports.get(source_uri) {
             return *uses_local_exports;
         }
-        let uses_local_exports = source_context_uses_local_exports(workspace, source_uri);
+        let uses_local_exports = file_uri_to_path(&workspace.root_uri).is_some_and(|root_path| {
+            self.source_context_uris(workspace, source_uri)
+                .iter()
+                .any(|uri| local_export_config_for_source(&root_path, uri).uses_local_exports())
+        });
         self.source_context_local_exports
             .insert(source_uri.to_owned(), uses_local_exports);
         uses_local_exports
