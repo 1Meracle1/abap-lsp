@@ -4797,9 +4797,7 @@ fn collect_remote_dependency_candidates_for_unit(
         if !matches!(reference.resolution, None | Some(Resolution::External)) {
             continue;
         }
-        if let Some(candidate) = remote_dependency_candidate_for_reference(reference) {
-            insert_remote_candidate(&mut deduped, candidate);
-        }
+        insert_remote_dependency_candidates_for_reference(&mut deduped, reference);
     }
     insert_message_class_dependency_candidates(&mut deduped, unit);
 
@@ -4868,6 +4866,7 @@ fn collect_remote_dependency_refresh_candidates_for_unit(
         };
         if include {
             insert_remote_candidate(&mut deduped, candidate);
+            insert_remote_dependency_table_line_candidate(&mut deduped, reference);
         }
     }
     insert_message_class_dependency_candidates(&mut deduped, unit);
@@ -4885,6 +4884,38 @@ fn collect_remote_dependency_refresh_candidates_for_unit(
     }
 
     deduped.into_values().collect()
+}
+
+fn insert_remote_dependency_candidates_for_reference(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    reference: &abap_symbols::ReferenceData,
+) {
+    if let Some(candidate) = remote_dependency_candidate_for_reference(reference) {
+        insert_remote_candidate(deduped, candidate);
+    }
+    insert_remote_dependency_table_line_candidate(deduped, reference);
+}
+
+fn insert_remote_dependency_table_line_candidate(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    reference: &abap_symbols::ReferenceData,
+) {
+    if reference.kind != ReferenceKind::TypeRef {
+        return;
+    }
+    let Some(name) = abap_symbols::well_known_external_table_line_type(reference.name.as_ref())
+    else {
+        return;
+    };
+    if is_remote_lookup_candidate_after_local_resolution(name, "type") {
+        insert_remote_candidate(
+            deduped,
+            RemoteDependencyCandidate {
+                name: name.to_string(),
+                kind: "type".to_string(),
+            },
+        );
+    }
 }
 
 fn insert_message_class_dependency_candidates(
@@ -15218,6 +15249,29 @@ dependency_mode = "remote-on-demand"
         assert!(names.contains("cx_sxml_parse_error"));
 
         let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn remote_dependency_candidates_include_known_table_line_types() {
+        let store = DocumentStore::default();
+        let snapshot = store.publish(
+            "file:///known_table_line_type.abap",
+            1,
+            concat!(
+                "DATA mt_fieldcat TYPE lvc_t_fcat.\n",
+                "APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).\n"
+            ),
+        );
+
+        let names: std::collections::HashSet<_> =
+            collect_remote_dependency_candidates(snapshot.as_ref())
+                .into_iter()
+                .filter(|candidate| candidate.kind == "type")
+                .map(|candidate| candidate.name)
+                .collect();
+
+        assert!(names.contains("lvc_t_fcat"), "{names:#?}");
+        assert!(names.contains("lvc_s_fcat"), "{names:#?}");
     }
 
     #[test]

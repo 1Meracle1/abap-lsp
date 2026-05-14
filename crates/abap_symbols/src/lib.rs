@@ -21,7 +21,7 @@ mod validate;
 pub use builtins::{
     BuiltinRoutineParamSpec, BuiltinRoutineSpec, builtin_routine_spec,
     builtin_structure_field_description, well_known_external_structure_field_description,
-    well_known_external_structure_field_type,
+    well_known_external_structure_field_type, well_known_external_table_line_type,
 };
 pub use compatibility::{call_section_matches_parameter, parameter_is_required};
 pub use def_map::{

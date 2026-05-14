@@ -22090,6 +22090,67 @@ ENDCLASS.";
     }
 
     #[test]
+    fn lists_field_symbol_components_from_fetched_table_line_dependency() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display_alv.
+  PRIVATE SECTION.
+    DATA mt_fieldcat TYPE lvc_t_fcat.
+ENDCLASS.
+
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display_alv.
+    APPEND INITIAL LINE TO mt_fieldcat ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+    <fs_fcat>-
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.publish_inputs(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/lvc_t_fcat.abap"),
+                version: 1,
+                text: Arc::from(
+                    "TYPES lvc_t_fcat TYPE STANDARD TABLE OF lvc_s_fcat WITH EMPTY KEY.",
+                ),
+                is_dependency: true,
+                object_name: Some(Arc::from("lvc_t_fcat")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/lvc_s_fcat.abap"),
+                version: 1,
+                text: Arc::from(
+                    "TYPES: BEGIN OF lvc_s_fcat,\n  fieldname TYPE string,\n  coltext TYPE string,\nEND OF lvc_s_fcat.",
+                ),
+                is_dependency: true,
+                object_name: Some(Arc::from("lvc_s_fcat")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let offset = src.find("<fs_fcat>-").expect("selector") + "<fs_fcat>-".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("field-symbol selector completion");
+
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["coltext", "fieldname"]
+        );
+    }
+
+    #[test]
     fn lists_public_static_methods_after_fat_arrow() {
         let store = DocumentStore::default();
         let src = "\

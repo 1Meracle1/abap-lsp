@@ -997,7 +997,7 @@ pub fn well_known_external_structure_field_type(
     None
 }
 
-pub(crate) fn well_known_external_table_line_type(table_type_name: &str) -> Option<&'static str> {
+pub fn well_known_external_table_line_type(table_type_name: &str) -> Option<&'static str> {
     if table_type_name.eq_ignore_ascii_case("lvc_t_fcat") {
         return Some("lvc_s_fcat");
     }
