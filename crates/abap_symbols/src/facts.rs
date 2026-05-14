@@ -450,19 +450,49 @@ impl<'a> FactBuilder<'a> {
                 continue;
             }
             let source_fact = self.type_fact_for_access(unit_idx, source_access);
-            let Some(line_fact) = source_fact.table_line.as_deref() else {
+            let line_fact = source_fact
+                .table_line
+                .as_deref()
+                .filter(|fact| fact.is_known())
+                .cloned()
+                .or_else(|| self.line_of_source_access_fact(&source_fact, source_access));
+            let Some(line_fact) = line_fact else {
                 continue;
             };
-            if !line_fact.is_known() {
-                continue;
-            }
             updates.push(SymbolTypeFactUpdate {
                 symbol_id,
-                type_fact: line_fact.clone(),
+                type_fact: line_fact,
                 overwrite_existing: true,
             });
         }
         updates
+    }
+
+    fn line_of_source_access_fact(
+        &self,
+        source_fact: &TypeFactData,
+        source_access: &FieldAccess,
+    ) -> Option<TypeFactData> {
+        if !source_fact
+            .type_clause_display
+            .as_deref()
+            .is_some_and(is_range_table_type_display)
+            || source_access.base_namespace != Namespace::Value
+            || !source_access.field_path.is_empty()
+        {
+            return None;
+        }
+        Some(TypeFactData {
+            structure: None,
+            declared_type: Some(FieldTypeRefData {
+                namespace: Namespace::Value,
+                is_ref: false,
+                base_name: Arc::clone(&source_access.base_name),
+                field_path: Vec::new(),
+            }),
+            type_clause_display: Some(Arc::from(format!("LINE OF {}", source_access.base_name))),
+            table_line: None,
+        })
     }
 
     fn inline_symbol_for_target_access(

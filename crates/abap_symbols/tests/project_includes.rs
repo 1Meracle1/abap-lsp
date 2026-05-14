@@ -894,6 +894,92 @@ ENDFORM.
 }
 
 #[test]
+fn infers_loop_inline_target_type_from_select_options_declared_in_prior_include() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zsel,
+         zf01.
+"#;
+    let top_src = "DATA gv_docnum TYPE string.";
+    let sel_src = "SELECT-OPTIONS so_dels FOR gv_docnum.";
+    let f01_src = r#"
+FORM process_data.
+  LOOP AT so_dels INTO DATA(ls_doc).
+    DATA(lv_low) = ls_doc-low.
+  ENDLOOP.
+ENDFORM.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let sel_parse = parse(sel_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zsel.abap",
+            source: sel_src,
+            parse: &sel_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let f01 = project.unit_by_uri("zf01.abap").expect("form include");
+    let sel = project.unit_by_uri("zsel.abap").expect("selection include");
+    assert!(
+        f01.references.iter().any(|reference| {
+            reference.name.as_ref() == "so_dels"
+                && matches!(reference.resolution, Some(Resolution::Symbol(handle)) if handle.unit == sel.unit_id)
+        }),
+        "expected LOOP source to resolve to selection include symbol, refs={:?}",
+        f01.references
+    );
+
+    let ls_doc = f01
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "ls_doc")
+        .expect("loop inline target");
+    let declared_type = ls_doc
+        .declared_type
+        .as_ref()
+        .expect("loop inline target declared type");
+    assert_eq!(declared_type.namespace, Namespace::Value);
+    assert_eq!(declared_type.base_name.as_ref(), "so_dels");
+    assert_eq!(
+        ls_doc.type_clause_display.as_deref(),
+        Some("LINE OF so_dels")
+    );
+
+    assert!(
+        !f01.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
+            ) && (diag.message.contains("so_dels")
+                || diag.message.contains("ls_doc")
+                || diag.message.contains("low"))
+        }),
+        "unexpected include SELECT-OPTIONS LOOP diagnostics: {:?}",
+        f01.diagnostics
+    );
+}
+
+#[test]
 fn reports_ddic_table_type_use_without_tables_in_selection_screen_include_closure() {
     let root_src = r#"
 REPORT zmain.
