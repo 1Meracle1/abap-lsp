@@ -1479,6 +1479,20 @@ impl AnalysisSnapshot {
 
         let symbol = self.symbols.semantic().decls().symbol_at_offset(offset)?;
 
+        if symbol.kind == SymbolKind::Method
+            && let Some((definition_unit, member)) = self
+                .project
+                .class_member_definition_for_method_symbol(self.symbols.unit_id, symbol.id)
+        {
+            let unit = &self.project.units[definition_unit.as_usize()];
+            return Some(HoveredSymbolInfo {
+                range: rename_method_symbol_range(self.text.as_ref(), symbol)
+                    .unwrap_or_else(|| symbol.decl_range.clone()),
+                display_name: Arc::clone(&member.name),
+                markdown_lines: markdown_lines_for_class_member(unit, member),
+            });
+        }
+
         Some(HoveredSymbolInfo {
             range: symbol.decl_range.clone(),
             display_name: Arc::clone(&symbol.name),
@@ -18546,6 +18560,81 @@ some_class=>exec( iv_value = 1 ).";
                 .markdown_lines
                 .iter()
                 .any(|line| line == "```abap\nTYPE i\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
+    fn hovered_resolved_symbol_at_formats_cross_include_method_implementation_signature() {
+        let store = DocumentStore::default();
+        let main_src = "INCLUDE top.\nINCLUDE f01.";
+        let top_src = "\
+CLASS lcl_demo DEFINITION.
+  PROTECTED SECTION.
+    METHODS status_from_rep_evt_status
+      IMPORTING
+        iv_status_rep_evt TYPE i
+      RETURNING
+        VALUE(rv_status) TYPE string.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD status_from_rep_evt_status.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///top.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("top")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///f01.abap"),
+                version: 1,
+                text: Arc::from(f01_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("f01")),
+            },
+        ]);
+        let f01 = snapshots.get("file:///f01.abap").expect("f01 snapshot");
+        let offset = f01_src.find("status_from_rep_evt_status").expect("method") + 1;
+
+        let hovered = f01
+            .hovered_resolved_symbol_at(offset)
+            .expect("method implementation hover");
+        assert_eq!(hovered.display_name.as_ref(), "status_from_rep_evt_status");
+        assert!(f01_src[hovered.range.clone()].eq_ignore_ascii_case("status_from_rep_evt_status"));
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("METHODS status_from_rep_evt_status")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("iv_status_rep_evt TYPE i")),
+            "{:?}",
+            hovered.markdown_lines
+        );
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line.contains("VALUE(rv_status) TYPE string")),
             "{:?}",
             hovered.markdown_lines
         );
