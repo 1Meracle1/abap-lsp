@@ -38,6 +38,16 @@ fn is_builtin_routine(name: &str) -> bool {
 }
 
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
+type RootHandleCache = HashMap<(usize, Namespace, Arc<str>), Option<SymbolHandle>>;
+
+fn lookup_namespaces(kind: ReferenceKind, namespace: Namespace) -> &'static [Namespace] {
+    match (kind, namespace) {
+        (ReferenceKind::TypeRef, Namespace::Value) => &[Namespace::Value, Namespace::Type],
+        (_, Namespace::Value) => &[Namespace::Value],
+        (_, Namespace::Type) => &[Namespace::Type],
+        (_, Namespace::Routine) => &[Namespace::Routine],
+    }
+}
 
 pub(crate) fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
     let mut out: ScopeIndex = vec![HashMap::new(); unit.scopes.len()];
@@ -424,15 +434,9 @@ fn resolve_project_cross_unit_with_filter(
                 }
             }
 
-            let namespaces = if reference_kind == ReferenceKind::TypeRef
-                && reference_namespace == Namespace::Value
-            {
-                [Namespace::Value, Namespace::Type]
-            } else {
-                [reference_namespace, reference_namespace]
-            };
+            let namespaces = lookup_namespaces(reference_kind, reference_namespace);
             if resolved.is_none() {
-                for namespace in namespaces {
+                for &namespace in namespaces {
                     if let Some(symbol) = resolve_inherited_symbol_in_project(
                         units,
                         unit_idx,
@@ -449,7 +453,7 @@ fn resolve_project_cross_unit_with_filter(
                 }
             }
             if resolved.is_none() {
-                for namespace in namespaces {
+                for &namespace in namespaces {
                     if let Some(symbol) = resolve_class_member_symbol_in_visible_definition(
                         units,
                         unit_idx,
@@ -466,7 +470,7 @@ fn resolve_project_cross_unit_with_filter(
                 }
             }
             if resolved.is_none() {
-                for namespace in namespaces {
+                for &namespace in namespaces {
                     if let Some(symbol) = resolve_root_symbol_in_visible_units(
                         unit_idx,
                         namespace,
@@ -483,7 +487,7 @@ fn resolve_project_cross_unit_with_filter(
                 }
             }
             if resolved.is_none() {
-                for namespace in namespaces {
+                for &namespace in namespaces {
                     if let Some(handles) = root_index.get(&(namespace, Arc::clone(&reference_name)))
                         && let Some(symbol) = handles.first().copied()
                     {
@@ -510,6 +514,7 @@ fn resolve_project_cross_unit_with_filter(
     }
 
     let snapshot = units.to_vec();
+    let mut root_handle_cache = RootHandleCache::new();
     for unit_idx in 0..units.len() {
         let mut imported = HashMap::<(u32, u32), StructureId>::new();
 
@@ -531,6 +536,7 @@ fn resolve_project_cross_unit_with_filter(
                         &root_index,
                         &mut units[unit_idx].structures,
                         &mut imported,
+                        &mut root_handle_cache,
                     )
                 })
             });
@@ -560,6 +566,7 @@ fn resolve_project_cross_unit_with_filter(
                             &root_index,
                             &mut units[unit_idx].structures,
                             &mut imported,
+                            &mut root_handle_cache,
                         )
                     })
                 });
@@ -594,6 +601,7 @@ fn resolve_project_cross_unit_with_filter(
                     &visible_units,
                     &root_index,
                     &mut units[unit_idx].structures,
+                    &mut root_handle_cache,
                 )
             }));
         }
@@ -818,6 +826,7 @@ fn import_structure_for_type_ref(
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
+    root_handle_cache: &mut RootHandleCache,
 ) -> Option<StructureId> {
     let handle = resolve_root_symbol_handle(
         snapshot,
@@ -826,6 +835,7 @@ fn import_structure_for_type_ref(
         per_unit_root_index,
         visible_units,
         root_index,
+        root_handle_cache,
     )?;
     let source_unit_idx = handle.unit.as_usize();
     let mut seen = HashSet::new();
@@ -839,6 +849,7 @@ fn import_structure_for_type_ref(
         root_index,
         target_structures,
         imported,
+        root_handle_cache,
         &mut seen,
     )?;
     for field_name in &type_ref.field_path {
@@ -858,21 +869,28 @@ fn resolve_root_symbol_handle(
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
     visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_handle_cache: &mut RootHandleCache,
 ) -> Option<SymbolHandle> {
-    let namespaces = if type_ref.namespace == Namespace::Value {
-        [Namespace::Value, Namespace::Type]
-    } else {
-        [type_ref.namespace, type_ref.namespace]
-    };
-    for namespace in namespaces {
+    let cache_key = (
+        unit_idx,
+        type_ref.namespace,
+        Arc::clone(&type_ref.base_name),
+    );
+    if let Some(handle) = root_handle_cache.get(&cache_key) {
+        return *handle;
+    }
+
+    let mut resolved = None;
+    for &namespace in lookup_namespaces(ReferenceKind::TypeRef, type_ref.namespace) {
         if let Some(symbol_id) = per_unit_root_index[unit_idx]
             .get(&(namespace, Arc::clone(&type_ref.base_name)))
             .copied()
         {
-            return Some(SymbolHandle {
+            resolved = Some(SymbolHandle {
                 unit: units[unit_idx].unit_id,
                 symbol: symbol_id,
             });
+            break;
         }
         if let Some(handle) = resolve_root_symbol_in_visible_units(
             unit_idx,
@@ -881,15 +899,18 @@ fn resolve_root_symbol_handle(
             per_unit_root_index,
             visible_units,
         ) {
-            return Some(handle);
+            resolved = Some(handle);
+            break;
         }
         if let Some(handles) = root_index.get(&(namespace, Arc::clone(&type_ref.base_name)))
             && let Some(handle) = handles.first().copied()
         {
-            return Some(handle);
+            resolved = Some(handle);
+            break;
         }
     }
-    None
+    root_handle_cache.insert(cache_key, resolved);
+    resolved
 }
 
 fn import_structure(
@@ -950,6 +971,7 @@ fn resolve_symbol_structure_for_target(
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
+    root_handle_cache: &mut RootHandleCache,
     seen: &mut HashSet<(u32, u32)>,
 ) -> Option<StructureId> {
     if !seen.insert((current_unit_idx as u32, symbol_id.0)) {
@@ -979,6 +1001,7 @@ fn resolve_symbol_structure_for_target(
         per_unit_root_index,
         visible_units,
         root_index,
+        root_handle_cache,
     )?;
     resolve_symbol_structure_for_target(
         snapshot,
@@ -990,6 +1013,7 @@ fn resolve_symbol_structure_for_target(
         root_index,
         target_structures,
         imported,
+        root_handle_cache,
         seen,
     )
 }
@@ -1002,6 +1026,7 @@ fn normalize_field_type_ref_for_target(
     visible_units: &[Vec<UnitId>],
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
+    root_handle_cache: &mut RootHandleCache,
 ) -> Option<(Option<StructureId>, FieldTypeRefData)> {
     if type_ref.field_path.is_empty() {
         return None;
@@ -1020,6 +1045,7 @@ fn normalize_field_type_ref_for_target(
         per_unit_root_index,
         visible_units,
         root_index,
+        root_handle_cache,
     )?;
 
     let mut imported = HashMap::new();
@@ -1034,6 +1060,7 @@ fn normalize_field_type_ref_for_target(
         root_index,
         target_structures,
         &mut imported,
+        root_handle_cache,
         &mut seen,
     )?;
 
