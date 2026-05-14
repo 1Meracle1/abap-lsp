@@ -340,6 +340,18 @@ fn resolve_project_cross_unit_with_filter(
     units: &mut [UnitAnalysis],
     dirty_units: Option<&HashSet<UnitId>>,
 ) {
+    let target_unit_indices: Vec<_> = match dirty_units {
+        Some(dirty) => units
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, unit)| dirty.contains(&unit.unit_id).then_some(idx))
+            .collect(),
+        None => (0..units.len()).collect(),
+    };
+    if target_unit_indices.is_empty() {
+        return;
+    }
+
     let mut root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>> = HashMap::new();
     let mut per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), SymbolId>> =
         vec![HashMap::new(); units.len()];
@@ -381,10 +393,7 @@ fn resolve_project_cross_unit_with_filter(
     let visible_units = include_visible_units_for_units(units);
     let predecessor_units = include_predecessor_units_for_units(units);
 
-    for unit_idx in 0..units.len() {
-        if dirty_units.is_some_and(|dirty| !dirty.contains(&units[unit_idx].unit_id)) {
-            continue;
-        }
+    for &unit_idx in &target_unit_indices {
         for reference_idx in 0..units[unit_idx].references.len() {
             if units[unit_idx].references[reference_idx]
                 .resolution
@@ -513,9 +522,9 @@ fn resolve_project_cross_unit_with_filter(
         }
     }
 
-    let snapshot = units.to_vec();
+    let mut snapshot = units.to_vec();
     let mut root_handle_cache = RootHandleCache::new();
-    for unit_idx in 0..units.len() {
+    for &unit_idx in &target_unit_indices {
         let mut imported = HashMap::<(u32, u32), StructureId>::new();
 
         let symbol_inputs: Vec<_> = units[unit_idx]
@@ -583,8 +592,10 @@ fn resolve_project_cross_unit_with_filter(
         }
     }
 
-    let snapshot = units.to_vec();
-    for unit_idx in 0..units.len() {
+    for &unit_idx in &target_unit_indices {
+        snapshot[unit_idx].clone_from(&units[unit_idx]);
+    }
+    for &unit_idx in &target_unit_indices {
         let symbol_inputs: Vec<_> = snapshot[unit_idx]
             .symbols
             .iter()

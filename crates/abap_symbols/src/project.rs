@@ -1089,7 +1089,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
 
     if force_full
         || previous_project.is_none()
-        || previous_project.is_some_and(|previous| previous.units.len() != local_units.len())
+        || previous_project.is_some_and(|previous| previous.units.len() > local_units.len())
     {
         metrics.full_rebuild = true;
         let dirty_set = dirty_set_for_all_units(&local_units);
@@ -1122,7 +1122,12 @@ pub(crate) fn analyze_project_incremental_from_locals(
     let apply_local_updates_timer = std::time::Instant::now();
     for local in &local_units {
         if dirty_set.unit_ids.contains(&local.unit.unit_id) {
-            units[local.unit.unit_id.as_usize()] = local.unit.clone();
+            let unit_idx = local.unit.unit_id.as_usize();
+            if unit_idx == units.len() {
+                units.push(local.unit.clone());
+            } else {
+                units[unit_idx] = local.unit.clone();
+            }
         }
     }
     metrics.apply_local_updates_micros = apply_local_updates_timer.elapsed().as_micros();

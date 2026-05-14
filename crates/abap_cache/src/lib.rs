@@ -12661,14 +12661,14 @@ fn force_full_rebuild(
     let Some(previous_analysis) = previous_analysis else {
         return true;
     };
-    if previous_analysis.uri_order.len() != inputs.len() {
+    if inputs.len() < previous_analysis.uri_order.len() {
         return true;
     }
-    let input_uris: HashSet<_> = inputs.iter().map(|input| input.uri.as_ref()).collect();
     previous_analysis
         .uri_order
         .iter()
-        .any(|uri| !input_uris.contains(uri.as_ref()))
+        .zip(inputs)
+        .any(|(uri, input)| uri.as_ref() != input.uri.as_ref())
 }
 
 fn changed_uris_for_inputs(
@@ -14085,6 +14085,40 @@ ENDCLASS.",
             &second.routine_analysis
         ));
         assert_eq!(store.get("file:///demo.abap").unwrap().version, 2);
+    }
+
+    #[test]
+    fn append_only_publish_uses_incremental_project_update() {
+        let store = DocumentStore::default();
+        let main_src = "DATA lo_dep TYPE REF TO zcl_dep.";
+        store.publish_inputs_with_build_plan(
+            vec![DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            }],
+            SnapshotBuildPlan::EDITOR_WORKSPACE,
+        );
+
+        let dep_src = "CLASS zcl_dep DEFINITION.\nENDCLASS.";
+        store.publish_inputs_with_build_plan(
+            vec![DocumentInput {
+                uri: Arc::from("file:///dep.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: None,
+            }],
+            SnapshotBuildPlan::EDITOR_WORKSPACE,
+        );
+
+        let metrics = store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics");
+        assert!(!metrics.full_rebuild);
+        assert_eq!(metrics.unit_count, 2);
     }
 
     #[test]
