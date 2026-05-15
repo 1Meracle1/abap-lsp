@@ -203,6 +203,11 @@ fn collect_pending(
             let Some(decl_range) = field.decl_range.as_ref() else {
                 continue;
             };
+            if unit.named_arguments.iter().any(|argument| {
+                argument.range == *decl_range && lookup.has_named_argument_parameter(argument)
+            }) {
+                continue;
+            }
             push_pending(
                 &mut pending,
                 decl_range.start,
@@ -785,6 +790,77 @@ DATA lt_data TYPE lcl_repro=>tr_errors.
             semantic_token_type_at(&tokens.data, line, character),
             Some(type_idx),
             "expected class type selector to highlight as type"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_new_shorthand_constructor_parameters_as_parameter() {
+        let store = DocumentStore::default();
+        let main_src = "INCLUDE top.\nINCLUDE f01.";
+        let dep_src = "\
+CLASS zcl_child DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING VALUE(CONTAINER_NAME) TYPE string.
+ENDCLASS.";
+        let top_src = "\
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display.
+  PRIVATE SECTION.
+    DATA mo_cont TYPE REF TO zcl_child.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display.
+    mo_cont = NEW #( container_name = 'CCONTAINER' ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///top.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("top")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///f01.abap"),
+                version: 1,
+                text: Arc::from(f01_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("f01")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zcl_child.abap"),
+                version: 1,
+                text: Arc::from(dep_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zcl_child")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///f01.abap").expect("f01 snapshot");
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+        let offset = f01_src.find("container_name").expect("parameter");
+        let (line, character) = byte_offset_to_line_character_utf16_reference(f01_src, offset + 1)
+            .expect("parameter position");
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, line, character),
+            Some(parameter_idx),
+            "expected NEW # constructor parameter to highlight as parameter"
         );
     }
 
