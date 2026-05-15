@@ -5935,6 +5935,14 @@ fn resolve_field_access_base_symbol_with_scope_index<'a>(
         &access.base_name,
         access.in_type_position,
     )
+    .or_else(|| {
+        resolved_reference_symbol_in_scope(
+            snapshot,
+            access.scope,
+            access.base_namespace,
+            &access.base_name,
+        )
+    })
 }
 
 fn resolve_symbol_structure_with_scope_index<'a>(
@@ -21927,6 +21935,67 @@ ENDCLASS.";
         assert!(f01.symbols.diagnostics.iter().any(|diag| {
             diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
         }));
+    }
+
+    #[test]
+    fn hover_resolves_ddic_structure_field_from_top_include_attribute() {
+        let store = DocumentStore::default();
+        let main_src = "\
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.";
+        let top_src = "\
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display_alv.
+  PRIVATE SECTION.
+    DATA ms_layout TYPE lvc_s_layo.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display_alv.
+    ms_layout-zebra = abap_true.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///zmain.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///ztop.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zf01.abap"),
+                version: 1,
+                text: Arc::from(f01_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/lvc_s_layo.abap"),
+                version: 1,
+                text: Arc::from(
+                    "TYPES: BEGIN OF lvc_s_layo,\n  zebra TYPE lvc_zebra,\nEND OF lvc_s_layo.",
+                ),
+                is_dependency: true,
+                object_name: Some(Arc::from("lvc_s_layo")),
+            },
+        ]);
+        let f01 = snapshots.get("file:///zf01.abap").expect("f01 snapshot");
+        let offset = f01_src.find("zebra").expect("zebra") + 1;
+
+        let hovered = f01.hovered_component_at(offset).expect("zebra hover");
+
+        assert_eq!(hovered.field_name.as_ref(), "zebra");
+        assert_eq!(hovered.declared_type.as_deref(), Some("TYPE lvc_zebra"));
     }
 
     #[test]
