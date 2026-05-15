@@ -90,6 +90,24 @@ impl ProjectRoutineAnalysis {
 }
 
 pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRoutineAnalysis {
+    build_project_routine_analysis_filtered(project, None)
+}
+
+pub fn build_project_routine_analysis_for_units(
+    project: &ProjectAnalysis,
+    units: &HashSet<UnitId>,
+) -> ProjectRoutineAnalysis {
+    build_project_routine_analysis_filtered(project, Some(units))
+}
+
+fn routine_analysis_includes_unit(unit_filter: Option<&HashSet<UnitId>>, unit: UnitId) -> bool {
+    unit_filter.is_none_or(|units| units.contains(&unit))
+}
+
+fn build_project_routine_analysis_filtered(
+    project: &ProjectAnalysis,
+    unit_filter: Option<&HashSet<UnitId>>,
+) -> ProjectRoutineAnalysis {
     let total_timer = std::time::Instant::now();
     let mut out = ProjectRoutineAnalysis {
         unit_routines: vec![Vec::new(); project.units.len()],
@@ -110,6 +128,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         .collect();
 
     for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
         let unit_idx = unit.unit_id.as_usize();
         for scope in &unit.scopes {
             let Some(kind) = routine_kind(scope.kind) else {
@@ -166,6 +187,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
     }
 
     for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
         let unit_idx = unit.unit_id.as_usize();
         out.scope_to_routine[unit_idx] =
             build_scope_to_routine_map(unit, &exact_routine_scopes[unit_idx]);
@@ -174,6 +198,9 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
 
     let ir_timer = std::time::Instant::now();
     for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
         let scope_map = &out.scope_to_routine[unit.unit_id.as_usize()];
         let call_range_index = RangeContainmentIndex::from_call_sites(unit);
 
@@ -369,7 +396,14 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
         .units
         .iter()
         .map(|unit| {
-            build_routine_control_region_index(unit, &out.scope_to_routine[unit.unit_id.as_usize()])
+            if routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+                build_routine_control_region_index(
+                    unit,
+                    &out.scope_to_routine[unit.unit_id.as_usize()],
+                )
+            } else {
+                HashMap::new()
+            }
         })
         .collect();
 
@@ -394,17 +428,26 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
     let dataflow_timer = std::time::Instant::now();
-    let tracked_symbols_by_routine =
-        build_tracked_symbols_by_routine(project, &out.scope_to_routine, out.routines.len());
+    let tracked_symbols_by_routine = build_tracked_symbols_by_routine(
+        project,
+        &out.scope_to_routine,
+        out.routines.len(),
+        unit_filter,
+    );
     let call_argument_effects_by_unit: Vec<_> = project
         .units
         .iter()
-        .map(|unit| build_call_argument_effects(project, unit))
+        .map(|unit| {
+            if routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+                build_call_argument_effects(project, unit)
+            } else {
+                HashMap::new()
+            }
+        })
         .collect();
-    let has_perform_calls = project
-        .units
-        .iter()
-        .any(|unit| !unit.perform_calls.is_empty());
+    let has_perform_calls = project.units.iter().any(|unit| {
+        routine_analysis_includes_unit(unit_filter, unit.unit_id) && !unit.perform_calls.is_empty()
+    });
     let routine_has_perform_instruction: Vec<_> = out
         .routines
         .iter()
@@ -471,9 +514,11 @@ pub fn build_project_routine_analysis(project: &ProjectAnalysis) -> ProjectRouti
     }
     out.metrics.dataflow_micros = dataflow_timer.elapsed().as_micros();
 
-    for (routine_id, diagnostic) in
-        build_read_table_binary_search_order_diagnostics(project, &out.scope_to_routine)
-    {
+    for (routine_id, diagnostic) in build_read_table_binary_search_order_diagnostics(
+        project,
+        &out.scope_to_routine,
+        unit_filter,
+    ) {
         let Some(routine) = out.routines.get_mut(routine_id.as_usize()) else {
             continue;
         };
@@ -4436,9 +4481,13 @@ fn sql_target_effective_range(target: &crate::SqlTargetData) -> &TextRange {
 fn build_read_table_binary_search_order_diagnostics(
     project: &ProjectAnalysis,
     scope_to_routine: &[Vec<Option<RoutineId>>],
+    unit_filter: Option<&HashSet<UnitId>>,
 ) -> Vec<(RoutineId, Diagnostic)> {
     let mut out = Vec::new();
     for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
         let Some(scope_map) = scope_to_routine.get(unit.unit_id.as_usize()) else {
             continue;
         };
@@ -5702,9 +5751,13 @@ fn build_tracked_symbols_by_routine<'a>(
     project: &'a ProjectAnalysis,
     scope_to_routine: &[Vec<Option<RoutineId>>],
     routine_count: usize,
+    unit_filter: Option<&HashSet<UnitId>>,
 ) -> Vec<Vec<&'a SymbolData>> {
     let mut out = vec![Vec::new(); routine_count];
     for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
         let unit_idx = unit.unit_id.as_usize();
         let Some(scope_map) = scope_to_routine.get(unit_idx) else {
             continue;

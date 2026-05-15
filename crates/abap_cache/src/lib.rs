@@ -33,8 +33,9 @@ use abap_symbols::{
     SqlSourceData, SqlSourceKind, StructureFieldData, StructureFieldInfo, StructureFieldShape,
     StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, SystemFieldStatementKind,
     SystemFieldUpdateData, UnitAnalysis, UnitId, ValueStateCheckData, ValueStateCheckKind,
-    Visibility, build_project_routine_analysis, build_project_static_analysis_summary,
-    builtin_routine_spec, call_section_matches_parameter, parameter_is_required,
+    Visibility, build_project_routine_analysis, build_project_routine_analysis_for_units,
+    build_project_static_analysis_summary, builtin_routine_spec, call_section_matches_parameter,
+    parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
         analyze_unit_local_state_for_project_build, incremental_project_update,
@@ -11152,6 +11153,12 @@ fn materialize_snapshots(
     let snapshot_timer = std::time::Instant::now();
     let build_plan = build_plan.normalized();
     let project = Arc::new(update.project);
+    let project_texts = Arc::new(
+        prepared
+            .iter()
+            .map(|prepared| (Arc::clone(&prepared.uri), Arc::clone(&prepared.text)))
+            .collect::<HashMap<_, _>>(),
+    );
     let scope_indexes = if build_plan.call_graph {
         let mut scope_indexes = vec![ScopeIndex::default(); project.units.len()];
         for prepared in &prepared {
@@ -11162,9 +11169,30 @@ fn materialize_snapshots(
     } else {
         Vec::new()
     };
+    let mut prepared_units = Vec::with_capacity(prepared.len());
+    for prepared in prepared {
+        let unit = project
+            .unit_by_uri(prepared.uri.as_ref())
+            .cloned()
+            .expect("project analysis should include every prepared document");
+        prepared_units.push((prepared, unit));
+    }
+    let diagnostic_unit_ids =
+        diagnostic_unit_ids_for_build_plan(&prepared_units, project.as_ref(), build_plan);
     let (routine_analysis, routine_analysis_micros) = if build_plan.routine_analysis {
         let routine_analysis_timer = std::time::Instant::now();
-        let routine_analysis = Arc::new(build_project_routine_analysis(project.as_ref()));
+        let routine_analysis = if build_plan.dependency_diagnostics
+            == DependencyDiagnosticsMode::EditableAndIncludes
+            && !build_plan.static_analysis
+            && !build_plan.callable_summaries
+        {
+            Arc::new(build_project_routine_analysis_for_units(
+                project.as_ref(),
+                &diagnostic_unit_ids,
+            ))
+        } else {
+            Arc::new(build_project_routine_analysis(project.as_ref()))
+        };
         (
             routine_analysis,
             routine_analysis_timer.elapsed().as_micros(),
@@ -11205,27 +11233,10 @@ fn materialize_snapshots(
     } else {
         (Arc::new(ProjectCallableSummaryAnalysis::default()), 0)
     };
-    let mut snapshots = HashMap::with_capacity(prepared.len());
-    let mut locals = HashMap::with_capacity(prepared.len());
-    let mut uri_order = Vec::with_capacity(prepared.len());
+    let mut snapshots = HashMap::with_capacity(prepared_units.len());
+    let mut locals = HashMap::with_capacity(prepared_units.len());
+    let mut uri_order = Vec::with_capacity(prepared_units.len());
 
-    let project_texts = Arc::new(
-        prepared
-            .iter()
-            .map(|prepared| (Arc::clone(&prepared.uri), Arc::clone(&prepared.text)))
-            .collect::<HashMap<_, _>>(),
-    );
-
-    let mut prepared_units = Vec::with_capacity(prepared.len());
-    for prepared in prepared {
-        let unit = project
-            .unit_by_uri(prepared.uri.as_ref())
-            .cloned()
-            .expect("project analysis should include every prepared document");
-        prepared_units.push((prepared, unit));
-    }
-    let diagnostic_unit_ids =
-        diagnostic_unit_ids_for_build_plan(&prepared_units, project.as_ref(), build_plan);
     for (_, unit) in &mut prepared_units {
         if !diagnostic_unit_ids.contains(&unit.unit_id) {
             unit.diagnostics.clear();
@@ -14489,7 +14500,10 @@ CLASS zcl_dep IMPLEMENTATION.
 ENDCLASS.";
         let main_src = "\
 DATA lo_dep TYPE REF TO zcl_dep.
-DATA lv_missing TYPE zty_main_missing.";
+DATA lv_missing TYPE zty_main_missing.
+START-OF-SELECTION.
+  DATA lv_seen TYPE i.
+  lv_seen = 1.";
         let inputs = vec![
             DocumentInput {
                 uri: Arc::from("file:///dep.abap"),
@@ -14531,6 +14545,20 @@ DATA lv_missing TYPE zty_main_missing.";
 
         assert_eq!(metrics.diagnostic_scope_unit_count, 1);
         assert_eq!(metrics.validation_unit_count, 1);
+        assert_eq!(
+            editor_dep
+                .routine_analysis()
+                .routines_for_unit(editor_dep.symbols.unit_id)
+                .count(),
+            0
+        );
+        assert!(
+            editor_main
+                .routine_analysis()
+                .routines_for_unit(editor_main.symbols.unit_id)
+                .count()
+                > 0
+        );
         assert!(
             editor_dep
                 .symbols

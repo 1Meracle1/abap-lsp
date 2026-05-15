@@ -58,6 +58,7 @@ pub use routine_analysis::{
     RoutineDataflowResult, RoutineDataflowValue, RoutineDescriptor, RoutineEdge, RoutineEdgeKind,
     RoutineId, RoutineInstrId, RoutineInstruction, RoutineInstructionKind, RoutineInstructionSite,
     RoutineIr, RoutineKind, RoutineTerminatorKind, build_project_routine_analysis,
+    build_project_routine_analysis_for_units,
 };
 pub use scope::{Namespace, ScopeData, ScopeKind};
 pub use semantic_queries::SemanticQueries;

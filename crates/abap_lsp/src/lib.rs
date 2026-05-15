@@ -3119,6 +3119,8 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     let mut scanned_candidate_sources = HashSet::<String>::new();
     let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
+    let mut inheritance_candidates_by_artifact =
+        HashMap::<i64, Vec<RemoteDependencyCandidate>>::new();
 
     loop {
         metrics.iterations += 1;
@@ -3219,8 +3221,10 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                     if !expanded_artifacts.insert(record.artifact_id) {
                         continue;
                     }
-                    let inheritance_candidates =
-                        dependency_inheritance_candidates_from_record(&record);
+                    let inheritance_candidates = inheritance_candidates_by_artifact
+                        .entry(record.artifact_id)
+                        .or_insert_with(|| dependency_inheritance_candidates_from_record(&record))
+                        .clone();
                     metrics.candidate_count += inheritance_candidates.len();
                     for candidate in inheritance_candidates {
                         let candidate_key = remote_candidate_key(&candidate);
