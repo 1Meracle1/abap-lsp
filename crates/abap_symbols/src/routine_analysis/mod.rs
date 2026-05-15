@@ -30,7 +30,7 @@ use crate::def_map::{
     SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis, ValueFlowKind,
     ValueFlowTargetData, ValueStateCheckKind,
 };
-use crate::ids::{ScopeId, StructureId, SymbolHandle, UnitId};
+use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
 
@@ -102,6 +102,61 @@ pub fn build_project_routine_analysis_for_units(
 
 fn routine_analysis_includes_unit(unit_filter: Option<&HashSet<UnitId>>, unit: UnitId) -> bool {
     unit_filter.is_none_or(|units| units.contains(&unit))
+}
+
+struct RoutineResolutionIndex {
+    unit_root_symbols: Vec<HashMap<(Namespace, Arc<str>), SymbolId>>,
+    project_root_symbols: HashMap<(Namespace, Arc<str>), (UnitId, SymbolId)>,
+}
+
+impl RoutineResolutionIndex {
+    fn new(project: &ProjectAnalysis) -> Self {
+        let mut unit_root_symbols = Vec::with_capacity(project.units.len());
+        let mut project_root_symbols = HashMap::new();
+
+        for unit in &project.units {
+            let mut root_symbols = HashMap::new();
+
+            for symbol in unit
+                .symbols
+                .iter()
+                .filter(|symbol| symbol.scope == unit.root_scope)
+            {
+                let name = symbol_lookup_key(&symbol.name);
+                for &namespace in symbol.kind.namespaces() {
+                    root_symbols
+                        .entry((namespace, Arc::clone(&name)))
+                        .or_insert(symbol.id);
+                    project_root_symbols
+                        .entry((namespace, Arc::clone(&name)))
+                        .or_insert((unit.unit_id, symbol.id));
+                }
+            }
+
+            unit_root_symbols.push(root_symbols);
+        }
+
+        Self {
+            unit_root_symbols,
+            project_root_symbols,
+        }
+    }
+}
+
+fn symbol_lookup_key(name: &Arc<str>) -> Arc<str> {
+    if name.as_bytes().iter().any(|byte| byte.is_ascii_uppercase()) {
+        Arc::from(name.to_ascii_lowercase())
+    } else {
+        Arc::clone(name)
+    }
+}
+
+fn type_ref_lookup_namespaces(namespace: Namespace) -> &'static [Namespace] {
+    match namespace {
+        Namespace::Value => &[Namespace::Value, Namespace::Type],
+        Namespace::Type => &[Namespace::Type],
+        Namespace::Routine => &[Namespace::Routine],
+    }
 }
 
 fn build_project_routine_analysis_filtered(
@@ -428,6 +483,7 @@ fn build_project_routine_analysis_filtered(
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
     let dataflow_timer = std::time::Instant::now();
+    let resolution_index = RoutineResolutionIndex::new(project);
     let tracked_symbols_by_routine = build_tracked_symbols_by_routine(
         project,
         &out.scope_to_routine,
@@ -481,6 +537,7 @@ fn build_project_routine_analysis_filtered(
             out.metrics.dataflow_routine_runs += 1;
             let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
                 project,
+                &resolution_index,
                 unit,
                 routine_control_regions,
                 &out.routines[routine_id],
@@ -1590,6 +1647,7 @@ fn unreachable_diagnostics_for_cfg(routine: &RoutineAnalysis, cfg: &RoutineCfg) 
 
 fn build_routine_dataflow(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
@@ -1659,10 +1717,16 @@ fn build_routine_dataflow(
         resolve_safe_value_state_checks(unit, &reference_uses, &value_ids_by_symbol);
     let condition_probe_reads =
         resolve_condition_probe_reads(unit, &reference_uses, &value_ids_by_symbol);
-    let mut safe_loop_field_refs =
-        resolve_safe_loop_where_field_refs(project, unit, &reference_uses, &values);
+    let mut safe_loop_field_refs = resolve_safe_loop_where_field_refs(
+        project,
+        resolution_index,
+        unit,
+        &reference_uses,
+        &values,
+    );
     safe_loop_field_refs.extend(resolve_safe_loop_at_field_refs(
         project,
+        resolution_index,
         unit,
         &reference_uses,
         &values,
@@ -1675,6 +1739,7 @@ fn build_routine_dataflow(
     );
     let is_not_initial_field_scope_refinements = resolve_is_not_initial_field_scope_refinements(
         project,
+        resolution_index,
         unit,
         &reference_uses,
         &value_ids_by_symbol,
@@ -1717,6 +1782,7 @@ fn build_routine_dataflow(
         );
     let structure_field_reads = resolve_structure_field_reads(
         project,
+        resolution_index,
         unit,
         &reference_uses,
         &structure_assignment_trackers,
@@ -2365,6 +2431,7 @@ fn build_routine_dataflow(
     for value in &values {
         if value_is_definitely_assigned_on_entry(
             project,
+            resolution_index,
             unit,
             value,
             &values,
@@ -3549,12 +3616,14 @@ fn resolve_condition_probe_reads(
 
 fn resolve_safe_loop_where_field_refs(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
 ) -> std::collections::HashSet<crate::ReferenceId> {
     resolve_safe_loop_field_refs(
         project,
+        resolution_index,
         unit,
         reference_uses,
         values,
@@ -3570,12 +3639,14 @@ fn resolve_safe_loop_where_field_refs(
 
 fn resolve_safe_loop_at_field_refs(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
 ) -> std::collections::HashSet<crate::ReferenceId> {
     resolve_safe_loop_field_refs(
         project,
+        resolution_index,
         unit,
         reference_uses,
         values,
@@ -3591,6 +3662,7 @@ fn resolve_safe_loop_at_field_refs(
 
 fn resolve_safe_loop_field_refs<'a>(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
@@ -3611,6 +3683,7 @@ fn resolve_safe_loop_field_refs<'a>(
             };
             let Some((structure_unit, structure_id)) = resolve_value_access_structure_project(
                 project,
+                resolution_index,
                 unit,
                 reference_uses,
                 values,
@@ -3677,6 +3750,7 @@ fn resolve_is_not_initial_scope_refinements(
 
 fn resolve_is_not_initial_field_scope_refinements(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
@@ -3708,7 +3782,13 @@ fn resolve_is_not_initial_field_scope_refinements(
                 || !value_ids_by_symbol.contains_key(&handle)
                 || reference.scope != check.scope
                 || reference.name != check.symbol_name
-                || value_symbol_is_internal_table(project, unit, use_site.value, values)
+                || value_symbol_is_internal_table(
+                    project,
+                    resolution_index,
+                    unit,
+                    use_site.value,
+                    values,
+                )
             {
                 continue;
             }
@@ -4766,6 +4846,7 @@ fn is_table_line_mutation_assignment(unit: &UnitAnalysis, range: &TextRange) -> 
 
 fn resolve_structure_field_reads(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
@@ -4791,7 +4872,7 @@ fn resolve_structure_field_reads(
         else {
             continue;
         };
-        if value_symbol_is_internal_table(project, unit, base_use.value, values) {
+        if value_symbol_is_internal_table(project, resolution_index, unit, base_use.value, values) {
             continue;
         }
         let Some(mask) = tracker
@@ -4838,6 +4919,7 @@ fn build_structure_assignment_tracker(
 
 fn value_symbol_is_internal_table(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     value: DataflowValueId,
     values: &[RoutineDataflowValue],
@@ -4849,11 +4931,12 @@ fn value_symbol_is_internal_table(
         return false;
     };
     let mut seen = HashSet::new();
-    symbol_is_internal_table(project, unit, symbol, &mut seen)
+    symbol_is_internal_table(project, resolution_index, unit, symbol, &mut seen)
 }
 
 fn symbol_is_internal_table(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     symbol: &SymbolData,
     seen: &mut HashSet<(u32, u32)>,
@@ -4878,9 +4961,14 @@ fn symbol_is_internal_table(
     if !type_ref.field_path.is_empty() {
         return false;
     }
-    let Some((resolved_unit, symbol_id)) =
-        resolve_type_ref_symbol_project(project, unit, unit, symbol.scope, type_ref)
-    else {
+    let Some((resolved_unit, symbol_id)) = resolve_type_ref_symbol_project(
+        project,
+        resolution_index,
+        unit,
+        unit,
+        symbol.scope,
+        type_ref,
+    ) else {
         return false;
     };
     if !seen.insert((resolved_unit.unit_id.0, symbol_id.0)) {
@@ -4889,11 +4977,18 @@ fn symbol_is_internal_table(
     let Some(resolved_symbol) = resolved_unit.symbols.get(symbol_id.as_usize()) else {
         return false;
     };
-    symbol_is_internal_table(project, resolved_unit, resolved_symbol, seen)
+    symbol_is_internal_table(
+        project,
+        resolution_index,
+        resolved_unit,
+        resolved_symbol,
+        seen,
+    )
 }
 
 fn resolve_value_access_structure_project<'a>(
     project: &'a ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &'a UnitAnalysis,
     reference_uses: &[ReferenceUse],
     values: &[RoutineDataflowValue],
@@ -4905,6 +5000,7 @@ fn resolve_value_access_structure_project<'a>(
     let base_handle = resolved_symbol_handle_for_access_base(unit, reference_uses, values, access)?;
     let (mut current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,
+        resolution_index,
         project.units.get(base_handle.unit.as_usize())?,
         unit,
         access.scope,
@@ -4921,8 +5017,14 @@ fn resolve_value_access_structure_project<'a>(
             .fields
             .iter()
             .find(|field| field.name == segment.name)?;
-        let (next_unit, next_structure) =
-            resolve_structure_from_field_project(project, current_unit, unit, access.scope, field)?;
+        let (next_unit, next_structure) = resolve_structure_from_field_project(
+            project,
+            resolution_index,
+            current_unit,
+            unit,
+            access.scope,
+            field,
+        )?;
         current_unit = next_unit;
         current_structure = next_structure;
     }
@@ -4958,6 +5060,7 @@ fn resolved_symbol_handle_for_access_base(
 
 fn resolve_symbol_structure_project<'a>(
     project: &'a ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     current_unit: &'a UnitAnalysis,
     origin_unit: &'a UnitAnalysis,
     scope: ScopeId,
@@ -4972,8 +5075,14 @@ fn resolve_symbol_structure_project<'a>(
             return Some((current_unit, structure_id));
         }
         let type_ref = symbol.declared_type.as_ref()?;
-        let (next_unit, next_symbol_id) =
-            resolve_type_ref_symbol_project(project, current_unit, origin_unit, scope, type_ref)?;
+        let (next_unit, next_symbol_id) = resolve_type_ref_symbol_project(
+            project,
+            resolution_index,
+            current_unit,
+            origin_unit,
+            scope,
+            type_ref,
+        )?;
         if !seen.insert((next_unit.unit_id.0, next_symbol_id.0)) {
             return None;
         }
@@ -4985,6 +5094,7 @@ fn resolve_symbol_structure_project<'a>(
 
 fn resolve_structure_from_field_project<'a>(
     project: &'a ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     current_unit: &'a UnitAnalysis,
     origin_unit: &'a UnitAnalysis,
     scope: ScopeId,
@@ -4994,15 +5104,28 @@ fn resolve_structure_from_field_project<'a>(
         return Some((current_unit, structure_id));
     }
     let type_ref = field.type_ref.as_ref()?;
-    let (next_unit, next_symbol_id) =
-        resolve_type_ref_symbol_project(project, current_unit, origin_unit, scope, type_ref)?;
-    let (next_unit, next_structure) =
-        resolve_symbol_structure_project(project, next_unit, origin_unit, scope, next_symbol_id)?;
+    let (next_unit, next_symbol_id) = resolve_type_ref_symbol_project(
+        project,
+        resolution_index,
+        current_unit,
+        origin_unit,
+        scope,
+        type_ref,
+    )?;
+    let (next_unit, next_structure) = resolve_symbol_structure_project(
+        project,
+        resolution_index,
+        next_unit,
+        origin_unit,
+        scope,
+        next_symbol_id,
+    )?;
     Some((next_unit, next_structure))
 }
 
 fn resolve_type_ref_symbol_project<'a>(
     project: &'a ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     current_unit: &'a UnitAnalysis,
     origin_unit: &'a UnitAnalysis,
     scope: ScopeId,
@@ -5016,25 +5139,27 @@ fn resolve_type_ref_symbol_project<'a>(
     } else {
         current_unit.root_scope
     };
-    let namespaces = if type_ref.namespace == Namespace::Value {
-        [Namespace::Value, Namespace::Type]
-    } else {
-        [type_ref.namespace, type_ref.namespace]
-    };
-    for namespace in namespaces {
-        if let Some(symbol_id) =
-            resolve_symbol_id_in_scope_chain(current_unit, scope, namespace, &type_ref.base_name)
-        {
+    for &namespace in type_ref_lookup_namespaces(type_ref.namespace) {
+        if let Some(symbol_id) = resolve_symbol_id_in_scope_chain(
+            current_unit,
+            scope,
+            namespace,
+            type_ref.base_name.as_ref(),
+        ) {
             return Some((current_unit, symbol_id));
         }
         if current_unit.unit_id != origin_unit.unit_id
-            && let Some(symbol_id) =
-                resolve_symbol_id_in_scope_chain(origin_unit, scope, namespace, &type_ref.base_name)
+            && let Some(symbol_id) = resolve_symbol_id_in_scope_chain(
+                origin_unit,
+                scope,
+                namespace,
+                type_ref.base_name.as_ref(),
+            )
         {
             return Some((origin_unit, symbol_id));
         }
         if let Some((resolved_unit, symbol_id)) =
-            resolve_project_root_symbol(project, namespace, &type_ref.base_name)
+            resolve_project_root_symbol(project, resolution_index, namespace, &type_ref.base_name)
         {
             return Some((resolved_unit, symbol_id));
         }
@@ -5047,7 +5172,7 @@ fn resolve_symbol_id_in_scope_chain(
     scope: ScopeId,
     namespace: Namespace,
     name: &str,
-) -> Option<crate::ids::SymbolId> {
+) -> Option<SymbolId> {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
         if let Some(symbol_id) = unit.symbols.iter().find_map(|symbol| {
@@ -5068,38 +5193,27 @@ fn resolve_symbol_id_in_scope_chain(
 
 fn resolve_project_root_symbol<'a>(
     project: &'a ProjectAnalysis,
+    index: &RoutineResolutionIndex,
     namespace: Namespace,
-    name: &str,
-) -> Option<(&'a UnitAnalysis, crate::ids::SymbolId)> {
-    if let Some(unit_id) =
-        project
-            .provided_name_to_unit
-            .iter()
-            .find_map(|(provided_name, unit_id)| {
-                provided_name
-                    .as_ref()
-                    .eq_ignore_ascii_case(name)
-                    .then_some(*unit_id)
-            })
-    {
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let key = (namespace, symbol_lookup_key(name));
+    if let Some(unit_id) = project.provided_name_to_unit.get(key.1.as_ref()) {
         let unit = project.units.get(unit_id.as_usize())?;
-        if let Some(symbol_id) = unit.symbols.iter().find_map(|symbol| {
-            (symbol.scope == unit.root_scope
-                && symbol.kind.occupies(namespace)
-                && symbol.name.as_ref().eq_ignore_ascii_case(name))
-            .then_some(symbol.id)
-        }) {
+        if let Some(symbol_id) = index
+            .unit_root_symbols
+            .get(unit_id.as_usize())
+            .and_then(|symbols| symbols.get(&key))
+            .copied()
+        {
             return Some((unit, symbol_id));
         }
     }
-    project.units.iter().find_map(|unit| {
-        unit.symbols.iter().find_map(|symbol| {
-            (symbol.scope == unit.root_scope
-                && symbol.kind.occupies(namespace)
-                && symbol.name.as_ref().eq_ignore_ascii_case(name))
-            .then_some((unit, symbol.id))
-        })
-    })
+    let (unit_id, symbol_id) = index.project_root_symbols.get(&key).copied()?;
+    project
+        .units
+        .get(unit_id.as_usize())
+        .map(|unit| (unit, symbol_id))
 }
 
 fn resolve_declared_value_id_for_access(
@@ -5967,6 +6081,7 @@ fn trackable_symbol_kind(kind: SymbolKind) -> bool {
 
 fn value_is_definitely_assigned_on_entry(
     project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     value: &RoutineDataflowValue,
     values: &[RoutineDataflowValue],
@@ -5984,7 +6099,7 @@ fn value_is_definitely_assigned_on_entry(
             if value_is_constructor_expression_binding(unit, value) {
                 return true;
             }
-            if value_symbol_is_internal_table(project, unit, value.id, values) {
+            if value_symbol_is_internal_table(project, resolution_index, unit, value.id, values) {
                 return true;
             }
             unit.symbols
