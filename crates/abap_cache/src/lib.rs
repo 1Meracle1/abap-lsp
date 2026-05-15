@@ -10935,9 +10935,10 @@ struct PreparedDocument {
     uri: Arc<str>,
     version: i32,
     text: Arc<str>,
-    analysis_text: Arc<str>,
+    analysis_text: Option<Arc<str>>,
     is_dependency: bool,
     object_name: Option<Arc<str>>,
+    previous: Option<Arc<AnalysisSnapshot>>,
     parse: Arc<ParseResult>,
     local: LocalAnalysis,
 }
@@ -11006,6 +11007,7 @@ fn prepare_documents(
     existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     previous_analysis: Option<&CachedWorkspaceAnalysis>,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    build_plan: SnapshotBuildPlan,
 ) -> (Vec<PreparedDocument>, AnalysisMetrics) {
     let parse_timer = std::time::Instant::now();
     let empty_existing = HashMap::new();
@@ -11033,32 +11035,43 @@ fn prepare_documents(
                 is_dependency: entry.is_dependency,
                 object_name: entry.object_name.clone(),
             };
-            let projection_timer = std::time::Instant::now();
-            let analysis_text = analysis_text_for_input(&input);
-            dependency_projection_micros.fetch_add(
-                projection_timer.elapsed().as_micros() as u64,
-                Ordering::Relaxed,
-            );
             let previous_local =
                 previous_analysis.and_then(|analysis| analysis.locals.get(entry.uri.as_ref()));
             let previous_snapshot = entry.previous.as_ref();
-            let reuse_previous = previous_snapshot
-                .is_some_and(|snapshot| snapshot_matches_input(snapshot, &input))
-                && previous_local.is_some();
-            let parse = if reuse_previous {
-                Arc::clone(
-                    &previous_snapshot
-                        .expect("reused snapshot should exist")
-                        .parse,
-                )
+            let previous = previous_snapshot
+                .filter(|snapshot| snapshot_matches_input(snapshot, &input))
+                .cloned();
+            let reuse_previous = previous.is_some() && previous_local.is_some();
+            let defer_analysis_text = reuse_previous
+                && entry.is_dependency
+                && build_plan.dependency_diagnostics
+                    == DependencyDiagnosticsMode::EditableAndIncludes;
+            let mut analysis_text = None;
+            let parse = if let Some(snapshot) = previous.as_ref().filter(|_| reuse_previous) {
+                if !defer_analysis_text {
+                    let projection_timer = std::time::Instant::now();
+                    analysis_text = Some(analysis_text_for_input(&input));
+                    dependency_projection_micros.fetch_add(
+                        projection_timer.elapsed().as_micros() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+                Arc::clone(&snapshot.parse)
             } else {
+                let projection_timer = std::time::Instant::now();
+                let projected = analysis_text_for_input(&input);
+                dependency_projection_micros.fetch_add(
+                    projection_timer.elapsed().as_micros() as u64,
+                    Ordering::Relaxed,
+                );
                 parse_count.fetch_add(1, Ordering::Relaxed);
                 let parse_work_timer = std::time::Instant::now();
-                let parsed = Arc::new(parse(analysis_text.as_ref()));
+                let parsed = Arc::new(parse(projected.as_ref()));
                 parse_work_micros.fetch_add(
                     parse_work_timer.elapsed().as_micros() as u64,
                     Ordering::Relaxed,
                 );
+                analysis_text = Some(projected);
                 if let Some(snapshot) = previous_snapshot {
                     if snapshot.parse.as_ref().tokens == parsed.as_ref().tokens
                         && snapshot.parse.as_ref().errors == parsed.as_ref().errors
@@ -11076,6 +11089,9 @@ fn prepare_documents(
             } else {
                 local_phase_count.fetch_add(1, Ordering::Relaxed);
                 let local_phase_work_timer = std::time::Instant::now();
+                let analysis_text = analysis_text
+                    .as_ref()
+                    .expect("local analysis should have projected text");
                 let local = analyze_unit_local_state_for_project_build(
                     UnitId(idx as u32),
                     Arc::clone(&entry.uri),
@@ -11105,6 +11121,7 @@ fn prepare_documents(
                 analysis_text,
                 is_dependency: entry.is_dependency,
                 object_name: entry.object_name.clone(),
+                previous,
                 parse,
                 local,
             }
@@ -11239,6 +11256,11 @@ fn materialize_snapshots(
 
     for (prepared, unit) in prepared_units {
         let scope_index = Arc::new(prepared.local.scope_index.clone());
+        let line_index = prepared
+            .previous
+            .as_ref()
+            .map(|snapshot| Arc::clone(&snapshot.line_index))
+            .unwrap_or_else(|| Arc::new(LineIndex::new(prepared.text.as_ref())));
         locals.insert(Arc::clone(&prepared.uri), prepared.local);
         uri_order.push(Arc::clone(&prepared.uri));
         snapshots.insert(
@@ -11248,7 +11270,7 @@ fn materialize_snapshots(
                 uri: Arc::clone(&prepared.uri),
                 version: prepared.version,
                 text: Arc::clone(&prepared.text),
-                line_index: Arc::new(LineIndex::new(prepared.text.as_ref())),
+                line_index,
                 project_texts: Arc::clone(&project_texts),
                 is_dependency: prepared.is_dependency,
                 object_name: prepared.object_name.clone(),
@@ -11412,8 +11434,15 @@ fn build_project_lint_analysis<'a>(
 ) -> ProjectLintAnalysis {
     let mut diagnostics = Vec::new();
     for (prepared, unit) in units {
+        let analysis_text = prepared
+            .analysis_text
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| {
+                analysis_text_for_document(prepared.text.as_ref(), prepared.is_dependency)
+            });
         let suppression_index =
-            SuppressionIndex::new(prepared.analysis_text.as_ref(), &prepared.parse.lexed);
+            SuppressionIndex::new(analysis_text.as_ref(), &prepared.parse.lexed);
         for diagnostic in &unit.diagnostics {
             if let Some(mut lint_diagnostic) =
                 lint_diagnostic_from_symbol_diagnostic(diagnostic, lint_policy)
@@ -11427,12 +11456,9 @@ fn build_project_lint_analysis<'a>(
                 );
             }
         }
-        for mut lint_diagnostic in build_local_lint_diagnostics(
-            context,
-            unit,
-            prepared.analysis_text.as_ref(),
-            lint_policy,
-        ) {
+        for mut lint_diagnostic in
+            build_local_lint_diagnostics(context, unit, analysis_text.as_ref(), lint_policy)
+        {
             push_filtered_lint_diagnostic(
                 &mut diagnostics,
                 unit.uri.as_ref(),
@@ -12588,7 +12614,8 @@ fn analyze_inputs_with_progress(
     CachedWorkspaceAnalysis,
 ) {
     let build_plan = build_plan.normalized();
-    let (prepared, mut metrics) = prepare_documents(inputs, existing, previous_analysis, progress);
+    let (prepared, mut metrics) =
+        prepare_documents(inputs, existing, previous_analysis, progress, build_plan);
     let diagnostic_scope_roots = diagnostic_scope_roots_for_build_plan(&prepared, build_plan);
     let locals: Vec<_> = prepared
         .iter()
@@ -14101,6 +14128,7 @@ ENDCLASS.",
             }],
             SnapshotBuildPlan::EDITOR_WORKSPACE,
         );
+        let main_before = store.get("file:///main.abap").expect("main snapshot");
 
         let dep_src = "CLASS zcl_dep DEFINITION.\nENDCLASS.";
         store.publish_inputs_with_build_plan(
@@ -14117,8 +14145,10 @@ ENDCLASS.",
         let metrics = store
             .last_analysis_metrics_snapshot()
             .expect("analysis metrics");
+        let main_after = store.get("file:///main.abap").expect("main snapshot");
         assert!(!metrics.full_rebuild);
         assert_eq!(metrics.unit_count, 2);
+        assert!(Arc::ptr_eq(&main_before.line_index, &main_after.line_index));
     }
 
     #[test]
