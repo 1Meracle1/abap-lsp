@@ -40,6 +40,27 @@ fn is_builtin_routine(name: &str) -> bool {
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 type RootHandleCache = HashMap<(usize, Namespace, Arc<str>), Option<SymbolHandle>>;
 
+struct UnitSnapshot<'a> {
+    target_idx: usize,
+    before: &'a [UnitAnalysis],
+    after: &'a [UnitAnalysis],
+    target_snapshots: &'a [UnitAnalysis],
+    target_pos_by_unit_idx: &'a [Option<usize>],
+}
+
+impl UnitSnapshot<'_> {
+    fn unit(&self, unit_idx: usize) -> &UnitAnalysis {
+        if let Some(pos) = self.target_pos_by_unit_idx[unit_idx] {
+            return &self.target_snapshots[pos];
+        }
+        if unit_idx < self.target_idx {
+            &self.before[unit_idx]
+        } else {
+            &self.after[unit_idx - self.target_idx - 1]
+        }
+    }
+}
+
 fn lookup_namespaces(kind: ReferenceKind, namespace: Namespace) -> &'static [Namespace] {
     match (kind, namespace) {
         (ReferenceKind::TypeRef, Namespace::Value) => &[Namespace::Value, Namespace::Type],
@@ -522,12 +543,30 @@ fn resolve_project_cross_unit_with_filter(
         }
     }
 
-    let mut snapshot = units.to_vec();
+    let mut target_pos_by_unit_idx = vec![None; units.len()];
+    for (pos, &unit_idx) in target_unit_indices.iter().enumerate() {
+        target_pos_by_unit_idx[unit_idx] = Some(pos);
+    }
+    let mut target_snapshots: Vec<_> = target_unit_indices
+        .iter()
+        .map(|&unit_idx| units[unit_idx].clone())
+        .collect();
     let mut root_handle_cache = RootHandleCache::new();
     for &unit_idx in &target_unit_indices {
+        let (before, rest) = units.split_at_mut(unit_idx);
+        let (unit, after) = rest
+            .split_first_mut()
+            .expect("target unit index should come from units");
+        let snapshot = UnitSnapshot {
+            target_idx: unit_idx,
+            before,
+            after,
+            target_snapshots: &target_snapshots,
+            target_pos_by_unit_idx: &target_pos_by_unit_idx,
+        };
         let mut imported = HashMap::<(u32, u32), StructureId>::new();
 
-        let symbol_inputs: Vec<_> = units[unit_idx]
+        let symbol_inputs: Vec<_> = unit
             .symbols
             .iter()
             .map(|symbol| (symbol.structure, symbol.declared_type.clone()))
@@ -543,7 +582,7 @@ fn resolve_project_cross_unit_with_filter(
                         &per_unit_root_index,
                         &visible_units,
                         &root_index,
-                        &mut units[unit_idx].structures,
+                        &mut unit.structures,
                         &mut imported,
                         &mut root_handle_cache,
                     )
@@ -551,13 +590,13 @@ fn resolve_project_cross_unit_with_filter(
             });
             symbol_structures.push(structure);
         }
-        for (symbol, structure) in units[unit_idx].symbols.iter_mut().zip(symbol_structures) {
+        for (symbol, structure) in unit.symbols.iter_mut().zip(symbol_structures) {
             symbol.structure = structure;
         }
 
         let mut structure_idx = 0usize;
-        while structure_idx < units[unit_idx].structures.len() {
-            let field_inputs: Vec<_> = units[unit_idx].structures[structure_idx]
+        while structure_idx < unit.structures.len() {
+            let field_inputs: Vec<_> = unit.structures[structure_idx]
                 .fields
                 .iter()
                 .map(|field| (field.structure, field.type_ref.clone()))
@@ -573,7 +612,7 @@ fn resolve_project_cross_unit_with_filter(
                             &per_unit_root_index,
                             &visible_units,
                             &root_index,
-                            &mut units[unit_idx].structures,
+                            &mut unit.structures,
                             &mut imported,
                             &mut root_handle_cache,
                         )
@@ -581,7 +620,7 @@ fn resolve_project_cross_unit_with_filter(
                 });
                 resolved_fields.push(structure);
             }
-            for (field, resolved_structure) in units[unit_idx].structures[structure_idx]
+            for (field, resolved_structure) in unit.structures[structure_idx]
                 .fields
                 .iter_mut()
                 .zip(resolved_fields)
@@ -592,11 +631,23 @@ fn resolve_project_cross_unit_with_filter(
         }
     }
 
-    for &unit_idx in &target_unit_indices {
-        snapshot[unit_idx].clone_from(&units[unit_idx]);
+    for (pos, &unit_idx) in target_unit_indices.iter().enumerate() {
+        target_snapshots[pos].clone_from(&units[unit_idx]);
     }
     for &unit_idx in &target_unit_indices {
-        let symbol_inputs: Vec<_> = snapshot[unit_idx]
+        let (before, rest) = units.split_at_mut(unit_idx);
+        let (unit, after) = rest
+            .split_first_mut()
+            .expect("target unit index should come from units");
+        let snapshot = UnitSnapshot {
+            target_idx: unit_idx,
+            before,
+            after,
+            target_snapshots: &target_snapshots,
+            target_pos_by_unit_idx: &target_pos_by_unit_idx,
+        };
+        let symbol_inputs: Vec<_> = snapshot
+            .unit(unit_idx)
             .symbols
             .iter()
             .map(|symbol| symbol.declared_type.clone())
@@ -611,12 +662,12 @@ fn resolve_project_cross_unit_with_filter(
                     &per_unit_root_index,
                     &visible_units,
                     &root_index,
-                    &mut units[unit_idx].structures,
+                    &mut unit.structures,
                     &mut root_handle_cache,
                 )
             }));
         }
-        for (symbol, normalized) in units[unit_idx].symbols.iter_mut().zip(normalized_symbols) {
+        for (symbol, normalized) in unit.symbols.iter_mut().zip(normalized_symbols) {
             if let Some((structure, declared_type)) = normalized {
                 symbol.structure = structure;
                 symbol.declared_type = Some(declared_type);
@@ -829,7 +880,7 @@ pub(crate) fn resolve_project_cross_unit_for_units(
 }
 
 fn import_structure_for_type_ref(
-    snapshot: &[UnitAnalysis],
+    snapshot: &UnitSnapshot<'_>,
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
@@ -874,7 +925,7 @@ fn import_structure_for_type_ref(
 }
 
 fn resolve_root_symbol_handle(
-    units: &[UnitAnalysis],
+    snapshot: &UnitSnapshot<'_>,
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
@@ -898,7 +949,7 @@ fn resolve_root_symbol_handle(
             .copied()
         {
             resolved = Some(SymbolHandle {
-                unit: units[unit_idx].unit_id,
+                unit: snapshot.unit(unit_idx).unit_id,
                 symbol: symbol_id,
             });
             break;
@@ -925,7 +976,7 @@ fn resolve_root_symbol_handle(
 }
 
 fn import_structure(
-    snapshot: &[UnitAnalysis],
+    snapshot: &UnitSnapshot<'_>,
     source_unit_idx: usize,
     source_structure_id: StructureId,
     target_structures: &mut Vec<StructureData>,
@@ -936,7 +987,9 @@ fn import_structure(
         return existing;
     }
 
-    let source = snapshot[source_unit_idx].structure(source_structure_id);
+    let source = snapshot
+        .unit(source_unit_idx)
+        .structure(source_structure_id);
     let new_id = StructureId(target_structures.len() as u32);
     target_structures.push(StructureData {
         id: new_id,
@@ -973,7 +1026,7 @@ fn import_structure(
 }
 
 fn resolve_symbol_structure_for_target(
-    snapshot: &[UnitAnalysis],
+    snapshot: &UnitSnapshot<'_>,
     target_unit_idx: usize,
     current_unit_idx: usize,
     symbol_id: SymbolId,
@@ -989,7 +1042,7 @@ fn resolve_symbol_structure_for_target(
         return None;
     }
 
-    let symbol = snapshot[current_unit_idx].symbol(symbol_id);
+    let symbol = snapshot.unit(current_unit_idx).symbol(symbol_id);
     if let Some(structure_id) = symbol.structure {
         return Some(if current_unit_idx == target_unit_idx {
             structure_id
@@ -1030,7 +1083,7 @@ fn resolve_symbol_structure_for_target(
 }
 
 fn normalize_field_type_ref_for_target(
-    snapshot: &[UnitAnalysis],
+    snapshot: &UnitSnapshot<'_>,
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
     per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
