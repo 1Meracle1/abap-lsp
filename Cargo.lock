@@ -97,6 +97,7 @@ dependencies = [
  "abap_cache",
  "abap_dependency_store",
  "abap_jsonrpc",
+ "abap_lexer",
  "abap_parser",
  "abap_symbols",
  "lsp-types",

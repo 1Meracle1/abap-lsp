@@ -32,6 +32,7 @@ use abap_dependency_store::{
     CandidateCacheStatus, DependencyProfile, DependencyStore, DependencyStoreReader,
     StoredArtifactInput, StoredArtifactRecord, StoredSymbolInput, resolve_dependency_store_path,
 };
+use abap_lexer::{Token, TokenKind, tokenize};
 use abap_parser::{parse, parse_error_is_include_fragment_boundary};
 use abap_symbols::{
     DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution, SqlResolution,
@@ -2326,10 +2327,10 @@ fn collect_local_export_dependency_candidate_batch(
     }
 
     let chunk_size = batch.len().div_ceil(parallelism);
+    let chunks = into_owned_chunks(batch, chunk_size);
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
-        for chunk in batch.chunks(chunk_size) {
-            let chunk = chunk.to_vec();
+        for chunk in chunks {
             handles.push(scope.spawn(move || {
                 chunk
                     .into_iter()
@@ -2391,10 +2392,10 @@ fn collect_local_export_dependency_candidate_batch_profiled(
     }
 
     let chunk_size = batch.len().div_ceil(parallelism);
+    let chunks = into_owned_chunks(batch, chunk_size);
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
-        for chunk in batch.chunks(chunk_size) {
-            let chunk = chunk.to_vec();
+        for chunk in chunks {
             handles.push(scope.spawn(move || {
                 chunk
                     .into_iter()
@@ -2417,6 +2418,18 @@ fn collect_local_export_dependency_candidate_batch_profiled(
         }
         out
     })
+}
+
+fn into_owned_chunks<T>(items: Vec<T>, chunk_size: usize) -> Vec<Vec<T>> {
+    let mut chunks = Vec::new();
+    let mut iter = items.into_iter();
+    loop {
+        let chunk: Vec<_> = iter.by_ref().take(chunk_size).collect();
+        if chunk.is_empty() {
+            return chunks;
+        }
+        chunks.push(chunk);
+    }
 }
 
 fn collect_local_export_dependency_candidates(
@@ -3320,32 +3333,142 @@ fn dependency_inheritance_candidates_from_record(
         return Vec::new();
     }
     let analysis_text = analysis_text_for_document(record.source_text.as_str(), true);
-    let parsed = parse(analysis_text.as_ref());
-    let unit = analyze_unit(
-        Arc::from(record.object_uri.as_str()),
-        analysis_text.as_ref(),
-        &parsed,
-    );
     let mut deduped = HashMap::new();
-    for inheritance in &unit.class_inheritance {
-        insert_remote_candidate(
-            &mut deduped,
-            RemoteDependencyCandidate {
-                name: inheritance.superclass_name.to_string(),
-                kind: "type".to_string(),
-            },
-        );
-    }
-    for interface in &unit.implemented_interfaces {
-        insert_remote_candidate(
-            &mut deduped,
-            RemoteDependencyCandidate {
-                name: interface.interface_name.to_string(),
-                kind: "type".to_string(),
-            },
-        );
-    }
+    collect_dependency_inheritance_candidates(analysis_text.as_ref(), &mut deduped);
     deduped.into_values().collect()
+}
+
+fn collect_dependency_inheritance_candidates(
+    source: &str,
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    let tokenized = tokenize(source);
+    let tokens = tokenized.tokens.as_ref();
+    let mut stmt_start = 0usize;
+    for (idx, token) in tokens.iter().enumerate() {
+        if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
+            continue;
+        }
+        collect_dependency_inheritance_candidates_from_statement(
+            source,
+            &tokens[stmt_start..=idx],
+            deduped,
+        );
+        stmt_start = idx + 1;
+    }
+}
+
+fn collect_dependency_inheritance_candidates_from_statement(
+    source: &str,
+    stmt: &[Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    let significant: Vec<_> = stmt
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect();
+    let Some(first) = significant.first().copied() else {
+        return;
+    };
+
+    if token_is_keyword(source, first, "class") {
+        if !significant
+            .iter()
+            .any(|token| token_is_keyword(source, token, "definition"))
+        {
+            return;
+        }
+        for window in significant.windows(3) {
+            if token_is_keyword(source, window[0], "inheriting")
+                && token_is_keyword(source, window[1], "from")
+            {
+                insert_inheritance_candidate(deduped, token_text(source, window[2]));
+                return;
+            }
+        }
+        return;
+    }
+
+    if token_is_keyword(source, first, "interfaces") {
+        collect_interfaces_statement_candidates(source, &significant[1..], deduped, false);
+        return;
+    }
+
+    if token_is_keyword(source, first, "interface") {
+        collect_interfaces_statement_candidates(source, &significant[1..], deduped, true);
+    }
+}
+
+fn collect_interfaces_statement_candidates(
+    source: &str,
+    tokens: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    require_load: bool,
+) {
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        while matches!(
+            tokens.get(idx).map(|token| token.kind),
+            Some(TokenKind::Colon | TokenKind::Comma)
+        ) {
+            idx += 1;
+        }
+        let Some(name) = tokens.get(idx).copied() else {
+            return;
+        };
+        if name.kind == TokenKind::Period {
+            return;
+        }
+        if name.kind != TokenKind::Ident {
+            idx += 1;
+            continue;
+        }
+        if require_load {
+            let Some(load) = tokens.get(idx + 1).copied() else {
+                return;
+            };
+            if !token_is_keyword(source, load, "load") {
+                idx += 1;
+                continue;
+            }
+            idx += 2;
+        } else {
+            idx += 1;
+        }
+        insert_inheritance_candidate(deduped, token_text(source, name));
+        idx = advance_to_next_interface_entry(tokens, idx);
+    }
+}
+
+fn advance_to_next_interface_entry(tokens: &[&Token], mut idx: usize) -> usize {
+    while let Some(token) = tokens.get(idx) {
+        if matches!(token.kind, TokenKind::Comma | TokenKind::Period) {
+            break;
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn insert_inheritance_candidate(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    name: &str,
+) {
+    insert_remote_candidate(
+        deduped,
+        RemoteDependencyCandidate {
+            name: name.to_string(),
+            kind: "type".to_string(),
+        },
+    );
+}
+
+fn token_is_keyword(source: &str, token: &Token, keyword: &str) -> bool {
+    token.kind == TokenKind::Ident && token_text(source, token).eq_ignore_ascii_case(keyword)
+}
+
+fn token_text<'a>(source: &'a str, token: &Token) -> &'a str {
+    token.lexeme(source)
 }
 
 fn insert_dependency_inheritance_candidates(
@@ -8366,7 +8489,7 @@ mod tests {
         ManifestPerformance, ManifestResolution, ManifestUnit, ManifestUnitMember,
         WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
     };
-    use abap_dependency_store::StoredArtifactInput;
+    use abap_dependency_store::{StoredArtifactInput, StoredArtifactRecord};
     use abap_symbols::DiagnosticKind;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -8403,16 +8526,16 @@ mod tests {
         collect_local_export_dependency_candidates_profiled, collect_remote_dependency_candidates,
         collect_remote_dependency_candidates_for_workspace_batch, completion, definition,
         dependency_document_input_from_payload_with_kind, dependency_document_uri,
-        extract_stored_dependency_symbols, folding_ranges_from_text,
-        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated,
-        handle_sap_atc_results_updated, hover, hydrate_workspace_dependency_documents,
-        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
-        publish_changed_document, publish_changed_document_mut, publish_open_document,
-        publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
-        semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
-        store_local_export_dependency_candidates, store_remote_dependency_artifacts,
-        workspace_committed_build_plan, workspace_dependency_store,
-        workspace_manifest_diagnostics_params,
+        dependency_inheritance_candidates_from_record, extract_stored_dependency_symbols,
+        folding_ranges_from_text, handle_dependency_cache_refresh_requested,
+        handle_remote_dependencies_updated, handle_sap_atc_results_updated, hover,
+        hydrate_workspace_dependency_documents, initialize_result, inlay_hints, normalize_lsp_uri,
+        offset_to_position, prepare_rename, publish_changed_document, publish_changed_document_mut,
+        publish_open_document, publish_open_document_mut, read_dependency_document, references,
+        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
+        stage_workspace_preview_snapshot, store_local_export_dependency_candidates,
+        store_remote_dependency_artifacts, workspace_committed_build_plan,
+        workspace_dependency_store, workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -17315,6 +17438,48 @@ dependency_mode = "remote-on-demand"
         assert!(workspace.local_export_chain_candidates.is_empty());
         assert!(workspace.local_export_chain_refresh_candidates.is_empty());
         assert!(workspace.dependency_store_hydration_metrics.is_some());
+    }
+
+    #[test]
+    fn stored_artifact_inheritance_scan_ignores_closed_dependency_body() {
+        let record = StoredArtifactRecord {
+            artifact_id: 1,
+            package_name: "ZPKG".to_string(),
+            package_version: "001".to_string(),
+            object_kind: "global-class".to_string(),
+            object_name: "ZCL_CHILD".to_string(),
+            object_uri: "/sap/bc/adt/oo/classes/zcl_child".to_string(),
+            object_type: "CLAS/OC".to_string(),
+            description: "Remote class".to_string(),
+            file_extension: "abap".to_string(),
+            source_text: "\
+CLASS zcl_child DEFINITION PUBLIC INHERITING FROM zcl_base.
+  PUBLIC SECTION.
+    INTERFACES zif_marker ALL METHODS ABSTRACT.
+    INTERFACE: zif_loaded LOAD, zif_other LOAD.
+ENDCLASS.
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    INTERFACE zif_noise LOAD.
+    DATA lo_noise TYPE REF TO zcl_noise.
+  ENDMETHOD.
+ENDCLASS."
+                .to_string(),
+        };
+
+        let candidates = dependency_inheritance_candidates_from_record(&record);
+        let names = candidates
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"zcl_base"), "{candidates:#?}");
+        assert!(names.contains(&"zif_marker"), "{candidates:#?}");
+        assert!(names.contains(&"zif_loaded"), "{candidates:#?}");
+        assert!(names.contains(&"zif_other"), "{candidates:#?}");
+        assert!(!names.contains(&"zcl_noise"), "{candidates:#?}");
+        assert!(!names.contains(&"zif_noise"), "{candidates:#?}");
+        assert!(candidates.iter().all(|candidate| candidate.kind == "type"));
     }
 
     #[test]

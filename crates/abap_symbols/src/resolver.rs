@@ -38,9 +38,67 @@ fn is_builtin_routine(name: &str) -> bool {
 }
 
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
-type RootHandleCache = HashMap<(usize, Namespace, Arc<str>), Option<SymbolHandle>>;
 type TypeRefImportCache = HashMap<(usize, Namespace, Arc<str>, Vec<Arc<str>>), StructureId>;
 type SymbolStructureCache = HashMap<(u32, u32), StructureId>;
+
+#[derive(Default)]
+struct NamespaceCache<V> {
+    value: HashMap<Arc<str>, V>,
+    type_: HashMap<Arc<str>, V>,
+    routine: HashMap<Arc<str>, V>,
+}
+
+impl<V> NamespaceCache<V> {
+    fn get(&self, namespace: Namespace, name: &str) -> Option<&V> {
+        match namespace {
+            Namespace::Value => self.value.get(name),
+            Namespace::Type => self.type_.get(name),
+            Namespace::Routine => self.routine.get(name),
+        }
+    }
+
+    fn insert(&mut self, namespace: Namespace, name: Arc<str>, value: V) {
+        match namespace {
+            Namespace::Value => self.value.insert(name, value),
+            Namespace::Type => self.type_.insert(name, value),
+            Namespace::Routine => self.routine.insert(name, value),
+        };
+    }
+}
+
+#[derive(Default)]
+struct RootHandleCache {
+    by_unit: Vec<NamespaceCache<Option<SymbolHandle>>>,
+}
+
+impl RootHandleCache {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(
+        &self,
+        unit_idx: usize,
+        namespace: Namespace,
+        name: &str,
+    ) -> Option<&Option<SymbolHandle>> {
+        self.by_unit.get(unit_idx)?.get(namespace, name)
+    }
+
+    fn insert(
+        &mut self,
+        unit_idx: usize,
+        namespace: Namespace,
+        name: Arc<str>,
+        handle: Option<SymbolHandle>,
+    ) {
+        if self.by_unit.len() <= unit_idx {
+            self.by_unit
+                .resize_with(unit_idx + 1, NamespaceCache::default);
+        }
+        self.by_unit[unit_idx].insert(namespace, name, handle);
+    }
+}
 
 struct UnitSnapshot<'a> {
     target_idx: usize,
@@ -957,12 +1015,9 @@ fn resolve_root_symbol_handle(
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     root_handle_cache: &mut RootHandleCache,
 ) -> Option<SymbolHandle> {
-    let cache_key = (
-        unit_idx,
-        type_ref.namespace,
-        Arc::clone(&type_ref.base_name),
-    );
-    if let Some(handle) = root_handle_cache.get(&cache_key) {
+    if let Some(handle) =
+        root_handle_cache.get(unit_idx, type_ref.namespace, type_ref.base_name.as_ref())
+    {
         return *handle;
     }
 
@@ -995,7 +1050,12 @@ fn resolve_root_symbol_handle(
             break;
         }
     }
-    root_handle_cache.insert(cache_key, resolved);
+    root_handle_cache.insert(
+        unit_idx,
+        type_ref.namespace,
+        Arc::clone(&type_ref.base_name),
+        resolved,
+    );
     resolved
 }
 
