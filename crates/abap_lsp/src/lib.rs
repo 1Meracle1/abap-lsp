@@ -2295,7 +2295,7 @@ fn resolve_dependency_document_for_candidate_profiled(
 fn collect_local_export_dependency_candidate_batch(
     batch: Vec<(String, LocalExportConfig, WorkspaceDocument)>,
 ) -> Vec<(String, LocalExportConfig, Vec<RemoteDependencyCandidate>)> {
-    if batch.len() < 8 {
+    if batch.len() < 2 {
         return batch
             .into_iter()
             .map(|(uri, config, document)| {
@@ -2364,7 +2364,7 @@ fn collect_local_export_dependency_candidate_batch_profiled(
     Vec<RemoteDependencyCandidate>,
     LocalExportCandidateDocumentProfile,
 )> {
-    if batch.len() < 8 {
+    if batch.len() < 2 {
         return batch
             .into_iter()
             .map(|(uri, config, document)| {
@@ -5455,7 +5455,12 @@ fn remote_dependency_batch_phase(
     if workspace.open_documents.contains_key(uri) {
         return RemoteDependencyBatchPhase::PriorityLocal;
     }
-    if uri_is_manifest_dependency(workspace, uri) {
+    if workspace
+        .cache
+        .get(uri)
+        .is_some_and(|snapshot| snapshot.is_dependency)
+        || uri_is_manifest_dependency(workspace, uri)
+    {
         return RemoteDependencyBatchPhase::Dependency;
     }
 
