@@ -645,17 +645,35 @@ type CallArgumentEffectMap = HashMap<(usize, usize, usize, usize), CallArgumentE
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DenseBitSet {
+    inline: u64,
     words: Vec<u64>,
 }
 
 impl DenseBitSet {
     fn new(bit_count: usize) -> Self {
+        if bit_count <= 64 {
+            return Self {
+                inline: 0,
+                words: Vec::new(),
+            };
+        }
         Self {
+            inline: 0,
             words: vec![0; bit_count.div_ceil(64)],
         }
     }
 
     fn filled(bit_count: usize) -> Self {
+        if bit_count <= 64 {
+            return Self {
+                inline: if bit_count == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << bit_count) - 1
+                },
+                words: Vec::new(),
+            };
+        }
         let word_count = bit_count.div_ceil(64);
         let mut words = vec![u64::MAX; word_count];
         let trailing_bits = bit_count % 64;
@@ -664,11 +682,17 @@ impl DenseBitSet {
         {
             *last = (1u64 << trailing_bits) - 1;
         }
-        Self { words }
+        Self { inline: 0, words }
     }
 
     fn insert(&mut self, value: DataflowValueId) {
         let idx = value.as_usize();
+        if self.words.is_empty() {
+            if idx < 64 {
+                self.inline |= 1u64 << idx;
+            }
+            return;
+        }
         let word = idx / 64;
         let bit = idx % 64;
         if let Some(slot) = self.words.get_mut(word) {
@@ -678,6 +702,12 @@ impl DenseBitSet {
 
     fn remove(&mut self, value: DataflowValueId) {
         let idx = value.as_usize();
+        if self.words.is_empty() {
+            if idx < 64 {
+                self.inline &= !(1u64 << idx);
+            }
+            return;
+        }
         let word = idx / 64;
         let bit = idx % 64;
         if let Some(slot) = self.words.get_mut(word) {
@@ -687,6 +717,9 @@ impl DenseBitSet {
 
     fn contains(&self, value: DataflowValueId) -> bool {
         let idx = value.as_usize();
+        if self.words.is_empty() {
+            return idx < 64 && (self.inline & (1u64 << idx)) != 0;
+        }
         let word = idx / 64;
         let bit = idx % 64;
         self.words
@@ -695,14 +728,50 @@ impl DenseBitSet {
     }
 
     fn union_from(&mut self, other: &Self) {
+        if self.words.is_empty() {
+            self.inline |= other.inline;
+            return;
+        }
         for (slot, other_slot) in self.words.iter_mut().zip(&other.words) {
             *slot |= *other_slot;
         }
     }
 
+    fn intersect_from(&mut self, other: &Self) {
+        if self.words.is_empty() {
+            self.inline &= other.inline;
+            return;
+        }
+        for (slot, other_slot) in self.words.iter_mut().zip(&other.words) {
+            *slot &= *other_slot;
+        }
+    }
+
     fn subtract_from(&mut self, other: &Self) {
+        if self.words.is_empty() {
+            self.inline &= !other.inline;
+            return;
+        }
         for (slot, other_slot) in self.words.iter_mut().zip(&other.words) {
             *slot &= !*other_slot;
+        }
+    }
+
+    fn any(&self) -> bool {
+        if self.words.is_empty() {
+            self.inline != 0
+        } else {
+            self.words.iter().any(|word| *word != 0)
+        }
+    }
+
+    fn for_each_word(&self, mut f: impl FnMut(usize, u64)) {
+        if self.words.is_empty() {
+            f(0, self.inline);
+        } else {
+            for (idx, word) in self.words.iter().copied().enumerate() {
+                f(idx, word);
+            }
         }
     }
 }
@@ -2658,7 +2727,7 @@ fn build_dead_store_diagnostics(
         value_ids_by_symbol,
         call_argument_effects,
     );
-    if !tracked_values.words.iter().any(|word| *word != 0) {
+    if !tracked_values.any() {
         return Vec::new();
     }
     let value_state_check_refs =
@@ -5333,13 +5402,7 @@ fn intersect_predecessor_bits(
     };
     let mut out = block_exit_bits[first.as_usize()].clone();
     for predecessor in rest {
-        for (slot, other) in out
-            .words
-            .iter_mut()
-            .zip(&block_exit_bits[predecessor.as_usize()].words)
-        {
-            *slot &= *other;
-        }
+        out.intersect_from(&block_exit_bits[predecessor.as_usize()]);
     }
     out
 }
@@ -5369,9 +5432,7 @@ fn intersect_predecessor_non_initial_bits(
     for predecessor in rest {
         let bits =
             predecessor_non_initial_bits(*predecessor, block_exit_non_initial, edge_refinements);
-        for (slot, other) in out.words.iter_mut().zip(&bits.words) {
-            *slot &= *other;
-        }
+        out.intersect_from(&bits);
     }
     out
 }
@@ -5537,14 +5598,14 @@ fn is_structure_field_definitely_assigned(
 
 fn bitset_to_value_ids(bits: &DenseBitSet) -> Vec<DataflowValueId> {
     let mut out = Vec::new();
-    for (word_idx, word) in bits.words.iter().copied().enumerate() {
+    bits.for_each_word(|word_idx, word| {
         let mut remaining = word;
         while remaining != 0 {
             let bit = remaining.trailing_zeros() as usize;
             out.push(DataflowValueId((word_idx * 64 + bit) as u32));
             remaining &= remaining - 1;
         }
-    }
+    });
     out
 }
 
