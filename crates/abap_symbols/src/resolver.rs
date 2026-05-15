@@ -40,12 +40,23 @@ fn is_builtin_routine(name: &str) -> bool {
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 type TypeRefImportCache = HashMap<(usize, Namespace, Arc<str>, Vec<Arc<str>>), StructureId>;
 type SymbolStructureCache = HashMap<(u32, u32), StructureId>;
+type PerUnitRootIndex = Vec<NamespaceCache<SymbolId>>;
+type RootIndex = NamespaceCache<Vec<SymbolHandle>>;
 
-#[derive(Default)]
 struct NamespaceCache<V> {
     value: HashMap<Arc<str>, V>,
     type_: HashMap<Arc<str>, V>,
     routine: HashMap<Arc<str>, V>,
+}
+
+impl<V> Default for NamespaceCache<V> {
+    fn default() -> Self {
+        Self {
+            value: HashMap::new(),
+            type_: HashMap::new(),
+            routine: HashMap::new(),
+        }
+    }
 }
 
 impl<V> NamespaceCache<V> {
@@ -63,6 +74,18 @@ impl<V> NamespaceCache<V> {
             Namespace::Type => self.type_.insert(name, value),
             Namespace::Routine => self.routine.insert(name, value),
         };
+    }
+
+    fn entry(
+        &mut self,
+        namespace: Namespace,
+        name: Arc<str>,
+    ) -> std::collections::hash_map::Entry<'_, Arc<str>, V> {
+        match namespace {
+            Namespace::Value => self.value.entry(name),
+            Namespace::Type => self.type_.entry(name),
+            Namespace::Routine => self.routine.entry(name),
+        }
     }
 }
 
@@ -104,19 +127,96 @@ struct UnitSnapshot<'a> {
     target_idx: usize,
     before: &'a [UnitAnalysis],
     after: &'a [UnitAnalysis],
-    target_snapshots: &'a [UnitAnalysis],
+    target_snapshots: &'a [UnitTypeSnapshot],
     target_pos_by_unit_idx: &'a [Option<usize>],
 }
 
+struct UnitTypeSnapshot {
+    unit_id: UnitId,
+    symbols: Vec<SymbolTypeSnapshot>,
+    structures: Vec<StructureData>,
+}
+
+struct SymbolTypeSnapshot {
+    structure: Option<StructureId>,
+    declared_type: Option<FieldTypeRefData>,
+}
+
+impl UnitTypeSnapshot {
+    fn from_unit(unit: &UnitAnalysis) -> Self {
+        Self {
+            unit_id: unit.unit_id,
+            symbols: unit
+                .symbols
+                .iter()
+                .map(|symbol| SymbolTypeSnapshot {
+                    structure: symbol.structure,
+                    declared_type: symbol.declared_type.clone(),
+                })
+                .collect(),
+            structures: unit.structures.clone(),
+        }
+    }
+}
+
 impl UnitSnapshot<'_> {
-    fn unit(&self, unit_idx: usize) -> &UnitAnalysis {
+    fn target(&self, unit_idx: usize) -> Option<&UnitTypeSnapshot> {
         if let Some(pos) = self.target_pos_by_unit_idx[unit_idx] {
-            return &self.target_snapshots[pos];
+            Some(&self.target_snapshots[pos])
+        } else {
+            None
+        }
+    }
+
+    fn unit_id(&self, unit_idx: usize) -> UnitId {
+        if let Some(target) = self.target(unit_idx) {
+            return target.unit_id;
         }
         if unit_idx < self.target_idx {
-            &self.before[unit_idx]
+            self.before[unit_idx].unit_id
         } else {
-            &self.after[unit_idx - self.target_idx - 1]
+            self.after[unit_idx - self.target_idx - 1].unit_id
+        }
+    }
+
+    fn symbol_structure(&self, unit_idx: usize, symbol_id: SymbolId) -> Option<StructureId> {
+        if let Some(target) = self.target(unit_idx) {
+            return target.symbols[symbol_id.as_usize()].structure;
+        }
+        if unit_idx < self.target_idx {
+            self.before[unit_idx].symbols[symbol_id.as_usize()].structure
+        } else {
+            self.after[unit_idx - self.target_idx - 1].symbols[symbol_id.as_usize()].structure
+        }
+    }
+
+    fn symbol_declared_type(
+        &self,
+        unit_idx: usize,
+        symbol_id: SymbolId,
+    ) -> Option<&FieldTypeRefData> {
+        if let Some(target) = self.target(unit_idx) {
+            return target.symbols[symbol_id.as_usize()].declared_type.as_ref();
+        }
+        if unit_idx < self.target_idx {
+            self.before[unit_idx].symbols[symbol_id.as_usize()]
+                .declared_type
+                .as_ref()
+        } else {
+            self.after[unit_idx - self.target_idx - 1].symbols[symbol_id.as_usize()]
+                .declared_type
+                .as_ref()
+        }
+    }
+
+    fn structure(&self, unit_idx: usize, structure_id: StructureId) -> &StructureData {
+        if let Some(target) = self.target(unit_idx) {
+            return &target.structures[structure_id.as_usize()];
+        }
+        if unit_idx < self.target_idx {
+            &self.before[unit_idx].structures[structure_id.as_usize()]
+        } else {
+            &self.after[unit_idx - self.target_idx - 1].structures[structure_id.as_usize()]
         }
     }
 }
@@ -239,14 +339,14 @@ fn inherited_class_scope_symbol(
 fn resolve_direct_superclass_handle_in_project(
     units: &[UnitAnalysis],
     current: SymbolHandle,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
-    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_index: &RootIndex,
 ) -> Option<SymbolHandle> {
     let unit = &units[current.unit.as_usize()];
     let inheritance = unit.class_superclass(current.symbol)?;
     if let Some(symbol_id) = per_unit_root_index[current.unit.as_usize()]
-        .get(&(Namespace::Type, Arc::clone(&inheritance.superclass_name)))
+        .get(Namespace::Type, inheritance.superclass_name.as_ref())
         .copied()
     {
         return Some(SymbolHandle {
@@ -264,7 +364,7 @@ fn resolve_direct_superclass_handle_in_project(
         return Some(symbol);
     }
     root_index
-        .get(&(Namespace::Type, Arc::clone(&inheritance.superclass_name)))
+        .get(Namespace::Type, inheritance.superclass_name.as_ref())
         .and_then(|handles| handles.first().copied())
 }
 
@@ -304,9 +404,9 @@ fn resolve_inherited_symbol_in_project(
     scope: ScopeId,
     namespace: Namespace,
     name: &Arc<str>,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
-    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_index: &RootIndex,
 ) -> Option<SymbolHandle> {
     let unit = &units[unit_idx];
     let mut current = SymbolHandle {
@@ -433,10 +533,12 @@ fn resolve_project_cross_unit_with_filter(
         return;
     }
 
-    let mut root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>> = HashMap::new();
-    let mut per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), SymbolId>> =
-        vec![HashMap::new(); units.len()];
+    let mut root_index = RootIndex::default();
+    let mut per_unit_root_index: PerUnitRootIndex = (0..units.len())
+        .map(|_| NamespaceCache::default())
+        .collect();
     let mut provided_name_to_unit: HashMap<Arc<str>, SymbolHandle> = HashMap::new();
+    let mut root_symbol_names = HashSet::new();
     for unit in units.iter() {
         for name in &unit.provided_names {
             provided_name_to_unit
@@ -452,25 +554,22 @@ fn resolve_project_cross_unit_with_filter(
             }
             for &namespace in symbol.kind.namespaces() {
                 per_unit_root_index[unit.unit_id.as_usize()]
-                    .entry((namespace, Arc::clone(&symbol.name)))
+                    .entry(namespace, Arc::clone(&symbol.name))
                     .or_insert(symbol.id);
                 if root_symbol_is_visible_across_units_by_default(symbol) {
                     root_index
-                        .entry((namespace, Arc::clone(&symbol.name)))
+                        .entry(namespace, Arc::clone(&symbol.name))
                         .or_default()
                         .push(SymbolHandle {
                             unit: unit.unit_id,
                             symbol: symbol.id,
                         });
+                    root_symbol_names.insert(Arc::clone(&symbol.name));
                 }
             }
         }
     }
 
-    let root_symbol_names: HashSet<_> = root_index
-        .keys()
-        .map(|(_, name)| Arc::clone(name))
-        .collect();
     let visible_units = include_visible_units_for_units(units);
     let predecessor_units = include_predecessor_units_for_units(units);
 
@@ -497,7 +596,7 @@ fn resolve_project_cross_unit_with_filter(
                 });
                 if let Some(superclass_name) = superclass_name {
                     if let Some(symbol_id) = per_unit_root_index[unit_idx]
-                        .get(&(Namespace::Type, Arc::clone(&superclass_name)))
+                        .get(Namespace::Type, superclass_name.as_ref())
                         .copied()
                     {
                         resolved = Some(Resolution::Symbol(SymbolHandle {
@@ -516,7 +615,8 @@ fn resolve_project_cross_unit_with_filter(
                         .map(Resolution::Symbol);
                     }
                     if resolved.is_none()
-                        && let Some(handles) = root_index.get(&(Namespace::Type, superclass_name))
+                        && let Some(handles) =
+                            root_index.get(Namespace::Type, superclass_name.as_ref())
                         && let Some(symbol) = handles.first().copied()
                     {
                         resolved = Some(Resolution::Symbol(symbol));
@@ -578,7 +678,7 @@ fn resolve_project_cross_unit_with_filter(
             }
             if resolved.is_none() {
                 for &namespace in namespaces {
-                    if let Some(handles) = root_index.get(&(namespace, Arc::clone(&reference_name)))
+                    if let Some(handles) = root_index.get(namespace, reference_name.as_ref())
                         && let Some(symbol) = handles.first().copied()
                     {
                         resolved = Some(Resolution::Symbol(symbol));
@@ -609,7 +709,7 @@ fn resolve_project_cross_unit_with_filter(
     }
     let mut target_snapshots: Vec<_> = target_unit_indices
         .iter()
-        .map(|&unit_idx| units[unit_idx].clone())
+        .map(|&unit_idx| UnitTypeSnapshot::from_unit(&units[unit_idx]))
         .collect();
     let mut root_handle_cache = RootHandleCache::new();
     for &unit_idx in &target_unit_indices {
@@ -698,7 +798,7 @@ fn resolve_project_cross_unit_with_filter(
     }
 
     for (pos, &unit_idx) in target_unit_indices.iter().enumerate() {
-        target_snapshots[pos].clone_from(&units[unit_idx]);
+        target_snapshots[pos] = UnitTypeSnapshot::from_unit(&units[unit_idx]);
     }
     for &unit_idx in &target_unit_indices {
         let (before, rest) = units.split_at_mut(unit_idx);
@@ -713,8 +813,7 @@ fn resolve_project_cross_unit_with_filter(
             target_pos_by_unit_idx: &target_pos_by_unit_idx,
         };
         let mut symbol_structure_cache = SymbolStructureCache::new();
-        let symbol_inputs: Vec<_> = snapshot
-            .unit(unit_idx)
+        let symbol_inputs: Vec<_> = unit
             .symbols
             .iter()
             .map(|symbol| symbol.declared_type.clone())
@@ -750,49 +849,81 @@ fn resolve_class_member_symbol_in_visible_definition(
     scope: ScopeId,
     namespace: Namespace,
     name: &Arc<str>,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     predecessor_units: &[Vec<UnitId>],
     visible_units: &[Vec<UnitId>],
 ) -> Option<SymbolHandle> {
     let current_unit = units.get(unit_idx)?;
     let current_class = enclosing_class_owner(current_unit, scope)?;
-    let class_name = Arc::clone(&current_unit.symbol(current_class).name);
+    let class_name = current_unit.symbol(current_class).name.as_ref();
 
-    let mut candidate_units = Vec::new();
-    candidate_units.push(current_unit.unit_id);
+    if let Some(symbol) = resolve_class_member_symbol_in_candidate_unit(
+        units,
+        current_unit.unit_id,
+        class_name,
+        namespace,
+        name,
+        per_unit_root_index,
+    ) {
+        return Some(symbol);
+    }
     if let Some(predecessors) = predecessor_units.get(unit_idx) {
-        candidate_units.extend(predecessors.iter().rev().copied());
+        for candidate_unit in predecessors.iter().rev().copied() {
+            if candidate_unit == current_unit.unit_id {
+                continue;
+            }
+            if let Some(symbol) = resolve_class_member_symbol_in_candidate_unit(
+                units,
+                candidate_unit,
+                class_name,
+                namespace,
+                name,
+                per_unit_root_index,
+            ) {
+                return Some(symbol);
+            }
+        }
     }
     if let Some(visible) = visible_units.get(unit_idx) {
-        candidate_units.extend(visible.iter().copied());
-    }
-
-    let mut seen = HashSet::new();
-    for candidate_unit in candidate_units {
-        if !seen.insert(candidate_unit) {
-            continue;
-        }
-        let candidate_idx = candidate_unit.as_usize();
-        let Some(class_symbol) = per_unit_root_index
-            .get(candidate_idx)
-            .and_then(|index| index.get(&(Namespace::Type, Arc::clone(&class_name))))
-            .copied()
-        else {
-            continue;
-        };
-        let candidate = &units[candidate_idx];
-        if candidate.class_definition(class_symbol).is_none() {
-            continue;
-        }
-        if let Some(symbol) = class_scope_symbol(candidate, class_symbol, namespace, name) {
-            return Some(SymbolHandle {
-                unit: candidate.unit_id,
-                symbol,
-            });
+        for candidate_unit in visible.iter().copied() {
+            if candidate_unit == current_unit.unit_id {
+                continue;
+            }
+            if let Some(symbol) = resolve_class_member_symbol_in_candidate_unit(
+                units,
+                candidate_unit,
+                class_name,
+                namespace,
+                name,
+                per_unit_root_index,
+            ) {
+                return Some(symbol);
+            }
         }
     }
 
     None
+}
+
+fn resolve_class_member_symbol_in_candidate_unit(
+    units: &[UnitAnalysis],
+    candidate_unit: UnitId,
+    class_name: &str,
+    namespace: Namespace,
+    name: &Arc<str>,
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
+) -> Option<SymbolHandle> {
+    let candidate_idx = candidate_unit.as_usize();
+    let class_symbol = per_unit_root_index
+        .get(candidate_idx)?
+        .get(Namespace::Type, class_name)
+        .copied()?;
+    let candidate = units.get(candidate_idx)?;
+    candidate.class_definition(class_symbol)?;
+    class_scope_symbol(candidate, class_symbol, namespace, name).map(|symbol| SymbolHandle {
+        unit: candidate.unit_id,
+        symbol,
+    })
 }
 
 fn root_symbol_is_visible_across_units_by_default(symbol: &SymbolData) -> bool {
@@ -917,14 +1048,14 @@ fn resolve_root_symbol_in_visible_units(
     unit_idx: usize,
     namespace: Namespace,
     name: &Arc<str>,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
 ) -> Option<SymbolHandle> {
     for visible_unit in visible_units.get(unit_idx)? {
         let target_idx = visible_unit.as_usize();
         if let Some(symbol_id) = per_unit_root_index
             .get(target_idx)
-            .and_then(|index| index.get(&(namespace, Arc::clone(name))))
+            .and_then(|index| index.get(namespace, name.as_ref()))
             .copied()
         {
             return Some(SymbolHandle {
@@ -951,9 +1082,9 @@ fn import_structure_for_type_ref(
     snapshot: &UnitSnapshot<'_>,
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
-    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_index: &RootIndex,
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
@@ -1010,9 +1141,9 @@ fn resolve_root_symbol_handle(
     snapshot: &UnitSnapshot<'_>,
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
-    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_index: &RootIndex,
     root_handle_cache: &mut RootHandleCache,
 ) -> Option<SymbolHandle> {
     if let Some(handle) =
@@ -1024,11 +1155,11 @@ fn resolve_root_symbol_handle(
     let mut resolved = None;
     for &namespace in lookup_namespaces(ReferenceKind::TypeRef, type_ref.namespace) {
         if let Some(symbol_id) = per_unit_root_index[unit_idx]
-            .get(&(namespace, Arc::clone(&type_ref.base_name)))
+            .get(namespace, type_ref.base_name.as_ref())
             .copied()
         {
             resolved = Some(SymbolHandle {
-                unit: snapshot.unit(unit_idx).unit_id,
+                unit: snapshot.unit_id(unit_idx),
                 symbol: symbol_id,
             });
             break;
@@ -1043,7 +1174,7 @@ fn resolve_root_symbol_handle(
             resolved = Some(handle);
             break;
         }
-        if let Some(handles) = root_index.get(&(namespace, Arc::clone(&type_ref.base_name)))
+        if let Some(handles) = root_index.get(namespace, type_ref.base_name.as_ref())
             && let Some(handle) = handles.first().copied()
         {
             resolved = Some(handle);
@@ -1071,9 +1202,7 @@ fn import_structure(
         return existing;
     }
 
-    let source = snapshot
-        .unit(source_unit_idx)
-        .structure(source_structure_id);
+    let source = snapshot.structure(source_unit_idx, source_structure_id);
     let new_id = StructureId(target_structures.len() as u32);
     target_structures.push(StructureData {
         id: new_id,
@@ -1114,9 +1243,9 @@ fn resolve_symbol_structure_for_target(
     target_unit_idx: usize,
     current_unit_idx: usize,
     symbol_id: SymbolId,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
-    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_index: &RootIndex,
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
@@ -1131,45 +1260,45 @@ fn resolve_symbol_structure_for_target(
         return None;
     }
 
-    let symbol = snapshot.unit(current_unit_idx).symbol(symbol_id);
-    let structure_id = if let Some(structure_id) = symbol.structure {
-        if current_unit_idx == target_unit_idx {
-            structure_id
+    let structure_id =
+        if let Some(structure_id) = snapshot.symbol_structure(current_unit_idx, symbol_id) {
+            if current_unit_idx == target_unit_idx {
+                structure_id
+            } else {
+                import_structure(
+                    snapshot,
+                    current_unit_idx,
+                    structure_id,
+                    target_structures,
+                    imported,
+                )
+            }
         } else {
-            import_structure(
+            let next_type_ref = snapshot.symbol_declared_type(current_unit_idx, symbol_id)?;
+            let handle = resolve_root_symbol_handle(
                 snapshot,
                 current_unit_idx,
-                structure_id,
+                next_type_ref,
+                per_unit_root_index,
+                visible_units,
+                root_index,
+                root_handle_cache,
+            )?;
+            resolve_symbol_structure_for_target(
+                snapshot,
+                target_unit_idx,
+                handle.unit.as_usize(),
+                handle.symbol,
+                per_unit_root_index,
+                visible_units,
+                root_index,
                 target_structures,
                 imported,
-            )
-        }
-    } else {
-        let next_type_ref = symbol.declared_type.as_ref()?;
-        let handle = resolve_root_symbol_handle(
-            snapshot,
-            current_unit_idx,
-            next_type_ref,
-            per_unit_root_index,
-            visible_units,
-            root_index,
-            root_handle_cache,
-        )?;
-        resolve_symbol_structure_for_target(
-            snapshot,
-            target_unit_idx,
-            handle.unit.as_usize(),
-            handle.symbol,
-            per_unit_root_index,
-            visible_units,
-            root_index,
-            target_structures,
-            imported,
-            root_handle_cache,
-            symbol_structure_cache,
-            seen,
-        )?
-    };
+                root_handle_cache,
+                symbol_structure_cache,
+                seen,
+            )?
+        };
     symbol_structure_cache.insert(cache_key, structure_id);
     Some(structure_id)
 }
@@ -1178,9 +1307,9 @@ fn normalize_field_type_ref_for_target(
     snapshot: &UnitSnapshot<'_>,
     unit_idx: usize,
     type_ref: &FieldTypeRefData,
-    per_unit_root_index: &[HashMap<(Namespace, Arc<str>), SymbolId>],
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
     visible_units: &[Vec<UnitId>],
-    root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    root_index: &RootIndex,
     target_structures: &mut Vec<StructureData>,
     root_handle_cache: &mut RootHandleCache,
     symbol_structure_cache: &mut SymbolStructureCache,
