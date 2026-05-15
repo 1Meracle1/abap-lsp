@@ -3100,6 +3100,7 @@ fn workspace_dependency_hydration_build_plan(workspace: &WorkspaceState) -> Snap
     build_plan.static_analysis = false;
     build_plan.call_graph = false;
     build_plan.callable_summaries = false;
+    build_plan.lint_analysis = false;
     build_plan
 }
 
@@ -3138,7 +3139,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
 
     let build_plan = workspace_dependency_hydration_build_plan(workspace);
     let mut queried_candidates = HashSet::<String>::new();
-    let mut scanned_candidate_sources = HashSet::<String>::new();
+    let mut scanned_candidate_sources = HashSet::<Arc<str>>::new();
     let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
     let mut inheritance_candidates_by_artifact =
@@ -3148,7 +3149,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
         metrics.iterations += 1;
         let candidate_dependency_count = candidate_dependency_uris.len();
         let mut inputs = Vec::<DocumentInput>::new();
-        let mut input_uris = HashSet::<String>::new();
+        let mut input_uris = HashSet::<Arc<str>>::new();
 
         let cache_uris = workspace.cache.uris();
         metrics.cache_uri_scans += cache_uris.len();
@@ -3164,7 +3165,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                 metrics.dependency_snapshots_skipped += 1;
                 continue;
             }
-            if !scanned_candidate_sources.insert(uri.to_string()) {
+            if !scanned_candidate_sources.insert(Arc::clone(&uri)) {
                 continue;
             }
 
@@ -3226,30 +3227,34 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                     continue;
                 };
                 metrics.artifact_hits += 1;
-                let mut records = VecDeque::from([(record, uri.to_string())]);
+                let mut records = VecDeque::from([(record, Arc::clone(&uri))]);
                 let mut expanded_artifacts = HashSet::new();
                 while let Some((record, parent_uri)) = records.pop_front() {
                     let input = workspace_dependency_document_input(workspace, &record);
-                    record_dependency_parent_uri(workspace, input.uri.as_ref(), &parent_uri);
-                    candidate_dependency_uris.insert(Arc::clone(&input.uri));
-                    if workspace.cache.get(input.uri.as_ref()).is_some()
-                        || !input_uris.insert(input.uri.to_string())
+                    let input_uri = Arc::clone(&input.uri);
+                    record_dependency_parent_uri(
+                        workspace,
+                        input_uri.as_ref(),
+                        parent_uri.as_ref(),
+                    );
+                    candidate_dependency_uris.insert(Arc::clone(&input_uri));
+                    if workspace.cache.get(input_uri.as_ref()).is_some()
+                        || !input_uris.insert(Arc::clone(&input_uri))
                     {
                         metrics.existing_or_duplicate_inputs += 1;
                     } else {
-                        hydrated_uris.insert(Arc::clone(&input.uri));
-                        inputs.push(input.clone());
+                        hydrated_uris.insert(Arc::clone(&input_uri));
+                        inputs.push(input);
                     }
                     if !expanded_artifacts.insert(record.artifact_id) {
                         continue;
                     }
                     let inheritance_candidates = inheritance_candidates_by_artifact
                         .entry(record.artifact_id)
-                        .or_insert_with(|| dependency_inheritance_candidates_from_record(&record))
-                        .clone();
+                        .or_insert_with(|| dependency_inheritance_candidates_from_record(&record));
                     metrics.candidate_count += inheritance_candidates.len();
-                    for candidate in inheritance_candidates {
-                        let candidate_key = remote_candidate_key(&candidate);
+                    for candidate in inheritance_candidates.iter() {
+                        let candidate_key = remote_candidate_key(candidate);
                         if !queried_candidates.insert(candidate_key) {
                             continue;
                         }
@@ -3268,7 +3273,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                             continue;
                         };
                         metrics.artifact_hits += 1;
-                        records.push_back((inherited_record, input.uri.to_string()));
+                        records.push_back((inherited_record, Arc::clone(&input_uri)));
                     }
                 }
             }
@@ -3367,15 +3372,19 @@ fn resolved_dependency_inheritance_candidates(
 fn dependency_inheritance_candidates_from_record(
     record: &StoredArtifactRecord,
 ) -> Vec<RemoteDependencyCandidate> {
-    if !matches!(
-        record.object_kind.as_str(),
-        "global-class" | "global-interface"
-    ) {
-        return Vec::new();
-    }
-    let analysis_text = analysis_text_for_document(record.source_text.as_str(), true);
     let mut deduped = HashMap::new();
-    collect_dependency_inheritance_candidates(analysis_text.as_ref(), &mut deduped);
+    match record.object_kind.as_str() {
+        "global-class" => {
+            collect_class_dependency_inheritance_candidates(
+                record.source_text.as_str(),
+                &mut deduped,
+            );
+        }
+        "global-interface" => {
+            collect_dependency_inheritance_candidates(record.source_text.as_str(), &mut deduped);
+        }
+        _ => return Vec::new(),
+    }
     deduped.into_values().collect()
 }
 
@@ -3390,24 +3399,86 @@ fn collect_dependency_inheritance_candidates(
         if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
             continue;
         }
-        collect_dependency_inheritance_candidates_from_statement(
-            source,
-            &tokens[stmt_start..=idx],
-            deduped,
-        );
+        let significant = significant_statement_tokens(&tokens[stmt_start..=idx]);
+        collect_dependency_inheritance_candidates_from_statement(source, &significant, deduped);
         stmt_start = idx + 1;
     }
 }
 
-fn collect_dependency_inheritance_candidates_from_statement(
+fn collect_class_dependency_inheritance_candidates(
     source: &str,
-    stmt: &[Token],
     deduped: &mut HashMap<String, RemoteDependencyCandidate>,
 ) {
-    let significant: Vec<_> = stmt
-        .iter()
+    let tokenized = tokenize(source);
+    let tokens = tokenized.tokens.as_ref();
+    let mut stmt_start = 0usize;
+    let mut in_definition = false;
+    let mut private = true;
+    for (idx, token) in tokens.iter().enumerate() {
+        if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
+            continue;
+        }
+        let significant = significant_statement_tokens(&tokens[stmt_start..=idx]);
+        stmt_start = idx + 1;
+        let Some(first) = significant.first().copied() else {
+            continue;
+        };
+        if in_definition {
+            if token_is_keyword(source, first, "endclass") {
+                break;
+            }
+            if let Some(is_private) = dependency_candidate_section_visibility(source, &significant)
+            {
+                private = is_private;
+            } else if !private {
+                collect_dependency_inheritance_candidates_from_statement(
+                    source,
+                    &significant,
+                    deduped,
+                );
+            }
+        } else if class_definition_statement(source, &significant) {
+            collect_dependency_inheritance_candidates_from_statement(source, &significant, deduped);
+            in_definition = true;
+        }
+    }
+}
+
+fn significant_statement_tokens(stmt: &[Token]) -> Vec<&Token> {
+    stmt.iter()
         .filter(|token| token.kind != TokenKind::Comment)
-        .collect();
+        .collect()
+}
+
+fn class_definition_statement(source: &str, significant: &[&Token]) -> bool {
+    significant
+        .first()
+        .is_some_and(|token| token_is_keyword(source, token, "class"))
+        && significant
+            .get(2)
+            .is_some_and(|token| token_is_keyword(source, token, "definition"))
+        && !significant
+            .iter()
+            .any(|token| token_is_any_keyword(source, token, &["load", "deferred"]))
+}
+
+fn dependency_candidate_section_visibility(source: &str, significant: &[&Token]) -> Option<bool> {
+    let first = significant.first().copied()?;
+    let second = significant.get(1).copied()?;
+    if !token_is_keyword(source, second, "section") {
+        return None;
+    }
+    if token_is_keyword(source, first, "public") || token_is_keyword(source, first, "protected") {
+        return Some(false);
+    }
+    token_is_keyword(source, first, "private").then_some(true)
+}
+
+fn collect_dependency_inheritance_candidates_from_statement(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
     let Some(first) = significant.first().copied() else {
         return;
     };
@@ -3506,6 +3577,12 @@ fn insert_inheritance_candidate(
 
 fn token_is_keyword(source: &str, token: &Token, keyword: &str) -> bool {
     token.kind == TokenKind::Ident && token_text(source, token).eq_ignore_ascii_case(keyword)
+}
+
+fn token_is_any_keyword(source: &str, token: &Token, keywords: &[&str]) -> bool {
+    keywords
+        .iter()
+        .any(|keyword| token_is_keyword(source, token, keyword))
 }
 
 fn token_text<'a>(source: &'a str, token: &Token) -> &'a str {
@@ -17498,6 +17575,8 @@ CLASS zcl_child DEFINITION PUBLIC INHERITING FROM zcl_base.
   PUBLIC SECTION.
     INTERFACES zif_marker ALL METHODS ABSTRACT.
     INTERFACE: zif_loaded LOAD, zif_other LOAD.
+  PRIVATE SECTION.
+    INTERFACES zif_private.
 ENDCLASS.
 CLASS zcl_child IMPLEMENTATION.
   METHOD run.
@@ -17518,6 +17597,7 @@ ENDCLASS."
         assert!(names.contains(&"zif_marker"), "{candidates:#?}");
         assert!(names.contains(&"zif_loaded"), "{candidates:#?}");
         assert!(names.contains(&"zif_other"), "{candidates:#?}");
+        assert!(!names.contains(&"zif_private"), "{candidates:#?}");
         assert!(!names.contains(&"zcl_noise"), "{candidates:#?}");
         assert!(!names.contains(&"zif_noise"), "{candidates:#?}");
         assert!(candidates.iter().all(|candidate| candidate.kind == "type"));

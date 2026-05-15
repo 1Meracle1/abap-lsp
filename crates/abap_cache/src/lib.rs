@@ -138,6 +138,7 @@ pub struct SnapshotBuildPlan {
     pub static_analysis: bool,
     pub call_graph: bool,
     pub callable_summaries: bool,
+    pub lint_analysis: bool,
     pub dependency_diagnostics: DependencyDiagnosticsMode,
 }
 
@@ -147,6 +148,7 @@ impl SnapshotBuildPlan {
         static_analysis: true,
         call_graph: true,
         callable_summaries: true,
+        lint_analysis: true,
         dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
@@ -155,6 +157,7 @@ impl SnapshotBuildPlan {
         static_analysis: true,
         call_graph: false,
         callable_summaries: false,
+        lint_analysis: true,
         dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
@@ -163,6 +166,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: false,
         callable_summaries: false,
+        lint_analysis: true,
         dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
@@ -173,6 +177,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: false,
         callable_summaries: false,
+        lint_analysis: true,
         dependency_diagnostics: DependencyDiagnosticsMode::EditableAndIncludes,
     };
 
@@ -181,6 +186,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: true,
         callable_summaries: false,
+        lint_analysis: true,
         dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
@@ -189,6 +195,7 @@ impl SnapshotBuildPlan {
         static_analysis: false,
         call_graph: true,
         callable_summaries: true,
+        lint_analysis: true,
         dependency_diagnostics: DependencyDiagnosticsMode::All,
     };
 
@@ -200,6 +207,7 @@ impl SnapshotBuildPlan {
             static_analysis: self.static_analysis,
             call_graph: self.call_graph || self.callable_summaries,
             callable_summaries: self.callable_summaries,
+            lint_analysis: self.lint_analysis,
             dependency_diagnostics: self.dependency_diagnostics,
         }
     }
@@ -11273,24 +11281,28 @@ fn materialize_snapshots(
             *unit = augment_unit_with_routine_diagnostics(unit.clone(), routine_analysis.as_ref());
         }
     }
-    let lint_scope_indexes: Vec<&ScopeIndex> = prepared_units
-        .iter()
-        .map(|(prepared, _)| &prepared.local.scope_index)
-        .collect();
-    let lint_lookup = build_lint_metadata_lookup(project.as_ref());
-    let lint_context = ProjectLintContext {
-        project: project.as_ref(),
-        scope_indexes: &lint_scope_indexes,
-        lookup: &lint_lookup,
-    };
-    let lint_analysis = Arc::new(build_project_lint_analysis(
-        &lint_context,
-        prepared_units
+    let lint_analysis = if build_plan.lint_analysis {
+        let lint_scope_indexes: Vec<&ScopeIndex> = prepared_units
             .iter()
-            .filter(|(_, unit)| diagnostic_unit_ids.contains(&unit.unit_id))
-            .map(|(prepared, unit)| (prepared, unit)),
-        lint_policy.as_ref(),
-    ));
+            .map(|(prepared, _)| &prepared.local.scope_index)
+            .collect();
+        let lint_lookup = build_lint_metadata_lookup(project.as_ref());
+        let lint_context = ProjectLintContext {
+            project: project.as_ref(),
+            scope_indexes: &lint_scope_indexes,
+            lookup: &lint_lookup,
+        };
+        Arc::new(build_project_lint_analysis(
+            &lint_context,
+            prepared_units
+                .iter()
+                .filter(|(_, unit)| diagnostic_unit_ids.contains(&unit.unit_id))
+                .map(|(prepared, unit)| (prepared, unit)),
+            lint_policy.as_ref(),
+        ))
+    } else {
+        Arc::new(ProjectLintAnalysis::default())
+    };
 
     for (prepared, unit) in prepared_units {
         let scope_index = Arc::new(prepared.local.scope_index.clone());
@@ -14513,6 +14525,33 @@ lv_value = 1.",
         assert_eq!(metrics.routine_analysis_micros, 0);
         assert_eq!(metrics.static_analysis_summary_micros, 0);
         assert_eq!(metrics.callable_summary_micros, 0);
+    }
+
+    #[test]
+    fn build_plan_can_skip_lint_analysis_until_committed_publish() {
+        let store = DocumentStore::default();
+        let src = "SELECT * FROM mara INTO TABLE @DATA(lt_mara).";
+        let input = DocumentInput {
+            uri: Arc::from("file:///lint_plan.abap"),
+            version: 1,
+            text: Arc::from(src),
+            is_dependency: false,
+            object_name: None,
+        };
+        let mut hydration_plan = SnapshotBuildPlan::EDITOR_WORKSPACE;
+        hydration_plan.lint_analysis = false;
+
+        let snapshots = store.replace_all_with_build_plan(vec![input.clone()], hydration_plan);
+        let snapshot = snapshots.get("file:///lint_plan.abap").expect("snapshot");
+        assert!(snapshot.lint_diagnostics().is_empty());
+
+        let snapshots =
+            store.replace_all_with_build_plan(vec![input], SnapshotBuildPlan::EDITOR_WORKSPACE);
+        let snapshot = snapshots.get("file:///lint_plan.abap").expect("snapshot");
+        assert_eq!(
+            lint_slices(src, snapshot, ABAP_LSP_SELECT_STAR),
+            vec!["*".to_string()]
+        );
     }
 
     #[test]
