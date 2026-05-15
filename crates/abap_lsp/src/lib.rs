@@ -35,7 +35,7 @@ use abap_dependency_store::{
 use abap_parser::{parse, parse_error_is_include_fragment_boundary};
 use abap_symbols::{
     DiagnosticKind, NamedArgumentTarget, Namespace, ReferenceKind, Resolution, SqlResolution,
-    SymbolKind, UnitId, analyze_unit,
+    SymbolKind, UnitId, analyze_unit, perf_api::analyze_unit_local_state_for_project_build,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionProviderCapability, CodeDescription,
@@ -2434,16 +2434,28 @@ fn collect_local_export_dependency_candidates(
 fn collect_local_export_dependency_candidates_uncached(
     document: &WorkspaceDocument,
 ) -> Vec<RemoteDependencyCandidate> {
-    let analysis_text = if document.is_dependency {
+    let analysis_text = local_export_candidate_analysis_text(document);
+    let unit = analyze_local_export_candidate_unit(&document.uri, analysis_text.as_ref());
+    collect_remote_dependency_candidates_for_unit(&unit)
+}
+
+fn local_export_candidate_analysis_text(document: &WorkspaceDocument) -> Arc<str> {
+    if document.is_dependency {
         // Dependency surface projection strips method bodies, but local export closure
         // needs full dependency text to discover implementation-only transitive refs.
         Arc::<str>::from(document.text.as_str())
     } else {
         analysis_text_for_document(document.text.as_ref(), false)
-    };
-    let parsed = parse(analysis_text.as_ref());
-    let unit = analyze_unit(Arc::clone(&document.uri), analysis_text.as_ref(), &parsed);
-    collect_remote_dependency_candidates_for_unit(&unit)
+    }
+}
+
+fn analyze_local_export_candidate_unit(
+    uri: &Arc<str>,
+    analysis_text: &str,
+) -> abap_symbols::UnitAnalysis {
+    let parsed = parse(analysis_text);
+    analyze_unit_local_state_for_project_build(UnitId(0), Arc::clone(uri), analysis_text, &parsed)
+        .unit
 }
 
 fn cached_local_export_dependency_candidates(
@@ -2508,16 +2520,9 @@ fn collect_local_export_dependency_candidates_profiled(
         return (candidates, profile);
     }
 
-    let analysis_text = if document.is_dependency {
-        // Dependency surface projection strips method bodies, but local export closure
-        // needs full dependency text to discover implementation-only transitive refs.
-        Arc::<str>::from(document.text.as_str())
-    } else {
-        analysis_text_for_document(document.text.as_ref(), false)
-    };
+    let analysis_text = local_export_candidate_analysis_text(document);
     let parse_analyze_start = Instant::now();
-    let parsed = parse(analysis_text.as_ref());
-    let unit = analyze_unit(Arc::clone(&document.uri), analysis_text.as_ref(), &parsed);
+    let unit = analyze_local_export_candidate_unit(&document.uri, analysis_text.as_ref());
     let parse_analyze_time = parse_analyze_start.elapsed();
     let candidates = collect_remote_dependency_candidates_for_unit(&unit);
     store_local_export_dependency_candidates(document, candidates.clone());
