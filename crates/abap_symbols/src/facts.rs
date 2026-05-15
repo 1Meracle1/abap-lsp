@@ -9,7 +9,7 @@ use crate::def_map::{
     UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId};
-use crate::resolver::{ScopeIndex, build_scope_index};
+use crate::resolver::ScopeIndex;
 use crate::scope::{Namespace, ScopeKind};
 
 #[derive(Debug, Clone, Default)]
@@ -49,15 +49,20 @@ struct ObservedCallArgumentType {
     type_clause_display: Option<Arc<str>>,
 }
 
-pub(crate) fn infer_semantic_facts(units: &mut [UnitAnalysis]) {
-    let rerun = apply_inferred_unit_facts(units, infer_all_unit_facts(units));
+pub(crate) fn infer_semantic_facts_with_scope_indexes(
+    units: &mut [UnitAnalysis],
+    scope_indexes: &[ScopeIndex],
+) {
+    let rerun = apply_inferred_unit_facts(units, infer_all_unit_facts(units, scope_indexes));
     if rerun {
-        apply_inferred_unit_facts(units, infer_all_unit_facts(units));
+        apply_inferred_unit_facts(units, infer_all_unit_facts(units, scope_indexes));
     }
 }
 
-fn infer_all_unit_facts(units: &[UnitAnalysis]) -> Vec<InferredUnitFacts> {
-    let scope_indexes: Vec<_> = units.iter().map(build_scope_index).collect();
+fn infer_all_unit_facts(
+    units: &[UnitAnalysis],
+    scope_indexes: &[ScopeIndex],
+) -> Vec<InferredUnitFacts> {
     let builder = FactBuilder::new(units, scope_indexes);
     (0..units.len())
         .map(|unit_idx| builder.infer_unit(unit_idx))
@@ -98,7 +103,7 @@ fn apply_inferred_unit_facts(units: &mut [UnitAnalysis], inferred: Vec<InferredU
 
 struct FactBuilder<'a> {
     units: &'a [UnitAnalysis],
-    scope_indexes: Vec<ScopeIndex>,
+    scope_indexes: &'a [ScopeIndex],
     inline_sql_table_symbols: Vec<HashSet<SymbolId>>,
     unit_indexes: HashMap<crate::ids::UnitId, usize>,
     root_type_symbols: HashMap<Arc<str>, SymbolHandle>,
@@ -107,7 +112,7 @@ struct FactBuilder<'a> {
 }
 
 impl<'a> FactBuilder<'a> {
-    fn new(units: &'a [UnitAnalysis], scope_indexes: Vec<ScopeIndex>) -> Self {
+    fn new(units: &'a [UnitAnalysis], scope_indexes: &'a [ScopeIndex]) -> Self {
         let inline_sql_table_symbols = units
             .iter()
             .enumerate()

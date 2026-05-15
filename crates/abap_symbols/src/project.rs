@@ -9,7 +9,7 @@ use crate::def_map::{
     ReferenceKind, Resolution, SqlNameRefKind, SqlProjectionKind, StructureData,
     StructureFieldData, SymbolKind, UnitAnalysis,
 };
-use crate::facts::infer_semantic_facts;
+use crate::facts::infer_semantic_facts_with_scope_indexes;
 use crate::ids::{ReferenceId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::{
     ScopeIndex, build_scope_index, include_predecessor_units_for_units, resolve_project_cross_unit,
@@ -545,7 +545,10 @@ pub(crate) fn resolve_local_phase(mut collected: CollectedUnit) -> LocallyResolv
     let scope_index = build_scope_index(&collected.unit);
     resolve_unit_with_index(&mut collected.unit, &scope_index);
     infer_inline_select_target_shapes(&mut collected.unit, &scope_index);
-    infer_semantic_facts(std::slice::from_mut(&mut collected.unit));
+    infer_semantic_facts_with_scope_indexes(
+        std::slice::from_mut(&mut collected.unit),
+        std::slice::from_ref(&scope_index),
+    );
     collected.unit.rebuild_semantic_index();
     let exported_signature = exported_signature_for_unit(&collected.unit);
     LocallyResolvedUnit {
@@ -1141,7 +1144,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();
-    infer_semantic_facts(&mut units);
+    infer_semantic_facts_with_scope_indexes(&mut units, &scope_indexes);
     metrics.infer_semantic_facts_micros = infer_semantic_facts_timer.elapsed().as_micros();
     let rebuild_semantic_index_timer = std::time::Instant::now();
     for unit_id in &dirty_set.unit_ids {
@@ -1220,7 +1223,7 @@ fn analyze_project_from_local_units_profiled_with_diagnostic_scope(
     reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();
-    infer_semantic_facts(&mut units);
+    infer_semantic_facts_with_scope_indexes(&mut units, &scope_indexes);
     metrics.infer_semantic_facts_micros = infer_semantic_facts_timer.elapsed().as_micros();
     let rebuild_semantic_index_timer = std::time::Instant::now();
     for unit in &mut units {
