@@ -7,11 +7,11 @@ use crate::collector::collect_unit;
 use crate::def_map::UnitAnalysis;
 use crate::ids::UnitId;
 use crate::project::{
-    IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis, ProjectUpdateMetrics,
-    analyze_project_incremental_from_locals, analyze_unit_locally_for_project,
-    analyze_unit_locally_phased, build_workspace_index_from_units, collect_project_diagnostics,
-    exported_signature_for_unit, link_class_member_implementations,
-    resolve_include_edges_for_units,
+    ExportedSignature, IncrementalProjectAnalysisResult, LocallyResolvedUnit, ProjectAnalysis,
+    ProjectUpdateMetrics, analyze_project_incremental_from_locals,
+    analyze_unit_locally_for_project, analyze_unit_locally_phased,
+    build_workspace_index_from_units, collect_project_diagnostics, exported_signature_for_unit,
+    link_class_member_implementations, resolve_include_edges_for_units,
 };
 use crate::resolver::{build_scope_index, resolve_unit_with_index};
 use crate::validate::{
@@ -128,27 +128,20 @@ pub fn incremental_project_update(
     force_full: bool,
     diagnostic_scope_roots: Option<&HashSet<UnitId>>,
 ) -> IncrementalProjectUpdate {
-    let previous_locals = previous_locals.map(|locals| {
-        locals
+    let previous_signatures = previous_locals.map(|locals| {
+        changed_uris
             .iter()
-            .map(|(uri, local)| {
-                (
-                    Arc::clone(uri),
-                    LocallyResolvedUnit {
-                        unit: local.unit.clone(),
-                        scope_index: local.scope_index.clone(),
-                        exported_signature: super::project::exported_signature_for_unit(
-                            &local.unit,
-                        ),
-                    },
-                )
+            .filter_map(|uri| {
+                locals
+                    .get(uri.as_ref())
+                    .map(|local| (Arc::clone(uri), exported_signature_for_unit(&local.unit)))
             })
-            .collect::<HashMap<_, _>>()
+            .collect::<HashMap<Arc<str>, ExportedSignature>>()
     });
     let locals = locals
         .into_iter()
         .map(|local| {
-            let exported_signature = super::project::exported_signature_for_unit(&local.unit);
+            let exported_signature = exported_signature_for_unit(&local.unit);
             LocallyResolvedUnit {
                 unit: local.unit,
                 scope_index: local.scope_index,
@@ -163,7 +156,7 @@ pub fn incremental_project_update(
         metrics,
     } = analyze_project_incremental_from_locals(
         previous_project,
-        previous_locals.as_ref(),
+        previous_signatures.as_ref(),
         locals,
         changed_uris,
         force_full,

@@ -11235,9 +11235,9 @@ fn materialize_snapshots(
             *unit = augment_unit_with_routine_diagnostics(unit.clone(), routine_analysis.as_ref());
         }
     }
-    let lint_scope_indexes: Vec<_> = prepared_units
+    let lint_scope_indexes: Vec<&ScopeIndex> = prepared_units
         .iter()
-        .map(|(prepared, _)| prepared.local.scope_index.clone())
+        .map(|(prepared, _)| &prepared.local.scope_index)
         .collect();
     let lint_lookup = build_lint_metadata_lookup(project.as_ref());
     let lint_context = ProjectLintContext {
@@ -11418,7 +11418,7 @@ pub fn lint_id_for_diagnostic_kind(kind: DiagnosticKind) -> Option<LintId> {
 
 struct ProjectLintContext<'a> {
     project: &'a ProjectAnalysis,
-    scope_indexes: &'a [ScopeIndex],
+    scope_indexes: &'a [&'a ScopeIndex],
     lookup: &'a LintMetadataLookup,
 }
 
@@ -11709,7 +11709,7 @@ fn open_sql_primary_key_fields_for_source(
     query_scope: ScopeId,
     source: &SqlSourceData,
 ) -> Option<Vec<Arc<str>>> {
-    let scope_index = context.scope_indexes.get(unit.unit_id.as_usize())?;
+    let scope_index = *context.scope_indexes.get(unit.unit_id.as_usize())?;
     let (source_unit, structure_id) =
         open_sql_source_structure_for_name(context, unit, scope_index, query_scope, &source.name)?;
     if !unit_is_ddic_table_like_metadata(source_unit) {
@@ -11802,7 +11802,7 @@ fn resolve_type_like_symbol_handle(
     } else {
         [type_ref.namespace, type_ref.namespace]
     };
-    let scope_index = context.scope_indexes.get(unit.unit_id.as_usize())?;
+    let scope_index = *context.scope_indexes.get(unit.unit_id.as_usize())?;
 
     for namespace in namespaces {
         if let Some(symbol_id) = resolve_symbol_in_lint_scope_chain(

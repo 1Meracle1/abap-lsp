@@ -949,29 +949,26 @@ fn include_component_dirty_set(
     visited
 }
 
-fn signature_changed(
-    previous: Option<&LocallyResolvedUnit>,
-    current: &LocallyResolvedUnit,
-) -> bool {
+fn signature_changed(previous: Option<&ExportedSignature>, current: &LocallyResolvedUnit) -> bool {
     previous
-        .map(|previous| previous.exported_signature != current.exported_signature)
+        .map(|previous| previous != &current.exported_signature)
         .unwrap_or(true)
 }
 
 fn compute_dirty_set(
     previous_project: Option<&ProjectAnalysis>,
-    previous_locals: Option<&HashMap<Arc<str>, LocallyResolvedUnit>>,
+    previous_signatures: Option<&HashMap<Arc<str>, ExportedSignature>>,
     local_units: &[LocallyResolvedUnit],
     workspace_index: &WorkspaceIndex,
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
 ) -> DirtySet {
-    if force_full || previous_project.is_none() || previous_locals.is_none() {
+    if force_full || previous_project.is_none() || previous_signatures.is_none() {
         return dirty_set_for_all_units(local_units);
     }
 
     let previous_project = previous_project.expect("checked above");
-    let previous_locals = previous_locals.expect("checked above");
+    let previous_signatures = previous_signatures.expect("checked above");
     let mut dirty = DirtySet::default();
     let mut changed_unit_ids = HashSet::new();
     let mut changed_export_names = HashSet::<Arc<str>>::new();
@@ -989,13 +986,13 @@ fn compute_dirty_set(
             .iter()
             .find(|local| local.unit.unit_id == unit_id)
             .expect("workspace index should resolve local unit");
-        let previous = previous_locals.get(uri.as_ref());
+        let previous = previous_signatures.get(uri.as_ref());
         if signature_changed(previous, current) {
             if let Some(previous) = previous {
-                for (_, name) in &previous.exported_signature.root_exports {
+                for (_, name) in &previous.root_exports {
                     changed_export_names.insert(Arc::clone(name));
                 }
-                for name in &previous.exported_signature.provided_names {
+                for name in &previous.provided_names {
                     changed_provided_names.insert(Arc::clone(name));
                 }
             }
@@ -1057,7 +1054,7 @@ fn compute_dirty_set(
 
 pub(crate) fn analyze_project_incremental_from_locals(
     previous_project: Option<&ProjectAnalysis>,
-    previous_locals: Option<&HashMap<Arc<str>, LocallyResolvedUnit>>,
+    previous_signatures: Option<&HashMap<Arc<str>, ExportedSignature>>,
     local_units: Vec<LocallyResolvedUnit>,
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
@@ -1081,7 +1078,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
     let compute_dirty_set_timer = std::time::Instant::now();
     let dirty_set = compute_dirty_set(
         previous_project,
-        previous_locals,
+        previous_signatures,
         &local_units,
         &workspace_index,
         changed_uris,
