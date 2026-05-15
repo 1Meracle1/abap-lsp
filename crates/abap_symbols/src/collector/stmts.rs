@@ -2658,6 +2658,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 AppendClause::Source => {
                     if source_expr.is_none() {
                         source_expr = Some(child);
+                        continue;
                     }
                 }
                 AppendClause::Target => {
@@ -2677,6 +2678,23 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
             }
 
             self.collector.walk_node(child, scope);
+        }
+
+        let target_access =
+            target_expr.and_then(|expr| self.collector.value_access_from_node(expr, scope));
+        if let Some(source_expr) = source_expr {
+            let unwrapped_source = self.collector.unwrap_simple_expr_wrapper(source_expr);
+            if !source_is_lines_of
+                && self.collector.file.kind(unwrapped_source) == SyntaxKind::ConstructorExpr
+            {
+                self.collector.expr_lowering().collect_constructor_expr(
+                    unwrapped_source,
+                    scope,
+                    target_access.as_ref(),
+                );
+            } else {
+                self.collector.walk_node(source_expr, scope);
+            }
         }
 
         let target_line_metadata = target_expr

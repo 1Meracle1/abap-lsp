@@ -886,7 +886,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         }
     }
 
-    fn collect_constructor_expr(
+    pub(super) fn collect_constructor_expr(
         &mut self,
         node: NodeId,
         scope: ScopeId,

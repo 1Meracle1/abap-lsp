@@ -708,6 +708,57 @@ DATA(lv_msgv1) = <ls_return>-message_v1.
     }
 
     #[test]
+    fn semantic_tokens_mark_append_value_hash_fields_as_property() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl DEFINITION.
+  PROTECTED SECTION.
+    TYPES: BEGIN OF ty_object_info,
+             docnum TYPE string,
+             status TYPE string,
+           END OF ty_object_info.
+    TYPES tt_object_info TYPE STANDARD TABLE OF ty_object_info.
+    DATA mt_object_info TYPE tt_object_info.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA lv_status TYPE string.
+    APPEND VALUE #(
+      docnum = `1`
+      status = lv_status
+    ) TO mt_object_info.
+  ENDMETHOD.
+ENDCLASS.
+";
+        let snapshot = store.publish("file:///append_value_hash_fields.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let property_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PROPERTY)
+            .expect("legend has property") as u32;
+        let append_offset = src.find("APPEND").expect("append");
+
+        for field_name in ["docnum", "status"] {
+            let field_offset = src[append_offset..]
+                .find(field_name)
+                .map(|offset| append_offset + offset)
+                .expect("VALUE field");
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, field_offset)
+                    .expect("field position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(property_idx),
+                "expected VALUE # field `{field_name}` to highlight as property"
+            );
+        }
+    }
+
+    #[test]
     fn semantic_tokens_mark_class_type_selector_segments_as_type() {
         let store = DocumentStore::default();
         let src = "\
