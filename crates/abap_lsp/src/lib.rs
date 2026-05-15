@@ -2842,6 +2842,7 @@ fn workspace_remote_dependency_refresh_inputs(
 fn remote_dependency_source_context_uris(
     workspace: &WorkspaceState,
     source_uri: &str,
+    inferred_parent_uris_by_object: Option<&HashMap<String, Vec<String>>>,
 ) -> Vec<String> {
     let source_uri = normalize_lsp_uri(source_uri);
     let root_path = file_uri_to_path(&workspace.root_uri);
@@ -2865,7 +2866,13 @@ fn remote_dependency_source_context_uris(
         if let Some(parents) = workspace.dependency_parent_uris.get(&current_uri) {
             queue.extend(parents.iter().cloned());
         }
-        queue.extend(infer_dependency_source_parent_uris(workspace, &current_uri));
+        if let Some(inferred_parent_uris_by_object) = inferred_parent_uris_by_object {
+            queue.extend(infer_dependency_source_parent_uris(
+                workspace,
+                &current_uri,
+                inferred_parent_uris_by_object,
+            ));
+        }
     }
     out
 }
@@ -2873,12 +2880,19 @@ fn remote_dependency_source_context_uris(
 fn infer_dependency_source_parent_uris(
     workspace: &WorkspaceState,
     source_uri: &str,
+    inferred_parent_uris_by_object: &HashMap<String, Vec<String>>,
 ) -> Vec<String> {
     if !is_dependency_document_uri(source_uri) {
         return Vec::new();
     }
 
-    let object_name = workspace
+    dependency_object_name_for_uri(workspace, source_uri)
+        .and_then(|object_name| inferred_parent_uris_by_object.get(&object_name).cloned())
+        .unwrap_or_default()
+}
+
+fn dependency_object_name_for_uri(workspace: &WorkspaceState, source_uri: &str) -> Option<String> {
+    workspace
         .cache
         .get(source_uri)
         .and_then(|snapshot| snapshot.object_name.as_ref().map(|name| name.to_string()))
@@ -2886,16 +2900,25 @@ fn infer_dependency_source_parent_uris(
             dependency_artifact_for_uri(workspace, source_uri).map(|record| record.object_name)
         })
         .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty());
-    let Some(object_name) = object_name else {
-        return Vec::new();
-    };
+        .filter(|name| !name.is_empty())
+}
 
-    let mut parent_uris = Vec::new();
+fn inferred_dependency_parent_uris_by_object(
+    workspace: &WorkspaceState,
+) -> HashMap<String, Vec<String>> {
+    let mut out = HashMap::<String, Vec<String>>::new();
+    let dependency_names = workspace
+        .cache
+        .uris()
+        .into_iter()
+        .filter(|uri| is_dependency_document_uri(uri.as_ref()))
+        .filter_map(|uri| dependency_object_name_for_uri(workspace, uri.as_ref()))
+        .collect::<HashSet<_>>();
+    if dependency_names.is_empty() {
+        return out;
+    }
+
     for uri in workspace.cache.uris() {
-        if uri.as_ref() == source_uri {
-            continue;
-        }
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
             continue;
         };
@@ -2906,74 +2929,54 @@ fn infer_dependency_source_parent_uris(
         {
             continue;
         }
-        if unit_references_object(snapshot.as_ref(), object_name.as_str()) {
-            parent_uris.push(uri.to_string());
+
+        let mut names = HashSet::<String>::new();
+        collect_unit_reference_object_names(snapshot.as_ref(), |name| {
+            let name = name.trim().to_ascii_lowercase();
+            if dependency_names.contains(&name) {
+                names.insert(name);
+            }
+        });
+        let uri = uri.to_string();
+        for name in names {
+            out.entry(name).or_default().push(uri.clone());
         }
     }
-    parent_uris.sort();
-    parent_uris
+    for uris in out.values_mut() {
+        uris.sort();
+    }
+    out
 }
 
-fn unit_references_object(snapshot: &AnalysisSnapshot, object_name: &str) -> bool {
-    let references = snapshot.symbols.semantic().refs();
-    if references
-        .all()
-        .any(|reference| reference.name.eq_ignore_ascii_case(object_name))
-    {
-        return true;
+fn collect_unit_reference_object_names(snapshot: &AnalysisSnapshot, mut collect: impl FnMut(&str)) {
+    for reference in snapshot.symbols.semantic().refs().all() {
+        collect(reference.name.as_ref());
     }
-
-    if snapshot
-        .symbols
-        .include_edges
-        .iter()
-        .any(|edge| edge.name.eq_ignore_ascii_case(object_name))
-    {
-        return true;
+    for edge in &snapshot.symbols.include_edges {
+        collect(edge.name.as_ref());
     }
-
-    if snapshot
-        .symbols
-        .sql_sources
-        .iter()
-        .any(|source| source.name.eq_ignore_ascii_case(object_name))
-    {
-        return true;
+    for source in &snapshot.symbols.sql_sources {
+        collect(source.name.as_ref());
     }
-
-    snapshot
-        .symbols
-        .call_sites
-        .iter()
-        .any(|call_site| match &call_site.target {
-            NamedArgumentTarget::Constructor { type_name } => {
-                type_name.eq_ignore_ascii_case(object_name)
-            }
-            NamedArgumentTarget::Function { function_name } => {
-                function_name.eq_ignore_ascii_case(object_name)
-            }
-            NamedArgumentTarget::Report { report_name } => {
-                report_name.eq_ignore_ascii_case(object_name)
-            }
-            NamedArgumentTarget::Routine { routine_name } => {
-                routine_name.eq_ignore_ascii_case(object_name)
-            }
-            NamedArgumentTarget::ImplicitMethod { method_name } => {
-                method_name.eq_ignore_ascii_case(object_name)
-            }
-            NamedArgumentTarget::Method { base_name, .. } => {
-                base_name.eq_ignore_ascii_case(object_name)
-            }
+    for call_site in &snapshot.symbols.call_sites {
+        match &call_site.target {
+            NamedArgumentTarget::Constructor { type_name } => collect(type_name.as_ref()),
+            NamedArgumentTarget::Function { function_name } => collect(function_name.as_ref()),
+            NamedArgumentTarget::Report { report_name } => collect(report_name.as_ref()),
+            NamedArgumentTarget::Routine { routine_name } => collect(routine_name.as_ref()),
+            NamedArgumentTarget::ImplicitMethod { method_name } => collect(method_name.as_ref()),
+            NamedArgumentTarget::Method { base_name, .. } => collect(base_name.as_ref()),
             NamedArgumentTarget::Event {
                 qualifier,
                 event_name,
             } => {
-                qualifier
-                    .as_ref()
-                    .is_some_and(|qualifier| qualifier.eq_ignore_ascii_case(object_name))
-                    || event_name.eq_ignore_ascii_case(object_name)
+                if let Some(qualifier) = qualifier {
+                    collect(qualifier.as_ref());
+                }
+                collect(event_name.as_ref());
             }
-        })
+        }
+    }
 }
 
 fn remote_dependency_manifest_parent_uris(
@@ -5366,6 +5369,76 @@ fn cached_dependency_batch_candidates(
     candidates
 }
 
+fn prewarm_dependency_batch_candidates(
+    workspace: &mut WorkspaceState,
+    uri_entries: &[(Arc<str>, RemoteDependencyBatchPhase)],
+    skip_unparented_closed_dependencies: bool,
+) {
+    let mut batch = Vec::new();
+    for (uri, phase) in uri_entries {
+        if *phase != RemoteDependencyBatchPhase::Dependency {
+            continue;
+        }
+        let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
+            continue;
+        };
+        if !snapshot.is_dependency
+            || (skip_unparented_closed_dependencies
+                && skip_closed_dependency_batch_source(workspace, uri.as_ref(), snapshot.as_ref()))
+        {
+            continue;
+        }
+
+        let (text_len, text_hash) = dependency_batch_candidate_fingerprint(snapshot.text.as_ref());
+        if workspace
+            .dependency_batch_candidates
+            .get(uri.as_ref())
+            .is_some_and(|cached| {
+                cached.text_len == text_len
+                    && cached.text_hash == text_hash
+                    && cached.object_name == snapshot.object_name
+            })
+        {
+            continue;
+        }
+
+        batch.push((
+            uri.to_string(),
+            LocalExportConfig::default(),
+            WorkspaceDocument {
+                uri: Arc::clone(&snapshot.uri),
+                version: snapshot.version,
+                text: snapshot.text.to_string(),
+                is_dependency: true,
+                object_name: snapshot.object_name.clone(),
+            },
+        ));
+    }
+
+    for (uri, _config, candidates) in collect_local_export_dependency_candidate_batch(batch) {
+        let Some(snapshot) = workspace.cache.get(uri.as_str()) else {
+            continue;
+        };
+        let (text_len, text_hash) = dependency_batch_candidate_fingerprint(snapshot.text.as_ref());
+        let mut deduped = HashMap::<String, RemoteDependencyCandidate>::new();
+        for candidate in candidates {
+            insert_remote_candidate(&mut deduped, candidate);
+        }
+        if let Some(candidate) = stale_dependency_refresh_candidate(snapshot.as_ref()) {
+            insert_remote_candidate(&mut deduped, candidate);
+        }
+        workspace.dependency_batch_candidates.insert(
+            uri,
+            CachedDependencyBatchCandidates {
+                text_len,
+                text_hash,
+                object_name: snapshot.object_name.clone(),
+                candidates: deduped.into_values().collect(),
+            },
+        );
+    }
+}
+
 fn remote_dependency_batch_phase(
     workspace: &WorkspaceState,
     uri: &str,
@@ -5471,6 +5544,8 @@ struct RemoteDependencyMemo {
     negative_candidate_presence: HashMap<String, bool>,
     source_context_uris: HashMap<String, Vec<String>>,
     source_context_local_exports: HashMap<String, bool>,
+    inferred_parent_uris_by_object: Option<HashMap<String, Vec<String>>>,
+    uri_local_exports: HashMap<String, bool>,
 }
 
 impl RemoteDependencyMemo {
@@ -5483,6 +5558,8 @@ impl RemoteDependencyMemo {
             negative_candidate_presence: HashMap::new(),
             source_context_uris: HashMap::new(),
             source_context_local_exports: HashMap::new(),
+            inferred_parent_uris_by_object: None,
+            uri_local_exports: HashMap::new(),
         }
     }
 
@@ -5531,10 +5608,21 @@ impl RemoteDependencyMemo {
     }
 
     fn source_context_uris(&mut self, workspace: &WorkspaceState, source_uri: &str) -> Vec<String> {
+        if let Some(uris) = self.source_context_uris.get(source_uri) {
+            return uris.clone();
+        }
+        let inferred_parent_uris_by_object = is_dependency_document_uri(source_uri).then(|| {
+            self.inferred_parent_uris_by_object
+                .get_or_insert_with(|| inferred_dependency_parent_uris_by_object(workspace))
+        });
+        let uris = remote_dependency_source_context_uris(
+            workspace,
+            source_uri,
+            inferred_parent_uris_by_object.map(|uris| &*uris),
+        );
         self.source_context_uris
-            .entry(source_uri.to_owned())
-            .or_insert_with(|| remote_dependency_source_context_uris(workspace, source_uri))
-            .clone()
+            .insert(source_uri.to_owned(), uris.clone());
+        uris
     }
 
     fn source_uses_local_exports(&mut self, workspace: &WorkspaceState, source_uri: &str) -> bool {
@@ -5544,10 +5632,21 @@ impl RemoteDependencyMemo {
         let uses_local_exports = file_uri_to_path(&workspace.root_uri).is_some_and(|root_path| {
             self.source_context_uris(workspace, source_uri)
                 .iter()
-                .any(|uri| local_export_config_for_source(&root_path, uri).uses_local_exports())
+                .any(|uri| self.uri_uses_local_exports(&root_path, uri))
         });
         self.source_context_local_exports
             .insert(source_uri.to_owned(), uses_local_exports);
+        uses_local_exports
+    }
+
+    fn uri_uses_local_exports(&mut self, root_path: &Path, uri: &str) -> bool {
+        if let Some(uses_local_exports) = self.uri_local_exports.get(uri) {
+            return *uses_local_exports;
+        }
+        let uses_local_exports =
+            local_export_config_for_source(root_path, uri).uses_local_exports();
+        self.uri_local_exports
+            .insert(uri.to_owned(), uses_local_exports);
         uses_local_exports
     }
 
@@ -5870,10 +5969,23 @@ fn build_remote_dependency_batch_for_workspace_filtered_with_options(
     let skip_unparented_closed_dependencies = source_uri_filter.is_none()
         && !options.include_resolved_dependencies
         && workspace_has_local_export_sources(workspace);
+    let mut dependency_batch_prewarmed = false;
 
-    for (uri, phase) in uri_entries {
-        if selected_phase.is_some_and(|selected| phase != selected) {
+    for (uri, phase) in &uri_entries {
+        if selected_phase.is_some_and(|selected| *phase != selected) {
             break;
+        }
+        if !dependency_batch_prewarmed
+            && !options.include_resolved_dependencies
+            && selected_phase.is_none()
+            && *phase == RemoteDependencyBatchPhase::Dependency
+        {
+            prewarm_dependency_batch_candidates(
+                workspace,
+                &uri_entries,
+                skip_unparented_closed_dependencies,
+            );
+            dependency_batch_prewarmed = true;
         }
 
         let Some(snapshot) = workspace.cache.get(uri.as_ref()) else {
@@ -5925,7 +6037,7 @@ fn build_remote_dependency_batch_for_workspace_filtered_with_options(
                 continue;
             }
             if selected_phase.is_none() {
-                selected_phase = Some(phase);
+                selected_phase = Some(*phase);
             }
             candidates.push(candidate);
             added_for_uri = true;
