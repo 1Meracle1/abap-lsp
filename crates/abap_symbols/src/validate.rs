@@ -535,6 +535,67 @@ fn resolve_field_access_base_symbol(
     None
 }
 
+fn class_scoped_type_symbol_for_owner(
+    unit: &crate::UnitAnalysis,
+    owner_symbol: SymbolId,
+    type_name: &Arc<str>,
+) -> Option<SymbolId> {
+    unit.symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == SymbolKind::TypeDef
+                && symbol.name == *type_name
+                && unit.scope(symbol.scope).owner == Some(owner_symbol)
+                && matches!(
+                    unit.scope(symbol.scope).kind,
+                    ScopeKind::Class | ScopeKind::Interface
+                )
+        })
+        .map(|symbol| symbol.id)
+}
+
+fn resolve_class_scoped_type_handle(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope: ScopeId,
+    type_name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let class_name = Arc::clone(&unit.symbol(class_symbol).name);
+    let mut current = project.visible_type_owner_handle_with_predecessors(
+        unit.unit_id,
+        &class_name,
+        &lookup.include_predecessors,
+    )?;
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert((current.unit, current.symbol)) {
+            return None;
+        }
+        let current_unit = &project.units[current.unit.as_usize()];
+        if let Some(symbol) =
+            class_scoped_type_symbol_for_owner(current_unit, current.symbol, type_name)
+        {
+            return Some(SymbolHandle {
+                unit: current.unit,
+                symbol,
+            });
+        }
+        let superclass_name = &current_unit
+            .class_superclass(current.symbol)?
+            .superclass_name;
+        current = root_symbol_handle_matching(
+            project,
+            lookup,
+            current_unit,
+            Namespace::Type,
+            superclass_name,
+            |symbol| symbol.kind == SymbolKind::Class,
+        )?;
+    }
+}
+
 fn enclosing_class_owner(unit: &crate::UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
     let mut current = Some(scope);
     while let Some(scope_id) = current {
@@ -3396,6 +3457,14 @@ fn resolve_type_like_symbol_handle(
                 unit: unit.unit_id,
                 symbol,
             });
+        }
+
+        if namespace == Namespace::Type
+            && type_ref.field_path.is_empty()
+            && let Some(handle) =
+                resolve_class_scoped_type_handle(project, lookup, unit, scope, &type_ref.base_name)
+        {
+            return Some(handle);
         }
 
         if let Some(handle) = root_symbol_handle_matching(

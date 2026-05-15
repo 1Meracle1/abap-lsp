@@ -7634,6 +7634,25 @@ fn resolve_symbol_from_context_with_scope_index<'a>(
             }
             return Some((current_unit, symbol_id));
         }
+        if namespace == Namespace::Type
+            && let Some(class_symbol) = enclosing_class_owner(current_unit, scope)
+        {
+            let class_name = Arc::clone(&current_unit.symbol(class_symbol).name);
+            if let Some(class_handle) = snapshot
+                .project
+                .visible_type_owner_handle(current_unit.unit_id, &class_name)
+            {
+                let class_unit = &snapshot.project.units[class_handle.unit.as_usize()];
+                if let Some((type_unit, type_symbol)) = resolve_class_type_symbol_in_hierarchy(
+                    snapshot,
+                    class_unit,
+                    class_handle.symbol,
+                    name.as_ref(),
+                ) {
+                    return Some((type_unit, type_symbol.id));
+                }
+            }
+        }
     }
 
     let namespaces = [
@@ -21832,6 +21851,82 @@ ENDCLASS.";
         assert!(signature.contains("iv_status_rep_evt TYPE i"));
         assert!(signature.contains("RETURNING"));
         assert!(signature.contains("VALUE(rv_status) TYPE string"));
+    }
+
+    #[test]
+    fn hover_completion_and_diagnostics_use_class_local_loop_row_type_from_top_include() {
+        let store = DocumentStore::default();
+        let main_src = "\
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.";
+        let top_src = "\
+CLASS lcl_app DEFINITION.
+  PROTECTED SECTION.
+    TYPES: BEGIN OF ty_object_info,
+             evtid TYPE string,
+             status_rep_evt TYPE i,
+           END OF ty_object_info.
+    TYPES tt_object_info TYPE STANDARD TABLE OF ty_object_info.
+    DATA mt_object_info TYPE tt_object_info.
+    METHODS run.
+ENDCLASS.";
+        let f01_src = "\
+CLASS lcl_app IMPLEMENTATION.
+  METHOD run.
+    LOOP AT mt_object_info INTO DATA(ls_obj_info).
+      DATA(lv_evtid) = ls_obj_info-evtid.
+      DATA(lv_bad) = ls_obj_info-missing.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///zmain.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///ztop.abap"),
+                version: 1,
+                text: Arc::from(top_src),
+                is_dependency: false,
+                object_name: None,
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zf01.abap"),
+                version: 1,
+                text: Arc::from(f01_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let f01 = snapshots.get("file:///zf01.abap").expect("f01 snapshot");
+        let selector_offset =
+            f01_src.find("ls_obj_info-evtid").expect("selector") + "ls_obj_info-".len();
+
+        let completion = f01
+            .selector_completion_at(selector_offset)
+            .expect("selector completion");
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["evtid", "status_rep_evt"]
+        );
+
+        let hovered = f01
+            .hovered_component_at(selector_offset + 1)
+            .expect("field hover");
+        assert_eq!(hovered.field_name.as_ref(), "evtid");
+        assert_eq!(hovered.declared_type.as_deref(), Some("TYPE string"));
+        assert!(f01.symbols.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
+        }));
     }
 
     #[test]

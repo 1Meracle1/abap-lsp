@@ -1334,7 +1334,12 @@ impl<'a> FactBuilder<'a> {
                 }),
             ));
         }
-        self.enrich_existing_type_fact(site_unit_idx, scope, symbol_unit_idx, &fact)
+        let type_scope = if site_unit_idx == symbol_unit_idx {
+            scope
+        } else {
+            symbol.scope
+        };
+        self.enrich_existing_type_fact(site_unit_idx, type_scope, symbol_unit_idx, &fact)
     }
 
     fn type_fact_from_declared_type(

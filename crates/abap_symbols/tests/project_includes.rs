@@ -894,6 +894,77 @@ ENDFORM.
 }
 
 #[test]
+fn infers_loop_inline_target_type_from_class_table_declared_in_prior_include() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+"#;
+    let top_src = r#"
+CLASS lcl_app DEFINITION.
+  PROTECTED SECTION.
+    TYPES: BEGIN OF ty_object_info,
+             evtid TYPE string,
+           END OF ty_object_info.
+    TYPES tt_object_info TYPE STANDARD TABLE OF ty_object_info.
+    DATA mt_object_info TYPE tt_object_info.
+    METHODS run.
+ENDCLASS.
+"#;
+    let f01_src = r#"
+CLASS lcl_app IMPLEMENTATION.
+  METHOD run.
+    LOOP AT mt_object_info INTO DATA(ls_obj_info).
+      DATA(lv_evtid) = ls_obj_info-evtid.
+      DATA(lv_bad) = ls_obj_info-missing.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let f01 = project.unit_by_uri("zf01.abap").expect("class include");
+    let ls_obj_info = f01
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Variable && symbol.name.as_ref() == "ls_obj_info")
+        .expect("loop inline target");
+    let declared_type = ls_obj_info
+        .declared_type
+        .as_ref()
+        .expect("loop inline target declared type");
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "ty_object_info");
+    assert!(
+        f01.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("missing")
+        }),
+        "expected unknown field diagnostic for class-local loop row type, diagnostics={:?}",
+        f01.diagnostics
+    );
+}
+
+#[test]
 fn infers_append_inline_field_symbol_type_from_table_declared_in_prior_include() {
     let root_src = r#"
 REPORT zmain.
