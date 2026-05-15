@@ -1,7 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::def_map::{
-    FieldTypeRefData, MethodParameterSection, NamedArgumentSection, TypeFactData,
+    FieldTypeRefData, MethodParameterSection, NamedArgumentSection, SymbolData, TypeFactData,
 };
 use crate::ids::SymbolHandle;
 use crate::project::ProjectAnalysis;
@@ -48,6 +51,78 @@ pub(crate) enum TypeCompatibility {
     Unknown,
 }
 
+#[derive(Clone, Copy)]
+struct CompatibilityContext<'a> {
+    project: &'a ProjectAnalysis,
+    lookup: &'a TypeFactLookup,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TypeFactLookup {
+    type_symbols: HashMap<Arc<str>, Vec<SymbolHandle>>,
+    value_symbols: HashMap<Arc<str>, Vec<SymbolHandle>>,
+}
+
+impl TypeFactLookup {
+    pub(crate) fn new(project: &ProjectAnalysis) -> Self {
+        let mut lookup = Self::default();
+
+        for unit in &project.units {
+            for symbol in &unit.symbols {
+                if symbol.scope != unit.root_scope {
+                    continue;
+                }
+                let handle = SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: symbol.id,
+                };
+                if matches!(
+                    symbol.kind,
+                    SymbolKind::TypeDef
+                        | SymbolKind::Class
+                        | SymbolKind::Interface
+                        | SymbolKind::BuiltinType
+                ) {
+                    lookup
+                        .type_symbols
+                        .entry(Arc::clone(&symbol.name))
+                        .or_default()
+                        .push(handle);
+                }
+                if symbol.kind.occupies(Namespace::Value) {
+                    lookup
+                        .value_symbols
+                        .entry(Arc::clone(&symbol.name))
+                        .or_default()
+                        .push(handle);
+                }
+            }
+        }
+
+        lookup
+    }
+
+    fn root_symbol(
+        &self,
+        preferred_unit: &UnitAnalysis,
+        name: &str,
+        is_type: bool,
+    ) -> Option<SymbolHandle> {
+        let symbols = if is_type {
+            &self.type_symbols
+        } else {
+            &self.value_symbols
+        };
+        symbols.get(name).and_then(|handles| {
+            handles
+                .iter()
+                .copied()
+                .find(|handle| handle.unit == preferred_unit.unit_id)
+                .or_else(|| handles.first().copied())
+        })
+    }
+}
+
 impl TypeCompatibility {
     pub(crate) fn is_incompatible(self) -> bool {
         self == Self::Incompatible
@@ -90,15 +165,16 @@ pub(crate) fn positional_parameter_section(section: MethodParameterSection) -> b
     )
 }
 
-pub(crate) fn type_facts_compatibility(
-    project: &ProjectAnalysis,
-    expected_unit: &UnitAnalysis,
+pub(crate) fn type_facts_compatibility<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &'a TypeFactLookup,
+    expected_unit: &'a UnitAnalysis,
     expected: &TypeFactData,
-    actual_unit: &UnitAnalysis,
+    actual_unit: &'a UnitAnalysis,
     actual: &TypeFactData,
 ) -> TypeCompatibility {
     type_facts_compatibility_inner(
-        project,
+        CompatibilityContext { project, lookup },
         expected_unit,
         expected,
         actual_unit,
@@ -108,15 +184,16 @@ pub(crate) fn type_facts_compatibility(
     )
 }
 
-pub(crate) fn type_facts_parameter_compatibility(
-    project: &ProjectAnalysis,
-    expected_unit: &UnitAnalysis,
+pub(crate) fn type_facts_parameter_compatibility<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &'a TypeFactLookup,
+    expected_unit: &'a UnitAnalysis,
     expected: &TypeFactData,
-    actual_unit: &UnitAnalysis,
+    actual_unit: &'a UnitAnalysis,
     actual: &TypeFactData,
 ) -> TypeCompatibility {
     type_facts_compatibility_inner(
-        project,
+        CompatibilityContext { project, lookup },
         expected_unit,
         expected,
         actual_unit,
@@ -126,15 +203,16 @@ pub(crate) fn type_facts_parameter_compatibility(
     )
 }
 
-pub(crate) fn type_facts_strict_table_kind_compatibility(
-    project: &ProjectAnalysis,
-    expected_unit: &UnitAnalysis,
+pub(crate) fn type_facts_strict_table_kind_compatibility<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &'a TypeFactLookup,
+    expected_unit: &'a UnitAnalysis,
     expected: &TypeFactData,
-    actual_unit: &UnitAnalysis,
+    actual_unit: &'a UnitAnalysis,
     actual: &TypeFactData,
 ) -> TypeCompatibility {
     type_facts_compatibility_inner(
-        project,
+        CompatibilityContext { project, lookup },
         expected_unit,
         expected,
         actual_unit,
@@ -144,20 +222,20 @@ pub(crate) fn type_facts_strict_table_kind_compatibility(
     )
 }
 
-fn type_facts_compatibility_inner(
-    project: &ProjectAnalysis,
-    expected_unit: &UnitAnalysis,
+fn type_facts_compatibility_inner<'a>(
+    ctx: CompatibilityContext<'a>,
+    expected_unit: &'a UnitAnalysis,
     expected: &TypeFactData,
-    actual_unit: &UnitAnalysis,
+    actual_unit: &'a UnitAnalysis,
     actual: &TypeFactData,
     allow_table_kind_conversion: bool,
     allow_scalar_conversion: bool,
 ) -> TypeCompatibility {
-    let Some((expected_unit, expected)) = normalize_type_fact(project, expected_unit, expected, 0)
+    let Some((expected_unit, expected)) = normalize_type_fact(ctx, expected_unit, expected, 0)
     else {
         return TypeCompatibility::Unknown;
     };
-    let Some((actual_unit, actual)) = normalize_type_fact(project, actual_unit, actual, 0) else {
+    let Some((actual_unit, actual)) = normalize_type_fact(ctx, actual_unit, actual, 0) else {
         return TypeCompatibility::Unknown;
     };
     if !expected.is_known() || !actual.is_known() {
@@ -166,22 +244,16 @@ fn type_facts_compatibility_inner(
     if normalized_internal_table_displays_match(&expected, &actual) {
         return TypeCompatibility::Compatible;
     }
-    if resolved_internal_table_displays_match(
-        project,
-        expected_unit,
-        &expected,
-        actual_unit,
-        &actual,
-    ) {
+    if resolved_internal_table_displays_match(ctx, expected_unit, &expected, actual_unit, &actual) {
         return TypeCompatibility::Compatible;
     }
     if normalized_type_facts_match_by_name(&expected, &actual)
-        && !internal_table_kinds_differ(project, expected_unit, &expected, actual_unit, &actual)
+        && !internal_table_kinds_differ(ctx, expected_unit, &expected, actual_unit, &actual)
     {
         return TypeCompatibility::Compatible;
     }
     if let Some(compatibility) = range_table_element_compatibility(
-        project,
+        ctx,
         expected_unit,
         &expected,
         actual_unit,
@@ -191,14 +263,14 @@ fn type_facts_compatibility_inner(
     ) {
         return compatibility;
     }
-    let Some(expected) = classify_normalized_type_fact(project, expected_unit, &expected, 0) else {
+    let Some(expected) = classify_normalized_type_fact(ctx, expected_unit, &expected, 0) else {
         return TypeCompatibility::Unknown;
     };
-    let Some(actual) = classify_normalized_type_fact(project, actual_unit, &actual, 0) else {
+    let Some(actual) = classify_normalized_type_fact(ctx, actual_unit, &actual, 0) else {
         return TypeCompatibility::Unknown;
     };
     types_compatibility(
-        project,
+        ctx,
         &expected,
         &actual,
         allow_table_kind_conversion,
@@ -207,7 +279,7 @@ fn type_facts_compatibility_inner(
 }
 
 fn types_compatibility(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     expected: &ClassifiedType,
     actual: &ClassifiedType,
     allow_table_kind_conversion: bool,
@@ -245,7 +317,7 @@ fn types_compatibility(
             }
             let line = match (expected_line.as_deref(), actual_line.as_deref()) {
                 (Some(expected_line), Some(actual_line)) => types_compatibility(
-                    project,
+                    ctx,
                     expected_line,
                     actual_line,
                     allow_table_kind_conversion,
@@ -299,14 +371,14 @@ fn types_compatibility(
                 return TypeCompatibility::Compatible;
             }
             if expected_name.as_ref() == "data" {
-                return match ref_is_object(project, actual_name.as_ref(), *actual_handle) {
+                return match ref_is_object(ctx, actual_name.as_ref(), *actual_handle) {
                     Some(false) => TypeCompatibility::Compatible,
                     Some(true) => TypeCompatibility::Incompatible,
                     None => TypeCompatibility::Unknown,
                 };
             }
             if expected_name.as_ref() == "object" {
-                return match ref_is_object(project, actual_name.as_ref(), *actual_handle) {
+                return match ref_is_object(ctx, actual_name.as_ref(), *actual_handle) {
                     Some(true) => TypeCompatibility::Compatible,
                     Some(false) => TypeCompatibility::Incompatible,
                     None => TypeCompatibility::Unknown,
@@ -317,7 +389,7 @@ fn types_compatibility(
             }
             match (expected_handle, actual_handle) {
                 (Some(expected_handle), Some(actual_handle)) => {
-                    if symbol_handle_is_same_or_subtype(project, *actual_handle, *expected_handle) {
+                    if symbol_handle_is_same_or_subtype(ctx, *actual_handle, *expected_handle) {
                         TypeCompatibility::Compatible
                     } else {
                         TypeCompatibility::Incompatible
@@ -330,7 +402,7 @@ fn types_compatibility(
 }
 
 fn classify_normalized_type_fact(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     unit: &UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
@@ -344,7 +416,7 @@ fn classify_normalized_type_fact(
         .and_then(parse_internal_table_display);
     if fact.table_line.is_some() || table_display.is_some() {
         let line = if let Some(line_fact) = fact.table_line.as_deref() {
-            classify_normalized_type_fact(project, unit, line_fact, depth + 1).map(Box::new)
+            classify_normalized_type_fact(ctx, unit, line_fact, depth + 1).map(Box::new)
         } else if table_display
             .as_ref()
             .is_some_and(|display| display.line_display.is_some())
@@ -355,7 +427,7 @@ fn classify_normalized_type_fact(
                 type_clause_display: None,
                 table_line: None,
             };
-            classify_normalized_type_fact(project, unit, &line_fact, depth + 1).map(Box::new)
+            classify_normalized_type_fact(ctx, unit, &line_fact, depth + 1).map(Box::new)
         } else {
             None
         };
@@ -363,7 +435,7 @@ fn classify_normalized_type_fact(
             kind: table_display
                 .as_ref()
                 .map(|display| display.kind)
-                .or_else(|| internal_table_fact_kind(project, unit, fact, 0))
+                .or_else(|| internal_table_fact_kind(ctx, unit, fact, 0))
                 .unwrap_or(InternalTableDisplayKind::Any),
             line,
         });
@@ -377,8 +449,7 @@ fn classify_normalized_type_fact(
         });
     };
     if declared_type.is_ref {
-        let target_handle =
-            resolve_type_symbol_handle(project, unit, declared_type.base_name.as_ref());
+        let target_handle = resolve_type_symbol_handle(ctx, unit, declared_type.base_name.as_ref());
         return Some(ClassifiedType::Ref {
             target_name: Arc::clone(&declared_type.base_name),
             target_handle,
@@ -393,10 +464,10 @@ fn classify_normalized_type_fact(
         match declared_type.namespace {
             Namespace::Type => {
                 if let Some((resolved_unit, resolved_fact)) =
-                    resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
+                    resolve_named_type_fact(ctx, unit, declared_type.base_name.as_ref())
                 {
                     return classify_normalized_type_fact(
-                        project,
+                        ctx,
                         resolved_unit,
                         &resolved_fact,
                         depth + 1,
@@ -405,13 +476,12 @@ fn classify_normalized_type_fact(
             }
             Namespace::Value => {
                 if let Some((resolved_unit, resolved_fact)) =
-                    resolve_named_value_fact(project, unit, declared_type.base_name.as_ref())
-                        .or_else(|| {
-                            resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())
-                        })
+                    resolve_named_value_fact(ctx, unit, declared_type.base_name.as_ref()).or_else(
+                        || resolve_named_type_fact(ctx, unit, declared_type.base_name.as_ref()),
+                    )
                 {
                     return classify_normalized_type_fact(
-                        project,
+                        ctx,
                         resolved_unit,
                         &resolved_fact,
                         depth + 1,
@@ -611,7 +681,7 @@ fn normalized_type_facts_match_by_name(expected: &TypeFactData, actual: &TypeFac
 }
 
 fn internal_table_kinds_differ(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     expected_unit: &UnitAnalysis,
     expected: &TypeFactData,
     actual_unit: &UnitAnalysis,
@@ -619,27 +689,27 @@ fn internal_table_kinds_differ(
 ) -> bool {
     matches!(
         (
-            internal_table_fact_kind(project, expected_unit, expected, 0),
-            internal_table_fact_kind(project, actual_unit, actual, 0),
+            internal_table_fact_kind(ctx, expected_unit, expected, 0),
+            internal_table_fact_kind(ctx, actual_unit, actual, 0),
         ),
         (Some(expected), Some(actual)) if expected != actual
     )
 }
 
 fn resolved_internal_table_displays_match(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     expected_unit: &UnitAnalysis,
     expected: &TypeFactData,
     actual_unit: &UnitAnalysis,
     actual: &TypeFactData,
 ) -> bool {
     let Some((expected_kind, expected_line)) =
-        internal_table_display_parts(project, expected_unit, expected, 0)
+        internal_table_display_parts(ctx, expected_unit, expected, 0)
     else {
         return false;
     };
     let Some((actual_kind, actual_line)) =
-        internal_table_display_parts(project, actual_unit, actual, 0)
+        internal_table_display_parts(ctx, actual_unit, actual, 0)
     else {
         return false;
     };
@@ -653,7 +723,7 @@ fn resolved_internal_table_displays_match(
 }
 
 fn internal_table_display_parts(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     unit: &UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
@@ -674,7 +744,7 @@ fn internal_table_display_parts(
             display.kind,
             display.line_display.map(|line| {
                 if is_range {
-                    range_line_display(project, unit, fact, line)
+                    range_line_display(ctx, unit, fact, line)
                 } else {
                     line.to_string()
                 }
@@ -688,12 +758,12 @@ fn internal_table_display_parts(
     {
         return None;
     }
-    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
-    internal_table_display_parts(project, unit, &fact, depth + 1)
+    let (unit, fact) = resolve_named_type_fact(ctx, unit, declared_type.base_name.as_ref())?;
+    internal_table_display_parts(ctx, unit, &fact, depth + 1)
 }
 
 fn internal_table_fact_kind(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     unit: &UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
@@ -716,12 +786,12 @@ fn internal_table_fact_kind(
     {
         return None;
     }
-    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
-    internal_table_fact_kind(project, unit, &fact, depth + 1)
+    let (unit, fact) = resolve_named_type_fact(ctx, unit, declared_type.base_name.as_ref())?;
+    internal_table_fact_kind(ctx, unit, &fact, depth + 1)
 }
 
 fn range_table_element_compatibility(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     expected_unit: &UnitAnalysis,
     expected: &TypeFactData,
     actual_unit: &UnitAnalysis,
@@ -729,11 +799,10 @@ fn range_table_element_compatibility(
     allow_table_kind_conversion: bool,
     allow_scalar_conversion: bool,
 ) -> Option<TypeCompatibility> {
-    let (expected_unit, expected_line) =
-        range_table_element_fact(project, expected_unit, expected, 0)?;
-    let (actual_unit, actual_line) = range_table_element_fact(project, actual_unit, actual, 0)?;
+    let (expected_unit, expected_line) = range_table_element_fact(ctx, expected_unit, expected, 0)?;
+    let (actual_unit, actual_line) = range_table_element_fact(ctx, actual_unit, actual, 0)?;
     let compatibility = type_facts_compatibility_inner(
-        project,
+        ctx,
         expected_unit,
         &expected_line,
         actual_unit,
@@ -745,7 +814,7 @@ fn range_table_element_compatibility(
 }
 
 fn range_table_element_fact<'a>(
-    project: &'a ProjectAnalysis,
+    ctx: CompatibilityContext<'a>,
     unit: &'a UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
@@ -766,13 +835,13 @@ fn range_table_element_fact<'a>(
             .as_deref()
             .and_then(parse_internal_table_display)?
             .line_display?;
-        if let Some((unit, fact)) = resolve_named_value_fact(project, unit, line) {
+        if let Some((unit, fact)) = resolve_named_value_fact(ctx, unit, line) {
             return Some((unit, fact));
         }
         return Some((unit, named_type_fact(line)));
     }
     if named_range_table_fact(unit, fact) && fact_is_table_shape(fact) {
-        return internal_table_line_fact(project, unit, fact, depth);
+        return internal_table_line_fact(ctx, unit, fact, depth);
     }
 
     let declared_type = fact.declared_type.as_ref()?;
@@ -782,12 +851,12 @@ fn range_table_element_fact<'a>(
     {
         return None;
     }
-    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
-    range_table_element_fact(project, unit, &fact, depth + 1)
+    let (unit, fact) = resolve_named_type_fact(ctx, unit, declared_type.base_name.as_ref())?;
+    range_table_element_fact(ctx, unit, &fact, depth + 1)
 }
 
 fn internal_table_line_fact<'a>(
-    project: &'a ProjectAnalysis,
+    ctx: CompatibilityContext<'a>,
     unit: &'a UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
@@ -804,7 +873,7 @@ fn internal_table_line_fact<'a>(
         .and_then(parse_internal_table_display)
         .and_then(|display| display.line_display)
     {
-        if let Some((unit, fact)) = resolve_named_value_fact(project, unit, line) {
+        if let Some((unit, fact)) = resolve_named_value_fact(ctx, unit, line) {
             return Some((unit, fact));
         }
         return Some((unit, named_type_fact(line)));
@@ -816,8 +885,8 @@ fn internal_table_line_fact<'a>(
     {
         return None;
     }
-    let (unit, fact) = resolve_named_type_fact(project, unit, declared_type.base_name.as_ref())?;
-    internal_table_line_fact(project, unit, &fact, depth + 1)
+    let (unit, fact) = resolve_named_type_fact(ctx, unit, declared_type.base_name.as_ref())?;
+    internal_table_line_fact(ctx, unit, &fact, depth + 1)
 }
 
 fn named_range_table_fact(unit: &UnitAnalysis, fact: &TypeFactData) -> bool {
@@ -874,7 +943,7 @@ fn named_type_fact(name: &str) -> TypeFactData {
 }
 
 fn range_line_display(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     unit: &UnitAnalysis,
     fact: &TypeFactData,
     fallback: &str,
@@ -886,10 +955,10 @@ fn range_line_display(
             .find(|field| field.name.as_ref() == "low")
             .and_then(|field| field.type_ref.as_ref())
     }) {
-        return resolved_type_ref_display(project, unit, type_ref)
+        return resolved_type_ref_display(ctx, unit, type_ref)
             .unwrap_or_else(|| fallback.to_string());
     }
-    resolve_named_value_fact(project, unit, fallback)
+    resolve_named_value_fact(ctx, unit, fallback)
         .and_then(|(_, fact)| {
             fact.declared_type
                 .map(|type_ref| type_ref_display(&type_ref))
@@ -898,13 +967,13 @@ fn range_line_display(
 }
 
 fn resolved_type_ref_display(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     unit: &UnitAnalysis,
     type_ref: &FieldTypeRefData,
 ) -> Option<String> {
     if type_ref.namespace == Namespace::Value && !type_ref.is_ref && type_ref.field_path.is_empty()
     {
-        return resolve_named_value_fact(project, unit, type_ref.base_name.as_ref()).and_then(
+        return resolve_named_value_fact(ctx, unit, type_ref.base_name.as_ref()).and_then(
             |(_, fact)| {
                 fact.declared_type
                     .map(|type_ref| type_ref_display(&type_ref))
@@ -1040,7 +1109,7 @@ fn trim_internal_table_line_display(display: &str) -> &str {
 }
 
 fn normalize_type_fact<'a>(
-    project: &'a ProjectAnalysis,
+    ctx: CompatibilityContext<'a>,
     unit: &'a UnitAnalysis,
     fact: &TypeFactData,
     depth: usize,
@@ -1057,7 +1126,7 @@ fn normalize_type_fact<'a>(
     }
 
     let (mut current_unit, base_fact) =
-        resolve_named_type_fact(project, unit, type_ref.base_name.as_ref())?;
+        resolve_named_type_fact(ctx, unit, type_ref.base_name.as_ref())?;
     let mut current_structure = base_fact.structure;
     let mut current_declared_type = base_fact.declared_type;
 
@@ -1071,7 +1140,7 @@ fn normalize_type_fact<'a>(
                 return None;
             }
             let (next_unit, next_fact) =
-                resolve_named_type_fact(project, current_unit, next_type_ref.base_name.as_ref())?;
+                resolve_named_type_fact(ctx, current_unit, next_type_ref.base_name.as_ref())?;
             current_unit = next_unit;
             current_structure = next_fact.structure;
             current_declared_type = next_fact.declared_type;
@@ -1098,91 +1167,44 @@ fn normalize_type_fact<'a>(
 }
 
 fn resolve_named_type_fact<'a>(
-    project: &'a ProjectAnalysis,
+    ctx: CompatibilityContext<'a>,
     preferred_unit: &'a UnitAnalysis,
     name: &str,
 ) -> Option<(&'a UnitAnalysis, TypeFactData)> {
-    for unit in std::iter::once(preferred_unit).chain(project.units.iter()) {
-        let Some(symbol) = unit.symbols.iter().find(|symbol| {
-            symbol.scope == unit.root_scope
-                && matches!(
-                    symbol.kind,
-                    SymbolKind::TypeDef
-                        | SymbolKind::Class
-                        | SymbolKind::Interface
-                        | SymbolKind::BuiltinType
-                )
-                && symbol.name.as_ref() == name
-        }) else {
-            continue;
-        };
-        return Some((
-            unit,
-            TypeFactData {
-                structure: symbol.structure,
-                declared_type: symbol.declared_type.clone(),
-                type_clause_display: symbol.type_clause_display.clone(),
-                table_line: None,
-            },
-        ));
-    }
-    None
+    let handle = ctx.lookup.root_symbol(preferred_unit, name, true)?;
+    let unit = &ctx.project.units[handle.unit.as_usize()];
+    Some((unit, type_fact_from_symbol(unit.symbol(handle.symbol))))
 }
 
 fn resolve_named_value_fact<'a>(
-    project: &'a ProjectAnalysis,
+    ctx: CompatibilityContext<'a>,
     preferred_unit: &'a UnitAnalysis,
     name: &str,
 ) -> Option<(&'a UnitAnalysis, TypeFactData)> {
-    for unit in std::iter::once(preferred_unit).chain(project.units.iter()) {
-        let Some(symbol) = unit.symbols.iter().find(|symbol| {
-            symbol.scope == unit.root_scope
-                && symbol.kind.occupies(Namespace::Value)
-                && symbol.name.as_ref() == name
-        }) else {
-            continue;
-        };
-        return Some((
-            unit,
-            TypeFactData {
-                structure: symbol.structure,
-                declared_type: symbol.declared_type.clone(),
-                type_clause_display: symbol.type_clause_display.clone(),
-                table_line: None,
-            },
-        ));
+    let handle = ctx.lookup.root_symbol(preferred_unit, name, false)?;
+    let unit = &ctx.project.units[handle.unit.as_usize()];
+    Some((unit, type_fact_from_symbol(unit.symbol(handle.symbol))))
+}
+
+fn type_fact_from_symbol(symbol: &SymbolData) -> TypeFactData {
+    TypeFactData {
+        structure: symbol.structure,
+        declared_type: symbol.declared_type.clone(),
+        type_clause_display: symbol.type_clause_display.clone(),
+        table_line: None,
     }
-    None
 }
 
 fn resolve_type_symbol_handle(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     preferred_unit: &UnitAnalysis,
     name: &str,
 ) -> Option<SymbolHandle> {
-    resolve_named_type_fact(project, preferred_unit, name).and_then(|(unit, _fact)| {
-        unit.symbols
-            .iter()
-            .find(|symbol| {
-                symbol.scope == unit.root_scope
-                    && symbol.name.as_ref() == name
-                    && matches!(
-                        symbol.kind,
-                        SymbolKind::Class
-                            | SymbolKind::Interface
-                            | SymbolKind::TypeDef
-                            | SymbolKind::BuiltinType
-                    )
-            })
-            .map(|symbol| SymbolHandle {
-                unit: unit.unit_id,
-                symbol: symbol.id,
-            })
-    })
+    ctx.lookup.root_symbol(preferred_unit, name, true)
 }
 
 fn ref_is_object(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     name: &str,
     handle: Option<SymbolHandle>,
 ) -> Option<bool> {
@@ -1192,7 +1214,7 @@ fn ref_is_object(
         _ => {}
     }
     let handle = handle?;
-    project.units.get(handle.unit.as_usize()).map(|unit| {
+    ctx.project.units.get(handle.unit.as_usize()).map(|unit| {
         matches!(
             unit.symbol(handle.symbol).kind,
             SymbolKind::Class | SymbolKind::Interface
@@ -1201,15 +1223,15 @@ fn ref_is_object(
 }
 
 fn symbol_handle_is_same_or_subtype(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     actual: SymbolHandle,
     expected: SymbolHandle,
 ) -> bool {
-    symbol_handle_is_same_or_subtype_inner(project, actual, expected, &mut HashSet::new())
+    symbol_handle_is_same_or_subtype_inner(ctx, actual, expected, &mut HashSet::new())
 }
 
 fn symbol_handle_is_same_or_subtype_inner(
-    project: &ProjectAnalysis,
+    ctx: CompatibilityContext<'_>,
     actual: SymbolHandle,
     expected: SymbolHandle,
     visited: &mut HashSet<SymbolHandle>,
@@ -1221,28 +1243,28 @@ fn symbol_handle_is_same_or_subtype_inner(
         return false;
     }
 
-    let unit = &project.units[actual.unit.as_usize()];
+    let unit = &ctx.project.units[actual.unit.as_usize()];
     for implemented in unit
         .implemented_interfaces
         .iter()
         .filter(|implemented| implemented.owner_symbol == actual.symbol)
     {
         let Some(interface) =
-            resolve_type_symbol_handle(project, unit, implemented.interface_name.as_ref())
+            resolve_type_symbol_handle(ctx, unit, implemented.interface_name.as_ref())
         else {
             continue;
         };
-        if symbol_handle_is_same_or_subtype_inner(project, interface, expected, visited) {
+        if symbol_handle_is_same_or_subtype_inner(ctx, interface, expected, visited) {
             return true;
         }
     }
 
     unit.class_superclass(actual.symbol)
         .and_then(|inheritance| {
-            resolve_type_symbol_handle(project, unit, inheritance.superclass_name.as_ref())
+            resolve_type_symbol_handle(ctx, unit, inheritance.superclass_name.as_ref())
         })
         .is_some_and(|superclass| {
-            symbol_handle_is_same_or_subtype_inner(project, superclass, expected, visited)
+            symbol_handle_is_same_or_subtype_inner(ctx, superclass, expected, visited)
         })
 }
 

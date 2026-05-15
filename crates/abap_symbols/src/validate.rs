@@ -5,8 +5,8 @@ use abap_lexer::TextRange;
 
 use crate::builtins::builtin_routine_spec;
 use crate::compatibility::{
-    call_section_matches_parameter, parameter_is_required, positional_parameter_section,
-    type_facts_compatibility, type_facts_parameter_compatibility,
+    TypeFactLookup, call_section_matches_parameter, parameter_is_required,
+    positional_parameter_section, type_facts_compatibility, type_facts_parameter_compatibility,
     type_facts_strict_table_kind_compatibility,
 };
 use crate::def_map::{
@@ -28,6 +28,7 @@ struct ValidationLookup<'a> {
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     include_predecessors: Vec<Vec<UnitId>>,
     include_order: IncludeOrderIndex,
+    type_fact_lookup: TypeFactLookup,
 }
 
 #[derive(Default)]
@@ -308,6 +309,7 @@ fn build_validation_lookup<'a>(
         root_index,
         include_predecessors: project.include_predecessor_units_by_unit(),
         include_order: build_include_order_index(project),
+        type_fact_lookup: TypeFactLookup::new(project),
     }
 }
 
@@ -2528,6 +2530,7 @@ fn validate_move_corresponding_component_pair(
         | (_, MoveCorrespondingOperand::Structure(_, _)) => {}
         _ if type_facts_compatibility(
             project,
+            &lookup.type_fact_lookup,
             target_unit,
             &target_fact,
             source_unit,
@@ -2667,8 +2670,15 @@ fn validate_move_corresponding_table_lines(
         | (_, MoveCorrespondingOperand::Dynamic)
         | (MoveCorrespondingOperand::Unknown, _)
         | (_, MoveCorrespondingOperand::Unknown) => {}
-        _ if type_facts_compatibility(project, unit, target_line, unit, source_line)
-            .is_incompatible() =>
+        _ if type_facts_compatibility(
+            project,
+            &lookup.type_fact_lookup,
+            unit,
+            target_line,
+            unit,
+            source_line,
+        )
+        .is_incompatible() =>
         {
             out.push(Diagnostic {
                 kind: DiagnosticKind::IncompatibleAssignmentType,
@@ -5383,8 +5393,15 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 ));
                 continue;
             }
-            if type_facts_compatibility(project, unit, &assignment.lhs, unit, &assignment.rhs)
-                .is_incompatible()
+            if type_facts_compatibility(
+                project,
+                &lookup.type_fact_lookup,
+                unit,
+                &assignment.lhs,
+                unit,
+                &assignment.rhs,
+            )
+            .is_incompatible()
             {
                 unit_diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::IncompatibleAssignmentType,
@@ -5470,6 +5487,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         FunctionModuleParameterSection::Tables => {
                             type_facts_parameter_compatibility(
                                 project,
+                                &lookup.type_fact_lookup,
                                 target_unit,
                                 &expected,
                                 unit,
@@ -5480,6 +5498,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         | FunctionModuleParameterSection::Changing => {
                             type_facts_strict_table_kind_compatibility(
                                 project,
+                                &lookup.type_fact_lookup,
                                 target_unit,
                                 &expected,
                                 unit,
@@ -5488,6 +5507,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                         }
                         FunctionModuleParameterSection::Exporting => type_facts_compatibility(
                             project,
+                            &lookup.type_fact_lookup,
                             target_unit,
                             &expected,
                             unit,
@@ -5567,6 +5587,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     }
                     if type_facts_parameter_compatibility(
                         project,
+                        &lookup.type_fact_lookup,
                         target_unit,
                         &method_parameter_type_fact(parameter),
                         unit,
@@ -5672,6 +5693,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     }
                     if type_facts_parameter_compatibility(
                         project,
+                        &lookup.type_fact_lookup,
                         target_unit,
                         &method_parameter_type_fact(parameter),
                         unit,
@@ -5702,6 +5724,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 }
                 if type_facts_parameter_compatibility(
                     project,
+                    &lookup.type_fact_lookup,
                     target_unit,
                     &method_parameter_type_fact(parameter),
                     unit,
@@ -5810,6 +5833,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 let expected = form_parameter_type_fact(target_unit, parameter);
                 if type_facts_parameter_compatibility(
                     project,
+                    &lookup.type_fact_lookup,
                     target_unit,
                     &expected,
                     unit,
