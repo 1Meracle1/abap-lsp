@@ -39,6 +39,8 @@ fn is_builtin_routine(name: &str) -> bool {
 
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 type RootHandleCache = HashMap<(usize, Namespace, Arc<str>), Option<SymbolHandle>>;
+type TypeRefImportCache = HashMap<(usize, Namespace, Arc<str>, Vec<Arc<str>>), StructureId>;
+type SymbolStructureCache = HashMap<(u32, u32), StructureId>;
 
 struct UnitSnapshot<'a> {
     target_idx: usize,
@@ -565,6 +567,8 @@ fn resolve_project_cross_unit_with_filter(
             target_pos_by_unit_idx: &target_pos_by_unit_idx,
         };
         let mut imported = HashMap::<(u32, u32), StructureId>::new();
+        let mut type_ref_import_cache = TypeRefImportCache::new();
+        let mut symbol_structure_cache = SymbolStructureCache::new();
 
         let symbol_inputs: Vec<_> = unit
             .symbols
@@ -585,6 +589,8 @@ fn resolve_project_cross_unit_with_filter(
                         &mut unit.structures,
                         &mut imported,
                         &mut root_handle_cache,
+                        &mut type_ref_import_cache,
+                        &mut symbol_structure_cache,
                     )
                 })
             });
@@ -615,6 +621,8 @@ fn resolve_project_cross_unit_with_filter(
                             &mut unit.structures,
                             &mut imported,
                             &mut root_handle_cache,
+                            &mut type_ref_import_cache,
+                            &mut symbol_structure_cache,
                         )
                     })
                 });
@@ -646,6 +654,7 @@ fn resolve_project_cross_unit_with_filter(
             target_snapshots: &target_snapshots,
             target_pos_by_unit_idx: &target_pos_by_unit_idx,
         };
+        let mut symbol_structure_cache = SymbolStructureCache::new();
         let symbol_inputs: Vec<_> = snapshot
             .unit(unit_idx)
             .symbols
@@ -664,6 +673,7 @@ fn resolve_project_cross_unit_with_filter(
                     &root_index,
                     &mut unit.structures,
                     &mut root_handle_cache,
+                    &mut symbol_structure_cache,
                 )
             }));
         }
@@ -889,7 +899,19 @@ fn import_structure_for_type_ref(
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
+    type_ref_import_cache: &mut TypeRefImportCache,
+    symbol_structure_cache: &mut SymbolStructureCache,
 ) -> Option<StructureId> {
+    let cache_key = (
+        unit_idx,
+        type_ref.namespace,
+        Arc::clone(&type_ref.base_name),
+        type_ref.field_path.clone(),
+    );
+    if let Some(structure_id) = type_ref_import_cache.get(&cache_key).copied() {
+        return Some(structure_id);
+    }
+
     let handle = resolve_root_symbol_handle(
         snapshot,
         unit_idx,
@@ -912,6 +934,7 @@ fn import_structure_for_type_ref(
         target_structures,
         imported,
         root_handle_cache,
+        symbol_structure_cache,
         &mut seen,
     )?;
     for field_name in &type_ref.field_path {
@@ -921,6 +944,7 @@ fn import_structure_for_type_ref(
             .find(|field| field.name.as_ref() == field_name.as_ref())?;
         structure_id = field.structure?;
     }
+    type_ref_import_cache.insert(cache_key, structure_id);
     Some(structure_id)
 }
 
@@ -1036,15 +1060,20 @@ fn resolve_symbol_structure_for_target(
     target_structures: &mut Vec<StructureData>,
     imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
+    symbol_structure_cache: &mut SymbolStructureCache,
     seen: &mut HashSet<(u32, u32)>,
 ) -> Option<StructureId> {
-    if !seen.insert((current_unit_idx as u32, symbol_id.0)) {
+    let cache_key = (current_unit_idx as u32, symbol_id.0);
+    if let Some(structure_id) = symbol_structure_cache.get(&cache_key).copied() {
+        return Some(structure_id);
+    }
+    if !seen.insert(cache_key) {
         return None;
     }
 
     let symbol = snapshot.unit(current_unit_idx).symbol(symbol_id);
-    if let Some(structure_id) = symbol.structure {
-        return Some(if current_unit_idx == target_unit_idx {
+    let structure_id = if let Some(structure_id) = symbol.structure {
+        if current_unit_idx == target_unit_idx {
             structure_id
         } else {
             import_structure(
@@ -1054,32 +1083,35 @@ fn resolve_symbol_structure_for_target(
                 target_structures,
                 imported,
             )
-        });
-    }
-
-    let next_type_ref = symbol.declared_type.as_ref()?;
-    let handle = resolve_root_symbol_handle(
-        snapshot,
-        current_unit_idx,
-        next_type_ref,
-        per_unit_root_index,
-        visible_units,
-        root_index,
-        root_handle_cache,
-    )?;
-    resolve_symbol_structure_for_target(
-        snapshot,
-        target_unit_idx,
-        handle.unit.as_usize(),
-        handle.symbol,
-        per_unit_root_index,
-        visible_units,
-        root_index,
-        target_structures,
-        imported,
-        root_handle_cache,
-        seen,
-    )
+        }
+    } else {
+        let next_type_ref = symbol.declared_type.as_ref()?;
+        let handle = resolve_root_symbol_handle(
+            snapshot,
+            current_unit_idx,
+            next_type_ref,
+            per_unit_root_index,
+            visible_units,
+            root_index,
+            root_handle_cache,
+        )?;
+        resolve_symbol_structure_for_target(
+            snapshot,
+            target_unit_idx,
+            handle.unit.as_usize(),
+            handle.symbol,
+            per_unit_root_index,
+            visible_units,
+            root_index,
+            target_structures,
+            imported,
+            root_handle_cache,
+            symbol_structure_cache,
+            seen,
+        )?
+    };
+    symbol_structure_cache.insert(cache_key, structure_id);
+    Some(structure_id)
 }
 
 fn normalize_field_type_ref_for_target(
@@ -1091,6 +1123,7 @@ fn normalize_field_type_ref_for_target(
     root_index: &HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     target_structures: &mut Vec<StructureData>,
     root_handle_cache: &mut RootHandleCache,
+    symbol_structure_cache: &mut SymbolStructureCache,
 ) -> Option<(Option<StructureId>, FieldTypeRefData)> {
     if type_ref.field_path.is_empty() {
         return None;
@@ -1125,6 +1158,7 @@ fn normalize_field_type_ref_for_target(
         target_structures,
         &mut imported,
         root_handle_cache,
+        symbol_structure_cache,
         &mut seen,
     )?;
 
