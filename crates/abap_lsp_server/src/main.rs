@@ -327,6 +327,32 @@ fn finish_background_task(
     Ok(())
 }
 
+fn refresh_pending_task_workspace(
+    workspace_uri: &str,
+    completed_workspace: &WorkspaceState,
+    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+) {
+    let mut queue = queue_state
+        .lock()
+        .expect("pending analysis queue should not be poisoned");
+    let Some(pending) = queue.pending_tasks.get_mut(workspace_uri) else {
+        return;
+    };
+
+    let staged_workspace = &pending.workspace;
+    let mut workspace = completed_workspace.clone();
+    workspace
+        .open_documents
+        .clone_from(&staged_workspace.open_documents);
+    workspace
+        .preview_snapshots
+        .clone_from(&staged_workspace.preview_snapshots);
+    workspace
+        .pending_open_dependency_requests
+        .clone_from(&staged_workspace.pending_open_dependency_requests);
+    pending.workspace = workspace;
+}
+
 fn background_analysis_worker_count() -> usize {
     thread::available_parallelism()
         .map(|parallelism| parallelism.get().min(MAX_BACKGROUND_ANALYSIS_WORKERS))
@@ -1343,6 +1369,11 @@ fn serve(
                     })) {
                         Ok(completion) => match completion {
                             Ok(completion) => {
+                                refresh_pending_task_workspace(
+                                    &workspace_uri,
+                                    &completion.workspace,
+                                    &worker_queue_state,
+                                );
                                 if send_analysis_completion(&worker_completion_tx, completion)
                                     .is_err()
                                 {
@@ -3751,18 +3782,20 @@ mod tests {
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use super::{
-        AnalysisCompletion, AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE,
+        AnalysisCompletion, AnalysisTask, AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE,
         EDITOR_FIRST_DIAGNOSTIC_LIMIT, PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED,
         RESOLVE_REMOTE_DEPENDENCIES, RemoteDependencyTask, finish_background_task,
         flush_analysis_completions, flush_due_debounced_tasks, handle_did_change_notifications,
-        handle_message, run_analysis_task, run_remote_dependency_task, send_analysis_completion,
-        take_pending_background_task, try_schedule_background_analysis,
-        workspace_analysis_status_finished, workspace_analysis_status_started,
+        handle_message, refresh_pending_task_workspace, run_analysis_task,
+        run_remote_dependency_task, send_analysis_completion, take_pending_background_task,
+        try_schedule_background_analysis, workspace_analysis_status_finished,
+        workspace_analysis_status_started,
     };
     use abap_lsp::{
-        DependencyArtifactPayload, DidChangeTextDocumentParams, SAP_ATC_RESULTS_UPDATED,
-        ServerConfig, ServerState, StoreRemoteDependencyArtifactsParams, WorkspacePerformanceMode,
-        normalize_lsp_uri, refresh_workspace, store_remote_dependency_artifacts,
+        DependencyArtifactPayload, DidChangeTextDocumentParams, OpenDocumentOverlay,
+        SAP_ATC_RESULTS_UPDATED, ServerConfig, ServerState, StoreRemoteDependencyArtifactsParams,
+        WorkspacePerformanceMode, WorkspaceState, normalize_lsp_uri, refresh_workspace,
+        store_remote_dependency_artifacts,
     };
     use serde_json::{Value, json};
 
@@ -4412,6 +4445,54 @@ START-OF-SELECTION.
         assert_eq!(task, normalized_workspace_uri);
 
         let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn pending_background_task_reuses_completed_workspace_cache() {
+        let workspace_uri = "file:///workspace".to_string();
+        let source_uri = "file:///workspace/main.abap".to_string();
+        let source_text = "DATA lv_value TYPE i.";
+
+        let completed = WorkspaceState::new(workspace_uri.clone());
+        completed.cache.publish(source_uri.clone(), 0, source_text);
+        let mut staged = WorkspaceState::new(workspace_uri.clone());
+        staged.open_documents.insert(
+            source_uri.clone(),
+            OpenDocumentOverlay {
+                version: 3,
+                text: Arc::from(source_text),
+            },
+        );
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
+        queue_state
+            .lock()
+            .expect("pending analysis queue")
+            .pending_tasks
+            .insert(
+                workspace_uri.clone(),
+                AnalysisTask {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: 2,
+                    started: None,
+                    workspace: staged,
+                    kind: AnalysisTaskKind::Initialized,
+                },
+            );
+
+        refresh_pending_task_workspace(&workspace_uri, &completed, &queue_state);
+
+        let queue = queue_state.lock().expect("pending analysis queue");
+        let pending = queue
+            .pending_tasks
+            .get(&workspace_uri)
+            .expect("pending analysis task");
+        assert!(pending.workspace.cache.get(&source_uri).is_some());
+        let overlay = pending
+            .workspace
+            .open_documents
+            .get(&source_uri)
+            .expect("open overlay");
+        assert_eq!(overlay.version, 3);
     }
 
     #[test]
