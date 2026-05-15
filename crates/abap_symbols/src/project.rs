@@ -1064,28 +1064,6 @@ pub(crate) fn analyze_project_incremental_from_locals(
         unit_count: local_units.len(),
         ..ProjectUpdateMetrics::default()
     };
-    let build_workspace_index_timer = std::time::Instant::now();
-    let workspace_index = build_workspace_index(&local_units);
-    metrics.build_workspace_index_micros = build_workspace_index_timer.elapsed().as_micros();
-
-    let scope_index_clone_timer = std::time::Instant::now();
-    let scope_indexes: Vec<_> = local_units
-        .iter()
-        .map(|local| local.scope_index.clone())
-        .collect();
-    metrics.scope_index_clone_micros = scope_index_clone_timer.elapsed().as_micros();
-
-    let compute_dirty_set_timer = std::time::Instant::now();
-    let dirty_set = compute_dirty_set(
-        previous_project,
-        previous_signatures,
-        &local_units,
-        &workspace_index,
-        changed_uris,
-        force_full,
-    );
-    metrics.compute_dirty_set_micros = compute_dirty_set_timer.elapsed().as_micros();
-    metrics.dirty_unit_count = dirty_set.unit_ids.len();
 
     if force_full
         || previous_project.is_none()
@@ -1115,22 +1093,38 @@ pub(crate) fn analyze_project_incremental_from_locals(
         };
     }
 
+    let build_workspace_index_timer = std::time::Instant::now();
+    let workspace_index = build_workspace_index(&local_units);
+    metrics.build_workspace_index_micros = build_workspace_index_timer.elapsed().as_micros();
+
+    let compute_dirty_set_timer = std::time::Instant::now();
+    let dirty_set = compute_dirty_set(
+        previous_project,
+        previous_signatures,
+        &local_units,
+        &workspace_index,
+        changed_uris,
+        force_full,
+    );
+    metrics.compute_dirty_set_micros = compute_dirty_set_timer.elapsed().as_micros();
+    metrics.dirty_unit_count = dirty_set.unit_ids.len();
+
     let previous_project = previous_project.expect("checked above");
     let clone_previous_units_timer = std::time::Instant::now();
-    let mut units = previous_project.units.clone();
-    metrics.clone_previous_units_micros = clone_previous_units_timer.elapsed().as_micros();
-    let apply_local_updates_timer = std::time::Instant::now();
-    for local in &local_units {
-        if dirty_set.unit_ids.contains(&local.unit.unit_id) {
-            let unit_idx = local.unit.unit_id.as_usize();
-            if unit_idx == units.len() {
-                units.push(local.unit.clone());
-            } else {
-                units[unit_idx] = local.unit.clone();
-            }
+    let mut units = Vec::with_capacity(local_units.len());
+    let mut scope_indexes = Vec::with_capacity(local_units.len());
+    for local in local_units {
+        let unit_id = local.unit.unit_id;
+        scope_indexes.push(local.scope_index);
+        if dirty_set.unit_ids.contains(&unit_id)
+            || unit_id.as_usize() >= previous_project.units.len()
+        {
+            units.push(local.unit);
+        } else {
+            units.push(previous_project.units[unit_id.as_usize()].clone());
         }
     }
-    metrics.apply_local_updates_micros = apply_local_updates_timer.elapsed().as_micros();
+    metrics.clone_previous_units_micros = clone_previous_units_timer.elapsed().as_micros();
 
     let resolve_include_edges_timer = std::time::Instant::now();
     resolve_include_edges_for_units(&mut units, &workspace_index, &dirty_set.unit_ids);
@@ -1151,7 +1145,7 @@ pub(crate) fn analyze_project_incremental_from_locals(
 
     let mut project = ProjectAnalysis {
         units,
-        uri_to_unit: workspace_index.uri_to_unit.clone(),
+        uri_to_unit: workspace_index.uri_to_unit,
         provided_name_to_unit: workspace_index.provided_name_to_unit,
         diagnostics: Vec::new(),
     };
@@ -1198,11 +1192,12 @@ fn analyze_project_from_local_units_profiled_with_diagnostic_scope(
     diagnostic_scope_roots: Option<&HashSet<UnitId>>,
 ) -> (ProjectAnalysis, ProjectUpdateMetrics) {
     let workspace_index = build_workspace_index(&local_units);
-    let scope_indexes: Vec<_> = local_units
-        .iter()
-        .map(|local| local.scope_index.clone())
-        .collect();
-    let mut units: Vec<_> = local_units.into_iter().map(|local| local.unit).collect();
+    let mut scope_indexes = Vec::with_capacity(local_units.len());
+    let mut units = Vec::with_capacity(local_units.len());
+    for local in local_units {
+        scope_indexes.push(local.scope_index);
+        units.push(local.unit);
+    }
     let dirty_unit_ids: HashSet<_> = units.iter().map(|unit| unit.unit_id).collect();
     let mut metrics = ProjectUpdateMetrics {
         full_rebuild: true,

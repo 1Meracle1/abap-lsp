@@ -1058,17 +1058,17 @@ pub struct UnitAnalysis {
     pub sql_predicates: Vec<SqlPredicateData>,
     pub sql_targets: Vec<SqlTargetData>,
     pub provided_names: Vec<Arc<str>>,
-    pub(crate) semantic_index: SemanticIndex,
+    pub(crate) semantic_index: Arc<SemanticIndex>,
 }
 
 impl UnitAnalysis {
     pub(crate) fn with_semantic_index(mut self) -> Self {
-        self.semantic_index = SemanticIndex::build(&self);
+        self.semantic_index = Arc::new(SemanticIndex::build(&self));
         self
     }
 
     pub fn rebuild_semantic_index(&mut self) {
-        self.semantic_index = SemanticIndex::build(self);
+        self.semantic_index = Arc::new(SemanticIndex::build(self));
     }
 
     pub fn symbol(&self, id: SymbolId) -> &SymbolData {
