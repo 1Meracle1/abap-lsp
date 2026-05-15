@@ -169,9 +169,8 @@ struct IncludeOrderIndex {
     roots: Vec<IncludeOrderRoot>,
 }
 
-#[derive(Clone)]
 struct IncludeOrderRoot {
-    unit_prefixes: Vec<Vec<Vec<usize>>>,
+    unit_prefixes: HashMap<UnitId, Vec<Vec<usize>>>,
 }
 
 impl IncludeOrderIndex {
@@ -186,10 +185,10 @@ impl IncludeOrderIndex {
             return decl_offset > reference_offset;
         }
         self.roots.iter().any(|root| {
-            let Some(reference_prefixes) = root.unit_prefixes.get(reference_unit.as_usize()) else {
+            let Some(reference_prefixes) = root.unit_prefixes.get(&reference_unit) else {
                 return false;
             };
-            let Some(decl_prefixes) = root.unit_prefixes.get(decl_unit.as_usize()) else {
+            let Some(decl_prefixes) = root.unit_prefixes.get(&decl_unit) else {
                 return false;
             };
             reference_prefixes.iter().any(|reference_prefix| {
@@ -221,24 +220,24 @@ fn build_include_order_index(project: &ProjectAnalysis) -> IncludeOrderIndex {
         return IncludeOrderIndex::default();
     }
 
-    let roots = project
-        .units
-        .iter()
-        .map(|unit| {
-            let mut root = IncludeOrderRoot {
-                unit_prefixes: vec![Vec::new(); project.units.len()],
-            };
-            let mut prefix = Vec::new();
-            collect_include_order_prefixes(
-                project,
-                unit.unit_id,
-                &mut prefix,
-                &mut root,
-                &mut HashSet::new(),
-            );
-            root
-        })
-        .collect();
+    let mut roots = Vec::new();
+    for unit in &project.units {
+        if !unit.include_edges.iter().any(|edge| edge.target.is_some()) {
+            continue;
+        }
+        let mut root = IncludeOrderRoot {
+            unit_prefixes: HashMap::new(),
+        };
+        let mut prefix = Vec::new();
+        collect_include_order_prefixes(
+            project,
+            unit.unit_id,
+            &mut prefix,
+            &mut root,
+            &mut HashSet::new(),
+        );
+        roots.push(root);
+    }
     IncludeOrderIndex { roots }
 }
 
@@ -256,9 +255,10 @@ fn collect_include_order_prefixes(
         return;
     }
 
-    if let Some(prefixes) = root.unit_prefixes.get_mut(unit_id.as_usize()) {
-        prefixes.push(prefix.clone());
-    }
+    root.unit_prefixes
+        .entry(unit_id)
+        .or_default()
+        .push(prefix.clone());
 
     let mut edges = unit
         .include_edges
