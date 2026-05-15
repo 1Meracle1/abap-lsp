@@ -3094,6 +3094,15 @@ fn workspace_committed_build_plan(_workspace: &WorkspaceState) -> SnapshotBuildP
     SnapshotBuildPlan::EDITOR_WORKSPACE
 }
 
+fn workspace_dependency_hydration_build_plan(workspace: &WorkspaceState) -> SnapshotBuildPlan {
+    let mut build_plan = workspace_committed_build_plan(workspace);
+    build_plan.routine_analysis = false;
+    build_plan.static_analysis = false;
+    build_plan.call_graph = false;
+    build_plan.callable_summaries = false;
+    build_plan
+}
+
 fn hydrate_workspace_dependency_documents(
     workspace: &mut WorkspaceState,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
@@ -3127,7 +3136,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     };
     metrics.reader_available = true;
 
-    let build_plan = workspace_committed_build_plan(workspace);
+    let build_plan = workspace_dependency_hydration_build_plan(workspace);
     let mut queried_candidates = HashSet::<String>::new();
     let mut scanned_candidate_sources = HashSet::<String>::new();
     let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
@@ -3281,6 +3290,18 @@ fn hydrate_workspace_dependency_documents_with_metrics(
         metrics.publish_micros += publish_start.elapsed().as_micros();
     }
 
+    if metrics.published_batch_count > 0 {
+        let final_inputs = workspace_cache_inputs(workspace);
+        if !final_inputs.is_empty() {
+            let publish_start = Instant::now();
+            workspace.cache.publish_inputs_with_build_plan(
+                final_inputs,
+                workspace_committed_build_plan(workspace),
+            );
+            metrics.publish_micros += publish_start.elapsed().as_micros();
+        }
+    }
+
     let mut hydrated = HashMap::new();
     for uri in hydrated_uris {
         if let Some(snapshot) = workspace.cache.get(uri.as_ref()) {
@@ -3288,6 +3309,26 @@ fn hydrate_workspace_dependency_documents_with_metrics(
         }
     }
     hydrated
+}
+
+fn workspace_cache_inputs(workspace: &WorkspaceState) -> Vec<DocumentInput> {
+    workspace
+        .cache
+        .uris()
+        .into_iter()
+        .filter_map(|uri| {
+            workspace
+                .cache
+                .get(uri.as_ref())
+                .map(|snapshot| DocumentInput {
+                    uri: Arc::clone(&snapshot.uri),
+                    version: snapshot.version,
+                    text: Arc::clone(&snapshot.text),
+                    is_dependency: snapshot.is_dependency,
+                    object_name: snapshot.object_name.clone(),
+                })
+        })
+        .collect()
 }
 
 fn resolved_dependency_inheritance_candidates(

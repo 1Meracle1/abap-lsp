@@ -542,6 +542,7 @@ fn build_project_routine_analysis_filtered(
                 routine_control_regions,
                 &out.routines[routine_id],
                 &tracked_symbols_by_routine[routine_id],
+                &out.scope_to_routine[descriptor.unit.as_usize()],
                 &call_argument_effects_by_unit[descriptor.unit.as_usize()],
                 &form_parameter_effects,
             );
@@ -1652,6 +1653,7 @@ fn build_routine_dataflow(
     control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
     tracked_symbols: &[&SymbolData],
+    scope_to_routine: &[Option<RoutineId>],
     call_argument_effects: &CallArgumentEffectMap,
     form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
 ) -> (
@@ -1691,6 +1693,11 @@ fn build_routine_dataflow(
                     reference.kind,
                     crate::ReferenceKind::TypeRef | crate::ReferenceKind::StructuredDeclEnd
                 )
+                && scope_to_routine
+                    .get(reference.scope.as_usize())
+                    .copied()
+                    .flatten()
+                    == Some(routine.descriptor.id)
         })
         .filter_map(|reference| {
             resolved_value_id_for_reference(unit, reference.id, &value_ids_by_symbol).map(|value| {
