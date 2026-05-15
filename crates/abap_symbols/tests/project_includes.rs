@@ -648,6 +648,66 @@ ENDCLASS.
 }
 
 #[test]
+fn reports_unknown_new_shorthand_constructor_parameter_from_definition_include_attribute() {
+    let root_src = r#"
+REPORT zmain.
+INCLUDE: ztop,
+         zf01.
+"#;
+    let top_src = r#"
+CLASS zcl_child DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING VALUE(container_name) TYPE string.
+ENDCLASS.
+
+CLASS lcl_app DEFINITION.
+  PUBLIC SECTION.
+    METHODS display.
+  PRIVATE SECTION.
+    DATA mo_cont TYPE REF TO zcl_child.
+ENDCLASS.
+"#;
+    let f01_src = r#"
+CLASS lcl_app IMPLEMENTATION.
+  METHOD display.
+    mo_cont = NEW #( container_name1 = 'CCONTAINER' ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let root_parse = parse(root_src);
+    let top_parse = parse(top_src);
+    let f01_parse = parse(f01_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zmain.abap",
+            source: root_src,
+            parse: &root_parse,
+        },
+        ProjectInput {
+            uri: "ztop.abap",
+            source: top_src,
+            parse: &top_parse,
+        },
+        ProjectInput {
+            uri: "zf01.abap",
+            source: f01_src,
+            parse: &f01_parse,
+        },
+    ]);
+
+    let f01 = project.unit_by_uri("zf01.abap").expect("f01 include");
+    assert!(
+        f01.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownNamedParameter
+                && diag.message.contains("container_name1")
+        }),
+        "expected unknown constructor parameter diagnostic, got {:?}",
+        f01.diagnostics
+    );
+}
+
+#[test]
 fn resolves_method_parameters_from_definition_include_inside_implementation_include_methods() {
     let root_src = r#"
 REPORT zmain.

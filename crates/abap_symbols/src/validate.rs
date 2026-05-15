@@ -425,6 +425,34 @@ fn resolve_symbol_handle_in_scope_or_includes(
         });
     }
 
+    if let Some(class_symbol) = enclosing_class_owner(unit, scope) {
+        let class_name = Arc::clone(&unit.symbol(class_symbol).name);
+        let predecessors = lookup
+            .include_predecessors
+            .get(unit.unit_id.as_usize())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for unit_id in std::iter::once(unit.unit_id).chain(predecessors.iter().rev().copied()) {
+            let Some(class) =
+                root_class_definition_handle_in_unit(project, lookup, unit_id, &class_name)
+            else {
+                continue;
+            };
+            let class_unit = &project.units[class.unit.as_usize()];
+            if let Some(symbol) = class_unit.symbols.iter().find(|symbol| {
+                symbol.name == *name
+                    && symbol.kind.occupies(namespace)
+                    && class_unit.scope(symbol.scope).kind == ScopeKind::Class
+                    && class_unit.scope(symbol.scope).owner == Some(class.symbol)
+            }) {
+                return Some(SymbolHandle {
+                    unit: class.unit,
+                    symbol: symbol.id,
+                });
+            }
+        }
+    }
+
     let key = (namespace, Arc::clone(name));
     let mut visited = HashSet::new();
     let mut queue: VecDeque<_> = unit
