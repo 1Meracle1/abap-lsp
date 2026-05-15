@@ -40,6 +40,7 @@ fn is_builtin_routine(name: &str) -> bool {
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 type TypeRefImportCache = HashMap<(usize, Namespace, Arc<str>, Vec<Arc<str>>), StructureId>;
 type SymbolStructureCache = HashMap<(u32, u32), StructureId>;
+type ClassScopeIndex = Vec<NamespaceCache<SymbolId>>;
 type PerUnitRootIndex = Vec<NamespaceCache<SymbolId>>;
 type RootIndex = NamespaceCache<Vec<SymbolHandle>>;
 
@@ -301,10 +302,18 @@ fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId
 
 fn class_scope_symbol(
     unit: &UnitAnalysis,
+    class_scope_index: Option<&ClassScopeIndex>,
     class_symbol: SymbolId,
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<SymbolId> {
+    if let Some(index) = class_scope_index {
+        return index
+            .get(class_symbol.as_usize())
+            .and_then(|class_symbols| class_symbols.get(namespace, name.as_ref()))
+            .copied();
+    }
+
     unit.symbols.iter().find_map(|symbol| {
         (symbol.name == *name
             && symbol.kind.occupies(namespace)
@@ -316,11 +325,12 @@ fn class_scope_symbol(
 
 fn inherited_class_scope_symbol(
     unit: &UnitAnalysis,
+    class_scope_index: Option<&ClassScopeIndex>,
     class_symbol: SymbolId,
     namespace: Namespace,
     name: &Arc<str>,
 ) -> Option<SymbolId> {
-    let symbol_id = class_scope_symbol(unit, class_symbol, namespace, name)?;
+    let symbol_id = class_scope_symbol(unit, class_scope_index, class_symbol, namespace, name)?;
     if namespace != Namespace::Value {
         return Some(symbol_id);
     }
@@ -390,7 +400,7 @@ fn resolve_inherited_symbol_in_unit(
             &inheritance.superclass_name,
         )?;
         if let Some(symbol_id) =
-            inherited_class_scope_symbol(unit, superclass_symbol, namespace, name)
+            inherited_class_scope_symbol(unit, None, superclass_symbol, namespace, name)
         {
             return Some(symbol_id);
         }
@@ -405,6 +415,7 @@ fn resolve_inherited_symbol_in_project(
     namespace: Namespace,
     name: &Arc<str>,
     per_unit_root_index: &[NamespaceCache<SymbolId>],
+    per_unit_class_scope_index: &[ClassScopeIndex],
     visible_units: &[Vec<UnitId>],
     root_index: &RootIndex,
 ) -> Option<SymbolHandle> {
@@ -426,9 +437,13 @@ fn resolve_inherited_symbol_in_project(
             root_index,
         )?;
         let superclass_unit = &units[current.unit.as_usize()];
-        if let Some(symbol_id) =
-            inherited_class_scope_symbol(superclass_unit, current.symbol, namespace, name)
-        {
+        if let Some(symbol_id) = inherited_class_scope_symbol(
+            superclass_unit,
+            per_unit_class_scope_index.get(current.unit.as_usize()),
+            current.symbol,
+            namespace,
+            name,
+        ) {
             return Some(SymbolHandle {
                 unit: current.unit,
                 symbol: symbol_id,
@@ -537,6 +552,7 @@ fn resolve_project_cross_unit_with_filter(
     let mut per_unit_root_index: PerUnitRootIndex = (0..units.len())
         .map(|_| NamespaceCache::default())
         .collect();
+    let per_unit_class_scope_index: Vec<_> = units.iter().map(build_class_scope_index).collect();
     let mut provided_name_to_unit: HashMap<Arc<str>, SymbolHandle> = HashMap::new();
     let mut root_symbol_names = HashSet::new();
     for unit in units.iter() {
@@ -634,6 +650,7 @@ fn resolve_project_cross_unit_with_filter(
                         namespace,
                         &reference_name,
                         &per_unit_root_index,
+                        &per_unit_class_scope_index,
                         &visible_units,
                         &root_index,
                     ) {
@@ -651,6 +668,7 @@ fn resolve_project_cross_unit_with_filter(
                         namespace,
                         &reference_name,
                         &per_unit_root_index,
+                        &per_unit_class_scope_index,
                         &predecessor_units,
                         &visible_units,
                     ) {
@@ -850,6 +868,7 @@ fn resolve_class_member_symbol_in_visible_definition(
     namespace: Namespace,
     name: &Arc<str>,
     per_unit_root_index: &[NamespaceCache<SymbolId>],
+    per_unit_class_scope_index: &[ClassScopeIndex],
     predecessor_units: &[Vec<UnitId>],
     visible_units: &[Vec<UnitId>],
 ) -> Option<SymbolHandle> {
@@ -864,6 +883,7 @@ fn resolve_class_member_symbol_in_visible_definition(
         namespace,
         name,
         per_unit_root_index,
+        per_unit_class_scope_index,
     ) {
         return Some(symbol);
     }
@@ -879,6 +899,7 @@ fn resolve_class_member_symbol_in_visible_definition(
                 namespace,
                 name,
                 per_unit_root_index,
+                per_unit_class_scope_index,
             ) {
                 return Some(symbol);
             }
@@ -896,6 +917,7 @@ fn resolve_class_member_symbol_in_visible_definition(
                 namespace,
                 name,
                 per_unit_root_index,
+                per_unit_class_scope_index,
             ) {
                 return Some(symbol);
             }
@@ -912,6 +934,7 @@ fn resolve_class_member_symbol_in_candidate_unit(
     namespace: Namespace,
     name: &Arc<str>,
     per_unit_root_index: &[NamespaceCache<SymbolId>],
+    per_unit_class_scope_index: &[ClassScopeIndex],
 ) -> Option<SymbolHandle> {
     let candidate_idx = candidate_unit.as_usize();
     let class_symbol = per_unit_root_index
@@ -920,10 +943,39 @@ fn resolve_class_member_symbol_in_candidate_unit(
         .copied()?;
     let candidate = units.get(candidate_idx)?;
     candidate.class_definition(class_symbol)?;
-    class_scope_symbol(candidate, class_symbol, namespace, name).map(|symbol| SymbolHandle {
+    class_scope_symbol(
+        candidate,
+        per_unit_class_scope_index.get(candidate_idx),
+        class_symbol,
+        namespace,
+        name,
+    )
+    .map(|symbol| SymbolHandle {
         unit: candidate.unit_id,
         symbol,
     })
+}
+
+fn build_class_scope_index(unit: &UnitAnalysis) -> ClassScopeIndex {
+    let mut index = ClassScopeIndex::new();
+    for symbol in &unit.symbols {
+        let scope = unit.scope(symbol.scope);
+        if scope.kind != ScopeKind::Class {
+            continue;
+        }
+        let Some(owner) = scope.owner else {
+            continue;
+        };
+        if index.len() <= owner.as_usize() {
+            index.resize_with(owner.as_usize() + 1, NamespaceCache::default);
+        }
+        for &namespace in symbol.kind.namespaces() {
+            index[owner.as_usize()]
+                .entry(namespace, Arc::clone(&symbol.name))
+                .or_insert(symbol.id);
+        }
+    }
+    index
 }
 
 fn root_symbol_is_visible_across_units_by_default(symbol: &SymbolData) -> bool {
