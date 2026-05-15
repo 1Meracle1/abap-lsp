@@ -4,8 +4,8 @@ use std::sync::OnceLock;
 
 use abap_cache::AnalysisSnapshot;
 use abap_symbols::{
-    ProjectAnalysis, ReferenceData, ReferenceKind, Resolution, SqlNameRefKind, SymbolData,
-    SymbolHandle, SymbolKind,
+    NamedArgumentTarget, ProjectAnalysis, ReferenceData, ReferenceKind, Resolution, SqlNameRefKind,
+    SymbolData, SymbolHandle, SymbolKind,
 };
 use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens};
 
@@ -149,6 +149,39 @@ fn push_pending(
     }
 }
 
+fn segment_is_followed_by_arg_list(text: &str, end: usize) -> bool {
+    text.get(end..)
+        .and_then(|tail| tail.chars().find(|ch| !ch.is_whitespace()))
+        == Some('(')
+}
+
+fn is_syntactic_method_call_segment(
+    unit: &abap_symbols::UnitAnalysis,
+    access: &abap_symbols::FieldAccess,
+    segment_index: usize,
+    text: &str,
+) -> bool {
+    let Some(segment) = access.field_path.get(segment_index) else {
+        return false;
+    };
+    segment_is_followed_by_arg_list(text, segment.range.end)
+        && unit.call_sites.iter().any(|call_site| {
+            call_site.scope == access.scope
+                && call_site.range.start <= segment.range.start
+                && segment.range.end <= call_site.range.end
+                && matches!(
+                    &call_site.target,
+                    NamedArgumentTarget::Method {
+                        base_namespace,
+                        base_name,
+                        method_name,
+                    } if *base_namespace == access.base_namespace
+                        && base_name == &access.base_name
+                        && method_name == &segment.name
+                )
+        })
+}
+
 fn collect_pending(
     snapshot: &AnalysisSnapshot,
     ty_ix: SemanticTokenTypeIndices,
@@ -258,17 +291,26 @@ fn collect_pending(
 
     for access in &unit.field_accesses {
         for (segment_index, segment) in access.field_path.iter().enumerate() {
-            let token_type = lookup
-                .classify_field_access_segment(access, segment_index)
-                .map(|kind| match kind {
-                    abap_cache::HoveredComponentKind::Scalar => ty_ix.property,
-                    abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
-                    abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
-                    abap_cache::HoveredComponentKind::Method => ty_ix.method,
-                    abap_cache::HoveredComponentKind::Interface => ty_ix.type_,
-                    abap_cache::HoveredComponentKind::Type => ty_ix.type_,
-                })
-                .unwrap_or(ty_ix.property);
+            let token_type = if is_syntactic_method_call_segment(
+                unit,
+                access,
+                segment_index,
+                snapshot.text.as_ref(),
+            ) {
+                ty_ix.method
+            } else {
+                lookup
+                    .classify_field_access_segment(access, segment_index)
+                    .map(|kind| match kind {
+                        abap_cache::HoveredComponentKind::Scalar => ty_ix.property,
+                        abap_cache::HoveredComponentKind::Structured { .. } => ty_ix.property,
+                        abap_cache::HoveredComponentKind::Attribute => ty_ix.property,
+                        abap_cache::HoveredComponentKind::Method => ty_ix.method,
+                        abap_cache::HoveredComponentKind::Interface => ty_ix.type_,
+                        abap_cache::HoveredComponentKind::Type => ty_ix.type_,
+                    })
+                    .unwrap_or(ty_ix.property)
+            };
             push_pending(
                 &mut pending,
                 segment.range.start,
@@ -790,6 +832,52 @@ DATA lt_data TYPE lcl_repro=>tr_errors.
             semantic_token_type_at(&tokens.data, line, character),
             Some(type_idx),
             "expected class type selector to highlight as type"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_unresolved_direct_selector_call_as_method() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS lcl_app DEFINITION.
+  PRIVATE SECTION.
+    DATA mo_alv TYPE REF TO cl_gui_alv_grid.
+    DATA mt_object_info TYPE STANDARD TABLE OF string.
+    DATA mt_fieldcat TYPE STANDARD TABLE OF string.
+    DATA ms_layout TYPE string.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_app IMPLEMENTATION.
+  METHOD run.
+    mo_alv->set_table_for_first_display(
+      EXPORTING
+        is_layout       = ms_layout
+      CHANGING
+        it_outtab       = mt_object_info
+        it_fieldcatalog = mt_fieldcat
+    ).
+  ENDMETHOD.
+ENDCLASS.
+";
+        let snapshot = store.publish("file:///unresolved_direct_selector_call.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+        let offset = src
+            .find("set_table_for_first_display")
+            .expect("method call");
+        let (line, character) =
+            byte_offset_to_line_character_utf16_reference(src, offset).expect("method position");
+
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, line, character),
+            Some(method_idx),
+            "expected unresolved direct selector call to highlight as method"
         );
     }
 
