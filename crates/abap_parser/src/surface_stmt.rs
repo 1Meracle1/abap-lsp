@@ -20,8 +20,17 @@ use crate::syntax::token_leaf;
 use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
 
 #[rustfmt::skip]
-const SQL_AGGREGATE_NAMES: &[&str] = &["COUNT", "MAX", "MIN", "SUM", "AVG", "MEDIAN", "STDDEV", "VAR", "CORR", "CORR_SPEARMAN", "ALLOW_PRECISION_LOSS"];
-const SQL_AGGREGATES: &[&str] = &["COUNT", "MAX", "MIN", "SUM", "AVG"];
+const SQL_AGGREGATE_NAMES: &[&str] = &["AVG", "COUNT", "MAX", "MIN", "SUM", "MEDIAN", "STDDEV", "VAR", "CORR", "CORR_SPEARMAN", "GROUPING", "STRING_AGG", "ALLOW_PRECISION_LOSS"];
+#[rustfmt::skip]
+const SQL_FUNCTION_NAMES: &[&str] = &[
+    "ABS", "CEIL", "DIV", "DIVISION", "FLOOR", "MOD", "ROUND",
+    "CONCAT", "CONCAT_WITH_SPACE", "INITCAP", "INSTR", "LEFT", "LENGTH", "LIKE_REGEXPR", "LOCATE", "LOCATE_REGEXPR", "LOCATE_REGEXPR_AFTER", "LOWER", "LPAD", "LTRIM", "OCCURRENCES_REGEXPR", "REPLACE", "REPLACE_REGEXPR", "RIGHT", "RPAD", "RTRIM", "SUBSTRING", "SUBSTRING_REGEXPR", "UPPER",
+    "COALESCE", "BINTOHEX", "HEXTOBIN", "TO_CLOB", "TO_BLOB", "UNIT_CONVERSION", "CURRENCY_CONVERSION",
+    "DATS_IS_VALID", "DATS_DAYS_BETWEEN", "DATS_ADD_DAYS", "DATS_ADD_MONTHS", "DATN_DAYS_BETWEEN", "DATN_ADD_DAYS", "DATN_ADD_MONTHS", "DATS_TO_DATN", "DATS_FROM_DATN", "TIMS_IS_VALID", "TIMS_TO_TIMN", "TIMS_FROM_TIMN",
+    "IS_VALID", "EXTRACT_YEAR", "EXTRACT_MONTH", "EXTRACT_DAY", "EXTRACT_HOUR", "EXTRACT_MINUTE", "EXTRACT_SECOND", "DAYNAME", "MONTHNAME", "WEEKDAY", "DAYS_BETWEEN", "ADD_DAYS", "ADD_MONTHS",
+    "TSTMP_IS_VALID", "TSTMP_CURRENT_UTCTIMESTAMP", "TSTMP_SECONDS_BETWEEN", "TSTMP_ADD_SECONDS", "TSTMP_TO_DATS", "TSTMP_TO_TIMS", "TSTMP_TO_DST", "DATS_TIMS_TO_TSTMP", "TSTMPL_TO_UTCL", "TSTMPL_FROM_UTCL", "UTCL_CURRENT", "UTCL_ADD_SECONDS", "UTCL_SECONDS_BETWEEN",
+    "ABAP_SYSTEM_TIMEZONE", "ABAP_USER_TIMEZONE",
+];
 const SUBMIT_COMPARISON_KEYWORDS: &[&str] = &["EQ", "NE", "CP", "NP", "GE", "GT", "LE", "LT"];
 
 #[inline]
@@ -1227,12 +1236,12 @@ fn sql_token_is_keyword(source: &str, token: &Token) -> bool {
     token.kind == TokenKind::Ident && sql_token_text_is_keyword(token.lexeme(source))
 }
 
-fn sql_token_is_aggregate(source: &str, token: &Token) -> bool {
+fn sql_token_is_function(source: &str, token: &Token) -> bool {
     if token.kind != TokenKind::Ident {
         return false;
     }
     let text = token.lexeme(source);
-    keyword_any(text, SQL_AGGREGATES)
+    keyword_any(text, SQL_AGGREGATE_NAMES) || keyword_any(text, SQL_FUNCTION_NAMES)
 }
 
 fn find_matching_delim_in_range(
@@ -1353,14 +1362,14 @@ fn build_sql_host_expr(
     ))
 }
 
-fn build_sql_aggregate_call(
+fn build_sql_function_call(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     start: usize,
     end_exclusive: usize,
 ) -> Option<(NodeId, usize)> {
-    if start + 1 >= end_exclusive || !sql_token_is_aggregate(source, &tokens[start]) {
+    if start + 1 >= end_exclusive || !sql_token_is_function(source, &tokens[start]) {
         return None;
     }
     if tokens[start + 1].kind != TokenKind::LParen {
@@ -1470,10 +1479,10 @@ fn push_sql_expr_children(
             idx = next_idx;
             continue;
         }
-        if let Some((aggregate, next_idx)) =
-            build_sql_aggregate_call(b, source, tokens, idx, end_exclusive)
+        if let Some((function, next_idx)) =
+            build_sql_function_call(b, source, tokens, idx, end_exclusive)
         {
-            children.push(aggregate);
+            children.push(function);
             idx = next_idx;
             continue;
         }
@@ -1510,6 +1519,9 @@ fn push_sql_expr_children(
         if mode == SqlExprMode::Structured
             && token.kind == TokenKind::Ident
             && !sql_token_is_keyword(source, token)
+            && tokens
+                .get(skip_trivia(tokens, idx + 1))
+                .is_none_or(|next| !matches!(next.kind, TokenKind::Eq | TokenKind::FatArrow))
         {
             if let Some(node) =
                 build_token_branch(b, SyntaxKind::SqlColumnRef, tokens, idx, idx + 1)
@@ -16817,6 +16829,23 @@ ENDFORM.",
                 .file
                 .count_kind(root, SyntaxKind::SqlPredicateOperand)
                 >= 4
+        );
+    }
+
+    #[test]
+    fn parses_open_sql_builtin_functions_as_sql_calls() {
+        let parsed = crate::parse(
+            "SELECT ltrim( e~matnr, '0' ) AS material,\n       coalesce( q~country, 'DE' ) AS country,\n       division( q~umrez, q~umren, 2 ) AS ratio,\n       upper( q~meins ) AS unit\n  FROM /sttp/prod AS q\n  JOIN /sttp/matmap AS e ON e~matid = q~matid\n  INTO TABLE @DATA(lt_rows).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlAggregateCall),
+            4
+        );
+        assert_eq!(
+            parsed.file.count_kind(root, SyntaxKind::SqlProjectionItem),
+            4
         );
     }
 

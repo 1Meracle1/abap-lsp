@@ -223,6 +223,7 @@ pub enum SqlNameRefKind {
     Star,
     QualifiedStar,
     Aggregate,
+    Function,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

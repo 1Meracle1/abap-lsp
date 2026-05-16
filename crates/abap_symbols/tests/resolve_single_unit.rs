@@ -3756,6 +3756,97 @@ SELECT MAX( a~bupid ) AS max_bupid
 }
 
 #[test]
+fn open_sql_builtin_functions_are_not_validated_as_columns() {
+    let ddic_src = r#"
+TYPES: BEGIN OF /sttp/matmap,
+         matnr TYPE c LENGTH 18,
+         country TYPE c LENGTH 3,
+         umrez TYPE i,
+         umren TYPE i,
+         meins TYPE c LENGTH 3,
+       END OF /sttp/matmap.
+"#;
+    let main_src = r#"
+SELECT ltrim( e~matnr, '0' ) AS material,
+       coalesce( e~country, 'DE' ) AS country,
+       division( e~umrez, e~umren, 2 ) AS ratio,
+       upper( e~meins ) AS unit,
+       currency_conversion( amount => e~umrez, source_currency => 'USD',
+                            target_currency => 'EUR',
+                            exchange_rate_date => @sy-datum ) AS converted
+  FROM /sttp/matmap AS e
+  INTO TABLE @DATA(lt_rows).
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_sttp_matmap.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_sql_functions.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///main_sql_functions.abap")
+        .expect("main unit");
+
+    for name in [
+        "ltrim",
+        "coalesce",
+        "division",
+        "upper",
+        "currency_conversion",
+    ] {
+        assert!(
+            main_unit.sql_name_refs.iter().any(|reference| {
+                reference.kind == SqlNameRefKind::Function && reference.name.as_ref() == name
+            }),
+            "expected SQL function ref {name}: {:?}",
+            main_unit.sql_name_refs
+        );
+        assert!(
+            !main_unit.sql_name_refs.iter().any(|reference| {
+                matches!(
+                    reference.kind,
+                    SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+                ) && reference.name.as_ref() == name
+            }),
+            "SQL function {name} must not be a field ref: {:?}",
+            main_unit.sql_name_refs
+        );
+        assert!(
+            !main_unit.diagnostics.iter().any(|diag| {
+                diag.kind == DiagnosticKind::UnknownField && diag.message.contains(name)
+            }),
+            "SQL function {name} must not produce UnknownField: {:?}",
+            main_unit.diagnostics
+        );
+    }
+    for name in [
+        "amount",
+        "source_currency",
+        "target_currency",
+        "exchange_rate_date",
+    ] {
+        assert!(
+            !main_unit.sql_name_refs.iter().any(|reference| {
+                matches!(
+                    reference.kind,
+                    SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn
+                ) && reference.name.as_ref() == name
+            }),
+            "SQL function parameter {name} must not be a field ref: {:?}",
+            main_unit.sql_name_refs
+        );
+    }
+}
+
+#[test]
 fn resolves_update_set_and_where_host_operands() {
     let src = r#"
 FORM f.

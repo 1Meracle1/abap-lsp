@@ -618,6 +618,7 @@ fn markdown_lines_for_sql_name_ref(
         SqlNameRefKind::Star => "Open SQL `*` projection",
         SqlNameRefKind::QualifiedStar => "Open SQL qualified `*` projection",
         SqlNameRefKind::Aggregate => "Open SQL aggregate",
+        SqlNameRefKind::Function => "Open SQL function",
     };
     let mut lines = vec![format!("`{}`", sql_ref.name), title.to_string()];
     if let Some(qual) = sql_ref.qualifier.as_ref() {

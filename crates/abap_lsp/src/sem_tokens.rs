@@ -342,7 +342,7 @@ fn collect_pending(
             SqlNameRefKind::Alias => ty_ix.variable,
             SqlNameRefKind::Column | SqlNameRefKind::QualifiedColumn => ty_ix.property,
             SqlNameRefKind::Star | SqlNameRefKind::QualifiedStar => ty_ix.type_,
-            SqlNameRefKind::Aggregate => ty_ix.function,
+            SqlNameRefKind::Aggregate | SqlNameRefKind::Function => ty_ix.function,
         };
         push_pending(
             &mut pending,

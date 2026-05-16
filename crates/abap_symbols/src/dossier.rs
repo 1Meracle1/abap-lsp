@@ -1794,6 +1794,7 @@ fn sql_name_ref_kind_name(kind: SqlNameRefKind) -> &'static str {
         SqlNameRefKind::Star => "star",
         SqlNameRefKind::QualifiedStar => "qualified_star",
         SqlNameRefKind::Aggregate => "aggregate",
+        SqlNameRefKind::Function => "function",
     }
 }
 

@@ -58,6 +58,25 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         Arc::<str>::from(text.to_ascii_lowercase())
     }
 
+    fn sql_call_ref_kind(name: &str) -> SqlNameRefKind {
+        match name.to_ascii_lowercase().as_str() {
+            "avg"
+            | "count"
+            | "max"
+            | "min"
+            | "sum"
+            | "median"
+            | "stddev"
+            | "var"
+            | "corr"
+            | "corr_spearman"
+            | "grouping"
+            | "string_agg"
+            | "allow_precision_loss" => SqlNameRefKind::Aggregate,
+            _ => SqlNameRefKind::Function,
+        }
+    }
+
     fn emit_dynamic_fragment(
         &mut self,
         query_id: usize,
@@ -1121,6 +1140,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         let mut kind = SqlProjectionKind::Expression;
         let mut source_alias = None;
         let mut name = None;
+        let mut collected_structured_refs = false;
 
         let children: Vec<_> = self
             .ctx
@@ -1198,19 +1218,28 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     }
                 }
                 SyntaxKind::SqlAggregateCall => {
-                    kind = SqlProjectionKind::Aggregate;
-                    if let Some((aggregate, range)) = SqlAggregateCall::cast(self.ctx.syntax(child))
+                    if let Some((function, range)) = SqlAggregateCall::cast(self.ctx.syntax(child))
                         .and_then(|call| call.name(self.ctx.source()))
                     {
+                        let ref_kind = Self::sql_call_ref_kind(function.as_ref());
                         self.push_sql_name_ref(
                             query_id,
                             scope,
                             range,
-                            Arc::clone(&aggregate),
+                            Arc::clone(&function),
                             None,
-                            SqlNameRefKind::Aggregate,
+                            ref_kind,
                         );
-                        name = Some(aggregate);
+                        self.collect_sql_call_arg_name_refs(query_id, scope, child);
+                        collected_structured_refs = true;
+                        if ref_kind == SqlNameRefKind::Aggregate {
+                            kind = SqlProjectionKind::Aggregate;
+                            name = Some(function);
+                        } else {
+                            kind = SqlProjectionKind::Expression;
+                            source_alias = None;
+                            name = None;
+                        }
                     }
                 }
                 _ => {}
@@ -1261,7 +1290,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             }
         }
 
-        if matches!(kind, SqlProjectionKind::Expression) {
+        if matches!(kind, SqlProjectionKind::Expression) && !collected_structured_refs {
             self.collect_sql_name_refs_from_node(query_id, scope, node, false);
         }
         let projection_range = self.ctx.file().range(node);
@@ -1974,22 +2003,19 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 }
             }
             SyntaxKind::SqlAggregateCall => {
-                if let Some((aggregate, range)) = SqlAggregateCall::cast(self.ctx.syntax(node))
+                if let Some((function, range)) = SqlAggregateCall::cast(self.ctx.syntax(node))
                     .and_then(|call| call.name(self.ctx.source()))
                 {
                     self.push_sql_name_ref(
                         query_id,
                         scope,
                         range,
-                        aggregate,
+                        Arc::clone(&function),
                         None,
-                        SqlNameRefKind::Aggregate,
+                        Self::sql_call_ref_kind(function.as_ref()),
                     );
                 }
-                let children: Vec<_> = self.ctx.file().children(node).collect();
-                for child in children {
-                    self.collect_sql_name_refs_from_node(query_id, scope, child, false);
-                }
+                self.collect_sql_call_arg_name_refs(query_id, scope, node);
             }
             SyntaxKind::SqlPredicateOperand => {
                 let child_kinds: Vec<_> = self
@@ -2171,9 +2197,9 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                             query_id,
                             scope,
                             token.range.clone(),
-                            lowered,
+                            Arc::clone(&lowered),
                             None,
-                            SqlNameRefKind::Aggregate,
+                            Self::sql_call_ref_kind(lowered.as_ref()),
                         );
                         idx += 1;
                         continue;
@@ -2235,6 +2261,27 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                     );
                     idx += 1;
                 }
+            }
+        }
+    }
+
+    fn collect_sql_call_arg_name_refs(&mut self, query_id: usize, scope: ScopeId, node: NodeId) {
+        let mut after_open_paren = false;
+        let children: Vec<_> = self.ctx.file().children(node).collect();
+        for child in children {
+            if self.ctx.file().kind(child) == SyntaxKind::Token {
+                if self
+                    .ctx
+                    .syntax(child)
+                    .text(self.ctx.source())
+                    .is_some_and(|text| text == "(")
+                {
+                    after_open_paren = true;
+                }
+                continue;
+            }
+            if after_open_paren {
+                self.collect_sql_name_refs_from_node(query_id, scope, child, false);
             }
         }
     }
