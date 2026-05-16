@@ -267,7 +267,7 @@ struct LocalExportIndex {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalExportArtifact {
     path: PathBuf,
-    kind_hint: String,
+    kind_hint: &'static str,
     object_name: String,
 }
 
@@ -1689,7 +1689,7 @@ fn resolve_local_export_dependency_documents_in_index_profiled(
             let text = if is_xml {
                 ddic_xml_to_abap_source(
                     artifact.object_name.as_str(),
-                    artifact.kind_hint.as_str(),
+                    artifact.kind_hint,
                     source_text.as_str(),
                 )
                 .unwrap_or(source_text)
@@ -2174,34 +2174,53 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
         return index;
     }
 
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let kind_hint = infer_local_export_kind_hint(&current);
-        let mut entries: Vec<_> = match fs::read_dir(&current) {
-            Ok(entries) => entries.flatten().collect(),
+    let root_key = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(local_export_path_segment_key)
+        .unwrap_or_default();
+    let mut stack = vec![(
+        root.to_path_buf(),
+        root_key,
+        infer_local_export_kind_hint(root),
+    )];
+    while let Some((current, current_key, kind_hint)) = stack.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
             Err(_) => continue,
         };
-        entries.sort_by_key(|entry| entry.file_name());
 
         for entry in entries {
-            let path = entry.path();
+            let Ok(entry) = entry else {
+                continue;
+            };
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             if file_type.is_dir() {
-                stack.push(path);
+                let file_name = entry.file_name();
+                let child_key = file_name
+                    .to_str()
+                    .map(local_export_path_segment_key)
+                    .unwrap_or_default();
+                let child_kind_hint =
+                    local_export_child_kind_hint(&current_key, &child_key, kind_hint);
+                let path = entry.path();
+                stack.push((path, child_key, child_kind_hint));
                 continue;
             }
             if !file_type.is_file() {
                 continue;
             }
-            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
                 continue;
             };
+            let path = entry.path();
             let file_key = file_name.to_ascii_lowercase();
             let artifact = LocalExportArtifact {
-                kind_hint: kind_hint.clone(),
-                object_name: infer_object_name_from_manifest_path(file_name)
+                kind_hint,
+                object_name: infer_object_name_from_file_name(file_name)
                     .unwrap_or_else(|| percent_decode(file_name)),
                 path,
             };
@@ -2212,11 +2231,24 @@ fn build_local_export_index(root: &Path) -> LocalExportIndex {
                 .push(artifact);
         }
     }
+    for artifacts in index.artifacts_by_file_name.values_mut() {
+        if artifacts.len() > 1 {
+            artifacts.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        }
+    }
 
     index
 }
 
-fn infer_local_export_kind_hint(dir: &Path) -> String {
+fn local_export_child_kind_hint(
+    parent_key: &str,
+    child_key: &str,
+    inherited: &'static str,
+) -> &'static str {
+    canonical_local_export_kind_for_key(child_key, Some(parent_key)).unwrap_or(inherited)
+}
+
+fn infer_local_export_kind_hint(dir: &Path) -> &'static str {
     let ancestor_keys: Vec<_> = dir
         .ancestors()
         .filter_map(|ancestor| ancestor.file_name().and_then(|name| name.to_str()))
@@ -2225,11 +2257,11 @@ fn infer_local_export_kind_hint(dir: &Path) -> String {
 
     for (idx, key) in ancestor_keys.iter().enumerate() {
         if let Some(kind) = canonical_local_export_kind_for_ancestor(&ancestor_keys, idx, key) {
-            return kind.to_string();
+            return kind;
         }
     }
 
-    "dependency".to_string()
+    "dependency"
 }
 
 fn local_export_path_segment_key(name: &str) -> String {
@@ -2257,6 +2289,10 @@ fn canonical_local_export_kind_for_ancestor(
     key: &str,
 ) -> Option<&'static str> {
     let parent = ancestor_keys.get(idx + 1).map(String::as_str);
+    canonical_local_export_kind_for_key(key, parent)
+}
+
+fn canonical_local_export_kind_for_key(key: &str, parent: Option<&str>) -> Option<&'static str> {
     match key {
         "global-class" => Some("global-class"),
         "class" => Some("class"),
@@ -2559,6 +2595,21 @@ fn infer_object_name_from_manifest_path(file: &str) -> Option<String> {
         return None;
     }
     Some(percent_decode(base_name).trim().to_string())
+}
+
+fn infer_object_name_from_file_name(file_name: &str) -> Option<String> {
+    let base_name = file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _extension)| stem)
+        .trim();
+    if base_name.is_empty() {
+        return None;
+    }
+    if base_name.as_bytes().contains(&b'%') {
+        Some(percent_decode(base_name).trim().to_string())
+    } else {
+        Some(base_name.to_string())
+    }
 }
 
 fn manifest_unit_files(unit: &ManifestUnit) -> Vec<String> {
