@@ -10,10 +10,10 @@ use abap_ast::ast::{
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    Diagnostic, DiagnosticKind, ReferenceKind, SqlDynamicFragmentData, SqlDynamicFragmentKind,
-    SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind, SqlProjectionData,
-    SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData, SqlSourceKind, SqlTargetData,
-    SqlTargetKind, SystemFieldStatementKind,
+    Diagnostic, DiagnosticKind, FieldTypeRefData, ReferenceKind, SqlDynamicFragmentData,
+    SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind, SqlPredicateData, SqlPredicateKind,
+    SqlProjectionData, SqlProjectionKind, SqlQueryData, SqlResolution, SqlSourceData,
+    SqlSourceKind, SqlTargetData, SqlTargetKind, SystemFieldStatementKind,
 };
 use crate::ids::ScopeId;
 use crate::ids::StructureId;
@@ -1206,10 +1206,11 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                             query_id,
                             scope,
                             range,
-                            aggregate,
+                            Arc::clone(&aggregate),
                             None,
                             SqlNameRefKind::Aggregate,
                         );
+                        name = Some(aggregate);
                     }
                 }
                 _ => {}
@@ -2443,10 +2444,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         &mut self,
         query_id: usize,
         scope: ScopeId,
-    ) -> (
-        Option<StructureId>,
-        Option<crate::def_map::FieldTypeRefData>,
-    ) {
+    ) -> (Option<StructureId>, Option<FieldTypeRefData>) {
         let projections = self.ctx.sql_projections_for_query(query_id);
         if projections.len() == 1
             && let Some(metadata) =
@@ -2463,10 +2461,20 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
         query_id: usize,
         scope: ScopeId,
         projection: &SqlProjectionData,
-    ) -> Option<(
-        Option<StructureId>,
-        Option<crate::def_map::FieldTypeRefData>,
-    )> {
+    ) -> Option<(Option<StructureId>, Option<FieldTypeRefData>)> {
+        if projection.kind == SqlProjectionKind::Aggregate {
+            return (projection.name.as_deref() == Some("count")).then(|| {
+                (
+                    None,
+                    Some(FieldTypeRefData {
+                        namespace: Namespace::Type,
+                        is_ref: false,
+                        base_name: Arc::<str>::from("i"),
+                        field_path: Vec::new(),
+                    }),
+                )
+            });
+        }
         if projection.kind != SqlProjectionKind::Column {
             return None;
         }

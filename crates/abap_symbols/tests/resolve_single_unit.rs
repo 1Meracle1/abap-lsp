@@ -5008,6 +5008,37 @@ WRITE lv_vozilooznaka.
 }
 
 #[test]
+fn resolves_count_select_inline_data_target_type() {
+    let src = r#"
+TYPES: BEGIN OF zattp_tnc_portal,
+         docnum TYPE string,
+       END OF zattp_tnc_portal.
+
+SELECT count( * )
+  FROM zattp_tnc_portal
+  INTO @DATA(lv_count).
+
+WRITE lv_count.
+"#;
+    let unit = analyze(src, "file:///select_count_inline_scalar.abap");
+
+    let symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| {
+            symbol.kind == abap_symbols::SymbolKind::Variable && symbol.name.as_ref() == "lv_count"
+        })
+        .expect("inline SQL count target symbol");
+    let declared_type = symbol
+        .declared_type
+        .as_ref()
+        .expect("declared type for inline SQL count target");
+
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert_eq!(declared_type.base_name.as_ref(), "i");
+}
+
+#[test]
 fn resolves_classic_select_single_inline_data_target_type_with_commented_where_line() {
     let src = r#"
 TYPES: BEGIN OF zattp_tnc_portal,
