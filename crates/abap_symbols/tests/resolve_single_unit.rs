@@ -17805,6 +17805,51 @@ ENDCLASS.
 }
 
 #[test]
+fn super_interface_method_call_accepts_interface_named_parameters() {
+    let src = r#"
+INTERFACE lif_runtime.
+  METHODS create_entity
+    IMPORTING iv_entity_name TYPE string
+    EXPORTING er_entity TYPE string.
+ENDINTERFACE.
+
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_runtime.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD lif_runtime~create_entity.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS lif_runtime~create_entity REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD lif_runtime~create_entity.
+    super->lif_runtime~create_entity(
+      EXPORTING
+        iv_entity_name = iv_entity_name
+      IMPORTING
+        er_entity = er_entity ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///super_interface_named_args.abap");
+
+    assert!(
+        unit.diagnostics
+            .iter()
+            .all(|diag| diag.kind != DiagnosticKind::UnknownNamedParameter),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn accepts_class_reference_for_implemented_interface_argument() {
     let src = r#"
 INTERFACE if_document_bcs.

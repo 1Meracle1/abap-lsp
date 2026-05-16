@@ -6719,6 +6719,56 @@ fn call_site_event_name_range(
     Some(call_site.range.start + rel_start..call_site.range.start + rel_start + event_name.len())
 }
 
+fn call_site_interface_qualifier<'a>(
+    unit: &'a UnitAnalysis,
+    call_site: &CallSiteData,
+    method_name: &str,
+) -> Option<&'a Arc<str>> {
+    let NamedArgumentTarget::Method {
+        base_namespace,
+        base_name,
+        ..
+    } = &call_site.target
+    else {
+        return None;
+    };
+    unit.field_accesses.iter().find_map(|access| {
+        if access.scope != call_site.scope
+            || access.base_namespace != *base_namespace
+            || access.base_name.as_ref() != base_name.as_ref()
+            || access.base_range.start < call_site.range.start
+        {
+            return None;
+        }
+        let last = access.field_path.last()?;
+        if last.name.as_ref() != method_name || last.range.end > call_site.range.end {
+            return None;
+        }
+        access
+            .field_path
+            .get(access.field_path.len().checked_sub(2)?)
+            .map(|segment| &segment.name)
+    })
+}
+
+fn resolve_interface_qualified_call_member<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    call_site: &CallSiteData,
+    method_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let interface_name =
+        call_site_interface_qualifier(snapshot.symbols.as_ref(), call_site, method_name)?;
+    let (interface_unit, interface_symbol) =
+        resolve_exposed_interface_handle(snapshot, owner_unit, owner_symbol, interface_name)?;
+    interface_unit
+        .semantic()
+        .decls()
+        .class_member(interface_symbol, method_name)
+        .map(|member| (interface_unit, member))
+}
+
 fn resolve_call_target_member<'a>(
     snapshot: &'a AnalysisSnapshot,
     call_site: &abap_symbols::CallSiteData,
@@ -6788,6 +6838,26 @@ fn resolve_call_target_member<'a>(
                     base_symbol_id,
                 )
             })?;
+            if let Some((member_unit, member)) = resolve_interface_qualified_call_member(
+                snapshot,
+                unit,
+                class_symbol_id,
+                call_site,
+                method_name,
+            ) {
+                if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static)
+                {
+                    return None;
+                }
+                return class_member_visible_to(
+                    snapshot,
+                    snapshot.symbols.as_ref(),
+                    call_site.scope,
+                    member_unit,
+                    member,
+                )
+                .then_some((member_unit, member));
+            }
             let (member_unit, member) =
                 resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
             if member.kind != ClassMemberKind::Method || (requires_static && !member.is_static) {
@@ -6910,6 +6980,27 @@ fn resolve_callable_completion_target<'a>(
                 *base_namespace,
                 base_name,
             )?;
+            if let Some((member_unit, member)) = resolve_interface_qualified_call_member(
+                snapshot,
+                unit,
+                class_symbol_id,
+                call_site,
+                method_name,
+            ) {
+                if member.kind == ClassMemberKind::Method
+                    && !(requires_static && !member.is_static)
+                    && class_member_visible_to(
+                        snapshot,
+                        snapshot.symbols.as_ref(),
+                        call_site.scope,
+                        member_unit,
+                        member,
+                    )
+                {
+                    return Some(CallableCompletionTarget::Method(member));
+                }
+                return None;
+            }
             let (member_unit, member) =
                 resolve_class_member_in_hierarchy(snapshot, unit, class_symbol_id, method_name)?;
             if member.kind != ClassMemberKind::Method
@@ -7026,6 +7117,18 @@ fn resolve_named_argument_parameter(
     access: &NamedArgumentAccess,
 ) -> Option<NamedArgumentParameterInfo> {
     resolve_named_argument_parameter_with_scope_index(snapshot, snapshot.scope_index(), access)
+}
+
+fn call_site_for_named_argument<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    access: &NamedArgumentAccess,
+) -> Option<&'a CallSiteData> {
+    snapshot.symbols.call_sites.iter().find(|call_site| {
+        call_site.scope == access.scope
+            && call_site.target == access.target
+            && call_site.range.start <= access.range.start
+            && access.range.end <= call_site.range.end
+    })
 }
 
 fn resolve_named_argument_parameter_with_scope_index(
@@ -7157,6 +7260,18 @@ fn resolve_named_argument_parameter_with_scope_index(
             base_name,
             method_name,
         } => {
+            if let Some(call_site) = call_site_for_named_argument(snapshot, access)
+                && let Some((_, member)) = resolve_call_target_member(snapshot, call_site)
+            {
+                let parameter = member
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == access.name)?;
+                return Some(NamedArgumentParameterInfo {
+                    name: Arc::clone(&parameter.name),
+                    declared_type: parameter.declared_type.clone(),
+                });
+            }
             let (unit, class_symbol_id, requires_static) =
                 resolve_method_target_from_context_with_scope_index(
                     snapshot,
@@ -7410,6 +7525,18 @@ fn resolve_named_argument_target(
             base_name,
             method_name,
         } => {
+            if let Some(call_site) = call_site_for_named_argument(snapshot, access)
+                && let Some((member_unit, member)) = resolve_call_target_member(snapshot, call_site)
+            {
+                let parameter = member
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == access.name)?;
+                return Some(definition_target_for_range(
+                    member_unit,
+                    parameter.range.clone(),
+                ));
+            }
             let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
                 snapshot,
                 access.scope,
@@ -7558,6 +7685,19 @@ fn resolve_named_argument_symbol(
             base_name,
             method_name,
         } => {
+            if let Some(call_site) = call_site_for_named_argument(snapshot, access)
+                && let Some((member_unit, member)) = resolve_call_target_member(snapshot, call_site)
+            {
+                let parameter = member
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == access.name)?;
+                return symbol_handle_for_decl_range(
+                    member_unit,
+                    &parameter.range,
+                    SymbolKind::Parameter,
+                );
+            }
             let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
                 snapshot,
                 access.scope,

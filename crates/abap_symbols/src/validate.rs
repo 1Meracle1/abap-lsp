@@ -3036,6 +3036,15 @@ fn resolve_call_target_member<'a>(
         | NamedArgumentTarget::Report { .. }
         | NamedArgumentTarget::Routine { .. } => return None,
     };
+    if let Some(interface_name) = call_site_interface_qualifier(unit, call_site, method_name)
+        && let Some(interface_handle) =
+            resolve_exposed_interface_handle(project, lookup, handle, interface_name)
+    {
+        let interface_unit = &project.units[interface_handle.unit.as_usize()];
+        if let Some(member) = interface_unit.class_member(interface_handle.symbol, method_name) {
+            return Some((interface_unit, member));
+        }
+    }
     if target_unit.symbol(handle.symbol).kind == SymbolKind::Interface {
         return target_unit
             .class_member(handle.symbol, method_name)
@@ -3043,10 +3052,41 @@ fn resolve_call_target_member<'a>(
     }
     resolve_class_member_in_hierarchy(project, lookup, target_unit, handle.symbol, method_name)
         .or_else(|| {
-            target_unit
-                .class_member(handle.symbol, method_name)
-                .map(|member| (target_unit, member))
+            let member = target_unit.class_member(handle.symbol, method_name)?;
+            (!class_member_uses_inherited_signature(member)).then_some((target_unit, member))
         })
+}
+
+fn call_site_interface_qualifier<'a>(
+    unit: &'a crate::UnitAnalysis,
+    call_site: &crate::CallSiteData,
+    method_name: &str,
+) -> Option<&'a str> {
+    let NamedArgumentTarget::Method {
+        base_namespace,
+        base_name,
+        ..
+    } = &call_site.target
+    else {
+        return None;
+    };
+    unit.field_accesses.iter().find_map(|access| {
+        if access.scope != call_site.scope
+            || access.base_namespace != *base_namespace
+            || access.base_name.as_ref() != base_name.as_ref()
+            || access.base_range.start < call_site.range.start
+        {
+            return None;
+        }
+        let last = access.field_path.last()?;
+        if last.name.as_ref() != method_name || last.range.end > call_site.range.end {
+            return None;
+        }
+        access
+            .field_path
+            .get(access.field_path.len().checked_sub(2)?)
+            .map(|segment| segment.name.as_ref())
+    })
 }
 
 fn call_section_matches_event_parameter(

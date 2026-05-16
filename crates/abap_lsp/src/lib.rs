@@ -23095,6 +23095,115 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn inlay_hints_and_semantic_tokens_cover_super_interface_method_arguments() {
+        use lsp_types::SemanticTokenType;
+
+        let state = ServerState::default();
+        let text = "\
+INTERFACE lif_runtime.
+  METHODS create_entity
+    IMPORTING iv_entity_name TYPE string
+    EXPORTING er_entity TYPE string.
+ENDINTERFACE.
+
+CLASS super DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_runtime.
+ENDCLASS.
+
+CLASS super IMPLEMENTATION.
+  METHOD lif_runtime~create_entity.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS sub DEFINITION INHERITING FROM super.
+  PUBLIC SECTION.
+    METHODS lif_runtime~create_entity REDEFINITION.
+ENDCLASS.
+
+CLASS sub IMPLEMENTATION.
+  METHOD lif_runtime~create_entity.
+    super->lif_runtime~create_entity(
+      EXPORTING
+        iv_entity_name = iv_entity_name
+      IMPORTING
+        er_entity = er_entity ).
+  ENDMETHOD.
+ENDCLASS.
+";
+        let uri = Uri::from_str("file:///super_interface_method_args.abap").expect("uri");
+        publish_open_document(
+            &state,
+            &DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "abap".to_string(),
+                    version: 1,
+                    text: text.to_string(),
+                },
+            },
+        );
+
+        let tokens = semantic_tokens(
+            &state,
+            &SemanticTokensParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+        )
+        .expect("semantic tokens");
+        let legend = sem_tokens::semantic_tokens_legend();
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+
+        for needle in ["iv_entity_name =", "er_entity ="] {
+            let offset = text.find(needle).expect("argument offset");
+            let position = offset_to_position(text, offset + 1).expect("argument position");
+            assert_eq!(
+                semantic_token_type_at(&tokens, position.line, position.character),
+                Some(parameter_idx),
+                "expected semantic token for `{needle}`"
+            );
+        }
+
+        let hints = inlay_hints(
+            &state,
+            &InlayHintParams {
+                text_document: TextDocumentIdentifier { uri },
+                range: Range {
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: offset_to_position(text, text.len()).expect("end position"),
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("inlay hints");
+        let parameter_hints: Vec<_> = hints
+            .iter()
+            .filter(|hint| matches!(hint.kind, Some(InlayHintKind::PARAMETER)))
+            .collect();
+        assert_eq!(parameter_hints.len(), 2, "{hints:?}");
+        for hint in parameter_hints {
+            assert_eq!(inlay_hint_label_string(hint), "string");
+            let Some(InlayHintTooltip::MarkupContent(tooltip)) = hint.tooltip.as_ref() else {
+                panic!("expected markdown tooltip");
+            };
+            assert!(
+                tooltip
+                    .value
+                    .contains("parameter of METHOD `create_entity`")
+            );
+        }
+    }
+
+    #[test]
     fn hover_returns_form_signature_when_hovering_form_name() {
         let state = ServerState::default();
         let text = "\
