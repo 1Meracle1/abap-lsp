@@ -4025,9 +4025,7 @@ pub fn stage_workspace_preview_snapshot(
         let Some(workspace) = state.workspace_for_uri_mut(&normalized_uri) else {
             return false;
         };
-        if workspace.performance_mode == WorkspacePerformanceMode::EditorFirst
-            && workspace.cache.len() == 0
-        {
+        if workspace.cache.len() == 0 {
             return false;
         }
         let preview =

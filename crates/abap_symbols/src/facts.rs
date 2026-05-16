@@ -50,6 +50,8 @@ struct ObservedCallArgumentType {
     type_clause_display: Option<Arc<str>>,
 }
 
+type ScopedRangeKey = (ScopeId, usize, usize);
+
 pub(crate) fn infer_semantic_facts_with_scope_indexes(
     units: &mut [UnitAnalysis],
     scope_indexes: &[ScopeIndex],
@@ -161,6 +163,8 @@ struct FactBuilder<'a> {
     function_modules_by_name: HashMap<Arc<str>, (usize, usize)>,
     observed_call_argument_types: HashMap<CallArgumentObservationKey, ObservedCallArgumentType>,
     symbol_type_fact_cache: RefCell<HashMap<(usize, ScopeId, SymbolHandle), TypeFactData>>,
+    field_accesses_by_range: Vec<HashMap<ScopedRangeKey, Vec<usize>>>,
+    value_refs_by_range: Vec<HashMap<ScopedRangeKey, Vec<usize>>>,
 }
 
 impl<'a> FactBuilder<'a> {
@@ -191,6 +195,30 @@ impl<'a> FactBuilder<'a> {
                 symbols
             })
             .collect();
+        let mut field_accesses_by_range = Vec::with_capacity(units.len());
+        let mut value_refs_by_range = Vec::with_capacity(units.len());
+        for unit in units {
+            let mut accesses: HashMap<ScopedRangeKey, Vec<usize>> = HashMap::new();
+            for (idx, access) in unit.field_accesses.iter().enumerate() {
+                if !access.in_type_position {
+                    let range = field_access_range(access);
+                    accesses
+                        .entry(scoped_range_key(access.scope, &range))
+                        .or_default()
+                        .push(idx);
+                }
+            }
+            let mut refs: HashMap<ScopedRangeKey, Vec<usize>> = HashMap::new();
+            for (idx, reference) in unit.references.iter().enumerate() {
+                if reference.namespace == Namespace::Value {
+                    refs.entry(scoped_range_key(reference.scope, &reference.range))
+                        .or_default()
+                        .push(idx);
+                }
+            }
+            field_accesses_by_range.push(accesses);
+            value_refs_by_range.push(refs);
+        }
         let unit_indexes = units
             .iter()
             .enumerate()
@@ -230,6 +258,8 @@ impl<'a> FactBuilder<'a> {
             function_modules_by_name,
             observed_call_argument_types: HashMap::new(),
             symbol_type_fact_cache: RefCell::new(HashMap::new()),
+            field_accesses_by_range,
+            value_refs_by_range,
         };
         builder.observed_call_argument_types = builder.build_observed_call_argument_types();
         builder
@@ -594,26 +624,19 @@ impl<'a> FactBuilder<'a> {
         assignment: &crate::AssignmentSiteData,
     ) -> Option<TypeFactData> {
         let unit = &self.units[unit_idx];
-        let mut exact_accesses = unit
-            .field_accesses
-            .iter()
-            .filter(|access| !access.in_type_position && access.scope == assignment.scope)
-            .filter(|access| field_access_range(access) == assignment.rhs_range);
-        if let Some(access) = exact_accesses.next()
-            && exact_accesses.next().is_none()
+        let key = scoped_range_key(assignment.scope, &assignment.rhs_range);
+        if let Some(accesses) = self.field_accesses_by_range[unit_idx].get(&key)
+            && accesses.len() == 1
         {
+            let access = &unit.field_accesses[accesses[0]];
             return Some(self.type_fact_for_access(unit_idx, access));
         }
 
-        let mut exact_refs = unit.references.iter().filter(|reference| {
-            reference.namespace == Namespace::Value
-                && reference.scope == assignment.scope
-                && reference.range == assignment.rhs_range
-        });
-        let reference = exact_refs.next()?;
-        if exact_refs.next().is_some() {
+        let refs = self.value_refs_by_range[unit_idx].get(&key)?;
+        if refs.len() != 1 {
             return None;
         }
+        let reference = &unit.references[refs[0]];
         let Some(Resolution::Symbol(handle)) = reference.resolution else {
             return None;
         };
@@ -806,29 +829,22 @@ impl<'a> FactBuilder<'a> {
         range: &std::ops::Range<usize>,
     ) -> Option<TypeFactData> {
         let unit = &self.units[unit_idx];
-        let mut accesses = unit
-            .field_accesses
-            .iter()
-            .filter(|access| access.scope == scope && !access.in_type_position)
-            .filter(|access| field_access_range(access) == *range);
-        if let Some(access) = accesses.next()
-            && accesses.next().is_none()
+        let key = scoped_range_key(scope, range);
+        if let Some(accesses) = self.field_accesses_by_range[unit_idx].get(&key)
+            && accesses.len() == 1
         {
+            let access = &unit.field_accesses[accesses[0]];
             return self
                 .type_fact_for_access(unit_idx, access)
                 .table_line
                 .map(|fact| *fact);
         }
 
-        let mut refs = unit.references.iter().filter(|reference| {
-            reference.namespace == Namespace::Value
-                && reference.scope == scope
-                && reference.range == *range
-        });
-        let reference = refs.next()?;
-        if refs.next().is_some() {
+        let refs = self.value_refs_by_range[unit_idx].get(&key)?;
+        if refs.len() != 1 {
             return None;
         }
+        let reference = &unit.references[refs[0]];
         let Some(Resolution::Symbol(handle)) = reference.resolution else {
             return None;
         };
@@ -2010,6 +2026,10 @@ fn field_access_range(access: &FieldAccess) -> std::ops::Range<usize> {
             .last()
             .map(|segment| segment.range.end)
             .unwrap_or(access.base_range.end)
+}
+
+fn scoped_range_key(scope: ScopeId, range: &std::ops::Range<usize>) -> ScopedRangeKey {
+    (scope, range.start, range.end)
 }
 
 fn field_symbol_edge_target_range(edge: &ValueFlowEdgeData) -> Option<&std::ops::Range<usize>> {

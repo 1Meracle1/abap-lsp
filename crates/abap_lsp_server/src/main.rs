@@ -4419,7 +4419,7 @@ START-OF-SELECTION.
         .expect("background job");
         assert_eq!(started.started_statuses.len(), 1);
         assert_eq!(started.started_statuses[0].trigger, "open");
-        assert_eq!(started.notifications.len(), 1);
+        assert!(started.notifications.is_empty());
 
         let workspace = state
             .workspaces
@@ -4431,6 +4431,7 @@ START-OF-SELECTION.
             .expect("staged overlay");
         assert_eq!(overlay.version, 3);
         assert_eq!(overlay.text.as_ref(), "DATA lv_value TYPE i.");
+        assert!(!workspace.preview_snapshots.contains_key(&normalized_uri));
 
         let queued_workspace_uri = task_rx.recv().expect("scheduled task");
         assert_eq!(queued_workspace_uri, normalized_workspace_uri);
