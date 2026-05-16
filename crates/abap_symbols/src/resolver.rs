@@ -444,6 +444,7 @@ fn resolve_direct_superclass_handle_in_project(
 fn resolve_inherited_symbol_in_unit(
     unit: &UnitAnalysis,
     scope_index: &ScopeIndex,
+    class_scope_index: &ClassScopeIndex,
     scope: ScopeId,
     namespace: Namespace,
     name: &Arc<str>,
@@ -462,9 +463,13 @@ fn resolve_inherited_symbol_in_unit(
             Namespace::Type,
             &inheritance.superclass_name,
         )?;
-        if let Some(symbol_id) =
-            inherited_class_scope_symbol(unit, None, superclass_symbol, namespace, name)
-        {
+        if let Some(symbol_id) = inherited_class_scope_symbol(
+            unit,
+            Some(class_scope_index),
+            superclass_symbol,
+            namespace,
+            name,
+        ) {
             return Some(symbol_id);
         }
         current_class = superclass_symbol;
@@ -547,6 +552,7 @@ fn resolve_super_reference_in_unit(
 
 pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &ScopeIndex) {
     let unit_id = unit.unit_id;
+    let class_scope_index = build_class_scope_index(unit);
     for idx in 0..unit.references.len() {
         let (scope, namespace, kind, name) = {
             let reference = &unit.references[idx];
@@ -564,9 +570,14 @@ pub(crate) fn resolve_unit_with_index(unit: &mut UnitAnalysis, scope_index: &Sco
                 unit: unit_id,
                 symbol,
             }))
-        } else if let Some(symbol) =
-            resolve_inherited_symbol_in_unit(unit, scope_index, scope, namespace, &name)
-        {
+        } else if let Some(symbol) = resolve_inherited_symbol_in_unit(
+            unit,
+            scope_index,
+            &class_scope_index,
+            scope,
+            namespace,
+            &name,
+        ) {
             Some(Resolution::Symbol(SymbolHandle {
                 unit: unit_id,
                 symbol,
