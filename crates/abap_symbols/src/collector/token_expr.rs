@@ -760,7 +760,12 @@ impl<'a> Collector<'a> {
         match base_namespace {
             Namespace::Type => self
                 .lookup_symbol_in_scope_chain(scope, Namespace::Type, base_name.as_ref())
-                .filter(|&symbol_id| self.symbol(symbol_id).kind == SymbolKind::Class),
+                .filter(|&symbol_id| {
+                    matches!(
+                        self.symbol(symbol_id).kind,
+                        SymbolKind::Class | SymbolKind::Interface
+                    )
+                }),
             Namespace::Value => {
                 let symbol_id =
                     self.lookup_symbol_in_scope_chain(scope, Namespace::Value, base_name.as_ref())?;
@@ -773,7 +778,12 @@ impl<'a> Collector<'a> {
                     declared_type.namespace,
                     declared_type.base_name.as_ref(),
                 )
-                .filter(|&class_symbol_id| self.symbol(class_symbol_id).kind == SymbolKind::Class)
+                .filter(|&class_symbol_id| {
+                    matches!(
+                        self.symbol(class_symbol_id).kind,
+                        SymbolKind::Class | SymbolKind::Interface
+                    )
+                })
             }
             Namespace::Routine => None,
         }

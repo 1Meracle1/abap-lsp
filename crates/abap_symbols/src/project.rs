@@ -1012,40 +1012,49 @@ fn compute_dirty_set(
             .insert(Arc::clone(&local_units[unit_id.as_usize()].unit.uri));
     }
 
-    for unit in &previous_project.units {
-        if dirty.unit_ids.contains(&unit.unit_id) {
-            continue;
-        }
+    let mut dependency_unit_ids = dirty.unit_ids.clone();
+    loop {
+        let mut added = false;
+        for unit in &previous_project.units {
+            if dirty.unit_ids.contains(&unit.unit_id) {
+                continue;
+            }
 
-        let depends_on_changed_exports = !changed_export_names.is_empty()
-            && (unit
-                .include_edges
-                .iter()
-                .filter_map(|edge| edge.target)
-                .any(|target| changed_unit_ids.contains(&target))
-                || unit.references.iter().any(|reference| {
-                    matches!(
-                        reference.resolution,
-                        Some(Resolution::Symbol(SymbolHandle { unit, .. }))
-                            if changed_unit_ids.contains(&unit)
-                    )
-                })
-                || unit
-                    .references
-                    .iter()
-                    .any(|reference| changed_export_names.contains(&reference.name))
-                || unit
-                    .sql_name_refs
-                    .iter()
-                    .any(|sql_ref| changed_export_names.contains(&sql_ref.name))
-                || unit
+            let depends_on_changed_exports = !changed_export_names.is_empty()
+                && (unit
                     .include_edges
                     .iter()
-                    .any(|edge| changed_provided_names.contains(&edge.name)));
+                    .filter_map(|edge| edge.target)
+                    .any(|target| dependency_unit_ids.contains(&target))
+                    || unit.references.iter().any(|reference| {
+                        matches!(
+                            reference.resolution,
+                            Some(Resolution::Symbol(SymbolHandle { unit, .. }))
+                                if dependency_unit_ids.contains(&unit)
+                        )
+                    })
+                    || unit
+                        .references
+                        .iter()
+                        .any(|reference| changed_export_names.contains(&reference.name))
+                    || unit
+                        .sql_name_refs
+                        .iter()
+                        .any(|sql_ref| changed_export_names.contains(&sql_ref.name))
+                    || unit
+                        .include_edges
+                        .iter()
+                        .any(|edge| changed_provided_names.contains(&edge.name)));
 
-        if depends_on_changed_exports {
-            dirty.unit_ids.insert(unit.unit_id);
-            dirty.uris.insert(Arc::clone(&unit.uri));
+            if depends_on_changed_exports {
+                dirty.unit_ids.insert(unit.unit_id);
+                dirty.uris.insert(Arc::clone(&unit.uri));
+                dependency_unit_ids.insert(unit.unit_id);
+                added = true;
+            }
+        }
+        if !added {
+            break;
         }
     }
 

@@ -56,9 +56,10 @@ pub(crate) fn infer_semantic_facts_with_scope_indexes(
     units: &mut [UnitAnalysis],
     scope_indexes: &[ScopeIndex],
 ) {
-    let rerun = apply_inferred_unit_facts(units, infer_all_unit_facts(units, scope_indexes));
-    if rerun {
-        apply_inferred_unit_facts(units, infer_all_unit_facts(units, scope_indexes));
+    for _ in 0..4 {
+        if !apply_inferred_unit_facts(units, infer_all_unit_facts(units, scope_indexes)) {
+            break;
+        }
     }
 }
 
@@ -67,15 +68,13 @@ pub(crate) fn infer_semantic_facts_with_scope_indexes_for_units(
     scope_indexes: &[ScopeIndex],
     unit_ids: &HashSet<UnitId>,
 ) {
-    let rerun = apply_inferred_unit_facts_for_units(
-        units,
-        infer_unit_facts(units, scope_indexes, unit_ids),
-    );
-    if rerun {
-        apply_inferred_unit_facts_for_units(
+    for _ in 0..4 {
+        if !apply_inferred_unit_facts_for_units(
             units,
             infer_unit_facts(units, scope_indexes, unit_ids),
-        );
+        ) {
+            break;
+        }
     }
 }
 

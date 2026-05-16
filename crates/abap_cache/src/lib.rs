@@ -19208,6 +19208,55 @@ ENDLOOP.";
     }
 
     #[test]
+    fn hover_infers_loop_inline_target_from_interface_method_table_return() {
+        let store = DocumentStore::default();
+        let src = "\
+INTERFACE /iwbep/if_mgw_req_filter.
+  METHODS get_filter_select_options
+    RETURNING VALUE(rt_filter_select_options) TYPE /iwbep/t_mgw_select_option.
+ENDINTERFACE.
+
+INTERFACE /iwbep/if_mgw_req_entityset.
+  METHODS get_filter
+    RETURNING VALUE(ro_filter) TYPE REF TO /iwbep/if_mgw_req_filter.
+ENDINTERFACE.
+
+TYPES: BEGIN OF /iwbep/s_mgw_select_option,
+         property TYPE string,
+       END OF /iwbep/s_mgw_select_option.
+TYPES /iwbep/t_mgw_select_option TYPE STANDARD TABLE OF /iwbep/s_mgw_select_option WITH EMPTY KEY.
+
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING io_tech_request_context TYPE REF TO /iwbep/if_mgw_req_entityset.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD run.
+    DATA(lo_filter) = io_tech_request_context->get_filter( ).
+    DATA(lt_filter_sel_opts) = lo_filter->get_filter_select_options( ).
+    LOOP AT lt_filter_sel_opts INTO DATA(ls_filter_sel_opt).
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///odata.abap", 1, src);
+        let offset = src.find("ls_filter_sel_opt").expect("loop target") + 1;
+
+        let hovered = snapshot
+            .hovered_resolved_symbol_at(offset)
+            .expect("loop target hover");
+        assert_eq!(hovered.display_name.as_ref(), "ls_filter_sel_opt");
+        assert!(
+            hovered
+                .markdown_lines
+                .iter()
+                .any(|line| line == "```abap\nTYPE /iwbep/s_mgw_select_option\n```"),
+            "{:?}",
+            hovered.markdown_lines
+        );
+    }
+
+    #[test]
     fn hover_and_definition_work_for_split_into_table_inline_target_and_source_field() {
         let store = DocumentStore::default();
         let src = "\

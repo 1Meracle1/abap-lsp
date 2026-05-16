@@ -255,7 +255,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             Namespace::Type => self
                 .ctx
                 .lookup_symbol_in_scope_chain(scope, Namespace::Type, base_name.as_ref())
-                .filter(|&symbol_id| self.ctx.symbol_kind(symbol_id) == SymbolKind::Class),
+                .filter(|&symbol_id| {
+                    matches!(
+                        self.ctx.symbol_kind(symbol_id),
+                        SymbolKind::Class | SymbolKind::Interface
+                    )
+                }),
             Namespace::Value => {
                 let symbol_id = self.ctx.lookup_symbol_in_scope_chain(
                     scope,
@@ -272,7 +277,12 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                         declared_type.namespace,
                         declared_type.base_name.as_ref(),
                     )
-                    .filter(|&symbol_id| self.ctx.symbol_kind(symbol_id) == SymbolKind::Class)
+                    .filter(|&symbol_id| {
+                        matches!(
+                            self.ctx.symbol_kind(symbol_id),
+                            SymbolKind::Class | SymbolKind::Interface
+                        )
+                    })
             }
             Namespace::Routine => None,
         }

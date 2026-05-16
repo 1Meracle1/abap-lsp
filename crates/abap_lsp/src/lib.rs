@@ -3232,9 +3232,6 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                         hydrated_uris.insert(Arc::clone(&input_uri));
                         inputs.push(input);
                     }
-                    if cached_input {
-                        continue;
-                    }
                     if !expanded_artifacts.insert(record.artifact_id) {
                         continue;
                     }
@@ -19020,6 +19017,194 @@ ENDINTERFACE.";
 
         let _ = fs::remove_dir_all(&workspace_path);
         let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
+    fn workspace_refresh_expands_cached_interface_return_type_for_loop_hover() {
+        let workspace_path = temp_workspace_path("central_dependency_odata_filter_loop_hover");
+        fs::create_dir_all(workspace_path.join("src")).expect("workspace src");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "SAP NETWEAVER"
+default_package_version = "7.50"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/ZCL_DPC.abap"),
+            "\
+CLASS zcl_dpc DEFINITION.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset
+      IMPORTING
+        io_tech_request_context TYPE REF TO /iwbep/if_mgw_req_entityset OPTIONAL.
+ENDCLASS.
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+  ENDMETHOD.
+ENDCLASS.",
+        )
+        .expect("super source");
+        let ext_src = "\
+CLASS zcl_dpc_ext DEFINITION INHERITING FROM zcl_dpc.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset REDEFINITION.
+ENDCLASS.
+CLASS zcl_dpc_ext IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+    DATA(lo_filter) = io_tech_request_context->get_filter( ).
+    DATA(lt_filter_sel_opts) = lo_filter->get_filter_select_options( ).
+    LOOP AT lt_filter_sel_opts INTO DATA(ls_filter_sel_opt).
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(workspace_path.join("src/ZCL_DPC_EXT.abap"), ext_src).expect("ext source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let ext_uri = path_to_file_uri(&workspace_path.join("src/ZCL_DPC_EXT.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: String::new(),
+                        object_kind: "global-interface".to_string(),
+                        object_name: "/IWBEP/IF_MGW_REQ_ENTITYSET".to_string(),
+                        object_uri: "/sap/bc/adt/oo/interfaces/%2fiwbep%2fif_mgw_req_entityset"
+                            .to_string(),
+                        object_type: "INTF/OI".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+INTERFACE /iwbep/if_mgw_req_entityset.
+  METHODS get_filter
+    RETURNING VALUE(ro_filter) TYPE REF TO /iwbep/if_mgw_req_filter.
+ENDINTERFACE."
+                            .to_string(),
+                        fetched_at: "2026-05-16T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: String::new(),
+                        object_kind: "global-interface".to_string(),
+                        object_name: "/IWBEP/IF_MGW_REQ_FILTER".to_string(),
+                        object_uri: "/sap/bc/adt/oo/interfaces/%2fiwbep%2fif_mgw_req_filter"
+                            .to_string(),
+                        object_type: "INTF/OI".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+INTERFACE /iwbep/if_mgw_req_filter.
+  METHODS get_filter_select_options
+    RETURNING VALUE(rt_filter_select_options) TYPE /iwbep/t_mgw_select_option.
+ENDINTERFACE."
+                            .to_string(),
+                        fetched_at: "2026-05-16T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store interfaces");
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "/IWBEP/MGW_GSR_CORE".to_string(),
+                        object_kind: "ddic-table-type".to_string(),
+                        object_name: "/IWBEP/T_MGW_SELECT_OPTION".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/tabletypes/%2fiwbep%2ft_mgw_select_option"
+                            .to_string(),
+                        object_type: "TTYP/DA".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "TYPES /iwbep/t_mgw_select_option TYPE STANDARD TABLE OF /iwbep/s_mgw_select_option WITH EMPTY KEY.".to_string(),
+                        fetched_at: "2026-05-16T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "/IWBEP/MGW_GSR_CORE".to_string(),
+                        object_kind: "ddic-structure".to_string(),
+                        object_name: "/IWBEP/S_MGW_SELECT_OPTION".to_string(),
+                        object_uri: "/sap/bc/adt/ddic/structures/%2fiwbep%2fs_mgw_select_option"
+                            .to_string(),
+                        object_type: "TABL/DT".to_string(),
+                        description: String::new(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+TYPES: BEGIN OF /iwbep/s_mgw_select_option,
+  property TYPE string,
+END OF /iwbep/s_mgw_select_option."
+                            .to_string(),
+                        fetched_at: "2026-05-16T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store table type");
+        refresh_workspace(&mut state, &workspace_uri);
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        for object_name in [
+            "/iwbep/if_mgw_req_filter",
+            "/iwbep/t_mgw_select_option",
+            "/iwbep/s_mgw_select_option",
+        ] {
+            assert!(
+                workspace.cache.uris().into_iter().any(|uri| {
+                    workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                        snapshot
+                            .object_name
+                            .as_ref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(object_name))
+                    })
+                }),
+                "{object_name} should be hydrated"
+            );
+        }
+        let offset = ext_src.find("ls_filter_sel_opt").expect("loop target") + 1;
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&ext_uri).expect("uri"),
+                    },
+                    position: offset_to_position(ext_src, offset).expect("position"),
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup.value.contains("TYPE /iwbep/s_mgw_select_option"),
+            "unexpected hover: {}",
+            markup.value
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
     }
 
     #[test]
