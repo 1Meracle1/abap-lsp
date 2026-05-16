@@ -26,9 +26,16 @@ struct ValidationLookup<'a> {
     scope_indexes: &'a [ScopeIndex],
     per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
+    message_class_entries: HashMap<Arc<str>, HashMap<Arc<str>, MessageClassEntryHandle>>,
     include_predecessors: Vec<Vec<UnitId>>,
     include_order: IncludeOrderIndex,
     type_fact_lookup: TypeFactLookup,
+}
+
+#[derive(Clone, Copy)]
+struct MessageClassEntryHandle {
+    unit: usize,
+    entry: usize,
 }
 
 #[derive(Default)]
@@ -37,19 +44,11 @@ struct OpenSqlOrderByValidation {
     resolved_primary_key_fields: Vec<(usize, Vec<Arc<str>>)>,
 }
 
-fn validate_message_uses(project: &ProjectAnalysis, unit: &crate::UnitAnalysis) -> Vec<Diagnostic> {
-    let mut by_class = HashMap::<String, HashMap<String, &crate::MessageClassEntryData>>::new();
-    for entry in project
-        .units
-        .iter()
-        .flat_map(|unit| unit.message_class_entries.iter())
-    {
-        by_class
-            .entry(entry.class_name.to_ascii_lowercase())
-            .or_default()
-            .insert(entry.id.to_string(), entry);
-    }
-
+fn validate_message_uses(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     for message in &unit.message_uses {
         let class_name = message
@@ -62,10 +61,10 @@ fn validate_message_uses(project: &ProjectAnalysis, unit: &crate::UnitAnalysis) 
         let Some(id) = &message.id else {
             continue;
         };
-        let Some(entries) = by_class.get(&class_name.to_ascii_lowercase()) else {
+        let Some(entries) = message_class_entries_named(lookup, class_name) else {
             continue;
         };
-        let Some(entry) = entries.get(id.as_ref()) else {
+        let Some(handle) = entries.get(id.as_ref()) else {
             diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::InvalidMessage,
                 range: message
@@ -80,6 +79,7 @@ fn validate_message_uses(project: &ProjectAnalysis, unit: &crate::UnitAnalysis) 
             });
             continue;
         };
+        let entry = &project.units[handle.unit].message_class_entries[handle.entry];
 
         let expected = message_parameter_count(entry.text.as_ref());
         let actual = message.with_arg_ranges.len();
@@ -108,6 +108,21 @@ fn validate_message_uses(project: &ProjectAnalysis, unit: &crate::UnitAnalysis) 
         });
     }
     diagnostics
+}
+
+fn message_class_entries_named<'a>(
+    lookup: &'a ValidationLookup<'_>,
+    class_name: &str,
+) -> Option<&'a HashMap<Arc<str>, MessageClassEntryHandle>> {
+    lookup.message_class_entries.get(class_name).or_else(|| {
+        has_ascii_uppercase(class_name)
+            .then(|| class_name.to_ascii_lowercase())
+            .and_then(|lower| lookup.message_class_entries.get(lower.as_str()))
+    })
+}
+
+fn has_ascii_uppercase(text: &str) -> bool {
+    text.bytes().any(|byte| byte.is_ascii_uppercase())
 }
 
 fn message_parameter_count(text: &str) -> usize {
@@ -307,10 +322,42 @@ fn build_validation_lookup<'a>(
         scope_indexes,
         per_unit_root_index,
         root_index,
+        message_class_entries: build_message_class_lookup(project),
         include_predecessors: project.include_predecessor_units_by_unit(),
         include_order: build_include_order_index(project),
         type_fact_lookup: TypeFactLookup::new(project),
     }
+}
+
+fn build_message_class_lookup(
+    project: &ProjectAnalysis,
+) -> HashMap<Arc<str>, HashMap<Arc<str>, MessageClassEntryHandle>> {
+    if !project
+        .units
+        .iter()
+        .any(|unit| !unit.message_uses.is_empty())
+    {
+        return HashMap::new();
+    }
+
+    let mut by_class = HashMap::<Arc<str>, HashMap<Arc<str>, MessageClassEntryHandle>>::new();
+    for (unit_idx, unit) in project.units.iter().enumerate() {
+        for (entry_idx, entry) in unit.message_class_entries.iter().enumerate() {
+            let class_name = if has_ascii_uppercase(&entry.class_name) {
+                Arc::from(entry.class_name.to_ascii_lowercase())
+            } else {
+                Arc::clone(&entry.class_name)
+            };
+            by_class.entry(class_name).or_default().insert(
+                Arc::clone(&entry.id),
+                MessageClassEntryHandle {
+                    unit: unit_idx,
+                    entry: entry_idx,
+                },
+            );
+        }
+    }
+    by_class
 }
 
 fn root_symbol_handle_matching<F>(
@@ -4964,7 +5011,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             });
         }
 
-        unit_diagnostics.extend(validate_message_uses(project, unit));
+        unit_diagnostics.extend(validate_message_uses(project, &lookup, unit));
 
         for (access, base_info) in unit.field_accesses.iter().zip(&field_access_bases) {
             let Some(((base_unit_idx, base_symbol_id), class_selector_base)) = *base_info else {

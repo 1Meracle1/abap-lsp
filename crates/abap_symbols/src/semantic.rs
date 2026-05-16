@@ -97,14 +97,14 @@ pub(crate) struct SemanticIndex {
     type_references_by_name: HashMap<String, Vec<SemReferenceId>>,
     sql_source_name_refs_by_name: HashMap<String, Vec<SemSqlNameRefId>>,
     sql_sources_by_name: HashMap<String, Vec<usize>>,
-    symbols_by_kind_and_range: HashMap<(u8, usize, usize), Vec<SemSymbolId>>,
+    symbols_by_kind_and_range: HashMap<(u8, usize, usize), SemSymbolId>,
 }
 
 impl SemanticIndex {
     pub(crate) fn build(unit: &UnitAnalysis) -> Self {
         let mut symbols = Vec::with_capacity(unit.symbols.len());
-        let mut symbols_by_kind_and_range: HashMap<(u8, usize, usize), Vec<SemSymbolId>> =
-            HashMap::new();
+        let mut symbols_by_kind_and_range: HashMap<(u8, usize, usize), SemSymbolId> =
+            HashMap::with_capacity(unit.symbols.len());
         for (idx, symbol) in unit.symbols.iter().enumerate() {
             let id = SemSymbolId(idx as u32);
             symbols.push(SemSymbol {
@@ -118,13 +118,13 @@ impl SemanticIndex {
                     symbol.decl_range.start,
                     symbol.decl_range.end,
                 ))
-                .or_default()
-                .push(id);
+                .or_insert(id);
         }
         let mut references = Vec::with_capacity(unit.references.len());
         let mut references_by_resolution: HashMap<SymbolHandle, Vec<SemReferenceId>> =
-            HashMap::new();
-        let mut references_by_scope: HashMap<ScopeId, Vec<SemReferenceId>> = HashMap::new();
+            HashMap::with_capacity(unit.references.len());
+        let mut references_by_scope: HashMap<ScopeId, Vec<SemReferenceId>> =
+            HashMap::with_capacity(unit.scopes.len());
         let mut type_references_by_name: HashMap<String, Vec<SemReferenceId>> = HashMap::new();
         for (idx, reference) in unit.references.iter().enumerate() {
             let id = SemReferenceId(idx as u32);
@@ -318,7 +318,7 @@ impl SemanticIndex {
     ) -> Option<SemSymbolId> {
         self.symbols_by_kind_and_range
             .get(&(symbol_kind_key(kind), range.start, range.end))
-            .and_then(|ids| ids.first().copied())
+            .copied()
     }
 
     pub(crate) fn structure_field_at_offset(&self, offset: usize) -> Option<SemStructureFieldId> {

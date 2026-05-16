@@ -211,7 +211,11 @@ impl UnitTypeSnapshot {
                 .iter()
                 .map(|symbol| SymbolTypeSnapshot {
                     structure: symbol.structure,
-                    declared_type: symbol.declared_type.clone(),
+                    declared_type: if symbol.structure.is_none() {
+                        symbol.declared_type.clone()
+                    } else {
+                        None
+                    },
                 })
                 .collect(),
             structures: unit.structures.clone(),
@@ -806,72 +810,63 @@ fn resolve_project_cross_unit_with_filter(
         let mut type_base_structure_cache = TypeBaseStructureCache::new();
         let mut symbol_structure_cache = SymbolStructureCache::new();
 
-        let symbol_inputs: Vec<_> = unit
-            .symbols
-            .iter()
-            .map(|symbol| (symbol.structure, symbol.declared_type.clone()))
-            .collect();
-        let mut symbol_structures = Vec::with_capacity(symbol_inputs.len());
-        for (existing_structure, declared_type) in symbol_inputs {
-            let structure = existing_structure.or_else(|| {
-                declared_type.as_ref().and_then(|type_ref| {
-                    import_structure_for_type_ref(
-                        &snapshot,
-                        unit_idx,
-                        type_ref,
-                        &per_unit_root_index,
-                        &visible_units,
-                        &root_index,
-                        &mut unit.structures,
-                        &mut imported,
-                        &mut root_handle_cache,
-                        &mut type_ref_import_cache,
-                        &mut type_base_structure_cache,
-                        &mut symbol_structure_cache,
-                    )
-                })
-            });
-            symbol_structures.push(structure);
-        }
-        for (symbol, structure) in unit.symbols.iter_mut().zip(symbol_structures) {
-            symbol.structure = structure;
+        for symbol_idx in 0..unit.symbols.len() {
+            if unit.symbols[symbol_idx].structure.is_some() {
+                continue;
+            }
+            let Some(type_ref) = unit.symbols[symbol_idx].declared_type.clone() else {
+                continue;
+            };
+            if let Some(structure) = import_structure_for_type_ref(
+                &snapshot,
+                unit_idx,
+                &type_ref,
+                &per_unit_root_index,
+                &visible_units,
+                &root_index,
+                &mut unit.structures,
+                &mut imported,
+                &mut root_handle_cache,
+                &mut type_ref_import_cache,
+                &mut type_base_structure_cache,
+                &mut symbol_structure_cache,
+            ) {
+                unit.symbols[symbol_idx].structure = Some(structure);
+            }
         }
 
         let mut structure_idx = 0usize;
         while structure_idx < unit.structures.len() {
-            let field_inputs: Vec<_> = unit.structures[structure_idx]
-                .fields
-                .iter()
-                .map(|field| (field.structure, field.type_ref.clone()))
-                .collect();
-            let mut resolved_fields = Vec::with_capacity(field_inputs.len());
-            for (existing_structure, type_ref) in field_inputs {
-                let structure = existing_structure.or_else(|| {
-                    type_ref.as_ref().and_then(|type_ref| {
-                        import_structure_for_type_ref(
-                            &snapshot,
-                            unit_idx,
-                            type_ref,
-                            &per_unit_root_index,
-                            &visible_units,
-                            &root_index,
-                            &mut unit.structures,
-                            &mut imported,
-                            &mut root_handle_cache,
-                            &mut type_ref_import_cache,
-                            &mut type_base_structure_cache,
-                            &mut symbol_structure_cache,
-                        )
-                    })
-                });
-                resolved_fields.push(structure);
-            }
-            for (field, resolved_structure) in unit.structures[structure_idx]
-                .fields
-                .iter_mut()
-                .zip(resolved_fields)
-            {
-                field.structure = resolved_structure;
+            let field_count = unit.structures[structure_idx].fields.len();
+            for field_idx in 0..field_count {
+                if unit.structures[structure_idx].fields[field_idx]
+                    .structure
+                    .is_some()
+                {
+                    continue;
+                }
+                let Some(type_ref) = unit.structures[structure_idx].fields[field_idx]
+                    .type_ref
+                    .clone()
+                else {
+                    continue;
+                };
+                if let Some(structure) = import_structure_for_type_ref(
+                    &snapshot,
+                    unit_idx,
+                    &type_ref,
+                    &per_unit_root_index,
+                    &visible_units,
+                    &root_index,
+                    &mut unit.structures,
+                    &mut imported,
+                    &mut root_handle_cache,
+                    &mut type_ref_import_cache,
+                    &mut type_base_structure_cache,
+                    &mut symbol_structure_cache,
+                ) {
+                    unit.structures[structure_idx].fields[field_idx].structure = Some(structure);
+                }
             }
             structure_idx += 1;
         }
@@ -895,33 +890,25 @@ fn resolve_project_cross_unit_with_filter(
         let mut imported = HashMap::<(u32, u32), StructureId>::new();
         let mut type_base_structure_cache = TypeBaseStructureCache::new();
         let mut symbol_structure_cache = SymbolStructureCache::new();
-        let symbol_inputs: Vec<_> = unit
-            .symbols
-            .iter()
-            .map(|symbol| symbol.declared_type.clone())
-            .collect();
-        let mut normalized_symbols = Vec::with_capacity(symbol_inputs.len());
-        for declared_type in symbol_inputs {
-            normalized_symbols.push(declared_type.as_ref().and_then(|type_ref| {
-                normalize_field_type_ref_for_target(
-                    &snapshot,
-                    unit_idx,
-                    type_ref,
-                    &per_unit_root_index,
-                    &visible_units,
-                    &root_index,
-                    &mut unit.structures,
-                    &mut imported,
-                    &mut root_handle_cache,
-                    &mut type_base_structure_cache,
-                    &mut symbol_structure_cache,
-                )
-            }));
-        }
-        for (symbol, normalized) in unit.symbols.iter_mut().zip(normalized_symbols) {
-            if let Some((structure, declared_type)) = normalized {
-                symbol.structure = structure;
-                symbol.declared_type = Some(declared_type);
+        for symbol_idx in 0..unit.symbols.len() {
+            let Some(type_ref) = unit.symbols[symbol_idx].declared_type.clone() else {
+                continue;
+            };
+            if let Some((structure, declared_type)) = normalize_field_type_ref_for_target(
+                &snapshot,
+                unit_idx,
+                &type_ref,
+                &per_unit_root_index,
+                &visible_units,
+                &root_index,
+                &mut unit.structures,
+                &mut imported,
+                &mut root_handle_cache,
+                &mut type_base_structure_cache,
+                &mut symbol_structure_cache,
+            ) {
+                unit.symbols[symbol_idx].structure = structure;
+                unit.symbols[symbol_idx].declared_type = Some(declared_type);
             }
         }
     }

@@ -59,6 +59,7 @@ pub(crate) struct WorkspaceIndex {
     pub(crate) uri_to_unit: HashMap<Arc<str>, UnitId>,
     pub(crate) provided_name_to_unit: HashMap<Arc<str>, UnitId>,
     pub(crate) provided_name_to_units: HashMap<Arc<str>, Vec<UnitId>>,
+    pub(crate) unit_dir_keys: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -601,11 +602,13 @@ pub(crate) fn build_workspace_index(local_units: &[LocallyResolvedUnit]) -> Work
     let mut uri_to_unit = HashMap::new();
     let mut provided_name_to_unit = HashMap::new();
     let mut provided_name_to_units = HashMap::<Arc<str>, Vec<UnitId>>::new();
+    let mut unit_dir_keys = vec![None; local_units.len()];
 
     for local in local_units {
         let unit = &local.unit;
         let unit_id = unit.unit_id;
         uri_to_unit.insert(Arc::clone(&unit.uri), unit_id);
+        unit_dir_keys[unit_id.as_usize()] = uri_parent_dir_key(unit.uri.as_ref());
         for name in &local.exported_signature.provided_names {
             provided_name_to_unit
                 .entry(Arc::clone(name))
@@ -621,6 +624,7 @@ pub(crate) fn build_workspace_index(local_units: &[LocallyResolvedUnit]) -> Work
         uri_to_unit,
         provided_name_to_unit,
         provided_name_to_units,
+        unit_dir_keys,
     }
 }
 
@@ -628,10 +632,12 @@ pub(crate) fn build_workspace_index_from_units(units: &[UnitAnalysis]) -> Worksp
     let mut uri_to_unit = HashMap::with_capacity(units.len());
     let mut provided_name_to_unit = HashMap::new();
     let mut provided_name_to_units = HashMap::<Arc<str>, Vec<UnitId>>::new();
+    let mut unit_dir_keys = vec![None; units.len()];
 
     for unit in units {
         let unit_id = unit.unit_id;
         uri_to_unit.insert(Arc::clone(&unit.uri), unit_id);
+        unit_dir_keys[unit_id.as_usize()] = uri_parent_dir_key(unit.uri.as_ref());
         for name in &unit.provided_names {
             provided_name_to_unit
                 .entry(Arc::clone(name))
@@ -647,6 +653,7 @@ pub(crate) fn build_workspace_index_from_units(units: &[UnitAnalysis]) -> Worksp
         uri_to_unit,
         provided_name_to_unit,
         provided_name_to_units,
+        unit_dir_keys,
     }
 }
 
@@ -674,11 +681,12 @@ fn child_dir_key(parent: &str, child: &str) -> String {
 
 fn find_include_candidate_in_dir(
     candidates: &[UnitId],
-    unit_dir_keys: &[Option<String>],
+    workspace_index: &WorkspaceIndex,
     dir_key: &str,
 ) -> Option<UnitId> {
     candidates.iter().copied().find(|candidate| {
-        unit_dir_keys
+        workspace_index
+            .unit_dir_keys
             .get(candidate.as_usize())
             .and_then(|dir| dir.as_deref())
             .is_some_and(|candidate_dir| candidate_dir == dir_key)
@@ -689,7 +697,6 @@ fn resolve_include_target(
     source_dir_key: Option<&str>,
     include_name: &Arc<str>,
     workspace_index: &WorkspaceIndex,
-    unit_dir_keys: &[Option<String>],
 ) -> Option<UnitId> {
     let candidates = workspace_index
         .provided_name_to_units
@@ -697,14 +704,14 @@ fn resolve_include_target(
 
     if let Some(source_dir_key) = source_dir_key {
         if let Some(target) =
-            find_include_candidate_in_dir(candidates, unit_dir_keys, source_dir_key)
+            find_include_candidate_in_dir(candidates, workspace_index, source_dir_key)
         {
             return Some(target);
         }
 
         let includes_dir_key = child_dir_key(source_dir_key, "includes");
         if let Some(target) =
-            find_include_candidate_in_dir(candidates, unit_dir_keys, &includes_dir_key)
+            find_include_candidate_in_dir(candidates, workspace_index, &includes_dir_key)
         {
             return Some(target);
         }
@@ -722,23 +729,18 @@ pub(crate) fn resolve_include_edges_for_units(
     workspace_index: &WorkspaceIndex,
     dirty_unit_ids: &HashSet<UnitId>,
 ) {
-    let unit_dir_keys: Vec<_> = units
-        .iter()
-        .map(|unit| uri_parent_dir_key(unit.uri.as_ref()))
-        .collect();
-
     for unit in units {
         if !dirty_unit_ids.contains(&unit.unit_id) {
             continue;
         }
-        let source_dir_key = unit_dir_keys
+        let source_dir_key = workspace_index
+            .unit_dir_keys
             .get(unit.unit_id.as_usize())
             .and_then(|dir| dir.as_deref());
         unit.diagnostics
             .retain(|diagnostic| !matches!(diagnostic.kind, DiagnosticKind::UnresolvedInclude));
         for edge in &mut unit.include_edges {
-            edge.target =
-                resolve_include_target(source_dir_key, &edge.name, workspace_index, &unit_dir_keys);
+            edge.target = resolve_include_target(source_dir_key, &edge.name, workspace_index);
             if edge.target.is_none() {
                 unit.diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::UnresolvedInclude,
@@ -914,18 +916,14 @@ fn include_component_dirty_set(
     seed_unit_ids: &HashSet<UnitId>,
 ) -> HashSet<UnitId> {
     let mut adjacency: HashMap<UnitId, HashSet<UnitId>> = HashMap::new();
-    let unit_dir_keys: Vec<_> = local_units
-        .iter()
-        .map(|local| uri_parent_dir_key(local.unit.uri.as_ref()))
-        .collect();
     for local in local_units {
         let unit_id = local.unit.unit_id;
-        let source_dir_key = unit_dir_keys
+        let source_dir_key = workspace_index
+            .unit_dir_keys
             .get(unit_id.as_usize())
             .and_then(|dir| dir.as_deref());
         for edge in &local.unit.include_edges {
-            let Some(target) =
-                resolve_include_target(source_dir_key, &edge.name, workspace_index, &unit_dir_keys)
+            let Some(target) = resolve_include_target(source_dir_key, &edge.name, workspace_index)
             else {
                 continue;
             };
