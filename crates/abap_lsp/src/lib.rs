@@ -3131,6 +3131,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     let mut scanned_candidate_sources = HashSet::<Arc<str>>::new();
     let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
+    let mut expanded_artifacts = HashSet::<i64>::new();
     let mut inheritance_candidates_by_artifact =
         HashMap::<i64, Vec<RemoteDependencyCandidate>>::new();
     let mut inputs = Vec::<DocumentInput>::new();
@@ -3217,7 +3218,6 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                 };
                 metrics.artifact_hits += 1;
                 let mut records = VecDeque::from([(record, Arc::clone(&uri))]);
-                let mut expanded_artifacts = HashSet::new();
                 while let Some((record, parent_uri)) = records.pop_front() {
                     let input = workspace_dependency_document_input(workspace, &record);
                     let input_uri = Arc::clone(&input.uri);
@@ -3227,13 +3227,15 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                         parent_uri.as_ref(),
                     );
                     candidate_dependency_uris.insert(Arc::clone(&input_uri));
-                    if workspace.cache.get(input_uri.as_ref()).is_some()
-                        || !input_uris.insert(Arc::clone(&input_uri))
-                    {
+                    let cached_input = workspace.cache.get(input_uri.as_ref()).is_some();
+                    if cached_input || !input_uris.insert(Arc::clone(&input_uri)) {
                         metrics.existing_or_duplicate_inputs += 1;
                     } else {
                         hydrated_uris.insert(Arc::clone(&input_uri));
                         inputs.push(input);
+                    }
+                    if cached_input {
+                        continue;
                     }
                     if !expanded_artifacts.insert(record.artifact_id) {
                         continue;
@@ -3302,17 +3304,12 @@ fn hydrate_workspace_dependency_documents_with_metrics(
 }
 
 fn dependency_record_hydration_candidates(
-    workspace_uri: &str,
+    _workspace_uri: &str,
     record: &StoredArtifactRecord,
     inheritance_candidates_by_artifact: &mut HashMap<i64, Vec<RemoteDependencyCandidate>>,
 ) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::new();
-    let document = workspace_document_from_dependency_record(workspace_uri, record);
-    let analysis_text = analysis_text_for_document(document.text.as_str(), true);
-    let unit = analyze_local_export_candidate_unit(&document.uri, analysis_text.as_ref());
-    for candidate in collect_remote_dependency_candidates_for_unit(&unit) {
-        insert_remote_candidate(&mut deduped, candidate);
-    }
+    collect_dependency_surface_hydration_candidates(record.source_text.as_str(), &mut deduped);
     for candidate in inheritance_candidates_by_artifact
         .entry(record.artifact_id)
         .or_insert_with(|| dependency_inheritance_candidates_from_record(record))
@@ -3322,6 +3319,328 @@ fn dependency_record_hydration_candidates(
         insert_remote_candidate(&mut deduped, candidate);
     }
     deduped.into_values().collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DependencyCandidateScanBlock {
+    ClassDefinition { private: bool },
+    ClassImplementation,
+    Routine { end_keyword: &'static str },
+}
+
+fn collect_dependency_surface_hydration_candidates(
+    source: &str,
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    let tokenized = tokenize(source);
+    let tokens = tokenized.tokens.as_ref();
+    let mut stmt_start = 0usize;
+    let mut stack = Vec::<DependencyCandidateScanBlock>::new();
+
+    for (idx, token) in tokens.iter().enumerate() {
+        if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
+            continue;
+        }
+        let significant = significant_statement_tokens(&tokens[stmt_start..=idx]);
+        stmt_start = idx + 1;
+        let Some(first) = significant.first().copied() else {
+            continue;
+        };
+
+        let scan = match stack.last_mut() {
+            Some(DependencyCandidateScanBlock::Routine { end_keyword }) => {
+                if token_is_keyword(source, first, end_keyword) {
+                    stack.pop();
+                    false
+                } else {
+                    dependency_surface_kept_include_statement(source, &significant)
+                }
+            }
+            Some(DependencyCandidateScanBlock::ClassImplementation) => {
+                if token_is_keyword(source, first, "endclass") {
+                    stack.pop();
+                    false
+                } else if let Some(block) = dependency_candidate_routine_block(source, &significant)
+                {
+                    stack.push(block);
+                    false
+                } else {
+                    dependency_surface_kept_include_statement(source, &significant)
+                }
+            }
+            Some(DependencyCandidateScanBlock::ClassDefinition { private }) => {
+                if token_is_keyword(source, first, "endclass") {
+                    stack.pop();
+                    false
+                } else if let Some(is_private) =
+                    dependency_candidate_section_visibility(source, &significant)
+                {
+                    *private = is_private;
+                    false
+                } else {
+                    !*private
+                }
+            }
+            None => {
+                if let Some(block) = dependency_candidate_block_start(source, &significant) {
+                    stack.push(block);
+                }
+                true
+            }
+        };
+
+        if scan {
+            collect_dependency_surface_statement_candidates(source, &significant, deduped);
+        }
+    }
+}
+
+fn dependency_candidate_block_start(
+    source: &str,
+    significant: &[&Token],
+) -> Option<DependencyCandidateScanBlock> {
+    if class_definition_statement(source, significant) {
+        return Some(DependencyCandidateScanBlock::ClassDefinition { private: true });
+    }
+    if significant
+        .first()
+        .is_some_and(|token| token_is_keyword(source, token, "class"))
+        && significant
+            .get(2)
+            .is_some_and(|token| token_is_keyword(source, token, "implementation"))
+    {
+        return Some(DependencyCandidateScanBlock::ClassImplementation);
+    }
+    dependency_candidate_routine_block(source, significant)
+}
+
+fn dependency_candidate_routine_block(
+    source: &str,
+    significant: &[&Token],
+) -> Option<DependencyCandidateScanBlock> {
+    let first = significant.first().copied()?;
+    if token_is_keyword(source, first, "method") {
+        return Some(DependencyCandidateScanBlock::Routine {
+            end_keyword: "endmethod",
+        });
+    }
+    if token_is_keyword(source, first, "form") {
+        return Some(DependencyCandidateScanBlock::Routine {
+            end_keyword: "endform",
+        });
+    }
+    if token_is_keyword(source, first, "function")
+        && !significant
+            .get(1)
+            .is_some_and(|token| token_is_keyword(source, token, "pool"))
+    {
+        return Some(DependencyCandidateScanBlock::Routine {
+            end_keyword: "endfunction",
+        });
+    }
+    None
+}
+
+fn dependency_surface_kept_include_statement(source: &str, significant: &[&Token]) -> bool {
+    significant
+        .first()
+        .is_some_and(|token| token_is_keyword(source, token, "include"))
+        && !significant
+            .get(1)
+            .is_some_and(|token| token_is_any_keyword(source, token, &["type", "structure"]))
+}
+
+fn collect_dependency_surface_statement_candidates(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    collect_dependency_inheritance_candidates_from_statement(source, significant, deduped);
+    collect_include_statement_candidate(source, significant, deduped);
+    collect_message_statement_candidate(source, significant, deduped);
+    collect_sql_statement_candidates(source, significant, deduped);
+    collect_submit_statement_candidate(source, significant, deduped);
+    collect_call_function_statement_candidate(source, significant, deduped);
+
+    for (idx, token) in significant.iter().enumerate() {
+        if token.kind == TokenKind::FatArrow {
+            if let Some(name) = significant
+                .get(idx.wrapping_sub(1))
+                .filter(|token| token.kind == TokenKind::Ident)
+                .map(|token| token_text(source, token))
+            {
+                insert_remote_candidate_if_lookup(deduped, name, "static", true);
+            }
+        } else if token_is_keyword(source, token, "type") || token_is_keyword(source, token, "like")
+        {
+            if let Some(name) = type_candidate_name_after(source, significant, idx + 1) {
+                insert_remote_candidate_if_lookup(deduped, name, "type", true);
+            }
+        } else if token_is_keyword(source, token, "raising") {
+            for candidate in significant[idx + 1..]
+                .iter()
+                .filter(|token| token.kind == TokenKind::Ident)
+                .map(|token| token_text(source, token))
+            {
+                insert_remote_candidate_if_lookup(deduped, candidate, "type", true);
+            }
+        }
+    }
+}
+
+fn collect_include_statement_candidate(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    if !dependency_surface_kept_include_statement(source, significant) {
+        return;
+    }
+    if let Some(name) = significant
+        .get(1)
+        .filter(|token| token.kind == TokenKind::Ident)
+        .map(|token| token_text(source, token))
+    {
+        insert_remote_candidate_if_lookup(deduped, name, "include", false);
+    }
+}
+
+fn collect_message_statement_candidate(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    for (idx, token) in significant.iter().enumerate() {
+        if token_is_keyword(source, token, "message-id")
+            && let Some(name) = significant
+                .get(idx + 1)
+                .filter(|token| token.kind == TokenKind::Ident)
+                .map(|token| token_text(source, token))
+        {
+            insert_remote_candidate_if_lookup(deduped, name, "message-class", false);
+        }
+        if token.kind == TokenKind::LParen
+            && significant
+                .first()
+                .is_some_and(|token| token_is_keyword(source, token, "message"))
+            && let Some(name) = significant
+                .get(idx + 1)
+                .filter(|token| token.kind == TokenKind::Ident)
+                .map(|token| token_text(source, token))
+        {
+            insert_remote_candidate_if_lookup(deduped, name, "message-class", false);
+        }
+    }
+}
+
+fn collect_sql_statement_candidates(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    if !significant.first().is_some_and(|token| {
+        token_is_any_keyword(
+            source,
+            token,
+            &["select", "update", "modify", "delete", "insert"],
+        )
+    }) {
+        return;
+    }
+    for (idx, token) in significant.iter().enumerate() {
+        if token_is_any_keyword(source, token, &["from", "join", "update"])
+            && let Some(name) = significant
+                .get(idx + 1)
+                .filter(|token| token.kind == TokenKind::Ident)
+                .map(|token| token_text(source, token))
+        {
+            insert_remote_candidate_if_lookup(deduped, name, "type", false);
+        }
+    }
+}
+
+fn collect_submit_statement_candidate(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    if !significant
+        .first()
+        .is_some_and(|token| token_is_keyword(source, token, "submit"))
+    {
+        return;
+    }
+    if let Some(name) = significant
+        .get(1)
+        .filter(|token| token.kind == TokenKind::Ident)
+        .map(|token| token_text(source, token))
+    {
+        insert_remote_candidate_if_lookup(deduped, name, "report", true);
+    }
+}
+
+fn collect_call_function_statement_candidate(
+    source: &str,
+    significant: &[&Token],
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+) {
+    if !significant
+        .first()
+        .is_some_and(|token| token_is_keyword(source, token, "call"))
+        || !significant
+            .get(1)
+            .is_some_and(|token| token_is_keyword(source, token, "function"))
+    {
+        return;
+    }
+    if let Some(name) = significant.get(2).map(|token| token_text(source, token)) {
+        insert_remote_candidate_if_lookup(deduped, name.trim_matches('\''), "function", true);
+    }
+}
+
+fn type_candidate_name_after<'a>(
+    source: &'a str,
+    significant: &[&Token],
+    mut idx: usize,
+) -> Option<&'a str> {
+    while let Some(token) = significant.get(idx).copied() {
+        if token.kind == TokenKind::Ident {
+            if !token_is_any_keyword(
+                source,
+                token,
+                &[
+                    "ref", "to", "standard", "sorted", "hashed", "any", "table", "of", "line",
+                    "range", "ranges", "for",
+                ],
+            ) {
+                return Some(token_text(source, token));
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn insert_remote_candidate_if_lookup(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    name: &str,
+    kind: &str,
+    after_local_resolution: bool,
+) {
+    let lookup = if after_local_resolution {
+        is_remote_lookup_candidate_after_local_resolution(name, kind)
+    } else {
+        is_remote_lookup_candidate(name, kind)
+    };
+    if lookup {
+        insert_remote_candidate(
+            deduped,
+            RemoteDependencyCandidate {
+                name: name.to_string(),
+                kind: kind.to_string(),
+            },
+        );
+    }
 }
 
 fn resolved_dependency_inheritance_candidates(
@@ -8632,16 +8951,17 @@ mod tests {
         collect_local_export_dependency_candidates_profiled, collect_remote_dependency_candidates,
         collect_remote_dependency_candidates_for_workspace_batch, completion, definition,
         dependency_document_input_from_payload_with_kind, dependency_document_uri,
-        dependency_inheritance_candidates_from_record, extract_stored_dependency_symbols,
-        folding_ranges_from_text, handle_dependency_cache_refresh_requested,
-        handle_remote_dependencies_updated, handle_sap_atc_results_updated, hover,
-        hydrate_workspace_dependency_documents, initialize_result, inlay_hints, normalize_lsp_uri,
-        offset_to_position, prepare_rename, publish_changed_document, publish_changed_document_mut,
-        publish_open_document, publish_open_document_mut, read_dependency_document, references,
-        refresh_workspace, rename, semantic_tokens, snapshot_for_uri,
-        stage_workspace_preview_snapshot, store_local_export_dependency_candidates,
-        store_remote_dependency_artifacts, workspace_committed_build_plan,
-        workspace_dependency_store, workspace_manifest_diagnostics_params,
+        dependency_inheritance_candidates_from_record, dependency_record_hydration_candidates,
+        extract_stored_dependency_symbols, folding_ranges_from_text,
+        handle_dependency_cache_refresh_requested, handle_remote_dependencies_updated,
+        handle_sap_atc_results_updated, hover, hydrate_workspace_dependency_documents,
+        initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
+        publish_changed_document, publish_changed_document_mut, publish_open_document,
+        publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
+        semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
+        store_local_export_dependency_candidates, store_remote_dependency_artifacts,
+        workspace_committed_build_plan, workspace_dependency_store,
+        workspace_manifest_diagnostics_params,
     };
 
     fn temp_workspace_path(name: &str) -> PathBuf {
@@ -17589,6 +17909,56 @@ ENDCLASS."
         assert!(!names.contains(&"zcl_noise"), "{candidates:#?}");
         assert!(!names.contains(&"zif_noise"), "{candidates:#?}");
         assert!(candidates.iter().all(|candidate| candidate.kind == "type"));
+    }
+
+    #[test]
+    fn stored_artifact_hydration_scan_uses_public_surface_only() {
+        let record = StoredArtifactRecord {
+            artifact_id: 1,
+            package_name: "ZPKG".to_string(),
+            package_version: "001".to_string(),
+            object_kind: "global-class".to_string(),
+            object_name: "ZCL_SCAN".to_string(),
+            object_uri: "/sap/bc/adt/oo/classes/zcl_scan".to_string(),
+            object_type: "CLAS/OC".to_string(),
+            description: "Remote class".to_string(),
+            file_extension: "abap".to_string(),
+            source_text: "\
+CLASS zcl_scan DEFINITION PUBLIC INHERITING FROM zcl_base.
+  PUBLIC SECTION.
+    TYPES ty_line TYPE /sttp/e_objid.
+    DATA obj TYPE REF TO zcl_public.
+    CLASS-METHODS create RETURNING VALUE(ro_obj) TYPE REF TO zcl_result.
+    CONSTANTS gc_value TYPE string VALUE zcl_factory=>co_value.
+  PRIVATE SECTION.
+    DATA hidden TYPE REF TO zcl_private.
+ENDCLASS.
+CLASS zcl_scan IMPLEMENTATION.
+  METHOD run.
+    DATA impl TYPE REF TO zcl_impl.
+  ENDMETHOD.
+ENDCLASS."
+                .to_string(),
+        };
+
+        let candidates = dependency_record_hydration_candidates(
+            "file:///workspace",
+            &record,
+            &mut std::collections::HashMap::new(),
+        );
+        let has = |name: &str, kind: &str| {
+            candidates
+                .iter()
+                .any(|candidate| candidate.name == name && candidate.kind == kind)
+        };
+
+        assert!(has("zcl_base", "type"), "{candidates:#?}");
+        assert!(has("/sttp/e_objid", "type"), "{candidates:#?}");
+        assert!(has("zcl_public", "type"), "{candidates:#?}");
+        assert!(has("zcl_result", "type"), "{candidates:#?}");
+        assert!(has("zcl_factory", "static"), "{candidates:#?}");
+        assert!(!has("zcl_private", "type"), "{candidates:#?}");
+        assert!(!has("zcl_impl", "type"), "{candidates:#?}");
     }
 
     #[test]
