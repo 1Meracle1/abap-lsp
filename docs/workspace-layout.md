@@ -27,6 +27,12 @@ default_package_version = "7.50"
 dependency_mode = "remote-on-demand"
 remote_requests_per_second = 24
 
+[local_export]
+roots = ["D:/dev/abap/sap_system_export"]
+
+[dependencies]
+source = "local-first"
+
 [lints]
 profile = "recommended"
 report_suppressed = false
@@ -39,6 +45,9 @@ report_suppressed = false
 
 The root manifest does not need explicit `[[unit]]` entries for normal `src` content.
 The optional `[dependency_store]` section enables centralized remote dependency resolution and versions cached ABAP/DDIC artifacts by SAP product/package version.
+The optional `[local_export]` and `[dependencies]` sections define workspace defaults for local
+exported SAP source roots and sourcing preference. Unit sidecars can override these defaults per
+report or per unit.
 
 ### Lint Configuration
 
@@ -234,7 +243,9 @@ Use this when the include name cannot be inferred reliably from the file path, o
 
 Optional exported SAP source roots to use for dependency sourcing before or instead of ADT.
 
-`roots` entries may be absolute or relative to the sidecar file.
+`roots` entries in `abapls.toml` may be absolute or relative to the workspace root. In sidecars,
+they may be absolute or relative to the sidecar file. A sidecar `[local_export]` section replaces
+the workspace default roots for that unit.
 
 #### `[dependencies]`
 
@@ -251,6 +262,8 @@ Behavior:
 - `local-first`: try local exported SAP roots first, then ADT
 - `local-only`: only use local exported SAP roots for dependencies from this unit
 - `adt-first`: prefer ADT, but fall back to local exported SAP roots if ADT fetch fails
+
+A sidecar `[dependencies]` section replaces the workspace default sourcing preference for that unit.
 
 ## Central Dependency Store
 

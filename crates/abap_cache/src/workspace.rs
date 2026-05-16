@@ -39,6 +39,10 @@ pub struct WorkspaceManifest {
     #[serde(default)]
     pub resolution: ManifestResolution,
     #[serde(default)]
+    pub local_export: ManifestLocalExport,
+    #[serde(default)]
+    pub dependencies: ManifestDependencies,
+    #[serde(default)]
     pub performance: ManifestPerformance,
     #[serde(default)]
     pub lints: Option<LintConfig>,
@@ -193,13 +197,13 @@ impl From<ManifestUnitMemberInline> for ManifestUnitMember {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
-struct UnitSidecarLocalExport {
+pub struct ManifestLocalExport {
     #[serde(default)]
     pub roots: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
-struct UnitSidecarDependencies {
+pub struct ManifestDependencies {
     #[serde(default)]
     pub source: String,
 }
@@ -278,9 +282,9 @@ struct UnitSidecarManifest {
     #[serde(default)]
     pub members: Vec<String>,
     #[serde(default)]
-    pub local_export: UnitSidecarLocalExport,
+    pub local_export: Option<ManifestLocalExport>,
     #[serde(default)]
-    pub dependencies: UnitSidecarDependencies,
+    pub dependencies: Option<ManifestDependencies>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,8 +301,15 @@ struct CachedUnitSidecarManifest {
 
 #[derive(Debug, Clone)]
 struct CachedLocalExportConfig {
+    manifest_state: Option<LocalExportPathState>,
     sidecar_keys: Vec<String>,
     sidecar_states: Vec<Option<LocalExportPathState>>,
+    config: LocalExportConfig,
+}
+
+#[derive(Debug, Clone)]
+struct CachedWorkspaceLocalExportConfig {
+    state: Option<LocalExportPathState>,
     config: LocalExportConfig,
 }
 
@@ -365,6 +376,13 @@ fn unit_sidecar_manifest_cache() -> &'static Mutex<HashMap<String, CachedUnitSid
 
 fn local_export_config_cache() -> &'static Mutex<HashMap<String, CachedLocalExportConfig>> {
     static CACHE: OnceLock<Mutex<HashMap<String, CachedLocalExportConfig>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn workspace_local_export_config_cache()
+-> &'static Mutex<HashMap<String, CachedWorkspaceLocalExportConfig>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedWorkspaceLocalExportConfig>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1510,6 +1528,7 @@ pub fn local_export_config_for_source(
     source_uri: &str,
 ) -> LocalExportConfig {
     let sidecar_paths = source_unit_sidecar_paths(workspace_root, source_uri);
+    let manifest_state = local_export_path_state(&workspace_root.join("abapls.toml"));
     let sidecar_keys: Vec<_> = sidecar_paths
         .iter()
         .map(|path| normalized_local_export_path_key(path))
@@ -1523,17 +1542,20 @@ pub fn local_export_config_for_source(
     if let Some(cached) = lock_unpoisoned(local_export_config_cache())
         .get(&cache_key)
         .filter(|cached| {
-            cached.sidecar_keys == sidecar_keys && cached.sidecar_states == sidecar_states
+            cached.manifest_state == manifest_state
+                && cached.sidecar_keys == sidecar_keys
+                && cached.sidecar_states == sidecar_states
         })
         .cloned()
     {
         return cached.config;
     }
 
-    let config = build_local_export_config_from_sidecar_paths(&sidecar_paths);
+    let config = build_local_export_config(workspace_root, manifest_state, &sidecar_paths);
     lock_unpoisoned(local_export_config_cache()).insert(
         cache_key,
         CachedLocalExportConfig {
+            manifest_state,
             sidecar_keys,
             sidecar_states,
             config: config.clone(),
@@ -1550,48 +1572,92 @@ fn local_export_config_cache_key(workspace_root: &Path, source_uri: &str) -> Str
     format!("{workspace_key}::{source_key}")
 }
 
-fn build_local_export_config_from_sidecar_paths(sidecar_paths: &[PathBuf]) -> LocalExportConfig {
-    if sidecar_paths.is_empty() {
-        return LocalExportConfig::default();
-    }
-
-    let mut roots = Vec::new();
-    let mut seen_roots = HashSet::new();
-    let mut saw_local_first = false;
-    let mut saw_adt_first = false;
+fn build_local_export_config(
+    workspace_root: &Path,
+    manifest_state: Option<LocalExportPathState>,
+    sidecar_paths: &[PathBuf],
+) -> LocalExportConfig {
+    let mut config = workspace_local_export_config(workspace_root, manifest_state);
+    let mut sidecar_roots = None::<Vec<PathBuf>>;
+    let mut sidecar_seen_roots = HashSet::new();
+    let mut sidecar_mode = None;
 
     for sidecar_path in sidecar_paths {
         let Some(sidecar) = load_unit_sidecar_manifest(sidecar_path) else {
             continue;
         };
-        for root in resolve_unit_sidecar_local_roots(sidecar_path, &sidecar) {
-            let key = normalized_local_export_path_key(&root);
-            if seen_roots.insert(key) {
-                roots.push(root);
+        if let Some(local_export) = &sidecar.local_export {
+            let roots = sidecar_roots.get_or_insert_with(Vec::new);
+            let base_dir = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
+            for root in resolve_local_export_roots(base_dir, &local_export.roots) {
+                let key = normalized_local_export_path_key(&root);
+                if sidecar_seen_roots.insert(key) {
+                    roots.push(root);
+                }
             }
         }
 
-        match normalize_local_dependency_source_mode(&sidecar.dependencies.source) {
-            LocalDependencySourceMode::LocalOnly => {
-                return LocalExportConfig {
-                    mode: LocalDependencySourceMode::LocalOnly,
-                    roots,
-                };
-            }
-            LocalDependencySourceMode::LocalFirst => saw_local_first = true,
-            LocalDependencySourceMode::AdtFirst => saw_adt_first = true,
+        if let Some(dependencies) = &sidecar.dependencies {
+            let incoming = normalize_local_dependency_source_mode(&dependencies.source);
+            let current = sidecar_mode.unwrap_or(LocalDependencySourceMode::AdtFirst);
+            sidecar_mode = Some(match (current, incoming) {
+                (_, LocalDependencySourceMode::LocalOnly)
+                | (LocalDependencySourceMode::LocalOnly, _) => LocalDependencySourceMode::LocalOnly,
+                (_, LocalDependencySourceMode::LocalFirst)
+                | (LocalDependencySourceMode::LocalFirst, _) => {
+                    LocalDependencySourceMode::LocalFirst
+                }
+                _ => LocalDependencySourceMode::AdtFirst,
+            });
         }
     }
 
-    let mode = if saw_local_first {
-        LocalDependencySourceMode::LocalFirst
-    } else if saw_adt_first {
-        LocalDependencySourceMode::AdtFirst
-    } else {
-        LocalDependencySourceMode::LocalFirst
-    };
+    if let Some(roots) = sidecar_roots {
+        config.roots = roots;
+    }
+    if let Some(mode) = sidecar_mode {
+        config.mode = mode;
+    }
 
-    LocalExportConfig { mode, roots }
+    config
+}
+
+fn workspace_local_export_config(
+    workspace_root: &Path,
+    manifest_state: Option<LocalExportPathState>,
+) -> LocalExportConfig {
+    let key = normalized_local_export_path_key(workspace_root);
+    if let Some(cached) = lock_unpoisoned(workspace_local_export_config_cache())
+        .get(&key)
+        .filter(|cached| cached.state == manifest_state)
+        .cloned()
+    {
+        return cached.config;
+    }
+
+    let Some(manifest) = load_manifest_from_workspace(workspace_root) else {
+        let config = LocalExportConfig::default();
+        lock_unpoisoned(workspace_local_export_config_cache()).insert(
+            key,
+            CachedWorkspaceLocalExportConfig {
+                state: manifest_state,
+                config: config.clone(),
+            },
+        );
+        return config;
+    };
+    let config = LocalExportConfig {
+        mode: normalize_local_dependency_source_mode(&manifest.dependencies.source),
+        roots: resolve_local_export_roots(workspace_root, &manifest.local_export.roots),
+    };
+    lock_unpoisoned(workspace_local_export_config_cache()).insert(
+        key,
+        CachedWorkspaceLocalExportConfig {
+            state: manifest_state,
+            config: config.clone(),
+        },
+    );
+    config
 }
 
 fn local_export_index_for_root(
@@ -2129,15 +2195,11 @@ fn load_unit_sidecar_manifest(sidecar_path: &Path) -> Option<UnitSidecarManifest
     manifest
 }
 
-fn resolve_unit_sidecar_local_roots(
-    sidecar_path: &Path,
-    sidecar: &UnitSidecarManifest,
-) -> Vec<PathBuf> {
-    let base_dir = sidecar_path.parent().unwrap_or_else(|| Path::new("."));
+fn resolve_local_export_roots(base_dir: &Path, root_values: &[String]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut seen = HashSet::new();
 
-    for root in &sidecar.local_export.roots {
+    for root in root_values {
         let root = root.trim();
         if root.is_empty() {
             continue;
@@ -4063,6 +4125,8 @@ mod tests {
     fn parses_manifest_defaults() {
         let manifest: WorkspaceManifest = toml::from_str("version = 1\n").expect("manifest");
         assert_eq!(manifest.dependency_store, None);
+        assert!(manifest.local_export.roots.is_empty());
+        assert!(manifest.dependencies.source.is_empty());
         assert_eq!(manifest.lints, None);
         assert_eq!(
             manifest.resolution.remote_requests_per_second,
@@ -4964,6 +5028,68 @@ mode = "full-workspace"
         assert_eq!(second.mode, LocalDependencySourceMode::LocalOnly);
         assert_eq!(second.roots.len(), 1);
         assert_eq!(second.roots[0], root.join("deps-b"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_config_cache_refreshes_when_manifest_changes() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-manifest-config-cache");
+        let _ = fs::remove_dir_all(&root);
+        let source_dir = root.join("src/reports/ZREP");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(root.join("deps-a")).expect("deps a");
+        fs::create_dir_all(root.join("deps-b")).expect("deps b");
+        let source_path = source_dir.join("zrep.abap");
+        fs::write(&source_path, "REPORT zrep.").expect("source");
+        fs::write(
+            root.join("abapls.toml"),
+            "version = 1\n\n[local_export]\nroots = [\"deps-a\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+        )
+        .expect("manifest a");
+
+        let source_uri = path_to_file_uri(&source_path);
+        let first = local_export_config_for_source(&root, &source_uri);
+        assert_eq!(first.mode, LocalDependencySourceMode::LocalFirst);
+        assert_eq!(first.roots, vec![root.join("deps-a")]);
+
+        fs::write(
+            root.join("abapls.toml"),
+            "version = 1\n\n[local_export]\nroots = [\"deps-b\"]\n\n[dependencies]\nsource = \"local-only\"\n",
+        )
+        .expect("manifest b");
+
+        let second = local_export_config_for_source(&root, &source_uri);
+        assert_eq!(second.mode, LocalDependencySourceMode::LocalOnly);
+        assert_eq!(second.roots, vec![root.join("deps-b")]);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn local_export_config_sidecar_overrides_workspace_defaults() {
+        let root = std::env::temp_dir().join("abap-lsp-local-export-sidecar-overrides");
+        let _ = fs::remove_dir_all(&root);
+        let source_dir = root.join("src/reports/ZREP");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        fs::create_dir_all(root.join("deps-global")).expect("global deps");
+        fs::create_dir_all(root.join("deps-report")).expect("report deps");
+        let source_path = source_dir.join("zrep.abap");
+        fs::write(&source_path, "REPORT zrep.").expect("source");
+        fs::write(
+            root.join("abapls.toml"),
+            "version = 1\n\n[local_export]\nroots = [\"deps-global\"]\n\n[dependencies]\nsource = \"adt-first\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            source_dir.join("abapls-unit.toml"),
+            "[local_export]\nroots = [\"../../../deps-report\"]\n\n[dependencies]\nsource = \"local-only\"\n",
+        )
+        .expect("sidecar");
+
+        let config = local_export_config_for_source(&root, &path_to_file_uri(&source_path));
+        assert_eq!(config.mode, LocalDependencySourceMode::LocalOnly);
+        assert_eq!(config.roots, vec![root.join("deps-report")]);
 
         let _ = fs::remove_dir_all(&root);
     }

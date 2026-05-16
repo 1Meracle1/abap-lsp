@@ -9425,6 +9425,8 @@ check_variant = "DEFAULT""#,
             connection: String::new(),
             dependency_store: None,
             resolution: ManifestResolution::default(),
+            local_export: Default::default(),
+            dependencies: Default::default(),
             performance: ManifestPerformance::default(),
             lints: None,
             units: vec![ManifestUnit {
