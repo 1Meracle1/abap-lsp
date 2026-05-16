@@ -225,10 +225,35 @@ impl<'a> MethodsStmtEntry<'a> {
     }
 
     pub fn name_token(&self, source: &str) -> Option<SyntaxNodeRef<'a>> {
-        self.items
+        let mut idx = self
+            .items
             .iter()
-            .copied()
-            .find(|item| MethodsStmt::is_ident_token(*item, source))
+            .position(|item| MethodsStmt::is_ident_token(*item, source))?;
+        let mut name = self.items[idx];
+        while self
+            .items
+            .get(idx + 1)
+            .is_some_and(|item| MethodsStmt::token_text_is(*item, source, "~"))
+            && self
+                .items
+                .get(idx + 2)
+                .is_some_and(|item| MethodsStmt::is_ident_token(*item, source))
+        {
+            idx += 2;
+            name = self.items[idx];
+        }
+        Some(name)
+    }
+
+    pub fn qualifier_token(&self, source: &str) -> Option<SyntaxNodeRef<'a>> {
+        let idx = self
+            .items
+            .iter()
+            .position(|item| MethodsStmt::is_ident_token(*item, source))?;
+        self.items
+            .get(idx + 1)
+            .is_some_and(|item| MethodsStmt::token_text_is(*item, source, "~"))
+            .then_some(self.items[idx])
     }
 
     pub fn signature_text(&self, source: &str) -> String {
@@ -2349,7 +2374,7 @@ impl<'a> MethodsStmt<'a> {
         node.kind() == SyntaxKind::Token
             && !matches!(
                 node.text(source),
-                Some("(" | ")" | "[" | "]" | ":" | "," | "." | "-")
+                Some("(" | ")" | "[" | "]" | ":" | "," | "." | "-" | "~")
             )
     }
 

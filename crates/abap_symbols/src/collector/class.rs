@@ -428,6 +428,21 @@ impl<'a> Collector<'a> {
     }
 }
 
+fn qualified_method_signature_matches(signature: &str, method_name: &str) -> bool {
+    let mut parts = signature.split_ascii_whitespace();
+    let _keyword = parts.next();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if let Some((_, member)) = first.rsplit_once('~') {
+        return member.eq_ignore_ascii_case(method_name);
+    }
+    parts.next().is_some_and(|part| part == "~")
+        && parts
+            .next()
+            .is_some_and(|part| part.eq_ignore_ascii_case(method_name))
+}
+
 impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
     pub(super) fn enclosing_class_owner(&self, scope: ScopeId) -> Option<SymbolId> {
         self.collector.enclosing_class_owner(scope)
@@ -989,23 +1004,38 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
         lookup_scope: ScopeId,
         range: TextRange,
     ) {
-        let target_owner = qualifier
-            .and_then(|interface_name| {
-                self.collector.resolve_exposed_interface_symbol(
-                    owner_symbol,
-                    lookup_scope,
-                    interface_name,
-                )
-            })
-            .unwrap_or(owner_symbol);
+        let implementation = crate::ClassMemberImplementationData {
+            unit: self.collector.unit_id,
+            range: range.clone(),
+        };
+        if qualifier.is_some()
+            && let Some(index) = self.collector.class_member_index(owner_symbol, method_name)
+        {
+            let member = &mut self.collector.class_members[index];
+            if member.kind == ClassMemberKind::Method
+                && qualified_method_signature_matches(member.signature.as_ref(), method_name)
+            {
+                member.implementation_range = Some(range.clone());
+                member.implementation = Some(implementation.clone());
+            }
+        }
+        let target_owner = if let Some(interface_name) = qualifier {
+            let Some(interface_symbol) = self.collector.resolve_exposed_interface_symbol(
+                owner_symbol,
+                lookup_scope,
+                interface_name,
+            ) else {
+                return;
+            };
+            interface_symbol
+        } else {
+            owner_symbol
+        };
         if let Some(index) = self.collector.class_member_index(target_owner, method_name) {
             let member = &mut self.collector.class_members[index];
             if member.kind == ClassMemberKind::Method {
                 member.implementation_range = Some(range.clone());
-                member.implementation = Some(crate::ClassMemberImplementationData {
-                    unit: self.collector.unit_id,
-                    range,
-                });
+                member.implementation = Some(implementation);
                 return;
             }
         }
@@ -1017,10 +1047,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
             return;
         };
         member.implementation_range = Some(range.clone());
-        member.implementation = Some(crate::ClassMemberImplementationData {
-            unit: self.collector.unit_id,
-            range,
-        });
+        member.implementation = Some(implementation);
     }
 
     pub(super) fn declare_implicit_me_symbol(

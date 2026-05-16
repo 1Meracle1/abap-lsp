@@ -16393,7 +16393,22 @@ START-OF-SELECTION.
   lo_obj->i1~meth( ).
 "#;
     let unit = analyze_ok(src, "file:///inherited_interface_impl.abap");
+    let qualified_decl_offset = src
+        .find("METHODS i1~meth")
+        .expect("qualified method declaration")
+        + "METHODS ".len();
+    let qualified_decl_range = qualified_decl_offset..qualified_decl_offset + "i1".len();
 
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "i1"
+                && reference.range == qualified_decl_range
+        }),
+        "{:#?}",
+        unit.references
+    );
     assert!(
         !unit.diagnostics.iter().any(|diag| {
             matches!(
@@ -16401,6 +16416,14 @@ START-OF-SELECTION.
                 DiagnosticKind::UnresolvedReference | DiagnosticKind::UnknownField
             ) && (diag.message.contains("i1") || diag.message.contains("meth"))
         }),
+        "{:#?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MissingMethodImplementation),
         "{:#?}",
         unit.diagnostics
     );
@@ -17113,6 +17136,64 @@ ENDCLASS.
                 && diag.message.contains("add_to_epcis")
                 && diag.range == method_range
         }),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_namespaced_interface_redefinition_implementation_without_interface_source() {
+    let src = r#"
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS /iwbep/if_mgw_appl_srv_runtime~get_entityset REDEFINITION.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD /iwbep/if_mgw_appl_srv_runtime~get_entityset.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze_ok(src, "file:///namespaced_interface_redefinition.abap");
+    let qualifier_offset = src
+        .find("METHODS /iwbep/if_mgw_appl_srv_runtime~get_entityset")
+        .expect("qualified method declaration")
+        + "METHODS ".len();
+    let qualifier_range =
+        qualifier_offset..qualifier_offset + "/iwbep/if_mgw_appl_srv_runtime".len();
+    let class_symbol = unit
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Class && symbol.name.as_ref() == "zcl_demo")
+        .expect("class symbol");
+    let member = unit
+        .class_member(class_symbol.id, "get_entityset")
+        .expect("qualified method member");
+
+    assert_eq!(member.kind, abap_symbols::ClassMemberKind::Method);
+    assert!(member.implementation.is_some(), "{:#?}", unit.class_members);
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::TypeRef
+                && reference.namespace == Namespace::Type
+                && reference.name.as_ref() == "/iwbep/if_mgw_appl_srv_runtime"
+                && reference.range == qualifier_range
+        }),
+        "{:#?}",
+        unit.references
+    );
+    assert!(
+        !unit
+            .class_members_for(class_symbol.id)
+            .any(|member| member.name.as_ref() == "/iwbep/if_mgw_appl_srv_runtime"),
+        "{:#?}",
+        unit.class_members
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MissingMethodImplementation),
         "{:#?}",
         unit.diagnostics
     );

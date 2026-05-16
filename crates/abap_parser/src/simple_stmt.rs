@@ -4663,6 +4663,16 @@ ENDCLASS.";
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].signature(src).parameters().len(), 1);
         assert_eq!(entries[1].signature(src).parameters().len(), 1);
+        assert_eq!(
+            entries[2].name_token(src).and_then(|token| token.text(src)),
+            Some("run")
+        );
+        assert_eq!(
+            entries[2]
+                .qualifier_token(src)
+                .and_then(|token| token.text(src)),
+            Some("if_demo")
+        );
         assert!(entries[2].signature(src).is_redefinition());
         assert!(entries[0].signature_text(src).contains("ABSTRACT"));
         assert!(entries[1].signature_text(src).contains("FINAL"));

@@ -1360,6 +1360,7 @@ ENDINTERFACE.
 CLASS zcl_demo DEFINITION.
   PUBLIC SECTION.
     INTERFACES /sttp/if_badi_rule_processing.
+    METHODS /sttp/if_badi_rule_processing~execute REDEFINITION.
 ENDCLASS.
 
 CLASS zcl_demo IMPLEMENTATION.
@@ -1386,6 +1387,20 @@ ENDCLASS.";
             .expect("interfaces col") as u32;
         assert_eq!(
             semantic_token_type_at(&tokens.data, interfaces_line.0 as u32, interfaces_col),
+            Some(type_idx)
+        );
+
+        let methods_line = src
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains("METHODS /sttp/if_badi_rule_processing~execute"))
+            .expect("methods line");
+        let methods_col = methods_line
+            .1
+            .find("/sttp/if_badi_rule_processing")
+            .expect("methods col") as u32;
+        assert_eq!(
+            semantic_token_type_at(&tokens.data, methods_line.0 as u32, methods_col),
             Some(type_idx)
         );
 

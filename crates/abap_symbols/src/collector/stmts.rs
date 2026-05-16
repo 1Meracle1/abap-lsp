@@ -4577,15 +4577,25 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_methods_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let (type_refs, handler_infos) = {
+        let (type_refs, qualifier_refs, handler_infos) = {
             let methods_stmt =
                 MethodsStmt::cast(self.collector.syntax(node)).expect("methods stmt");
             let type_refs = methods_stmt
                 .type_refs()
                 .map(|type_ref| type_ref.syntax().id())
                 .collect::<Vec<_>>();
-            let handler_infos = methods_stmt
-                .entries(self.collector.source)
+            let entries = methods_stmt.entries(self.collector.source);
+            let qualifier_refs = entries
+                .iter()
+                .filter_map(|entry| {
+                    let token = entry.qualifier_token(self.collector.source)?;
+                    Some((
+                        Arc::<str>::from(token.text(self.collector.source)?.to_ascii_lowercase()),
+                        token.range(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let handler_infos = entries
                 .into_iter()
                 .filter_map(|entry| {
                     let handler = entry.event_handler(self.collector.source)?;
@@ -4617,12 +4627,21 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     ))
                 })
                 .collect::<Vec<_>>();
-            (type_refs, handler_infos)
+            (type_refs, qualifier_refs, handler_infos)
         };
         for type_ref in type_refs {
             self.collector
                 .decl_lowering()
                 .collect_type_ref(type_ref, scope);
+        }
+        for (name, range) in qualifier_refs {
+            self.collector.add_reference(
+                scope,
+                name,
+                Namespace::Type,
+                ReferenceKind::TypeRef,
+                range,
+            );
         }
         for (qualifier, source_type_name, source_type_range, event_name, event_range) in
             handler_infos
