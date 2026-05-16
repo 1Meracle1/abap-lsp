@@ -23647,6 +23647,97 @@ ENDCLASS.";
     }
 
     #[test]
+    fn inline_method_result_infers_returned_interface_for_hover_and_completion() {
+        let store = DocumentStore::default();
+        let filter_src = "\
+INTERFACE /iwbep/if_mgw_req_filter.
+  METHODS get_filter_select_options.
+  METHODS get_filter_string
+    RETURNING VALUE(rv_filter) TYPE string.
+ENDINTERFACE.";
+        let context_src = "\
+INTERFACE /iwbep/if_mgw_req_entityset.
+  METHODS get_filter
+    RETURNING VALUE(ro_filter) TYPE REF TO /iwbep/if_mgw_req_filter.
+ENDINTERFACE.";
+        let main_src = "\
+CLASS zcl_dpc_ext DEFINITION.
+  PUBLIC SECTION.
+    METHODS prodset_get_entityset
+      IMPORTING
+        io_tech_request_context TYPE REF TO /iwbep/if_mgw_req_entityset.
+ENDCLASS.
+
+CLASS zcl_dpc_ext IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+    DATA(lo_filter) = io_tech_request_context->get_filter( ).
+    lo_filter->
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///deps/filter.abap"),
+                version: 1,
+                text: Arc::from(filter_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/iwbep/if_mgw_req_filter")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///deps/context.abap"),
+                version: 1,
+                text: Arc::from(context_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/iwbep/if_mgw_req_entityset")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///main.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: None,
+            },
+        ]);
+        let snapshot = snapshots.get("file:///main.abap").expect("main snapshot");
+        let lo_filter = snapshot
+            .symbols
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name.as_ref() == "lo_filter")
+            .expect("inline lo_filter symbol");
+        let declared_type = lo_filter
+            .declared_type
+            .as_ref()
+            .expect("inline method result type");
+        assert!(declared_type.is_ref);
+        assert_eq!(declared_type.base_name.as_ref(), "/iwbep/if_mgw_req_filter");
+
+        let hover = snapshot
+            .hovered_resolved_symbol_at(main_src.find("lo_filter").expect("lo_filter") + 1)
+            .expect("lo_filter hover");
+        assert!(
+            hover
+                .markdown_lines
+                .iter()
+                .any(|line| { line == "```abap\nTYPE REF TO /iwbep/if_mgw_req_filter\n```" }),
+            "{:?}",
+            hover.markdown_lines
+        );
+
+        let completion = snapshot
+            .selector_completion_at(
+                main_src.find("lo_filter->").expect("selector") + "lo_filter->".len(),
+            )
+            .expect("lo_filter method completion");
+        let labels = completion
+            .items
+            .iter()
+            .map(|item| item.name.as_ref())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"get_filter_select_options"), "{labels:?}");
+        assert!(labels.contains(&"get_filter_string"), "{labels:?}");
+    }
+
+    #[test]
     fn lists_method_completion_items_inside_assignment_template_expression() {
         let store = DocumentStore::default();
         let src = "\

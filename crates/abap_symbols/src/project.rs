@@ -1168,6 +1168,10 @@ pub(crate) fn analyze_project_incremental_from_locals(
         &validation_unit_ids,
     );
     metrics.validate_micros = validate_timer.elapsed().as_micros();
+    let (infer_micros, rebuild_micros) =
+        refresh_validated_semantic_facts(&mut project.units, &validation_unit_ids);
+    metrics.infer_semantic_facts_micros += infer_micros;
+    metrics.rebuild_semantic_index_micros += rebuild_micros;
     clear_diagnostics_outside_scope(&mut project.units, diagnostic_scope_unit_ids.as_ref());
     let collect_project_diagnostics_timer = std::time::Instant::now();
     collect_project_diagnostics(&mut project);
@@ -1248,6 +1252,10 @@ fn analyze_project_from_local_units_profiled_with_diagnostic_scope(
         &validation_unit_ids,
     );
     metrics.validate_micros = validate_timer.elapsed().as_micros();
+    let (infer_micros, rebuild_micros) =
+        refresh_validated_semantic_facts(&mut project.units, &validation_unit_ids);
+    metrics.infer_semantic_facts_micros += infer_micros;
+    metrics.rebuild_semantic_index_micros += rebuild_micros;
     clear_diagnostics_outside_scope(&mut project.units, diagnostic_scope_unit_ids.as_ref());
     let collect_project_diagnostics_timer = std::time::Instant::now();
     collect_project_diagnostics(&mut project);
@@ -1272,6 +1280,21 @@ pub fn analyze_project_from_units(units: Vec<UnitAnalysis>) -> ProjectAnalysis {
     analyze_project_from_local_units(local_units)
 }
 
+fn refresh_validated_semantic_facts(
+    units: &mut [UnitAnalysis],
+    unit_ids: &HashSet<UnitId>,
+) -> (u128, u128) {
+    let scope_indexes: Vec<_> = units.iter().map(build_scope_index).collect();
+    let infer_timer = std::time::Instant::now();
+    infer_semantic_facts_with_scope_indexes_for_units(units, &scope_indexes, unit_ids);
+    let infer_micros = infer_timer.elapsed().as_micros();
+    let rebuild_timer = std::time::Instant::now();
+    for unit_id in unit_ids {
+        units[unit_id.as_usize()].rebuild_semantic_index();
+    }
+    (infer_micros, rebuild_timer.elapsed().as_micros())
+}
+
 pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult) -> UnitAnalysis {
     let uri = uri.into();
     let local = analyze_unit_locally_phased(UnitId(0), Arc::clone(&uri), source, parse);
@@ -1285,6 +1308,8 @@ pub fn analyze_unit(uri: impl Into<Arc<str>>, source: &str, parse: &ParseResult)
         diagnostics: Vec::new(),
     };
     validate_project_with_scope_indexes(&mut project, &[scope_index]);
+    let unit_ids = HashSet::from([UnitId(0)]);
+    refresh_validated_semantic_facts(&mut project.units, &unit_ids);
     project.units.pop().expect("single unit analysis")
 }
 

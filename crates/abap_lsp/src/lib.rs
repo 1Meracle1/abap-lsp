@@ -5419,6 +5419,16 @@ fn collect_remote_dependency_candidates_for_unit(
         }
         insert_remote_dependency_candidates_for_reference(&mut deduped, reference);
     }
+    for symbol in unit
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.decl_range.start == symbol.decl_range.end)
+    {
+        insert_remote_dependency_candidate_for_declared_type(
+            &mut deduped,
+            symbol.declared_type.as_ref(),
+        );
+    }
     insert_message_class_dependency_candidates(&mut deduped, unit);
 
     for sql_source in &unit.sql_sources {
@@ -5512,6 +5522,30 @@ fn insert_remote_dependency_candidates_for_reference(
     if let Some(candidate) = remote_dependency_candidate_for_reference(reference) {
         insert_remote_candidate(deduped, candidate);
     }
+}
+
+fn insert_remote_dependency_candidate_for_declared_type(
+    deduped: &mut HashMap<String, RemoteDependencyCandidate>,
+    declared_type: Option<&abap_symbols::FieldTypeRefData>,
+) {
+    let Some(declared_type) = declared_type else {
+        return;
+    };
+    if declared_type.namespace != Namespace::Type
+        || !is_remote_lookup_candidate_after_local_resolution(
+            declared_type.base_name.as_ref(),
+            "type",
+        )
+    {
+        return;
+    }
+    insert_remote_candidate(
+        deduped,
+        RemoteDependencyCandidate {
+            name: declared_type.base_name.to_string(),
+            kind: "type".to_string(),
+        },
+    );
 }
 
 fn insert_message_class_dependency_candidates(
@@ -12047,6 +12081,60 @@ dependency_mode = "remote-on-demand"
         assert!(
             candidates.iter().any(|candidate| {
                 candidate.kind == "type" && candidate.name == "if_rest_client"
+            }),
+            "{candidates:#?}"
+        );
+    }
+
+    #[test]
+    fn inherited_redefinition_parameter_type_emits_remote_dependency_candidate() {
+        let store = DocumentStore::default();
+        let super_src = "\
+CLASS zcl_dpc DEFINITION.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset
+      IMPORTING
+        io_tech_request_context TYPE REF TO /iwbep/if_mgw_req_entityset.
+ENDCLASS.
+
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+  ENDMETHOD.
+ENDCLASS.";
+        let sub_src = "\
+CLASS zcl_dpc_ext DEFINITION INHERITING FROM zcl_dpc.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset REDEFINITION.
+ENDCLASS.
+
+CLASS zcl_dpc_ext IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+    DATA(lo_filter) = io_tech_request_context->get_filter( ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///super.abap"),
+                version: 1,
+                text: Arc::from(super_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zcl_dpc")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///sub.abap"),
+                version: 1,
+                text: Arc::from(sub_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("zcl_dpc_ext")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///sub.abap").expect("sub snapshot");
+
+        let candidates = collect_remote_dependency_candidates(snapshot.as_ref());
+
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.kind == "type" && candidate.name == "/iwbep/if_mgw_req_entityset"
             }),
             "{candidates:#?}"
         );
@@ -18738,6 +18826,200 @@ ENDCLASS."
         assert_eq!(metrics.published_batch_count, 1);
 
         let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn workspace_refresh_hydrates_redefinition_parameter_return_type_for_completion() {
+        let workspace_path = temp_workspace_path("central_dependency_odata_filter_completion");
+        let export_root = temp_workspace_path("central_dependency_odata_filter_export");
+        fs::create_dir_all(workspace_path.join("src")).expect("workspace src");
+        fs::create_dir_all(&export_root).expect("export root");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            format!(
+                r#"
+version = 1
+
+[dependency_store]
+product_version = "SAP NETWEAVER"
+default_package_version = "7.50"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+
+[local_export]
+roots = ["{}"]
+
+[dependencies]
+source = "local-first"
+"#,
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("src/ZCL_DPC.abap"),
+            "\
+CLASS zcl_dpc DEFINITION.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset
+      IMPORTING
+        io_tech_request_context TYPE REF TO /iwbep/if_mgw_req_entityset OPTIONAL.
+ENDCLASS.
+
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+  ENDMETHOD.
+ENDCLASS.",
+        )
+        .expect("super source");
+        let ext_src = "\
+CLASS zcl_dpc_ext DEFINITION INHERITING FROM zcl_dpc.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset REDEFINITION.
+ENDCLASS.
+
+CLASS zcl_dpc_ext IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+    DATA(lo_filter) = io_tech_request_context->get_filter( ).
+    lo_filter->
+  ENDMETHOD.
+ENDCLASS.";
+        fs::write(workspace_path.join("src/ZCL_DPC_EXT.abap"), ext_src).expect("ext source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let ext_uri = path_to_file_uri(&workspace_path.join("src/ZCL_DPC_EXT.abap"));
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        {
+            let workspace = state
+                .workspaces
+                .get(&normalize_lsp_uri(&workspace_uri))
+                .expect("workspace");
+            let store = workspace_dependency_store(workspace).expect("dependency store");
+            let profile = workspace
+                .dependency_profile
+                .clone()
+                .expect("dependency profile");
+            let entityset_src = "\
+INTERFACE /iwbep/if_mgw_req_entityset.
+  METHODS get_filter
+    RETURNING VALUE(ro_filter) TYPE REF TO /iwbep/if_mgw_req_filter.
+ENDINTERFACE.";
+            let filter_src = "\
+INTERFACE /iwbep/if_mgw_req_filter.
+  METHODS get_filter_select_options.
+  METHODS get_filter_string
+    RETURNING VALUE(rv_filter) TYPE string.
+ENDINTERFACE.";
+            let artifacts = [
+                (
+                    "/IWBEP/IF_MGW_REQ_ENTITYSET",
+                    "/sap/bc/adt/oo/interfaces/%2fiwbep%2fif_mgw_req_entityset",
+                    entityset_src,
+                ),
+                (
+                    "/IWBEP/IF_MGW_REQ_FILTER",
+                    "/sap/bc/adt/oo/interfaces/%2fiwbep%2fif_mgw_req_filter",
+                    filter_src,
+                ),
+            ]
+            .into_iter()
+            .map(|(name, uri, source_text)| StoredArtifactInput {
+                package_name: String::new(),
+                object_kind: "global-interface".to_string(),
+                object_name: name.to_string(),
+                object_uri: uri.to_string(),
+                object_type: "INTF/OI".to_string(),
+                description: String::new(),
+                file_extension: "abap".to_string(),
+                source_text: source_text.to_string(),
+                fetched_at: "2026-05-16T00:00:00Z".to_string(),
+                symbols: extract_stored_dependency_symbols(uri, source_text),
+            })
+            .collect::<Vec<_>>();
+            store
+                .put_artifacts(&profile, &artifacts)
+                .expect("put artifacts");
+        }
+
+        refresh_workspace(&mut state, &workspace_uri);
+        let snapshot =
+            snapshot_for_uri(&state, &normalize_lsp_uri(&ext_uri)).expect("ext snapshot");
+        let lo_filter = snapshot
+            .symbols
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name.as_ref() == "lo_filter")
+            .expect("lo_filter symbol");
+        assert_eq!(
+            lo_filter
+                .declared_type
+                .as_ref()
+                .map(|ty| ty.base_name.as_ref()),
+            Some("/iwbep/if_mgw_req_filter")
+        );
+        let hover = hover(
+            &state,
+            &HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&ext_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 7,
+                        character: 10,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+            },
+        )
+        .expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(
+            markup
+                .value
+                .contains("TYPE REF TO /iwbep/if_mgw_req_filter"),
+            "unexpected hover: {}",
+            markup.value
+        );
+
+        let completion = completion(
+            &state,
+            &CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Uri::from_str(&ext_uri).expect("uri"),
+                    },
+                    position: Position {
+                        line: 8,
+                        character: "    lo_filter->".len() as u32,
+                    },
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: Some(CompletionContext {
+                    trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                    trigger_character: Some(">".to_string()),
+                }),
+            },
+        )
+        .expect("completion");
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected completion array");
+        };
+        assert!(
+            items
+                .iter()
+                .any(|item| item.label == "get_filter_select_options"),
+            "{items:#?}"
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
     }
 
     #[test]

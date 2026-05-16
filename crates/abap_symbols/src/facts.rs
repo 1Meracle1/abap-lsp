@@ -353,9 +353,6 @@ impl<'a> FactBuilder<'a> {
         unit_idx: usize,
         assignment: &crate::AssignmentSiteData,
     ) -> Option<SymbolTypeFactUpdate> {
-        if !assignment.rhs_is_top_level_sum {
-            return None;
-        }
         let unit = &self.units[unit_idx];
         let symbol = unit.symbols.iter().find(|symbol| {
             symbol.decl_range == assignment.lhs_range
@@ -363,6 +360,27 @@ impl<'a> FactBuilder<'a> {
                 && symbol.declared_type.is_none()
         })?;
 
+        let fact = if assignment.rhs_is_top_level_sum {
+            self.top_level_sum_type_fact(unit_idx, assignment)?
+        } else {
+            self.assignment_source_type_fact(unit_idx, assignment)
+        };
+        if fact.declared_type.is_none() && fact.structure.is_none() {
+            return None;
+        }
+        Some(SymbolTypeFactUpdate {
+            symbol_id: symbol.id,
+            type_fact: fact,
+            overwrite_existing: false,
+        })
+    }
+
+    fn top_level_sum_type_fact(
+        &self,
+        unit_idx: usize,
+        assignment: &crate::AssignmentSiteData,
+    ) -> Option<TypeFactData> {
+        let unit = &self.units[unit_idx];
         let mut found_ref = false;
         let mut inferred_fact: Option<TypeFactData> = None;
         for reference in unit.references.iter().filter(|reference| {
@@ -390,15 +408,7 @@ impl<'a> FactBuilder<'a> {
                 inferred_fact = Some(fact);
             }
         }
-
-        if !found_ref {
-            return None;
-        }
-        inferred_fact.map(|fact| SymbolTypeFactUpdate {
-            symbol_id: symbol.id,
-            type_fact: fact,
-            overwrite_existing: false,
-        })
+        found_ref.then_some(inferred_fact).flatten()
     }
 
     fn build_observed_call_argument_types(
@@ -630,6 +640,18 @@ impl<'a> FactBuilder<'a> {
         {
             let access = &unit.field_accesses[accesses[0]];
             return Some(self.type_fact_for_access(unit_idx, access));
+        }
+        let mut calls = unit.call_sites.iter().filter(|call_site| {
+            call_site.scope == assignment.scope && call_site.range == assignment.rhs_range
+        });
+        if let Some(call_site) = calls.next()
+            && calls.next().is_none()
+        {
+            let fact = self.call_result_type_fact(unit_idx, call_site.scope, &call_site.target);
+            if fact.declared_type.is_some() || fact.structure.is_some() || fact.table_line.is_some()
+            {
+                return Some(fact);
+            }
         }
 
         let refs = self.value_refs_by_range[unit_idx].get(&key)?;
