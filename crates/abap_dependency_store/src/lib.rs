@@ -694,41 +694,40 @@ WHERE product_version = ?
         append_placeholders(&mut sql, package_versions.len());
         sql.push_str(") AND object_kind IN (");
         append_placeholders(&mut sql, allowed_kinds.len());
-        sql.push(')');
+        sql.push_str(") ORDER BY CASE object_kind");
+        for _ in &allowed_kinds {
+            sql.push_str(" WHEN ? THEN ?");
+        }
+        sql.push_str(" ELSE ? END, package_name ASC, object_name ASC LIMIT 1");
 
-        let mut params = Vec::with_capacity(2 + package_versions.len() + allowed_kinds.len());
+        let mut params = Vec::with_capacity(3 + package_versions.len() + allowed_kinds.len() * 3);
         params.push(Value::from(profile.normalized_product_version()));
         params.push(Value::from(normalized_name));
         params.extend(package_versions.into_iter().map(Value::from));
         params.extend(allowed_kinds.iter().cloned().map(Value::from));
-
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query(params_from_iter(params))?;
-        let mut candidates = Vec::new();
-        while let Some(row) = rows.next()? {
-            candidates.push(StoredArtifactRecord {
-                artifact_id: row.get(0)?,
-                package_name: row.get(1)?,
-                package_version: row.get(2)?,
-                object_kind: row.get(3)?,
-                object_name: row.get(4)?,
-                object_uri: row.get(5)?,
-                object_type: row.get(6)?,
-                description: row.get(7)?,
-                file_extension: row.get(8)?,
-                source_text: row.get(9)?,
-            });
+        for (rank, kind) in allowed_kinds.iter().enumerate() {
+            params.push(Value::from(kind.clone()));
+            params.push(Value::from(rank as i64));
         }
-        candidates.sort_by(|left, right| {
-            artifact_kind_rank(&allowed_kinds, left.object_kind.as_str())
-                .cmp(&artifact_kind_rank(
-                    &allowed_kinds,
-                    right.object_kind.as_str(),
-                ))
-                .then_with(|| left.package_name.cmp(&right.package_name))
-                .then_with(|| left.object_name.cmp(&right.object_name))
-        });
-        Ok(candidates.into_iter().next())
+        params.push(Value::from(allowed_kinds.len() as i64));
+
+        self.connection
+            .query_row(&sql, params_from_iter(params), |row| {
+                Ok(StoredArtifactRecord {
+                    artifact_id: row.get(0)?,
+                    package_name: row.get(1)?,
+                    package_version: row.get(2)?,
+                    object_kind: row.get(3)?,
+                    object_name: row.get(4)?,
+                    object_uri: row.get(5)?,
+                    object_type: row.get(6)?,
+                    description: row.get(7)?,
+                    file_extension: row.get(8)?,
+                    source_text: row.get(9)?,
+                })
+            })
+            .optional()
+            .map_err(DependencyStoreError::from)
     }
 
     pub fn list_artifacts_by_kind(
@@ -1039,13 +1038,6 @@ fn append_placeholders(out: &mut String, count: usize) {
     }
 }
 
-fn artifact_kind_rank(allowed_kinds: &[String], object_kind: &str) -> usize {
-    allowed_kinds
-        .iter()
-        .position(|candidate| candidate.eq_ignore_ascii_case(object_kind))
-        .unwrap_or(allowed_kinds.len())
-}
-
 fn normalize_name(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
@@ -1059,8 +1051,11 @@ mod tests {
             .join("abap-lsp-dependency-store-tests")
             .join(format!("{name}.sqlite3"));
         if let Some(parent) = path.parent() {
-            let _ = fs::remove_dir_all(parent);
+            let _ = fs::create_dir_all(parent);
         }
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(path.with_extension("sqlite3-wal"));
+        let _ = fs::remove_file(path.with_extension("sqlite3-shm"));
         path
     }
 
@@ -1143,6 +1138,31 @@ mod tests {
             .expect("read")
             .expect("artifact");
         assert_eq!(stored.object_name, "cl_abap_typedescr");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn candidate_lookup_returns_highest_priority_artifact_kind() {
+        let path = temp_store_path("candidate_lookup_kind_priority");
+        let store = DependencyStore::from_override_path(Some(&path)).expect("store");
+        let profile = sample_profile();
+        let mut data_element = sample_artifact();
+        data_element.object_kind = "ddic-data-element".to_string();
+        data_element.object_uri = "/sap/bc/adt/ddic/dataelements/cl_abap_typedescr".to_string();
+        data_element.object_type = "DTEL/DE".to_string();
+        data_element.source_text = "TYPES cl_abap_typedescr TYPE c LENGTH 10.".to_string();
+        data_element.symbols = Vec::new();
+        store
+            .put_artifacts(&profile, &[data_element, sample_artifact()])
+            .expect("put");
+
+        let record = store
+            .find_artifact_for_candidate(&profile, "CL_ABAP_TYPEDESCR", "type")
+            .expect("lookup")
+            .expect("record");
+
+        assert_eq!(record.object_kind, "global-class");
 
         let _ = fs::remove_file(path);
     }

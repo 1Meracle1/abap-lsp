@@ -3132,8 +3132,6 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
     let mut expanded_artifacts = HashSet::<i64>::new();
-    let mut inheritance_candidates_by_artifact =
-        HashMap::<i64, Vec<RemoteDependencyCandidate>>::new();
     let mut inputs = Vec::<DocumentInput>::new();
     let mut input_uris = HashSet::<Arc<str>>::new();
 
@@ -3240,11 +3238,7 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                     if !expanded_artifacts.insert(record.artifact_id) {
                         continue;
                     }
-                    let record_candidates = dependency_record_hydration_candidates(
-                        &workspace.root_uri,
-                        &record,
-                        &mut inheritance_candidates_by_artifact,
-                    );
+                    let record_candidates = dependency_record_hydration_candidates(&record);
                     metrics.candidate_count += record_candidates.len();
                     for candidate in record_candidates {
                         let candidate_key = remote_candidate_key(&candidate);
@@ -3304,20 +3298,10 @@ fn hydrate_workspace_dependency_documents_with_metrics(
 }
 
 fn dependency_record_hydration_candidates(
-    _workspace_uri: &str,
     record: &StoredArtifactRecord,
-    inheritance_candidates_by_artifact: &mut HashMap<i64, Vec<RemoteDependencyCandidate>>,
 ) -> Vec<RemoteDependencyCandidate> {
     let mut deduped = HashMap::new();
     collect_dependency_surface_hydration_candidates(record.source_text.as_str(), &mut deduped);
-    for candidate in inheritance_candidates_by_artifact
-        .entry(record.artifact_id)
-        .or_insert_with(|| dependency_inheritance_candidates_from_record(record))
-        .iter()
-        .cloned()
-    {
-        insert_remote_candidate(&mut deduped, candidate);
-    }
     deduped.into_values().collect()
 }
 
@@ -3336,12 +3320,13 @@ fn collect_dependency_surface_hydration_candidates(
     let tokens = tokenized.tokens.as_ref();
     let mut stmt_start = 0usize;
     let mut stack = Vec::<DependencyCandidateScanBlock>::new();
+    let mut significant = Vec::new();
 
     for (idx, token) in tokens.iter().enumerate() {
         if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
             continue;
         }
-        let significant = significant_statement_tokens(&tokens[stmt_start..=idx]);
+        significant_statement_tokens(&tokens[stmt_start..=idx], &mut significant);
         stmt_start = idx + 1;
         let Some(first) = significant.first().copied() else {
             continue;
@@ -3676,6 +3661,7 @@ fn resolved_dependency_inheritance_candidates(
     deduped.into_values().collect()
 }
 
+#[cfg(test)]
 fn dependency_inheritance_candidates_from_record(
     record: &StoredArtifactRecord,
 ) -> Vec<RemoteDependencyCandidate> {
@@ -3695,6 +3681,7 @@ fn dependency_inheritance_candidates_from_record(
     deduped.into_values().collect()
 }
 
+#[cfg(test)]
 fn collect_dependency_inheritance_candidates(
     source: &str,
     deduped: &mut HashMap<String, RemoteDependencyCandidate>,
@@ -3702,16 +3689,18 @@ fn collect_dependency_inheritance_candidates(
     let tokenized = tokenize(source);
     let tokens = tokenized.tokens.as_ref();
     let mut stmt_start = 0usize;
+    let mut significant = Vec::new();
     for (idx, token) in tokens.iter().enumerate() {
         if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
             continue;
         }
-        let significant = significant_statement_tokens(&tokens[stmt_start..=idx]);
+        significant_statement_tokens(&tokens[stmt_start..=idx], &mut significant);
         collect_dependency_inheritance_candidates_from_statement(source, &significant, deduped);
         stmt_start = idx + 1;
     }
 }
 
+#[cfg(test)]
 fn collect_class_dependency_inheritance_candidates(
     source: &str,
     deduped: &mut HashMap<String, RemoteDependencyCandidate>,
@@ -3721,11 +3710,12 @@ fn collect_class_dependency_inheritance_candidates(
     let mut stmt_start = 0usize;
     let mut in_definition = false;
     let mut private = true;
+    let mut significant = Vec::new();
     for (idx, token) in tokens.iter().enumerate() {
         if !matches!(token.kind, TokenKind::Period | TokenKind::Eof) {
             continue;
         }
-        let significant = significant_statement_tokens(&tokens[stmt_start..=idx]);
+        significant_statement_tokens(&tokens[stmt_start..=idx], &mut significant);
         stmt_start = idx + 1;
         let Some(first) = significant.first().copied() else {
             continue;
@@ -3751,10 +3741,9 @@ fn collect_class_dependency_inheritance_candidates(
     }
 }
 
-fn significant_statement_tokens(stmt: &[Token]) -> Vec<&Token> {
-    stmt.iter()
-        .filter(|token| token.kind != TokenKind::Comment)
-        .collect()
+fn significant_statement_tokens<'a>(stmt: &'a [Token], out: &mut Vec<&'a Token>) {
+    out.clear();
+    out.extend(stmt.iter().filter(|token| token.kind != TokenKind::Comment));
 }
 
 fn class_definition_statement(source: &str, significant: &[&Token]) -> bool {
@@ -17941,11 +17930,7 @@ ENDCLASS."
                 .to_string(),
         };
 
-        let candidates = dependency_record_hydration_candidates(
-            "file:///workspace",
-            &record,
-            &mut std::collections::HashMap::new(),
-        );
+        let candidates = dependency_record_hydration_candidates(&record);
         let has = |name: &str, kind: &str| {
             candidates
                 .iter()
