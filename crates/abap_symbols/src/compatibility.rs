@@ -6,7 +6,7 @@ use std::{
 use crate::def_map::{
     FieldTypeRefData, MethodParameterSection, NamedArgumentSection, SymbolData, TypeFactData,
 };
-use crate::ids::SymbolHandle;
+use crate::ids::{SymbolHandle, UnitId};
 use crate::project::ProjectAnalysis;
 use crate::{Namespace, SymbolKind, UnitAnalysis};
 
@@ -61,6 +61,7 @@ struct CompatibilityContext<'a> {
 pub(crate) struct TypeFactLookup {
     type_symbols: HashMap<Arc<str>, Vec<SymbolHandle>>,
     value_symbols: HashMap<Arc<str>, Vec<SymbolHandle>>,
+    range_name_units: HashSet<UnitId>,
 }
 
 impl TypeFactLookup {
@@ -68,6 +69,13 @@ impl TypeFactLookup {
         let mut lookup = Self::default();
 
         for unit in &project.units {
+            if unit
+                .provided_names
+                .iter()
+                .any(|name| range_table_type_name(name.as_ref()))
+            {
+                lookup.range_name_units.insert(unit.unit_id);
+            }
             for symbol in &unit.symbols {
                 if symbol.scope != unit.root_scope {
                     continue;
@@ -840,7 +848,7 @@ fn range_table_element_fact<'a>(
         }
         return Some((unit, named_type_fact(line)));
     }
-    if named_range_table_fact(unit, fact) && fact_is_table_shape(fact) {
+    if fact_is_table_shape(fact) && named_range_table_fact(ctx, unit, fact) {
         return internal_table_line_fact(ctx, unit, fact, depth);
     }
 
@@ -889,7 +897,11 @@ fn internal_table_line_fact<'a>(
     internal_table_line_fact(ctx, unit, &fact, depth + 1)
 }
 
-fn named_range_table_fact(unit: &UnitAnalysis, fact: &TypeFactData) -> bool {
+fn named_range_table_fact(
+    ctx: CompatibilityContext<'_>,
+    unit: &UnitAnalysis,
+    fact: &TypeFactData,
+) -> bool {
     fact.declared_type
         .as_ref()
         .is_some_and(|type_ref| range_table_type_name(type_ref.base_name.as_ref()))
@@ -897,16 +909,12 @@ fn named_range_table_fact(unit: &UnitAnalysis, fact: &TypeFactData) -> bool {
             .type_clause_display
             .as_deref()
             .is_some_and(range_table_type_name)
-        || unit
-            .provided_names
-            .iter()
-            .any(|name| range_table_type_name(name.as_ref()))
+        || ctx.lookup.range_name_units.contains(&unit.unit_id)
 }
 
 fn range_table_type_name(name: &str) -> bool {
-    name.to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .any(|part| matches!(part, "rng" | "range"))
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part.eq_ignore_ascii_case("rng") || part.eq_ignore_ascii_case("range"))
 }
 
 fn range_structure_low_fact(unit: &UnitAnalysis, fact: &TypeFactData) -> Option<TypeFactData> {
