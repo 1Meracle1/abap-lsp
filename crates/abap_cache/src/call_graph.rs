@@ -659,8 +659,12 @@ fn unresolved_call_target_name(target: &NamedArgumentTarget) -> Arc<str> {
         NamedArgumentTarget::Method {
             base_name,
             method_name,
+            interface_qualified,
             ..
-        } => Arc::from(format!("{base_name}->{method_name}")),
+        } => {
+            let op = if *interface_qualified { "~" } else { "->" };
+            Arc::from(format!("{base_name}{op}{method_name}"))
+        }
         NamedArgumentTarget::Event {
             qualifier,
             event_name,

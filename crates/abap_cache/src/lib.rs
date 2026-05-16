@@ -6769,6 +6769,24 @@ fn resolve_interface_qualified_call_member<'a>(
         .map(|member| (interface_unit, member))
 }
 
+fn resolve_bare_interface_qualified_call_member<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    call_site: &CallSiteData,
+    interface_name: &Arc<str>,
+    method_name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let unit = snapshot.symbols.as_ref();
+    let class_symbol = enclosing_class_owner(unit, call_site.scope)?;
+    let (interface_unit, interface_symbol) =
+        resolve_exposed_interface_handle(snapshot, unit, class_symbol, interface_name)?;
+    interface_unit
+        .semantic()
+        .decls()
+        .class_member(interface_symbol, method_name.as_ref())
+        .filter(|member| member.kind == ClassMemberKind::Method)
+        .map(|member| (interface_unit, member))
+}
+
 fn resolve_call_target_member<'a>(
     snapshot: &'a AnalysisSnapshot,
     call_site: &abap_symbols::CallSiteData,
@@ -6815,7 +6833,24 @@ fn resolve_call_target_member<'a>(
             base_namespace,
             base_name,
             method_name,
+            interface_qualified,
         } => {
+            if *interface_qualified {
+                let (member_unit, member) = resolve_bare_interface_qualified_call_member(
+                    snapshot,
+                    call_site,
+                    base_name,
+                    method_name,
+                )?;
+                return class_member_visible_to(
+                    snapshot,
+                    snapshot.symbols.as_ref(),
+                    call_site.scope,
+                    member_unit,
+                    member,
+                )
+                .then_some((member_unit, member));
+            }
             let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
                 snapshot,
                 call_site.scope,
@@ -6973,7 +7008,26 @@ fn resolve_callable_completion_target<'a>(
             base_namespace,
             base_name,
             method_name,
+            interface_qualified,
         } => {
+            if *interface_qualified {
+                let (member_unit, member) = resolve_bare_interface_qualified_call_member(
+                    snapshot,
+                    call_site,
+                    base_name,
+                    method_name,
+                )?;
+                if class_member_visible_to(
+                    snapshot,
+                    snapshot.symbols.as_ref(),
+                    call_site.scope,
+                    member_unit,
+                    member,
+                ) {
+                    return Some(CallableCompletionTarget::Method(member));
+                }
+                return None;
+            }
             let (unit, class_symbol_id, requires_static) = resolve_method_target_from_context(
                 snapshot,
                 call_site.scope,
@@ -7259,6 +7313,7 @@ fn resolve_named_argument_parameter_with_scope_index(
             base_namespace,
             base_name,
             method_name,
+            ..
         } => {
             if let Some(call_site) = call_site_for_named_argument(snapshot, access)
                 && let Some((_, member)) = resolve_call_target_member(snapshot, call_site)
@@ -7524,6 +7579,7 @@ fn resolve_named_argument_target(
             base_namespace,
             base_name,
             method_name,
+            ..
         } => {
             if let Some(call_site) = call_site_for_named_argument(snapshot, access)
                 && let Some((member_unit, member)) = resolve_call_target_member(snapshot, call_site)
@@ -7684,6 +7740,7 @@ fn resolve_named_argument_symbol(
             base_namespace,
             base_name,
             method_name,
+            ..
         } => {
             if let Some(call_site) = call_site_for_named_argument(snapshot, access)
                 && let Some((member_unit, member)) = resolve_call_target_member(snapshot, call_site)

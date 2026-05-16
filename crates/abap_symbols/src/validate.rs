@@ -940,6 +940,7 @@ fn validate_super_constructor_calls(
                     base_namespace,
                     base_name,
                     method_name,
+                    ..
                 } if *base_namespace == Namespace::Value
                     && base_name.as_ref().eq_ignore_ascii_case("super")
                     && method_name.as_ref().eq_ignore_ascii_case("constructor") =>
@@ -2977,7 +2978,8 @@ fn resolve_method_target_handle(
         NamedArgumentTarget::Method {
             base_namespace,
             base_name,
-            ..
+            method_name,
+            interface_qualified,
         } => match base_namespace {
             Namespace::Type => resolve_type_owner_symbol(project, lookup, unit, base_name),
             Namespace::Value if base_name.as_ref().eq_ignore_ascii_case("super") => {
@@ -2986,6 +2988,16 @@ fn resolve_method_target_handle(
                 resolve_type_owner_symbol(project, lookup, unit, &inheritance.superclass_name)
             }
             Namespace::Value => {
+                if *interface_qualified {
+                    return resolve_current_instance_interface_method_handle(
+                        project,
+                        lookup,
+                        unit,
+                        scope,
+                        base_name.as_ref(),
+                        method_name.as_ref(),
+                    );
+                }
                 let handle = resolve_symbol_handle_in_scope_or_includes(
                     project,
                     lookup,
@@ -3009,6 +3021,31 @@ fn resolve_method_target_handle(
         | NamedArgumentTarget::Report { .. }
         | NamedArgumentTarget::Routine { .. } => None,
     }
+}
+
+fn resolve_current_instance_interface_method_handle(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope: ScopeId,
+    interface_name: &str,
+    method_name: &str,
+) -> Option<SymbolHandle> {
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let interface_handle = resolve_exposed_interface_handle(
+        project,
+        lookup,
+        SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class_symbol,
+        },
+        interface_name,
+    )?;
+    let interface_unit = &project.units[interface_handle.unit.as_usize()];
+    interface_unit
+        .class_member(interface_handle.symbol, method_name)
+        .filter(|member| member.kind == ClassMemberKind::Method)
+        .map(|_| interface_handle)
 }
 
 fn resolve_call_target_member<'a>(

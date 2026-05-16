@@ -660,6 +660,7 @@ pub enum NamedArgumentTarget {
         base_namespace: Namespace,
         base_name: Arc<str>,
         method_name: Arc<str>,
+        interface_qualified: bool,
     },
     Event {
         qualifier: Option<Arc<str>>,

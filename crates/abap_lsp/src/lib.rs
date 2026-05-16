@@ -7654,6 +7654,7 @@ fn dependency_static_method_call_at_offset(
                 base_namespace,
                 base_name,
                 method_name,
+                ..
             } if *base_namespace == Namespace::Type => (base_name, method_name),
             _ => continue,
         };

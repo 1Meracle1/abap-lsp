@@ -558,6 +558,18 @@ impl<'a> Collector<'a> {
         }
     }
 
+    pub(super) fn selector_expr_is_bare_interface_qualified(&self, node: NodeId) -> bool {
+        let node = self.unwrap_simple_expr_wrapper(node);
+        let Some(selector) = SelectorExpr::cast(self.syntax(node)) else {
+            return false;
+        };
+        selector.operator().and_then(|op| op.text(self.source)) == Some("~")
+            && selector
+                .base()
+                .map(|base| self.unwrap_simple_expr_wrapper(base.id()))
+                .is_some_and(|base| self.file.kind(base) == SyntaxKind::ExprIdent)
+    }
+
     pub(super) fn value_access_from_node(
         &self,
         node: NodeId,

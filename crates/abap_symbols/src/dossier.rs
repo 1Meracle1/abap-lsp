@@ -1164,6 +1164,7 @@ fn call_target_dossier(target: &NamedArgumentTarget) -> CallTargetDossier {
             base_namespace,
             base_name,
             method_name,
+            ..
         } => CallTargetDossier::Method {
             base_namespace: namespace_name(*base_namespace),
             base_name: base_name.to_string(),

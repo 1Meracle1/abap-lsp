@@ -2667,8 +2667,12 @@ fn call_target_name(target: &NamedArgumentTarget) -> String {
         NamedArgumentTarget::Method {
             base_name,
             method_name,
+            interface_qualified,
             ..
-        } => format!("{base_name}->{method_name}"),
+        } => {
+            let op = if *interface_qualified { "~" } else { "->" };
+            format!("{base_name}{op}{method_name}")
+        }
         NamedArgumentTarget::Event {
             qualifier,
             event_name,

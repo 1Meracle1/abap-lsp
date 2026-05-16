@@ -5280,6 +5280,9 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 self.collector
                     .consume_selector_access_from_infos(tokens, idx)
             {
+                let interface_qualified = self
+                    .collector
+                    .selector_access_is_bare_interface_qualified_infos(tokens, idx);
                 for (group_start, group_end, is_legacy_table_body) in bracket_groups {
                     if is_legacy_table_body {
                         continue;
@@ -5294,7 +5297,14 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 else {
                     return;
                 };
-                let kind = if namespace == Namespace::Type {
+                let reference_namespace = if interface_qualified {
+                    Namespace::Type
+                } else {
+                    namespace
+                };
+                let kind = if interface_qualified {
+                    ReferenceKind::TypeRef
+                } else if namespace == Namespace::Type {
                     ReferenceKind::StaticTarget
                 } else {
                     ReferenceKind::Identifier
@@ -5302,13 +5312,13 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 self.collector.add_reference(
                     scope,
                     Arc::clone(&base_name),
-                    namespace,
+                    reference_namespace,
                     kind,
                     base_range.clone(),
                 );
                 self.collector.emit_field_access(crate::FieldAccess {
                     scope,
-                    base_namespace: namespace,
+                    base_namespace: reference_namespace,
                     base_name: Arc::clone(&base_name),
                     base_range,
                     field_path,
@@ -5319,6 +5329,7 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                     base_namespace: namespace,
                     base_name,
                     method_name,
+                    interface_qualified,
                 }
             } else {
                 let Some(token) = tokens.get(idx) else {

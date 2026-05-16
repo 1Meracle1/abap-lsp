@@ -175,6 +175,7 @@ fn is_syntactic_method_call_segment(
                         base_namespace,
                         base_name,
                         method_name,
+                        ..
                     } if *base_namespace == access.base_namespace
                         && base_name == &access.base_name
                         && method_name == &segment.name

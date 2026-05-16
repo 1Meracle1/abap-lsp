@@ -131,11 +131,14 @@ impl<'a> Collector<'a> {
                         bracket_groups,
                     )) = self.consume_selector_access_from_infos(tokens, idx)
                     {
+                        let interface_qualified =
+                            self.selector_access_is_bare_interface_qualified_infos(tokens, idx);
                         let selector_end = field_path
                             .last()
                             .map(|segment| segment.range.end)
                             .unwrap_or(base_range.end);
-                        if namespace == Namespace::Value
+                        if !interface_qualified
+                            && namespace == Namespace::Value
                             && field_path.len() == 1
                             && !field_path[0].is_deref()
                             && let Some(kind) =
@@ -164,7 +167,14 @@ impl<'a> Collector<'a> {
                         }
                         let method_name =
                             field_path.last().map(|segment| Arc::clone(&segment.name));
-                        let kind = if namespace == Namespace::Type {
+                        let reference_namespace = if interface_qualified {
+                            Namespace::Type
+                        } else {
+                            namespace
+                        };
+                        let kind = if interface_qualified {
+                            ReferenceKind::TypeRef
+                        } else if namespace == Namespace::Type {
                             ReferenceKind::StaticTarget
                         } else {
                             ReferenceKind::Identifier
@@ -172,14 +182,14 @@ impl<'a> Collector<'a> {
                         self.add_reference(
                             scope,
                             base_name.clone(),
-                            namespace,
+                            reference_namespace,
                             kind,
                             base_range.clone(),
                         );
                         if !field_path.is_empty() {
                             self.emit_field_access(FieldAccess {
                                 scope,
-                                base_namespace: namespace,
+                                base_namespace: reference_namespace,
                                 base_name: Arc::clone(&base_name),
                                 base_range: base_range.clone(),
                                 field_path,
@@ -199,6 +209,7 @@ impl<'a> Collector<'a> {
                                         base_namespace: namespace,
                                         base_name: Arc::clone(&base_name),
                                         method_name,
+                                        interface_qualified,
                                     },
                                     base_range.start..tokens[end_idx].range.end,
                                 );
@@ -658,6 +669,7 @@ impl<'a> Collector<'a> {
             base_namespace,
             base_name,
             method_name,
+            interface_qualified: self.selector_expr_is_bare_interface_qualified(callee),
         })
     }
 
@@ -825,18 +837,31 @@ impl<'a> Collector<'a> {
                 base_namespace,
                 base_name,
                 method_name,
-            } => self
-                .resolve_method_target_class_symbol(scope, *base_namespace, base_name)
-                .and_then(|class_symbol| {
-                    self.class_method_signature(class_symbol, method_name.as_ref(), scope)
-                })
-                .and_then(|signature| {
+                interface_qualified,
+            } => {
+                let signature = if *interface_qualified {
+                    self.enclosing_class_owner(scope).and_then(|class_symbol| {
+                        self.class_method_signature_target(
+                            class_symbol,
+                            Some(base_name.as_ref()),
+                            method_name.as_ref(),
+                            scope,
+                        )
+                    })
+                } else {
+                    self.resolve_method_target_class_symbol(scope, *base_namespace, base_name)
+                        .and_then(|class_symbol| {
+                            self.class_method_signature(class_symbol, method_name.as_ref(), scope)
+                        })
+                };
+                signature.and_then(|signature| {
                     signature
                         .parameters
                         .iter()
                         .find(|param| param.name == *argument_name)
                         .and_then(|param| param.declared_type.clone())
-                }),
+                })
+            }
         };
         local_type.or_else(|| Self::well_known_named_argument_declared_type(target, argument_name))
     }
@@ -849,6 +874,7 @@ impl<'a> Collector<'a> {
             base_namespace: Namespace::Type,
             base_name,
             method_name,
+            ..
         } = target
         else {
             return None;
@@ -1112,6 +1138,16 @@ impl<'a> Collector<'a> {
                     | "&"
                     | "|"
             )
+    }
+
+    pub(super) fn selector_access_is_bare_interface_qualified_infos(
+        &self,
+        tokens: &[SyntaxTokenInfo],
+        idx: usize,
+    ) -> bool {
+        tokens
+            .get(idx + 1)
+            .is_some_and(|token| token.text.as_ref() == "~")
     }
 
     pub(super) fn consume_selector_access_from_infos(

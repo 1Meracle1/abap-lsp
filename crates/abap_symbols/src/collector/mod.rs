@@ -914,10 +914,25 @@ impl<'a> Collector<'a> {
                     base_namespace,
                     base_name,
                     method_name,
+                    interface_qualified,
                 } = target
                 else {
                     return (None, None);
                 };
+                if interface_qualified {
+                    let Some(owner_symbol) = self.enclosing_class_owner(scope) else {
+                        return (None, None);
+                    };
+                    let Some(signature) = self.class_method_signature_target(
+                        owner_symbol,
+                        Some(base_name.as_ref()),
+                        method_name.as_ref(),
+                        scope,
+                    ) else {
+                        return (None, None);
+                    };
+                    return self.method_return_inferred_metadata(scope, signature);
+                }
                 let Some(class_symbol) =
                     self.inline_call_target_class_symbol(scope, base_namespace, &base_name)
                 else {

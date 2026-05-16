@@ -16584,6 +16584,89 @@ ENDCLASS.
 }
 
 #[test]
+fn accepts_bare_call_to_inherited_interface_method_dependency() {
+    let if_src = r#"
+INTERFACE /iwbep/if_mgw_conv_srv_runtime.
+  METHODS get_logger
+    IMPORTING iv_kind TYPE string
+    RETURNING VALUE(rv_logger) TYPE string.
+ENDINTERFACE.
+"#;
+    let grandparent_src = r#"
+CLASS /iwbep/cl_mgw_abs_data DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES /iwbep/if_mgw_conv_srv_runtime.
+ENDCLASS.
+
+CLASS /iwbep/cl_mgw_abs_data IMPLEMENTATION.
+  METHOD /iwbep/if_mgw_conv_srv_runtime~get_logger.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parent_src = "CLASS /iwbep/cl_mgw_push_abs_data DEFINITION INHERITING FROM /iwbep/cl_mgw_abs_data.\nENDCLASS.";
+    let main_src = r#"
+CLASS zcl_dpc DEFINITION INHERITING FROM /iwbep/cl_mgw_push_abs_data.
+  PUBLIC SECTION.
+    METHODS commit_work.
+ENDCLASS.
+
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD commit_work.
+    DATA lv_kind TYPE string.
+    DATA lv_logger TYPE string.
+    lv_logger = /iwbep/if_mgw_conv_srv_runtime~get_logger( iv_kind = lv_kind ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+
+    let if_parse = parse(if_src);
+    let grandparent_parse = parse(grandparent_src);
+    let parent_parse = parse(parent_src);
+    let main_parse = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///if_mgw_conv_srv_runtime.abap",
+            source: if_src,
+            parse: &if_parse,
+        },
+        ProjectInput {
+            uri: "file:///cl_mgw_abs_data.abap",
+            source: grandparent_src,
+            parse: &grandparent_parse,
+        },
+        ProjectInput {
+            uri: "file:///cl_mgw_push_abs_data.abap",
+            source: parent_src,
+            parse: &parent_parse,
+        },
+        ProjectInput {
+            uri: "file:///zcl_dpc.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///zcl_dpc.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            matches!(
+                diag.kind,
+                DiagnosticKind::WrongNamespace
+                    | DiagnosticKind::UnresolvedReference
+                    | DiagnosticKind::UnknownNamedParameter
+                    | DiagnosticKind::MissingRequiredParameter
+            ) && (diag.message.contains("/iwbep/if_mgw_conv_srv_runtime")
+                || diag.message.contains("get_logger")
+                || diag.message.contains("iv_kind"))
+        }),
+        "{:#?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_me_and_interface_parameters_in_qualified_method_implementation() {
     let src = r#"
 INTERFACE i1.

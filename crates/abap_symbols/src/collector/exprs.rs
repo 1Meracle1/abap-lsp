@@ -336,7 +336,22 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 base_namespace,
                 base_name,
                 method_name,
+                interface_qualified,
             } => {
+                if *interface_qualified {
+                    let Some(owner_symbol) = self.ctx.enclosing_class_owner(scope) else {
+                        return TypeFactData::default();
+                    };
+                    let Some(signature) = self.ctx.class_method_signature_target(
+                        owner_symbol,
+                        Some(base_name.as_ref()),
+                        method_name.as_ref(),
+                        scope,
+                    ) else {
+                        return TypeFactData::default();
+                    };
+                    return self.type_fact_from_method_signature(scope, signature);
+                }
                 let Some(owner_symbol) =
                     self.resolve_method_target_class_symbol(scope, *base_namespace, base_name)
                 else {
@@ -1015,6 +1030,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             base_namespace: target.base_namespace,
             base_name: Arc::clone(&target.base_name),
             method_name: Arc::from("constructor"),
+            interface_qualified: false,
         })
     }
 
@@ -4372,7 +4388,15 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             self.ctx.selector_access_chain(node)
         {
             let base_node = self.ctx.file().children(node).next();
-            let kind = if namespace == Namespace::Type {
+            let interface_qualified = self.ctx.selector_expr_is_bare_interface_qualified(node);
+            let reference_namespace = if interface_qualified {
+                Namespace::Type
+            } else {
+                namespace
+            };
+            let kind = if interface_qualified {
+                ReferenceKind::TypeRef
+            } else if namespace == Namespace::Type {
                 ReferenceKind::StaticTarget
             } else {
                 ReferenceKind::Identifier
@@ -4385,7 +4409,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 self.ctx.add_reference(
                     scope,
                     Arc::clone(&base_name),
-                    namespace,
+                    reference_namespace,
                     kind,
                     base_range.clone(),
                 );
@@ -4393,7 +4417,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             if !field_path.is_empty() {
                 self.ctx.emit_field_access(FieldAccess {
                     scope,
-                    base_namespace: namespace,
+                    base_namespace: reference_namespace,
                     base_name,
                     base_range,
                     field_path,

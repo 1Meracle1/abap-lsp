@@ -916,15 +916,24 @@ impl<'a> FactBuilder<'a> {
                 base_namespace,
                 base_name,
                 method_name,
+                interface_qualified,
             } => {
-                let class_handle = self.resolve_method_target_class_symbol(
-                    unit_idx,
-                    scope,
-                    *base_namespace,
-                    base_name,
-                )?;
-                let (member_unit_idx, member) =
-                    self.resolve_class_member_in_hierarchy(class_handle, method_name.as_ref())?;
+                let (member_unit_idx, member) = if *interface_qualified {
+                    self.resolve_current_interface_method_member(
+                        unit_idx,
+                        scope,
+                        base_name.as_ref(),
+                        method_name.as_ref(),
+                    )?
+                } else {
+                    let class_handle = self.resolve_method_target_class_symbol(
+                        unit_idx,
+                        scope,
+                        *base_namespace,
+                        base_name,
+                    )?;
+                    self.resolve_class_member_in_hierarchy(class_handle, method_name.as_ref())?
+                };
                 Some(
                     member
                         .parameters
@@ -1076,18 +1085,26 @@ impl<'a> FactBuilder<'a> {
                 base_namespace,
                 base_name,
                 method_name,
+                interface_qualified,
             } => {
-                let Some(class_handle) = self.resolve_method_target_class_symbol(
-                    unit_idx,
-                    scope,
-                    *base_namespace,
-                    base_name,
-                ) else {
-                    return TypeFactData::default();
-                };
-                let Some((member_unit_idx, member)) =
-                    self.resolve_class_member_in_hierarchy(class_handle, method_name.as_ref())
-                else {
+                let Some((member_unit_idx, member)) = (if *interface_qualified {
+                    self.resolve_current_interface_method_member(
+                        unit_idx,
+                        scope,
+                        base_name.as_ref(),
+                        method_name.as_ref(),
+                    )
+                } else {
+                    self.resolve_method_target_class_symbol(
+                        unit_idx,
+                        scope,
+                        *base_namespace,
+                        base_name,
+                    )
+                    .and_then(|class_handle| {
+                        self.resolve_class_member_in_hierarchy(class_handle, method_name.as_ref())
+                    })
+                }) else {
                     return TypeFactData::default();
                 };
                 self.method_return_type_fact(unit_idx, scope, member_unit_idx, member)
@@ -1687,6 +1704,29 @@ impl<'a> FactBuilder<'a> {
             }
             Namespace::Routine => None,
         }
+    }
+
+    fn resolve_current_interface_method_member(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        interface_name: &str,
+        method_name: &str,
+    ) -> Option<(usize, &'a crate::ClassMemberData)> {
+        let class_symbol = enclosing_class_owner(&self.units[unit_idx], scope)?;
+        let interface_handle = self.resolve_exposed_interface_handle(
+            SymbolHandle {
+                unit: self.units[unit_idx].unit_id,
+                symbol: class_symbol,
+            },
+            scope,
+            interface_name,
+        )?;
+        let interface_unit_idx = self.unit_index(interface_handle.unit)?;
+        self.units[interface_unit_idx]
+            .class_member(interface_handle.symbol, method_name)
+            .filter(|member| member.kind == crate::ClassMemberKind::Method)
+            .map(|member| (interface_unit_idx, member))
     }
 
     fn resolve_event_target_member(

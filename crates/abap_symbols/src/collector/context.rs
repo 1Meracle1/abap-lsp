@@ -228,6 +228,11 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.selector_access_chain(node)
     }
 
+    pub(super) fn selector_expr_is_bare_interface_qualified(&self, node: NodeId) -> bool {
+        self.collector
+            .selector_expr_is_bare_interface_qualified(node)
+    }
+
     pub(super) fn consume_selector_access_from_infos(
         &self,
         tokens: &[SyntaxTokenInfo],
