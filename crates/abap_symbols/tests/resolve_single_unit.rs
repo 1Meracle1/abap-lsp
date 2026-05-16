@@ -16505,6 +16505,85 @@ lv_message = lx_document_bcs->get_longtext( ).
 }
 
 #[test]
+fn accepts_bare_call_to_alias_inherited_from_grandparent_dependency() {
+    let if_src = r#"
+INTERFACE /iwbep/if_mgw_conv_srv_runtime.
+  METHODS copy_data_to_ref
+    IMPORTING is_data TYPE string
+    CHANGING cr_data TYPE string.
+ENDINTERFACE.
+"#;
+    let grandparent_src = r#"
+CLASS /iwbep/cl_mgw_abs_data DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES /iwbep/if_mgw_conv_srv_runtime.
+    ALIASES copy_data_to_ref
+      FOR /iwbep/if_mgw_conv_srv_runtime~copy_data_to_ref.
+ENDCLASS.
+
+CLASS /iwbep/cl_mgw_abs_data IMPLEMENTATION.
+  METHOD /iwbep/if_mgw_conv_srv_runtime~copy_data_to_ref.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let parent_src = "CLASS /iwbep/cl_mgw_push_abs_data DEFINITION INHERITING FROM /iwbep/cl_mgw_abs_data.\nENDCLASS.";
+    let main_src = r#"
+CLASS zcl_dpc DEFINITION INHERITING FROM /iwbep/cl_mgw_push_abs_data.
+  PUBLIC SECTION.
+    METHODS create_entity.
+ENDCLASS.
+
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD create_entity.
+    DATA lv_data TYPE string.
+    copy_data_to_ref(
+      EXPORTING is_data = lv_data
+      CHANGING cr_data = lv_data ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+
+    let if_parse = parse(if_src);
+    let grandparent_parse = parse(grandparent_src);
+    let parent_parse = parse(parent_src);
+    let main_parse = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///if_mgw_conv_srv_runtime.abap",
+            source: if_src,
+            parse: &if_parse,
+        },
+        ProjectInput {
+            uri: "file:///cl_mgw_abs_data.abap",
+            source: grandparent_src,
+            parse: &grandparent_parse,
+        },
+        ProjectInput {
+            uri: "file:///cl_mgw_push_abs_data.abap",
+            source: parent_src,
+            parse: &parent_parse,
+        },
+        ProjectInput {
+            uri: "file:///zcl_dpc.abap",
+            source: main_src,
+            parse: &main_parse,
+        },
+    ]);
+    let main_unit = project
+        .unit_by_uri("file:///zcl_dpc.abap")
+        .expect("main unit");
+
+    assert!(
+        !main_unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("copy_data_to_ref")
+        }),
+        "{:#?}",
+        main_unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_me_and_interface_parameters_in_qualified_method_implementation() {
     let src = r#"
 INTERFACE i1.

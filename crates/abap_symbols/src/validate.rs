@@ -48,6 +48,39 @@ struct OpenSqlOrderByValidation {
     resolved_primary_key_fields: Vec<(usize, Vec<Arc<str>>)>,
 }
 
+fn unresolved_reference_is_resolved_implicit_method_call(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    scope_index: &ScopeIndex,
+    reference: &crate::ReferenceData,
+) -> bool {
+    reference.namespace == Namespace::Routine
+        && reference.kind == ReferenceKind::RoutineCall
+        && unit.call_sites.iter().any(|call_site| {
+            call_site.scope == reference.scope
+                && call_site.range.start <= reference.range.start
+                && reference.range.end <= call_site.range.end
+                && matches!(
+                    &call_site.target,
+                    NamedArgumentTarget::ImplicitMethod { method_name }
+                        if method_name == &reference.name
+                )
+                && resolve_call_target_member(project, lookup, unit, scope_index, call_site)
+                    .is_some_and(|(target_unit, member)| {
+                        member.kind == ClassMemberKind::Method
+                            && class_member_visible_to(
+                                project,
+                                lookup,
+                                unit,
+                                reference.scope,
+                                target_unit,
+                                member,
+                            )
+                    })
+        })
+}
+
 fn validate_message_uses(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
@@ -5055,6 +5088,15 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 && reference.name.as_ref() == "super"
                 && is_valid_super_reference(unit, reference.scope)
             {
+                continue;
+            }
+            if unresolved_reference_is_resolved_implicit_method_call(
+                project,
+                &lookup,
+                unit,
+                &scope_index,
+                reference,
+            ) {
                 continue;
             }
 

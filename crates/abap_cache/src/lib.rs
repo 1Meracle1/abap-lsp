@@ -5851,6 +5851,18 @@ fn resolve_project_class_symbol<'a>(
         })
 }
 
+fn resolve_project_interface_symbol<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    preferred_unit: &'a UnitAnalysis,
+    name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    let handle = snapshot
+        .project
+        .visible_type_owner_handle(preferred_unit.unit_id, name)?;
+    let unit = &snapshot.project.units[handle.unit.as_usize()];
+    (unit.symbol(handle.symbol).kind == SymbolKind::Interface).then_some((unit, handle.symbol))
+}
+
 fn direct_superclass_from_class<'a>(
     snapshot: &'a AnalysisSnapshot,
     unit: &'a UnitAnalysis,
@@ -7946,9 +7958,99 @@ fn resolve_class_member_in_hierarchy<'a>(
                 return Some((unit, member));
             }
         }
+        if let Some(member) =
+            resolve_class_member_alias_target(snapshot, unit, current.1, member_name)
+        {
+            return Some(member);
+        }
         let (next_unit, next_symbol) = direct_superclass_from_class(snapshot, unit, current.1)?;
         current = (next_unit.unit_id, next_symbol);
     }
+}
+
+fn resolve_class_member_alias_target<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    alias_name: &str,
+) -> Option<(&'a UnitAnalysis, &'a ClassMemberData)> {
+    let alias = owner_unit.member_aliases.iter().find(|alias| {
+        alias.owner_symbol == owner_symbol && alias.alias_name.as_ref() == alias_name
+    })?;
+    let (target_unit, target_symbol) = resolve_exposed_interface_handle(
+        snapshot,
+        owner_unit,
+        owner_symbol,
+        &alias.target_interface_name,
+    )?;
+    target_unit
+        .semantic()
+        .decls()
+        .class_member(target_symbol, alias.target_member_name.as_ref())
+        .map(|member| (target_unit, member))
+}
+
+fn resolve_exposed_interface_handle<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    interface_name: &Arc<str>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    resolve_exposed_interface_handle_inner_simple(
+        snapshot,
+        owner_unit,
+        owner_symbol,
+        interface_name,
+        &mut HashSet::new(),
+    )
+}
+
+fn resolve_exposed_interface_handle_inner_simple<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    owner_unit: &'a UnitAnalysis,
+    owner_symbol: SymbolId,
+    interface_name: &Arc<str>,
+    visited: &mut HashSet<(UnitId, SymbolId)>,
+) -> Option<(&'a UnitAnalysis, SymbolId)> {
+    if !visited.insert((owner_unit.unit_id, owner_symbol)) {
+        return None;
+    }
+    for implemented in owner_unit
+        .implemented_interfaces
+        .iter()
+        .filter(|implemented| implemented.owner_symbol == owner_symbol)
+    {
+        let Some((interface_unit, interface_symbol)) =
+            resolve_project_interface_symbol(snapshot, owner_unit, &implemented.interface_name)
+        else {
+            continue;
+        };
+        if implemented.interface_name == *interface_name {
+            return Some((interface_unit, interface_symbol));
+        }
+        if let Some(found) = resolve_exposed_interface_handle_inner_simple(
+            snapshot,
+            interface_unit,
+            interface_symbol,
+            interface_name,
+            visited,
+        ) {
+            return Some(found);
+        }
+    }
+    if owner_unit.symbol(owner_symbol).kind == SymbolKind::Class
+        && let Some((super_unit, super_symbol)) =
+            direct_superclass_from_class(snapshot, owner_unit, owner_symbol)
+    {
+        return resolve_exposed_interface_handle_inner_simple(
+            snapshot,
+            super_unit,
+            super_symbol,
+            interface_name,
+            visited,
+        );
+    }
+    None
 }
 
 fn class_member_uses_inherited_signature(member: &ClassMemberData) -> bool {
@@ -21612,6 +21714,95 @@ ENDCLASS.";
             .definition_at(method_use + 1)
             .expect("interface method definition target");
         assert_target_slice(&target, "file:///i1.abap", interface_src, "meth");
+    }
+
+    #[test]
+    fn hover_and_definition_work_for_bare_call_to_inherited_dependency_alias() {
+        let store = DocumentStore::default();
+        let interface_src = "\
+INTERFACE /iwbep/if_mgw_conv_srv_runtime.
+  METHODS copy_data_to_ref
+    IMPORTING is_data TYPE string
+    CHANGING cr_data TYPE string.
+ENDINTERFACE.";
+        let grandparent_src = "\
+CLASS /iwbep/cl_mgw_abs_data DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES /iwbep/if_mgw_conv_srv_runtime.
+    ALIASES copy_data_to_ref
+      FOR /iwbep/if_mgw_conv_srv_runtime~copy_data_to_ref.
+ENDCLASS.
+
+CLASS /iwbep/cl_mgw_abs_data IMPLEMENTATION.
+  METHOD /iwbep/if_mgw_conv_srv_runtime~copy_data_to_ref.
+  ENDMETHOD.
+ENDCLASS.";
+        let parent_src = "\
+CLASS /iwbep/cl_mgw_push_abs_data DEFINITION INHERITING FROM /iwbep/cl_mgw_abs_data.
+ENDCLASS.";
+        let main_src = "\
+CLASS zcl_dpc DEFINITION INHERITING FROM /iwbep/cl_mgw_push_abs_data.
+  PUBLIC SECTION.
+    METHODS create_entity.
+ENDCLASS.
+
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD create_entity.
+    DATA lv_data TYPE string.
+    copy_data_to_ref(
+      EXPORTING is_data = lv_data
+      CHANGING cr_data = lv_data ).
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///if_mgw_conv_srv_runtime.abap"),
+                version: 1,
+                text: Arc::from(interface_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/iwbep/if_mgw_conv_srv_runtime")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///cl_mgw_abs_data.abap"),
+                version: 1,
+                text: Arc::from(grandparent_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/iwbep/cl_mgw_abs_data")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///cl_mgw_push_abs_data.abap"),
+                version: 1,
+                text: Arc::from(parent_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/iwbep/cl_mgw_push_abs_data")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///zcl_dpc.abap"),
+                version: 1,
+                text: Arc::from(main_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("zcl_dpc")),
+            },
+        ]);
+        let main = snapshots
+            .get("file:///zcl_dpc.abap")
+            .expect("main snapshot");
+        let method_use = main_src.rfind("copy_data_to_ref").expect("method use") + 1;
+
+        let hover = main
+            .hovered_call_target_at(method_use)
+            .expect("inherited alias hover");
+        assert_eq!(hover.display_name.as_ref(), "copy_data_to_ref");
+
+        let target = main
+            .definition_at(method_use)
+            .expect("inherited alias definition target");
+        assert_target_slice(
+            &target,
+            "file:///if_mgw_conv_srv_runtime.abap",
+            interface_src,
+            "copy_data_to_ref",
+        );
     }
 
     #[test]
