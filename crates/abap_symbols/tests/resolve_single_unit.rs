@@ -5291,6 +5291,84 @@ SELECT * FROM demo INTO CORRESPONDING FIELDS OF TABLE lt_gs1_gcp.
 }
 
 #[test]
+fn reports_projection_field_missing_from_inherited_corresponding_table_target() {
+    let ddic_src = r#"
+TYPES: BEGIN OF zsource,
+         gtin TYPE string,
+         matnr TYPE string,
+       END OF zsource.
+"#;
+    let main_src = r#"
+CLASS zcl_mpc DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ts_prod,
+             gtin TYPE string,
+             material TYPE string,
+           END OF ts_prod.
+    TYPES tt_prod TYPE STANDARD TABLE OF ts_prod WITH EMPTY KEY.
+ENDCLASS.
+
+CLASS zcl_dpc DEFINITION.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset
+      EXPORTING et_entityset TYPE zcl_mpc=>tt_prod.
+ENDCLASS.
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcl_dpc_ext DEFINITION INHERITING FROM zcl_dpc.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset REDEFINITION.
+ENDCLASS.
+CLASS zcl_dpc_ext IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+    SELECT gtin,
+           matnr AS missing
+      FROM zsource
+      INTO CORRESPONDING FIELDS OF TABLE @et_entityset.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let ddic_parsed = parse(ddic_src);
+    let main_parsed = parse(main_src);
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///ddic_zsource.abap",
+            source: ddic_src,
+            parse: &ddic_parsed,
+        },
+        ProjectInput {
+            uri: "file:///main_odata_corresponding_target.abap",
+            source: main_src,
+            parse: &main_parsed,
+        },
+    ]);
+    let unit = project
+        .unit_by_uri("file:///main_odata_corresponding_target.abap")
+        .expect("main unit");
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnknownField
+                && diag.message.contains("missing")
+                && diag.message.contains("et_entityset")
+        }),
+        "expected target field diagnostic, got {:?}",
+        unit.diagnostics
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidOpenSqlIntoTarget
+                && diag.message.contains("et_entityset")
+        }),
+        "unexpected INTO target diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn into_corresponding_fields_accepts_generic_field_symbol_target() {
     let src = r#"
 DATA: lo_data TYPE REF TO data.

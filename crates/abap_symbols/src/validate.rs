@@ -4511,6 +4511,20 @@ fn symbol_is_internal_table(
     let Some(type_ref) = symbol.declared_type.as_ref() else {
         return false;
     };
+    if let Some(handle) = resolve_owner_scoped_type_ref_handle(project, lookup, unit, type_ref) {
+        if !seen.insert((handle.unit.0, handle.symbol.0)) {
+            return false;
+        }
+        let resolved_unit = &project.units[handle.unit.as_usize()];
+        return symbol_is_internal_table(
+            project,
+            lookup,
+            resolved_unit,
+            scope_indexes,
+            resolved_unit.symbol(handle.symbol),
+            seen,
+        );
+    }
     if !type_ref.field_path.is_empty() {
         return false;
     }
@@ -4594,9 +4608,9 @@ fn validate_open_sql_into_targets(
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_indexes: &[ScopeIndex],
+    scope_index: &ScopeIndex,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let scope_index = &scope_indexes[unit.unit_id.as_usize()];
     for target in &unit.sql_targets {
         if target.is_inline || target.target_name.is_none() {
             continue;
@@ -4628,6 +4642,71 @@ fn validate_open_sql_into_targets(
                     name
                 ),
             });
+        }
+        if target.is_corresponding && target.is_table {
+            let (target_unit, structure_id, _) = normalize_field_metadata_project(
+                project,
+                lookup,
+                scope_indexes,
+                unit,
+                target.scope,
+                symbol.structure,
+                symbol.declared_type.clone(),
+            );
+            if let Some(structure_id) = structure_id {
+                let target_scope = scope_for_unit(target_unit, target.scope);
+                if structure_has_unresolved_proxy_include_fields(
+                    project,
+                    lookup,
+                    scope_indexes,
+                    target_unit,
+                    target_scope,
+                    structure_id,
+                ) {
+                    continue;
+                }
+                let mut emitted = HashSet::new();
+                for projection in unit
+                    .sql_projections
+                    .iter()
+                    .filter(|projection| projection.query_id == target.query_id)
+                {
+                    let field_name = match projection.kind {
+                        crate::SqlProjectionKind::Column => {
+                            projection.alias.as_ref().or(projection.name.as_ref())
+                        }
+                        crate::SqlProjectionKind::Aggregate
+                        | crate::SqlProjectionKind::Expression => projection.alias.as_ref(),
+                        crate::SqlProjectionKind::Star
+                        | crate::SqlProjectionKind::QualifiedStar => None,
+                    };
+                    let Some(field_name) = field_name else {
+                        continue;
+                    };
+                    if resolve_structure_field_info_project(
+                        project,
+                        lookup,
+                        scope_indexes,
+                        target_unit,
+                        target_scope,
+                        structure_id,
+                        field_name.as_ref(),
+                    )
+                    .is_some()
+                        || !emitted.insert((projection.range.start, projection.range.end))
+                    {
+                        continue;
+                    }
+                    out.push(Diagnostic {
+                        kind: DiagnosticKind::UnknownField,
+                        range: projection.range.clone(),
+                        message: format!(
+                            "Open SQL projection field '{}' has no matching field in INTO CORRESPONDING FIELDS target '{}'",
+                            field_name, name
+                        ),
+                    });
+                }
+            }
         }
         // `INTO CORRESPONDING FIELDS OF wa` needs a structure-like work area; `... OF TABLE itab`
         // needs an internal table (checked above). Both set `is_corresponding`; only the former
@@ -6154,6 +6233,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             &lookup,
             unit,
             scope_indexes,
+            &scope_index,
         ));
         unit_diagnostics.extend(validate_missing_tables_declarations(
             project,
