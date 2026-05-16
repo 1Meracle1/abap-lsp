@@ -26,13 +26,15 @@ use crate::def_map::{
     AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
     FormParameterSection, FunctionModuleParameterSection, IfRegionData, InternalTableOrderData,
     LoopRegionData, MethodParameterSection, NamedArgumentSection, PerformParameterSection,
-    ReadTableBinarySearchData, Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData,
-    SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis, ValueFlowKind,
-    ValueFlowTargetData, ValueStateCheckKind,
+    ReadTableBinarySearchData, ReferenceData, Resolution, RoutineControlRegionData,
+    RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis,
+    ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
+
+const MAX_ROUTINES_FOR_DATAFLOW: usize = 5000;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectRoutineAnalysis {
@@ -482,13 +484,24 @@ fn build_project_routine_analysis_filtered(
     }
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
 
+    if out.routines.len() > MAX_ROUTINES_FOR_DATAFLOW {
+        finish_routine_metrics(&mut out, total_timer);
+        return out;
+    }
+
     let dataflow_timer = std::time::Instant::now();
     let resolution_index = RoutineResolutionIndex::new(project);
-    let tracked_symbols_by_routine = build_tracked_symbols_by_routine(
+    let value_references_by_routine = build_value_references_by_routine(
         project,
         &out.scope_to_routine,
         out.routines.len(),
         unit_filter,
+    );
+    let tracked_symbols_by_routine = build_tracked_symbols_by_routine(
+        project,
+        &out.routines,
+        &out.scope_to_routine,
+        &value_references_by_routine,
     );
     let call_argument_effects_by_unit: Vec<_> = project
         .units
@@ -524,6 +537,9 @@ fn build_project_routine_analysis_filtered(
     for pass_idx in 0..max_dataflow_passes {
         out.metrics.dataflow_pass_count += 1;
         for routine_id in 0..out.routines.len() {
+            if out.routines[routine_id].ir.instructions.is_empty() {
+                continue;
+            }
             if pass_idx > 0 && !routine_has_perform_instruction[routine_id] {
                 continue;
             }
@@ -541,8 +557,8 @@ fn build_project_routine_analysis_filtered(
                 unit,
                 routine_control_regions,
                 &out.routines[routine_id],
+                &value_references_by_routine[routine_id],
                 &tracked_symbols_by_routine[routine_id],
-                &out.scope_to_routine[descriptor.unit.as_usize()],
                 &call_argument_effects_by_unit[descriptor.unit.as_usize()],
                 &form_parameter_effects,
             );
@@ -591,6 +607,11 @@ fn build_project_routine_analysis_filtered(
         sort_diagnostics(diagnostics);
     }
 
+    finish_routine_metrics(&mut out, total_timer);
+    out
+}
+
+fn finish_routine_metrics(out: &mut ProjectRoutineAnalysis, total_timer: std::time::Instant) {
     out.metrics.routine_count = out.routines.len();
     out.metrics.instruction_count = out
         .routines
@@ -608,7 +629,6 @@ fn build_project_routine_analysis_filtered(
         .map(|routine| routine.dataflow_inputs.values.len())
         .sum();
     out.metrics.total_micros = total_timer.elapsed().as_micros();
-    out
 }
 
 fn push_routine_instruction(
@@ -1655,8 +1675,8 @@ fn build_routine_dataflow(
     unit: &UnitAnalysis,
     control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
+    routine_references: &[&ReferenceData],
     tracked_symbols: &[&SymbolData],
-    scope_to_routine: &[Option<RoutineId>],
     call_argument_effects: &CallArgumentEffectMap,
     form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
 ) -> (
@@ -1686,22 +1706,8 @@ fn build_routine_dataflow(
             kind: dataflow_value_kind(symbol.kind),
         });
     }
-
-    let mut reference_uses = unit
-        .references
+    let mut reference_uses = routine_references
         .iter()
-        .filter(|reference| {
-            reference.namespace == Namespace::Value
-                && !matches!(
-                    reference.kind,
-                    crate::ReferenceKind::TypeRef | crate::ReferenceKind::StructuredDeclEnd
-                )
-                && scope_to_routine
-                    .get(reference.scope.as_usize())
-                    .copied()
-                    .flatten()
-                    == Some(routine.descriptor.id)
-        })
         .filter_map(|reference| {
             resolved_value_id_for_reference(unit, reference.id, &value_ids_by_symbol).map(|value| {
                 ReferenceUse {
@@ -1872,7 +1878,7 @@ fn build_routine_dataflow(
     let mut safe_read_refs = safe_field_symbol_checks;
     safe_read_refs.extend(safe_value_state_checks);
     safe_read_refs.extend(safe_loop_field_refs);
-    let mut suppressed_refs = vec![false; unit.references.len()];
+    let mut suppressed_refs = HashSet::new();
     for instruction in &routine.ir.instructions {
         match instruction.site {
             RoutineInstructionSite::Assignment { index } => {
@@ -1973,7 +1979,6 @@ fn build_routine_dataflow(
             | RoutineInstructionSite::Terminator { .. } => {}
         }
     }
-
     let mut instruction_summaries = Vec::with_capacity(routine.ir.instructions.len());
     let mut instruction_transfers = Vec::with_capacity(routine.ir.instructions.len());
     let mut candidate_field_symbols = DenseBitSet::new(values.len());
@@ -2043,7 +2048,6 @@ fn build_routine_dataflow(
                         unit,
                         assignment,
                         &reference_uses,
-                        &value_ids_by_symbol,
                         &values,
                     ) {
                         transfer.reads.retain(|read| {
@@ -2439,7 +2443,6 @@ fn build_routine_dataflow(
         });
         instruction_transfers.push(transfer);
     }
-
     let mut entry_assigned = DenseBitSet::new(values.len());
     let mut entry_structure_fields = vec![0u64; values.len()];
     for value in &values {
@@ -2672,7 +2675,6 @@ fn build_routine_dataflow(
             }
         }
     }
-
     let mut diagnostics = Vec::new();
     for block in &routine.cfg.blocks {
         if !block.reachable {
@@ -3263,7 +3265,6 @@ fn build_dead_store_instruction_summaries(
                         unit,
                         assignment,
                         reference_uses,
-                        value_ids_by_symbol,
                         values,
                     )
                     && tracked_values.contains(value)
@@ -4811,19 +4812,20 @@ fn reference_uses_in_range<'a>(
 }
 
 fn mark_reference_ids_in_range(
-    marked: &mut [bool],
+    marked: &mut HashSet<crate::ReferenceId>,
     reference_uses: &[ReferenceUse],
     range: &TextRange,
 ) {
     for use_site in reference_uses_in_range(reference_uses, range) {
-        if let Some(slot) = marked.get_mut(use_site.reference.as_usize()) {
-            *slot = true;
-        }
+        marked.insert(use_site.reference);
     }
 }
 
-fn reference_is_marked(marked: &[bool], reference: crate::ReferenceId) -> bool {
-    marked.get(reference.as_usize()).copied().unwrap_or(false)
+fn reference_is_marked(
+    marked: &HashSet<crate::ReferenceId>,
+    reference: crate::ReferenceId,
+) -> bool {
+    marked.contains(&reference)
 }
 
 fn exact_reference_use_in_range(
@@ -5271,24 +5273,17 @@ fn direct_write_value_id_for_assignment(
     unit: &UnitAnalysis,
     assignment: &crate::AssignmentSiteData,
     reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     values: &[RoutineDataflowValue],
 ) -> Option<DataflowValueId> {
-    for symbol in &unit.symbols {
+    for value in values {
+        let symbol = unit.symbol(value.symbol.symbol);
         if symbol.decl_range.start < assignment.lhs_range.start
             || symbol.decl_range.end > assignment.lhs_range.end
         {
             continue;
         }
-        let handle = SymbolHandle {
-            unit: unit.unit_id,
-            symbol: symbol.id,
-        };
-        let Some(value_id) = value_ids_by_symbol.get(&handle).copied() else {
-            continue;
-        };
-        if values[value_id.as_usize()].kind != DataflowValueKind::FieldSymbol {
-            return Some(value_id);
+        if value.kind != DataflowValueKind::FieldSymbol {
+            return Some(value.id);
         }
     }
     if let Some(access) = assignment.lhs_target_access.as_ref()
@@ -5342,7 +5337,7 @@ fn direct_write_value_id_for_range(
     unit: &UnitAnalysis,
     range: &TextRange,
     reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    _value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     cache: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> Option<DataflowValueId> {
@@ -5350,13 +5345,7 @@ fn direct_write_value_id_for_range(
     if let Some(cached) = cache.get(&key) {
         return *cached;
     }
-    let out = direct_write_value_id_for_range_uncached(
-        unit,
-        range,
-        reference_uses,
-        value_ids_by_symbol,
-        values,
-    );
+    let out = direct_write_value_id_for_range_uncached(unit, range, reference_uses, values);
     cache.insert(key, out);
     out
 }
@@ -5365,31 +5354,19 @@ fn direct_write_value_id_for_range_uncached(
     unit: &UnitAnalysis,
     range: &TextRange,
     reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     values: &[RoutineDataflowValue],
 ) -> Option<DataflowValueId> {
     let mut declared_value = None;
     let mut multiple_declared = false;
-    for symbol in &unit.symbols {
-        if !trackable_symbol_kind(symbol.kind)
-            || symbol.decl_range.start < range.start
-            || symbol.decl_range.end > range.end
-        {
+    for value in values {
+        let symbol = unit.symbol(value.symbol.symbol);
+        if symbol.decl_range.start < range.start || symbol.decl_range.end > range.end {
             continue;
         }
-        let Some(value) = value_ids_by_symbol
-            .get(&SymbolHandle {
-                unit: unit.unit_id,
-                symbol: symbol.id,
-            })
-            .copied()
-        else {
-            continue;
-        };
-        if values[value.as_usize()].kind == DataflowValueKind::FieldSymbol {
+        if value.kind == DataflowValueKind::FieldSymbol {
             continue;
         }
-        if declared_value.replace(value).is_some() {
+        if declared_value.replace(value.id).is_some() {
             multiple_declared = true;
             break;
         }
@@ -5929,12 +5906,12 @@ fn build_routine_control_region_index<'a>(
     out
 }
 
-fn build_tracked_symbols_by_routine<'a>(
+fn build_value_references_by_routine<'a>(
     project: &'a ProjectAnalysis,
     scope_to_routine: &[Vec<Option<RoutineId>>],
     routine_count: usize,
     unit_filter: Option<&HashSet<UnitId>>,
-) -> Vec<Vec<&'a SymbolData>> {
+) -> Vec<Vec<&'a ReferenceData>> {
     let mut out = vec![Vec::new(); routine_count];
     for unit in &project.units {
         if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
@@ -5944,15 +5921,60 @@ fn build_tracked_symbols_by_routine<'a>(
         let Some(scope_map) = scope_to_routine.get(unit_idx) else {
             continue;
         };
-        for symbol in unit
-            .symbols
-            .iter()
-            .filter(|symbol| trackable_symbol_kind(symbol.kind))
-        {
-            let Some(routine_id) = scope_map.get(symbol.scope.as_usize()).copied().flatten() else {
+        for reference in unit.references.iter().filter(|reference| {
+            reference.namespace == Namespace::Value
+                && !matches!(
+                    reference.kind,
+                    crate::ReferenceKind::TypeRef | crate::ReferenceKind::StructuredDeclEnd
+                )
+        }) {
+            let Some(routine_id) = scope_map.get(reference.scope.as_usize()).copied().flatten()
+            else {
                 continue;
             };
-            if let Some(symbols) = out.get_mut(routine_id.as_usize()) {
+            if let Some(references) = out.get_mut(routine_id.as_usize()) {
+                references.push(reference);
+            }
+        }
+    }
+    out
+}
+
+fn build_tracked_symbols_by_routine<'a>(
+    project: &'a ProjectAnalysis,
+    routines: &[RoutineAnalysis],
+    scope_to_routine: &[Vec<Option<RoutineId>>],
+    value_references_by_routine: &[Vec<&ReferenceData>],
+) -> Vec<Vec<&'a SymbolData>> {
+    let mut out = vec![Vec::new(); routines.len()];
+    for (routine_id, references) in value_references_by_routine.iter().enumerate() {
+        let Some(routine) = routines.get(routine_id) else {
+            continue;
+        };
+        let Some(unit) = project.units.get(routine.descriptor.unit.as_usize()) else {
+            continue;
+        };
+        let Some(scope_map) = scope_to_routine.get(unit.unit_id.as_usize()) else {
+            continue;
+        };
+        let mut seen = HashSet::new();
+        for reference in references {
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if handle.unit != unit.unit_id || !seen.insert(handle.symbol) {
+                continue;
+            };
+            let symbol = unit.symbol(handle.symbol);
+            if !trackable_symbol_kind(symbol.kind) {
+                continue;
+            }
+            if scope_map.get(symbol.scope.as_usize()).copied().flatten()
+                != Some(routine.descriptor.id)
+            {
+                continue;
+            }
+            if let Some(symbols) = out.get_mut(routine_id) {
                 symbols.push(symbol);
             }
         }

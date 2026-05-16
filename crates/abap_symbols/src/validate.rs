@@ -25,6 +25,7 @@ use crate::{ClassMemberKind, SymbolKind, Visibility};
 struct ValidationLookup<'a> {
     scope_indexes: &'a [ScopeIndex],
     per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
+    per_unit_class_type_index: Vec<HashMap<SymbolId, HashMap<Arc<str>, SymbolId>>>,
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     message_class_entries: HashMap<Arc<str>, HashMap<Arc<str>, MessageClassEntryHandle>>,
     include_predecessors: Vec<Vec<UnitId>>,
@@ -295,10 +296,24 @@ fn build_validation_lookup<'a>(
     scope_indexes: &'a [ScopeIndex],
 ) -> ValidationLookup<'a> {
     let mut per_unit_root_index = vec![HashMap::new(); project.units.len()];
+    let mut per_unit_class_type_index = Vec::with_capacity(project.units.len());
     let mut root_index = HashMap::new();
 
     for unit in &project.units {
+        let mut class_type_index = HashMap::<SymbolId, HashMap<Arc<str>, SymbolId>>::new();
         for symbol in &unit.symbols {
+            if symbol.kind == SymbolKind::TypeDef {
+                let scope = unit.scope(symbol.scope);
+                if matches!(scope.kind, ScopeKind::Class | ScopeKind::Interface)
+                    && let Some(owner) = scope.owner
+                {
+                    class_type_index
+                        .entry(owner)
+                        .or_default()
+                        .entry(Arc::clone(&symbol.name))
+                        .or_insert(symbol.id);
+                }
+            }
             if symbol.scope != unit.root_scope {
                 continue;
             }
@@ -316,11 +331,13 @@ fn build_validation_lookup<'a>(
                     });
             }
         }
+        per_unit_class_type_index.push(class_type_index);
     }
 
     ValidationLookup {
         scope_indexes,
         per_unit_root_index,
+        per_unit_class_type_index,
         root_index,
         message_class_entries: build_message_class_lookup(project),
         include_predecessors: project.include_predecessor_units_by_unit(),
@@ -613,22 +630,15 @@ fn resolve_field_access_base_symbol(
 }
 
 fn class_scoped_type_symbol_for_owner(
+    lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     owner_symbol: SymbolId,
     type_name: &Arc<str>,
 ) -> Option<SymbolId> {
-    unit.symbols
-        .iter()
-        .find(|symbol| {
-            symbol.kind == SymbolKind::TypeDef
-                && symbol.name == *type_name
-                && unit.scope(symbol.scope).owner == Some(owner_symbol)
-                && matches!(
-                    unit.scope(symbol.scope).kind,
-                    ScopeKind::Class | ScopeKind::Interface
-                )
-        })
-        .map(|symbol| symbol.id)
+    lookup.per_unit_class_type_index[unit.unit_id.as_usize()]
+        .get(&owner_symbol)?
+        .get(type_name.as_ref())
+        .copied()
 }
 
 fn resolve_class_scoped_type_handle(
@@ -652,7 +662,7 @@ fn resolve_class_scoped_type_handle(
         }
         let current_unit = &project.units[current.unit.as_usize()];
         if let Some(symbol) =
-            class_scoped_type_symbol_for_owner(current_unit, current.symbol, type_name)
+            class_scoped_type_symbol_for_owner(lookup, current_unit, current.symbol, type_name)
         {
             return Some(SymbolHandle {
                 unit: current.unit,
