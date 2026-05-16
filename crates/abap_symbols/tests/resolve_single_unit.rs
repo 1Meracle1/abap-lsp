@@ -9021,6 +9021,49 @@ DATA lv_value TYPE ty_pair-missing.";
 }
 
 #[test]
+fn validates_fields_on_inherited_parameter_typed_by_interface_scoped_type() {
+    let src = "\
+INTERFACE zif_runtime.\n\
+  TYPES: BEGIN OF ty_context,\n\
+           count TYPE i,\n\
+           inlinecount TYPE i,\n\
+         END OF ty_context.\n\
+ENDINTERFACE.\n\
+CLASS zcl_base DEFINITION.\n\
+  PROTECTED SECTION.\n\
+    METHODS get_entityset EXPORTING es_response_context TYPE zif_runtime=>ty_context.\n\
+ENDCLASS.\n\
+CLASS zcl_base IMPLEMENTATION.\n\
+  METHOD get_entityset.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n\
+CLASS zcl_child DEFINITION INHERITING FROM zcl_base.\n\
+  PROTECTED SECTION.\n\
+    METHODS get_entityset REDEFINITION.\n\
+ENDCLASS.\n\
+CLASS zcl_child IMPLEMENTATION.\n\
+  METHOD get_entityset.\n\
+    es_response_context-count = 1.\n\
+    es_response_context-inlinecount = 1.\n\
+    es_response_context-inlinecount1 = 1.\n\
+  ENDMETHOD.\n\
+ENDCLASS.";
+    let unit = analyze(src, "file:///scoped_type_param.abap");
+
+    let unknown_field_diags: Vec<_> = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::UnknownField && diag.message.contains("inlinecount1")
+        })
+        .collect();
+    assert_eq!(unknown_field_diags.len(), 1, "{:?}", unit.diagnostics);
+    assert!(!unit.diagnostics.iter().any(|diag| {
+        diag.kind == DiagnosticKind::UnknownField && diag.message.contains("inlinecount'")
+    }));
+}
+
+#[test]
 fn carries_nested_structure_metadata_on_fields() {
     let src = "\
 TYPES: BEGIN OF ty_outer,\n\

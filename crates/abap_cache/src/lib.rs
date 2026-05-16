@@ -676,6 +676,19 @@ struct FormParameterHoverInfo {
 
 type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
 
+fn build_scope_index(unit: &UnitAnalysis) -> ScopeIndex {
+    let mut out: ScopeIndex = vec![HashMap::new(); unit.scopes.len()];
+    for symbol in &unit.symbols {
+        for &namespace in symbol.kind.namespaces() {
+            out[symbol.scope.as_usize()]
+                .entry((namespace, Arc::clone(&symbol.name)))
+                .or_default()
+                .push(symbol.id);
+        }
+    }
+    out
+}
+
 pub struct SemanticTokenLookupContext<'a> {
     snapshot: &'a AnalysisSnapshot,
     scope_index: &'a ScopeIndex,
@@ -5996,6 +6009,40 @@ fn resolve_symbol_structure_with_scope_index<'a>(
             unit = resolved_unit;
             symbol_id = resolved_symbol_id;
             continue;
+        }
+
+        if declared_type.namespace == Namespace::Type
+            && matches!(
+                resolved_unit.symbol(resolved_symbol_id).kind,
+                SymbolKind::Class | SymbolKind::Interface
+            )
+        {
+            let (type_name, rest) = declared_type.field_path.split_first()?;
+            let (type_unit, type_symbol) = resolve_class_type_symbol_in_hierarchy(
+                snapshot,
+                resolved_unit,
+                resolved_symbol_id,
+                type_name.as_ref(),
+            )?;
+            let (base_unit, base_structure_id) = resolve_symbol_structure_with_scope_index(
+                snapshot,
+                scope_index,
+                type_unit,
+                scope,
+                type_symbol.id,
+            )?;
+            if rest.is_empty() {
+                return Some((base_unit, base_structure_id));
+            }
+            let path: Vec<_> = rest.iter().map(|part| part.as_ref()).collect();
+            let field = base_unit
+                .semantic()
+                .decls()
+                .resolve_structure_field_path(base_structure_id, &path)?;
+            return match field.shape {
+                StructureFieldShape::Structured { structure } => Some((base_unit, structure)),
+                StructureFieldShape::Scalar => None,
+            };
         }
 
         let (base_unit, base_structure_id) = resolve_symbol_structure_with_scope_index(
@@ -11604,7 +11651,7 @@ fn materialize_snapshots(
     };
 
     for (prepared, unit) in prepared_units {
-        let scope_index = Arc::new(prepared.local.scope_index.clone());
+        let scope_index = Arc::new(build_scope_index(&unit));
         let line_index = prepared
             .previous
             .as_ref()
@@ -23321,6 +23368,81 @@ DATA lr_data TYPE lcl_demo=>ty_outer-l";
             vec!["low"]
         );
         assert_eq!(completion.items[0].declared_type.as_deref(), Some("TYPE i"));
+    }
+
+    #[test]
+    fn completes_inherited_parameter_typed_as_interface_scoped_structure() {
+        let store = DocumentStore::default();
+        let runtime_src = "\
+INTERFACE /iwbep/if_mgw_appl_srv_runtime.
+  TYPES: BEGIN OF ty_s_mgw_response_context,
+           inlinecount TYPE i,
+           count TYPE i,
+         END OF ty_s_mgw_response_context.
+ENDINTERFACE.";
+        let super_src = "\
+CLASS zcl_dpc DEFINITION.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset
+      EXPORTING
+        es_response_context TYPE /iwbep/if_mgw_appl_srv_runtime=>ty_s_mgw_response_context.
+ENDCLASS.
+
+CLASS zcl_dpc IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+  ENDMETHOD.
+ENDCLASS.";
+        let sub_src = "\
+CLASS zcl_dpc_ext DEFINITION INHERITING FROM zcl_dpc.
+  PROTECTED SECTION.
+    METHODS prodset_get_entityset REDEFINITION.
+ENDCLASS.
+
+CLASS zcl_dpc_ext IMPLEMENTATION.
+  METHOD prodset_get_entityset.
+    es_response_context-
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshots = store.replace_all(vec![
+            DocumentInput {
+                uri: Arc::from("file:///runtime.abap"),
+                version: 1,
+                text: Arc::from(runtime_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("/iwbep/if_mgw_appl_srv_runtime")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///super.abap"),
+                version: 1,
+                text: Arc::from(super_src),
+                is_dependency: true,
+                object_name: Some(Arc::from("zcl_dpc")),
+            },
+            DocumentInput {
+                uri: Arc::from("file:///sub.abap"),
+                version: 1,
+                text: Arc::from(sub_src),
+                is_dependency: false,
+                object_name: Some(Arc::from("zcl_dpc_ext")),
+            },
+        ]);
+        let snapshot = snapshots.get("file:///sub.abap").expect("sub snapshot");
+        let offset =
+            sub_src.find("es_response_context-").expect("selector") + "es_response_context-".len();
+
+        let completion = snapshot
+            .selector_completion_at(offset)
+            .expect("selector completion");
+
+        assert_eq!(
+            completion
+                .items
+                .iter()
+                .map(|item| item.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["count", "inlinecount"]
+        );
+        assert!(completion.replace_range.is_empty());
     }
 
     #[test]

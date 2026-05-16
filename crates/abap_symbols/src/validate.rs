@@ -2366,6 +2366,16 @@ fn normalize_field_metadata_project<'a>(
         let Some(type_ref) = declared_type.as_ref() else {
             break;
         };
+        if let Some(handle) =
+            resolve_owner_scoped_type_ref_handle(project, lookup, current_unit, type_ref)
+        {
+            let symbol_unit = &project.units[handle.unit.as_usize()];
+            let symbol = symbol_unit.symbol(handle.symbol);
+            current_unit = symbol_unit;
+            structure = symbol.structure;
+            declared_type = symbol.declared_type.clone();
+            continue;
+        }
         if type_ref.namespace != Namespace::Type
             || type_ref.is_ref
             || !type_ref.field_path.is_empty()
@@ -2392,6 +2402,33 @@ fn normalize_field_metadata_project<'a>(
         declared_type = symbol.declared_type.clone();
     }
     (current_unit, structure, declared_type)
+}
+
+fn resolve_owner_scoped_type_ref_handle(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    type_ref: &FieldTypeRefData,
+) -> Option<SymbolHandle> {
+    if type_ref.namespace != Namespace::Type || type_ref.is_ref || type_ref.field_path.len() != 1 {
+        return None;
+    }
+    let owner = resolve_type_owner_symbol(project, lookup, unit, &type_ref.base_name)?;
+    let owner_unit = &project.units[owner.unit.as_usize()];
+    if owner_unit.symbol(owner.symbol).kind == SymbolKind::Class {
+        return resolve_class_type_symbol_in_hierarchy(
+            project,
+            lookup,
+            owner_unit,
+            owner.symbol,
+            type_ref.field_path[0].as_ref(),
+        );
+    }
+    class_scoped_type_symbol_for_owner(lookup, owner_unit, owner.symbol, &type_ref.field_path[0])
+        .map(|symbol| SymbolHandle {
+            unit: owner.unit,
+            symbol,
+        })
 }
 
 fn count_form_section(parameters: &[FormParameterData], section: FormParameterSection) -> usize {
