@@ -193,6 +193,10 @@ impl<'ctx, 'a> ExprContext<'ctx, 'a> {
         self.collector.syntax_token_nodes(node)
     }
 
+    pub(super) fn syntax_token_nodes_from_nodes(&self, nodes: &[NodeId]) -> Vec<SyntaxTokenInfo> {
+        self.collector.syntax_token_nodes_from_nodes(nodes)
+    }
+
     pub(super) fn syntax_tokens_have_space_between(
         &self,
         left: &SyntaxTokenInfo,

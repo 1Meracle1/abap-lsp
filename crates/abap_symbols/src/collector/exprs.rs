@@ -508,11 +508,20 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
         tokens: &[super::SyntaxTokenInfo],
         scope: ScopeId,
     ) -> TypeFactData {
-        let tokens: Vec<_> = tokens
+        let filtered;
+        let tokens = if tokens
             .iter()
-            .filter(|token| !self.ctx.syntax_token_is_comment(token))
-            .cloned()
-            .collect();
+            .any(|token| self.ctx.syntax_token_is_comment(token))
+        {
+            filtered = tokens
+                .iter()
+                .filter(|token| !self.ctx.syntax_token_is_comment(token))
+                .cloned()
+                .collect::<Vec<_>>();
+            filtered.as_slice()
+        } else {
+            tokens
+        };
         let Some(first) = tokens.first() else {
             return TypeFactData::default();
         };
@@ -702,22 +711,20 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
     }
 
     fn type_fact_from_value_children(&self, nodes: &[NodeId], scope: ScopeId) -> TypeFactData {
-        let non_token: Vec<_> = nodes
-            .iter()
-            .copied()
-            .filter(|&node| self.kind(node) != SyntaxKind::Token)
-            .collect();
-        match non_token.as_slice() {
-            [single] => self.type_fact_from_expr_node(*single, scope),
-            [] => {
-                let tokens = nodes
-                    .iter()
-                    .flat_map(|&node| self.ctx.syntax_token_nodes(node))
-                    .collect::<Vec<_>>();
-                self.type_fact_from_tokens(&tokens, scope)
+        let mut single_non_token = None;
+        for &node in nodes {
+            if self.kind(node) == SyntaxKind::Token {
+                continue;
             }
-            _ => TypeFactData::default(),
+            if single_non_token.replace(node).is_some() {
+                return TypeFactData::default();
+            }
         }
+        if let Some(node) = single_non_token {
+            return self.type_fact_from_expr_node(node, scope);
+        }
+        let tokens = self.ctx.syntax_token_nodes_from_nodes(nodes);
+        self.type_fact_from_tokens(&tokens, scope)
     }
 
     fn type_fact_for_internal_table_line(
@@ -3565,10 +3572,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
             .iter()
             .all(|&node| self.kind(node) == SyntaxKind::Token)
         {
-            let tokens = nodes
-                .iter()
-                .flat_map(|&node| self.ctx.syntax_token_nodes(node))
-                .collect::<Vec<_>>();
+            let tokens = self.ctx.syntax_token_nodes_from_nodes(nodes);
             self.collect_argument_token_refs(&tokens, scope);
             return;
         }
@@ -4274,10 +4278,7 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                 &value_children,
             )
             .unwrap_or_else(|| {
-                let value_tokens = value_children
-                    .iter()
-                    .flat_map(|&child| self.ctx.syntax_token_nodes(child))
-                    .collect::<Vec<_>>();
+                let value_tokens = self.ctx.syntax_token_nodes_from_nodes(&value_children);
                 self.ctx.declare_inline_named_argument_target_infos(
                     scope,
                     target,
@@ -4314,16 +4315,16 @@ impl<'ctx, 'a> ExprLowering<'ctx, 'a> {
                     current_section = self.call_arg_section_from_node(child);
                 }
                 SyntaxKind::CallNamedArg => {
-                    let value_children: Vec<_> = CallNamedArg::cast(self.ctx.syntax(child))
-                        .map(|arg| {
-                            arg.value_children()
-                                .into_iter()
-                                .map(|child| child.id())
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let argument_name = CallNamedArg::cast(self.ctx.syntax(child))
-                        .and_then(|arg| arg.name_token())
+                    let Some(arg) = CallNamedArg::cast(self.ctx.syntax(child)) else {
+                        continue;
+                    };
+                    let value_children: Vec<_> = arg
+                        .value_children()
+                        .into_iter()
+                        .map(|child| child.id())
+                        .collect();
+                    let argument_name = arg
+                        .name_token()
                         .and_then(|token| token.text(self.source()))
                         .map(|name| Arc::<str>::from(name.to_ascii_lowercase()));
                     self.collect_structured_named_argument(child, scope, &target, current_section);

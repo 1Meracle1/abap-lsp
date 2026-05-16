@@ -441,19 +441,39 @@ impl<'a> Collector<'a> {
     }
 
     pub(super) fn syntax_token_nodes(&self, node: NodeId) -> Vec<SyntaxTokenInfo> {
-        self.syntax(node)
-            .token_descendants()
-            .into_iter()
-            .filter_map(|token_node| {
-                let text = token_node.text(self.source)?;
-                Some(SyntaxTokenInfo {
-                    range: token_node.range(),
-                    text: Arc::<str>::from(text),
-                    _index: token_node.token_index()?,
-                    kind: token_node.token_kind().unwrap_or(TokenKind::Other),
-                })
-            })
-            .collect()
+        let mut tokens = Vec::new();
+        self.push_syntax_token_nodes(node, &mut tokens);
+        tokens
+    }
+
+    pub(super) fn syntax_token_nodes_from_nodes(&self, nodes: &[NodeId]) -> Vec<SyntaxTokenInfo> {
+        let mut tokens = Vec::new();
+        for &node in nodes {
+            self.push_syntax_token_nodes(node, &mut tokens);
+        }
+        tokens
+    }
+
+    fn push_syntax_token_nodes(&self, node: NodeId, tokens: &mut Vec<SyntaxTokenInfo>) {
+        if self.file.kind(node) == SyntaxKind::Token {
+            let range = self.file.range(node);
+            let Some(text) = self.source.get(range.clone()) else {
+                return;
+            };
+            let Some(index) = self.file.token_index(node) else {
+                return;
+            };
+            tokens.push(SyntaxTokenInfo {
+                range,
+                text: Arc::<str>::from(text),
+                _index: index,
+                kind: self.file.token_kind(node).unwrap_or(TokenKind::Other),
+            });
+            return;
+        }
+        for child in self.file.children(node) {
+            self.push_syntax_token_nodes(child, tokens);
+        }
     }
 
     pub(super) fn syntax_tokens_have_space_between(
