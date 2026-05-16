@@ -207,10 +207,8 @@ impl<'a> Collector<'a> {
             owner_symbol
         };
 
-        if let Some(member) = self.class_members.iter().find(|member| {
-            member.class_symbol == direct_owner && member.name.as_ref() == member_name
-        }) {
-            return Some(member.clone());
+        if let Some(index) = self.class_member_index(direct_owner, member_name) {
+            return Some(self.class_members[index].clone());
         }
 
         if let Some(alias) = self.member_alias(direct_owner, member_name) {
@@ -268,6 +266,12 @@ impl<'a> Collector<'a> {
             owner_symbol
         };
 
+        if let Some(index) = self.class_member_index(direct_owner, event_name) {
+            let member = &self.class_members[index];
+            if member.kind == ClassMemberKind::Event {
+                return Some(member.clone());
+            }
+        }
         if let Some(member) = self.class_members.iter().find(|member| {
             member.class_symbol == direct_owner
                 && member.kind == ClassMemberKind::Event
@@ -994,6 +998,17 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 )
             })
             .unwrap_or(owner_symbol);
+        if let Some(index) = self.collector.class_member_index(target_owner, method_name) {
+            let member = &mut self.collector.class_members[index];
+            if member.kind == ClassMemberKind::Method {
+                member.implementation_range = Some(range.clone());
+                member.implementation = Some(crate::ClassMemberImplementationData {
+                    unit: self.collector.unit_id,
+                    range,
+                });
+                return;
+            }
+        }
         let Some(member) = self.collector.class_members.iter_mut().find(|member| {
             member.class_symbol == target_owner
                 && member.kind == ClassMemberKind::Method

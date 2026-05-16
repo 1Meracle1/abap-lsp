@@ -8,7 +8,10 @@ use crate::ids::{ScopeId, StructureId};
 use crate::scope::{Namespace, ScopeKind};
 use abap_ast::{
     SyntaxKind,
-    ast::{AstNode, DataDecl, DataLikeDecl, DeclClause, FormDecl, IncludeStmt, MethodDecl},
+    ast::{
+        AstNode, DataDecl, DataLikeDecl, DeclClause, FormDecl, IncludeStmt, MethodDecl,
+        TypeClauseKind,
+    },
 };
 use abap_lexer::{TextRange, TokenKind};
 
@@ -699,12 +702,24 @@ impl<'ctx, 'a> DeclLowering<'ctx, 'a> {
             && let Some(name) = name_node.name(self.ctx.source())
         {
             let range = name_node.range();
-            let structure = self.ctx.structure_from_typed_clause(node, scope);
             let declared_type = self
                 .ctx
                 .type_ref_from_typed_clause(node)
                 .or_else(|| self.checkbox_parameter_type_from_clause(node));
             let type_clause_display = self.ctx.type_clause_display_from_typed_clause(node);
+            let structure = if clause.type_clause_kind(self.ctx.source())
+                == Some(TypeClauseKind::For)
+                || type_clause_display
+                    .as_deref()
+                    .and_then(|display| display.get(..9))
+                    .is_some_and(|head| head.eq_ignore_ascii_case("RANGE OF "))
+            {
+                self.ctx.structure_from_typed_clause(node, scope)
+            } else {
+                declared_type
+                    .as_ref()
+                    .and_then(|type_ref| self.ctx.resolve_field_type_ref(scope, type_ref))
+            };
             let value_clause_display = self.ctx.value_clause_display_from_typed_clause(node);
             self.ctx.declare_symbol(
                 scope,

@@ -59,7 +59,7 @@ impl<'a> RefSink for Collector<'a> {
 
 impl<'a> ClassSink for Collector<'a> {
     fn emit_class_member(&mut self, member: ClassMemberData) {
-        self.class_members.push(member);
+        self.push_class_member(member);
     }
 }
 

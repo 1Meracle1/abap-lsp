@@ -251,6 +251,8 @@ pub struct Collector<'a> {
     sql_name_refs: Vec<SqlNameRefData>,
     sql_predicates: Vec<SqlPredicateData>,
     sql_targets: Vec<SqlTargetData>,
+    class_member_index:
+        std::collections::HashMap<SymbolId, std::collections::HashMap<Arc<str>, usize>>,
     class_definition_scopes: std::collections::HashMap<SymbolId, ScopeId>,
     class_superclasses: std::collections::HashMap<SymbolId, Arc<str>>,
     class_method_signatures: std::collections::HashMap<
@@ -323,6 +325,7 @@ impl<'a> Collector<'a> {
             sql_name_refs: Vec::new(),
             sql_predicates: Vec::new(),
             sql_targets: Vec::new(),
+            class_member_index: std::collections::HashMap::new(),
             class_definition_scopes: std::collections::HashMap::new(),
             class_superclasses: std::collections::HashMap::new(),
             class_method_signatures: std::collections::HashMap::new(),
@@ -456,8 +459,25 @@ impl<'a> Collector<'a> {
                     .insert(alias.alias_name.clone(), signature);
             }
 
-            self.class_members.push(target_member);
+            self.push_class_member(target_member);
         }
+    }
+
+    fn push_class_member(&mut self, member: ClassMemberData) {
+        let index = self.class_members.len();
+        self.class_member_index
+            .entry(member.class_symbol)
+            .or_default()
+            .entry(Arc::clone(&member.name))
+            .or_insert(index);
+        self.class_members.push(member);
+    }
+
+    fn class_member_index(&self, class_symbol: SymbolId, name: &str) -> Option<usize> {
+        self.class_member_index
+            .get(&class_symbol)
+            .and_then(|members| members.get(name))
+            .copied()
     }
 
     fn node_has_structured_children(&self, node: NodeId) -> bool {
@@ -1743,19 +1763,23 @@ impl<'a> Collector<'a> {
     }
 
     fn render_type_ref_display(&self, node: NodeId) -> Option<Arc<str>> {
-        let tokens = self.syntax_token_nodes(node);
-        let mut rendered_tokens = Vec::new();
+        let mut rendered = String::new();
+        let mut prev_text: Option<&str> = None;
         let mut paren = 0i32;
         let mut bracket = 0i32;
         let mut brace = 0i32;
 
-        for token in tokens {
-            if self.syntax_token_is_comment(&token) {
+        for token in self.syntax(node).token_descendants() {
+            if token.token_kind() == Some(TokenKind::Comment) {
                 continue;
             }
+            let text = token.text(self.source)?;
 
-            if paren == 0 && bracket == 0 && brace == 0 && token.kind == TokenKind::Ident {
-                let text = token.text.as_ref();
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && token.token_kind() == Some(TokenKind::Ident)
+            {
                 if text.eq_ignore_ascii_case("initial")
                     || text.eq_ignore_ascii_case("length")
                     || text.eq_ignore_ascii_case("decimals")
@@ -1764,7 +1788,7 @@ impl<'a> Collector<'a> {
                 }
             }
 
-            match token.text.as_ref() {
+            match text {
                 "(" => paren += 1,
                 ")" => paren -= 1,
                 "[" => bracket += 1,
@@ -1774,10 +1798,16 @@ impl<'a> Collector<'a> {
                 _ => {}
             }
 
-            rendered_tokens.push(token);
+            let needs_space = !rendered.is_empty()
+                && !matches!(text, "," | ":" | "-" | ")" | "]")
+                && !matches!(prev_text, Some("(" | "[" | ":" | "-"));
+            if needs_space {
+                rendered.push(' ');
+            }
+            rendered.push_str(text);
+            prev_text = Some(text);
         }
 
-        let rendered = self.render_token_infos(&rendered_tokens);
         (!rendered.is_empty()).then(|| Arc::from(rendered))
     }
 

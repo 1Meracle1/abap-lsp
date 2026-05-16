@@ -604,6 +604,14 @@ impl<'ctx, 'a> DeclContext<'ctx, 'a> {
         self.collector.type_clause_display_from_typed_clause(node)
     }
 
+    pub(super) fn resolve_field_type_ref(
+        &self,
+        scope: ScopeId,
+        type_ref: &FieldTypeRefData,
+    ) -> Option<StructureId> {
+        self.collector.resolve_field_type_ref(scope, type_ref)
+    }
+
     pub(super) fn value_clause_display_from_typed_clause(
         &self,
         node: NodeId,
