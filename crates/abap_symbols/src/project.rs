@@ -9,7 +9,9 @@ use crate::def_map::{
     ReferenceKind, Resolution, SqlNameRefKind, SqlProjectionKind, StructureData,
     StructureFieldData, SymbolKind, UnitAnalysis,
 };
-use crate::facts::infer_semantic_facts_with_scope_indexes;
+use crate::facts::{
+    infer_semantic_facts_with_scope_indexes, infer_semantic_facts_with_scope_indexes_for_units,
+};
 use crate::ids::{ReferenceId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::{
     ScopeIndex, build_scope_index, include_predecessor_units_for_units, resolve_project_cross_unit,
@@ -1133,7 +1135,11 @@ pub(crate) fn analyze_project_incremental_from_locals(
     reclassify_project_open_sql_predicate_host_variables(&mut units);
     metrics.resolve_cross_unit_micros = resolve_cross_unit_timer.elapsed().as_micros();
     let infer_semantic_facts_timer = std::time::Instant::now();
-    infer_semantic_facts_with_scope_indexes(&mut units, &scope_indexes);
+    infer_semantic_facts_with_scope_indexes_for_units(
+        &mut units,
+        &scope_indexes,
+        &dirty_set.unit_ids,
+    );
     metrics.infer_semantic_facts_micros = infer_semantic_facts_timer.elapsed().as_micros();
     let rebuild_semantic_index_timer = std::time::Instant::now();
     for unit_id in &dirty_set.unit_ids {

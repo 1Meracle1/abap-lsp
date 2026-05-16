@@ -3249,12 +3249,14 @@ fn hydrate_workspace_dependency_documents_with_metrics(
                     if !expanded_artifacts.insert(record.artifact_id) {
                         continue;
                     }
-                    let inheritance_candidates = inheritance_candidates_by_artifact
-                        .entry(record.artifact_id)
-                        .or_insert_with(|| dependency_inheritance_candidates_from_record(&record));
-                    metrics.candidate_count += inheritance_candidates.len();
-                    for candidate in inheritance_candidates.iter() {
-                        let candidate_key = remote_candidate_key(candidate);
+                    let record_candidates = dependency_record_hydration_candidates(
+                        &workspace.root_uri,
+                        &record,
+                        &mut inheritance_candidates_by_artifact,
+                    );
+                    metrics.candidate_count += record_candidates.len();
+                    for candidate in record_candidates {
+                        let candidate_key = remote_candidate_key(&candidate);
                         if !queried_candidates.insert(candidate_key) {
                             continue;
                         }
@@ -3334,6 +3336,29 @@ fn workspace_cache_inputs(workspace: &WorkspaceState) -> Vec<DocumentInput> {
                 })
         })
         .collect()
+}
+
+fn dependency_record_hydration_candidates(
+    workspace_uri: &str,
+    record: &StoredArtifactRecord,
+    inheritance_candidates_by_artifact: &mut HashMap<i64, Vec<RemoteDependencyCandidate>>,
+) -> Vec<RemoteDependencyCandidate> {
+    let mut deduped = HashMap::new();
+    let document = workspace_document_from_dependency_record(workspace_uri, record);
+    let analysis_text = analysis_text_for_document(document.text.as_str(), true);
+    let unit = analyze_local_export_candidate_unit(&document.uri, analysis_text.as_ref());
+    for candidate in collect_remote_dependency_candidates_for_unit(&unit) {
+        insert_remote_candidate(&mut deduped, candidate);
+    }
+    for candidate in inheritance_candidates_by_artifact
+        .entry(record.artifact_id)
+        .or_insert_with(|| dependency_inheritance_candidates_from_record(record))
+        .iter()
+        .cloned()
+    {
+        insert_remote_candidate(&mut deduped, candidate);
+    }
+    deduped.into_values().collect()
 }
 
 fn resolved_dependency_inheritance_candidates(
@@ -18288,6 +18313,110 @@ dependency_mode = "remote-on-demand"
             build_remote_dependency_request(&mut state, &source_uri).is_none(),
             "hydrated cached type should not be re-requested remotely"
         );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
+    fn workspace_refresh_hydrates_transitive_central_dependencies_in_one_batch() {
+        let workspace_path = temp_workspace_path("central_dependency_transitive_hydration");
+        fs::create_dir_all(&workspace_path).expect("workspace dir");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            r#"
+version = 1
+
+[dependency_store]
+product_version = "s4-2023"
+default_package_version = "001"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+"#,
+        )
+        .expect("manifest");
+        fs::write(
+            workspace_path.join("main.abap"),
+            "REPORT zmain.\nDATA lo_first TYPE REF TO zcl_first.\n",
+        )
+        .expect("source");
+
+        let workspace_uri = path_to_file_uri(&workspace_path);
+        let mut state = ServerState::default();
+        configure_test_dependency_store(&mut state, &workspace_path);
+        state.register_workspace_folder(workspace_uri.clone());
+        refresh_workspace(&mut state, &workspace_uri);
+
+        store_remote_dependency_artifacts(
+            &mut state,
+            &StoreRemoteDependencyArtifactsParams {
+                workspace_uri: workspace_uri.clone(),
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "global-class".to_string(),
+                        object_name: "ZCL_FIRST".to_string(),
+                        object_uri: "/sap/bc/adt/oo/classes/zcl_first".to_string(),
+                        object_type: "CLAS/OC".to_string(),
+                        description: "Remote class".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+CLASS zcl_first DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS create RETURNING VALUE(ro_inst) TYPE REF TO zcl_second.
+ENDCLASS.
+CLASS zcl_first IMPLEMENTATION.
+ENDCLASS."
+                            .to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                    DependencyArtifactPayload {
+                        package_name: "ZPKG".to_string(),
+                        object_kind: "global-class".to_string(),
+                        object_name: "ZCL_SECOND".to_string(),
+                        object_uri: "/sap/bc/adt/oo/classes/zcl_second".to_string(),
+                        object_type: "CLAS/OC".to_string(),
+                        description: "Remote class".to_string(),
+                        file_extension: "abap".to_string(),
+                        source_text: "\
+CLASS zcl_second DEFINITION.
+ENDCLASS.
+CLASS zcl_second IMPLEMENTATION.
+ENDCLASS."
+                            .to_string(),
+                        fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                    },
+                ],
+                negative: Vec::new(),
+            },
+        )
+        .expect("store dependency artifacts");
+
+        refresh_workspace(&mut state, &workspace_uri);
+        let workspace = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace");
+        for object_name in ["zcl_first", "zcl_second"] {
+            assert!(
+                workspace.cache.uris().into_iter().any(|uri| {
+                    workspace.cache.get(uri.as_ref()).is_some_and(|snapshot| {
+                        snapshot
+                            .object_name
+                            .as_ref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(object_name))
+                    })
+                }),
+                "{object_name} should be hydrated"
+            );
+        }
+        let metrics = workspace
+            .dependency_store_hydration_metrics
+            .as_ref()
+            .expect("hydration metrics");
+        assert_eq!(metrics.hydrated_input_count, 2);
+        assert_eq!(metrics.published_batch_count, 1);
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use crate::def_map::{
     RoutineControlRegionData, RoutineLoopKind, RoutineSiteKind, SymbolKind, TypeFactData,
     UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
-use crate::ids::{ScopeId, SymbolHandle, SymbolId};
+use crate::ids::{ScopeId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::ScopeIndex;
 use crate::scope::{Namespace, ScopeKind};
 
@@ -59,6 +60,23 @@ pub(crate) fn infer_semantic_facts_with_scope_indexes(
     }
 }
 
+pub(crate) fn infer_semantic_facts_with_scope_indexes_for_units(
+    units: &mut [UnitAnalysis],
+    scope_indexes: &[ScopeIndex],
+    unit_ids: &HashSet<UnitId>,
+) {
+    let rerun = apply_inferred_unit_facts_for_units(
+        units,
+        infer_unit_facts(units, scope_indexes, unit_ids),
+    );
+    if rerun {
+        apply_inferred_unit_facts_for_units(
+            units,
+            infer_unit_facts(units, scope_indexes, unit_ids),
+        );
+    }
+}
+
 fn infer_all_unit_facts(
     units: &[UnitAnalysis],
     scope_indexes: &[ScopeIndex],
@@ -69,33 +87,66 @@ fn infer_all_unit_facts(
         .collect()
 }
 
+fn infer_unit_facts(
+    units: &[UnitAnalysis],
+    scope_indexes: &[ScopeIndex],
+    unit_ids: &HashSet<UnitId>,
+) -> Vec<(usize, InferredUnitFacts)> {
+    let builder = FactBuilder::new(units, scope_indexes);
+    let mut out = Vec::with_capacity(unit_ids.len());
+    for unit_id in unit_ids {
+        let unit_idx = unit_id.as_usize();
+        if unit_idx < units.len() {
+            out.push((unit_idx, builder.infer_unit(unit_idx)));
+        }
+    }
+    out
+}
+
 fn apply_inferred_unit_facts(units: &mut [UnitAnalysis], inferred: Vec<InferredUnitFacts>) -> bool {
     let mut rerun = false;
     for (unit, facts) in units.iter_mut().zip(inferred) {
-        unit.expression_facts = facts.expression_facts;
-        unit.value_flow_edges = facts.value_flow_edges;
-        for update in facts.symbol_type_facts {
-            let symbol = &mut unit.symbols[update.symbol_id.as_usize()];
-            if update.overwrite_existing {
-                rerun |= symbol.structure != update.type_fact.structure
-                    || symbol.declared_type != update.type_fact.declared_type
-                    || symbol.type_clause_display != update.type_fact.type_clause_display;
-                symbol.structure = update.type_fact.structure;
-                symbol.declared_type = update.type_fact.declared_type;
-                symbol.type_clause_display = update.type_fact.type_clause_display;
-            } else if symbol.declared_type.is_none() {
-                let structure = symbol.structure.or(update.type_fact.structure);
-                rerun |= symbol.structure != structure
-                    || symbol.declared_type != update.type_fact.declared_type;
-                symbol.structure = structure;
-                symbol.declared_type = update.type_fact.declared_type;
-            }
+        rerun |= apply_unit_facts(unit, facts);
+    }
+    rerun
+}
+
+fn apply_inferred_unit_facts_for_units(
+    units: &mut [UnitAnalysis],
+    inferred: Vec<(usize, InferredUnitFacts)>,
+) -> bool {
+    let mut rerun = false;
+    for (unit_idx, facts) in inferred {
+        rerun |= apply_unit_facts(&mut units[unit_idx], facts);
+    }
+    rerun
+}
+
+fn apply_unit_facts(unit: &mut UnitAnalysis, facts: InferredUnitFacts) -> bool {
+    let mut rerun = false;
+    unit.expression_facts = facts.expression_facts;
+    unit.value_flow_edges = facts.value_flow_edges;
+    for update in facts.symbol_type_facts {
+        let symbol = &mut unit.symbols[update.symbol_id.as_usize()];
+        if update.overwrite_existing {
+            rerun |= symbol.structure != update.type_fact.structure
+                || symbol.declared_type != update.type_fact.declared_type
+                || symbol.type_clause_display != update.type_fact.type_clause_display;
+            symbol.structure = update.type_fact.structure;
+            symbol.declared_type = update.type_fact.declared_type;
+            symbol.type_clause_display = update.type_fact.type_clause_display;
+        } else if symbol.declared_type.is_none() {
+            let structure = symbol.structure.or(update.type_fact.structure);
+            rerun |= symbol.structure != structure
+                || symbol.declared_type != update.type_fact.declared_type;
+            symbol.structure = structure;
+            symbol.declared_type = update.type_fact.declared_type;
         }
-        for (assignment_idx, lhs, rhs) in facts.assignment_type_facts {
-            if let Some(assignment) = unit.assignment_sites.get_mut(assignment_idx) {
-                assignment.lhs = lhs;
-                assignment.rhs = rhs;
-            }
+    }
+    for (assignment_idx, lhs, rhs) in facts.assignment_type_facts {
+        if let Some(assignment) = unit.assignment_sites.get_mut(assignment_idx) {
+            assignment.lhs = lhs;
+            assignment.rhs = rhs;
         }
     }
     rerun
@@ -109,6 +160,7 @@ struct FactBuilder<'a> {
     root_type_symbols: HashMap<Arc<str>, SymbolHandle>,
     function_modules_by_name: HashMap<Arc<str>, (usize, usize)>,
     observed_call_argument_types: HashMap<CallArgumentObservationKey, ObservedCallArgumentType>,
+    symbol_type_fact_cache: RefCell<HashMap<(usize, ScopeId, SymbolHandle), TypeFactData>>,
 }
 
 impl<'a> FactBuilder<'a> {
@@ -177,6 +229,7 @@ impl<'a> FactBuilder<'a> {
             root_type_symbols,
             function_modules_by_name,
             observed_call_argument_types: HashMap::new(),
+            symbol_type_fact_cache: RefCell::new(HashMap::new()),
         };
         builder.observed_call_argument_types = builder.build_observed_call_argument_types();
         builder
@@ -280,21 +333,14 @@ impl<'a> FactBuilder<'a> {
                 && symbol.declared_type.is_none()
         })?;
 
-        let refs: Vec<_> = unit
-            .references
-            .iter()
-            .filter(|reference| {
-                reference.namespace == Namespace::Value
-                    && reference.range.start >= assignment.rhs_range.start
-                    && reference.range.end <= assignment.rhs_range.end
-            })
-            .collect();
-        if refs.is_empty() {
-            return None;
-        }
-
+        let mut found_ref = false;
         let mut inferred_fact: Option<TypeFactData> = None;
-        for reference in refs {
+        for reference in unit.references.iter().filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.range.start >= assignment.rhs_range.start
+                && reference.range.end <= assignment.rhs_range.end
+        }) {
+            found_ref = true;
             let Some(Resolution::Symbol(handle)) = reference.resolution else {
                 return None;
             };
@@ -315,6 +361,9 @@ impl<'a> FactBuilder<'a> {
             }
         }
 
+        if !found_ref {
+            return None;
+        }
         inferred_fact.map(|fact| SymbolTypeFactUpdate {
             symbol_id: symbol.id,
             type_fact: fact,
@@ -545,29 +594,27 @@ impl<'a> FactBuilder<'a> {
         assignment: &crate::AssignmentSiteData,
     ) -> Option<TypeFactData> {
         let unit = &self.units[unit_idx];
-        let exact_accesses = unit
+        let mut exact_accesses = unit
             .field_accesses
             .iter()
             .filter(|access| !access.in_type_position && access.scope == assignment.scope)
-            .filter(|access| field_access_range(access) == assignment.rhs_range)
-            .collect::<Vec<_>>();
-        if exact_accesses.len() == 1 {
-            return Some(self.type_fact_for_access(unit_idx, exact_accesses[0]));
+            .filter(|access| field_access_range(access) == assignment.rhs_range);
+        if let Some(access) = exact_accesses.next()
+            && exact_accesses.next().is_none()
+        {
+            return Some(self.type_fact_for_access(unit_idx, access));
         }
 
-        let exact_refs = unit
-            .references
-            .iter()
-            .filter(|reference| {
-                reference.namespace == Namespace::Value
-                    && reference.scope == assignment.scope
-                    && reference.range == assignment.rhs_range
-            })
-            .collect::<Vec<_>>();
-        if exact_refs.len() != 1 {
+        let mut exact_refs = unit.references.iter().filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.scope == assignment.scope
+                && reference.range == assignment.rhs_range
+        });
+        let reference = exact_refs.next()?;
+        if exact_refs.next().is_some() {
             return None;
         }
-        let Some(Resolution::Symbol(handle)) = exact_refs[0].resolution else {
+        let Some(Resolution::Symbol(handle)) = reference.resolution else {
             return None;
         };
         Some(self.symbol_type_fact_for_site(unit_idx, assignment.scope, handle))
@@ -759,32 +806,30 @@ impl<'a> FactBuilder<'a> {
         range: &std::ops::Range<usize>,
     ) -> Option<TypeFactData> {
         let unit = &self.units[unit_idx];
-        let accesses = unit
+        let mut accesses = unit
             .field_accesses
             .iter()
             .filter(|access| access.scope == scope && !access.in_type_position)
-            .filter(|access| field_access_range(access) == *range)
-            .collect::<Vec<_>>();
-        if accesses.len() == 1 {
+            .filter(|access| field_access_range(access) == *range);
+        if let Some(access) = accesses.next()
+            && accesses.next().is_none()
+        {
             return self
-                .type_fact_for_access(unit_idx, accesses[0])
+                .type_fact_for_access(unit_idx, access)
                 .table_line
                 .map(|fact| *fact);
         }
 
-        let refs = unit
-            .references
-            .iter()
-            .filter(|reference| {
-                reference.namespace == Namespace::Value
-                    && reference.scope == scope
-                    && reference.range == *range
-            })
-            .collect::<Vec<_>>();
-        if refs.len() != 1 {
+        let mut refs = unit.references.iter().filter(|reference| {
+            reference.namespace == Namespace::Value
+                && reference.scope == scope
+                && reference.range == *range
+        });
+        let reference = refs.next()?;
+        if refs.next().is_some() {
             return None;
         }
-        let Some(Resolution::Symbol(handle)) = refs[0].resolution else {
+        let Some(Resolution::Symbol(handle)) = reference.resolution else {
             return None;
         };
         let symbol_unit_idx = self.unit_index(handle.unit)?;
@@ -1310,6 +1355,10 @@ impl<'a> FactBuilder<'a> {
         scope: ScopeId,
         handle: SymbolHandle,
     ) -> TypeFactData {
+        let key = (site_unit_idx, scope, handle);
+        if let Some(fact) = self.symbol_type_fact_cache.borrow().get(&key) {
+            return fact.clone();
+        }
         let Some(symbol_unit_idx) = self.unit_index(handle.unit) else {
             return TypeFactData::default();
         };
@@ -1339,7 +1388,12 @@ impl<'a> FactBuilder<'a> {
         } else {
             symbol.scope
         };
-        self.enrich_existing_type_fact(site_unit_idx, type_scope, symbol_unit_idx, &fact)
+        let fact =
+            self.enrich_existing_type_fact(site_unit_idx, type_scope, symbol_unit_idx, &fact);
+        self.symbol_type_fact_cache
+            .borrow_mut()
+            .insert(key, fact.clone());
+        fact
     }
 
     fn type_fact_from_declared_type(
