@@ -719,6 +719,9 @@ struct ConditionalAssignedTarget {
     field_mask: Option<u64>,
 }
 
+type SelectorStructureWriteCache = HashMap<(usize, usize), Option<SelectorStructureWrite>>;
+type DirectWriteCache = HashMap<(usize, usize), Option<DataflowValueId>>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldSymbolBindingTransfer {
     Set(DataflowValueId),
@@ -1717,6 +1720,8 @@ fn build_routine_dataflow(
             .then(left.reference.0.cmp(&right.reference.0))
             .then(left.value.as_usize().cmp(&right.value.as_usize()))
     });
+    let mut selector_structure_writes = SelectorStructureWriteCache::default();
+    let mut direct_writes = DirectWriteCache::default();
 
     let safe_field_symbol_checks =
         resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
@@ -1770,23 +1775,19 @@ fn build_routine_dataflow(
             values.len(),
         ),
     );
-    let sy_subrc_success_assigned_scope_refinements =
-        resolve_sy_subrc_success_assigned_scope_refinements(
-            unit,
-            &reference_uses,
-            &value_ids_by_symbol,
-            &structure_assignment_trackers,
-            &values,
-            values.len(),
-        );
-    let sy_subrc_success_structure_field_scope_refinements =
-        resolve_sy_subrc_success_structure_field_scope_refinements(
-            unit,
-            &reference_uses,
-            &value_ids_by_symbol,
-            &structure_assignment_trackers,
-            &values,
-        );
+    let (
+        sy_subrc_success_assigned_scope_refinements,
+        sy_subrc_success_structure_field_scope_refinements,
+    ) = resolve_sy_subrc_success_assignment_scope_refinements(
+        unit,
+        &reference_uses,
+        &value_ids_by_symbol,
+        &structure_assignment_trackers,
+        &mut selector_structure_writes,
+        &mut direct_writes,
+        &values,
+        values.len(),
+    );
     let structure_field_reads = resolve_structure_field_reads(
         project,
         resolution_index,
@@ -1842,6 +1843,8 @@ fn build_routine_dataflow(
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
+        &mut selector_structure_writes,
+        &mut direct_writes,
         &values,
     );
     union_dense_scope_refinements(
@@ -2190,6 +2193,7 @@ fn build_routine_dataflow(
                             &target.range,
                             &reference_uses,
                             &structure_assignment_trackers,
+                            &mut selector_structure_writes,
                         ) {
                             transfer.reads.retain(|read| {
                                 !(read.value == selector_write.base_value
@@ -2216,6 +2220,7 @@ fn build_routine_dataflow(
                             &target.range,
                             &reference_uses,
                             &value_ids_by_symbol,
+                            &mut direct_writes,
                             &values,
                         ) {
                             transfer.reads.retain(|read| {
@@ -2409,6 +2414,8 @@ fn build_routine_dataflow(
                     &reference_uses,
                     &value_ids_by_symbol,
                     &structure_assignment_trackers,
+                    &mut selector_structure_writes,
+                    &mut direct_writes,
                     &values,
                 ) {
                     transfer.writes.push(target.value);
@@ -2763,6 +2770,7 @@ fn build_routine_dataflow(
         &value_ids_by_symbol,
         &instruction_summaries,
         call_argument_effects,
+        &mut direct_writes,
     ));
     sort_diagnostics(&mut diagnostics);
 
@@ -2833,6 +2841,7 @@ fn build_dead_store_diagnostics(
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     instruction_summaries: &[InstructionDataflowSummary],
     call_argument_effects: &CallArgumentEffectMap,
+    direct_writes: &mut DirectWriteCache,
 ) -> Vec<Diagnostic> {
     if values.is_empty() || routine.cfg.blocks.is_empty() {
         return Vec::new();
@@ -2862,6 +2871,7 @@ fn build_dead_store_diagnostics(
         &tracked_values,
         call_argument_effects,
         &value_state_check_refs,
+        direct_writes,
     );
     let block_summaries =
         build_dead_store_block_summaries(routine, &instruction_summaries, values.len());
@@ -3229,6 +3239,7 @@ fn build_dead_store_instruction_summaries(
     tracked_values: &DenseBitSet,
     call_argument_effects: &CallArgumentEffectMap,
     value_state_check_refs: &std::collections::HashSet<crate::ReferenceId>,
+    direct_writes: &mut DirectWriteCache,
 ) -> Vec<DeadStoreInstructionSummary> {
     let mut out = Vec::with_capacity(routine.ir.instructions.len());
     for instruction in &routine.ir.instructions {
@@ -3296,6 +3307,7 @@ fn build_dead_store_instruction_summaries(
                             &target.range,
                             reference_uses,
                             value_ids_by_symbol,
+                            direct_writes,
                             values,
                         ) && tracked_values.contains(value)
                         {
@@ -4131,20 +4143,26 @@ fn value_state_check_value_id(
     })
 }
 
-fn resolve_sy_subrc_success_assigned_scope_refinements(
+fn resolve_sy_subrc_success_assignment_scope_refinements(
     unit: &UnitAnalysis,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_writes: &mut SelectorStructureWriteCache,
+    direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
     value_count: usize,
-) -> Vec<DenseBitSet> {
-    let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
+) -> (Vec<DenseBitSet>, Vec<Vec<u64>>) {
+    let mut assigned = vec![DenseBitSet::new(value_count); unit.scopes.len()];
+    let mut structure_fields = vec![vec![0u64; values.len()]; unit.scopes.len()];
     for check in &unit.value_state_checks {
         if !sy_subrc_success_check(unit, check) {
             continue;
         }
-        let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
+        let Some(scope_bits) = assigned.get_mut(check.scope.as_usize()) else {
+            continue;
+        };
+        let Some(scope_masks) = structure_fields.get_mut(check.scope.as_usize()) else {
             continue;
         };
         let Some(update) = latest_subrc_update_before_check(unit, check) else {
@@ -4156,48 +4174,18 @@ fn resolve_sy_subrc_success_assigned_scope_refinements(
             reference_uses,
             value_ids_by_symbol,
             structure_assignment_trackers,
-            values,
-        ) {
-            if target.field_mask.is_none() {
-                scope_bits.insert(target.value);
-            }
-        }
-    }
-    out
-}
-
-fn resolve_sy_subrc_success_structure_field_scope_refinements(
-    unit: &UnitAnalysis,
-    reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
-    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
-    values: &[RoutineDataflowValue],
-) -> Vec<Vec<u64>> {
-    let mut out = vec![vec![0u64; values.len()]; unit.scopes.len()];
-    for check in &unit.value_state_checks {
-        if !sy_subrc_success_check(unit, check) {
-            continue;
-        }
-        let Some(scope_masks) = out.get_mut(check.scope.as_usize()) else {
-            continue;
-        };
-        let Some(update) = latest_subrc_update_before_check(unit, check) else {
-            continue;
-        };
-        for target in conditional_assignment_targets_for_subrc_success_update(
-            unit,
-            update,
-            reference_uses,
-            value_ids_by_symbol,
-            structure_assignment_trackers,
+            selector_structure_writes,
+            direct_writes,
             values,
         ) {
             if let Some(mask) = target.field_mask {
                 scope_masks[target.value.as_usize()] |= mask;
+            } else {
+                scope_bits.insert(target.value);
             }
         }
     }
-    out
+    (assigned, structure_fields)
 }
 
 fn sy_subrc_success_check(unit: &UnitAnalysis, check: &crate::ValueStateCheckData) -> bool {
@@ -4305,6 +4293,8 @@ fn conditional_assignment_targets_for_subrc_success_update(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_writes: &mut SelectorStructureWriteCache,
+    direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> Vec<ConditionalAssignedTarget> {
     match update.statement {
@@ -4326,6 +4316,8 @@ fn conditional_assignment_targets_for_subrc_success_update(
                         reference_uses,
                         value_ids_by_symbol,
                         structure_assignment_trackers,
+                        selector_structure_writes,
+                        direct_writes,
                         values,
                     )
                 })
@@ -4347,6 +4339,8 @@ fn conditional_assignment_targets_for_subrc_success_update(
                     reference_uses,
                     value_ids_by_symbol,
                     structure_assignment_trackers,
+                    selector_structure_writes,
+                    direct_writes,
                     values,
                 )
             })
@@ -4361,6 +4355,8 @@ fn resolve_sy_subrc_success_guard_block_refinements(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_writes: &mut SelectorStructureWriteCache,
+    direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> (Vec<DenseBitSet>, Vec<Vec<u64>>, Vec<DenseBitSet>) {
     let mut assigned = vec![DenseBitSet::new(values.len()); routine.cfg.blocks.len()];
@@ -4407,6 +4403,8 @@ fn resolve_sy_subrc_success_guard_block_refinements(
             reference_uses,
             value_ids_by_symbol,
             structure_assignment_trackers,
+            selector_structure_writes,
+            direct_writes,
             values,
         ) {
             if let Some(mask) = target.field_mask {
@@ -4703,6 +4701,8 @@ fn conditional_assignment_target_for_range(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_writes: &mut SelectorStructureWriteCache,
+    direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> Option<ConditionalAssignedTarget> {
     if let Some(selector_write) = selector_structure_write_for_range(
@@ -4710,18 +4710,25 @@ fn conditional_assignment_target_for_range(
         range,
         reference_uses,
         structure_assignment_trackers,
+        selector_structure_writes,
     ) {
         return Some(ConditionalAssignedTarget {
             value: selector_write.base_value,
             field_mask: selector_write.field_mask,
         });
     }
-    direct_write_value_id_for_range(unit, range, reference_uses, value_ids_by_symbol, values).map(
-        |value| ConditionalAssignedTarget {
-            value,
-            field_mask: None,
-        },
+    direct_write_value_id_for_range(
+        unit,
+        range,
+        reference_uses,
+        value_ids_by_symbol,
+        direct_writes,
+        values,
     )
+    .map(|value| ConditionalAssignedTarget {
+        value,
+        field_mask: None,
+    })
 }
 
 fn sql_query_conditional_assignment_targets(
@@ -4730,6 +4737,8 @@ fn sql_query_conditional_assignment_targets(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_writes: &mut SelectorStructureWriteCache,
+    direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> Vec<ConditionalAssignedTarget> {
     unit.sql_targets
@@ -4742,6 +4751,8 @@ fn sql_query_conditional_assignment_targets(
                 reference_uses,
                 value_ids_by_symbol,
                 structure_assignment_trackers,
+                selector_structure_writes,
+                direct_writes,
                 values,
             )
         })
@@ -5332,28 +5343,59 @@ fn direct_write_value_id_for_range(
     range: &TextRange,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    cache: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> Option<DataflowValueId> {
-    let declared_values = unit
-        .symbols
-        .iter()
-        .filter(|symbol| {
-            trackable_symbol_kind(symbol.kind)
-                && symbol.decl_range.start >= range.start
-                && symbol.decl_range.end <= range.end
-        })
-        .filter_map(|symbol| {
-            value_ids_by_symbol
-                .get(&SymbolHandle {
-                    unit: unit.unit_id,
-                    symbol: symbol.id,
-                })
-                .copied()
-        })
-        .filter(|value| values[value.as_usize()].kind != DataflowValueKind::FieldSymbol)
-        .collect::<Vec<_>>();
-    if let [value] = declared_values.as_slice() {
-        return Some(*value);
+    let key = (range.start, range.end);
+    if let Some(cached) = cache.get(&key) {
+        return *cached;
+    }
+    let out = direct_write_value_id_for_range_uncached(
+        unit,
+        range,
+        reference_uses,
+        value_ids_by_symbol,
+        values,
+    );
+    cache.insert(key, out);
+    out
+}
+
+fn direct_write_value_id_for_range_uncached(
+    unit: &UnitAnalysis,
+    range: &TextRange,
+    reference_uses: &[ReferenceUse],
+    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+    values: &[RoutineDataflowValue],
+) -> Option<DataflowValueId> {
+    let mut declared_value = None;
+    let mut multiple_declared = false;
+    for symbol in &unit.symbols {
+        if !trackable_symbol_kind(symbol.kind)
+            || symbol.decl_range.start < range.start
+            || symbol.decl_range.end > range.end
+        {
+            continue;
+        }
+        let Some(value) = value_ids_by_symbol
+            .get(&SymbolHandle {
+                unit: unit.unit_id,
+                symbol: symbol.id,
+            })
+            .copied()
+        else {
+            continue;
+        };
+        if values[value.as_usize()].kind == DataflowValueKind::FieldSymbol {
+            continue;
+        }
+        if declared_value.replace(value).is_some() {
+            multiple_declared = true;
+            break;
+        }
+    }
+    if !multiple_declared && let Some(value) = declared_value {
+        return Some(value);
     }
 
     let direct = exact_reference_use_in_range(reference_uses, range)?;
@@ -5405,18 +5447,37 @@ fn selector_structure_write_for_range(
     range: &TextRange,
     reference_uses: &[ReferenceUse],
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    cache: &mut SelectorStructureWriteCache,
+) -> Option<SelectorStructureWrite> {
+    let key = (range.start, range.end);
+    if let Some(cached) = cache.get(&key) {
+        return *cached;
+    }
+    let out = selector_structure_write_for_range_uncached(
+        unit,
+        range,
+        reference_uses,
+        structure_assignment_trackers,
+    );
+    cache.insert(key, out);
+    out
+}
+
+fn selector_structure_write_for_range_uncached(
+    unit: &UnitAnalysis,
+    range: &TextRange,
+    reference_uses: &[ReferenceUse],
+    structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
 ) -> Option<SelectorStructureWrite> {
     let access = unit.field_accesses.iter().find(|access| {
-        if access.base_namespace != Namespace::Value
-            || access.field_path.is_empty()
-            || access.field_path.iter().any(|segment| segment.is_deref())
-        {
+        if access.base_namespace != Namespace::Value || access.base_range.start != range.start {
             return false;
         }
         let Some(last_segment) = access.field_path.last() else {
             return false;
         };
-        access.base_range.start == range.start && last_segment.range.end == range.end
+        last_segment.range.end == range.end
+            && !access.field_path.iter().any(|segment| segment.is_deref())
     })?;
     let base_use = reference_uses_in_range(reference_uses, range)
         .filter(|use_site| {
