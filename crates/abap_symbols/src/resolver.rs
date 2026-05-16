@@ -38,7 +38,6 @@ fn is_builtin_routine(name: &str) -> bool {
 }
 
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
-type TypeRefImportCache = HashMap<(usize, Namespace, Arc<str>, Vec<Arc<str>>), StructureId>;
 type SymbolStructureCache = HashMap<(u32, u32), StructureId>;
 type ClassScopeIndex = Vec<NamespaceCache<SymbolId>>;
 type PerUnitRootIndex = Vec<NamespaceCache<SymbolId>>;
@@ -95,6 +94,16 @@ struct RootHandleCache {
     by_unit: Vec<NamespaceCache<Option<SymbolHandle>>>,
 }
 
+#[derive(Default)]
+struct TypeRefImportCache {
+    entries: NamespaceCache<Vec<(Vec<Arc<str>>, Option<StructureId>)>>,
+}
+
+#[derive(Default)]
+struct TypeBaseStructureCache {
+    entries: NamespaceCache<Option<StructureId>>,
+}
+
 impl RootHandleCache {
     fn new() -> Self {
         Self::default()
@@ -121,6 +130,56 @@ impl RootHandleCache {
                 .resize_with(unit_idx + 1, NamespaceCache::default);
         }
         self.by_unit[unit_idx].insert(namespace, name, handle);
+    }
+}
+
+impl TypeRefImportCache {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(
+        &self,
+        namespace: Namespace,
+        base_name: &str,
+        field_path: &[Arc<str>],
+    ) -> Option<Option<StructureId>> {
+        self.entries
+            .get(namespace, base_name)?
+            .iter()
+            .find_map(|(path, structure)| (path.as_slice() == field_path).then_some(*structure))
+    }
+
+    fn insert(
+        &mut self,
+        namespace: Namespace,
+        base_name: Arc<str>,
+        field_path: &[Arc<str>],
+        structure: Option<StructureId>,
+    ) {
+        self.entries
+            .entry(namespace, base_name)
+            .or_default()
+            .push((field_path.to_vec(), structure));
+    }
+}
+
+impl TypeBaseStructureCache {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, namespace: Namespace, base_name: &str) -> Option<Option<StructureId>> {
+        self.entries.get(namespace, base_name).copied()
+    }
+
+    fn insert(
+        &mut self,
+        namespace: Namespace,
+        base_name: Arc<str>,
+        structure: Option<StructureId>,
+    ) {
+        self.entries.insert(namespace, base_name, structure);
     }
 }
 
@@ -744,6 +803,7 @@ fn resolve_project_cross_unit_with_filter(
         };
         let mut imported = HashMap::<(u32, u32), StructureId>::new();
         let mut type_ref_import_cache = TypeRefImportCache::new();
+        let mut type_base_structure_cache = TypeBaseStructureCache::new();
         let mut symbol_structure_cache = SymbolStructureCache::new();
 
         let symbol_inputs: Vec<_> = unit
@@ -766,6 +826,7 @@ fn resolve_project_cross_unit_with_filter(
                         &mut imported,
                         &mut root_handle_cache,
                         &mut type_ref_import_cache,
+                        &mut type_base_structure_cache,
                         &mut symbol_structure_cache,
                     )
                 })
@@ -798,6 +859,7 @@ fn resolve_project_cross_unit_with_filter(
                             &mut imported,
                             &mut root_handle_cache,
                             &mut type_ref_import_cache,
+                            &mut type_base_structure_cache,
                             &mut symbol_structure_cache,
                         )
                     })
@@ -830,6 +892,8 @@ fn resolve_project_cross_unit_with_filter(
             target_snapshots: &target_snapshots,
             target_pos_by_unit_idx: &target_pos_by_unit_idx,
         };
+        let mut imported = HashMap::<(u32, u32), StructureId>::new();
+        let mut type_base_structure_cache = TypeBaseStructureCache::new();
         let mut symbol_structure_cache = SymbolStructureCache::new();
         let symbol_inputs: Vec<_> = unit
             .symbols
@@ -847,7 +911,9 @@ fn resolve_project_cross_unit_with_filter(
                     &visible_units,
                     &root_index,
                     &mut unit.structures,
+                    &mut imported,
                     &mut root_handle_cache,
+                    &mut type_base_structure_cache,
                     &mut symbol_structure_cache,
                 )
             }));
@@ -1141,42 +1207,67 @@ fn import_structure_for_type_ref(
     imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
     type_ref_import_cache: &mut TypeRefImportCache,
+    type_base_structure_cache: &mut TypeBaseStructureCache,
     symbol_structure_cache: &mut SymbolStructureCache,
 ) -> Option<StructureId> {
-    let cache_key = (
-        unit_idx,
+    if type_ref.namespace == Namespace::Type && is_builtin_type(type_ref.base_name.as_ref()) {
+        return None;
+    }
+    if let Some(structure_id) = type_ref_import_cache.get(
         type_ref.namespace,
-        Arc::clone(&type_ref.base_name),
-        type_ref.field_path.clone(),
-    );
-    if let Some(structure_id) = type_ref_import_cache.get(&cache_key).copied() {
-        return Some(structure_id);
+        type_ref.base_name.as_ref(),
+        &type_ref.field_path,
+    ) {
+        return structure_id;
     }
 
-    let handle = resolve_root_symbol_handle(
+    let structure_id = import_structure_for_type_ref_uncached(
         snapshot,
         unit_idx,
         type_ref,
         per_unit_root_index,
         visible_units,
         root_index,
+        target_structures,
+        imported,
         root_handle_cache,
-    )?;
-    let source_unit_idx = handle.unit.as_usize();
-    let mut seen = HashSet::new();
-    let mut structure_id = resolve_symbol_structure_for_target(
+        type_base_structure_cache,
+        symbol_structure_cache,
+    );
+    type_ref_import_cache.insert(
+        type_ref.namespace,
+        Arc::clone(&type_ref.base_name),
+        &type_ref.field_path,
+        structure_id,
+    );
+    structure_id
+}
+
+fn import_structure_for_type_ref_uncached(
+    snapshot: &UnitSnapshot<'_>,
+    unit_idx: usize,
+    type_ref: &FieldTypeRefData,
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
+    visible_units: &[Vec<UnitId>],
+    root_index: &RootIndex,
+    target_structures: &mut Vec<StructureData>,
+    imported: &mut HashMap<(u32, u32), StructureId>,
+    root_handle_cache: &mut RootHandleCache,
+    type_base_structure_cache: &mut TypeBaseStructureCache,
+    symbol_structure_cache: &mut SymbolStructureCache,
+) -> Option<StructureId> {
+    let mut structure_id = resolve_type_base_structure_for_target(
         snapshot,
         unit_idx,
-        source_unit_idx,
-        handle.symbol,
+        type_ref,
         per_unit_root_index,
         visible_units,
         root_index,
         target_structures,
         imported,
         root_handle_cache,
+        type_base_structure_cache,
         symbol_structure_cache,
-        &mut seen,
     )?;
     for field_name in &type_ref.field_path {
         let field = target_structures[structure_id.as_usize()]
@@ -1185,8 +1276,60 @@ fn import_structure_for_type_ref(
             .find(|field| field.name.as_ref() == field_name.as_ref())?;
         structure_id = field.structure?;
     }
-    type_ref_import_cache.insert(cache_key, structure_id);
     Some(structure_id)
+}
+
+fn resolve_type_base_structure_for_target(
+    snapshot: &UnitSnapshot<'_>,
+    unit_idx: usize,
+    type_ref: &FieldTypeRefData,
+    per_unit_root_index: &[NamespaceCache<SymbolId>],
+    visible_units: &[Vec<UnitId>],
+    root_index: &RootIndex,
+    target_structures: &mut Vec<StructureData>,
+    imported: &mut HashMap<(u32, u32), StructureId>,
+    root_handle_cache: &mut RootHandleCache,
+    type_base_structure_cache: &mut TypeBaseStructureCache,
+    symbol_structure_cache: &mut SymbolStructureCache,
+) -> Option<StructureId> {
+    if let Some(structure_id) =
+        type_base_structure_cache.get(type_ref.namespace, type_ref.base_name.as_ref())
+    {
+        return structure_id;
+    }
+
+    let structure_id = resolve_root_symbol_handle(
+        snapshot,
+        unit_idx,
+        type_ref,
+        per_unit_root_index,
+        visible_units,
+        root_index,
+        root_handle_cache,
+    )
+    .and_then(|handle| {
+        let mut seen = HashSet::new();
+        resolve_symbol_structure_for_target(
+            snapshot,
+            unit_idx,
+            handle.unit.as_usize(),
+            handle.symbol,
+            per_unit_root_index,
+            visible_units,
+            root_index,
+            target_structures,
+            imported,
+            root_handle_cache,
+            symbol_structure_cache,
+            &mut seen,
+        )
+    });
+    type_base_structure_cache.insert(
+        type_ref.namespace,
+        Arc::clone(&type_ref.base_name),
+        structure_id,
+    );
+    structure_id
 }
 
 fn resolve_root_symbol_handle(
@@ -1363,44 +1506,30 @@ fn normalize_field_type_ref_for_target(
     visible_units: &[Vec<UnitId>],
     root_index: &RootIndex,
     target_structures: &mut Vec<StructureData>,
+    imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
+    type_base_structure_cache: &mut TypeBaseStructureCache,
     symbol_structure_cache: &mut SymbolStructureCache,
 ) -> Option<(Option<StructureId>, FieldTypeRefData)> {
     if type_ref.field_path.is_empty() {
         return None;
     }
+    if type_ref.namespace == Namespace::Type && is_builtin_type(type_ref.base_name.as_ref()) {
+        return None;
+    }
 
-    let base_ref = FieldTypeRefData {
-        namespace: type_ref.namespace,
-        is_ref: type_ref.is_ref,
-        base_name: Arc::clone(&type_ref.base_name),
-        field_path: Vec::new(),
-    };
-    let handle = resolve_root_symbol_handle(
+    let mut structure_id = resolve_type_base_structure_for_target(
         snapshot,
         unit_idx,
-        &base_ref,
-        per_unit_root_index,
-        visible_units,
-        root_index,
-        root_handle_cache,
-    )?;
-
-    let mut imported = HashMap::new();
-    let mut seen = HashSet::new();
-    let mut structure_id = resolve_symbol_structure_for_target(
-        snapshot,
-        unit_idx,
-        handle.unit.as_usize(),
-        handle.symbol,
+        type_ref,
         per_unit_root_index,
         visible_units,
         root_index,
         target_structures,
-        &mut imported,
+        imported,
         root_handle_cache,
+        type_base_structure_cache,
         symbol_structure_cache,
-        &mut seen,
     )?;
 
     for (idx, field_name) in type_ref.field_path.iter().enumerate() {
