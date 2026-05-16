@@ -26,12 +26,15 @@ struct ValidationLookup<'a> {
     scope_indexes: &'a [ScopeIndex],
     per_unit_root_index: Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>,
     per_unit_class_type_index: Vec<HashMap<SymbolId, HashMap<Arc<str>, SymbolId>>>,
+    per_unit_class_member_index: Vec<HashMap<SymbolId, HashMap<(Namespace, Arc<str>), SymbolId>>>,
     root_index: HashMap<(Namespace, Arc<str>), Vec<SymbolHandle>>,
     message_class_entries: HashMap<Arc<str>, HashMap<Arc<str>, MessageClassEntryHandle>>,
     include_predecessors: Vec<Vec<UnitId>>,
     include_order: IncludeOrderIndex,
     type_fact_lookup: TypeFactLookup,
 }
+
+type ReferenceResolutionIndex = HashMap<(usize, usize, Namespace, Arc<str>), SymbolHandle>;
 
 #[derive(Clone, Copy)]
 struct MessageClassEntryHandle {
@@ -297,13 +300,16 @@ fn build_validation_lookup<'a>(
 ) -> ValidationLookup<'a> {
     let mut per_unit_root_index = vec![HashMap::new(); project.units.len()];
     let mut per_unit_class_type_index = Vec::with_capacity(project.units.len());
+    let mut per_unit_class_member_index = Vec::with_capacity(project.units.len());
     let mut root_index = HashMap::new();
 
     for unit in &project.units {
         let mut class_type_index = HashMap::<SymbolId, HashMap<Arc<str>, SymbolId>>::new();
+        let mut class_member_index =
+            HashMap::<SymbolId, HashMap<(Namespace, Arc<str>), SymbolId>>::new();
         for symbol in &unit.symbols {
+            let scope = unit.scope(symbol.scope);
             if symbol.kind == SymbolKind::TypeDef {
-                let scope = unit.scope(symbol.scope);
                 if matches!(scope.kind, ScopeKind::Class | ScopeKind::Interface)
                     && let Some(owner) = scope.owner
                 {
@@ -311,6 +317,17 @@ fn build_validation_lookup<'a>(
                         .entry(owner)
                         .or_default()
                         .entry(Arc::clone(&symbol.name))
+                        .or_insert(symbol.id);
+                }
+            }
+            if scope.kind == ScopeKind::Class
+                && let Some(owner) = scope.owner
+            {
+                for &namespace in symbol.kind.namespaces() {
+                    class_member_index
+                        .entry(owner)
+                        .or_default()
+                        .entry((namespace, Arc::clone(&symbol.name)))
                         .or_insert(symbol.id);
                 }
             }
@@ -332,12 +349,14 @@ fn build_validation_lookup<'a>(
             }
         }
         per_unit_class_type_index.push(class_type_index);
+        per_unit_class_member_index.push(class_member_index);
     }
 
     ValidationLookup {
         scope_indexes,
         per_unit_root_index,
         per_unit_class_type_index,
+        per_unit_class_member_index,
         root_index,
         message_class_entries: build_message_class_lookup(project),
         include_predecessors: project.include_predecessor_units_by_unit(),
@@ -491,6 +510,7 @@ fn resolve_symbol_handle_in_scope_or_includes(
         });
     }
 
+    let key = (namespace, Arc::clone(name));
     if let Some(class_symbol) = enclosing_class_owner(unit, scope) {
         let class_name = Arc::clone(&unit.symbol(class_symbol).name);
         let predecessors = lookup
@@ -504,22 +524,19 @@ fn resolve_symbol_handle_in_scope_or_includes(
             else {
                 continue;
             };
-            let class_unit = &project.units[class.unit.as_usize()];
-            if let Some(symbol) = class_unit.symbols.iter().find(|symbol| {
-                symbol.name == *name
-                    && symbol.kind.occupies(namespace)
-                    && class_unit.scope(symbol.scope).kind == ScopeKind::Class
-                    && class_unit.scope(symbol.scope).owner == Some(class.symbol)
-            }) {
+            if let Some(symbol_id) = lookup.per_unit_class_member_index[class.unit.as_usize()]
+                .get(&class.symbol)
+                .and_then(|members| members.get(&key))
+                .copied()
+            {
                 return Some(SymbolHandle {
                     unit: class.unit,
-                    symbol: symbol.id,
+                    symbol: symbol_id,
                 });
             }
         }
     }
 
-    let key = (namespace, Arc::clone(name));
     let mut visited = HashSet::new();
     let mut queue: VecDeque<_> = unit
         .include_edges
@@ -576,11 +593,36 @@ fn scope_for_unit(unit: &crate::UnitAnalysis, scope: ScopeId) -> ScopeId {
     }
 }
 
+fn reference_resolution_key(
+    range: &TextRange,
+    namespace: Namespace,
+    name: &Arc<str>,
+) -> (usize, usize, Namespace, Arc<str>) {
+    (range.start, range.end, namespace, Arc::clone(name))
+}
+
+fn build_reference_resolution_index(unit: &crate::UnitAnalysis) -> ReferenceResolutionIndex {
+    let mut index = HashMap::with_capacity(unit.references.len());
+    for reference in &unit.references {
+        if let Some(Resolution::Symbol(handle)) = reference.resolution {
+            index
+                .entry(reference_resolution_key(
+                    &reference.range,
+                    reference.namespace,
+                    &reference.name,
+                ))
+                .or_insert(handle);
+        }
+    }
+    index
+}
+
 fn resolve_field_access_base_symbol(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
+    reference_resolution_index: Option<&ReferenceResolutionIndex>,
     access: &crate::FieldAccess,
 ) -> Option<SymbolHandle> {
     if let Some(handle) = resolve_symbol_handle_in_scope_or_includes(
@@ -595,17 +637,28 @@ fn resolve_field_access_base_symbol(
         return Some(handle);
     }
 
-    if let Some(handle) = unit.references.iter().find_map(|reference| {
-        (reference.range == access.base_range
-            && reference.namespace == access.base_namespace
-            && reference.name == access.base_name)
-            .then_some(reference.resolution)
-            .flatten()
-            .and_then(|resolution| match resolution {
-                Resolution::Symbol(handle) => Some(handle),
-                _ => None,
-            })
-    }) {
+    let reference_handle = if let Some(index) = reference_resolution_index {
+        index
+            .get(&reference_resolution_key(
+                &access.base_range,
+                access.base_namespace,
+                &access.base_name,
+            ))
+            .copied()
+    } else {
+        unit.references.iter().find_map(|reference| {
+            (reference.range == access.base_range
+                && reference.namespace == access.base_namespace
+                && reference.name == access.base_name)
+                .then_some(reference.resolution)
+                .flatten()
+                .and_then(|resolution| match resolution {
+                    Resolution::Symbol(handle) => Some(handle),
+                    _ => None,
+                })
+        })
+    };
+    if let Some(handle) = reference_handle {
         return Some(handle);
     }
 
@@ -1157,7 +1210,8 @@ fn constructor_for_binding_row_structure_key(
     if access.base_namespace != Namespace::Value {
         return None;
     }
-    let base_handle = resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)?;
+    let base_handle =
+        resolve_field_access_base_symbol(project, lookup, unit, scope_index, None, access)?;
     if access.field_path.is_empty() {
         let base_unit = &project.units[base_handle.unit.as_usize()];
         let base_symbol = base_unit.symbol(base_handle.symbol);
@@ -3934,6 +3988,7 @@ fn resolve_loop_field_source_structure<'a>(
         lookup,
         unit,
         scope_index,
+        None,
         context.source_access,
     )?;
     let base_unit = &project.units[base_handle.unit.as_usize()];
@@ -4003,7 +4058,8 @@ fn resolve_field_access_structure<'a>(
     access: &crate::FieldAccess,
 ) -> Option<(&'a crate::UnitAnalysis, StructureId)> {
     let scope_index = scope_indexes.get(unit.unit_id.as_usize())?;
-    let base_handle = resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)?;
+    let base_handle =
+        resolve_field_access_base_symbol(project, lookup, unit, scope_index, None, access)?;
     let base_unit = &project.units[base_handle.unit.as_usize()];
     let (current_unit, mut current_structure) = resolve_symbol_structure_project(
         project,
@@ -4172,6 +4228,7 @@ fn reference_depends_on_unresolved_field_access_base(
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
+    reference_resolution_index: Option<&ReferenceResolutionIndex>,
     reference: &crate::ReferenceData,
 ) -> bool {
     if reference.namespace != Namespace::Value || reference.kind != ReferenceKind::Identifier {
@@ -4195,9 +4252,14 @@ fn reference_depends_on_unresolved_field_access_base(
             }
         }
 
-        let Some(base_handle) =
-            resolve_field_access_base_symbol(project, lookup, unit, scope_index, access)
-        else {
+        let Some(base_handle) = resolve_field_access_base_symbol(
+            project,
+            lookup,
+            unit,
+            scope_index,
+            reference_resolution_index,
+            access,
+        ) else {
             return false;
         };
         let base_unit = &project.units[base_handle.unit.as_usize()];
@@ -4850,13 +4912,21 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
             scope_indexes,
             &scope_index,
         );
+        let reference_resolution_index = (!project.units[unit_idx].field_accesses.is_empty())
+            .then(|| build_reference_resolution_index(&project.units[unit_idx]));
         let field_access_bases: Vec<_> = project.units[unit_idx]
             .field_accesses
             .iter()
             .map(|access| {
                 let unit = &project.units[unit_idx];
-                let base_handle =
-                    resolve_field_access_base_symbol(project, &lookup, unit, &scope_index, access)?;
+                let base_handle = resolve_field_access_base_symbol(
+                    project,
+                    &lookup,
+                    unit,
+                    &scope_index,
+                    reference_resolution_index.as_ref(),
+                    access,
+                )?;
                 Some((
                     (base_handle.unit.as_usize(), base_handle.symbol),
                     resolve_class_selector_base(project, &lookup, unit, access, base_handle).map(
@@ -4975,6 +5045,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 &lookup,
                 unit,
                 &scope_index,
+                reference_resolution_index.as_ref(),
                 reference,
             ) && !is_field_symbol_binding_target
             {

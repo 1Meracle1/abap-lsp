@@ -11551,8 +11551,15 @@ fn build_local_lint_diagnostics(
     lint_select_single_without_full_key(context, unit, lint_policy, &mut diagnostics);
     lint_for_all_entries_without_guard(unit, lint_policy, &mut diagnostics);
     lint_dynamic_open_sql(unit, lint_policy, &mut diagnostics);
-    lint_ignored_authority_check(unit, lint_policy, &mut diagnostics);
-    lint_ignored_call_function_result(unit, source, lint_policy, &mut diagnostics);
+    let system_field_index = SystemFieldLintIndex::new(unit);
+    lint_ignored_authority_check(unit, &system_field_index, lint_policy, &mut diagnostics);
+    lint_ignored_call_function_result(
+        unit,
+        &system_field_index,
+        source,
+        lint_policy,
+        &mut diagnostics,
+    );
     diagnostics
 }
 
@@ -12111,8 +12118,59 @@ fn lint_dynamic_open_sql(
     }
 }
 
+type SystemFieldUpdateKey = (ScopeId, usize, usize, usize);
+type CallSiteKey = (ScopeId, usize, usize);
+
+struct SystemFieldLintIndex<'a> {
+    observed_subrc_updates: HashSet<SystemFieldUpdateKey>,
+    call_function_sites: HashMap<CallSiteKey, &'a CallSiteData>,
+}
+
+impl<'a> SystemFieldLintIndex<'a> {
+    fn new(unit: &'a UnitAnalysis) -> Self {
+        let mut observed_subrc_updates = HashSet::new();
+        for check in unit
+            .value_state_checks
+            .iter()
+            .filter(|check| is_sy_subrc_check(check))
+        {
+            if let Some(update) = latest_subrc_update_before_check(unit, check) {
+                observed_subrc_updates.insert(system_field_update_key(update));
+            }
+        }
+
+        let mut call_function_sites = HashMap::new();
+        for call_site in &unit.call_sites {
+            if matches!(call_site.target, NamedArgumentTarget::Function { .. }) {
+                call_function_sites
+                    .entry(call_site_key(call_site.scope, &call_site.range))
+                    .or_insert(call_site);
+            }
+        }
+
+        Self {
+            observed_subrc_updates,
+            call_function_sites,
+        }
+    }
+}
+
+fn system_field_update_key(update: &SystemFieldUpdateData) -> SystemFieldUpdateKey {
+    (
+        update.scope,
+        update.range.start,
+        update.range.end,
+        update.statement as usize,
+    )
+}
+
+fn call_site_key(scope: ScopeId, range: &Range<usize>) -> CallSiteKey {
+    (scope, range.start, range.end)
+}
+
 fn lint_ignored_authority_check(
     unit: &UnitAnalysis,
+    system_field_index: &SystemFieldLintIndex<'_>,
     lint_policy: &LintPolicy,
     diagnostics: &mut Vec<LintDiagnostic>,
 ) {
@@ -12125,7 +12183,7 @@ fn lint_ignored_authority_check(
         {
             continue;
         }
-        if system_field_update_result_is_observed(unit, update) {
+        if system_field_update_result_is_observed(system_field_index, update) {
             continue;
         }
         emit_lint_diagnostic(
@@ -12147,6 +12205,7 @@ enum CallFunctionResultEvidence {
 
 fn lint_ignored_call_function_result(
     unit: &UnitAnalysis,
+    system_field_index: &SystemFieldLintIndex<'_>,
     source: &str,
     lint_policy: &LintPolicy,
     diagnostics: &mut Vec<LintDiagnostic>,
@@ -12160,10 +12219,10 @@ fn lint_ignored_call_function_result(
         {
             continue;
         }
-        let Some(call_site) = call_function_site_for_update(unit, update) else {
+        let Some(call_site) = call_function_site_for_update(system_field_index, update) else {
             continue;
         };
-        if system_field_update_result_is_observed(unit, update)
+        if system_field_update_result_is_observed(system_field_index, update)
             || call_function_has_potentially_handled_result_argument(unit, call_site)
         {
             continue;
@@ -12393,25 +12452,22 @@ fn scope_has_direct_terminating_site(unit: &UnitAnalysis, scope: ScopeId) -> boo
 }
 
 fn system_field_update_result_is_observed(
-    unit: &UnitAnalysis,
+    system_field_index: &SystemFieldLintIndex<'_>,
     update: &SystemFieldUpdateData,
 ) -> bool {
-    unit.value_state_checks
-        .iter()
-        .filter(|check| is_sy_subrc_check(check))
-        .filter_map(|check| latest_subrc_update_before_check(unit, check))
-        .any(|latest| same_system_field_update(latest, update))
+    system_field_index
+        .observed_subrc_updates
+        .contains(&system_field_update_key(update))
 }
 
 fn call_function_site_for_update<'a>(
-    unit: &'a UnitAnalysis,
+    system_field_index: &'a SystemFieldLintIndex<'a>,
     update: &SystemFieldUpdateData,
 ) -> Option<&'a CallSiteData> {
-    unit.call_sites.iter().find(|call_site| {
-        call_site.scope == update.scope
-            && call_site.range == update.range
-            && matches!(call_site.target, NamedArgumentTarget::Function { .. })
-    })
+    system_field_index
+        .call_function_sites
+        .get(&call_site_key(update.scope, &update.range))
+        .copied()
 }
 
 fn call_function_has_potentially_handled_result_argument(
