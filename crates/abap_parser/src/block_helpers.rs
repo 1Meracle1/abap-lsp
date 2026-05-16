@@ -13,7 +13,9 @@ pub(crate) enum Boundary<'a> {
 
 #[inline]
 pub(crate) fn is_keyword(source: &str, token: &Token, kw: &str) -> bool {
-    token.kind == TokenKind::Ident && token.lexeme(source).eq_ignore_ascii_case(kw)
+    token.kind == TokenKind::Ident
+        && token.range.end - token.range.start == kw.len()
+        && token.lexeme(source).eq_ignore_ascii_case(kw)
 }
 
 pub(crate) fn skip_trivia(tokens: &[Token], mut idx: usize) -> usize {
@@ -162,6 +164,7 @@ pub(crate) fn recover_skip_after_keyword(
 ) -> usize {
     while idx < tokens.len() {
         if tokens[idx].kind == TokenKind::Ident
+            && tokens[idx].range.end - tokens[idx].range.start == keyword.len()
             && tokens[idx].lexeme(source).eq_ignore_ascii_case(keyword)
         {
             let mut j = idx + 1;

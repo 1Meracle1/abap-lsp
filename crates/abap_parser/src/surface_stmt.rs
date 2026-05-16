@@ -13041,8 +13041,9 @@ pub fn try_parse_select_stmt(
     let (mut children, next) = parse_select_header_until_period(b, source, tokens, idx, errors);
 
     let mut cursor = next;
-    let endselect_idx = recover_skip_after_keyword(source, tokens, next, "ENDSELECT");
-    if !select_header_is_flat(tokens, source, idx, next) && endselect_idx != tokens.len() {
+    if !select_header_is_flat(tokens, source, idx, next)
+        && recover_skip_after_keyword(source, tokens, next, "ENDSELECT") != tokens.len()
+    {
         let (body, after_body) =
             parse_body_until_keywords(b, source, tokens, cursor, errors, &["ENDSELECT"]);
         children.extend(body);
@@ -13103,9 +13104,8 @@ pub fn try_parse_with_select_stmt(
     children.extend(select_children);
 
     let mut cursor = next;
-    let endselect_idx = recover_skip_after_keyword(source, tokens, next, "ENDSELECT");
     if !select_header_is_flat(tokens, source, main_select_idx, next)
-        && endselect_idx != tokens.len()
+        && recover_skip_after_keyword(source, tokens, next, "ENDSELECT") != tokens.len()
     {
         let (body, after_body) =
             parse_body_until_keywords(b, source, tokens, cursor, errors, &["ENDSELECT"]);
