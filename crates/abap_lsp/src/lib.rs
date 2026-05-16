@@ -3094,16 +3094,6 @@ fn workspace_committed_build_plan(_workspace: &WorkspaceState) -> SnapshotBuildP
     SnapshotBuildPlan::EDITOR_WORKSPACE
 }
 
-fn workspace_dependency_hydration_build_plan(workspace: &WorkspaceState) -> SnapshotBuildPlan {
-    let mut build_plan = workspace_committed_build_plan(workspace);
-    build_plan.routine_analysis = false;
-    build_plan.static_analysis = false;
-    build_plan.call_graph = false;
-    build_plan.callable_summaries = false;
-    build_plan.lint_analysis = false;
-    build_plan
-}
-
 fn hydrate_workspace_dependency_documents(
     workspace: &mut WorkspaceState,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
@@ -3137,19 +3127,18 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     };
     metrics.reader_available = true;
 
-    let build_plan = workspace_dependency_hydration_build_plan(workspace);
     let mut queried_candidates = HashSet::<String>::new();
     let mut scanned_candidate_sources = HashSet::<Arc<str>>::new();
     let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
     let mut inheritance_candidates_by_artifact =
         HashMap::<i64, Vec<RemoteDependencyCandidate>>::new();
+    let mut inputs = Vec::<DocumentInput>::new();
+    let mut input_uris = HashSet::<Arc<str>>::new();
 
     loop {
         metrics.iterations += 1;
         let candidate_dependency_count = candidate_dependency_uris.len();
-        let mut inputs = Vec::<DocumentInput>::new();
-        let mut input_uris = HashSet::<Arc<str>>::new();
 
         let cache_uris = workspace.cache.uris();
         metrics.cache_uri_scans += cache_uris.len();
@@ -3281,32 +3270,26 @@ fn hydrate_workspace_dependency_documents_with_metrics(
             }
         }
 
-        if inputs.is_empty() {
-            if candidate_dependency_uris.len() > candidate_dependency_count {
-                continue;
-            }
-            break;
+        let has_unscanned_cached_dependency = candidate_dependency_uris.iter().any(|uri| {
+            !scanned_candidate_sources.contains(uri.as_ref())
+                && workspace.cache.get(uri.as_ref()).is_some()
+        });
+        if candidate_dependency_uris.len() > candidate_dependency_count
+            && has_unscanned_cached_dependency
+        {
+            continue;
         }
+        break;
+    }
 
-        metrics.hydrated_input_count += inputs.len();
-        metrics.published_batch_count += 1;
+    if !inputs.is_empty() {
+        metrics.hydrated_input_count = inputs.len();
+        metrics.published_batch_count = 1;
         let publish_start = Instant::now();
         workspace
             .cache
-            .publish_inputs_with_build_plan(inputs, build_plan);
+            .publish_inputs_with_build_plan(inputs, workspace_committed_build_plan(workspace));
         metrics.publish_micros += publish_start.elapsed().as_micros();
-    }
-
-    if metrics.published_batch_count > 0 {
-        let final_inputs = workspace_cache_inputs(workspace);
-        if !final_inputs.is_empty() {
-            let publish_start = Instant::now();
-            workspace.cache.publish_inputs_with_build_plan(
-                final_inputs,
-                workspace_committed_build_plan(workspace),
-            );
-            metrics.publish_micros += publish_start.elapsed().as_micros();
-        }
     }
 
     let mut hydrated = HashMap::new();
@@ -3316,26 +3299,6 @@ fn hydrate_workspace_dependency_documents_with_metrics(
         }
     }
     hydrated
-}
-
-fn workspace_cache_inputs(workspace: &WorkspaceState) -> Vec<DocumentInput> {
-    workspace
-        .cache
-        .uris()
-        .into_iter()
-        .filter_map(|uri| {
-            workspace
-                .cache
-                .get(uri.as_ref())
-                .map(|snapshot| DocumentInput {
-                    uri: Arc::clone(&snapshot.uri),
-                    version: snapshot.version,
-                    text: Arc::clone(&snapshot.text),
-                    is_dependency: snapshot.is_dependency,
-                    object_name: snapshot.object_name.clone(),
-                })
-        })
-        .collect()
 }
 
 fn dependency_record_hydration_candidates(
