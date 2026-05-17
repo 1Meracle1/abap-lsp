@@ -3,15 +3,10 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::{
-    Boundary, error_token_children, inline_name_spacing_is_valid, is_keyword,
-    next_after_unterminated_scan, parse_body_until_keywords, parse_end_keyword,
-    parse_header_until_period, parse_inline_name, scan_boundary_keywords, skip_trivia,
+    inline_name_spacing_is_valid, is_keyword, parse_inline_name, skip_trivia,
 };
-use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
-use crate::stmt_period::{
-    StmtPeriodScan, delimiter_error, has_non_comment_tokens, scan_until_statement_period,
-    unterminated_err_end,
-};
+use crate::parser::{PResult, ParseFailure, Parser};
+use crate::stmt_period::{is_definite_stmt_lead_keyword, line_start_assignment, token_begins_line};
 use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
 
@@ -39,115 +34,6 @@ fn scan_catch_type_ref_end(tokens: &[Token], idx: usize) -> usize {
     i
 }
 
-fn parse_catch_header_until_period(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    catch_idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> (Vec<NodeId>, usize) {
-    let catch_tok = &tokens[catch_idx];
-    match scan_until_statement_period(tokens, source, catch_idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
-            if !has_non_comment_tokens(tokens, catch_idx + 1, period_i) {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected exception class after CATCH".to_string(),
-                    range: catch_tok.range.start..tokens[period_i].range.end,
-                });
-            }
-            let mut children = vec![token_leaf(b, catch_tok)];
-            let mut cursor = catch_idx + 1;
-            while cursor < period_i {
-                let token = &tokens[cursor];
-                if token.kind == TokenKind::Comment {
-                    children.push(token_leaf(b, token));
-                    cursor += 1;
-                    continue;
-                }
-                if is_keyword(source, token, "into") {
-                    children.push(token_leaf(b, token));
-                    let target_start = skip_trivia(tokens, cursor + 1);
-                    if target_start < period_i {
-                        if let Some((inline_decl, next_idx)) =
-                            try_parse_catch_inline_data_target(b, source, tokens, target_start)
-                        {
-                            children.push(inline_decl);
-                            for trailing in &tokens[next_idx..period_i] {
-                                children.push(token_leaf(b, trailing));
-                            }
-                        } else {
-                            let expr = parse_arithmetic_expr(
-                                b,
-                                source,
-                                &tokens[target_start..period_i],
-                                None,
-                            );
-                            children.push(expr);
-                        }
-                    }
-                    cursor = period_i;
-                    continue;
-                }
-                if is_keyword(source, token, "before") || is_keyword(source, token, "unwind") {
-                    children.push(token_leaf(b, token));
-                    cursor += 1;
-                    continue;
-                }
-                let type_end = scan_catch_type_ref_end(tokens, cursor);
-                if type_end > cursor {
-                    children.push(build_type_ref_node(b, source, &tokens[cursor..type_end]));
-                    cursor = type_end;
-                    continue;
-                }
-                children.push(token_leaf(b, token));
-                cursor += 1;
-            }
-            children.push(token_leaf(b, &tokens[period_i]));
-            (children, period_i + 1)
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, catch_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after CATCH clause".to_string(),
-                range: catch_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, catch_idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                catch_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    }
-}
-
-fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    let mut i = start;
-    while i < tokens.len() {
-        let token = &tokens[i];
-        match token.kind {
-            TokenKind::Eof => return None,
-            TokenKind::Period if paren == 0 && bracket == 0 && brace == 0 => return Some(i),
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen if paren > 0 => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket if bracket > 0 => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace if brace > 0 => brace -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
 fn catch_system_exceptions_body_start(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
     let catch_tok = tokens.get(idx)?;
     if !is_keyword(source, catch_tok, "catch") {
@@ -168,44 +54,6 @@ fn catch_system_exceptions_body_start(source: &str, tokens: &[Token], idx: usize
         return None;
     }
     Some(exceptions_idx + 1)
-}
-
-fn parse_catch_system_exceptions_header_until_period(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    catch_idx: usize,
-    body_start_idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> (Vec<NodeId>, usize) {
-    let catch_tok = &tokens[catch_idx];
-    match scan_until_top_level_period(tokens, body_start_idx) {
-        Some(period_i) => {
-            let children = error_token_children(b, tokens, catch_idx, period_i + 1);
-            (children, period_i + 1)
-        }
-        None => {
-            let end_exclusive = tokens
-                .iter()
-                .position(|token| token.kind == TokenKind::Eof)
-                .unwrap_or(tokens.len());
-            let err_end = unterminated_err_end(tokens, end_exclusive, catch_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after CATCH SYSTEM-EXCEPTIONS header"
-                    .to_string(),
-                range: catch_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, catch_idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                catch_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    }
 }
 
 fn try_parse_loop_inline_data_target(
@@ -252,15 +100,6 @@ fn try_parse_loop_inline_data_target(
         ),
         next_idx + 1,
     ))
-}
-
-fn try_parse_catch_inline_data_target(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    try_parse_loop_inline_data_target(b, source, tokens, idx)
 }
 
 fn try_parse_loop_inline_field_symbol_target(
@@ -325,427 +164,6 @@ fn try_parse_loop_inline_field_symbol_target(
     ))
 }
 
-fn is_loop_group_by_start(source: &str, tokens: &[Token], idx: usize) -> bool {
-    tokens
-        .get(idx)
-        .is_some_and(|token| is_keyword(source, token, "group"))
-        && tokens
-            .get(skip_trivia(tokens, idx + 1))
-            .is_some_and(|token| is_keyword(source, token, "by"))
-}
-
-fn is_loop_at_group_start(source: &str, tokens: &[Token], idx: usize) -> bool {
-    tokens
-        .get(idx)
-        .is_some_and(|token| is_keyword(source, token, "group"))
-        && !tokens
-            .get(skip_trivia(tokens, idx + 1))
-            .is_some_and(|token| is_keyword(source, token, "by"))
-}
-
-fn loop_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
-    let Some(token) = tokens.get(idx) else {
-        return false;
-    };
-    token.kind == TokenKind::Ident
-        && (is_keyword(source, token, "into")
-            || is_keyword(source, token, "assigning")
-            || is_keyword(source, token, "where")
-            || is_keyword(source, token, "using")
-            || is_keyword(source, token, "transporting")
-            || is_loop_group_by_start(source, tokens, idx)
-            || is_keyword(source, token, "from")
-            || is_keyword(source, token, "to")
-            || is_keyword(source, token, "step")
-            || (is_keyword(source, token, "reference")
-                && tokens
-                    .get(idx + 1)
-                    .is_some_and(|next| is_keyword(source, next, "into"))))
-}
-
-fn scan_loop_expr_end(source: &str, tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
-    let mut idx = start;
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-
-    while idx < end_exclusive {
-        let token = &tokens[idx];
-        if token.kind == TokenKind::Comment {
-            idx += 1;
-            continue;
-        }
-        if paren == 0
-            && bracket == 0
-            && brace == 0
-            && (token.kind == TokenKind::Period || loop_clause_starts(source, tokens, idx))
-        {
-            break;
-        }
-        match token.kind {
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
-            _ => {}
-        }
-        idx += 1;
-    }
-
-    idx
-}
-
-fn loop_group_by_tail_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
-    let Some(token) = tokens.get(idx) else {
-        return false;
-    };
-    is_keyword(source, token, "ascending")
-        || is_keyword(source, token, "descending")
-        || is_keyword(source, token, "without")
-        || loop_clause_starts(source, tokens, idx)
-}
-
-fn scan_loop_group_by_expr_end(
-    source: &str,
-    tokens: &[Token],
-    start: usize,
-    end_exclusive: usize,
-) -> usize {
-    let mut idx = start;
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-
-    while idx < end_exclusive {
-        let token = &tokens[idx];
-        if token.kind == TokenKind::Comment {
-            idx += 1;
-            continue;
-        }
-        if paren == 0
-            && bracket == 0
-            && brace == 0
-            && (token.kind == TokenKind::Period || loop_group_by_tail_starts(source, tokens, idx))
-        {
-            break;
-        }
-        match token.kind {
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
-            _ => {}
-        }
-        idx += 1;
-    }
-
-    idx
-}
-
-fn parse_loop_clause_expr(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    expr_start: usize,
-    expr_end: usize,
-    prev_before_first: Option<&Token>,
-    kind: SyntaxKind,
-    keyword_tokens: &[usize],
-    logical: bool,
-) -> Option<NodeId> {
-    if expr_start >= expr_end {
-        return None;
-    }
-    let expr = if logical {
-        parse_logical_expr(b, source, &tokens[expr_start..expr_end], prev_before_first)
-    } else {
-        parse_arithmetic_expr(b, source, &tokens[expr_start..expr_end], prev_before_first)
-    };
-    let start = tokens[*keyword_tokens.first()?].range.start;
-    let end = b.span(expr).end;
-    let mut children: Vec<NodeId> = keyword_tokens
-        .iter()
-        .map(|&idx| token_leaf(b, &tokens[idx]))
-        .collect();
-    children.push(expr);
-    Some(b.branch(kind, start..end, &children))
-}
-
-fn parse_loop_group_by_clause(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    group_idx: usize,
-    by_idx: usize,
-    expr_start: usize,
-    expr_end: usize,
-) -> Option<NodeId> {
-    if expr_start >= expr_end {
-        return None;
-    }
-    let mut children = vec![
-        token_leaf(b, &tokens[group_idx]),
-        token_leaf(b, &tokens[by_idx]),
-    ];
-    children.extend(
-        tokens[expr_start..expr_end]
-            .iter()
-            .map(|token| token_leaf(b, token)),
-    );
-    Some(b.branch(
-        SyntaxKind::LoopGroupByClause,
-        tokens[group_idx].range.start..tokens[expr_end - 1].range.end,
-        &children,
-    ))
-}
-
-pub fn try_parse_while_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let while_tok = tokens.get(idx)?;
-    if !is_keyword(source, while_tok, "while") {
-        return None;
-    }
-
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
-            let cond = if let Some(delim_error) = delimiter_error(tokens, idx + 1, period_i) {
-                errors.push(delim_error);
-                let err_children = error_token_children(b, tokens, idx + 1, period_i);
-                b.branch(
-                    SyntaxKind::Error,
-                    while_tok.range.end..tokens[period_i].range.start,
-                    &err_children,
-                )
-            } else if has_non_comment_tokens(tokens, idx + 1, period_i) {
-                parse_logical_expr(b, source, &tokens[idx + 1..period_i], Some(while_tok))
-            } else {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected condition after WHILE".to_string(),
-                    range: while_tok.range.start..tokens[period_i].range.end,
-                });
-                let err_children = error_token_children(b, tokens, idx + 1, period_i);
-                b.branch(
-                    SyntaxKind::Error,
-                    while_tok.range.end..tokens[period_i].range.start,
-                    &err_children,
-                )
-            };
-            (
-                vec![
-                    token_leaf(b, while_tok),
-                    cond,
-                    token_leaf(b, &tokens[period_i]),
-                ],
-                period_i + 1,
-            )
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, while_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after WHILE condition".to_string(),
-                range: while_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                while_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    };
-
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDWHILE"]);
-    children.extend(body);
-    next = after_body;
-
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        while_tok,
-        "ENDWHILE",
-        "syntax error: expected ENDWHILE",
-        errors,
-    );
-    children.extend(end_children);
-    let end = end_pos.max(
-        children
-            .last()
-            .copied()
-            .map(|id| b.span(id).end)
-            .unwrap_or(while_tok.range.end),
-    );
-    let node = b.branch(SyntaxKind::WhileStmt, while_tok.range.start..end, &children);
-    Some((node, next_after))
-}
-
-/// `TIMES` keyword that ends `DO <arith> TIMES .`, not an identifier inside the expression.
-fn find_do_times_delimiter(
-    source: &str,
-    tokens: &[Token],
-    mut start: usize,
-    period_i: usize,
-) -> Option<usize> {
-    while start < period_i {
-        match tokens[start].kind {
-            TokenKind::Comment => start += 1,
-            TokenKind::Ident if tokens[start].lexeme(source).eq_ignore_ascii_case("times") => {
-                let mut j = start + 1;
-                while j < period_i && tokens[j].kind == TokenKind::Comment {
-                    j += 1;
-                }
-                if j == period_i {
-                    return Some(start);
-                }
-                start += 1;
-            }
-            _ => start += 1,
-        }
-    }
-    None
-}
-
-fn trim_trailing_comments(tokens: &[Token], start: usize, end_exclusive: usize) -> usize {
-    let mut e = end_exclusive;
-    while e > start && tokens[e - 1].kind == TokenKind::Comment {
-        e -= 1;
-    }
-    e
-}
-
-fn is_loop_clause_keyword(source: &str, token: &Token) -> bool {
-    is_keyword(source, token, "into")
-        || is_keyword(source, token, "assigning")
-        || is_keyword(source, token, "reference")
-        || is_keyword(source, token, "where")
-        || is_keyword(source, token, "from")
-        || is_keyword(source, token, "to")
-        || is_keyword(source, token, "step")
-}
-
-/// `DO .` or `DO <arith> TIMES .` — parses the repetition count as an expression (like `WHILE` does
-/// for its condition) so identifiers participate in semantic analysis.
-fn parse_do_header_until_period(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    do_idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-    missing_period_message: &str,
-) -> (Vec<NodeId>, usize) {
-    match scan_until_statement_period(tokens, source, do_idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
-            let after_do = skip_trivia(tokens, do_idx + 1);
-            if let Some(times_i) = find_do_times_delimiter(source, tokens, after_do, period_i) {
-                let expr_end = trim_trailing_comments(tokens, after_do, times_i);
-                let mut children = vec![token_leaf(b, &tokens[do_idx])];
-                if after_do < expr_end {
-                    let expr = parse_arithmetic_expr(
-                        b,
-                        source,
-                        &tokens[after_do..expr_end],
-                        Some(&tokens[do_idx]),
-                    );
-                    children.push(expr);
-                } else {
-                    errors.push(crate::ParseError {
-                        message: "syntax error: expected repetition count before TIMES".to_string(),
-                        range: tokens[do_idx].range.start..tokens[times_i].range.end,
-                    });
-                    let err = error_token_children(b, tokens, times_i, times_i + 1);
-                    children.push(b.branch(SyntaxKind::Error, tokens[times_i].range.clone(), &err));
-                }
-                children.push(token_leaf(b, &tokens[times_i]));
-                let mut j = times_i + 1;
-                while j < period_i {
-                    if tokens[j].kind == TokenKind::Comment {
-                        children.push(token_leaf(b, &tokens[j]));
-                    }
-                    j += 1;
-                }
-                children.push(token_leaf(b, &tokens[period_i]));
-                (children, period_i + 1)
-            } else {
-                let mut children = Vec::with_capacity(period_i.saturating_sub(do_idx) + 1);
-                for t in &tokens[do_idx..=period_i] {
-                    children.push(token_leaf(b, t));
-                }
-                (children, period_i + 1)
-            }
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let start_tok = &tokens[do_idx];
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: missing_period_message.to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, do_idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                start_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    }
-}
-
-pub fn try_parse_do_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let do_tok = tokens.get(idx)?;
-    if !is_keyword(source, do_tok, "do") {
-        return None;
-    }
-
-    let (mut children, mut next) = parse_do_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        errors,
-        "syntax error: expected '.' after DO header",
-    );
-    let (body, after_body) = parse_body_until_keywords(b, source, tokens, next, errors, &["ENDDO"]);
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        do_tok,
-        "ENDDO",
-        "syntax error: expected ENDDO",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(SyntaxKind::DoStmt, do_tok.range.start..end_pos, &children);
-    Some((node, next_after))
-}
-
 fn at_stmt_body_start(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
     let at_tok = tokens.get(idx)?;
     if !is_keyword(source, at_tok, "at") {
@@ -770,594 +188,1020 @@ fn at_stmt_body_start(source: &str, tokens: &[Token], idx: usize) -> Option<usiz
     None
 }
 
-pub fn try_parse_at_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let at_tok = tokens.get(idx)?;
-    let body_start_idx = at_stmt_body_start(source, tokens, idx)?;
-
-    let (mut children, mut next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        body_start_idx,
-        errors,
-        "syntax error: expected '.' after AT header",
-    );
-    let (body, after_body) = parse_body_until_keywords(b, source, tokens, next, errors, &["ENDAT"]);
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        at_tok,
-        "ENDAT",
-        "syntax error: expected ENDAT",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(SyntaxKind::AtStmt, at_tok.range.start..end_pos, &children);
-    Some((node, next_after))
+pub(crate) fn at_stmt_starts(cursor: &Parser<'_, '_>) -> bool {
+    at_stmt_body_start(cursor.source(), cursor.tokens(), cursor.index()).is_some()
 }
 
-pub fn try_parse_loop_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let loop_tok = tokens.get(idx)?;
-    if !is_keyword(source, loop_tok, "loop") {
-        return None;
+pub(crate) fn catch_system_exceptions_stmt_starts(cursor: &Parser<'_, '_>) -> bool {
+    catch_system_exceptions_body_start(cursor.source(), cursor.tokens(), cursor.index()).is_some()
+}
+
+const WHILE_BOUNDARY_KEYWORDS: &[&str] = &["ENDWHILE"];
+const DO_BOUNDARY_KEYWORDS: &[&str] = &["ENDDO"];
+const LOOP_BOUNDARY_KEYWORDS: &[&str] = &["ENDLOOP"];
+const AT_BOUNDARY_KEYWORDS: &[&str] = &["ENDAT"];
+const TRY_BODY_BOUNDARY_KEYWORDS: &[&str] = &["CATCH", "CLEANUP", "ENDTRY"];
+const CLEANUP_BOUNDARY_KEYWORDS: &[&str] = &["ENDTRY"];
+const CATCH_SYSTEM_BOUNDARY_KEYWORDS: &[&str] = &["ENDCATCH"];
+const CASE_TYPE_REF_STOP_KEYWORDS: &[&str] = &["INTO"];
+const LOOP_CLAUSE_BOUNDARY_KEYWORDS: &[&str] = &[
+    "INTO",
+    "ASSIGNING",
+    "REFERENCE",
+    "WHERE",
+    "USING",
+    "TRANSPORTING",
+    "GROUP",
+    "FROM",
+    "TO",
+    "STEP",
+];
+const CASE_BOUNDARY_KEYWORDS: &[&str] = &["WHEN", "ENDCASE"];
+
+fn token_leaf_at(cursor: &mut Parser<'_, '_>, index: usize) -> Option<NodeId> {
+    let (range, token_index, kind) = {
+        let token = cursor.tokens().get(index)?;
+        (token.range.clone(), token.index(), token.kind)
+    };
+    Some(
+        cursor
+            .builder()
+            .token_leaf(SyntaxKind::Token, range, token_index, kind),
+    )
+}
+
+fn failure(cursor: &Parser<'_, '_>, message: impl Into<String>) -> ParseFailure {
+    ParseFailure {
+        message: message.into(),
+        range: cursor.current_range(),
     }
+}
 
-    let at_tok = tokens.get(idx + 1)?;
-    if !is_keyword(source, at_tok, "at") {
-        return None;
+fn with_failure_message(mut failure: ParseFailure, message: impl Into<String>) -> ParseFailure {
+    failure.message = message.into();
+    failure
+}
+
+fn positioned_failure(
+    cursor: &Parser<'_, '_>,
+    index: usize,
+    message: impl Into<String>,
+) -> ParseFailure {
+    ParseFailure {
+        message: message.into(),
+        range: cursor
+            .tokens()
+            .get(index)
+            .map_or_else(|| cursor.current_range(), |token| token.range.clone()),
     }
+}
 
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 2) {
-        StmtPeriodScan::Found(period_i) => {
-            let mut children = vec![token_leaf(b, loop_tok), token_leaf(b, at_tok)];
-            let mut cursor = idx + 2;
-            let first_operand = skip_trivia(tokens, cursor);
-            if first_operand >= period_i || is_loop_clause_keyword(source, &tokens[first_operand]) {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected loop source after LOOP AT".to_string(),
-                    range: at_tok.range.start..tokens[period_i].range.end,
-                });
-            }
-            if is_loop_at_group_start(source, tokens, first_operand) {
-                let group_tok = &tokens[first_operand];
-                let group_start = skip_trivia(tokens, first_operand + 1);
-                let group_end = scan_loop_expr_end(source, tokens, group_start, period_i);
-                if let Some(group_clause) = parse_loop_clause_expr(
-                    b,
-                    source,
-                    tokens,
-                    group_start,
-                    group_end,
-                    Some(group_tok),
-                    SyntaxKind::LoopAtGroupClause,
-                    &[first_operand],
-                    false,
-                ) {
-                    children.push(group_clause);
-                }
-                cursor = group_end;
-            } else {
-                let source_end = scan_loop_expr_end(source, tokens, cursor, period_i);
-                if let Some(source_clause) = parse_loop_clause_expr(
-                    b,
-                    source,
-                    tokens,
-                    cursor,
-                    source_end,
-                    Some(at_tok),
-                    SyntaxKind::LoopSourceClause,
-                    &[idx + 1],
-                    false,
-                ) {
-                    children.push(source_clause);
-                }
-                cursor = source_end;
-            }
-
-            while cursor < period_i {
-                let token = &tokens[cursor];
-                if is_loop_group_by_start(source, tokens, cursor) {
-                    let by_idx = skip_trivia(tokens, cursor + 1);
-                    let expr_start = skip_trivia(tokens, by_idx + 1);
-                    let expr_end =
-                        scan_loop_group_by_expr_end(source, tokens, expr_start, period_i);
-                    if let Some(clause) =
-                        parse_loop_group_by_clause(b, tokens, cursor, by_idx, expr_start, expr_end)
-                    {
-                        children.push(clause);
-                    }
-                    cursor = expr_end;
-                    continue;
-                }
-                if is_keyword(source, token, "into") {
-                    let target_start = skip_trivia(tokens, cursor + 1);
-                    let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
-                    let mut clause_children = vec![token_leaf(b, token)];
-                    if let Some((inline_data, next_idx)) =
-                        try_parse_loop_inline_data_target(b, source, tokens, target_start)
-                    {
-                        clause_children.push(inline_data);
-                        cursor = next_idx;
-                    } else if target_start < target_end {
-                        let expr = parse_arithmetic_expr(
-                            b,
-                            source,
-                            &tokens[target_start..target_end],
-                            Some(token),
-                        );
-                        clause_children.push(expr);
-                        cursor = target_end;
-                    } else {
-                        errors.push(crate::ParseError {
-                            message: "syntax error: expected target after INTO".to_string(),
-                            range: token.range.start..tokens[period_i].range.start,
-                        });
-                        cursor = target_start;
-                    }
-                    let end = clause_children
-                        .last()
-                        .copied()
-                        .map(|id| b.span(id).end)
-                        .unwrap_or(token.range.end);
-                    children.push(b.branch(
-                        SyntaxKind::LoopIntoClause,
-                        token.range.start..end,
-                        &clause_children,
-                    ));
-                    continue;
-                }
-                if is_keyword(source, token, "assigning") {
-                    let target_start = skip_trivia(tokens, cursor + 1);
-                    let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
-                    let mut clause_children = vec![token_leaf(b, token)];
-                    if let Some((inline_decl, next_idx)) =
-                        try_parse_loop_inline_field_symbol_target(b, source, tokens, target_start)
-                    {
-                        clause_children.push(inline_decl);
-                        cursor = next_idx;
-                    } else if target_start < target_end {
-                        let expr = parse_arithmetic_expr(
-                            b,
-                            source,
-                            &tokens[target_start..target_end],
-                            Some(token),
-                        );
-                        clause_children.push(expr);
-                        cursor = target_end;
-                    } else {
-                        errors.push(crate::ParseError {
-                            message: "syntax error: expected target after ASSIGNING".to_string(),
-                            range: token.range.start..tokens[period_i].range.start,
-                        });
-                        cursor = target_start;
-                    }
-                    let end = clause_children
-                        .last()
-                        .copied()
-                        .map(|id| b.span(id).end)
-                        .unwrap_or(token.range.end);
-                    children.push(b.branch(
-                        SyntaxKind::LoopAssigningClause,
-                        token.range.start..end,
-                        &clause_children,
-                    ));
-                    continue;
-                }
-                if is_keyword(source, token, "reference")
-                    && tokens
-                        .get(cursor + 1)
-                        .is_some_and(|next| is_keyword(source, next, "into"))
-                {
-                    let into_tok = &tokens[cursor + 1];
-                    let target_start = skip_trivia(tokens, cursor + 2);
-                    let target_end = scan_loop_expr_end(source, tokens, target_start, period_i);
-                    let mut clause_children = vec![token_leaf(b, token), token_leaf(b, into_tok)];
-                    if target_start < target_end {
-                        let expr = parse_arithmetic_expr(
-                            b,
-                            source,
-                            &tokens[target_start..target_end],
-                            Some(into_tok),
-                        );
-                        clause_children.push(expr);
-                    } else {
-                        errors.push(crate::ParseError {
-                            message: "syntax error: expected target after REFERENCE INTO"
-                                .to_string(),
-                            range: token.range.start..tokens[period_i].range.start,
-                        });
-                    }
-                    let end = clause_children
-                        .last()
-                        .copied()
-                        .map(|id| b.span(id).end)
-                        .unwrap_or(into_tok.range.end);
-                    children.push(b.branch(
-                        SyntaxKind::LoopReferenceIntoClause,
-                        token.range.start..end,
-                        &clause_children,
-                    ));
-                    cursor = target_end;
-                    continue;
-                }
-                let clause_kind = if is_keyword(source, token, "where") {
-                    Some((SyntaxKind::LoopWhereClause, true))
-                } else if is_keyword(source, token, "from") {
-                    Some((SyntaxKind::LoopFromClause, false))
-                } else if is_keyword(source, token, "to") {
-                    Some((SyntaxKind::LoopToClause, false))
-                } else if is_keyword(source, token, "step") {
-                    Some((SyntaxKind::LoopStepClause, false))
+fn expr_boundary(cursor: &Parser<'_, '_>, stop_keywords: &[&str]) -> bool {
+    let Some(token) = cursor.current() else {
+        return true;
+    };
+    match token.kind {
+        TokenKind::Period
+        | TokenKind::Comma
+        | TokenKind::Colon
+        | TokenKind::RParen
+        | TokenKind::RBracket
+        | TokenKind::RBrace
+        | TokenKind::Eof => true,
+        TokenKind::Ident => {
+            stop_keywords.iter().any(|keyword| {
+                if keyword.eq_ignore_ascii_case("GROUP") {
+                    cursor_at_group_by_start(cursor)
                 } else {
-                    None
-                };
-                if let Some((clause_kind, logical)) = clause_kind {
-                    let expr_start = skip_trivia(tokens, cursor + 1);
-                    let expr_end = scan_loop_expr_end(source, tokens, expr_start, period_i);
-                    if let Some(clause) = parse_loop_clause_expr(
-                        b,
-                        source,
-                        tokens,
-                        expr_start,
-                        expr_end,
-                        Some(token),
-                        clause_kind,
-                        &[cursor],
-                        logical,
-                    ) {
-                        children.push(clause);
-                    } else {
-                        errors.push(crate::ParseError {
-                            message: format!(
-                                "syntax error: expected expression after {}",
-                                token.lexeme(source).to_ascii_uppercase()
-                            ),
-                            range: token.range.start..tokens[period_i].range.start,
-                        });
-                    }
-                    cursor = expr_end;
-                    continue;
+                    cursor.at_keyword(keyword)
                 }
-                children.push(token_leaf(b, token));
-                cursor += 1;
-            }
-            children.push(token_leaf(b, &tokens[period_i]));
-            (children, period_i + 1)
+            }) || token_begins_line(token)
         }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, loop_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after LOOP header".to_string(),
-                range: loop_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                loop_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    };
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDLOOP"]);
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        loop_tok,
-        "ENDLOOP",
-        "syntax error: expected ENDLOOP",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::LoopStmt,
-        loop_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+        _ => false,
+    }
 }
 
-pub fn try_parse_case_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let case_tok = tokens.get(idx)?;
-    if !is_keyword(source, case_tok, "case") {
+fn expect_expr_result(
+    cursor: &mut Parser<'_, '_>,
+    logical: bool,
+    after: &str,
+    message: impl Into<String>,
+    stop_keywords: &[&str],
+) -> PResult<NodeId> {
+    let message = message.into();
+    cursor.skip_trivia();
+    if expr_boundary(cursor, stop_keywords) {
+        return Err(failure(cursor, message));
+    }
+    let result = if logical {
+        cursor.expect_logical_expr_result(after)
+    } else {
+        cursor.expect_arithmetic_expr_result(after)
+    };
+    result.map_err(|failure| with_failure_message(failure, message))
+}
+
+fn expect_control_condition_result(cursor: &mut Parser<'_, '_>, keyword: &str) -> PResult<NodeId> {
+    expect_expr_result(
+        cursor,
+        true,
+        keyword,
+        format!("syntax error: expected condition after {keyword}"),
+        &[],
+    )
+}
+
+fn expect_loop_expr_result(
+    cursor: &mut Parser<'_, '_>,
+    logical: bool,
+    after: &str,
+) -> PResult<NodeId> {
+    expect_expr_result(
+        cursor,
+        logical,
+        after,
+        format!("syntax error: expected expression after {after}"),
+        LOOP_CLAUSE_BOUNDARY_KEYWORDS,
+    )
+}
+
+fn expect_loop_target_result(cursor: &mut Parser<'_, '_>, after: &str) -> PResult<NodeId> {
+    expect_expr_result(
+        cursor,
+        false,
+        after,
+        format!("syntax error: expected target after {after}"),
+        LOOP_CLAUSE_BOUNDARY_KEYWORDS,
+    )
+}
+
+fn push_raw_arithmetic_expr_result(
+    cursor: &mut Parser<'_, '_>,
+    children: &mut Vec<NodeId>,
+    after: &str,
+    message: impl Into<String>,
+    stop_keywords: &[&str],
+) -> PResult<()> {
+    let start = cursor.index();
+    let previous = cursor.previous_index();
+    expect_expr_result(cursor, false, after, message, stop_keywords)?;
+    let end = cursor.index();
+    cursor.set_position(start, previous);
+    while cursor.index() < end {
+        children.push(cursor.bump().expect("expression token exists"));
+    }
+    Ok(())
+}
+
+fn cursor_keyword_at(cursor: &Parser<'_, '_>, index: usize, keyword: &str) -> bool {
+    cursor
+        .tokens()
+        .get(index)
+        .is_some_and(|token| is_keyword(cursor.source(), token, keyword))
+}
+
+fn cursor_at_group_by_start(cursor: &Parser<'_, '_>) -> bool {
+    cursor.at_keyword("GROUP")
+        && cursor_keyword_at(
+            cursor,
+            skip_trivia(cursor.tokens(), cursor.index() + 1),
+            "BY",
+        )
+}
+
+fn cursor_at_loop_at_group_start(cursor: &Parser<'_, '_>) -> bool {
+    cursor.at_keyword("GROUP")
+        && !cursor_keyword_at(
+            cursor,
+            skip_trivia(cursor.tokens(), cursor.index() + 1),
+            "BY",
+        )
+}
+
+fn cursor_at_reference_into_start(cursor: &Parser<'_, '_>) -> bool {
+    cursor.at_keyword("REFERENCE")
+        && cursor_keyword_at(
+            cursor,
+            skip_trivia(cursor.tokens(), cursor.index() + 1),
+            "INTO",
+        )
+}
+
+fn cursor_at_loop_clause_start(cursor: &Parser<'_, '_>) -> bool {
+    LOOP_CLAUSE_BOUNDARY_KEYWORDS.iter().any(|keyword| {
+        if keyword.eq_ignore_ascii_case("GROUP") {
+            cursor_at_group_by_start(cursor)
+        } else {
+            cursor.at_keyword(keyword)
+        }
+    })
+}
+
+fn cursor_at_loop_tail_keyword(cursor: &Parser<'_, '_>) -> bool {
+    cursor.at_keyword("ASCENDING")
+        || cursor.at_keyword("DESCENDING")
+        || cursor.at_keyword("WITHOUT")
+}
+
+fn loop_header_should_stop(cursor: &Parser<'_, '_>) -> bool {
+    let Some(token) = cursor.current() else {
+        return true;
+    };
+    token.kind == TokenKind::Period
+        || token.kind == TokenKind::Eof
+        || cursor.at_keyword("ENDLOOP")
+        || (token_begins_line(token)
+            && !cursor_at_loop_clause_start(cursor)
+            && !cursor_at_loop_tail_keyword(cursor))
+}
+
+fn try_parse_loop_inline_data_target_from_cursor(cursor: &mut Parser<'_, '_>) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        try_parse_loop_inline_data_target(b, source, tokens, start)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn try_parse_loop_inline_field_symbol_target_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        try_parse_loop_inline_field_symbol_target(b, source, tokens, start)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn try_parse_catch_inline_data_target_from_cursor(cursor: &mut Parser<'_, '_>) -> Option<NodeId> {
+    try_parse_loop_inline_data_target_from_cursor(cursor)
+}
+
+fn try_parse_catch_type_ref(cursor: &mut Parser<'_, '_>) -> Option<NodeId> {
+    let start = cursor.index();
+    let end = scan_catch_type_ref_end(cursor.tokens(), start);
+    if end <= start {
         return None;
     }
-
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
-            let expr = if let Some(delim_error) = delimiter_error(tokens, idx + 1, period_i) {
-                errors.push(delim_error);
-                let err_children = error_token_children(b, tokens, idx + 1, period_i);
-                b.branch(
-                    SyntaxKind::Error,
-                    case_tok.range.end..tokens[period_i].range.start,
-                    &err_children,
-                )
-            } else if has_non_comment_tokens(tokens, idx + 1, period_i) {
-                parse_arithmetic_expr(b, source, &tokens[idx + 1..period_i], Some(case_tok))
-            } else {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected expression after CASE".to_string(),
-                    range: case_tok.range.start..tokens[period_i].range.end,
-                });
-                let err_children = error_token_children(b, tokens, idx + 1, period_i);
-                b.branch(
-                    SyntaxKind::Error,
-                    case_tok.range.end..tokens[period_i].range.start,
-                    &err_children,
-                )
-            };
-            (
-                vec![
-                    token_leaf(b, case_tok),
-                    expr,
-                    token_leaf(b, &tokens[period_i]),
-                ],
-                period_i + 1,
-            )
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, case_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after CASE expression".to_string(),
-                range: case_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                case_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
+    let node = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        build_type_ref_node(b, source, &tokens[start..end])
     };
+    cursor.set_position(end, end.checked_sub(1));
+    Some(node)
+}
 
-    while let Some(Boundary::Keyword("WHEN")) =
-        scan_boundary_keywords(source, tokens, next, &["WHEN", "ENDCASE"])
+fn parse_loop_expr_clause(
+    cursor: &mut Parser<'_, '_>,
+    kind: SyntaxKind,
+    keyword_indices: &[usize],
+    logical: bool,
+    after: &str,
+) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = keyword_indices
+        .iter()
+        .filter_map(|&index| token_leaf_at(cursor, index))
+        .collect::<Vec<_>>();
+    children.push(expect_loop_expr_result(cursor, logical, after)?);
+    Ok(cursor.branch_from_children(kind, &children, fallback))
+}
+
+fn parse_loop_target_clause(
+    cursor: &mut Parser<'_, '_>,
+    kind: SyntaxKind,
+    keyword_indices: &[usize],
+    after: &str,
+) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = keyword_indices
+        .iter()
+        .filter_map(|&index| token_leaf_at(cursor, index))
+        .collect::<Vec<_>>();
+    let inline = if kind == SyntaxKind::LoopIntoClause {
+        try_parse_loop_inline_data_target_from_cursor(cursor)
+    } else if kind == SyntaxKind::LoopAssigningClause {
+        try_parse_loop_inline_field_symbol_target_from_cursor(cursor)
+    } else {
+        None
+    };
+    children.push(match inline {
+        Some(inline) => inline,
+        None => expect_loop_target_result(cursor, after)?,
+    });
+    Ok(cursor.branch_from_children(kind, &children, fallback))
+}
+
+fn parse_loop_group_by_clause_from_cursor(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("GROUP")?);
+    children.push(cursor.expect_keyword_after_result("BY", "GROUP")?);
+    if cursor
+        .current()
+        .is_some_and(|token| token.kind == TokenKind::LParen)
     {
-        let when_idx = skip_trivia(tokens, next);
-        let when_tok = &tokens[when_idx];
-        if let StmtPeriodScan::Found(period_i) =
-            scan_until_statement_period(tokens, source, when_idx + 1)
-        {
-            if let Some(delim_error) = delimiter_error(tokens, when_idx + 1, period_i) {
-                errors.push(delim_error);
+        push_loop_group_by_structured_key(cursor, &mut children);
+    } else {
+        children.push(expect_loop_expr_result(cursor, false, "GROUP BY")?);
+    }
+    Ok(cursor.branch_from_children(SyntaxKind::LoopGroupByClause, &children, fallback))
+}
+
+fn push_loop_group_by_structured_key(cursor: &mut Parser<'_, '_>, children: &mut Vec<NodeId>) {
+    let mut depth = 0usize;
+    loop {
+        let Some(token) = cursor.current() else {
+            break;
+        };
+        if token.kind == TokenKind::Eof || token.kind == TokenKind::Period {
+            break;
+        }
+        if depth == 0 && cursor_at_loop_clause_start(cursor) {
+            break;
+        }
+
+        let closes_outer = token.kind == TokenKind::RParen && depth == 1;
+        match token.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if let Some(node) = cursor.bump() {
+            children.push(node);
+        } else {
+            break;
+        }
+        if closes_outer {
+            break;
+        }
+    }
+}
+
+fn parse_loop_at_group_clause(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("GROUP")?);
+    children.push(expect_loop_expr_result(cursor, false, "GROUP")?);
+    Ok(cursor.branch_from_children(SyntaxKind::LoopAtGroupClause, &children, fallback))
+}
+
+fn parse_loop_source_clause(cursor: &mut Parser<'_, '_>, at_index: usize) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    if let Some(at_leaf) = token_leaf_at(cursor, at_index) {
+        children.push(at_leaf);
+    }
+    children.push(expect_expr_result(
+        cursor,
+        false,
+        "LOOP AT",
+        "syntax error: expected loop source after LOOP AT".to_string(),
+        LOOP_CLAUSE_BOUNDARY_KEYWORDS,
+    )?);
+    Ok(cursor.branch_from_children(SyntaxKind::LoopSourceClause, &children, fallback))
+}
+
+fn parse_loop_header_result(
+    cursor: &mut Parser<'_, '_>,
+    children: &mut Vec<NodeId>,
+    at_index: usize,
+) -> PResult<()> {
+    if cursor_at_loop_at_group_start(cursor) {
+        children.push(parse_loop_at_group_clause(cursor)?);
+    } else {
+        children.push(parse_loop_source_clause(cursor, at_index)?);
+    }
+
+    while !loop_header_should_stop(cursor) {
+        cursor.skip_trivia();
+        if cursor_at_group_by_start(cursor) {
+            children.push(parse_loop_group_by_clause_from_cursor(cursor)?);
+            continue;
+        }
+        if cursor.at_keyword("INTO") {
+            let into_idx = cursor.index();
+            cursor.expect_keyword_result("INTO")?;
+            children.push(parse_loop_target_clause(
+                cursor,
+                SyntaxKind::LoopIntoClause,
+                &[into_idx],
+                "INTO",
+            )?);
+            continue;
+        }
+        if cursor.at_keyword("ASSIGNING") {
+            let assigning_idx = cursor.index();
+            cursor.expect_keyword_result("ASSIGNING")?;
+            children.push(parse_loop_target_clause(
+                cursor,
+                SyntaxKind::LoopAssigningClause,
+                &[assigning_idx],
+                "ASSIGNING",
+            )?);
+            continue;
+        }
+        if cursor_at_reference_into_start(cursor) {
+            let reference_idx = cursor.index();
+            cursor.expect_keyword_result("REFERENCE")?;
+            let into_idx = cursor.index();
+            cursor.expect_keyword_result("INTO")?;
+            children.push(parse_loop_target_clause(
+                cursor,
+                SyntaxKind::LoopReferenceIntoClause,
+                &[reference_idx, into_idx],
+                "REFERENCE INTO",
+            )?);
+            continue;
+        }
+        let clause = if cursor.at_keyword("WHERE") {
+            Some((SyntaxKind::LoopWhereClause, true, "WHERE"))
+        } else if cursor.at_keyword("FROM") {
+            Some((SyntaxKind::LoopFromClause, false, "FROM"))
+        } else if cursor.at_keyword("TO") {
+            Some((SyntaxKind::LoopToClause, false, "TO"))
+        } else if cursor.at_keyword("STEP") {
+            Some((SyntaxKind::LoopStepClause, false, "STEP"))
+        } else {
+            None
+        };
+        if let Some((kind, logical, after)) = clause {
+            let keyword_idx = cursor.index();
+            cursor.expect_keyword_result(after)?;
+            children.push(parse_loop_expr_clause(
+                cursor,
+                kind,
+                &[keyword_idx],
+                logical,
+                after,
+            )?);
+            continue;
+        }
+        if let Some(node) = cursor.bump() {
+            children.push(node);
+        } else {
+            break;
+        }
+    }
+
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "LOOP header")?);
+    Ok(())
+}
+
+pub(crate) fn parse_while_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("WHILE")?);
+    children.push(expect_control_condition_result(cursor, "WHILE")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "WHILE condition")?);
+    children.extend(cursor.parse_stmt_list_until(WHILE_BOUNDARY_KEYWORDS));
+    children.push(cursor.expect_keyword_result("ENDWHILE")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "ENDWHILE")?);
+    Ok(cursor.branch_from_children(SyntaxKind::WhileStmt, &children, fallback))
+}
+
+/// `DO .` or `DO <arith> TIMES .`; parses the repetition count as an expression.
+pub(crate) fn parse_do_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("DO")?);
+    cursor.skip_trivia();
+    if !cursor
+        .current()
+        .is_some_and(|token| token.kind == TokenKind::Period)
+    {
+        if cursor.at_keyword("TIMES") {
+            return Err(failure(
+                cursor,
+                "syntax error: expected repetition count before TIMES",
+            ));
+        } else {
+            children.push(expect_expr_result(
+                cursor,
+                false,
+                "DO",
+                "syntax error: expected repetition count before TIMES".to_string(),
+                DO_BOUNDARY_KEYWORDS,
+            )?);
+        }
+        children.push(cursor.expect_keyword_after_result("TIMES", "DO repetition count")?);
+    }
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "DO header")?);
+    children.extend(cursor.parse_stmt_list_until(DO_BOUNDARY_KEYWORDS));
+    children.push(cursor.expect_keyword_result("ENDDO")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "ENDDO")?);
+    Ok(cursor.branch_from_children(SyntaxKind::DoStmt, &children, fallback))
+}
+
+pub(crate) fn parse_at_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("AT")?);
+    cursor.skip_trivia();
+    if cursor.at_keyword("FIRST") || cursor.at_keyword("LAST") {
+        let keyword = if cursor.at_keyword("FIRST") {
+            "FIRST"
+        } else {
+            "LAST"
+        };
+        children.push(cursor.expect_keyword_result(keyword)?);
+    } else if cursor.at_keyword("NEW") {
+        children.push(cursor.expect_keyword_result("NEW")?);
+        push_raw_arithmetic_expr_result(
+            cursor,
+            &mut children,
+            "AT NEW",
+            "syntax error: expected group key after AT NEW",
+            AT_BOUNDARY_KEYWORDS,
+        )?;
+    } else {
+        children.push(cursor.expect_keyword_result("END")?);
+        children.push(cursor.expect_keyword_after_result("OF", "AT END")?);
+        push_raw_arithmetic_expr_result(
+            cursor,
+            &mut children,
+            "AT END OF",
+            "syntax error: expected group key after AT END OF",
+            AT_BOUNDARY_KEYWORDS,
+        )?;
+    }
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "AT header")?);
+    children.extend(cursor.parse_stmt_list_until(AT_BOUNDARY_KEYWORDS));
+    children.push(cursor.expect_keyword_result("ENDAT")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "ENDAT")?);
+    Ok(cursor.branch_from_children(SyntaxKind::AtStmt, &children, fallback))
+}
+
+pub(crate) fn parse_loop_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let at_index = skip_trivia(cursor.tokens(), cursor.index() + 1);
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("LOOP")?);
+    children.push(cursor.expect_keyword_after_result("AT", "LOOP")?);
+    parse_loop_header_result(cursor, &mut children, at_index)?;
+    children.extend(cursor.parse_stmt_list_until(LOOP_BOUNDARY_KEYWORDS));
+    children.push(cursor.expect_keyword_result("ENDLOOP")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "ENDLOOP")?);
+    Ok(cursor.branch_from_children(SyntaxKind::LoopStmt, &children, fallback))
+}
+
+fn parse_when_clause_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+
+    children.push(cursor.expect_keyword_result("WHEN")?);
+    cursor.skip_trivia();
+    if cursor.at_keyword("OTHERS") {
+        children.push(cursor.expect_keyword_result("OTHERS")?);
+    } else {
+        children.push(parse_when_operand_result(cursor)?);
+        loop {
+            cursor.skip_trivia();
+            if !cursor.at_keyword("OR") {
+                break;
             }
-            if !has_non_comment_tokens(tokens, when_idx + 1, period_i) {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected expression after WHEN".to_string(),
-                    range: when_tok.range.start..tokens[period_i].range.end,
-                });
+            children.push(cursor.expect_keyword_result("OR")?);
+            children.push(parse_when_operand_result(cursor)?);
+        }
+    }
+    children.push(cursor.expect_token_result(TokenKind::Period)?);
+    children.extend(cursor.parse_stmt_list_until(CASE_BOUNDARY_KEYWORDS));
+    Ok(cursor.branch_from_children(SyntaxKind::WhenClause, &children, fallback))
+}
+
+fn parse_case_type_when_clause_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+
+    children.push(cursor.expect_keyword_result("WHEN")?);
+    cursor.skip_trivia();
+    if cursor.at_keyword("OTHERS") {
+        children.push(cursor.expect_keyword_result("OTHERS")?);
+    } else {
+        children.push(cursor.expect_keyword_after_result("TYPE", "WHEN")?);
+        children.push(
+            crate::type_ref::parse_type_ref_from_cursor(cursor, CASE_TYPE_REF_STOP_KEYWORDS)
+                .ok_or_else(|| failure(cursor, "syntax error: expected type after WHEN TYPE"))?,
+        );
+        cursor.skip_trivia();
+        if cursor.at_keyword("INTO") {
+            children.push(cursor.expect_keyword_result("INTO")?);
+            if let Some(inline) = try_parse_loop_inline_data_target_from_cursor(cursor) {
+                children.push(inline);
+            } else {
+                children.push(expect_expr_result(
+                    cursor,
+                    false,
+                    "INTO",
+                    "syntax error: expected target after INTO",
+                    CASE_BOUNDARY_KEYWORDS,
+                )?);
             }
         }
-        let (mut when_children, body_start) = parse_header_until_period(
-            b,
-            source,
-            tokens,
-            when_idx,
-            when_idx + 1,
-            errors,
-            "syntax error: expected '.' after WHEN branch",
-        );
-        let (body, after_body) =
-            parse_body_until_keywords(b, source, tokens, body_start, errors, &["WHEN", "ENDCASE"]);
-        when_children.extend(body);
-        let end = when_children
-            .last()
-            .copied()
-            .map(|id| b.span(id).end)
-            .unwrap_or(when_tok.range.end);
-        let clause = b.branch(
-            SyntaxKind::WhenClause,
-            when_tok.range.start..end,
-            &when_children,
-        );
-        children.push(clause);
-        next = after_body;
     }
-
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        case_tok,
-        "ENDCASE",
-        "syntax error: expected ENDCASE",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::CaseStmt,
-        case_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+    children.push(cursor.expect_token_result(TokenKind::Period)?);
+    children.extend(cursor.parse_stmt_list_until(CASE_BOUNDARY_KEYWORDS));
+    Ok(cursor.branch_from_children(SyntaxKind::WhenClause, &children, fallback))
 }
 
-pub fn try_parse_try_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let try_tok = tokens.get(idx)?;
-    if !is_keyword(source, try_tok, "try") {
-        return None;
+fn parse_case_when_clauses(
+    cursor: &mut Parser<'_, '_>,
+    children: &mut Vec<NodeId>,
+    parse_when: fn(&mut Parser<'_, '_>) -> PResult<NodeId>,
+) {
+    loop {
+        cursor.skip_trivia();
+        if !cursor.at_keyword("WHEN") {
+            break;
+        }
+        let mark = cursor.mark_stmt();
+        match parse_when(cursor) {
+            Ok(when_clause) => children.push(when_clause),
+            Err(failure) => {
+                cursor.push_failure(failure);
+                if !cursor.consumed_significant_since(mark) {
+                    cursor.skip_trivia();
+                    if cursor
+                        .current()
+                        .is_some_and(|token| token.kind != TokenKind::Eof)
+                    {
+                        cursor.bump();
+                    }
+                }
+                children.push(cursor.invalid_stmt_from_mark(mark));
+                children.extend(cursor.parse_stmt_list_until(CASE_BOUNDARY_KEYWORDS));
+            }
+        }
     }
-
-    let (mut children, mut next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        errors,
-        "syntax error: expected '.' after TRY",
-    );
-    let (body, after_body) = parse_body_until_keywords(
-        b,
-        source,
-        tokens,
-        next,
-        errors,
-        &["CATCH", "CLEANUP", "ENDTRY"],
-    );
-    children.extend(body);
-    next = after_body;
-
-    while matches!(
-        scan_boundary_keywords(source, tokens, next, &["CATCH"]),
-        Some(Boundary::Keyword("CATCH"))
-    ) {
-        let catch_idx = skip_trivia(tokens, next);
-        let catch_tok = &tokens[catch_idx];
-        let (mut catch_children, body_start) =
-            parse_catch_header_until_period(b, source, tokens, catch_idx, errors);
-        let (catch_body, after_catch) = parse_body_until_keywords(
-            b,
-            source,
-            tokens,
-            body_start,
-            errors,
-            &["CATCH", "CLEANUP", "ENDTRY"],
-        );
-        catch_children.extend(catch_body);
-        let end = catch_children
-            .last()
-            .copied()
-            .map(|id| b.span(id).end)
-            .unwrap_or(catch_tok.range.end);
-        let clause = b.branch(
-            SyntaxKind::CatchClause,
-            catch_tok.range.start..end,
-            &catch_children,
-        );
-        children.push(clause);
-        next = after_catch;
-    }
-
-    if matches!(
-        scan_boundary_keywords(source, tokens, next, &["CLEANUP"]),
-        Some(Boundary::Keyword("CLEANUP"))
-    ) {
-        let cleanup_idx = skip_trivia(tokens, next);
-        let cleanup_tok = &tokens[cleanup_idx];
-        let (mut cleanup_children, body_start) = parse_header_until_period(
-            b,
-            source,
-            tokens,
-            cleanup_idx,
-            cleanup_idx + 1,
-            errors,
-            "syntax error: expected '.' after CLEANUP",
-        );
-        let (cleanup_body, after_cleanup) =
-            parse_body_until_keywords(b, source, tokens, body_start, errors, &["ENDTRY"]);
-        cleanup_children.extend(cleanup_body);
-        let end = cleanup_children
-            .last()
-            .copied()
-            .map(|id| b.span(id).end)
-            .unwrap_or(cleanup_tok.range.end);
-        let clause = b.branch(
-            SyntaxKind::CleanupClause,
-            cleanup_tok.range.start..end,
-            &cleanup_children,
-        );
-        children.push(clause);
-        next = after_cleanup;
-    }
-
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        try_tok,
-        "ENDTRY",
-        "syntax error: expected ENDTRY",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(SyntaxKind::TryStmt, try_tok.range.start..end_pos, &children);
-    Some((node, next_after))
 }
 
-pub fn try_parse_catch_system_exceptions_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let catch_tok = tokens.get(idx)?;
-    let body_start_idx = catch_system_exceptions_body_start(source, tokens, idx)?;
-    let (mut children, mut next) =
-        parse_catch_system_exceptions_header_until_period(b, tokens, idx, body_start_idx, errors);
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDCATCH"]);
-    children.extend(body);
-    next = after_body;
+fn case_type_of_starts(cursor: &Parser<'_, '_>) -> bool {
+    let type_index = skip_trivia(cursor.tokens(), cursor.index() + 1);
+    let of_index = skip_trivia(cursor.tokens(), type_index + 1);
+    cursor
+        .tokens()
+        .get(type_index)
+        .is_some_and(|token| is_keyword(cursor.source(), token, "TYPE"))
+        && cursor
+            .tokens()
+            .get(of_index)
+            .is_some_and(|token| is_keyword(cursor.source(), token, "OF"))
+}
 
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        catch_tok,
-        "ENDCATCH",
-        "syntax error: expected ENDCATCH",
-        errors,
+fn parse_case_type_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+
+    children.push(cursor.expect_keyword_result("CASE")?);
+    children.push(cursor.expect_keyword_after_result("TYPE", "CASE")?);
+    children.push(cursor.expect_keyword_after_result("OF", "CASE TYPE")?);
+    children.push(cursor.expect_arithmetic_expr_result("CASE TYPE OF")?);
+    children.push(cursor.expect_token_result(TokenKind::Period)?);
+    parse_case_when_clauses(cursor, &mut children, parse_case_type_when_clause_result);
+    children.push(cursor.expect_keyword_result("ENDCASE")?);
+    children.push(cursor.expect_token_result(TokenKind::Period)?);
+    Ok(cursor.branch_from_children(SyntaxKind::CaseStmt, &children, fallback))
+}
+
+pub(crate) fn parse_case_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    if case_type_of_starts(cursor) {
+        return parse_case_type_stmt_result(cursor);
+    }
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+
+    children.push(cursor.expect_keyword_result("CASE")?);
+    children.push(cursor.expect_arithmetic_expr_result("CASE")?);
+    children.push(cursor.expect_token_result(TokenKind::Period)?);
+    parse_case_when_clauses(cursor, &mut children, parse_when_clause_result);
+
+    children.push(cursor.expect_keyword_result("ENDCASE")?);
+    children.push(cursor.expect_token_result(TokenKind::Period)?);
+    Ok(cursor.branch_from_children(SyntaxKind::CaseStmt, &children, fallback))
+}
+
+fn parse_when_operand_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let end = scan_when_operand_end(cursor, start);
+    if end == start {
+        return Err(failure(
+            cursor,
+            "syntax error: expected expression after WHEN",
+        ));
+    }
+    if let Some(invalid) = invalid_when_operand_token(cursor, start, end) {
+        let stop = cursor.tokens().get(end).map(|token| token.kind);
+        let next = if stop == Some(TokenKind::Period) {
+            end + 1
+        } else {
+            end
+        };
+        cursor.set_position(next, next.checked_sub(1));
+        let first = first_significant_token(cursor.tokens(), start, end).unwrap_or(invalid);
+        let message = if invalid == first {
+            "syntax error: expected expression after WHEN"
+        } else {
+            "syntax error: invalid operand after WHEN"
+        };
+        return Err(positioned_failure(cursor, invalid, message));
+    }
+    let node = {
+        let previous = cursor.previous_index();
+        let (builder, source, tokens, _) = cursor.parts_mut();
+        let prev = previous.and_then(|index| tokens.get(index));
+        crate::expr::parse_arithmetic_expr(builder, source, &tokens[start..end], prev)
+    };
+    cursor.set_position(end, end.checked_sub(1));
+    Ok(node)
+}
+
+fn scan_when_operand_end(cursor: &Parser<'_, '_>, start: usize) -> usize {
+    let mut idx = start;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+
+    while let Some(token) = cursor.tokens().get(idx) {
+        if token.kind == TokenKind::Eof {
+            break;
+        }
+        let top = paren == 0 && bracket == 0 && brace == 0;
+        if top {
+            if token.kind == TokenKind::Period
+                || is_keyword(cursor.source(), token, "OR")
+                || is_keyword(cursor.source(), token, "WHEN")
+                || is_keyword(cursor.source(), token, "ENDCASE")
+            {
+                break;
+            }
+            if idx > start
+                && token.kind == TokenKind::Ident
+                && (is_definite_stmt_lead_keyword(cursor.source(), token)
+                    || token_begins_line(token))
+            {
+                break;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren = paren.saturating_sub(1),
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace = brace.saturating_sub(1),
+            _ => {}
+        }
+        idx += 1;
+    }
+    idx
+}
+
+fn first_significant_token(tokens: &[Token], start: usize, end: usize) -> Option<usize> {
+    (start..end).find(|index| tokens[*index].kind != TokenKind::Comment)
+}
+
+fn invalid_when_operand_token(cursor: &Parser<'_, '_>, start: usize, end: usize) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut seen_operand_token = false;
+
+    for idx in start..end {
+        let token = &cursor.tokens()[idx];
+        if token.kind == TokenKind::Comment {
+            continue;
+        }
+        let top = paren == 0 && bracket == 0 && brace == 0;
+        if top {
+            match token.kind {
+                TokenKind::Eq
+                | TokenKind::Lt
+                | TokenKind::Gt
+                | TokenKind::Le
+                | TokenKind::Ge
+                | TokenKind::Ne
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Ampersand
+                | TokenKind::LBracket => return Some(idx),
+                TokenKind::Plus => {
+                    if seen_operand_token {
+                        return Some(idx);
+                    }
+                }
+                TokenKind::Minus => {
+                    if seen_operand_token {
+                        return Some(idx);
+                    }
+                }
+                TokenKind::Ident
+                    if is_keyword(cursor.source(), token, "AND")
+                        || is_keyword(cursor.source(), token, "BETWEEN")
+                        || is_keyword(cursor.source(), token, "DIV")
+                        || is_keyword(cursor.source(), token, "MOD")
+                        || is_keyword(cursor.source(), token, "TO") =>
+                {
+                    return Some(idx);
+                }
+                _ => {}
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren = paren.saturating_sub(1),
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace = brace.saturating_sub(1),
+            _ => {}
+        }
+        seen_operand_token = true;
+    }
+    None
+}
+
+fn parse_catch_into_target_result(
+    cursor: &mut Parser<'_, '_>,
+    children: &mut Vec<NodeId>,
+) -> PResult<()> {
+    children.push(cursor.expect_keyword_result("INTO")?);
+    if let Some(inline) = try_parse_catch_inline_data_target_from_cursor(cursor) {
+        children.push(inline);
+    } else {
+        children.push(expect_expr_result(
+            cursor,
+            false,
+            "INTO",
+            "syntax error: expected target after INTO",
+            TRY_BODY_BOUNDARY_KEYWORDS,
+        )?);
+    }
+    Ok(())
+}
+
+fn catch_header_should_stop_after_exception(cursor: &Parser<'_, '_>) -> bool {
+    let Some(token) = cursor.current() else {
+        return true;
+    };
+    token.kind == TokenKind::Eof
+        || cursor.at_keyword("CATCH")
+        || cursor.at_keyword("CLEANUP")
+        || cursor.at_keyword("ENDTRY")
+        || (token.kind == TokenKind::Ident
+            && token_begins_line(token)
+            && (is_definite_stmt_lead_keyword(cursor.source(), token)
+                || line_start_assignment(cursor.tokens(), cursor.index())))
+}
+
+fn parse_catch_header_result(
+    cursor: &mut Parser<'_, '_>,
+    children: &mut Vec<NodeId>,
+) -> PResult<()> {
+    children.push(cursor.expect_keyword_result("CATCH")?);
+    let mut saw_exception = false;
+
+    loop {
+        cursor.skip_trivia();
+        if cursor
+            .current()
+            .is_none_or(|token| matches!(token.kind, TokenKind::Period | TokenKind::Eof))
+            || cursor.at_keyword("CATCH")
+            || cursor.at_keyword("CLEANUP")
+            || cursor.at_keyword("ENDTRY")
+        {
+            break;
+        }
+        if saw_exception && catch_header_should_stop_after_exception(cursor) {
+            break;
+        }
+        if cursor.at_keyword("INTO") {
+            if !saw_exception {
+                return Err(failure(
+                    cursor,
+                    "syntax error: expected exception class after CATCH",
+                ));
+            }
+            parse_catch_into_target_result(cursor, children)?;
+            break;
+        }
+        if cursor.at_keyword("BEFORE") || cursor.at_keyword("UNWIND") {
+            children.push(cursor.bump().expect("current token exists"));
+            continue;
+        }
+        if let Some(type_ref) = try_parse_catch_type_ref(cursor) {
+            saw_exception = true;
+            children.push(type_ref);
+            continue;
+        }
+        if !saw_exception {
+            return Err(failure(
+                cursor,
+                "syntax error: expected exception class after CATCH",
+            ));
+        }
+        children.push(cursor.bump().expect("current token exists"));
+    }
+
+    if !saw_exception {
+        return Err(failure(
+            cursor,
+            "syntax error: expected exception class after CATCH",
+        ));
+    }
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "CATCH clause")?);
+    Ok(())
+}
+
+fn parse_catch_clause_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    parse_catch_header_result(cursor, &mut children)?;
+    children.extend(cursor.parse_stmt_list_until(TRY_BODY_BOUNDARY_KEYWORDS));
+    Ok(cursor.branch_from_children(SyntaxKind::CatchClause, &children, fallback))
+}
+
+fn parse_cleanup_clause_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("CLEANUP")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "CLEANUP")?);
+    children.extend(cursor.parse_stmt_list_until(CLEANUP_BOUNDARY_KEYWORDS));
+    Ok(cursor.branch_from_children(SyntaxKind::CleanupClause, &children, fallback))
+}
+
+pub(crate) fn parse_try_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("TRY")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "TRY")?);
+    children.extend(cursor.parse_stmt_list_until(TRY_BODY_BOUNDARY_KEYWORDS));
+
+    while {
+        cursor.skip_trivia();
+        cursor.at_keyword("CATCH")
+    } {
+        children.push(parse_catch_clause_result(cursor)?);
+    }
+    cursor.skip_trivia();
+    if cursor.at_keyword("CLEANUP") {
+        children.push(parse_cleanup_clause_result(cursor)?);
+    }
+    children.push(cursor.expect_keyword_result("ENDTRY")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "ENDTRY")?);
+    Ok(cursor.branch_from_children(SyntaxKind::TryStmt, &children, fallback))
+}
+
+fn consume_raw_header_until_period(
+    cursor: &mut Parser<'_, '_>,
+    stop_keywords: &[&str],
+    children: &mut Vec<NodeId>,
+) {
+    loop {
+        cursor.skip_trivia();
+        let Some(token) = cursor.current() else {
+            break;
+        };
+        if token.kind == TokenKind::Period
+            || token.kind == TokenKind::Eof
+            || stop_keywords
+                .iter()
+                .any(|keyword| cursor.at_keyword(keyword))
+        {
+            break;
+        }
+        children.push(cursor.bump().expect("current token exists"));
+    }
+}
+
+pub(crate) fn parse_catch_system_exceptions_stmt_result(
+    cursor: &mut Parser<'_, '_>,
+) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = Vec::new();
+    children.push(cursor.expect_keyword_result("CATCH")?);
+    children.push(cursor.expect_keyword_after_result("SYSTEM", "CATCH")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Minus, "CATCH SYSTEM")?);
+    children.push(cursor.expect_keyword_after_result("EXCEPTIONS", "CATCH SYSTEM-")?);
+    consume_raw_header_until_period(cursor, CATCH_SYSTEM_BOUNDARY_KEYWORDS, &mut children);
+    children.push(
+        cursor.expect_token_after_result(TokenKind::Period, "CATCH SYSTEM-EXCEPTIONS header")?,
     );
-    children.extend(end_children);
-    let node_end = children
-        .last()
-        .copied()
-        .map(|id| b.span(id).end)
-        .unwrap_or(end_pos)
-        .max(end_pos);
-    let node = b.branch(
-        SyntaxKind::CatchSystemExceptionsStmt,
-        catch_tok.range.start..node_end,
-        &children,
-    );
-    Some((node, next_after))
+    children.extend(cursor.parse_stmt_list_until(CATCH_SYSTEM_BOUNDARY_KEYWORDS));
+    children.push(cursor.expect_keyword_result("ENDCATCH")?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "ENDCATCH")?);
+    Ok(cursor.branch_from_children(SyntaxKind::CatchSystemExceptionsStmt, &children, fallback))
 }
 
 #[cfg(test)]
@@ -1398,6 +1242,57 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::WhenClause),
             2
         );
+    }
+
+    #[test]
+    fn parses_case_when_or_operands() {
+        let parsed = crate::parse("CASE lv. WHEN 1 OR 2. lv = 1. ENDCASE.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::WhenClause),
+            1
+        );
+    }
+
+    #[test]
+    fn parses_case_when_validated_operand_forms() {
+        let parsed = crate::parse(
+            "CASE lv.
+               WHEN abs( lv_num ).
+               WHEN strlen( lv_text ) OR lines( lt_int ).
+               WHEN CONV i( lv_text ).
+               WHEN lcl_helper=>get_code( ).
+               WHEN OTHERS.
+             ENDCASE.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CaseStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WhenClause), 5);
+        assert!(parsed.file.count_kind(root, SyntaxKind::CallExpr) >= 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
+    }
+
+    #[test]
+    fn parses_case_type_of_when_type() {
+        let parsed = crate::parse(
+            "CASE TYPE OF lo_ref.
+               WHEN TYPE lcl_child INTO DATA(lo_child).
+                 lv = 1.
+               WHEN TYPE zif_any.
+                 lv = 2.
+               WHEN OTHERS.
+                 lv = 3.
+             ENDCASE.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CaseStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WhenClause), 3);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::TypeRefSimple), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 1);
     }
 
     #[test]
@@ -1540,6 +1435,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_structured_loop_group_by_clause() {
+        let parsed = crate::parse(
+            "LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<row>)\n  GROUP BY ( key = <row>-archivekey size = GROUP SIZE )\n  INTO DATA(ls_group).\nENDLOOP.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        let group_by = parsed
+            .file
+            .find_first_kind(root, SyntaxKind::LoopGroupByClause)
+            .expect("GROUP BY clause");
+        assert_eq!(parsed.file.count_kind(group_by, SyntaxKind::Error), 0);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LoopIntoClause), 1);
+    }
+
+    #[test]
     fn parses_do_unconditional_and_times() {
         let parsed = crate::parse("DO. EXIT. ENDDO.\nDO 7 TIMES. CONTINUE. ENDDO.");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -1550,12 +1460,12 @@ mod tests {
     #[test]
     fn parses_at_group_processing_blocks_inside_loop() {
         let parsed = crate::parse(
-            "LOOP AT itab INTO wa.\n  AT NEW a.\n    x = 1.\n  ENDAT.\n  AT LAST.\n    y = 2.\n  ENDAT.\nENDLOOP.",
+            "LOOP AT itab INTO wa.\n  AT NEW a.\n    x = 1.\n  ENDAT.\n  AT END OF a.\n    y = 2.\n  ENDAT.\n  AT LAST.\n    z = 3.\n  ENDAT.\nENDLOOP.",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let root = parsed.file.root();
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::LoopStmt), 1);
-        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AtStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::AtStmt), 3);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::EndAtStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
     }

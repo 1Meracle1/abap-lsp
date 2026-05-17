@@ -3,6 +3,7 @@ use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind};
 
 use crate::block_helpers::is_keyword;
+use crate::parser::Parser as CursorParser;
 use crate::stmt_period::{is_definite_stmt_lead_keyword, token_begins_line};
 use crate::syntax::token_leaf;
 
@@ -184,4 +185,72 @@ pub(crate) fn parse_type_ref_tokens(
     }
     let node = build_type_ref_node(b, source, &tokens[idx..i]);
     Some((node, i))
+}
+
+pub(crate) fn parse_type_ref_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    stop_keywords: &[&str],
+) -> Option<NodeId> {
+    cursor.skip_trivia();
+    let idx = cursor.index();
+    let first = cursor.current()?;
+    if matches!(
+        first.kind,
+        TokenKind::Comma | TokenKind::Period | TokenKind::Colon | TokenKind::Eof
+    ) || (token_begins_line(first) && is_definite_stmt_lead_keyword(cursor.source(), first))
+    {
+        return None;
+    }
+
+    let mut i = idx;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    while i < cursor.tokens().len() {
+        let tok = &cursor.tokens()[i];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if matches!(
+                tok.kind,
+                TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+            ) {
+                break;
+            }
+            if tok.kind == TokenKind::Ident
+                && stop_keywords
+                    .iter()
+                    .any(|kw| tok.lexeme(cursor.source()).eq_ignore_ascii_case(kw))
+            {
+                break;
+            }
+            if i > idx && tok.kind == TokenKind::Ident && token_begins_line(tok) {
+                if is_definite_stmt_lead_keyword(cursor.source(), tok) {
+                    break;
+                }
+                let next_kind = cursor.tokens().get(i + 1).map(|next| next.kind);
+                if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
+                    break;
+                }
+            }
+        }
+        match tok.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    if i == idx {
+        return None;
+    }
+
+    let node = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        build_type_ref_node(b, source, &tokens[idx..i])
+    };
+    cursor.set_position(i, i.checked_sub(1));
+    Some(node)
 }

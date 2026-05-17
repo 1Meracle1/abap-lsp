@@ -137,6 +137,8 @@ pub enum SyntaxKind {
     FieldSymbolInlineDecl,
     /// A valid statement kept as raw tokens through a top-level `.` when no more specific kind applies yet.
     UnparsedStmt,
+    /// Statement-level syntax that failed to parse.
+    InvalidStmt,
     /// `DEFINE macro . ... END-OF-DEFINITION.` macro definition block.
     MacroDef,
     /// Macro invocation statement (`name [arg ...] .`) kept as raw tokens.
@@ -841,6 +843,7 @@ impl SyntaxKind {
             Self::AssignSourceExpr => "AssignSourceExpr",
             Self::FieldSymbolInlineDecl => "FieldSymbolInlineDecl",
             Self::UnparsedStmt => "UnparsedStmt",
+            Self::InvalidStmt => "InvalidStmt",
             Self::MacroDef => "MacroDef",
             Self::MacroCallStmt => "MacroCallStmt",
             Self::ClassDeferredStmt => "ClassDeferredStmt",

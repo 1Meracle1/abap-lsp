@@ -1,7 +1,7 @@
 //! Scan for the end-of-statement `.` without stealing a later statement's period (ABAP is
 //! line-oriented; a missing `.` must not bind to the next physical line's terminator).
 
-use abap_lexer::{Token, TokenKind};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Delimiter {
@@ -31,6 +31,23 @@ impl Delimiter {
 #[inline]
 pub(crate) fn token_begins_line(tok: &Token) -> bool {
     tok.range.start == 0 || tok.has_newline_before()
+}
+
+#[inline]
+pub(crate) fn line_start_assignment(tokens: &[Token], idx: usize) -> bool {
+    tokens.get(idx).is_some_and(|token| {
+        token.kind == TokenKind::Ident
+            && token_begins_line(token)
+            && matches!(
+                tokens.get(idx + 1).map(|next| next.kind),
+                Some(TokenKind::Eq | TokenKind::QuestionEq)
+            )
+    })
+}
+
+#[inline]
+pub(crate) fn compact_dynamic_selector_lparen(prev: &Token, lparen: &Token) -> bool {
+    matches!(prev.kind, TokenKind::Arrow | TokenKind::FatArrow) && !have_space_between(prev, lparen)
 }
 
 #[inline]
@@ -125,7 +142,7 @@ const CONDITION_CONTINUATION_KEYWORDS: &[&str] = &["AND", "OR", "NOT", "WHERE", 
 const CONDITION_COMPARISON_KEYWORDS: &[&str] = &["EQ", "NE", "LT", "LE", "GT", "GE", "CP", "NP", "CO", "CN", "CA", "NA", "CS", "NS", "IS", "IN", "BETWEEN", "LIKE"];
 
 #[inline]
-fn keyword_any(text: &str, keywords: &[&str]) -> bool {
+pub(crate) fn keyword_any(text: &str, keywords: &[&str]) -> bool {
     keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
 }
 
@@ -158,11 +175,11 @@ pub(crate) fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bo
 }
 
 #[inline]
-fn token_matches_keyword(source: &str, tok: &Token, keyword: &str) -> bool {
+fn token_is_keyword(source: &str, tok: &Token, keyword: &str) -> bool {
     tok.kind == TokenKind::Ident && tok.lexeme(source).eq_ignore_ascii_case(keyword)
 }
 
-fn previous_non_comment_token(tokens: &[Token], before: usize) -> Option<usize> {
+pub(crate) fn previous_non_comment_token(tokens: &[Token], before: usize) -> Option<usize> {
     let mut idx = before.checked_sub(1)?;
     loop {
         if tokens
@@ -175,54 +192,111 @@ fn previous_non_comment_token(tokens: &[Token], before: usize) -> Option<usize> 
     }
 }
 
-fn skip_comment_tokens(tokens: &[Token], mut idx: usize) -> usize {
-    while tokens
-        .get(idx)
-        .is_some_and(|token| token.kind == TokenKind::Comment)
+pub(crate) fn skip_comment_tokens_until(
+    tokens: &[Token],
+    mut idx: usize,
+    end_exclusive: usize,
+) -> usize {
+    while idx < end_exclusive
+        && tokens
+            .get(idx)
+            .is_some_and(|token| token.kind == TokenKind::Comment)
     {
         idx += 1;
     }
     idx
 }
 
+fn skip_comment_tokens(tokens: &[Token], idx: usize) -> usize {
+    skip_comment_tokens_until(tokens, idx, tokens.len())
+}
+
 #[inline]
 fn statement_lead_matches(source: &str, tokens: &[Token], start: usize, keyword: &str) -> bool {
     tokens
         .get(start)
-        .is_some_and(|tok| token_matches_keyword(source, tok, keyword))
+        .is_some_and(|tok| token_is_keyword(source, tok, keyword))
         || previous_non_comment_token(tokens, start)
             .and_then(|idx| tokens.get(idx))
-            .is_some_and(|tok| token_matches_keyword(source, tok, keyword))
+            .is_some_and(|tok| token_is_keyword(source, tok, keyword))
+}
+
+pub(crate) fn find_top_level_keyword_index(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    end_exclusive: usize,
+    keyword: &str,
+) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut idx = start;
+    while idx < end_exclusive {
+        let token = &tokens[idx];
+        if token.kind == TokenKind::Comment {
+            idx += 1;
+            continue;
+        }
+        if paren == 0 && bracket == 0 && brace == 0 && token_is_keyword(source, token, keyword) {
+            return Some(idx);
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    None
 }
 
 #[inline]
-fn is_perform_if_found_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+pub(crate) fn is_perform_if_found_addition(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    idx: usize,
+) -> bool {
     tokens
         .get(start)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "perform"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "perform"))
         && tokens
             .get(idx)
-            .is_some_and(|tok| token_matches_keyword(source, tok, "if"))
+            .is_some_and(|tok| token_is_keyword(source, tok, "if"))
         && tokens
             .get(idx + 1)
-            .is_some_and(|tok| token_matches_keyword(source, tok, "found"))
+            .is_some_and(|tok| token_is_keyword(source, tok, "found"))
 }
 
 #[inline]
-fn is_signature_addition(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+pub(crate) fn is_signature_addition(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    idx: usize,
+) -> bool {
     (statement_lead_matches(source, tokens, start, "perform")
         || statement_lead_matches(source, tokens, start, "form"))
         && tokens.get(idx).is_some_and(|tok| {
-            token_matches_keyword(source, tok, "tables")
-                || token_matches_keyword(source, tok, "using")
-                || token_matches_keyword(source, tok, "changing")
+            token_is_keyword(source, tok, "tables")
+                || token_is_keyword(source, tok, "using")
+                || token_is_keyword(source, tok, "changing")
         })
 }
 
-fn statement_starts_chained_methods_decl(source: &str, tokens: &[Token], start: usize) -> bool {
+pub(crate) fn statement_starts_chained_methods_decl(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+) -> bool {
     if tokens
         .get(start)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "methods"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "methods"))
     {
         let next = skip_comment_tokens(tokens, start + 1);
         return tokens
@@ -232,11 +306,11 @@ fn statement_starts_chained_methods_decl(source: &str, tokens: &[Token], start: 
 
     if !tokens
         .get(start)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "class"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "class"))
         || tokens.get(start + 1).map(|tok| tok.kind) != Some(TokenKind::Minus)
         || !tokens
             .get(start + 2)
-            .is_some_and(|tok| token_matches_keyword(source, tok, "methods"))
+            .is_some_and(|tok| token_is_keyword(source, tok, "methods"))
     {
         return false;
     }
@@ -246,7 +320,7 @@ fn statement_starts_chained_methods_decl(source: &str, tokens: &[Token], start: 
         .is_some_and(|tok| tok.kind == TokenKind::Colon)
 }
 
-fn is_chained_methods_entry_after_separator(tokens: &[Token], idx: usize) -> bool {
+pub(crate) fn is_chained_methods_entry_after_separator(tokens: &[Token], idx: usize) -> bool {
     previous_non_comment_token(tokens, idx)
         .and_then(|prev| tokens.get(prev))
         .is_some_and(|tok| matches!(tok.kind, TokenKind::Colon | TokenKind::Comma))
@@ -265,16 +339,16 @@ fn statement_starts_authority_check(source: &str, tokens: &[Token], start: usize
 
     tokens
         .get(authority_idx)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "authority"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "authority"))
         && tokens
             .get(minus_idx)
             .is_some_and(|tok| tok.kind == TokenKind::Minus)
         && tokens
             .get(check_idx)
-            .is_some_and(|tok| token_matches_keyword(source, tok, "check"))
+            .is_some_and(|tok| token_is_keyword(source, tok, "check"))
 }
 
-fn is_authority_check_field_continuation(
+pub(crate) fn is_authority_check_field_continuation(
     source: &str,
     tokens: &[Token],
     start: usize,
@@ -282,7 +356,7 @@ fn is_authority_check_field_continuation(
 ) -> bool {
     tokens
         .get(idx)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "field"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "field"))
         && statement_starts_authority_check(source, tokens, start)
 }
 
@@ -393,19 +467,19 @@ pub(crate) fn starts_with_table_key_clause(source: &str, tokens: &[Token], idx: 
     let Some(with_tok) = tokens.get(idx) else {
         return false;
     };
-    if !token_matches_keyword(source, with_tok, "with") {
+    if !token_is_keyword(source, with_tok, "with") {
         return false;
     }
     let mut j = skip_comment_tokens(tokens, idx + 1);
     if tokens
         .get(j)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "table"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "table"))
     {
         j = skip_comment_tokens(tokens, j + 1);
     }
     tokens
         .get(j)
-        .is_some_and(|tok| token_matches_keyword(source, tok, "key"))
+        .is_some_and(|tok| token_is_keyword(source, tok, "key"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,102 +489,6 @@ pub(crate) enum StmtPeriodScan {
     Unterminated {
         end_exclusive: usize,
     },
-}
-
-/// From `start` (inclusive), find the first top-level `.` that terminates this statement, or decide
-/// the statement ended early because another statement begins.
-///
-/// `start` is the first token that belongs to the syntactic unit (e.g. LHS of an assignment, or the
-/// keyword of a `REPORT`/`DATA` fragment). Boundary detection only applies to positions **after**
-/// `start` so the opening keyword itself is never treated as a boundary.
-pub(crate) fn scan_until_statement_period(
-    tokens: &[Token],
-    source: &str,
-    start: usize,
-) -> StmtPeriodScan {
-    scan_until_statement_period_with_named_args(tokens, source, start, false)
-}
-
-pub(crate) fn scan_until_statement_period_with_named_args(
-    tokens: &[Token],
-    source: &str,
-    start: usize,
-    initial_allow_line_start_named_args: bool,
-) -> StmtPeriodScan {
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    let mut allow_line_start_named_args = initial_allow_line_start_named_args;
-    let mut allow_line_start_condition_comparison = false;
-    let mut allow_line_start_table_key_components = false;
-    let in_chained_methods_decl = statement_starts_chained_methods_decl(source, tokens, start);
-    let mut i = start;
-    while i < tokens.len() {
-        let t = &tokens[i];
-        if t.kind == TokenKind::Eof {
-            return StmtPeriodScan::Unterminated { end_exclusive: i };
-        }
-        if paren == 0 && bracket == 0 && brace == 0 {
-            if t.kind == TokenKind::Period {
-                return StmtPeriodScan::Found(i);
-            }
-            if is_named_arg_clause_keyword(source, t) {
-                allow_line_start_named_args = true;
-            }
-            if is_condition_continuation_keyword(source, t) {
-                allow_line_start_condition_comparison = true;
-            }
-            if starts_with_table_key_clause(source, tokens, i) {
-                allow_line_start_table_key_components = true;
-            }
-            if i > start {
-                let condition_continuation = allow_line_start_condition_comparison
-                    && line_start_condition_operand_continues(source, tokens, i);
-                let table_key_continuation = allow_line_start_table_key_components
-                    && line_start_table_key_component_continues(tokens, i);
-                let named_arg_continuation =
-                    allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
-                if t.kind == TokenKind::Ident
-                    && token_begins_line(t)
-                    && is_definite_stmt_lead_keyword(source, t)
-                    && !is_perform_if_found_addition(source, tokens, start, i)
-                    && !is_signature_addition(source, tokens, start, i)
-                    && !is_inline_decl_continuation(source, tokens, i)
-                    && !(in_chained_methods_decl
-                        && is_chained_methods_entry_after_separator(tokens, i))
-                    && !is_authority_check_field_continuation(source, tokens, start, i)
-                    && !named_arg_continuation
-                    && !condition_continuation
-                    && !table_key_continuation
-                {
-                    return StmtPeriodScan::Unterminated { end_exclusive: i };
-                }
-                if t.kind == TokenKind::Ident && token_begins_line(t) {
-                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
-                    if !allow_line_start_named_args
-                        && !allow_line_start_condition_comparison
-                        && !allow_line_start_table_key_components
-                        && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
-                    {
-                        return StmtPeriodScan::Unterminated { end_exclusive: i };
-                    }
-                }
-            }
-        }
-        match t.kind {
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen if paren > 0 => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket if bracket > 0 => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace if brace > 0 => brace -= 1,
-            _ => {}
-        }
-        i += 1;
-    }
-    StmtPeriodScan::Unterminated {
-        end_exclusive: tokens.len(),
-    }
 }
 
 pub(crate) fn unterminated_err_end(

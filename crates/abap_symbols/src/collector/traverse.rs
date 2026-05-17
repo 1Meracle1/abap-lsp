@@ -24,6 +24,7 @@ impl<'a> Collector<'a> {
         match self.file.kind(node) {
             SyntaxKind::Token => {}
             SyntaxKind::SqlScriptIsland => {}
+            SyntaxKind::InvalidStmt => {}
             SyntaxKind::Error => {
                 let tokens = self.syntax_token_nodes(node);
                 if !tokens.is_empty() {

@@ -32,10 +32,10 @@ use abap_symbols::{
     SqlDynamicFragmentKind, SqlNameRefData, SqlNameRefKind, SqlProjectionKind, SqlQueryData,
     SqlSourceData, SqlSourceKind, StructureFieldData, StructureFieldInfo, StructureFieldShape,
     StructureId, SymbolData, SymbolHandle, SymbolId, SymbolKind, SystemFieldStatementKind,
-    SystemFieldUpdateData, UnitAnalysis, UnitId, ValueStateCheckData, ValueStateCheckKind,
-    Visibility, build_project_routine_analysis, build_project_routine_analysis_for_units,
-    build_project_static_analysis_summary, builtin_routine_spec, call_section_matches_parameter,
-    parameter_is_required,
+    SystemFieldUpdateData, TypeFactData, UnitAnalysis, UnitId, ValueStateCheckData,
+    ValueStateCheckKind, Visibility, build_project_routine_analysis,
+    build_project_routine_analysis_for_units, build_project_static_analysis_summary,
+    builtin_routine_spec, call_section_matches_parameter, parameter_is_required,
     perf_api::{
         IncrementalProjectUpdate, LocalAnalysis, analyze_unit_local_state,
         analyze_unit_local_state_for_project_build, incremental_project_update,
@@ -2928,12 +2928,20 @@ impl AnalysisSnapshot {
     }
 
     fn named_argument_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let synthetic_call_site;
         let call_site = self
             .symbols
             .call_sites
             .iter()
             .filter(|call_site| call_site.range.start <= offset && offset <= call_site.range.end)
-            .min_by_key(|call_site| call_site.range.end - call_site.range.start)?;
+            .min_by_key(|call_site| call_site.range.end - call_site.range.start);
+        let call_site = match call_site {
+            Some(call_site) => call_site,
+            None => {
+                synthetic_call_site = self.incomplete_method_call_site_at(offset)?;
+                &synthetic_call_site
+            }
+        };
         let (replace_range, prefix, section) =
             named_argument_completion_context(self, call_site, offset)?;
         let callable = resolve_callable_completion_target(self, call_site)?;
@@ -3009,6 +3017,116 @@ impl AnalysisSnapshot {
             items,
             in_type_position: false,
         })
+    }
+
+    fn incomplete_method_call_site_at(&self, offset: usize) -> Option<CallSiteData> {
+        let range = statement_query_range(&self.parse, offset)?;
+        let (token_start, token_end) = token_window_for_range(&self.parse, &range)?;
+        let significant: Vec<_> = (token_start..token_end)
+            .filter(|&idx| {
+                !matches!(
+                    self.parse.tokens[idx].kind,
+                    TokenKind::Comment | TokenKind::Eof
+                )
+            })
+            .collect();
+        let lparen_pos = significant.iter().position(|&idx| {
+            self.parse.tokens[idx].kind == TokenKind::LParen
+                && self.parse.tokens[idx].range.start <= offset
+        })?;
+        let target = self.incomplete_method_call_target(&significant[..lparen_pos])?;
+        let first = *significant.first()?;
+        let rparen = significant[lparen_pos + 1..]
+            .iter()
+            .copied()
+            .find(|&idx| self.parse.tokens[idx].kind == TokenKind::RParen);
+        let call_end = rparen.map_or(range.end, |idx| self.parse.tokens[idx].range.end);
+        Some(CallSiteData {
+            scope: innermost_scope_at(&self.symbols, self.parse.tokens[first].range.start),
+            range: self.parse.tokens[first].range.start..call_end,
+            target,
+            arguments: self
+                .incomplete_method_call_arguments(&significant[lparen_pos + 1..], offset),
+        })
+    }
+
+    fn incomplete_method_call_target(
+        &self,
+        target_tokens: &[usize],
+    ) -> Option<NamedArgumentTarget> {
+        let method_idx = *target_tokens.last()?;
+        if self.parse.tokens[method_idx].kind != TokenKind::Ident {
+            return None;
+        }
+        let method_name = Arc::<str>::from(
+            self.parse.tokens[method_idx]
+                .lexeme(self.text.as_ref())
+                .to_ascii_lowercase(),
+        );
+        if target_tokens.len() == 1 {
+            return Some(NamedArgumentTarget::ImplicitMethod { method_name });
+        }
+
+        let op_idx = target_tokens[target_tokens.len().checked_sub(2)?];
+        let op = self.parse.tokens[op_idx].kind;
+        if !matches!(
+            op,
+            TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
+        ) {
+            return None;
+        }
+        let base = parse_value_access_tokens(
+            self.text.as_ref(),
+            &self.parse,
+            &target_tokens[..target_tokens.len() - 2],
+        )?;
+        Some(NamedArgumentTarget::Method {
+            base_namespace: if op == TokenKind::FatArrow {
+                Namespace::Type
+            } else {
+                base.base_namespace
+            },
+            base_name: base.base_name,
+            method_name,
+            interface_qualified: false,
+        })
+    }
+
+    fn incomplete_method_call_arguments(
+        &self,
+        arg_tokens: &[usize],
+        offset: usize,
+    ) -> Vec<CallArgumentData> {
+        let mut arguments = Vec::new();
+        for pair in arg_tokens.windows(2) {
+            let name_idx = pair[0];
+            let eq_idx = pair[1];
+            let name = &self.parse.tokens[name_idx];
+            if name.range.start >= offset {
+                break;
+            }
+            if name.kind != TokenKind::Ident
+                || self.parse.tokens[eq_idx].kind != TokenKind::Eq
+                || named_argument_section_keyword(
+                    name.lexeme(self.text.as_ref())
+                        .to_ascii_lowercase()
+                        .as_ref(),
+                )
+                .is_some()
+            {
+                continue;
+            }
+            arguments.push(CallArgumentData {
+                range: name.range.start..self.parse.tokens[eq_idx].range.end,
+                name: Some(Arc::from(
+                    name.lexeme(self.text.as_ref()).to_ascii_lowercase(),
+                )),
+                section: None,
+                ordinal: arguments.len(),
+                type_fact: TypeFactData::default(),
+            });
+        }
+        arguments
     }
 
     fn method_parameter_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
@@ -9454,9 +9572,12 @@ fn node_path_at_offset(parse: &ParseResult, offset: usize) -> Vec<abap_ast::aren
 }
 
 fn offset_is_in_error_node(parse: &ParseResult, offset: usize) -> bool {
-    node_path_at_offset(parse, offset)
-        .into_iter()
-        .any(|node| parse.file.kind(node) == SyntaxKind::Error)
+    node_path_at_offset(parse, offset).into_iter().any(|node| {
+        matches!(
+            parse.file.kind(node),
+            SyntaxKind::Error | SyntaxKind::InvalidStmt
+        )
+    })
 }
 
 fn child_at_offset_prefer_left_boundary(

@@ -41,18 +41,26 @@ pub fn build_file_tree(
     errors: &mut Vec<crate::ParseError>,
 ) -> SyntaxTree {
     let mut b = SyntaxTreeBuilder::default();
-    let mut idx = 0;
     let mut children: Vec<NodeId> = Vec::new();
 
-    while idx < tokens.len() {
-        let t = &tokens[idx];
-        if t.kind == TokenKind::Eof {
-            break;
-        }
+    {
+        let mut parser = crate::parser::Parser::new(&mut b, source, tokens, 0, errors);
+        while parser.index() < tokens.len() {
+            if parser
+                .current()
+                .is_some_and(|token| token.kind == TokenKind::Eof)
+            {
+                break;
+            }
 
-        let (node, next) = crate::parse_file_level_item(&mut b, source, tokens, idx, errors);
-        children.push(node);
-        idx = ensure_forward_progress(tokens, idx, next);
+            let idx = parser.index();
+            let node = parser.parse_file_level_item();
+            children.push(node);
+            let next = ensure_forward_progress(tokens, idx, parser.index());
+            if next != parser.index() {
+                parser.set_position(next, next.checked_sub(1));
+            }
+        }
     }
 
     let root = b.branch(SyntaxKind::File, 0..end, &children);

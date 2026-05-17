@@ -7,12 +7,10 @@ use abap_lexer::{Token, TokenKind, have_space_between};
 use crate::block_helpers::{
     inline_name_spacing_is_valid, is_keyword, match_hyphenated_keyword, parse_inline_name,
 };
-use crate::stmt_period::{
-    StmtPeriodScan, delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
-    scan_until_statement_period, token_begins_line, unterminated_err_end,
-};
+use crate::parser::{PResult, ParseFailure, Parser as CursorParser};
+use crate::stmt_period::{is_definite_stmt_lead_keyword, token_begins_line};
 use crate::syntax::token_leaf;
-use crate::type_ref::parse_type_ref_tokens;
+use crate::type_ref::{parse_type_ref_from_cursor, parse_type_ref_tokens};
 
 #[inline]
 fn is_parameters_keyword(source: &str, token: &Token) -> bool {
@@ -77,6 +75,18 @@ const SELECT_OPTIONS_FOR_STOP_KEYWORDS: &[&str] = &[
 
 const DATA_TYPE_REF_STOP_KEYWORDS: &[&str] = &["OCCURS", "VALUE", "ASSOCIATION"];
 
+enum DeclParseResult {
+    Parsed(NodeId),
+    Malformed(ParseFailure),
+    Unsupported,
+}
+
+enum ClauseResult {
+    Parsed(NodeId),
+    Malformed(String),
+    Unsupported,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StructuredDeclFlavor {
     Struct,
@@ -84,238 +94,48 @@ enum StructuredDeclFlavor {
     Mesh,
 }
 
-/// If `tokens[idx]` begins a classic `DATA` declaration (optionally `DATA:` and
-/// comma-separated clauses),
-/// returns the structured node and the index after the closing `.`. Otherwise `None`.
-pub fn try_parse_data_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let data_tok = tokens.get(idx)?;
-    if !is_keyword(source, data_tok, "data") {
-        return None;
+fn decl_failure(cursor: &CursorParser<'_, '_>, message: impl Into<String>) -> ParseFailure {
+    ParseFailure {
+        message: message.into(),
+        range: cursor.current_range(),
     }
-    if tokens.get(idx + 1).map(|t| t.kind) == Some(TokenKind::LParen) {
-        return try_parse_data_inline_decl(b, source, tokens, idx, errors);
-    }
+}
 
-    let scan = scan_until_statement_period(tokens, source, idx);
-    if let Some((node, next)) = try_parse_structured_data_decl(b, source, tokens, idx) {
-        return Some((node, next));
-    }
-
-    let malformed = match scan {
-        StmtPeriodScan::Found(period_i) => {
-            classify_malformed_data_decl(source, tokens, idx, period_i)
+fn declaration_boundary_end(source: &str, tokens: &[Token], start: usize) -> usize {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut i = start;
+    while let Some(tok) = tokens.get(i) {
+        if tok.kind == TokenKind::Eof {
+            return i;
         }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            looks_like_typed_data_candidate(source, &tokens[idx..end_exclusive])
-                .then_some("syntax error: expected '.' to end DATA declaration")
-        }
-    };
-    let message = malformed?;
-
-    let (end_exclusive, err_end) = match scan {
-        StmtPeriodScan::Found(period_i) => (period_i + 1, tokens[period_i].range.end),
-        StmtPeriodScan::Unterminated { end_exclusive } => (
-            end_exclusive,
-            unterminated_err_end(tokens, end_exclusive, data_tok.range.end),
-        ),
-    };
-    errors.push(crate::ParseError {
-        message: message.to_string(),
-        range: data_tok.range.start..err_end,
-    });
-    let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-    for t in &tokens[idx..end_exclusive] {
-        children.push(token_leaf(b, t));
-    }
-    let node = b.branch(SyntaxKind::Error, data_tok.range.start..err_end, &children);
-    let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
-        tokens.len()
-    } else {
-        end_exclusive
-    };
-    Some((node, next))
-}
-
-pub fn try_parse_parameters_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_tok = tokens.get(idx)?;
-    if !is_parameters_keyword(source, kw_tok) {
-        return None;
-    }
-    parse_clause_list_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        SyntaxKind::ParametersDecl,
-        parse_parameters_clause,
-    )
-}
-
-pub fn try_parse_tables_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_tok = tokens.get(idx)?;
-    if !is_keyword(source, kw_tok, "tables") {
-        return None;
-    }
-    parse_clause_list_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        SyntaxKind::TablesDecl,
-        parse_tables_clause,
-    )
-}
-
-pub fn try_parse_select_options_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_end = match_hyphenated_keyword(source, tokens, idx, &["select", "options"])?;
-    parse_clause_list_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        kw_end,
-        SyntaxKind::SelectOptionsDecl,
-        parse_select_options_clause,
-    )
-}
-
-pub fn try_parse_ranges_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_tok = tokens.get(idx)?;
-    if !is_keyword(source, kw_tok, "ranges") {
-        return None;
-    }
-    parse_clause_list_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        SyntaxKind::RangesDecl,
-        parse_select_options_clause,
-    )
-}
-
-pub fn try_parse_controls_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_tok = tokens.get(idx)?;
-    if !is_keyword(source, kw_tok, "controls") {
-        return None;
-    }
-    parse_clause_list_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        SyntaxKind::ControlsDecl,
-        parse_controls_clause,
-    )
-}
-
-fn parse_clause_list_decl<F>(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    keyword_end: usize,
-    kind: SyntaxKind,
-    mut parse_clause: F,
-) -> Option<(NodeId, usize)>
-where
-    F: FnMut(&mut SyntaxTreeBuilder, &str, &[Token], usize) -> Option<(NodeId, usize)>,
-{
-    let mut i = keyword_end;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = parse_clause(b, source, tokens, i)?;
-        clause_nodes.push(clause);
-        i = next_i;
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + (keyword_end - idx) + 1);
-                for token in &tokens[idx..keyword_end] {
-                    children.push(token_leaf(b, token));
-                }
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(kind, tokens[idx].range.start..next.range.end, &children);
-                return Some((node, i + 1));
+        let top = paren == 0 && bracket == 0 && brace == 0;
+        if top {
+            if tok.kind == TokenKind::Period {
+                return i + 1;
             }
-            _ => return None,
+            if i > start && tok.kind == TokenKind::Ident && token_begins_line(tok) {
+                let next_kind = tokens.get(i + 1).map(|next| next.kind);
+                if is_definite_stmt_lead_keyword(source, tok)
+                    || matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
+                {
+                    return i;
+                }
+            }
         }
+        match tok.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren = paren.saturating_sub(1),
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace = brace.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
     }
-}
-
-pub fn try_parse_class_data_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_end = match_hyphenated_keyword(source, tokens, idx, &["class", "data"])?;
-    try_parse_chained_decl_after_keyword_span(
-        b,
-        source,
-        tokens,
-        idx,
-        kw_end,
-        SyntaxKind::DataDecl,
-        SyntaxKind::DataTypedClause,
-        true,
-        true,
-        false,
-    )
+    tokens.len()
 }
 
 fn try_parse_structured_data_decl(
@@ -393,76 +213,6 @@ fn try_parse_structured_data_decl(
     }
 }
 
-fn looks_like_typed_data_candidate(source: &str, stmt_tokens: &[Token]) -> bool {
-    stmt_tokens.iter().any(|t| is_keyword(source, t, "type"))
-        || matches!(stmt_tokens.get(1).map(|t| t.kind), Some(TokenKind::Colon))
-}
-
-fn classify_malformed_data_decl(
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Option<&'static str> {
-    let stmt_tokens = &tokens[idx..period_i];
-    if stmt_tokens.is_empty() || !looks_like_typed_data_candidate(source, stmt_tokens) {
-        return None;
-    }
-
-    let after_data = stmt_tokens.get(1)?;
-    if after_data.kind == TokenKind::Colon {
-        match stmt_tokens.get(2).map(|t| t.kind) {
-            None | Some(TokenKind::Comma | TokenKind::Period) => {
-                return Some("syntax error: expected declaration name in DATA statement");
-            }
-            _ => {}
-        }
-    } else if is_keyword(source, after_data, "type") {
-        return Some("syntax error: expected declaration name in DATA statement");
-    }
-
-    let mut saw_type = false;
-    for (rel_i, tok) in stmt_tokens.iter().enumerate() {
-        if tok.kind == TokenKind::Comma {
-            let prev_kind = rel_i
-                .checked_sub(1)
-                .and_then(|j| stmt_tokens.get(j))
-                .map(|t| t.kind);
-            let next_kind = stmt_tokens.get(rel_i + 1).map(|t| t.kind);
-            if matches!(prev_kind, None | Some(TokenKind::Colon | TokenKind::Comma))
-                || matches!(next_kind, None | Some(TokenKind::Comma | TokenKind::Period))
-            {
-                return Some("syntax error: expected declaration after ',' in DATA statement");
-            }
-        }
-        if is_keyword(source, tok, "type") {
-            saw_type = true;
-            match stmt_tokens.get(rel_i + 1) {
-                None => {
-                    return Some("syntax error: expected type name after TYPE in DATA declaration");
-                }
-                Some(next) if matches!(next.kind, TokenKind::Comma | TokenKind::Period) => {
-                    return Some("syntax error: expected type name after TYPE in DATA declaration");
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if !saw_type {
-        return None;
-    }
-    if stmt_tokens
-        .last()
-        .map(|t| t.kind == TokenKind::Comma)
-        .unwrap_or(false)
-    {
-        return Some("syntax error: expected declaration after ',' in DATA statement");
-    }
-
-    None
-}
-
 fn parse_data_decl_name(
     b: &mut SyntaxTreeBuilder,
     _source: &str,
@@ -530,44 +280,6 @@ fn parse_structured_field_decl_name(
         .or_else(|| parse_numeric_prefixed_decl_name(b, tokens, idx))
 }
 
-fn parse_tables_decl_name(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    if tokens.get(idx).map(|t| t.kind) != Some(TokenKind::Star) {
-        return parse_data_decl_name(b, source, tokens, idx);
-    }
-    let name = tokens.get(idx + 1)?;
-    if name.kind != TokenKind::Ident {
-        return None;
-    }
-    let children = vec![token_leaf(b, tokens.get(idx)?), token_leaf(b, name)];
-    Some((
-        b.branch(
-            SyntaxKind::DataDeclName,
-            tokens[idx].range.start..name.range.end,
-            &children,
-        ),
-        idx + 2,
-    ))
-}
-
-fn parse_tables_clause(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let (name, mut i) = parse_tables_decl_name(b, source, tokens, idx)?;
-    let mut children = vec![name];
-    i = collect_raw_decl_tail(b, source, tokens, i, &mut children);
-
-    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
-}
-
 fn collect_raw_decl_tail(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -598,6 +310,128 @@ fn collect_raw_decl_tail(
         idx += 1;
     }
     idx
+}
+
+fn parse_data_decl_name_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    cursor.skip_trivia();
+    let first = cursor.current()?;
+    if first.kind != TokenKind::Ident {
+        return None;
+    }
+    let start = first.range.start;
+    let mut children = vec![cursor.bump()?];
+    while cursor
+        .current()
+        .is_some_and(|token| token.kind == TokenKind::Minus)
+    {
+        let op = cursor.current()?;
+        let prev = cursor.previous()?;
+        if have_space_between(prev, op) {
+            break;
+        }
+        if cursor
+            .tokens()
+            .get(cursor.index() + 1)
+            .is_none_or(|token| token.kind != TokenKind::Ident)
+        {
+            return None;
+        }
+        children.push(cursor.bump()?);
+        children.push(cursor.expect_token_after(TokenKind::Ident, "'-'"));
+    }
+    let end = cursor.span(*children.last().unwrap()).end;
+    Some(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataDeclName, start..end, &children),
+    )
+}
+
+fn parse_numeric_prefixed_decl_name_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<NodeId> {
+    cursor.skip_trivia();
+    let first = cursor.current()?;
+    let second = cursor.tokens().get(cursor.index() + 1)?;
+    if first.kind != TokenKind::Number || second.kind != TokenKind::Ident {
+        return None;
+    }
+    if have_space_between(first, second) {
+        return None;
+    }
+    let start = first.range.start;
+    let first = cursor.bump()?;
+    let second = cursor.bump()?;
+    let end = cursor.span(second).end;
+    Some(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataDeclName, start..end, &[first, second]),
+    )
+}
+
+fn parse_structured_field_decl_name_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<NodeId> {
+    parse_data_decl_name_from_cursor(cursor)
+        .or_else(|| parse_numeric_prefixed_decl_name_from_cursor(cursor))
+}
+
+fn parse_tables_decl_name_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    cursor.skip_trivia();
+    if cursor
+        .current()
+        .is_none_or(|token| token.kind != TokenKind::Star)
+    {
+        return parse_data_decl_name_from_cursor(cursor);
+    }
+    let start = cursor.current()?.range.start;
+    let star = cursor.bump()?;
+    let name = cursor.expect_token_after(TokenKind::Ident, "'*'");
+    let end = cursor.span(name).end;
+    Some(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataDeclName, start..end, &[star, name]),
+    )
+}
+
+fn collect_raw_decl_tail_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    children: &mut Vec<NodeId>,
+) {
+    let mut saw_association = false;
+    loop {
+        cursor.skip_trivia();
+        let Some(tok) = cursor.current() else {
+            break;
+        };
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
+            break;
+        }
+        if tok.kind == TokenKind::Ident && is_keyword(cursor.source(), tok, "association") {
+            saw_association = true;
+        }
+        if token_begins_line(tok) && !saw_association {
+            let next_kind = cursor
+                .tokens()
+                .get(cursor.index() + 1)
+                .map(|next| next.kind);
+            if is_definite_stmt_lead_keyword(cursor.source(), tok)
+                || matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
+            {
+                break;
+            }
+        }
+        if let Some(child) = cursor.bump() {
+            children.push(child);
+        } else {
+            break;
+        }
+    }
 }
 
 fn is_invalid_decl_name_keyword(source: &str, token: &Token) -> bool {
@@ -758,137 +592,927 @@ fn parse_optional_paren_length(
     ))
 }
 
-fn try_parse_data_inline_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let data_tok = tokens.get(idx)?;
-    let lparen = tokens.get(idx + 1)?;
-    if lparen.kind != TokenKind::LParen {
+fn parse_optional_paren_length_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, _, tokens, _) = cursor.parts_mut();
+        parse_optional_paren_length(b, tokens, start)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn parse_optional_length_spec_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    stop_keywords: &[&str],
+) -> Option<NodeId> {
+    cursor.skip_trivia();
+    let first = cursor.current()?;
+    if first.kind != TokenKind::Ident
+        || (!first.lexeme(cursor.source()).eq_ignore_ascii_case("length")
+            && !first
+                .lexeme(cursor.source())
+                .eq_ignore_ascii_case("decimals"))
+    {
         return None;
     }
-    let (name, i) = parse_inline_name(b, tokens, idx + 2)?;
-    let rparen = tokens.get(i)?;
-    if rparen.kind != TokenKind::RParen {
+    let start = first.range.start;
+    let mut children = Vec::new();
+    while let Some(tok) = cursor.current() {
+        if !children.is_empty()
+            && tok.kind == TokenKind::Ident
+            && stop_keywords
+                .iter()
+                .any(|kw| tok.lexeme(cursor.source()).eq_ignore_ascii_case(kw))
+        {
+            break;
+        }
+        if !children.is_empty()
+            && matches!(
+                tok.kind,
+                TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+            )
+        {
+            break;
+        }
+        if !children.is_empty()
+            && tok.kind == TokenKind::Ident
+            && (tok.lexeme(cursor.source()).eq_ignore_ascii_case("length")
+                || tok.lexeme(cursor.source()).eq_ignore_ascii_case("decimals"))
+        {
+            break;
+        }
+        children.push(cursor.bump()?);
+    }
+    let end = cursor.span(*children.last().unwrap()).end;
+    Some(
+        cursor
+            .builder()
+            .branch(SyntaxKind::LengthSpec, start..end, &children),
+    )
+}
+
+fn parse_value_clause_keywords_until_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    keywords: &[&str],
+    stop_keywords: &[&str],
+) -> Option<NodeId> {
+    cursor.skip_trivia();
+    let value_tok = cursor.current()?;
+    if !keywords
+        .iter()
+        .any(|keyword| is_keyword(cursor.source(), value_tok, keyword))
+    {
         return None;
     }
-    if !inline_name_spacing_is_valid(tokens, idx + 1, idx + 2, i) {
-        match scan_until_statement_period(tokens, source, idx + 1) {
-            StmtPeriodScan::Found(period_i) => {
-                errors.push(crate::ParseError {
-                    message:
-                        "syntax error: inline DATA declaration must not contain whitespace inside parentheses"
-                            .to_string(),
-                    range: data_tok.range.start..tokens[period_i].range.end,
-                });
-                let mut children = Vec::with_capacity(period_i - idx + 1);
-                for t in &tokens[idx..=period_i] {
-                    children.push(token_leaf(b, t));
+    let start = value_tok.range.start;
+    let value_kw = cursor.bump()?;
+    let expr = parse_type_ref_from_cursor(cursor, stop_keywords)?;
+    let range = start..cursor.span(expr).end;
+    Some(
+        cursor
+            .builder()
+            .branch(SyntaxKind::ValueClause, range, &[value_kw, expr]),
+    )
+}
+
+fn parse_value_clause_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    parse_value_clause_keywords_until_from_cursor(cursor, &["value"], &[])
+}
+
+fn parse_structured_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    node_kind: SyntaxKind,
+    allow_like: bool,
+    allow_value: bool,
+) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        parse_begin_of_decl_clause(b, source, tokens, start, node_kind, allow_like, allow_value)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn parse_common_part_clause_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        parse_common_part_clause(b, source, tokens, start)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn parse_decl_clause_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    node_kind: SyntaxKind,
+    allow_like: bool,
+    allow_value: bool,
+    allow_untyped: bool,
+    type_context: &str,
+) -> ClauseResult {
+    cursor.skip_trivia();
+    let Some(first) = cursor.current() else {
+        return ClauseResult::Unsupported;
+    };
+    if node_kind != SyntaxKind::StructuredFieldClause
+        && is_invalid_decl_name_keyword(cursor.source(), first)
+    {
+        return ClauseResult::Unsupported;
+    }
+    let name = if node_kind == SyntaxKind::StructuredFieldClause {
+        parse_structured_field_decl_name_from_cursor(cursor)
+    } else {
+        parse_data_decl_name_from_cursor(cursor)
+    };
+    let Some(name) = name else {
+        return ClauseResult::Unsupported;
+    };
+    let mut children = vec![name];
+
+    if let Some(legacy_len) = parse_optional_paren_length_from_cursor(cursor) {
+        children.push(legacy_len);
+    }
+
+    while let Some(length) =
+        parse_optional_length_spec_from_cursor(cursor, &["TYPE", "LIKE", "VALUE"])
+    {
+        children.push(length);
+    }
+
+    let mut has_type_or_like = false;
+    if let Some(type_kw) = cursor.current()
+        && (is_keyword(cursor.source(), type_kw, "type")
+            || (allow_like && is_keyword(cursor.source(), type_kw, "like")))
+    {
+        let keyword = type_kw.lexeme(cursor.source()).to_ascii_uppercase();
+        has_type_or_like = true;
+        children.push(cursor.bump().expect("type keyword exists"));
+
+        let Some(typed) = parse_type_ref_from_cursor(cursor, DATA_TYPE_REF_STOP_KEYWORDS) else {
+            return ClauseResult::Malformed(format!(
+                "syntax error: expected type name after {keyword} in {type_context}"
+            ));
+        };
+        children.push(typed);
+
+        while let Some(length) =
+            parse_optional_length_spec_from_cursor(cursor, DATA_TYPE_REF_STOP_KEYWORDS)
+        {
+            children.push(length);
+        }
+    }
+
+    if allow_value && let Some(value) = parse_value_clause_from_cursor(cursor) {
+        children.push(value);
+    }
+    if !has_type_or_like && !allow_untyped {
+        return ClauseResult::Unsupported;
+    }
+    if cursor
+        .current()
+        .is_some_and(|tok| tok.kind == TokenKind::Eq)
+    {
+        return ClauseResult::Unsupported;
+    }
+    collect_raw_decl_tail_from_cursor(cursor, &mut children);
+
+    let range = cursor.children_range(&children, cursor.current_range());
+    ClauseResult::Parsed(cursor.builder().branch(node_kind, range, &children))
+}
+
+fn parse_parameters_clause_from_cursor(cursor: &mut CursorParser<'_, '_>) -> ClauseResult {
+    let Some(name) = parse_data_decl_name_from_cursor(cursor) else {
+        return ClauseResult::Unsupported;
+    };
+    let mut children = vec![name];
+
+    if let Some(legacy_len) = parse_optional_paren_length_from_cursor(cursor) {
+        children.push(legacy_len);
+    }
+
+    while let Some(length) =
+        parse_optional_length_spec_from_cursor(cursor, PARAMETERS_LENGTH_STOP_KEYWORDS)
+    {
+        children.push(length);
+    }
+
+    if let Some(type_kw) = cursor.current()
+        && (is_keyword(cursor.source(), type_kw, "type")
+            || is_keyword(cursor.source(), type_kw, "like"))
+    {
+        let keyword = type_kw.lexeme(cursor.source()).to_ascii_uppercase();
+        children.push(cursor.bump().expect("parameter type keyword exists"));
+
+        let Some(typed) = parse_type_ref_from_cursor(cursor, PARAMETERS_TYPE_STOP_KEYWORDS) else {
+            return ClauseResult::Malformed(format!(
+                "syntax error: expected type name after {keyword} in PARAMETERS declaration"
+            ));
+        };
+        children.push(typed);
+
+        while let Some(length) =
+            parse_optional_length_spec_from_cursor(cursor, PARAMETERS_TYPE_STOP_KEYWORDS)
+        {
+            children.push(length);
+        }
+    }
+
+    loop {
+        cursor.skip_trivia();
+        let Some(tok) = cursor.current() else {
+            break;
+        };
+        match tok.kind {
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof => break,
+            _ => {
+                if let Some(value) = parse_value_clause_keywords_until_from_cursor(
+                    cursor,
+                    &["default"],
+                    PARAMETERS_TYPE_STOP_KEYWORDS,
+                ) {
+                    children.push(value);
+                } else {
+                    children.push(cursor.bump().expect("parameter tail token exists"));
                 }
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    data_tok.range.start..tokens[period_i].range.end,
-                    &children,
-                );
-                return Some((node, period_i + 1));
-            }
-            StmtPeriodScan::Unterminated { end_exclusive } => {
-                let err_end = unterminated_err_end(tokens, end_exclusive, data_tok.range.end);
-                errors.push(crate::ParseError {
-                    message:
-                        "syntax error: inline DATA declaration must not contain whitespace inside parentheses"
-                            .to_string(),
-                    range: data_tok.range.start..err_end,
-                });
-                let mut children = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-                for t in &tokens[idx..end_exclusive] {
-                    children.push(token_leaf(b, t));
-                }
-                let node = b.branch(SyntaxKind::Error, data_tok.range.start..err_end, &children);
-                return Some((node, end_exclusive));
             }
         }
     }
-    let eq_tok = tokens.get(i + 1)?;
-    if eq_tok.kind != TokenKind::Eq {
+
+    let range = cursor.children_range(&children, cursor.current_range());
+    ClauseResult::Parsed(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataTypedClause, range, &children),
+    )
+}
+
+fn parse_select_options_clause_from_cursor(cursor: &mut CursorParser<'_, '_>) -> ClauseResult {
+    let Some(name) = parse_data_decl_name_from_cursor(cursor) else {
+        return ClauseResult::Unsupported;
+    };
+    let mut children = vec![name];
+
+    cursor.skip_trivia();
+    if !cursor.at_keyword("FOR") {
+        return ClauseResult::Unsupported;
+    }
+    children.push(cursor.expect_keyword("FOR"));
+
+    let Some(typed) = parse_type_ref_from_cursor(cursor, SELECT_OPTIONS_FOR_STOP_KEYWORDS) else {
+        return ClauseResult::Malformed(
+            "syntax error: expected type name after FOR in SELECT-OPTIONS declaration".to_string(),
+        );
+    };
+    children.push(typed);
+
+    loop {
+        cursor.skip_trivia();
+        let Some(tok) = cursor.current() else {
+            break;
+        };
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) {
+            break;
+        }
+        children.push(cursor.bump().expect("select-options tail token exists"));
+    }
+
+    let range = cursor.children_range(&children, cursor.current_range());
+    ClauseResult::Parsed(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataTypedClause, range, &children),
+    )
+}
+
+fn parse_tables_clause_from_cursor(cursor: &mut CursorParser<'_, '_>) -> ClauseResult {
+    let Some(name) = parse_tables_decl_name_from_cursor(cursor) else {
+        return ClauseResult::Unsupported;
+    };
+    let mut children = vec![name];
+    collect_raw_decl_tail_from_cursor(cursor, &mut children);
+    let range = cursor.children_range(&children, cursor.current_range());
+    ClauseResult::Parsed(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataTypedClause, range, &children),
+    )
+}
+
+fn parse_controls_clause_from_cursor(cursor: &mut CursorParser<'_, '_>) -> ClauseResult {
+    cursor.skip_trivia();
+    if cursor
+        .current()
+        .is_some_and(|first| is_invalid_decl_name_keyword(cursor.source(), first))
+    {
+        return ClauseResult::Unsupported;
+    }
+    let Some(name) = parse_data_decl_name_from_cursor(cursor) else {
+        return ClauseResult::Unsupported;
+    };
+    let mut children = vec![name];
+
+    cursor.skip_trivia();
+    if cursor.at_keyword("TYPE") {
+        children.push(cursor.expect_keyword("TYPE"));
+    }
+
+    collect_raw_decl_tail_from_cursor(cursor, &mut children);
+    let range = cursor.children_range(&children, cursor.current_range());
+    ClauseResult::Parsed(
+        cursor
+            .builder()
+            .branch(SyntaxKind::DataTypedClause, range, &children),
+    )
+}
+
+fn parse_clause_list_decl_from_cursor<F>(
+    cursor: &mut CursorParser<'_, '_>,
+    start: usize,
+    saved_previous: Option<usize>,
+    keyword_children: Vec<NodeId>,
+    kind: SyntaxKind,
+    stmt_name: &str,
+    mut parse_clause: F,
+) -> DeclParseResult
+where
+    F: FnMut(&mut CursorParser<'_, '_>) -> ClauseResult,
+{
+    let mut children = keyword_children;
+    let has_colon = cursor.allow_token(TokenKind::Colon).is_some();
+    let mut after_comma = false;
+
+    loop {
+        cursor.skip_trivia();
+        let Some(tok) = cursor.current() else {
+            return DeclParseResult::Malformed(decl_failure(
+                cursor,
+                format!("syntax error: expected declaration name in {stmt_name}"),
+            ));
+        };
+        if matches!(
+            tok.kind,
+            TokenKind::Comma | TokenKind::Period | TokenKind::Eof
+        ) || (tok.kind == TokenKind::Ident && is_invalid_decl_name_keyword(cursor.source(), tok))
+        {
+            let message = if after_comma {
+                format!("syntax error: expected declaration after ',' in {stmt_name}")
+            } else {
+                format!("syntax error: expected declaration name in {stmt_name}")
+            };
+            return DeclParseResult::Malformed(decl_failure(cursor, message));
+        }
+
+        match parse_clause(cursor) {
+            ClauseResult::Parsed(clause) => children.push(clause),
+            ClauseResult::Malformed(message) => {
+                return DeclParseResult::Malformed(decl_failure(cursor, message));
+            }
+            ClauseResult::Unsupported => {
+                cursor.set_position(start, saved_previous);
+                return DeclParseResult::Unsupported;
+            }
+        }
+        cursor.skip_trivia();
+        if cursor
+            .current()
+            .is_some_and(|token| token.kind == TokenKind::Comma)
+        {
+            if has_colon {
+                let _ = cursor.expect_token_after(TokenKind::Comma, stmt_name);
+                after_comma = true;
+                continue;
+            }
+            cursor.set_position(start, saved_previous);
+            return DeclParseResult::Unsupported;
+        }
+
+        let period = match cursor.expect_token_result(TokenKind::Period) {
+            Ok(period) => period,
+            Err(failure) => return DeclParseResult::Malformed(failure),
+        };
+        children.push(period);
+        return DeclParseResult::Parsed(cursor.branch_from_children(
+            kind,
+            &children,
+            cursor.tokens()[start].range.clone(),
+        ));
+    }
+}
+
+fn consume_hyphenated_keyword_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    parts: &[&str],
+) -> Option<Vec<NodeId>> {
+    if match_hyphenated_keyword(cursor.source(), cursor.tokens(), cursor.index(), parts).is_none() {
         return None;
     }
-    match scan_until_statement_period(tokens, source, i + 2) {
-        StmtPeriodScan::Found(period_i) => {
-            if let Some(delim_error) = delimiter_error(tokens, idx, period_i) {
-                errors.push(delim_error);
-                let mut children = Vec::with_capacity(period_i - idx + 1);
-                for t in &tokens[idx..=period_i] {
-                    children.push(token_leaf(b, t));
-                }
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    data_tok.range.start..tokens[period_i].range.end,
-                    &children,
-                );
-                return Some((node, period_i + 1));
-            }
-            if !has_non_comment_tokens(tokens, i + 2, period_i) {
-                errors.push(crate::ParseError {
-                    message:
-                        "syntax error: expected expression after '=' in inline DATA declaration"
-                            .to_string(),
-                    range: eq_tok.range.start..tokens[period_i].range.end,
-                });
-                let mut children = Vec::with_capacity(period_i - idx + 1);
-                for t in &tokens[idx..=period_i] {
-                    children.push(token_leaf(b, t));
-                }
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    data_tok.range.start..tokens[period_i].range.end,
-                    &children,
-                );
-                return Some((node, period_i + 1));
-            }
-            let rhs = crate::expr::parse_arithmetic_expr(
-                b,
-                source,
-                &tokens[i + 2..period_i],
-                Some(eq_tok),
-            );
-            let data_leaf = token_leaf(b, data_tok);
-            let lparen_leaf = token_leaf(b, lparen);
-            let rparen_leaf = token_leaf(b, rparen);
-            let eq_leaf = token_leaf(b, eq_tok);
-            let period_leaf = token_leaf(b, &tokens[period_i]);
-            let node = b.branch(
-                SyntaxKind::DataInlineDecl,
-                data_tok.range.start..tokens[period_i].range.end,
-                &[
-                    data_leaf,
-                    lparen_leaf,
-                    name,
-                    rparen_leaf,
-                    eq_leaf,
-                    rhs,
-                    period_leaf,
-                ],
-            );
-            Some((node, period_i + 1))
+    let mut children = Vec::with_capacity(parts.len() * 2 - 1);
+    for (part_idx, part) in parts.iter().enumerate() {
+        if part_idx > 0 {
+            children.push(cursor.expect_token_after(TokenKind::Minus, parts[part_idx - 1]));
         }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, data_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' to end inline DATA declaration".to_string(),
-                range: data_tok.range.start..err_end,
-            });
-            let mut children = Vec::with_capacity(end_exclusive - idx);
-            for t in &tokens[idx..end_exclusive] {
-                children.push(token_leaf(b, t));
+        children.push(cursor.expect_keyword(part));
+    }
+    Some(children)
+}
+
+fn cursor_is_parameters_keyword(cursor: &CursorParser<'_, '_>) -> bool {
+    cursor
+        .current()
+        .is_some_and(|token| is_parameters_keyword(cursor.source(), token))
+}
+
+fn try_parse_keyword_decl_from_cursor<F>(
+    cursor: &mut CursorParser<'_, '_>,
+    keyword: &str,
+    kind: SyntaxKind,
+    stmt_name: &str,
+    parse_clause: F,
+) -> DeclParseResult
+where
+    F: FnMut(&mut CursorParser<'_, '_>) -> ClauseResult,
+{
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if !cursor.at_keyword(keyword) {
+        return DeclParseResult::Unsupported;
+    }
+    let keyword_children = vec![cursor.expect_keyword(keyword)];
+    parse_clause_list_decl_from_cursor(
+        cursor,
+        start,
+        saved_previous,
+        keyword_children,
+        kind,
+        stmt_name,
+        parse_clause,
+    )
+}
+
+fn try_parse_hyphenated_decl_from_cursor<F>(
+    cursor: &mut CursorParser<'_, '_>,
+    parts: &[&str],
+    kind: SyntaxKind,
+    stmt_name: &str,
+    parse_clause: F,
+) -> DeclParseResult
+where
+    F: FnMut(&mut CursorParser<'_, '_>) -> ClauseResult,
+{
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    let Some(keyword_children) = consume_hyphenated_keyword_from_cursor(cursor, parts) else {
+        return DeclParseResult::Unsupported;
+    };
+    parse_clause_list_decl_from_cursor(
+        cursor,
+        start,
+        saved_previous,
+        keyword_children,
+        kind,
+        stmt_name,
+        parse_clause,
+    )
+}
+
+fn try_parse_structured_data_decl_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        try_parse_structured_data_decl(b, source, tokens, start)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn try_parse_types_structured_block_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<NodeId> {
+    let start = cursor.index();
+    let parsed = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        try_parse_types_structured_block_decl(b, source, tokens, start)
+    };
+    let (node, next) = parsed?;
+    cursor.set_position(next, next.checked_sub(1));
+    Some(node)
+}
+
+fn finish_decl_result(result: DeclParseResult) -> Option<PResult<NodeId>> {
+    match result {
+        DeclParseResult::Parsed(node) => Some(Ok(node)),
+        DeclParseResult::Malformed(failure) => Some(Err(failure)),
+        DeclParseResult::Unsupported => None,
+    }
+}
+
+fn try_parse_data_inline_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if !cursor.at_keyword("DATA")
+        || cursor
+            .tokens()
+            .get(start + 1)
+            .is_none_or(|token| token.kind != TokenKind::LParen)
+    {
+        return None;
+    }
+
+    let fallback = cursor.tokens()[start].range.clone();
+    let mut children = Vec::new();
+    children.push(match cursor.expect_keyword_result("DATA") {
+        Ok(keyword) => keyword,
+        Err(failure) => return Some(Err(failure)),
+    });
+    let lparen_idx = cursor.index();
+    children.push(
+        match cursor.expect_token_after_result(TokenKind::LParen, "DATA") {
+            Ok(lparen) => lparen,
+            Err(failure) => return Some(Err(failure)),
+        },
+    );
+    let name_idx = cursor.index();
+    let name = {
+        let (b, _, tokens, _) = cursor.parts_mut();
+        parse_inline_name(b, tokens, name_idx)
+    };
+    let Some((name, next)) = name else {
+        cursor.set_position(start, saved_previous);
+        return None;
+    };
+    cursor.set_position(next, next.checked_sub(1));
+    children.push(name);
+    let rparen_idx = cursor.index();
+    children.push(
+        match cursor.expect_token_after_result(TokenKind::RParen, "inline DATA name") {
+            Ok(rparen) => rparen,
+            Err(failure) => return Some(Err(failure)),
+        },
+    );
+
+    if !inline_name_spacing_is_valid(cursor.tokens(), lparen_idx, name_idx, rparen_idx) {
+        return Some(Err(decl_failure(
+            cursor,
+            "syntax error: inline DATA declaration must not contain whitespace inside parentheses"
+                .to_string(),
+        )));
+    }
+
+    if !cursor
+        .current()
+        .is_some_and(|token| token.kind == TokenKind::Eq)
+    {
+        cursor.set_position(start, saved_previous);
+        return None;
+    }
+    children.push(
+        match cursor.expect_token_after_result(TokenKind::Eq, "inline DATA declaration") {
+            Ok(eq) => eq,
+            Err(failure) => return Some(Err(failure)),
+        },
+    );
+
+    let rhs = match cursor.expect_arithmetic_expr_result("inline DATA declaration") {
+        Ok(rhs) => rhs,
+        Err(mut failure) => {
+            failure.message =
+                "syntax error: expected expression after '=' in inline DATA declaration"
+                    .to_string();
+            return Some(Err(failure));
+        }
+    };
+    children.push(rhs);
+
+    let period =
+        match cursor.expect_token_after_result(TokenKind::Period, "inline DATA declaration") {
+            Ok(period) => period,
+            Err(failure) => return Some(Err(failure)),
+        };
+    children.push(period);
+    Some(Ok(cursor.branch_from_children(
+        SyntaxKind::DataInlineDecl,
+        &children,
+        fallback,
+    )))
+}
+
+fn try_parse_data_decl_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if !cursor.at_keyword("DATA") {
+        return None;
+    }
+    if cursor
+        .tokens()
+        .get(start + 1)
+        .is_some_and(|token| token.kind == TokenKind::LParen)
+    {
+        return try_parse_data_inline_decl_from_cursor(cursor);
+    }
+    if let Some(node) = try_parse_structured_data_decl_from_cursor(cursor) {
+        return Some(Ok(node));
+    }
+    cursor.set_position(start, saved_previous);
+
+    let keyword_children = vec![cursor.expect_keyword("DATA")];
+    finish_decl_result(parse_clause_list_decl_from_cursor(
+        cursor,
+        start,
+        saved_previous,
+        keyword_children,
+        SyntaxKind::DataDecl,
+        "DATA statement",
+        |cursor| {
+            parse_common_part_clause_from_cursor(cursor)
+                .map(ClauseResult::Parsed)
+                .or_else(|| {
+                    parse_structured_decl_from_cursor(
+                        cursor,
+                        SyntaxKind::DataTypedClause,
+                        true,
+                        true,
+                    )
+                    .map(ClauseResult::Parsed)
+                })
+                .unwrap_or_else(|| {
+                    parse_decl_clause_from_cursor(
+                        cursor,
+                        SyntaxKind::DataTypedClause,
+                        true,
+                        true,
+                        true,
+                        "DATA declaration",
+                    )
+                })
+        },
+    ))
+}
+
+fn try_parse_parameters_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if !cursor_is_parameters_keyword(cursor) {
+        return None;
+    }
+    let keyword_children = vec![cursor.bump().expect("PARAMETERS keyword exists")];
+    finish_decl_result(parse_clause_list_decl_from_cursor(
+        cursor,
+        start,
+        saved_previous,
+        keyword_children,
+        SyntaxKind::ParametersDecl,
+        "PARAMETERS statement",
+        parse_parameters_clause_from_cursor,
+    ))
+}
+
+fn try_parse_tables_decl_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_keyword_decl_from_cursor(
+        cursor,
+        "TABLES",
+        SyntaxKind::TablesDecl,
+        "TABLES statement",
+        parse_tables_clause_from_cursor,
+    ))
+}
+
+fn try_parse_select_options_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_hyphenated_decl_from_cursor(
+        cursor,
+        &["SELECT", "OPTIONS"],
+        SyntaxKind::SelectOptionsDecl,
+        "SELECT-OPTIONS statement",
+        parse_select_options_clause_from_cursor,
+    ))
+}
+
+fn try_parse_ranges_decl_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_keyword_decl_from_cursor(
+        cursor,
+        "RANGES",
+        SyntaxKind::RangesDecl,
+        "RANGES statement",
+        parse_select_options_clause_from_cursor,
+    ))
+}
+
+fn try_parse_controls_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_keyword_decl_from_cursor(
+        cursor,
+        "CONTROLS",
+        SyntaxKind::ControlsDecl,
+        "CONTROLS statement",
+        parse_controls_clause_from_cursor,
+    ))
+}
+
+fn try_parse_class_data_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_hyphenated_decl_from_cursor(
+        cursor,
+        &["CLASS", "DATA"],
+        SyntaxKind::DataDecl,
+        "CLASS-DATA statement",
+        |cursor| {
+            parse_decl_clause_from_cursor(
+                cursor,
+                SyntaxKind::DataTypedClause,
+                true,
+                true,
+                false,
+                "CLASS-DATA declaration",
+            )
+        },
+    ))
+}
+
+fn try_parse_statics_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_keyword_decl_from_cursor(
+        cursor,
+        "STATICS",
+        SyntaxKind::StaticsDecl,
+        "STATICS statement",
+        |cursor| {
+            parse_structured_decl_from_cursor(cursor, SyntaxKind::DataTypedClause, true, true)
+                .map(ClauseResult::Parsed)
+                .unwrap_or_else(|| {
+                    parse_decl_clause_from_cursor(
+                        cursor,
+                        SyntaxKind::DataTypedClause,
+                        true,
+                        true,
+                        true,
+                        "STATICS declaration",
+                    )
+                })
+        },
+    ))
+}
+
+fn try_parse_types_decl_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if !cursor.at_keyword("TYPES") {
+        return None;
+    }
+    if let Some(node) = try_parse_types_structured_block_decl_from_cursor(cursor) {
+        return Some(Ok(node));
+    }
+    cursor.set_position(start, saved_previous);
+    finish_decl_result(try_parse_keyword_decl_from_cursor(
+        cursor,
+        "TYPES",
+        SyntaxKind::TypesDecl,
+        "TYPES statement",
+        |cursor| {
+            parse_structured_decl_from_cursor(cursor, SyntaxKind::TypesTypedClause, true, false)
+                .map(ClauseResult::Parsed)
+                .unwrap_or_else(|| {
+                    parse_decl_clause_from_cursor(
+                        cursor,
+                        SyntaxKind::TypesTypedClause,
+                        true,
+                        false,
+                        false,
+                        "TYPES declaration",
+                    )
+                })
+        },
+    ))
+}
+
+fn try_parse_constants_chained_from_cursor(cursor: &mut CursorParser<'_, '_>) -> DeclParseResult {
+    try_parse_keyword_decl_from_cursor(
+        cursor,
+        "CONSTANTS",
+        SyntaxKind::ConstantsDecl,
+        "CONSTANTS statement",
+        |cursor| {
+            parse_structured_decl_from_cursor(cursor, SyntaxKind::ConstantClause, true, true)
+                .map(ClauseResult::Parsed)
+                .unwrap_or_else(|| {
+                    parse_decl_clause_from_cursor(
+                        cursor,
+                        SyntaxKind::ConstantClause,
+                        true,
+                        true,
+                        true,
+                        "CONSTANTS declaration",
+                    )
+                })
+        },
+    )
+}
+
+fn try_parse_constants_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if !cursor.at_keyword("CONSTANTS") {
+        return None;
+    }
+
+    match try_parse_constants_chained_from_cursor(cursor) {
+        DeclParseResult::Parsed(node) => {
+            let end = cursor.index();
+            match validate_structured_decl_nesting(cursor.source(), cursor.tokens(), start, end) {
+                Ok(_) => Some(Ok(node)),
+                Err(message) => {
+                    let parsed = {
+                        let (b, _, tokens, errors) = cursor.parts_mut();
+                        parse_malformed_constants_decl(b, tokens, start, errors, message, end)
+                    };
+                    let (node, next) = parsed?;
+                    cursor.set_position(next, next.checked_sub(1));
+                    Some(Ok(node))
+                }
             }
-            let node = b.branch(SyntaxKind::Error, data_tok.range.start..err_end, &children);
-            Some((node, end_exclusive))
+        }
+        DeclParseResult::Malformed(failure) => Some(Err(failure)),
+        DeclParseResult::Unsupported => {
+            cursor.set_position(start, saved_previous);
+            let end = declaration_boundary_end(cursor.source(), cursor.tokens(), start);
+            match validate_structured_decl_nesting(cursor.source(), cursor.tokens(), start, end) {
+                Ok(false) => None,
+                Ok(true) => None,
+                Err(message) => {
+                    let parsed = {
+                        let (b, _, tokens, errors) = cursor.parts_mut();
+                        parse_malformed_constants_decl(b, tokens, start, errors, message, end)
+                    };
+                    let (node, next) = parsed?;
+                    cursor.set_position(next, next.checked_sub(1));
+                    Some(Ok(node))
+                }
+            }
         }
     }
+}
+
+fn try_parse_field_symbols_decl_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    finish_decl_result(try_parse_hyphenated_decl_from_cursor(
+        cursor,
+        &["FIELD", "SYMBOLS"],
+        SyntaxKind::FieldSymbolsDecl,
+        "FIELD-SYMBOLS statement",
+        |cursor| {
+            parse_decl_clause_from_cursor(
+                cursor,
+                SyntaxKind::FieldSymbolClause,
+                true,
+                false,
+                true,
+                "FIELD-SYMBOLS declaration",
+            )
+        },
+    ))
+}
+
+pub(crate) fn parse_decl_result_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    try_parse_data_decl_from_cursor(cursor)
+        .or_else(|| try_parse_tables_decl_from_cursor(cursor))
+        .or_else(|| try_parse_ranges_decl_from_cursor(cursor))
+        .or_else(|| try_parse_controls_decl_from_cursor(cursor))
+        .or_else(|| try_parse_parameters_decl_from_cursor(cursor))
+        .or_else(|| try_parse_select_options_decl_from_cursor(cursor))
+        .or_else(|| try_parse_class_data_decl_from_cursor(cursor))
+        .or_else(|| try_parse_statics_decl_from_cursor(cursor))
+        .or_else(|| try_parse_types_decl_from_cursor(cursor))
+        .or_else(|| try_parse_constants_decl_from_cursor(cursor))
+        .or_else(|| try_parse_field_symbols_decl_from_cursor(cursor))
 }
 
 fn parse_decl_clause(
@@ -960,140 +1584,6 @@ fn parse_decl_clause(
 
     let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
     Some((b.branch(node_kind, range, &children), i))
-}
-
-fn parse_parameters_clause(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
-    let mut children = vec![name];
-
-    if let Some((legacy_len, j)) = parse_optional_paren_length(b, tokens, i) {
-        children.push(legacy_len);
-        i = j;
-    }
-
-    while let Some((length, j)) =
-        parse_optional_length_spec(b, source, tokens, i, PARAMETERS_LENGTH_STOP_KEYWORDS)
-    {
-        children.push(length);
-        i = j;
-    }
-
-    if let Some(type_kw) = tokens.get(i)
-        && (is_keyword(source, type_kw, "type") || is_keyword(source, type_kw, "like"))
-    {
-        children.push(token_leaf(b, type_kw));
-        i += 1;
-
-        let (typed, j) =
-            parse_type_ref_tokens(b, source, tokens, i, PARAMETERS_TYPE_STOP_KEYWORDS)?;
-        children.push(typed);
-        i = j;
-
-        while let Some((length, j)) =
-            parse_optional_length_spec(b, source, tokens, i, PARAMETERS_TYPE_STOP_KEYWORDS)
-        {
-            children.push(length);
-            i = j;
-        }
-    }
-
-    while let Some(tok) = tokens.get(i) {
-        match tok.kind {
-            TokenKind::Comment => {
-                children.push(token_leaf(b, tok));
-                i += 1;
-            }
-            TokenKind::Comma | TokenKind::Period | TokenKind::Eof => break,
-            _ => {
-                if let Some((value, j)) = parse_value_clause_keywords_until(
-                    b,
-                    source,
-                    tokens,
-                    i,
-                    &["default"],
-                    PARAMETERS_TYPE_STOP_KEYWORDS,
-                ) {
-                    children.push(value);
-                    i = j;
-                } else {
-                    children.push(token_leaf(b, tok));
-                    i += 1;
-                }
-            }
-        }
-    }
-
-    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
-}
-
-fn parse_select_options_clause(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
-    let mut children = vec![name];
-
-    let for_tok = tokens.get(i)?;
-    if !is_keyword(source, for_tok, "for") {
-        return None;
-    }
-    children.push(token_leaf(b, for_tok));
-    i += 1;
-
-    let (typed, j) = parse_type_ref_tokens(b, source, tokens, i, SELECT_OPTIONS_FOR_STOP_KEYWORDS)?;
-    children.push(typed);
-    i = j;
-
-    while let Some(tok) = tokens.get(i) {
-        match tok.kind {
-            TokenKind::Comment => {
-                children.push(token_leaf(b, tok));
-                i += 1;
-            }
-            TokenKind::Comma | TokenKind::Period | TokenKind::Eof => break,
-            _ => {
-                children.push(token_leaf(b, tok));
-                i += 1;
-            }
-        }
-    }
-
-    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
-}
-
-fn parse_controls_clause(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-) -> Option<(NodeId, usize)> {
-    let first = tokens.get(idx)?;
-    if is_invalid_decl_name_keyword(source, first) {
-        return None;
-    }
-    let (name, mut i) = parse_data_decl_name(b, source, tokens, idx)?;
-    let mut children = vec![name];
-
-    if let Some(type_kw) = tokens.get(i)
-        && is_keyword(source, type_kw, "type")
-    {
-        children.push(token_leaf(b, type_kw));
-        i += 1;
-    }
-
-    i = collect_raw_decl_tail(b, source, tokens, i, &mut children);
-
-    let range = b.span(*children.first().unwrap()).start..b.span(*children.last().unwrap()).end;
-    Some((b.branch(SyntaxKind::DataTypedClause, range, &children), i))
 }
 
 fn parse_begin_of_decl_clause(
@@ -1499,148 +1989,6 @@ fn parse_untyped_structured_field_clause(
     ))
 }
 
-fn try_parse_chained_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    keyword: &str,
-    decl_kind: SyntaxKind,
-    clause_kind: SyntaxKind,
-    allow_like: bool,
-    allow_value: bool,
-    allow_untyped: bool,
-) -> Option<(NodeId, usize)> {
-    let kw_tok = tokens.get(idx)?;
-    if !is_keyword(source, kw_tok, keyword) {
-        return None;
-    }
-    try_parse_chained_decl_after_keyword_span(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        decl_kind,
-        clause_kind,
-        allow_like,
-        allow_value,
-        allow_untyped,
-    )
-}
-
-fn try_parse_chained_decl_after_keyword_span(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    kw_end: usize,
-    decl_kind: SyntaxKind,
-    clause_kind: SyntaxKind,
-    allow_like: bool,
-    allow_value: bool,
-    allow_untyped: bool,
-) -> Option<(NodeId, usize)> {
-    let mut i = kw_end;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = {
-            parse_begin_of_decl_clause(b, source, tokens, i, clause_kind, allow_like, allow_value)
-        }
-        .or_else(|| {
-            parse_decl_clause(
-                b,
-                source,
-                tokens,
-                i,
-                clause_kind,
-                allow_like,
-                allow_value,
-                allow_untyped,
-            )
-        })?;
-        clause_nodes.push(clause);
-        i = next_i;
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::with_capacity(clause_nodes.len() + (kw_end - idx) + 1);
-                for token in &tokens[idx..kw_end] {
-                    children.push(token_leaf(b, token));
-                }
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(
-                    decl_kind,
-                    tokens[idx].range.start..next.range.end,
-                    &children,
-                );
-                return Some((node, i + 1));
-            }
-            _ => return None,
-        }
-    }
-}
-
-pub fn try_parse_statics_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    try_parse_chained_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        "statics",
-        SyntaxKind::StaticsDecl,
-        SyntaxKind::DataTypedClause,
-        true,
-        true,
-        true,
-    )
-}
-
-pub fn try_parse_types_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    try_parse_types_structured_block_decl(b, source, tokens, idx).or_else(|| {
-        try_parse_chained_decl(
-            b,
-            source,
-            tokens,
-            idx,
-            "types",
-            SyntaxKind::TypesDecl,
-            SyntaxKind::TypesTypedClause,
-            true,
-            false,
-            false,
-        )
-    })
-}
-
 fn try_parse_types_structured_block_decl(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -1972,107 +2320,6 @@ fn parse_malformed_constants_decl(
         end_exclusive
     };
     Some((node, next))
-}
-
-pub fn try_parse_constants_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let parsed = try_parse_chained_decl(
-        b,
-        source,
-        tokens,
-        idx,
-        "constants",
-        SyntaxKind::ConstantsDecl,
-        SyntaxKind::ConstantClause,
-        true,
-        true,
-        true,
-    );
-    let validation = parsed
-        .as_ref()
-        .map(|(_, next)| {
-            (
-                *next,
-                validate_structured_decl_nesting(source, tokens, idx, *next),
-            )
-        })
-        .or_else(|| {
-            let scan = scan_until_statement_period(tokens, source, idx);
-            let end_exclusive = match scan {
-                StmtPeriodScan::Found(period_i) => period_i + 1,
-                StmtPeriodScan::Unterminated { end_exclusive } => end_exclusive,
-            };
-            match validate_structured_decl_nesting(source, tokens, idx, end_exclusive) {
-                Ok(false) => None,
-                result => Some((end_exclusive, result)),
-            }
-        });
-
-    if let Some((end_exclusive, Err(message))) = validation {
-        return parse_malformed_constants_decl(b, tokens, idx, errors, message, end_exclusive);
-    }
-
-    parsed
-}
-
-pub fn try_parse_field_symbols_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    _errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let kw_end = match_hyphenated_keyword(source, tokens, idx, &["field", "symbols"])?;
-    let mut i = kw_end;
-    let has_colon = match tokens.get(i).map(|t| t.kind) {
-        Some(TokenKind::Colon) => {
-            i += 1;
-            true
-        }
-        _ => false,
-    };
-    let mut clause_nodes = Vec::new();
-    loop {
-        while tokens.get(i).map(|t| t.kind) == Some(TokenKind::Comment) {
-            i += 1;
-        }
-        let (clause, next_i) = parse_decl_clause(
-            b,
-            source,
-            tokens,
-            i,
-            SyntaxKind::FieldSymbolClause,
-            true,
-            false,
-            true,
-        )?;
-        clause_nodes.push(clause);
-        i = next_i;
-        let next = tokens.get(i)?;
-        match next.kind {
-            TokenKind::Comma if has_colon => i += 1,
-            TokenKind::Period => {
-                let mut children = Vec::new();
-                for t in &tokens[idx..kw_end] {
-                    children.push(token_leaf(b, t));
-                }
-                children.extend(clause_nodes);
-                children.push(token_leaf(b, next));
-                let node = b.branch(
-                    SyntaxKind::FieldSymbolsDecl,
-                    tokens[idx].range.start..next.range.end,
-                    &children,
-                );
-                return Some((node, i + 1));
-            }
-            _ => return None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2422,7 +2669,7 @@ DATA: END OF bet.";
             assert!(
                 parsed
                     .file
-                    .count_kind(parsed.file.root(), SyntaxKind::Error)
+                    .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt)
                     >= 1
             );
         }
@@ -2967,9 +3214,9 @@ CONSTANTS: BEGIN OF gc_bapi_proc_mode,\n\
         assert!(
             parsed
                 .file
-                .count_kind(parsed.file.root(), SyntaxKind::Error)
+                .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt)
                 >= 1,
-            "expected malformed DATA to produce an Error node for {src:?}"
+            "expected malformed DATA to produce an InvalidStmt node for {src:?}"
         );
     }
 
@@ -3049,7 +3296,7 @@ CONSTANTS: BEGIN OF gc_bapi_proc_mode,\n\
             parsed
                 .errors
                 .iter()
-                .any(|e| e.message.contains("expected '.' to end DATA declaration")),
+                .any(|e| e.message.contains("expected '.'")),
             "{:?}",
             parsed.errors
         );

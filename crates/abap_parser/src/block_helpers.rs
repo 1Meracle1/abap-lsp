@@ -2,7 +2,6 @@ use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
 use abap_lexer::{Token, TokenKind, have_space_between};
 
-use crate::stmt_period::{StmtPeriodScan, scan_until_statement_period, unterminated_err_end};
 use crate::syntax::token_leaf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,42 +260,4 @@ pub(crate) fn parse_body_until_keywords(
         idx = ensure_forward_progress(tokens, idx, next);
     }
     (nodes, idx)
-}
-
-pub(crate) fn parse_header_until_period(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    keyword_idx: usize,
-    body_start_idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-    missing_period_message: &str,
-) -> (Vec<NodeId>, usize) {
-    match scan_until_statement_period(tokens, source, body_start_idx) {
-        StmtPeriodScan::Found(period_i) => {
-            let mut children = Vec::with_capacity(period_i.saturating_sub(keyword_idx) + 1);
-            for t in &tokens[keyword_idx..=period_i] {
-                children.push(token_leaf(b, t));
-            }
-            (children, period_i + 1)
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let start_tok = &tokens[keyword_idx];
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: missing_period_message.to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, keyword_idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                start_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    }
 }

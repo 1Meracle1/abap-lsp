@@ -8,11 +8,15 @@
 //! `IS [NOT] INITIAL|…`; [`SyntaxKind::InstanceOfPredicate`] for `IS [NOT] INSTANCE OF type` (type =
 //! concat-expr). Comment tokens (including lexer `##…` pragmas) are skipped inside the expression parser.
 
+use crate::parser::{PResult, ParseFailure, Parser as CursorParser};
+use crate::stmt_period::{
+    is_definite_stmt_lead_keyword, keyword_any, line_start_assignment, token_begins_line,
+};
 use crate::syntax::{parse_char_string_template, token_leaf};
 use crate::type_ref::build_type_ref_node;
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind, have_space_between};
+use abap_lexer::{TextRange, Token, TokenKind, have_space_between};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParenInner {
@@ -43,24 +47,22 @@ const CALL_ARGUMENT_SECTION_KEYWORDS: &[&str] = &[
 ];
 #[rustfmt::skip]
 const CONSTRUCTOR_KEYWORDS: &[&str] = &["NEW", "VALUE", "CONV", "REF", "CAST", "EXACT", "CORRESPONDING", "FILTER", "REDUCE", "SWITCH", "COND"];
+#[rustfmt::skip]
+const EXPR_STOP_KEYWORDS: &[&str] = &["ELSEIF", "ELSE", "ENDIF", "WHEN", "ENDCASE", "CATCH", "CLEANUP", "ENDTRY", "ENDCATCH", "ENDWHILE", "ENDDO", "ENDLOOP", "ENDAT", "ENDSELECT", "ENDCLASS", "ENDINTERFACE", "ENDMETHOD", "ENDFORM", "ENDFUNCTION", "ENDMODULE"];
 
-struct Parser<'a, 'b> {
+struct ExprParser<'a, 'b> {
     source: &'a str,
     tokens: &'a [Token],
     idx: usize,
     prev: &'a Token,
     b: &'b mut SyntaxTreeBuilder,
     paren_inner: ParenInner,
+    stop_at_stmt_boundary: bool,
 }
 
 #[inline]
 fn ident_eq(source: &str, t: &Token, kw: &str) -> bool {
     t.kind == TokenKind::Ident && t.lexeme(source).eq_ignore_ascii_case(kw)
-}
-
-#[inline]
-fn keyword_any(text: &str, keywords: &[&str]) -> bool {
-    keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
 }
 
 fn is_comparison_op(source: &str, t: &Token) -> bool {
@@ -112,7 +114,13 @@ fn slice_has_non_comment_token(tokens: &[Token]) -> bool {
     tokens.iter().any(|token| token.kind != TokenKind::Comment)
 }
 
-impl<'a, 'b> Parser<'a, 'b> {
+struct CursorExprResult {
+    node: Option<NodeId>,
+    start: usize,
+    end: usize,
+}
+
+impl<'a, 'b> ExprParser<'a, 'b> {
     /// Comments include ABAP pragmas (`##...`) from the lexer.
     fn skip_trivia(&mut self) {
         while self.idx < self.tokens.len() && self.tokens[self.idx].kind == TokenKind::Comment {
@@ -132,6 +140,23 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.prev = t;
         self.idx += 1;
         Some(t)
+    }
+
+    fn is_expr_stop_ident(&self, token: &Token) -> bool {
+        self.stop_at_stmt_boundary
+            && token.kind == TokenKind::Ident
+            && (keyword_any(token.lexeme(self.source), EXPR_STOP_KEYWORDS)
+                || (token_begins_line(token)
+                    && !self.prev_allows_line_start_operand()
+                    && (is_definite_stmt_lead_keyword(self.source, token)
+                        || line_start_assignment(self.tokens, self.idx))))
+    }
+
+    fn prev_allows_line_start_operand(&self) -> bool {
+        self.prev.kind == TokenKind::Ident
+            && (ident_eq(self.source, self.prev, "AND")
+                || ident_eq(self.source, self.prev, "OR")
+                || ident_eq(self.source, self.prev, "NOT"))
     }
 
     fn parse_concat_expr(&mut self) -> Option<NodeId> {
@@ -420,13 +445,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             return None;
         }
 
-        let mut nested = Parser {
+        let mut nested = ExprParser {
             source: self.source,
             tokens,
             idx: 0,
             prev: prev_before_first,
             b: self.b,
             paren_inner: ParenInner::Concat,
+            stop_at_stmt_boundary: false,
         };
         let expr = nested.parse_concat_expr()?;
         nested.skip_trivia();
@@ -445,13 +471,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             return None;
         }
 
-        let mut nested = Parser {
+        let mut nested = ExprParser {
             source: self.source,
             tokens,
             idx: 0,
             prev: prev_before_first,
             b: self.b,
             paren_inner: ParenInner::Logical,
+            stop_at_stmt_boundary: false,
         };
         let expr = nested.parse_or_expr()?;
         nested.skip_trivia();
@@ -2596,11 +2623,13 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.prev = &self.tokens[next.saturating_sub(1)];
                 Some(node)
             }
+            TokenKind::Ident if self.is_expr_stop_ident(curr) => None,
             TokenKind::Ident => {
                 if ident_eq(self.source, curr, "LET") {
-                    let node = self.build_raw_let_expr(&self.tokens[self.idx..])?;
-                    self.idx = self.tokens.len();
-                    self.prev = self.tokens.last()?;
+                    let end = self.raw_let_expr_end(self.idx);
+                    let node = self.build_raw_let_expr(&self.tokens[self.idx..end])?;
+                    self.idx = end;
+                    self.prev = &self.tokens[end.saturating_sub(1)];
                     return Some(node);
                 }
                 if is_constructor_keyword(curr.lexeme(self.source)) {
@@ -2613,6 +2642,21 @@ impl<'a, 'b> Parser<'a, 'b> {
                         .branch(SyntaxKind::ExprIdent, t.range.clone(), &[leaf]),
                 )
             }
+            TokenKind::Other
+                if curr.lexeme(self.source) == "%"
+                    && self.tokens.get(self.idx + 1).is_some_and(|next| {
+                        next.kind == TokenKind::Ident && !have_space_between(curr, next)
+                    }) =>
+            {
+                let percent = self.bump()?;
+                let name = self.bump()?;
+                let children = vec![token_leaf(self.b, percent), token_leaf(self.b, name)];
+                Some(self.b.branch(
+                    SyntaxKind::ExprIdent,
+                    percent.range.start..name.range.end,
+                    &children,
+                ))
+            }
             TokenKind::Number | TokenKind::String => {
                 let t = self.bump()?;
                 let leaf = token_leaf(self.b, t);
@@ -2624,6 +2668,44 @@ impl<'a, 'b> Parser<'a, 'b> {
             TokenKind::LParen if have_space_between(self.prev, curr) => self.parse_paren_expr(),
             _ => None,
         }
+    }
+
+    fn raw_let_expr_end(&self, start: usize) -> usize {
+        let mut idx = start;
+        let mut paren = 0i32;
+        let mut bracket = 0i32;
+        let mut brace = 0i32;
+        while idx < self.tokens.len() {
+            let token = &self.tokens[idx];
+            if paren == 0
+                && bracket == 0
+                && brace == 0
+                && idx > start
+                && matches!(
+                    token.kind,
+                    TokenKind::Period
+                        | TokenKind::Comma
+                        | TokenKind::Colon
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::RBrace
+                        | TokenKind::Eof
+                )
+            {
+                break;
+            }
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren -= 1,
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket -= 1,
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace -= 1,
+                _ => {}
+            }
+            idx += 1;
+        }
+        idx
     }
 
     fn find_top_level_keyword_in_slice(
@@ -2659,6 +2741,222 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 }
 
+fn run_cursor_expr(cursor: &mut CursorParser<'_, '_>, paren_inner: ParenInner) -> CursorExprResult {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let previous_index = cursor.previous_index();
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    let Some(first) = tokens.get(start) else {
+        return CursorExprResult {
+            node: None,
+            start,
+            end: start,
+        };
+    };
+    let sentinel = Token::new(TokenKind::Other, first.range.start..first.range.start);
+    let initial_prev = cursor.previous().unwrap_or(&sentinel);
+
+    let mut parser = ExprParser {
+        source,
+        tokens: &tokens[start..],
+        idx: 0,
+        prev: initial_prev,
+        b: cursor.builder(),
+        paren_inner,
+        stop_at_stmt_boundary: true,
+    };
+    let node = match paren_inner {
+        ParenInner::Concat => parser.parse_concat_expr(),
+        ParenInner::Logical => parser.parse_or_expr(),
+    };
+    let consumed = parser.idx;
+    drop(parser);
+
+    let end = start + consumed;
+    let previous_index = if consumed == 0 {
+        previous_index
+    } else {
+        Some(end - 1)
+    };
+    cursor.set_position(end, previous_index);
+
+    CursorExprResult { node, start, end }
+}
+
+fn wrap_template_expr(cursor: &mut CursorParser<'_, '_>, expr: NodeId) -> NodeId {
+    let range = cursor.builder().span(expr);
+    cursor
+        .builder()
+        .branch(SyntaxKind::TemplateExpr, range, &[expr])
+}
+
+fn expected_expression_message(after: &str) -> String {
+    if after.is_empty() {
+        "syntax error: expected expression".to_string()
+    } else {
+        format!("syntax error: expected expression after {after}")
+    }
+}
+
+fn expression_boundary_at(source: &str, tokens: &[Token], index: usize) -> bool {
+    let Some(token) = tokens.get(index) else {
+        return true;
+    };
+    match token.kind {
+        TokenKind::Period
+        | TokenKind::Comma
+        | TokenKind::Colon
+        | TokenKind::RParen
+        | TokenKind::RBracket
+        | TokenKind::RBrace
+        | TokenKind::Eof => true,
+        TokenKind::Ident => {
+            keyword_any(token.lexeme(source), EXPR_STOP_KEYWORDS)
+                || (token_begins_line(token)
+                    && (is_definite_stmt_lead_keyword(source, token)
+                        || line_start_assignment(tokens, index)))
+        }
+        _ => false,
+    }
+}
+
+fn expression_error_range(cursor: &CursorParser<'_, '_>, start: usize, end: usize) -> TextRange {
+    if end > start {
+        let tokens = cursor.tokens();
+        return tokens[start].range.start..tokens[end - 1].range.end;
+    }
+    cursor
+        .current()
+        .or_else(|| cursor.previous())
+        .map_or(0..0, |token| token.range.clone())
+}
+
+fn empty_error_range(range: &TextRange) -> TextRange {
+    range.start..range.start
+}
+
+fn build_expected_expression_error(
+    cursor: &mut CursorParser<'_, '_>,
+    parsed: CursorExprResult,
+    after: &str,
+) -> NodeId {
+    let range = expression_error_range(cursor, parsed.start, parsed.end);
+    cursor.push_error(expected_expression_message(after), range.clone());
+
+    if parsed.end > parsed.start {
+        let tokens = cursor.tokens();
+        let children = {
+            let b = cursor.builder();
+            tokens[parsed.start..parsed.end]
+                .iter()
+                .map(|token| token_leaf(b, token))
+                .collect::<Vec<_>>()
+        };
+        return cursor.builder().branch(SyntaxKind::Error, range, &children);
+    }
+
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    if expression_boundary_at(source, tokens, cursor.index()) {
+        return cursor
+            .builder()
+            .branch(SyntaxKind::Error, empty_error_range(&range), &[]);
+    }
+
+    let child = cursor.bump().expect("current token exists");
+    cursor.builder().branch(SyntaxKind::Error, range, &[child])
+}
+
+fn expect_cursor_expr(
+    cursor: &mut CursorParser<'_, '_>,
+    paren_inner: ParenInner,
+    after: &str,
+) -> NodeId {
+    let parsed = run_cursor_expr(cursor, paren_inner);
+    match parsed.node {
+        Some(expr) => wrap_template_expr(cursor, expr),
+        None => {
+            let error = build_expected_expression_error(cursor, parsed, after);
+            wrap_template_expr(cursor, error)
+        }
+    }
+}
+
+fn expect_cursor_expr_result(
+    cursor: &mut CursorParser<'_, '_>,
+    paren_inner: ParenInner,
+    after: &str,
+) -> PResult<NodeId> {
+    let saved_index = cursor.index();
+    let saved_previous_index = cursor.previous_index();
+    let parsed = run_cursor_expr(cursor, paren_inner);
+    if let Some(expr) = parsed.node {
+        return Ok(wrap_template_expr(cursor, expr));
+    }
+
+    let range = expression_error_range(cursor, parsed.start, parsed.end);
+    cursor.set_position(saved_index, saved_previous_index);
+    Err(ParseFailure {
+        message: expected_expression_message(after),
+        range,
+    })
+}
+
+pub(crate) fn parse_arithmetic_expr_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<NodeId> {
+    let saved_index = cursor.index();
+    let saved_previous_index = cursor.previous_index();
+    let parsed = run_cursor_expr(cursor, ParenInner::Concat);
+    if let Some(expr) = parsed.node {
+        Some(wrap_template_expr(cursor, expr))
+    } else {
+        cursor.set_position(saved_index, saved_previous_index);
+        None
+    }
+}
+
+pub(crate) fn parse_logical_expr_from_cursor(cursor: &mut CursorParser<'_, '_>) -> Option<NodeId> {
+    let saved_index = cursor.index();
+    let saved_previous_index = cursor.previous_index();
+    let parsed = run_cursor_expr(cursor, ParenInner::Logical);
+    if let Some(expr) = parsed.node {
+        Some(wrap_template_expr(cursor, expr))
+    } else {
+        cursor.set_position(saved_index, saved_previous_index);
+        None
+    }
+}
+
+pub(crate) fn expect_arithmetic_expr_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    after: &str,
+) -> NodeId {
+    expect_cursor_expr(cursor, ParenInner::Concat, after)
+}
+
+pub(crate) fn expect_logical_expr_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    after: &str,
+) -> NodeId {
+    expect_cursor_expr(cursor, ParenInner::Logical, after)
+}
+
+pub(crate) fn expect_arithmetic_expr_result_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    after: &str,
+) -> PResult<NodeId> {
+    expect_cursor_expr_result(cursor, ParenInner::Concat, after)
+}
+
+pub(crate) fn expect_logical_expr_result_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    after: &str,
+) -> PResult<NodeId> {
+    expect_cursor_expr_result(cursor, ParenInner::Logical, after)
+}
+
 /// Parses `tokens` as one expression using the same precedence as Odin's `parse_concat_expr` chain.
 ///
 /// `prev_before_first` should be the real token before `tokens[0]` when available (e.g. `{` in
@@ -2682,13 +2980,14 @@ pub fn parse_arithmetic_expr(
     );
     let initial_prev = prev_before_first.unwrap_or(&sentinel);
 
-    let mut p = Parser {
+    let mut p = ExprParser {
         source,
         tokens,
         idx: 0,
         prev: initial_prev,
         b,
         paren_inner: ParenInner::Concat,
+        stop_at_stmt_boundary: false,
     };
 
     let expr = p.parse_concat_expr();
@@ -2728,13 +3027,14 @@ pub fn parse_logical_expr(
     );
     let initial_prev = prev_before_first.unwrap_or(&sentinel);
 
-    let mut p = Parser {
+    let mut p = ExprParser {
         source,
         tokens,
         idx: 0,
         prev: initial_prev,
         b,
         paren_inner: ParenInner::Logical,
+        stop_at_stmt_boundary: false,
     };
 
     let expr = p.parse_or_expr();
@@ -2823,6 +3123,183 @@ mod tests {
                 .expect("inner expr"),
             _ => wrap,
         }
+    }
+
+    #[test]
+    fn cursor_arithmetic_expr_stops_at_period() {
+        let src = "lv_value + 1.\nDATA lv_other TYPE i.";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let node = p.expect_arithmetic_expr("test");
+        let span = p.builder().span(node);
+        let current = p.current().map(|token| token.kind);
+        drop(p);
+
+        assert_eq!(&src[span], "lv_value + 1");
+        assert_eq!(current, Some(TokenKind::Period));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn cursor_expected_expr_before_period_reports_without_consuming_period() {
+        let src = ".";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let node = p.expect_arithmetic_expr("WHEN");
+        let span = p.builder().span(node);
+        let current = p.current().map(|token| token.kind);
+        drop(p);
+
+        assert_eq!(span, 0..0);
+        assert_eq!(current, Some(TokenKind::Period));
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("expected expression after WHEN"));
+    }
+
+    #[test]
+    fn cursor_expected_expr_stops_at_block_boundary_keyword() {
+        let src = "ENDIF.";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let node = p.expect_logical_expr("IF");
+        let span = p.builder().span(node);
+        let current = p.current().map(|token| token.lexeme(src).to_string());
+        drop(p);
+
+        assert_eq!(span, 0..0);
+        assert_eq!(current.as_deref(), Some("ENDIF"));
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("expected expression after IF"));
+    }
+
+    #[test]
+    fn cursor_expected_expr_consumes_malformed_leading_token() {
+        let src = "= 1.";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let node = p.expect_arithmetic_expr("WHEN");
+        let span = p.builder().span(node);
+        let current = p.current().map(|token| token.kind);
+        drop(p);
+
+        assert_eq!(&src[span], "=");
+        assert_eq!(current, Some(TokenKind::Number));
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("expected expression after WHEN"));
+    }
+
+    #[test]
+    fn cursor_expr_result_keeps_valid_expression_shape() {
+        let src = "lv_value + 1.\nDATA lv_other TYPE i.";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let node = p.expect_arithmetic_expr_result("test").unwrap();
+        let span = p.builder().span(node);
+        let current = p.current().map(|token| token.kind);
+
+        assert_eq!(&src[span], "lv_value + 1");
+        assert_eq!(current, Some(TokenKind::Period));
+        assert_eq!(p.error_count(), 0);
+    }
+
+    #[test]
+    fn cursor_expr_result_before_period_does_not_consume_or_report() {
+        let src = ".";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let failure = p.expect_arithmetic_expr_result("WHEN").unwrap_err();
+
+        assert_eq!(p.index(), 0);
+        assert_eq!(p.current().map(|token| token.kind), Some(TokenKind::Period));
+        assert_eq!(
+            failure.message,
+            "syntax error: expected expression after WHEN"
+        );
+        assert_eq!(failure.range, 0..1);
+        assert_eq!(p.error_count(), 0);
+    }
+
+    #[test]
+    fn cursor_expr_result_malformed_leading_token_does_not_consume_or_report() {
+        let src = "= 1.";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let failure = p.expect_arithmetic_expr_result("WHEN").unwrap_err();
+
+        assert_eq!(p.index(), 0);
+        assert_eq!(p.current().map(|token| token.kind), Some(TokenKind::Eq));
+        assert_eq!(
+            failure.message,
+            "syntax error: expected expression after WHEN"
+        );
+        assert_eq!(failure.range, 0..1);
+        assert_eq!(p.error_count(), 0);
+    }
+
+    #[test]
+    fn cursor_expr_result_partial_expression_restores_position() {
+        let src = "lv_value + .";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let failure = p.expect_arithmetic_expr_result("WHEN").unwrap_err();
+
+        assert_eq!(p.index(), 0);
+        assert_eq!(
+            p.current()
+                .map(|token| token.lexeme(src).to_string())
+                .as_deref(),
+            Some("lv_value")
+        );
+        assert_eq!(
+            failure.message,
+            "syntax error: expected expression after WHEN"
+        );
+        assert_eq!(&src[failure.range], "lv_value +");
+        assert_eq!(p.error_count(), 0);
+    }
+
+    #[test]
+    fn cursor_logical_expr_result_boundary_keyword_does_not_consume_or_report() {
+        let src = "ENDIF.";
+        let lexed = tokenize(src);
+        let mut b = SyntaxTreeBuilder::default();
+        let mut errors = Vec::new();
+        let mut p = crate::parser::Parser::new(&mut b, src, &lexed.tokens, 0, &mut errors);
+
+        let failure = p.expect_logical_expr_result("IF").unwrap_err();
+
+        assert_eq!(p.index(), 0);
+        assert!(p.at_keyword("ENDIF"));
+        assert_eq!(
+            failure.message,
+            "syntax error: expected expression after IF"
+        );
+        assert_eq!(failure.range, 0..5);
+        assert_eq!(p.error_count(), 0);
     }
 
     #[test]
@@ -3275,6 +3752,18 @@ mod tests {
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConstructorExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::CallArgList), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn top_level_let_expr_stops_before_statement_period() {
+        let parsed = crate::parse(
+            "DATA(result) = LET lt_extpda2 = get_unavailable_obj_pda( it_child_obj = get_object_hry( it_objid = VALUE stringtab( ( get_objid( iv_raw = iv_raw ) ) ) ) ) IN COND stringtab( WHEN lt_extpda2 IS INITIAL THEN VALUE #( ( get_objid( iv_raw = iv_raw ) ) ) ELSE VALUE #( ) ).",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::LetExpr), 1);
+        assert!(parsed.file.count_kind(root, SyntaxKind::CallExpr) >= 4);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 

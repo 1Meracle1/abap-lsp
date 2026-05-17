@@ -1,15 +1,12 @@
 //! Statement-level assignment: `lhs = rhs .` or `lhs ?= rhs .`.
 
 use abap_ast::SyntaxKind;
-use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind, have_space_between};
+use abap_ast::arena::NodeId;
+use abap_lexer::{TextRange, Token, TokenKind};
 
 use crate::expr::parse_arithmetic_expr;
-use crate::stmt_period::{
-    delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
-    line_start_named_arg_continues, token_begins_line, unterminated_err_end,
-};
-use crate::syntax::token_leaf;
+use crate::parser::{PResult, ParseFailure, Parser as CursorParser};
+use crate::stmt_period::{delimiter_error, is_definite_stmt_lead_keyword, token_begins_line};
 
 #[inline]
 fn is_data_keyword(source: &str, t: &Token) -> bool {
@@ -21,6 +18,7 @@ fn is_non_assignment_stmt_keyword(source: &str, t: &Token) -> bool {
     t.kind == TokenKind::Ident
         && (t.lexeme(source).eq_ignore_ascii_case("assert")
             || t.lexeme(source).eq_ignore_ascii_case("check")
+            || t.lexeme(source).eq_ignore_ascii_case("compute")
             || t.lexeme(source).eq_ignore_ascii_case("perform"))
 }
 
@@ -67,270 +65,215 @@ fn find_stmt_level_assign_op(tokens: &[Token], start: usize) -> Option<usize> {
     None
 }
 
-#[inline]
-fn is_named_arg_clause_keyword(source: &str, tok: &Token) -> bool {
-    tok.kind == TokenKind::Ident
-        && (tok.lexeme(source).eq_ignore_ascii_case("EXPORTING")
-            || tok.lexeme(source).eq_ignore_ascii_case("IMPORTING")
-            || tok.lexeme(source).eq_ignore_ascii_case("CHANGING")
-            || tok.lexeme(source).eq_ignore_ascii_case("RECEIVING")
-            || tok.lexeme(source).eq_ignore_ascii_case("EXCEPTIONS"))
+fn child_range(
+    cursor: &CursorParser<'_, '_>,
+    children: &[NodeId],
+    fallback: TextRange,
+) -> TextRange {
+    let Some(first) = children.first() else {
+        return fallback;
+    };
+    let last = *children.last().unwrap_or(first);
+    cursor.span(*first).start..cursor.span(last).end
 }
 
-#[inline]
-fn is_condition_continuation_keyword(source: &str, tok: &Token) -> bool {
-    tok.kind == TokenKind::Ident
-        && (tok.lexeme(source).eq_ignore_ascii_case("AND")
-            || tok.lexeme(source).eq_ignore_ascii_case("OR")
-            || tok.lexeme(source).eq_ignore_ascii_case("NOT")
-            || tok.lexeme(source).eq_ignore_ascii_case("WHERE")
-            || tok.lexeme(source).eq_ignore_ascii_case("HAVING")
-            || tok.lexeme(source).eq_ignore_ascii_case("ON"))
+fn current_delimiter_error(
+    cursor: &CursorParser<'_, '_>,
+    start: usize,
+) -> Option<crate::ParseError> {
+    let current = cursor.index();
+    delimiter_error(cursor.tokens(), start, current.saturating_add(1))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AssignRhsScan {
-    Found {
-        period_i: usize,
-        nested_eq: bool,
-    },
-    Unterminated {
-        end_exclusive: usize,
-        nested_eq: bool,
-    },
+fn cursor_failure(cursor: &CursorParser<'_, '_>, message: impl Into<String>) -> ParseFailure {
+    ParseFailure {
+        message: message.into(),
+        range: cursor
+            .current()
+            .or_else(|| cursor.previous())
+            .map_or(0..0, |token| token.range.clone()),
+    }
 }
 
-fn scan_assign_rhs(tokens: &[Token], source: &str, start: usize) -> AssignRhsScan {
-    let mut group_paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    let mut allow_line_start_named_args = false;
-    let mut allow_line_start_condition_comparison = false;
-    let mut nested_eq = false;
-    let mut non_call_paren_depth = 0i32;
-    let mut paren_stack: Vec<bool> = Vec::new();
-    let mut prev_token: Option<&Token> = None;
+fn nested_eq_before_rhs_boundary(cursor: &CursorParser<'_, '_>, start: usize) -> bool {
+    let mut depth = 0usize;
     let mut i = start;
-    while i < tokens.len() {
-        let t = &tokens[i];
-        if t.kind == TokenKind::Eof {
-            return AssignRhsScan::Unterminated {
-                end_exclusive: i,
-                nested_eq,
-            };
+    while let Some(token) = cursor.tokens().get(i) {
+        if token.kind == TokenKind::Eof {
+            break;
         }
-        if group_paren == 0 && bracket == 0 && brace == 0 {
-            if t.kind == TokenKind::Period {
-                return AssignRhsScan::Found {
-                    period_i: i,
-                    nested_eq,
-                };
+        if depth == 0 {
+            if token.kind == TokenKind::Period {
+                break;
             }
-            if is_named_arg_clause_keyword(source, t) {
-                allow_line_start_named_args = true;
-            }
-            if is_condition_continuation_keyword(source, t) {
-                allow_line_start_condition_comparison = true;
-            }
-            if i > start {
-                let named_arg_continuation =
-                    allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
-                if t.kind == TokenKind::Ident
-                    && token_begins_line(t)
-                    && is_definite_stmt_lead_keyword(source, t)
-                    && !named_arg_continuation
+            if i > start && token.kind == TokenKind::Ident && token_begins_line(token) {
+                let next_kind = cursor.tokens().get(i + 1).map(|next| next.kind);
+                if is_definite_stmt_lead_keyword(cursor.source(), token)
+                    || matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
                 {
-                    return AssignRhsScan::Unterminated {
-                        end_exclusive: i,
-                        nested_eq,
-                    };
-                }
-                if t.kind == TokenKind::Ident && token_begins_line(t) {
-                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
-                    if !allow_line_start_named_args
-                        && !allow_line_start_condition_comparison
-                        && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
-                    {
-                        return AssignRhsScan::Unterminated {
-                            end_exclusive: i,
-                            nested_eq,
-                        };
-                    }
+                    break;
                 }
             }
         }
-        match t.kind {
-            TokenKind::LParen => {
-                let is_call_paren = prev_token.is_some_and(|prev| !have_space_between(prev, t));
-                paren_stack.push(is_call_paren);
-                group_paren += 1;
-                if !is_call_paren {
-                    non_call_paren_depth += 1;
-                }
+        match token.kind {
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                depth = depth.saturating_sub(1);
             }
-            TokenKind::RParen => {
-                if group_paren > 0 {
-                    group_paren -= 1;
-                }
-                if !paren_stack.pop().unwrap_or(true) {
-                    non_call_paren_depth -= 1;
-                }
-            }
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket if bracket > 0 => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace if brace > 0 => brace -= 1,
-            TokenKind::Eq | TokenKind::QuestionEq
-                if non_call_paren_depth > 0
-                    && !paren_stack.iter().rev().any(|is_call| *is_call) =>
-            {
-                nested_eq = true;
-            }
+            TokenKind::Eq | TokenKind::QuestionEq if depth > 0 => return true,
             _ => {}
         }
-        prev_token = Some(t);
         i += 1;
     }
-    AssignRhsScan::Unterminated {
-        end_exclusive: tokens.len(),
-        nested_eq,
+    false
+}
+
+fn expect_assignment_operator_result(cursor: &mut CursorParser<'_, '_>) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    match cursor.current().map(|token| token.kind) {
+        Some(TokenKind::Eq) => cursor.expect_token_result(TokenKind::Eq),
+        Some(TokenKind::QuestionEq) => cursor.expect_token_result(TokenKind::QuestionEq),
+        _ => Err(cursor_failure(
+            cursor,
+            "syntax error: expected assignment operator",
+        )),
     }
 }
 
-/// If `tokens[idx]..` is `lhs (=|?=) rhs .`, returns [`AssignStmt`] and the index after `.`.
-///
-/// Skips when the first token is the `DATA` keyword so invalid forms like `DATA lv = 1.` are not classified
-/// as assignments (they stay ordinary tokens until wider `DATA` support exists).
-pub fn try_parse_assign_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let first = tokens.get(idx)?;
-    if is_data_keyword(source, first) || is_non_assignment_stmt_keyword(source, first) {
-        return None;
-    }
-    if assign_preceded_by_data_keyword(tokens, idx, source) {
-        return None;
-    }
-
-    let eq_i = find_stmt_level_assign_op(tokens, idx)?;
-    if eq_i == idx {
-        return None;
-    }
-
-    let lhs_tokens = &tokens[idx..eq_i];
-    if lhs_tokens.is_empty() {
-        return None;
-    }
-
-    let eq_tok = &tokens[eq_i];
-
-    match scan_assign_rhs(tokens, source, eq_i + 1) {
-        AssignRhsScan::Found {
-            period_i,
-            nested_eq,
-        } => {
-            let period_tok = &tokens[period_i];
-            let rhs_tokens = &tokens[eq_i + 1..period_i];
-
-            if let Some(delim_error) = delimiter_error(tokens, idx, period_i) {
-                errors.push(delim_error);
-                let mut kids = Vec::with_capacity(period_i - idx + 1);
-                for t in &tokens[idx..=period_i] {
-                    kids.push(token_leaf(b, t));
-                }
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    first.range.start..period_tok.range.end,
-                    &kids,
-                );
-                return Some((node, period_i + 1));
-            }
-
-            if nested_eq {
-                errors.push(crate::ParseError {
-                    message: "syntax error: assignment value must not contain '=' inside nested parentheses, brackets, or braces"
-                        .to_string(),
-                    range: first.range.start..period_tok.range.end,
-                });
-                let mut kids = Vec::with_capacity(period_i - idx + 1);
-                for t in &tokens[idx..=period_i] {
-                    kids.push(token_leaf(b, t));
-                }
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    first.range.start..period_tok.range.end,
-                    &kids,
-                );
-                return Some((node, period_i + 1));
-            }
-
-            if !has_non_comment_tokens(tokens, eq_i + 1, period_i) {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected assignment value after '='".to_string(),
-                    range: eq_tok.range.start..period_tok.range.end,
-                });
-                let mut kids = Vec::with_capacity(period_i - idx + 1);
-                for t in &tokens[idx..=period_i] {
-                    kids.push(token_leaf(b, t));
-                }
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    first.range.start..period_tok.range.end,
-                    &kids,
-                );
-                return Some((node, period_i + 1));
-            }
-
-            let prev_before_lhs = idx.checked_sub(1).and_then(|j| tokens.get(j));
-            let lhs = parse_arithmetic_expr(b, source, lhs_tokens, prev_before_lhs);
-            let rhs = parse_arithmetic_expr(b, source, rhs_tokens, Some(eq_tok));
-            let eq_leaf = token_leaf(b, eq_tok);
-            let period_leaf = token_leaf(b, period_tok);
-
-            let end = period_tok.range.end;
-            let node = b.branch(
-                SyntaxKind::AssignStmt,
-                first.range.start..end,
-                &[lhs, eq_leaf, rhs, period_leaf],
-            );
-            Some((node, period_i + 1))
+fn rhs_logical_continues(cursor: &mut CursorParser<'_, '_>) -> bool {
+    cursor.skip_trivia();
+    let Some(token) = cursor.current() else {
+        return false;
+    };
+    match token.kind {
+        TokenKind::Eq
+        | TokenKind::Lt
+        | TokenKind::Gt
+        | TokenKind::Le
+        | TokenKind::Ge
+        | TokenKind::Ne => true,
+        TokenKind::Ident => {
+            let text = token.lexeme(cursor.source());
+            text.eq_ignore_ascii_case("AND")
+                || text.eq_ignore_ascii_case("OR")
+                || text.eq_ignore_ascii_case("IS")
+                || text.eq_ignore_ascii_case("BETWEEN")
+                || text.eq_ignore_ascii_case("IN")
+                || text.eq_ignore_ascii_case("EQ")
+                || text.eq_ignore_ascii_case("NE")
+                || text.eq_ignore_ascii_case("LT")
+                || text.eq_ignore_ascii_case("LE")
+                || text.eq_ignore_ascii_case("GT")
+                || text.eq_ignore_ascii_case("GE")
+                || text.eq_ignore_ascii_case("CO")
+                || text.eq_ignore_ascii_case("CN")
+                || text.eq_ignore_ascii_case("CA")
+                || text.eq_ignore_ascii_case("NA")
+                || text.eq_ignore_ascii_case("CS")
+                || text.eq_ignore_ascii_case("NS")
+                || text.eq_ignore_ascii_case("CP")
+                || text.eq_ignore_ascii_case("NP")
         }
-        AssignRhsScan::Unterminated {
-            end_exclusive,
-            nested_eq,
-        } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, first.range.end);
+        _ => false,
+    }
+}
 
-            if nested_eq {
-                errors.push(crate::ParseError {
-                    message: "syntax error: assignment value must not contain '=' inside nested parentheses, brackets, or braces"
-                        .to_string(),
-                    range: first.range.start..err_end,
-                });
+fn expect_assignment_rhs_result(
+    cursor: &mut CursorParser<'_, '_>,
+    rhs_start: usize,
+) -> PResult<NodeId> {
+    let rhs = cursor
+        .expect_arithmetic_expr_result("assignment value after '='")
+        .map_err(|mut failure| {
+            failure.message = if nested_eq_before_rhs_boundary(cursor, rhs_start) {
+                "syntax error: assignment value must not contain '=' inside nested parentheses, brackets, or braces"
+                    .to_string()
             } else {
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected '.' to end assignment statement".to_string(),
-                    range: first.range.start..err_end,
-                });
-            }
-
-            let mut kids = Vec::with_capacity(end_exclusive - idx);
-            for t in &tokens[idx..end_exclusive] {
-                kids.push(token_leaf(b, t));
-            }
-            let node = b.branch(SyntaxKind::Error, first.range.start..err_end, &kids);
-            let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
-                tokens.len()
-            } else {
-                end_exclusive
+                "syntax error: expected assignment value after '='".to_string()
             };
-            Some((node, next))
-        }
+            failure
+        })?;
+    if !rhs_logical_continues(cursor) {
+        return Ok(rhs);
     }
+    cursor.set_position(rhs_start, rhs_start.checked_sub(1));
+    cursor
+        .expect_logical_expr_result("assignment value after '='")
+        .map_err(|mut failure| {
+            failure.message = "syntax error: expected assignment value after '='".to_string();
+            failure
+        })
+}
+
+pub(crate) fn parse_assign_stmt_result_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let first = cursor.current()?;
+    if is_data_keyword(cursor.source(), first)
+        || is_non_assignment_stmt_keyword(cursor.source(), first)
+    {
+        return None;
+    }
+    if assign_preceded_by_data_keyword(cursor.tokens(), start, cursor.source()) {
+        return None;
+    }
+
+    let Some(eq_i) = find_stmt_level_assign_op(cursor.tokens(), start) else {
+        return None;
+    };
+    if eq_i == start {
+        return None;
+    }
+
+    let lhs = {
+        let (b, source, tokens, _) = cursor.parts_mut();
+        let prev_before_lhs = start.checked_sub(1).and_then(|index| tokens.get(index));
+        parse_arithmetic_expr(b, source, &tokens[start..eq_i], prev_before_lhs)
+    };
+    cursor.set_position(eq_i, eq_i.checked_sub(1));
+
+    let eq = match expect_assignment_operator_result(cursor) {
+        Ok(eq) => eq,
+        Err(failure) => return Some(Err(failure)),
+    };
+    let rhs_start = cursor.index();
+    let mut children = vec![lhs, eq];
+
+    let rhs = match expect_assignment_rhs_result(cursor, rhs_start) {
+        Ok(rhs) => rhs,
+        Err(failure) => return Some(Err(failure)),
+    };
+    children.push(rhs);
+
+    if cursor.current().is_some_and(|token| {
+        matches!(
+            token.kind,
+            TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace
+        )
+    }) && let Some(error) = current_delimiter_error(cursor, start)
+    {
+        return Some(Err(ParseFailure {
+            message: error.message,
+            range: error.range,
+        }));
+    }
+
+    let period = match cursor.expect_token_after_result(TokenKind::Period, "assignment statement") {
+        Ok(period) => period,
+        Err(mut failure) => {
+            failure.message = "syntax error: expected '.' to end assignment statement".to_string();
+            return Some(Err(failure));
+        }
+    };
+    children.push(period);
+    let range = child_range(cursor, &children, cursor.span(lhs));
+    Some(Ok(cursor.builder().branch(
+        SyntaxKind::AssignStmt,
+        range,
+        &children,
+    )))
 }
 
 #[cfg(test)]
@@ -401,7 +344,13 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::Error),
-            1
+            0
+        );
+        assert!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt)
+                >= 1
         );
     }
 
@@ -440,6 +389,12 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::Error),
+            0
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt),
             1
         );
     }
@@ -466,6 +421,12 @@ mod tests {
             parsed
                 .file
                 .count_kind(parsed.file.root(), SyntaxKind::Error),
+            0
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt),
             1
         );
         assert_eq!(

@@ -4,17 +4,20 @@ use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::block_helpers::{
     error_token_children, inline_name_spacing_is_valid, is_keyword, match_hyphenated_keyword,
-    next_after_unterminated_scan, parse_body_until_keywords, parse_end_keyword,
-    parse_header_until_period, parse_inline_name, recover_skip_after_keyword, skip_trivia,
+    next_after_unterminated_scan, parse_body_until_keywords, parse_end_keyword, parse_inline_name,
+    recover_skip_after_keyword, skip_trivia,
 };
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
+use crate::parser::{PResult, ParseFailure, Parser};
 use crate::stmt_period::{
-    StmtPeriodScan, is_condition_continuation_keyword, is_definite_stmt_lead_keyword,
-    is_inline_decl_continuation, is_named_arg_clause_keyword,
-    line_start_condition_operand_continues, line_start_named_arg_continues,
-    line_start_table_key_component_continues, scan_until_statement_period,
-    scan_until_statement_period_with_named_args, starts_with_table_key_clause, token_begins_line,
-    unterminated_err_end,
+    StmtPeriodScan, compact_dynamic_selector_lparen, find_top_level_keyword_index,
+    is_authority_check_field_continuation, is_chained_methods_entry_after_separator,
+    is_condition_continuation_keyword, is_definite_stmt_lead_keyword, is_inline_decl_continuation,
+    is_named_arg_clause_keyword, is_perform_if_found_addition, is_signature_addition, keyword_any,
+    line_start_assignment, line_start_condition_operand_continues, line_start_named_arg_continues,
+    line_start_table_key_component_continues, previous_non_comment_token,
+    skip_comment_tokens_until, starts_with_table_key_clause, statement_starts_chained_methods_decl,
+    token_begins_line, unterminated_err_end,
 };
 use crate::syntax::token_leaf;
 use crate::type_ref::{build_type_ref_node, parse_type_ref_tokens};
@@ -32,11 +35,7 @@ const SQL_FUNCTION_NAMES: &[&str] = &[
     "ABAP_SYSTEM_TIMEZONE", "ABAP_USER_TIMEZONE",
 ];
 const SUBMIT_COMPARISON_KEYWORDS: &[&str] = &["EQ", "NE", "CP", "NP", "GE", "GT", "LE", "LT"];
-
-#[inline]
-fn keyword_any(text: &str, keywords: &[&str]) -> bool {
-    keywords.iter().any(|kw| text.eq_ignore_ascii_case(kw))
-}
+const FORM_HEADER_CONTINUATION_KEYWORDS: &[&str] = &["TABLES", "USING", "CHANGING", "RAISING"];
 
 #[derive(Clone, Copy)]
 enum EventBlockLead {
@@ -126,35 +125,119 @@ const NON_SYSTEM_CALL_VARIANTS: &[&str] = &[
     "transformation",
 ];
 
-fn scan_until_top_level_period(tokens: &[Token], start: usize) -> Option<usize> {
+fn cursor_stmt_period<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    errors: &mut Vec<crate::ParseError>,
+    line_start_continues: F,
+) -> StmtPeriodScan
+where
+    F: FnMut(&str, &[Token], usize) -> bool,
+{
+    let mut cursor = Parser::new(b, source, tokens, start, errors);
+    advance_to_surface_stmt_boundary(&mut cursor, line_start_continues);
+    if cursor
+        .current()
+        .is_some_and(|token| token.kind == TokenKind::Period)
+    {
+        StmtPeriodScan::Found(cursor.index())
+    } else {
+        StmtPeriodScan::Unterminated {
+            end_exclusive: cursor.index(),
+        }
+    }
+}
+
+fn top_level_period_from_cursor(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    errors: &mut Vec<crate::ParseError>,
+) -> Option<usize> {
+    match cursor_stmt_period(b, source, tokens, start, errors, |_, _, _| true) {
+        StmtPeriodScan::Found(period_i) => Some(period_i),
+        StmtPeriodScan::Unterminated { .. } => None,
+    }
+}
+
+fn legacy_line_start_continues(source: &str, tokens: &[Token], start: usize, at: usize) -> bool {
+    legacy_line_start_continues_with_named_args(source, tokens, start, at, false)
+}
+
+fn legacy_line_start_continues_with_named_args(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    at: usize,
+    initial_allow_named_args: bool,
+) -> bool {
+    if is_inline_decl_continuation(source, tokens, at)
+        || is_perform_if_found_addition(source, tokens, start, at)
+        || is_signature_addition(source, tokens, start, at)
+        || is_authority_check_field_continuation(source, tokens, start, at)
+    {
+        return true;
+    }
+
+    let mut allow_named_args = initial_allow_named_args;
+    let mut allow_condition = false;
+    let mut allow_table_key = false;
+    let in_chained_methods = statement_starts_chained_methods_decl(source, tokens, start);
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
     let mut i = start;
-    while i < tokens.len() {
-        let t = &tokens[i];
-        match t.kind {
-            TokenKind::Eof => return None,
-            TokenKind::Period if paren == 0 && bracket == 0 && brace == 0 => return Some(i),
+    while i < at && i < tokens.len() {
+        let token = &tokens[i];
+        if paren == 0 && bracket == 0 && brace == 0 {
+            if is_named_arg_clause_keyword(source, token) {
+                allow_named_args = true;
+            }
+            if is_condition_continuation_keyword(source, token) {
+                allow_condition = true;
+            }
+            if starts_with_table_key_clause(source, tokens, i) {
+                allow_table_key = true;
+            }
+        }
+        match token.kind {
             TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
+            TokenKind::RParen if paren > 0 => paren -= 1,
             TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
+            TokenKind::RBracket if bracket > 0 => bracket -= 1,
             TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
+            TokenKind::RBrace if brace > 0 => brace -= 1,
             _ => {}
         }
         i += 1;
     }
-    None
+
+    let named_arg_continuation = allow_named_args && line_start_named_arg_continues(tokens, at);
+    let condition_continuation =
+        allow_condition && line_start_condition_operand_continues(source, tokens, at);
+    let table_key_continuation =
+        allow_table_key && line_start_table_key_component_continues(tokens, at);
+    named_arg_continuation
+        || condition_continuation
+        || table_key_continuation
+        || (in_chained_methods && is_chained_methods_entry_after_separator(tokens, at))
+        || (tokens
+            .get(at + 1)
+            .is_some_and(|token| matches!(token.kind, TokenKind::Eq | TokenKind::QuestionEq))
+            && (allow_named_args || allow_condition || allow_table_key))
 }
 
-fn scan_until_selection_screen_period(
+fn selection_screen_period_from_cursor(
     tokens: &[Token],
     source: &str,
+    b: &mut SyntaxTreeBuilder,
     start: usize,
+    errors: &mut Vec<crate::ParseError>,
 ) -> StmtPeriodScan {
-    if let Some(period_i) = scan_until_top_level_period(tokens, start) {
+    if let Some(period_i) = top_level_period_from_cursor(b, source, tokens, start, errors) {
         let has_chain_colon = tokens[start..period_i]
             .iter()
             .any(|token| token.kind == TokenKind::Colon);
@@ -162,10 +245,12 @@ fn scan_until_selection_screen_period(
             return StmtPeriodScan::Found(period_i);
         }
     }
-    scan_until_statement_period(tokens, source, start)
+    cursor_stmt_period(b, source, tokens, start, errors, |source, tokens, at| {
+        legacy_line_start_continues(source, tokens, start, at)
+    })
 }
 
-fn parse_selection_screen_stmt_with_period_scan<F>(
+fn parse_selection_screen_stmt_with_cursor_boundary<F>(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
@@ -179,7 +264,7 @@ fn parse_selection_screen_stmt_with_period_scan<F>(
 where
     F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
 {
-    match scan_until_selection_screen_period(tokens, source, scan_start) {
+    match selection_screen_period_from_cursor(tokens, source, b, scan_start, errors) {
         StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
         StmtPeriodScan::Unterminated { end_exclusive } => {
             let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
@@ -233,8 +318,7 @@ fn dynamic_selector_lparen(tokens: &[Token], lparen_idx: usize) -> bool {
     let Some(prev) = lparen_idx.checked_sub(1).and_then(|idx| tokens.get(idx)) else {
         return false;
     };
-    matches!(prev.kind, TokenKind::Arrow | TokenKind::FatArrow)
-        && !have_space_between(prev, &tokens[lparen_idx])
+    compact_dynamic_selector_lparen(prev, &tokens[lparen_idx])
 }
 
 fn validate_call_method_inline_args_spacing(
@@ -293,8 +377,31 @@ fn starts_hyphenated_keyword(tokens: &[Token], idx: usize) -> bool {
     tokens.get(idx + 1).map(|t| t.kind) == Some(TokenKind::Minus)
 }
 
+fn top_level_period_index(tokens: &[Token], start: usize) -> Option<usize> {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut i = start;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        match token.kind {
+            TokenKind::Eof => return None,
+            TokenKind::Period if paren == 0 && bracket == 0 && brace == 0 => return Some(i),
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
 fn class_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool {
-    let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) else {
+    let Some(period_i) = top_level_period_index(tokens, idx + 1) else {
         return true;
     };
     for tok in &tokens[idx + 1..period_i] {
@@ -309,7 +416,7 @@ fn class_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool {
 }
 
 fn interface_header_is_block(tokens: &[Token], source: &str, idx: usize) -> bool {
-    let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) else {
+    let Some(period_i) = top_level_period_index(tokens, idx + 1) else {
         return true;
     };
     let significant = tokens[idx..=period_i]
@@ -2110,19 +2217,6 @@ fn scan_select_set_operator_clause_end(
     end_exclusive
 }
 
-fn previous_non_comment_token(tokens: &[Token], before: usize) -> Option<usize> {
-    let mut idx = before.checked_sub(1)?;
-    loop {
-        if tokens
-            .get(idx)
-            .is_some_and(|token| token.kind != TokenKind::Comment)
-        {
-            return Some(idx);
-        }
-        idx = idx.checked_sub(1)?;
-    }
-}
-
 fn select_token_is_set_operand_lead(source: &str, tokens: &[Token], select_idx: usize) -> bool {
     let Some(prev_idx) = previous_non_comment_token(tokens, select_idx) else {
         return false;
@@ -2338,7 +2432,9 @@ fn parse_select_header_until_period(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> (Vec<NodeId>, usize) {
-    match scan_select_stmt_period(tokens, source, idx + 1) {
+    match cursor_stmt_period(b, source, tokens, idx + 1, errors, |source, tokens, at| {
+        select_line_start_continues(source, tokens, idx + 1, at)
+    }) {
         StmtPeriodScan::Found(period_i) => {
             let mut children = Vec::new();
             if let Some(query) = build_select_query_until(b, source, tokens, idx, period_i) {
@@ -2368,25 +2464,18 @@ fn parse_select_header_until_period(
     }
 }
 
-fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> StmtPeriodScan {
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
+fn select_line_start_continues(source: &str, tokens: &[Token], start: usize, at: usize) -> bool {
     let mut sql_case_depth = 0i32;
     let mut allow_line_start_named_args = false;
     let mut allow_line_start_condition_comparison = false;
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
     let mut i = start;
 
-    while i < tokens.len() {
+    while i < at && i < tokens.len() {
         let t = &tokens[i];
-        if t.kind == TokenKind::Eof {
-            return StmtPeriodScan::Unterminated { end_exclusive: i };
-        }
-
         if paren == 0 && bracket == 0 && brace == 0 {
-            if t.kind == TokenKind::Period {
-                return StmtPeriodScan::Found(i);
-            }
             if is_named_arg_clause_keyword(source, t) {
                 allow_line_start_named_args = true;
             }
@@ -2394,37 +2483,7 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
                 allow_line_start_condition_comparison = true;
             }
             let is_sql_case_start = t.kind == TokenKind::Ident && is_keyword(source, t, "case");
-            let is_sql_case_branch = t.kind == TokenKind::Ident
-                && (is_keyword(source, t, "when") || is_keyword(source, t, "else"));
             let is_sql_case_end = t.kind == TokenKind::Ident && is_keyword(source, t, "end");
-            if i > start {
-                let condition_continuation = allow_line_start_condition_comparison
-                    && line_start_condition_operand_continues(source, tokens, i);
-                let named_arg_continuation =
-                    allow_line_start_named_args && line_start_named_arg_continues(tokens, i);
-                if t.kind == TokenKind::Ident
-                    && token_begins_line(t)
-                    && is_definite_stmt_lead_keyword(source, t)
-                    && !(is_keyword(source, t, "select")
-                        && select_token_is_set_operand_lead(source, tokens, i))
-                    && !(is_sql_case_start
-                        || is_sql_case_branch && sql_case_depth > 0
-                        || is_sql_case_end && sql_case_depth > 0)
-                    && !named_arg_continuation
-                    && !condition_continuation
-                {
-                    return StmtPeriodScan::Unterminated { end_exclusive: i };
-                }
-                if t.kind == TokenKind::Ident && token_begins_line(t) {
-                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
-                    if !allow_line_start_named_args
-                        && !allow_line_start_condition_comparison
-                        && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
-                    {
-                        return StmtPeriodScan::Unterminated { end_exclusive: i };
-                    }
-                }
-            }
             if is_sql_case_start {
                 sql_case_depth += 1;
             } else if is_sql_case_end && sql_case_depth > 0 {
@@ -2444,29 +2503,48 @@ fn scan_select_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
         i += 1;
     }
 
-    StmtPeriodScan::Unterminated {
-        end_exclusive: tokens.len(),
-    }
+    let Some(token) = tokens.get(at) else {
+        return false;
+    };
+    let condition_continuation = allow_line_start_condition_comparison
+        && line_start_condition_operand_continues(source, tokens, at);
+    let named_arg_continuation =
+        allow_line_start_named_args && line_start_named_arg_continues(tokens, at);
+    let is_sql_case_start = token.kind == TokenKind::Ident && is_keyword(source, token, "case");
+    let is_sql_case_branch = token.kind == TokenKind::Ident
+        && (is_keyword(source, token, "when") || is_keyword(source, token, "else"));
+    let is_sql_case_end = token.kind == TokenKind::Ident && is_keyword(source, token, "end");
+    named_arg_continuation
+        || condition_continuation
+        || (is_keyword(source, token, "select")
+            && select_token_is_set_operand_lead(source, tokens, at))
+        || is_sql_case_start
+        || (is_sql_case_branch && sql_case_depth > 0)
+        || (is_sql_case_end && sql_case_depth > 0)
+        || (tokens
+            .get(at + 1)
+            .is_some_and(|token| matches!(token.kind, TokenKind::Eq | TokenKind::QuestionEq))
+            && (allow_line_start_named_args || allow_line_start_condition_comparison))
 }
 
-fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> StmtPeriodScan {
+fn read_table_line_start_continues(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    at: usize,
+) -> bool {
+    if is_inline_decl_continuation(source, tokens, at) {
+        return true;
+    }
+    let mut inside_key_components = false;
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
-    let mut inside_key_components = false;
     let mut i = start;
 
-    while i < tokens.len() {
+    while i < at && i < tokens.len() {
         let t = &tokens[i];
-        if t.kind == TokenKind::Eof {
-            return StmtPeriodScan::Unterminated { end_exclusive: i };
-        }
-
         if paren == 0 && bracket == 0 && brace == 0 {
-            if t.kind == TokenKind::Period {
-                return StmtPeriodScan::Found(i);
-            }
-
             if t.kind == TokenKind::Ident {
                 if starts_with_table_key_clause(source, tokens, i) {
                     let mut j = skip_trivia(tokens, i + 1);
@@ -2491,23 +2569,6 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
                     inside_key_components = false;
                 }
             }
-
-            if i > start && t.kind == TokenKind::Ident && token_begins_line(t) {
-                let table_key_continuation =
-                    inside_key_components && line_start_table_key_component_continues(tokens, i);
-                if is_definite_stmt_lead_keyword(source, t)
-                    && !is_inline_decl_continuation(source, tokens, i)
-                    && !table_key_continuation
-                {
-                    return StmtPeriodScan::Unterminated { end_exclusive: i };
-                }
-                if !inside_key_components {
-                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
-                    if matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq)) {
-                        return StmtPeriodScan::Unterminated { end_exclusive: i };
-                    }
-                }
-            }
         }
 
         match t.kind {
@@ -2522,30 +2583,27 @@ fn scan_read_table_stmt_period(tokens: &[Token], source: &str, start: usize) -> 
         i += 1;
     }
 
-    StmtPeriodScan::Unterminated {
-        end_exclusive: tokens.len(),
-    }
+    inside_key_components
+        && (line_start_table_key_component_continues(tokens, at)
+            || tokens
+                .get(at + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Eq | TokenKind::QuestionEq)))
 }
 
-fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> StmtPeriodScan {
+fn update_line_start_continues(source: &str, tokens: &[Token], start: usize, at: usize) -> bool {
+    if is_inline_decl_continuation(source, tokens, at) {
+        return true;
+    }
+    let mut inside_set_clause = false;
+    let mut allow_line_start_condition_comparison = false;
     let mut paren = 0i32;
     let mut bracket = 0i32;
     let mut brace = 0i32;
-    let mut inside_set_clause = false;
-    let mut allow_line_start_condition_comparison = false;
     let mut i = start;
 
-    while i < tokens.len() {
+    while i < at && i < tokens.len() {
         let t = &tokens[i];
-        if t.kind == TokenKind::Eof {
-            return StmtPeriodScan::Unterminated { end_exclusive: i };
-        }
-
         if paren == 0 && bracket == 0 && brace == 0 {
-            if t.kind == TokenKind::Period {
-                return StmtPeriodScan::Found(i);
-            }
-
             if t.kind == TokenKind::Ident {
                 if is_keyword(source, t, "set") {
                     inside_set_clause = true;
@@ -2561,25 +2619,6 @@ fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
             if is_condition_continuation_keyword(source, t) {
                 allow_line_start_condition_comparison = true;
             }
-
-            if i > start && t.kind == TokenKind::Ident && token_begins_line(t) {
-                let condition_continuation = allow_line_start_condition_comparison
-                    && line_start_condition_operand_continues(source, tokens, i);
-                if is_definite_stmt_lead_keyword(source, t)
-                    && !is_inline_decl_continuation(source, tokens, i)
-                    && !condition_continuation
-                {
-                    return StmtPeriodScan::Unterminated { end_exclusive: i };
-                }
-                if !inside_set_clause {
-                    let next_kind = tokens.get(i + 1).map(|x| x.kind);
-                    if !allow_line_start_condition_comparison
-                        && matches!(next_kind, Some(TokenKind::Eq | TokenKind::QuestionEq))
-                    {
-                        return StmtPeriodScan::Unterminated { end_exclusive: i };
-                    }
-                }
-            }
         }
 
         match t.kind {
@@ -2594,9 +2633,13 @@ fn scan_update_stmt_period(tokens: &[Token], source: &str, start: usize) -> Stmt
         i += 1;
     }
 
-    StmtPeriodScan::Unterminated {
-        end_exclusive: tokens.len(),
-    }
+    let condition_continuation = allow_line_start_condition_comparison
+        && line_start_condition_operand_continues(source, tokens, at);
+    condition_continuation
+        || inside_set_clause
+            && tokens
+                .get(at + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Eq | TokenKind::QuestionEq))
 }
 
 fn match_keyword_sequence(
@@ -2672,6 +2715,46 @@ fn call_stmt_uses_token_children(source: &str, tokens: &[Token], idx: usize) -> 
     .any(|parts| match_call_lead_sequence(source, tokens, idx, parts).is_some())
 }
 
+fn call_like_line_start_continues(
+    source: &str,
+    tokens: &[Token],
+    stmt_start: usize,
+    idx: usize,
+    lead_kind: CallLikeLeadKind,
+) -> bool {
+    let is_named_arg_row = line_start_named_arg_after_section(source, tokens, stmt_start, idx);
+
+    match lead_kind {
+        CallLikeLeadKind::SystemFunctionCall => {
+            system_call_id_clause_starts(source, tokens, idx)
+                || system_call_field_clause_starts(source, tokens, idx)
+        }
+        CallLikeLeadKind::CallMethod => {
+            call_method_clause_starts(source, tokens, idx) || is_named_arg_row
+        }
+        CallLikeLeadKind::CallStmt => {
+            named_argument_section_keyword(source, tokens, idx) || is_named_arg_row
+        }
+        CallLikeLeadKind::CreateObject | CallLikeLeadKind::CreateData => is_named_arg_row,
+    }
+}
+
+fn line_start_named_arg_after_section(
+    source: &str,
+    tokens: &[Token],
+    stmt_start: usize,
+    idx: usize,
+) -> bool {
+    tokens
+        .get(idx)
+        .is_some_and(|token| token.kind == TokenKind::Ident)
+        && tokens.get(idx + 1).map(|token| token.kind) == Some(TokenKind::Eq)
+        && tokens[stmt_start..idx]
+            .iter()
+            .enumerate()
+            .any(|(offset, _)| named_argument_section_keyword(source, tokens, stmt_start + offset))
+}
+
 fn token_children(
     b: &mut SyntaxTreeBuilder,
     tokens: &[Token],
@@ -2681,116 +2764,1184 @@ fn token_children(
     error_token_children(b, tokens, start, end_exclusive)
 }
 
-fn parse_stmt_with_period_scan<F>(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    scan_start: usize,
-    start_tok: &Token,
-    missing_period_message: &str,
-    errors: &mut Vec<crate::ParseError>,
-    next_on_unterminated: fn(&[Token], usize) -> usize,
-    on_found: F,
-) -> (NodeId, usize)
-where
-    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
-{
-    match scan_until_statement_period(tokens, source, scan_start) {
-        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: missing_period_message.to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let children = token_children(b, tokens, idx, end_exclusive);
-            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
-            (node, next_on_unterminated(tokens, end_exclusive))
+fn push_period_or_error(
+    cursor: &mut Parser<'_, '_>,
+    after: &str,
+    _stop_keywords: &[&str],
+    children: &mut Vec<NodeId>,
+) {
+    match cursor.expect_token_after_result(TokenKind::Period, after) {
+        Ok(period) => children.push(period),
+        Err(failure) => {
+            let start = failure.range.start;
+            cursor.push_failure(failure);
+            let error = cursor
+                .builder()
+                .branch(SyntaxKind::Error, start..start, &[]);
+            children.push(error);
         }
     }
 }
 
-fn scan_until_chained_statement_period(
-    tokens: &[Token],
-    source: &str,
-    start: usize,
-) -> StmtPeriodScan {
-    let chain_start = skip_trivia(tokens, start);
-    if tokens
-        .get(chain_start)
-        .is_some_and(|token| token.kind == TokenKind::Colon)
-        && let Some(period_i) = scan_until_top_level_period(tokens, chain_start + 1)
-    {
-        return StmtPeriodScan::Found(period_i);
+fn push_period_or_custom_error(
+    cursor: &mut Parser<'_, '_>,
+    message: &str,
+    _stop_keywords: &[&str],
+    children: &mut Vec<NodeId>,
+) {
+    if let Some(period) = cursor.allow_token(TokenKind::Period) {
+        children.push(period);
+        return;
     }
-    scan_until_statement_period(tokens, source, start)
+
+    let fallback = cursor.current_range();
+    cursor.push_error(message.to_string(), fallback.clone());
+    let error = cursor
+        .builder()
+        .branch(SyntaxKind::Error, fallback.start..fallback.start, &[]);
+    children.push(error);
 }
 
-fn parse_chained_stmt_with_period_scan<F>(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    scan_start: usize,
-    start_tok: &Token,
-    missing_period_message: &str,
-    errors: &mut Vec<crate::ParseError>,
-    next_on_unterminated: fn(&[Token], usize) -> usize,
-    on_found: F,
-) -> (NodeId, usize)
-where
-    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
-{
-    match scan_until_chained_statement_period(tokens, source, scan_start) {
-        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: missing_period_message.to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let children = token_children(b, tokens, idx, end_exclusive);
-            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
-            (node, next_on_unterminated(tokens, end_exclusive))
-        }
+fn push_until_stmt_boundary(
+    cursor: &mut Parser<'_, '_>,
+    stop_keywords: &[&str],
+    children: &mut Vec<NodeId>,
+) {
+    while !cursor.at_stmt_boundary(stop_keywords) {
+        let Some(node) = cursor.bump() else {
+            break;
+        };
+        children.push(node);
     }
 }
 
-fn parse_simple_keyword_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    kind: SyntaxKind,
+fn parse_failure(cursor: &Parser<'_, '_>, message: impl Into<String>) -> ParseFailure {
+    ParseFailure {
+        message: message.into(),
+        range: cursor.current_range(),
+    }
+}
+
+fn parse_raw_header_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+    after: &str,
+    stop_keywords: &[&str],
+) -> PResult<(usize, Vec<NodeId>)> {
+    parse_raw_header_with_continuations(cursor, after, stop_keywords, &[])
+}
+
+fn parse_raw_header_with_continuations(
+    cursor: &mut Parser<'_, '_>,
+    after: &str,
+    stop_keywords: &[&str],
+    continuation_keywords: &[&str],
+) -> PResult<(usize, Vec<NodeId>)> {
+    let mut children = Vec::new();
+    if let Some(first) = cursor.bump() {
+        children.push(first);
+    }
+    while header_continues(cursor, stop_keywords, continuation_keywords) {
+        let Some(node) = cursor.bump() else {
+            break;
+        };
+        children.push(node);
+    }
+    let period_i = cursor.index();
+    children.push(cursor.expect_token_after_result(TokenKind::Period, after)?);
+    Ok((period_i, children))
+}
+
+fn parse_function_header_from_cursor(cursor: &mut Parser<'_, '_>) -> PResult<(usize, Vec<NodeId>)> {
+    let mut children = Vec::new();
+    let mut saw_section = false;
+    if let Some(first) = cursor.bump() {
+        children.push(first);
+    }
+    while function_header_continues(cursor, saw_section) {
+        saw_section |= cursor
+            .current()
+            .is_some_and(|token| function_header_section_keyword(cursor.source(), token));
+        let Some(node) = cursor.bump() else {
+            break;
+        };
+        children.push(node);
+    }
+    let period_i = cursor.index();
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "function header")?);
+    Ok((period_i, children))
+}
+
+fn function_header_continues(cursor: &Parser<'_, '_>, saw_section: bool) -> bool {
+    let Some(token) = cursor.current() else {
+        return false;
+    };
+    if token.kind == TokenKind::Period || cursor.at_keyword("ENDFUNCTION") {
+        return false;
+    }
+    if !cursor.at_stmt_boundary(&["ENDFUNCTION"]) {
+        return true;
+    }
+    function_header_section_keyword(cursor.source(), token)
+        || (saw_section && token.kind == TokenKind::Ident)
+}
+
+fn header_continues(
+    cursor: &Parser<'_, '_>,
+    stop_keywords: &[&str],
+    continuation_keywords: &[&str],
+) -> bool {
+    if !cursor.at_stmt_boundary(stop_keywords) {
+        return true;
+    }
+    cursor.current().is_some_and(|token| {
+        token.kind == TokenKind::Ident
+            && continuation_keywords
+                .iter()
+                .any(|keyword| token.lexeme(cursor.source()).eq_ignore_ascii_case(keyword))
+    })
+}
+
+fn parse_raw_keyword_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
     keyword: &str,
-    errors: &mut Vec<crate::ParseError>,
-    missing_period_message: &str,
-) -> Option<(NodeId, usize)> {
-    let tok = tokens.get(idx)?;
-    if !is_keyword(source, tok, keyword) {
-        return None;
+    kind: SyntaxKind,
+    period_after: &str,
+) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let fallback = cursor.current_range();
+    let mut children = vec![cursor.expect_keyword_result(keyword)?];
+    push_until_stmt_boundary(cursor, &[], &mut children);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, period_after)?);
+    Ok(cursor.branch_from_children(kind, &children, fallback))
+}
+
+fn push_end_keyword_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+    keyword: &str,
+    children: &mut Vec<NodeId>,
+) -> PResult<()> {
+    cursor.skip_trivia();
+    children.push(cursor.expect_keyword_result(keyword)?);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, keyword)?);
+    Ok(())
+}
+
+fn cursor_at_hyphenated_keyword(cursor: &Parser<'_, '_>, parts: &[&str]) -> bool {
+    let idx = skip_trivia(cursor.tokens(), cursor.index());
+    match_hyphenated_keyword(cursor.source(), cursor.tokens(), idx, parts).is_some()
+}
+
+fn cursor_at_enhancement_end(cursor: &Parser<'_, '_>, kind: EnhancementEndKind) -> bool {
+    let idx = skip_trivia(cursor.tokens(), cursor.index());
+    enhancement_end_keyword_end(cursor.source(), cursor.tokens(), idx, kind).is_some()
+}
+
+fn push_hyphenated_end_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+    parts: &[&str],
+    text: &str,
+    children: &mut Vec<NodeId>,
+) -> PResult<()> {
+    cursor.skip_trivia();
+    let idx = cursor.index();
+    let Some(end) = match_hyphenated_keyword(cursor.source(), cursor.tokens(), idx, parts) else {
+        return Err(parse_failure(
+            cursor,
+            format!("syntax error: expected {text}"),
+        ));
+    };
+    while cursor.index() < end {
+        if let Some(node) = cursor.bump() {
+            children.push(node);
+        } else {
+            break;
+        }
     }
-    Some(parse_stmt_with_period_scan(
+    children.push(cursor.expect_token_after_result(TokenKind::Period, text)?);
+    Ok(())
+}
+
+fn parse_with_cursor(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    errors: &mut Vec<crate::ParseError>,
+    f: impl FnOnce(&mut Parser<'_, '_>) -> Option<NodeId>,
+) -> Option<(NodeId, usize)> {
+    let mut cursor = Parser::new(b, source, tokens, idx, errors);
+    let node = f(&mut cursor)?;
+    Some((node, cursor.index()))
+}
+
+type SurfaceBuildFn = fn(
+    &mut SyntaxTreeBuilder,
+    &str,
+    &[Token],
+    usize,
+    &mut Vec<crate::ParseError>,
+) -> Option<(NodeId, usize)>;
+
+fn surface_line_start_stmt_boundary(source: &str, tokens: &[Token], idx: usize) -> bool {
+    tokens.get(idx).is_some_and(|token| {
+        token_begins_line(token)
+            && (is_definite_stmt_lead_keyword(source, token) || line_start_assignment(tokens, idx))
+    })
+}
+
+fn surface_stmt_period_index_result<F>(
+    cursor: &mut Parser<'_, '_>,
+    scan_start: usize,
+    after: &str,
+    line_start_continues: F,
+) -> PResult<usize>
+where
+    F: FnMut(&str, &[Token], usize) -> bool,
+{
+    cursor.set_position(scan_start, scan_start.checked_sub(1));
+    advance_to_surface_stmt_boundary(cursor, line_start_continues);
+    let period_i = cursor.index();
+    cursor.expect_token_after_result(TokenKind::Period, after)?;
+    Ok(period_i)
+}
+
+fn advance_to_surface_stmt_boundary<F>(cursor: &mut Parser<'_, '_>, mut line_start_continues: F)
+where
+    F: FnMut(&str, &[Token], usize) -> bool,
+{
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+
+    loop {
+        let Some(token) = cursor.current() else {
+            break;
+        };
+        if token.kind == TokenKind::Eof {
+            break;
+        }
+
+        let at_top = paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
+        if at_top
+            && (token.kind == TokenKind::Period
+                || (surface_line_start_stmt_boundary(
+                    cursor.source(),
+                    cursor.tokens(),
+                    cursor.index(),
+                ) && !line_start_continues(cursor.source(), cursor.tokens(), cursor.index())))
+        {
+            break;
+        }
+
+        match token.kind {
+            TokenKind::LParen => paren_depth += 1,
+            TokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+            TokenKind::LBracket => bracket_depth += 1,
+            TokenKind::RBracket => bracket_depth = bracket_depth.saturating_sub(1),
+            TokenKind::LBrace => brace_depth += 1,
+            TokenKind::RBrace => brace_depth = brace_depth.saturating_sub(1),
+            _ => {}
+        }
+        let current = cursor.index();
+        cursor.set_position(current + 1, Some(current));
+    }
+}
+
+fn legacy_result_with_period_boundary<F>(
+    cursor: &mut Parser<'_, '_>,
+    scan_start: usize,
+    after: &str,
+    line_start_continues: F,
+    parser: SurfaceBuildFn,
+) -> Option<PResult<NodeId>>
+where
+    F: FnMut(&str, &[Token], usize) -> bool,
+{
+    let idx = cursor.index();
+    let previous = cursor.previous_index();
+    if let Err(failure) =
+        surface_stmt_period_index_result(cursor, scan_start, after, line_start_continues)
+    {
+        return Some(Err(failure));
+    }
+
+    cursor.set_position(idx, previous);
+    let parsed = {
+        let (b, source, tokens, errors) = cursor.parts_mut();
+        parser(b, source, tokens, idx, errors)
+    };
+    let Some((node, next)) = parsed else {
+        cursor.set_position(idx, previous);
+        return None;
+    };
+
+    let prev = next
+        .checked_sub(1)
+        .filter(|previous| *previous < cursor.tokens().len());
+    cursor.set_position(next, prev);
+    Some(Ok(node))
+}
+
+fn legacy_result_with_default_boundary(
+    cursor: &mut Parser<'_, '_>,
+    scan_start: usize,
+    after: &str,
+    parser: SurfaceBuildFn,
+) -> Option<PResult<NodeId>> {
+    legacy_result_with_period_boundary(
+        cursor,
+        scan_start,
+        after,
+        |source, tokens, at| legacy_line_start_continues(source, tokens, scan_start, at),
+        parser,
+    )
+}
+
+fn legacy_result_with_chained_boundary(
+    cursor: &mut Parser<'_, '_>,
+    scan_start: usize,
+    after: &str,
+    parser: SurfaceBuildFn,
+) -> Option<PResult<NodeId>> {
+    let chain_start = skip_trivia(cursor.tokens(), scan_start);
+    let is_chain = cursor
+        .tokens()
+        .get(chain_start)
+        .is_some_and(|token| token.kind == TokenKind::Colon);
+    legacy_result_with_period_boundary(
+        cursor,
+        scan_start,
+        after,
+        move |source, tokens, at| {
+            is_chain || legacy_line_start_continues(source, tokens, scan_start, at)
+        },
+        parser,
+    )
+}
+
+fn stmt_boundary_from_cursor(cursor: &mut Parser<'_, '_>, start: usize) -> usize {
+    cursor.set_position(start, start.checked_sub(1));
+    advance_to_surface_stmt_boundary(cursor, |_, _, _| false);
+    cursor.index()
+}
+
+fn parse_stmt_with_cursor_boundary<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    scan_start: usize,
+    start_tok: &Token,
+    missing_period_message: &str,
+    errors: &mut Vec<crate::ParseError>,
+    next_on_unterminated: fn(&[Token], usize) -> usize,
+    on_found: F,
+) -> (NodeId, usize)
+where
+    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
+{
+    match cursor_stmt_period(
         b,
         source,
         tokens,
-        idx,
-        idx + 1,
-        tok,
-        missing_period_message,
+        scan_start,
         errors,
-        next_after_unterminated_scan,
-        |b, period_i, _errors| {
-            let children = token_children(b, tokens, idx, period_i + 1);
-            let node = b.branch(kind, tok.range.start..tokens[period_i].range.end, &children);
-            (node, period_i + 1)
+        |source, tokens, at| legacy_line_start_continues(source, tokens, scan_start, at),
+    ) {
+        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: missing_period_message.to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
+            (node, next_on_unterminated(tokens, end_exclusive))
+        }
+    }
+}
+
+fn parse_chained_stmt_with_cursor_boundary<F>(
+    b: &mut SyntaxTreeBuilder,
+    source: &str,
+    tokens: &[Token],
+    idx: usize,
+    scan_start: usize,
+    start_tok: &Token,
+    missing_period_message: &str,
+    errors: &mut Vec<crate::ParseError>,
+    next_on_unterminated: fn(&[Token], usize) -> usize,
+    on_found: F,
+) -> (NodeId, usize)
+where
+    F: FnOnce(&mut SyntaxTreeBuilder, usize, &mut Vec<crate::ParseError>) -> (NodeId, usize),
+{
+    let chain_start = skip_trivia(tokens, scan_start);
+    let is_chain = tokens
+        .get(chain_start)
+        .is_some_and(|token| token.kind == TokenKind::Colon);
+    match cursor_stmt_period(
+        b,
+        source,
+        tokens,
+        scan_start,
+        errors,
+        |source, tokens, at| {
+            is_chain || legacy_line_start_continues(source, tokens, scan_start, at)
         },
+    ) {
+        StmtPeriodScan::Found(period_i) => on_found(b, period_i, errors),
+        StmtPeriodScan::Unterminated { end_exclusive } => {
+            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
+            errors.push(crate::ParseError {
+                message: missing_period_message.to_string(),
+                range: start_tok.range.start..err_end,
+            });
+            let children = token_children(b, tokens, idx, end_exclusive);
+            let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
+            (node, next_on_unterminated(tokens, end_exclusive))
+        }
+    }
+}
+
+pub(crate) fn try_parse_selection_screen_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let lead_end = match_hyphenated_keyword(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["selection", "screen"],
+    )?;
+    legacy_result_with_period_boundary(
+        cursor,
+        lead_end,
+        "SELECTION-SCREEN statement",
+        move |source, tokens, at| {
+            tokens[lead_end..at]
+                .iter()
+                .any(|token| token.kind == TokenKind::Colon)
+                || legacy_line_start_continues(source, tokens, lead_end, at)
+        },
+        try_parse_selection_screen_stmt,
+    )
+}
+
+pub(crate) fn try_parse_read_report_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let scan_start = {
+        let idx = cursor.index();
+        let tokens = cursor.tokens();
+        let read_tok = tokens.get(idx)?;
+        let report_idx = idx + 1;
+        if !is_keyword(cursor.source(), read_tok, "read")
+            || !tokens
+                .get(report_idx)
+                .is_some_and(|token| is_keyword(cursor.source(), token, "report"))
+        {
+            return None;
+        }
+        report_idx + 1
+    };
+    legacy_result_with_default_boundary(
+        cursor,
+        scan_start,
+        "READ REPORT statement",
+        try_parse_read_report_stmt,
+    )
+}
+
+pub(crate) fn try_parse_insert_report_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let scan_start = {
+        let idx = cursor.index();
+        let tokens = cursor.tokens();
+        let insert_tok = tokens.get(idx)?;
+        let report_idx = idx + 1;
+        if !is_keyword(cursor.source(), insert_tok, "insert")
+            || !tokens
+                .get(report_idx)
+                .is_some_and(|token| is_keyword(cursor.source(), token, "report"))
+        {
+            return None;
+        }
+        report_idx + 1
+    };
+    legacy_result_with_default_boundary(
+        cursor,
+        scan_start,
+        "INSERT REPORT statement",
+        try_parse_insert_report_stmt,
+    )
+}
+
+pub(crate) fn try_parse_delete_report_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let scan_start = {
+        let idx = cursor.index();
+        let tokens = cursor.tokens();
+        let delete_tok = tokens.get(idx)?;
+        let report_idx = idx + 1;
+        if !is_keyword(cursor.source(), delete_tok, "delete")
+            || !tokens
+                .get(report_idx)
+                .is_some_and(|token| is_keyword(cursor.source(), token, "report"))
+        {
+            return None;
+        }
+        report_idx + 1
+    };
+    legacy_result_with_default_boundary(
+        cursor,
+        scan_start,
+        "DELETE REPORT statement",
+        try_parse_delete_report_stmt,
+    )
+}
+
+pub(crate) fn try_parse_syntax_check_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let lead_end = match_hyphenated_keyword(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["syntax", "check"],
+    )?;
+    legacy_result_with_default_boundary(
+        cursor,
+        lead_end,
+        "SYNTAX-CHECK statement",
+        try_parse_syntax_check_stmt,
+    )
+}
+
+pub(crate) fn try_parse_write_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("WRITE") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "WRITE statement",
+        try_parse_write_stmt,
+    )
+}
+
+pub(crate) fn try_parse_concatenate_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("CONCATENATE") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "CONCATENATE statement",
+        try_parse_concatenate_stmt,
+    )
+}
+
+pub(crate) fn try_parse_split_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("SPLIT") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "SPLIT statement",
+        try_parse_split_stmt,
+    )
+}
+
+pub(crate) fn try_parse_condense_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("CONDENSE") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "CONDENSE statement",
+        try_parse_condense_stmt,
+    )
+}
+
+pub(crate) fn try_parse_raise_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("RAISE") {
+        return None;
+    }
+    let idx = cursor.index();
+    legacy_result_with_period_boundary(
+        cursor,
+        idx + 1,
+        "RAISE statement",
+        move |source, tokens, at| line_start_named_arg_after_section(source, tokens, idx, at),
+        try_parse_raise_stmt,
+    )
+}
+
+pub(crate) fn try_parse_message_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("MESSAGE") {
+        return None;
+    }
+    legacy_result_with_period_boundary(
+        cursor,
+        cursor.index() + 1,
+        "MESSAGE statement",
+        |_, _, _| false,
+        try_parse_message_stmt,
+    )
+}
+
+pub(crate) fn try_parse_submit_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("SUBMIT") {
+        return None;
+    }
+    legacy_result_with_period_boundary(
+        cursor,
+        cursor.index() + 1,
+        "SUBMIT",
+        |_, _, _| false,
+        try_parse_submit_stmt,
+    )
+}
+
+pub(crate) fn try_parse_leave_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("LEAVE") {
+        return None;
+    }
+    Some(parse_raw_keyword_stmt_result_from_cursor(
+        cursor,
+        "LEAVE",
+        SyntaxKind::LeaveStmt,
+        "LEAVE statement",
     ))
+}
+
+pub(crate) fn try_parse_endat_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("ENDAT") {
+        return None;
+    }
+    Some(parse_raw_keyword_stmt_result_from_cursor(
+        cursor,
+        "ENDAT",
+        SyntaxKind::EndAtStmt,
+        "ENDAT",
+    ))
+}
+
+pub(crate) fn try_parse_find_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("FIND") {
+        return None;
+    }
+    legacy_result_with_default_boundary(cursor, cursor.index() + 1, "FIND", try_parse_find_stmt)
+}
+
+pub(crate) fn try_parse_get_bit_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let lead_end = match_keyword_sequence(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["get", "bit"],
+    )?;
+    legacy_result_with_default_boundary(
+        cursor,
+        lead_end,
+        "GET BIT statement",
+        try_parse_get_bit_stmt,
+    )
+}
+
+pub(crate) fn try_parse_set_bit_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let lead_end = match_keyword_sequence(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["set", "bit"],
+    )?;
+    legacy_result_with_default_boundary(
+        cursor,
+        lead_end,
+        "SET BIT statement",
+        try_parse_set_bit_stmt,
+    )
+}
+
+pub(crate) fn try_parse_get_time_stamp_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let lead_end = match_keyword_sequence(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        GET_TIME_STAMP_FIELD_LEAD,
+    )?;
+    legacy_result_with_default_boundary(
+        cursor,
+        lead_end,
+        "GET TIME STAMP FIELD statement",
+        try_parse_get_time_stamp_stmt,
+    )
+}
+
+pub(crate) fn try_parse_get_reference_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let lead_end = match_keyword_sequence(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        GET_REFERENCE_OF_LEAD,
+    )?;
+    legacy_result_with_default_boundary(
+        cursor,
+        lead_end,
+        "GET REFERENCE OF statement",
+        try_parse_get_reference_stmt,
+    )
+}
+
+pub(crate) fn try_parse_call_like_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let (lead_kind, lead_end) =
+        call_like_lead_kind(cursor.source(), cursor.tokens(), cursor.index())?;
+    let idx = cursor.index();
+    let result = legacy_result_with_period_boundary(
+        cursor,
+        lead_end,
+        "call-like statement",
+        move |source, tokens, at| {
+            call_like_line_start_continues(source, tokens, idx, at, lead_kind)
+        },
+        try_parse_call_like_stmt,
+    )?;
+    Some(result.map_err(|mut failure| {
+        failure.message = "syntax error: expected '.' to end call-like statement".to_string();
+        failure
+    }))
+}
+
+pub(crate) fn try_parse_read_table_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let idx = cursor.index();
+    if !cursor.at_keyword("READ")
+        || !cursor
+            .tokens()
+            .get(idx + 1)
+            .is_some_and(|token| is_keyword(cursor.source(), token, "table"))
+    {
+        return None;
+    }
+    legacy_result_with_period_boundary(
+        cursor,
+        idx + 2,
+        "READ TABLE statement",
+        move |source, tokens, at| read_table_line_start_continues(source, tokens, idx + 2, at),
+        try_parse_read_table_stmt,
+    )
+}
+
+pub(crate) fn try_parse_authority_check_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let keyword_end = match_hyphenated_keyword(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["authority", "check"],
+    )?;
+    legacy_result_with_default_boundary(
+        cursor,
+        keyword_end,
+        "AUTHORITY-CHECK statement",
+        try_parse_authority_check_stmt,
+    )
+}
+
+pub(crate) fn try_parse_append_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("APPEND") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "APPEND statement",
+        try_parse_append_stmt,
+    )
+}
+
+pub(crate) fn try_parse_insert_table_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("INSERT") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "INSERT statement",
+        try_parse_insert_table_stmt,
+    )
+}
+
+pub(crate) fn try_parse_move_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if let Some(keyword_end) = match_hyphenated_keyword(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["move", "corresponding"],
+    ) {
+        return legacy_result_with_default_boundary(
+            cursor,
+            keyword_end,
+            "MOVE-CORRESPONDING statement",
+            try_parse_move_stmt,
+        );
+    }
+    if !cursor.at_keyword("MOVE") {
+        return None;
+    }
+    legacy_result_with_chained_boundary(
+        cursor,
+        cursor.index() + 1,
+        "MOVE statement",
+        try_parse_move_stmt,
+    )
+}
+
+pub(crate) fn try_parse_sort_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("SORT") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "SORT statement",
+        try_parse_sort_stmt,
+    )
+}
+
+pub(crate) fn try_parse_modify_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("MODIFY") {
+        return None;
+    }
+    let idx = cursor.index();
+    if modify_line_stmt_lead(cursor.source(), cursor.tokens(), idx) {
+        return legacy_result_with_period_boundary(
+            cursor,
+            idx + 1,
+            "MODIFY LINE statement",
+            |_, _, _| true,
+            try_parse_modify_stmt,
+        );
+    }
+    legacy_result_with_default_boundary(cursor, idx + 1, "MODIFY statement", try_parse_modify_stmt)
+}
+
+pub(crate) fn try_parse_delete_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("DELETE") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "DELETE statement",
+        try_parse_delete_stmt,
+    )
+}
+
+pub(crate) fn try_parse_refresh_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("REFRESH") {
+        return None;
+    }
+    legacy_result_with_chained_boundary(
+        cursor,
+        cursor.index() + 1,
+        "REFRESH statement",
+        try_parse_refresh_stmt,
+    )
+}
+
+pub(crate) fn try_parse_collect_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("COLLECT") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "COLLECT statement",
+        try_parse_collect_stmt,
+    )
+}
+
+pub(crate) fn try_parse_free_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("FREE") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "FREE statement",
+        try_parse_free_stmt,
+    )
+}
+
+pub(crate) fn try_parse_unassign_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("UNASSIGN") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "UNASSIGN statement",
+        try_parse_unassign_stmt,
+    )
+}
+
+pub(crate) fn try_parse_import_memory_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("IMPORT") {
+        return None;
+    }
+    let idx = cursor.index();
+    legacy_result_with_period_boundary(
+        cursor,
+        idx + 1,
+        "IMPORT data cluster statement",
+        move |source, tokens, at| {
+            legacy_line_start_continues_with_named_args(source, tokens, idx + 1, at, true)
+        },
+        try_parse_import_memory_stmt,
+    )
+}
+
+pub(crate) fn try_parse_export_memory_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("EXPORT") {
+        return None;
+    }
+    let idx = cursor.index();
+    legacy_result_with_period_boundary(
+        cursor,
+        idx + 1,
+        "EXPORT data cluster statement",
+        move |source, tokens, at| {
+            legacy_line_start_continues_with_named_args(source, tokens, idx + 1, at, true)
+        },
+        try_parse_export_memory_stmt,
+    )
+}
+
+pub(crate) fn try_parse_update_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("UPDATE") {
+        return None;
+    }
+    let idx = cursor.index();
+    legacy_result_with_period_boundary(
+        cursor,
+        idx + 1,
+        "UPDATE statement",
+        move |source, tokens, at| update_line_start_continues(source, tokens, idx + 1, at),
+        try_parse_update_stmt,
+    )
+}
+
+pub(crate) fn try_parse_assign_keyword_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("ASSIGN") {
+        return None;
+    }
+    legacy_result_with_default_boundary(
+        cursor,
+        cursor.index() + 1,
+        "ASSIGN statement",
+        try_parse_assign_keyword_stmt,
+    )
+}
+
+pub(crate) fn try_parse_select_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("SELECT") {
+        return None;
+    }
+    let idx = cursor.index();
+    legacy_result_with_period_boundary(
+        cursor,
+        idx + 1,
+        "SELECT statement",
+        move |source, tokens, at| select_line_start_continues(source, tokens, idx + 1, at),
+        try_parse_select_stmt,
+    )
+}
+
+pub(crate) fn try_parse_with_select_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    if !cursor.at_keyword("WITH") {
+        return None;
+    }
+    let main_select_idx =
+        find_with_main_select_idx(cursor.source(), cursor.tokens(), cursor.index())?;
+    legacy_result_with_period_boundary(
+        cursor,
+        main_select_idx + 1,
+        "SELECT statement",
+        move |source, tokens, at| {
+            select_line_start_continues(source, tokens, main_select_idx + 1, at)
+        },
+        try_parse_with_select_stmt,
+    )
+}
+
+pub(crate) fn try_parse_open_cursor_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let idx = cursor.index();
+    if !cursor.at_keyword("OPEN") {
+        return None;
+    }
+    let cursor_idx = skip_trivia(cursor.tokens(), idx + 1);
+    if !cursor
+        .tokens()
+        .get(cursor_idx)
+        .is_some_and(|token| is_keyword(cursor.source(), token, "cursor"))
+    {
+        return None;
+    }
+    legacy_result_with_period_boundary(
+        cursor,
+        cursor_idx + 1,
+        "OPEN CURSOR statement",
+        |_, _, _| true,
+        try_parse_open_cursor_stmt,
+    )
+}
+
+pub(crate) fn try_parse_fetch_cursor_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let idx = cursor.index();
+    if !cursor.at_keyword("FETCH") {
+        return None;
+    }
+    let next_idx = skip_trivia(cursor.tokens(), idx + 1);
+    if !cursor
+        .tokens()
+        .get(next_idx)
+        .is_some_and(|token| is_keyword(cursor.source(), token, "next"))
+    {
+        return None;
+    }
+    let cursor_idx = skip_trivia(cursor.tokens(), next_idx + 1);
+    if !cursor
+        .tokens()
+        .get(cursor_idx)
+        .is_some_and(|token| is_keyword(cursor.source(), token, "cursor"))
+    {
+        return None;
+    }
+    let handle_start = skip_trivia(cursor.tokens(), cursor_idx + 1);
+    legacy_result_with_period_boundary(
+        cursor,
+        handle_start,
+        "FETCH NEXT CURSOR statement",
+        |_, _, _| false,
+        try_parse_fetch_cursor_stmt,
+    )
+}
+
+pub(crate) fn try_parse_close_cursor_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let idx = cursor.index();
+    if !cursor.at_keyword("CLOSE") {
+        return None;
+    }
+    let cursor_idx = skip_trivia(cursor.tokens(), idx + 1);
+    if !cursor
+        .tokens()
+        .get(cursor_idx)
+        .is_some_and(|token| is_keyword(cursor.source(), token, "cursor"))
+    {
+        return None;
+    }
+    let handle_start = skip_trivia(cursor.tokens(), cursor_idx + 1);
+    legacy_result_with_period_boundary(
+        cursor,
+        handle_start,
+        "CLOSE CURSOR statement",
+        |_, _, _| false,
+        try_parse_close_cursor_stmt,
+    )
+}
+
+pub(crate) fn try_parse_dataset_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let (_, lead_end) = dataset_stmt_lead_kind(cursor.source(), cursor.tokens(), cursor.index())?;
+    legacy_result_with_default_boundary(
+        cursor,
+        lead_end,
+        "dataset statement",
+        try_parse_dataset_stmt,
+    )
 }
 
 fn parse_raw_stmt_until_top_level_period(
     b: &mut SyntaxTreeBuilder,
+    source: &str,
     tokens: &[Token],
     idx: usize,
     kind: SyntaxKind,
@@ -2798,22 +3949,19 @@ fn parse_raw_stmt_until_top_level_period(
     missing_period_message: &str,
     errors: &mut Vec<crate::ParseError>,
 ) -> (NodeId, usize) {
-    let Some(period_i) = scan_until_top_level_period(tokens, idx + 1) else {
-        let eof_idx = tokens
+    let Some(period_i) = top_level_period_from_cursor(b, source, tokens, idx + 1, errors) else {
+        let end_exclusive = tokens
             .iter()
             .position(|token| token.kind == TokenKind::Eof)
             .unwrap_or(tokens.len());
-        let err_end = tokens
-            .get(eof_idx.saturating_sub(1))
-            .map(|token| token.range.end)
-            .unwrap_or(start_tok.range.end);
+        let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
         errors.push(crate::ParseError {
             message: missing_period_message.to_string(),
             range: start_tok.range.start..err_end,
         });
-        let children = error_token_children(b, tokens, idx, eof_idx);
+        let children = error_token_children(b, tokens, idx, end_exclusive);
         let node = b.branch(SyntaxKind::Error, start_tok.range.start..err_end, &children);
-        return (node, tokens.len());
+        return (node, end_exclusive);
     };
 
     let children = token_children(b, tokens, idx, period_i + 1);
@@ -2823,41 +3971,6 @@ fn parse_raw_stmt_until_top_level_period(
         &children,
     );
     (node, period_i + 1)
-}
-
-fn build_include_stmt_children(
-    b: &mut SyntaxTreeBuilder,
-    tokens: &[Token],
-    idx: usize,
-    period_i: usize,
-) -> Vec<NodeId> {
-    let mut children = Vec::with_capacity(period_i + 1 - idx);
-    let mut expect_name = false;
-    for i in idx..=period_i {
-        let token = &tokens[i];
-        if i == idx {
-            children.push(token_leaf(b, token));
-            expect_name = true;
-            continue;
-        }
-        if token.kind == TokenKind::Comment {
-            children.push(token_leaf(b, token));
-            continue;
-        }
-        if expect_name && token.kind == TokenKind::Ident {
-            let leaf = token_leaf(b, token);
-            children.push(b.branch(SyntaxKind::IncludeName, token.range.clone(), &[leaf]));
-            expect_name = false;
-            continue;
-        }
-        if matches!(token.kind, TokenKind::Colon | TokenKind::Comma) {
-            expect_name = true;
-        } else if token.kind != TokenKind::Period {
-            expect_name = false;
-        }
-        children.push(token_leaf(b, token));
-    }
-    children
 }
 
 fn try_parse_field_symbol_inline_decl(
@@ -3714,13 +4827,6 @@ fn scan_until_system_call_field_clause(
     })
 }
 
-fn skip_comment_tokens(tokens: &[Token], mut idx: usize, end_exclusive: usize) -> usize {
-    while idx < end_exclusive && tokens[idx].kind == TokenKind::Comment {
-        idx += 1;
-    }
-    idx
-}
-
 fn push_system_call_arg_section(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -3748,7 +4854,7 @@ fn build_system_function_call_argument_list_node(
     let mut children = Vec::new();
     let mut idx = start;
     while idx < end_exclusive {
-        idx = skip_comment_tokens(tokens, idx, end_exclusive);
+        idx = skip_comment_tokens_until(tokens, idx, end_exclusive);
         if idx >= end_exclusive {
             break;
         }
@@ -3762,7 +4868,7 @@ fn build_system_function_call_argument_list_node(
         push_system_call_arg_section(b, &mut children, &tokens[idx]);
         idx += 1;
 
-        let id_start = skip_comment_tokens(tokens, idx, end_exclusive);
+        let id_start = skip_comment_tokens_until(tokens, idx, end_exclusive);
         let id_end = scan_until_system_call_field_clause(
             source,
             tokens,
@@ -3778,7 +4884,7 @@ fn build_system_function_call_argument_list_node(
             id_end,
             Some(&tokens[idx - 1]),
         );
-        idx = skip_comment_tokens(tokens, id_end, end_exclusive);
+        idx = skip_comment_tokens_until(tokens, id_end, end_exclusive);
 
         if idx >= end_exclusive || !system_call_field_clause_starts(source, tokens, idx) {
             continue;
@@ -3787,7 +4893,7 @@ fn build_system_function_call_argument_list_node(
         push_system_call_arg_section(b, &mut children, &tokens[idx]);
         idx += 1;
 
-        let field_start = skip_comment_tokens(tokens, idx, end_exclusive);
+        let field_start = skip_comment_tokens_until(tokens, idx, end_exclusive);
         let field_end = scan_until_system_call_id_clause(
             source,
             tokens,
@@ -3814,36 +4920,6 @@ fn build_system_function_call_argument_list_node(
         tokens[start].range.start..tokens[end_exclusive - 1].range.end,
         &children,
     ))
-}
-
-fn find_top_level_keyword_index(
-    source: &str,
-    tokens: &[Token],
-    start: usize,
-    end_exclusive: usize,
-    keyword: &str,
-) -> Option<usize> {
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    let mut idx = start;
-    while idx < end_exclusive {
-        let token = &tokens[idx];
-        if paren == 0 && bracket == 0 && brace == 0 && is_keyword(source, token, keyword) {
-            return Some(idx);
-        }
-        match token.kind {
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
-            _ => {}
-        }
-        idx += 1;
-    }
-    None
 }
 
 fn match_keyword_sequence_at(
@@ -4978,13 +6054,6 @@ enum EnhancementEndKind {
     Enhancement,
 }
 
-fn enhancement_end_keyword_text(kind: EnhancementEndKind) -> &'static str {
-    match kind {
-        EnhancementEndKind::Section => "END-ENHANCEMENT-SECTION",
-        EnhancementEndKind::Enhancement => "ENDENHANCEMENT",
-    }
-}
-
 fn enhancement_end_keyword_end(
     source: &str,
     tokens: &[Token],
@@ -5002,143 +6071,19 @@ fn enhancement_end_keyword_end(
     }
 }
 
-fn recover_skip_after_enhancement_end(
-    source: &str,
-    tokens: &[Token],
-    mut idx: usize,
-    kind: EnhancementEndKind,
-) -> usize {
-    while idx < tokens.len() {
-        if let Some(end) = enhancement_end_keyword_end(source, tokens, idx, kind) {
-            let period_idx = skip_trivia(tokens, end);
-            if tokens.get(period_idx).map(|token| token.kind) == Some(TokenKind::Period) {
-                return period_idx + 1;
-            }
-            return end;
-        }
-        idx += 1;
-    }
-    tokens.len()
-}
-
-fn parse_body_until_enhancement_end(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    mut idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-    kind: EnhancementEndKind,
-) -> (Vec<NodeId>, usize) {
-    let mut nodes = Vec::new();
-    loop {
-        let boundary_idx = skip_trivia(tokens, idx);
-        if enhancement_end_keyword_end(source, tokens, boundary_idx, kind).is_some() {
-            break;
-        }
-        if idx >= tokens.len() || tokens[idx].kind == TokenKind::Eof {
-            break;
-        }
-        let (node, next) = crate::parse_file_level_item(b, source, tokens, idx, errors);
-        nodes.push(node);
-        idx = crate::block_helpers::ensure_forward_progress(tokens, idx, next);
-    }
-    (nodes, idx)
-}
-
-fn parse_enhancement_end_keyword(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    start_tok: &Token,
-    kind: EnhancementEndKind,
-    errors: &mut Vec<crate::ParseError>,
-) -> (Vec<NodeId>, usize, usize) {
-    let end_text = enhancement_end_keyword_text(kind);
-    let end_idx = skip_trivia(tokens, idx);
-    let Some(end_tok) = tokens.get(end_idx) else {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected {end_text}"),
-            range: start_tok.range.clone(),
-        });
-        return (Vec::new(), tokens.len(), start_tok.range.end);
-    };
-    let Some(end_parts_end) = enhancement_end_keyword_end(source, tokens, end_idx, kind) else {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected {end_text}"),
-            range: start_tok.range.start..end_tok.range.end,
-        });
-        let recover = recover_skip_after_enhancement_end(source, tokens, idx, kind);
-        return (Vec::new(), recover, end_tok.range.end);
-    };
-
-    let mut children = token_children(b, tokens, end_idx, end_parts_end);
-    let period_idx = skip_trivia(tokens, end_parts_end);
-    let Some(period_tok) = tokens.get(period_idx) else {
-        let end_pos = children
-            .last()
-            .copied()
-            .map(|node| b.span(node).end)
-            .unwrap_or(end_tok.range.end);
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_text}"),
-            range: end_tok.range.start..end_pos,
-        });
-        let recover = recover_skip_after_enhancement_end(source, tokens, end_idx, kind);
-        return (children, recover, end_pos);
-    };
-    if period_tok.kind != TokenKind::Period {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_text}"),
-            range: end_tok.range.start..period_tok.range.end,
-        });
-        let recover = recover_skip_after_enhancement_end(source, tokens, end_idx, kind);
-        return (children, recover, period_tok.range.end);
-    }
-
-    children.push(token_leaf(b, period_tok));
-    (children, period_idx + 1, period_tok.range.end)
-}
-
-fn try_parse_block_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
+fn try_parse_block_stmt_from_cursor(
+    cursor: &mut Parser<'_, '_>,
     start_kw: &str,
     end_kw: &str,
     kind: SyntaxKind,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, start_kw) {
-        return None;
-    }
-    let (mut children, mut next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        errors,
-        &format!("syntax error: expected '.' after {start_kw} header"),
-    );
-    let (body, after_body) = parse_body_until_keywords(b, source, tokens, next, errors, &[end_kw]);
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        start_tok,
-        end_kw,
-        &format!("syntax error: expected {end_kw}"),
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(kind, start_tok.range.start..end_pos, &children);
-    Some((node, next_after))
+) -> PResult<NodeId> {
+    cursor.skip_trivia();
+    let fallback = cursor.current_range();
+    let period_after = format!("{start_kw} header");
+    let (_, mut children) = parse_raw_header_from_cursor(cursor, &period_after, &[end_kw])?;
+    children.extend(cursor.parse_stmt_list_until(&[end_kw]));
+    push_end_keyword_from_cursor(cursor, end_kw, &mut children)?;
+    Ok(cursor.branch_from_children(kind, &children, fallback))
 }
 
 fn test_block_start(
@@ -5164,95 +6109,29 @@ fn test_block_start(
     })
 }
 
-fn parse_test_block_end_keyword(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    start_tok: &Token,
-    end_parts: &[&str],
-    end_text: &str,
-    errors: &mut Vec<crate::ParseError>,
-) -> (Vec<NodeId>, usize, usize) {
-    let end_idx = skip_trivia(tokens, idx);
-    let Some(end_tok) = tokens.get(end_idx) else {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected {end_text}"),
-            range: start_tok.range.clone(),
-        });
-        return (Vec::new(), tokens.len(), start_tok.range.end);
-    };
-    let Some(end_parts_end) = match_hyphenated_keyword(source, tokens, end_idx, end_parts) else {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected {end_text}"),
-            range: start_tok.range.start..end_tok.range.end,
-        });
-        return (Vec::new(), end_idx + 1, end_tok.range.end);
-    };
-
-    let mut children = token_children(b, tokens, end_idx, end_parts_end);
-    let period_idx = skip_trivia(tokens, end_parts_end);
-    let Some(period_tok) = tokens.get(period_idx) else {
-        let end_pos = children
-            .last()
-            .copied()
-            .map(|node| b.span(node).end)
-            .unwrap_or(end_tok.range.end);
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_text}"),
-            range: end_tok.range.start..end_pos,
-        });
-        return (children, tokens.len(), end_pos);
-    };
-    if period_tok.kind != TokenKind::Period {
-        errors.push(crate::ParseError {
-            message: format!("syntax error: expected '.' after {end_text}"),
-            range: end_tok.range.start..period_tok.range.end,
-        });
-        return (children, period_idx + 1, period_tok.range.end);
-    }
-
-    children.push(token_leaf(b, period_tok));
-    (children, period_idx + 1, period_tok.range.end)
+pub(crate) fn try_parse_test_block_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    let (kind, end_parts, end_text, _) =
+        test_block_start(cursor.source(), cursor.tokens(), cursor.index())?;
+    Some(parse_test_block_stmt_result(
+        cursor, kind, end_parts, end_text,
+    ))
 }
 
-pub fn try_parse_test_block_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let start_tok = tokens.get(idx)?;
-    let (kind, end_parts, end_text, body_start_idx) = test_block_start(source, tokens, idx)?;
-    let (mut children, next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        body_start_idx,
-        errors,
-        "syntax error: expected '.' after test block header",
-    );
-    let mut after_body = next;
-    loop {
-        let boundary_idx = skip_trivia(tokens, after_body);
-        if match_hyphenated_keyword(source, tokens, boundary_idx, end_parts).is_some()
-            || after_body >= tokens.len()
-            || tokens[after_body].kind == TokenKind::Eof
-        {
-            break;
-        }
-        let (node, next) = crate::parse_file_level_item(b, source, tokens, after_body, errors);
-        children.push(node);
-        after_body = crate::block_helpers::ensure_forward_progress(tokens, after_body, next);
-    }
-    let (end_children, next_after, end_pos) = parse_test_block_end_keyword(
-        b, source, tokens, after_body, start_tok, end_parts, end_text, errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(kind, start_tok.range.start..end_pos, &children);
-    Some((node, next_after))
+fn parse_test_block_stmt_result(
+    cursor: &mut Parser<'_, '_>,
+    kind: SyntaxKind,
+    end_parts: &[&str],
+    end_text: &str,
+) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let (_, mut children) = parse_raw_header_from_cursor(cursor, "test block header", &[])?;
+    children.extend(cursor.parse_stmt_list_until_with(&[], |cursor| {
+        cursor_at_hyphenated_keyword(cursor, end_parts)
+    }));
+    push_hyphenated_end_from_cursor(cursor, end_parts, end_text, &mut children)?;
+    Ok(cursor.branch_from_children(kind, &children, fallback))
 }
 
 fn form_header_section_keyword(source: &str, token: &Token) -> bool {
@@ -6102,13 +6981,7 @@ fn find_sqlscript_island_end(source: &str, tokens: &[Token], mut idx: usize) -> 
             return idx;
         }
         if is_keyword(source, token, "endmethod") {
-            let j = skip_trivia(tokens, idx + 1);
-            if tokens
-                .get(j)
-                .is_some_and(|next| next.kind == TokenKind::Period)
-            {
-                return idx;
-            }
+            return idx;
         }
         idx += 1;
     }
@@ -6135,72 +7008,51 @@ fn parse_sqlscript_island_until_endmethod(
     (vec![island], end)
 }
 
-pub fn try_parse_exec_sql_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let exec_tok = tokens.get(idx)?;
-    if !is_keyword(source, exec_tok, "exec") {
+pub(crate) fn try_parse_exec_sql_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("EXEC") {
         return None;
     }
-    let sql_idx = skip_trivia(tokens, idx + 1);
-    if !tokens
+    let sql_idx = skip_trivia(cursor.tokens(), cursor.index() + 1);
+    if !cursor
+        .tokens()
         .get(sql_idx)
-        .is_some_and(|token| is_keyword(source, token, "sql"))
+        .is_some_and(|token| is_keyword(cursor.source(), token, "sql"))
     {
         return None;
     }
 
-    let (mut children, body_start) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        sql_idx + 1,
-        errors,
-        "syntax error: expected '.' after EXEC SQL",
-    );
+    Some(parse_exec_sql_stmt_result(cursor))
+}
+
+fn parse_exec_sql_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let (_, mut children) = parse_raw_header_from_cursor(cursor, "EXEC SQL", &["ENDEXEC"])?;
+    let body_start = cursor.index();
     let mut endexec_idx = body_start;
-    while tokens
-        .get(endexec_idx)
-        .is_some_and(|token| token.kind != TokenKind::Eof && !is_keyword(source, token, "endexec"))
-    {
+    while cursor.tokens().get(endexec_idx).is_some_and(|token| {
+        token.kind != TokenKind::Eof && !is_keyword(cursor.source(), token, "endexec")
+    }) {
         endexec_idx += 1;
     }
     if body_start < endexec_idx {
-        let body = token_children(b, tokens, body_start, endexec_idx);
-        children.push(b.branch(
-            SyntaxKind::NativeSqlIsland,
-            tokens[body_start].range.start..tokens[endexec_idx - 1].range.end,
-            &body,
-        ));
+        let tokens = cursor.tokens();
+        let island = {
+            let b = cursor.builder();
+            let body = token_children(b, tokens, body_start, endexec_idx);
+            b.branch(
+                SyntaxKind::NativeSqlIsland,
+                tokens[body_start].range.start..tokens[endexec_idx - 1].range.end,
+                &body,
+            )
+        };
+        children.push(island);
     }
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        endexec_idx,
-        exec_tok,
-        "ENDEXEC",
-        "syntax error: expected ENDEXEC",
-        errors,
-    );
-    children.extend(end_children);
-    let end = children
-        .last()
-        .copied()
-        .map(|id| b.span(id).end)
-        .unwrap_or(exec_tok.range.end)
-        .max(end_pos);
-    let node = b.branch(
-        SyntaxKind::ExecSqlStmt,
-        exec_tok.range.start..end,
-        &children,
-    );
-    Some((node, next_after))
+    cursor.set_position(endexec_idx, endexec_idx.checked_sub(1));
+    push_end_keyword_from_cursor(cursor, "ENDEXEC", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::ExecSqlStmt, &children, fallback))
 }
 
 fn event_block_header_end(source: &str, tokens: &[Token], idx: usize) -> Option<usize> {
@@ -6273,31 +7125,22 @@ fn find_macro_end_keyword(source: &str, tokens: &[Token], mut idx: usize) -> Opt
     None
 }
 
-pub fn try_parse_report_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let tok = tokens.get(idx)?;
-    if !is_keyword(source, tok, "report") && !is_keyword(source, tok, "program") {
+pub(crate) fn try_parse_report_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("REPORT") && !cursor.at_keyword("PROGRAM") {
         return None;
     }
-    parse_simple_keyword_stmt(
-        b,
-        source,
-        tokens,
-        idx,
-        SyntaxKind::ReportStmt,
-        if is_keyword(source, tok, "program") {
-            "program"
-        } else {
-            "report"
-        },
-        errors,
-        "syntax error: expected '.' after REPORT/PROGRAM",
-    )
+    Some(parse_report_stmt_result(cursor))
+}
+
+fn parse_report_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = vec![cursor.bump().expect("REPORT/PROGRAM token exists")];
+    push_until_stmt_boundary(cursor, &[], &mut children);
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "REPORT/PROGRAM")?);
+    Ok(cursor.branch_from_children(SyntaxKind::ReportStmt, &children, fallback))
 }
 
 fn source_maintenance_clause_keyword_index(
@@ -6397,7 +7240,7 @@ pub fn try_parse_read_report_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -6491,7 +7334,7 @@ pub fn try_parse_insert_report_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -6588,7 +7431,7 @@ pub fn try_parse_delete_report_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -6642,7 +7485,7 @@ pub fn try_parse_syntax_check_stmt(
     let syntax_tok = tokens.get(idx)?;
     let lead_end = match_hyphenated_keyword(source, tokens, idx, &["syntax", "check"])?;
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -6839,42 +7682,53 @@ pub fn try_parse_syntax_check_stmt(
     ))
 }
 
-pub fn try_parse_include_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let tok = tokens.get(idx)?;
-    if !is_keyword(source, tok, "include") {
+pub(crate) fn try_parse_include_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("INCLUDE") {
         return None;
     }
-    if tokens.get(idx + 1).is_some_and(|next| {
-        is_keyword(source, next, "type") || is_keyword(source, next, "structure")
+    let next = skip_trivia(cursor.tokens(), cursor.index() + 1);
+    if cursor.tokens().get(next).is_some_and(|token| {
+        is_keyword(cursor.source(), token, "type")
+            || is_keyword(cursor.source(), token, "structure")
     }) {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        tok,
-        "syntax error: expected '.' after INCLUDE",
-        errors,
-        next_after_unterminated_scan,
-        |b, period_i, _errors| {
-            let children = build_include_stmt_children(b, tokens, idx, period_i);
-            let node = b.branch(
-                SyntaxKind::IncludeStmt,
-                tok.range.start..tokens[period_i].range.end,
-                &children,
-            );
-            (node, period_i + 1)
-        },
-    ))
+
+    Some(parse_include_stmt_result(cursor))
+}
+
+fn parse_include_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let mut children = vec![cursor.expect_keyword_result("INCLUDE")?];
+    let mut expect_name = true;
+    while !cursor.at_stmt_boundary(&[]) {
+        let Some(token) = cursor.current() else {
+            break;
+        };
+        if expect_name && token.kind == TokenKind::Ident {
+            let leaf = cursor.bump().expect("current token exists");
+            let range = cursor.span(leaf);
+            let name = cursor
+                .builder()
+                .branch(SyntaxKind::IncludeName, range, &[leaf]);
+            children.push(name);
+            expect_name = false;
+            continue;
+        }
+        let kind = token.kind;
+        let node = cursor.bump().expect("current token exists");
+        if matches!(kind, TokenKind::Colon | TokenKind::Comma) {
+            expect_name = true;
+        } else if kind != TokenKind::Comment {
+            expect_name = false;
+        }
+        children.push(node);
+    }
+    children.push(cursor.expect_token_after_result(TokenKind::Period, "INCLUDE")?);
+    Ok(cursor.branch_from_children(SyntaxKind::IncludeStmt, &children, fallback))
 }
 
 pub fn try_parse_write_stmt(
@@ -6888,7 +7742,7 @@ pub fn try_parse_write_stmt(
     if !is_keyword(source, write_tok, "write") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -6947,7 +7801,7 @@ pub fn try_parse_concatenate_stmt(
     if !is_keyword(source, concat_tok, "concatenate") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -7050,7 +7904,7 @@ pub fn try_parse_split_stmt(
     if !is_keyword(source, split_tok, "split") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -7154,7 +8008,7 @@ pub fn try_parse_condense_stmt(
     if !is_keyword(source, condense_tok, "condense") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -7256,17 +8110,32 @@ pub fn try_parse_raise_stmt(
             .map(|_| idx + 2)
     }
 
-    Some(parse_stmt_with_period_scan(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        first,
-        "syntax error: expected '.' after RAISE statement",
-        errors,
-        next_after_unterminated_scan,
-        |b, period_i, _errors| {
+    parse_with_cursor(b, source, tokens, idx, errors, |cursor| {
+        let idx = cursor.index();
+        let source = cursor.source();
+        let tokens = cursor.tokens();
+        let first = tokens.get(idx)?;
+        if !is_keyword(source, first, "raise") {
+            return None;
+        }
+
+        cursor.set_position(idx + 1, Some(idx));
+        advance_to_surface_stmt_boundary(cursor, |source, tokens, at| {
+            line_start_named_arg_after_section(source, tokens, idx, at)
+        });
+        let period_i = cursor.index();
+        let Some(period) = cursor.allow_token(TokenKind::Period) else {
+            let mut children = token_children(cursor.builder(), tokens, idx, period_i);
+            push_period_or_error(cursor, "RAISE statement", &[], &mut children);
+            return Some(cursor.branch_from_children(
+                SyntaxKind::Error,
+                &children,
+                first.range.clone(),
+            ));
+        };
+
+        let b = cursor.builder();
+        let node = {
             if let Some(target_start) = raise_event_prefix_end(source, tokens, idx) {
                 let arg_start = scan_until_clause(tokens, target_start, period_i, |tokens, at| {
                     named_argument_section_keyword(source, tokens, at)
@@ -7286,23 +8155,22 @@ pub fn try_parse_raise_stmt(
                         }
                     }
                 }
-                children.push(token_leaf(b, &tokens[period_i]));
-                let node = b.branch(
+                children.push(period);
+                return Some(b.branch(
                     SyntaxKind::RaiseEventStmt,
                     first.range.start..tokens[period_i].range.end,
                     &children,
-                );
-                return (node, period_i + 1);
+                ));
             }
 
             let Some(type_start) = raise_exception_type_prefix_end(source, tokens, idx) else {
-                let children = token_children(b, tokens, idx, period_i + 1);
-                let node = b.branch(
+                let mut children = token_children(b, tokens, idx, period_i);
+                children.push(period);
+                return Some(b.branch(
                     SyntaxKind::RaiseStmt,
                     first.range.start..tokens[period_i].range.end,
                     &children,
-                );
-                return (node, period_i + 1);
+                ));
             };
 
             let clause_starts = |tokens: &[Token], at: usize| {
@@ -7313,13 +8181,13 @@ pub fn try_parse_raise_stmt(
             };
             let type_end = scan_until_clause(tokens, type_start, period_i, clause_starts);
             if type_start >= type_end {
-                let children = token_children(b, tokens, idx, period_i + 1);
-                let node = b.branch(
+                let mut children = token_children(b, tokens, idx, period_i);
+                children.push(period);
+                return Some(b.branch(
                     SyntaxKind::RaiseStmt,
                     first.range.start..tokens[period_i].range.end,
                     &children,
-                );
-                return (node, period_i + 1);
+                ));
             }
 
             let mut children = Vec::with_capacity(period_i - idx + 1);
@@ -7348,15 +8216,15 @@ pub fn try_parse_raise_stmt(
                     }
                 }
             }
-            children.push(token_leaf(b, &tokens[period_i]));
-            let node = b.branch(
+            children.push(period);
+            b.branch(
                 SyntaxKind::RaiseStmt,
                 first.range.start..tokens[period_i].range.end,
                 &children,
-            );
-            (node, period_i + 1)
-        },
-    ))
+            )
+        };
+        Some(node)
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -7740,17 +8608,30 @@ pub fn try_parse_message_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        message_tok,
-        "syntax error: expected '.' after MESSAGE statement",
-        errors,
-        next_after_unterminated_scan,
-        |b, period_i, _errors| {
+    parse_with_cursor(b, source, tokens, idx, errors, |cursor| {
+        let idx = cursor.index();
+        let source = cursor.source();
+        let tokens = cursor.tokens();
+        let message_tok = tokens.get(idx)?;
+        if !is_keyword(source, message_tok, "message") {
+            return None;
+        }
+
+        cursor.set_position(idx + 1, Some(idx));
+        advance_to_surface_stmt_boundary(cursor, |_, _, _| false);
+        let period_i = cursor.index();
+        let Some(period) = cursor.allow_token(TokenKind::Period) else {
+            let mut children = token_children(cursor.builder(), tokens, idx, period_i);
+            push_period_or_error(cursor, "MESSAGE statement", &[], &mut children);
+            return Some(cursor.branch_from_children(
+                SyntaxKind::Error,
+                &children,
+                message_tok.range.clone(),
+            ));
+        };
+
+        let b = cursor.builder();
+        let node = {
             let mut children = vec![token_leaf(b, message_tok)];
             let clause_starts = |tokens: &[Token], at: usize| {
                 message_clause_start_kind(source, tokens, at).is_some()
@@ -7876,15 +8757,15 @@ pub fn try_parse_message_stmt(
                 }
             }
 
-            children.push(token_leaf(b, &tokens[period_i]));
-            let node = b.branch(
+            children.push(period);
+            b.branch(
                 SyntaxKind::MessageStmt,
                 message_tok.range.start..tokens[period_i].range.end,
                 &children,
-            );
-            (node, period_i + 1)
-        },
-    ))
+            )
+        };
+        Some(node)
+    })
 }
 
 pub fn try_parse_submit_stmt(
@@ -7898,17 +8779,30 @@ pub fn try_parse_submit_stmt(
     if !is_keyword(source, submit_tok, "submit") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        submit_tok,
-        "syntax error: expected '.' after SUBMIT",
-        errors,
-        next_after_unterminated_scan,
-        |b, period_i, _errors| {
+    parse_with_cursor(b, source, tokens, idx, errors, |cursor_parser| {
+        let idx = cursor_parser.index();
+        let source = cursor_parser.source();
+        let tokens = cursor_parser.tokens();
+        let submit_tok = tokens.get(idx)?;
+        if !is_keyword(source, submit_tok, "submit") {
+            return None;
+        }
+
+        cursor_parser.set_position(idx + 1, Some(idx));
+        advance_to_surface_stmt_boundary(cursor_parser, |_, _, _| false);
+        let period_i = cursor_parser.index();
+        let Some(period) = cursor_parser.allow_token(TokenKind::Period) else {
+            let mut children = token_children(cursor_parser.builder(), tokens, idx, period_i);
+            push_period_or_error(cursor_parser, "SUBMIT", &[], &mut children);
+            return Some(cursor_parser.branch_from_children(
+                SyntaxKind::Error,
+                &children,
+                submit_tok.range.clone(),
+            ));
+        };
+
+        let b = cursor_parser.builder();
+        let node = {
             let mut children = vec![token_leaf(b, submit_tok)];
             let mut cursor = idx + 1;
 
@@ -8597,34 +9491,15 @@ pub fn try_parse_submit_stmt(
                 cursor += 1;
             }
 
-            children.push(token_leaf(b, &tokens[period_i]));
-            let node = b.branch(
+            children.push(period);
+            b.branch(
                 SyntaxKind::SubmitStmt,
                 submit_tok.range.start..tokens[period_i].range.end,
                 &children,
-            );
-            (node, period_i + 1)
-        },
-    ))
-}
-
-pub fn try_parse_leave_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    parse_simple_keyword_stmt(
-        b,
-        source,
-        tokens,
-        idx,
-        SyntaxKind::LeaveStmt,
-        "leave",
-        errors,
-        "syntax error: expected '.' after LEAVE statement",
-    )
+            )
+        };
+        Some(node)
+    })
 }
 
 pub fn try_parse_selection_screen_stmt(
@@ -8636,7 +9511,7 @@ pub fn try_parse_selection_screen_stmt(
 ) -> Option<(NodeId, usize)> {
     let lead_end = match_hyphenated_keyword(source, tokens, idx, &["selection", "screen"])?;
     let start_tok = tokens.get(idx)?;
-    Some(parse_selection_screen_stmt_with_period_scan(
+    Some(parse_selection_screen_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -8657,25 +9532,6 @@ pub fn try_parse_selection_screen_stmt(
     ))
 }
 
-pub fn try_parse_endat_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    parse_simple_keyword_stmt(
-        b,
-        source,
-        tokens,
-        idx,
-        SyntaxKind::EndAtStmt,
-        "endat",
-        errors,
-        "syntax error: expected '.' after ENDAT",
-    )
-}
-
 pub fn try_parse_find_stmt(
     b: &mut SyntaxTreeBuilder,
     source: &str,
@@ -8687,7 +9543,7 @@ pub fn try_parse_find_stmt(
     if !is_keyword(source, find_tok, "find") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -8931,7 +9787,7 @@ pub fn try_parse_get_bit_stmt(
 ) -> Option<(NodeId, usize)> {
     let get_tok = tokens.get(idx)?;
     let lead_end = match_keyword_sequence(source, tokens, idx, &["get", "bit"])?;
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -9037,7 +9893,7 @@ pub fn try_parse_set_bit_stmt(
 ) -> Option<(NodeId, usize)> {
     let set_tok = tokens.get(idx)?;
     let lead_end = match_keyword_sequence(source, tokens, idx, &["set", "bit"])?;
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -9136,7 +9992,7 @@ pub fn try_parse_get_time_stamp_stmt(
     let get_tok = tokens.get(idx)?;
     let lead_end = match_keyword_sequence(source, tokens, idx, GET_TIME_STAMP_FIELD_LEAD)?;
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -9206,7 +10062,7 @@ pub fn try_parse_get_reference_stmt(
     let get_tok = tokens.get(idx)?;
     let lead_end = match_keyword_sequence(source, tokens, idx, GET_REFERENCE_OF_LEAD)?;
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -9283,28 +10139,49 @@ pub fn try_parse_call_like_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    let first = tokens.get(idx)?;
-    let (lead_kind, lead_end) = call_like_lead_kind(source, tokens, idx)?;
+    parse_with_cursor(b, source, tokens, idx, errors, |cursor| {
+        let idx = cursor.index();
+        let source = cursor.source();
+        let tokens = cursor.tokens();
+        let first = tokens.get(idx)?;
+        let (lead_kind, lead_end) = call_like_lead_kind(source, tokens, idx)?;
 
-    if let Some(period_i) = scan_until_top_level_period(tokens, lead_end) {
+        cursor.set_position(lead_end, lead_end.checked_sub(1));
+        advance_to_surface_stmt_boundary(cursor, |source, tokens, at| {
+            call_like_line_start_continues(source, tokens, idx, at, lead_kind)
+        });
+        let period_i = cursor.index();
+        let Some(period) = cursor.allow_token(TokenKind::Period) else {
+            let mut children = token_children(cursor.builder(), tokens, idx, period_i);
+            push_period_or_custom_error(
+                cursor,
+                "syntax error: expected '.' to end call-like statement",
+                &[],
+                &mut children,
+            );
+            return Some(cursor.branch_from_children(
+                SyntaxKind::Error,
+                &children,
+                first.range.clone(),
+            ));
+        };
+
         if lead_kind == CallLikeLeadKind::CallMethod
             && !validate_call_method_inline_args_spacing(source, tokens, idx, period_i)
         {
-            errors.push(crate::ParseError {
-                message: "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
+            cursor.push_error(
+                "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
                     .to_string(),
-                range: first.range.start..tokens[period_i].range.end,
-            });
-            let mut children = Vec::with_capacity(period_i - idx + 1);
-            for t in &tokens[idx..=period_i] {
-                children.push(token_leaf(b, t));
-            }
-            let node = b.branch(
+                first.range.start..tokens[period_i].range.end,
+            );
+            let mut children = token_children(cursor.builder(), tokens, idx, period_i);
+            children.push(period);
+            let node = cursor.builder().branch(
                 SyntaxKind::Error,
                 first.range.start..tokens[period_i].range.end,
                 &children,
             );
-            return Some((node, period_i + 1));
+            return Some(node);
         }
         let kind = match lead_kind {
             CallLikeLeadKind::CreateObject => SyntaxKind::CreateObjectStmt,
@@ -9317,172 +10194,198 @@ pub fn try_parse_call_like_stmt(
         let mut children = Vec::with_capacity(period_i - idx + 1);
         match lead_kind {
             CallLikeLeadKind::CallMethod => {
-                children.push(token_leaf(b, &tokens[idx]));
-                children.push(token_leaf(b, &tokens[idx + 1]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx + 1]));
                 let callee_end = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
                     call_method_clause_starts(source, tokens, at)
                 });
-                let callee = parse_arithmetic_expr(b, source, &tokens[lead_end..callee_end], None);
-                children.push(b.branch(
+                let callee = parse_arithmetic_expr(
+                    cursor.builder(),
+                    source,
+                    &tokens[lead_end..callee_end],
+                    None,
+                );
+                children.push(cursor.builder().branch(
                     SyntaxKind::CallMethodTarget,
                     tokens[lead_end].range.start..tokens[callee_end - 1].range.end,
                     &[callee],
                 ));
-                if let Some(arg_list) =
-                    build_call_argument_list_node(b, source, tokens, callee_end, period_i)
-                {
+                if let Some(arg_list) = build_call_argument_list_node(
+                    cursor.builder(),
+                    source,
+                    tokens,
+                    callee_end,
+                    period_i,
+                ) {
                     children.push(arg_list);
                 }
-                children.push(token_leaf(b, &tokens[period_i]));
+                children.push(period);
             }
             CallLikeLeadKind::CreateObject => {
-                children.push(token_leaf(b, &tokens[idx]));
-                children.push(token_leaf(b, &tokens[idx + 1]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx + 1]));
                 let clause_starts = |tokens: &[Token], at: usize| {
                     tokens.get(at).is_some_and(|token| {
                         is_keyword(source, token, "type")
                             || named_argument_section_keyword(source, tokens, at)
                     })
                 };
-                let mut cursor = lead_end;
-                let target_end = scan_until_clause(tokens, cursor, period_i, clause_starts);
-                push_expr_child(b, &mut children, source, tokens, cursor, target_end, None);
-                cursor = target_end;
-                if cursor < period_i
+                let mut i = lead_end;
+                let target_end = scan_until_clause(tokens, i, period_i, clause_starts);
+                push_expr_child(
+                    cursor.builder(),
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    target_end,
+                    None,
+                );
+                i = target_end;
+                if i < period_i
                     && tokens
-                        .get(cursor)
+                        .get(i)
                         .is_some_and(|token| is_keyword(source, token, "type"))
                 {
-                    children.push(token_leaf(b, &tokens[cursor]));
-                    cursor += 1;
-                    let type_end = scan_until_clause(tokens, cursor, period_i, clause_starts);
-                    if cursor < type_end {
-                        children.push(build_type_ref_node(b, source, &tokens[cursor..type_end]));
+                    children.push(token_leaf(cursor.builder(), &tokens[i]));
+                    i += 1;
+                    let type_end = scan_until_clause(tokens, i, period_i, clause_starts);
+                    if i < type_end {
+                        children.push(build_type_ref_node(
+                            cursor.builder(),
+                            source,
+                            &tokens[i..type_end],
+                        ));
                     }
-                    cursor = type_end;
+                    i = type_end;
                 }
                 if let Some(arg_list) =
-                    build_call_argument_list_node(b, source, tokens, cursor, period_i)
+                    build_call_argument_list_node(cursor.builder(), source, tokens, i, period_i)
                 {
                     children.push(arg_list);
                 }
-                children.push(token_leaf(b, &tokens[period_i]));
+                children.push(period);
             }
             CallLikeLeadKind::CreateData => {
-                children.push(token_leaf(b, &tokens[idx]));
-                children.push(token_leaf(b, &tokens[idx + 1]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx + 1]));
                 let clause_starts = |tokens: &[Token], at: usize| {
                     tokens.get(at).is_some_and(|token| {
                         is_keyword(source, token, "type") || is_keyword(source, token, "like")
                     })
                 };
-                let mut cursor = lead_end;
-                let target_end = scan_until_clause(tokens, cursor, period_i, clause_starts);
-                push_expr_child(b, &mut children, source, tokens, cursor, target_end, None);
-                cursor = target_end;
-                if cursor < period_i
-                    && tokens.get(cursor).is_some_and(|token| {
+                let mut i = lead_end;
+                let target_end = scan_until_clause(tokens, i, period_i, clause_starts);
+                push_expr_child(
+                    cursor.builder(),
+                    &mut children,
+                    source,
+                    tokens,
+                    i,
+                    target_end,
+                    None,
+                );
+                i = target_end;
+                if i < period_i
+                    && tokens.get(i).is_some_and(|token| {
                         is_keyword(source, token, "type") || is_keyword(source, token, "like")
                     })
                 {
-                    children.push(token_leaf(b, &tokens[cursor]));
-                    cursor += 1;
-                    if cursor < period_i {
+                    children.push(token_leaf(cursor.builder(), &tokens[i]));
+                    i += 1;
+                    if i < period_i {
                         if tokens
-                            .get(cursor - 1)
+                            .get(i - 1)
                             .is_some_and(|token| is_keyword(source, token, "like"))
-                            || (tokens.get(cursor).map(|token| token.kind)
-                                == Some(TokenKind::LParen)
-                                && scan_until_clause(tokens, cursor + 1, period_i, |tokens, at| {
+                            || (tokens.get(i).map(|token| token.kind) == Some(TokenKind::LParen)
+                                && scan_until_clause(tokens, i + 1, period_i, |tokens, at| {
                                     tokens
                                         .get(at)
                                         .is_some_and(|token| token.kind == TokenKind::RParen)
                                 }) < period_i)
                         {
                             push_expr_child(
-                                b,
+                                cursor.builder(),
                                 &mut children,
                                 source,
                                 tokens,
-                                cursor,
+                                i,
                                 period_i,
-                                Some(&tokens[cursor - 1]),
+                                Some(&tokens[i - 1]),
                             );
                         } else {
                             children.push(build_type_ref_node(
-                                b,
+                                cursor.builder(),
                                 source,
-                                &tokens[cursor..period_i],
+                                &tokens[i..period_i],
                             ));
                         }
                     }
                 }
-                children.push(token_leaf(b, &tokens[period_i]));
+                children.push(period);
             }
             CallLikeLeadKind::SystemFunctionCall => {
-                children.push(token_leaf(b, &tokens[idx]));
+                children.push(token_leaf(cursor.builder(), &tokens[idx]));
                 let arg_start = scan_until_system_call_id_clause(
                     source,
                     tokens,
                     lead_end.saturating_add(1).min(period_i),
                     period_i,
                 );
-                push_expr_child(b, &mut children, source, tokens, lead_end, arg_start, None);
+                push_expr_child(
+                    cursor.builder(),
+                    &mut children,
+                    source,
+                    tokens,
+                    lead_end,
+                    arg_start,
+                    None,
+                );
                 if let Some(arg_list) = build_system_function_call_argument_list_node(
-                    b, source, tokens, arg_start, period_i,
+                    cursor.builder(),
+                    source,
+                    tokens,
+                    arg_start,
+                    period_i,
                 ) {
                     children.push(arg_list);
                 }
-                children.push(token_leaf(b, &tokens[period_i]));
+                children.push(period);
             }
             CallLikeLeadKind::CallStmt => {
                 if call_stmt_uses_token_children(source, tokens, idx) {
-                    children = token_children(b, tokens, idx, period_i + 1);
+                    children = token_children(cursor.builder(), tokens, idx, period_i);
+                    children.push(period);
                 } else {
-                    push_token_children(b, &mut children, tokens, idx, lead_end);
+                    push_token_children(cursor.builder(), &mut children, tokens, idx, lead_end);
                     let arg_start = scan_until_clause(tokens, lead_end, period_i, |tokens, at| {
                         tokens
                             .get(at)
                             .is_some_and(|_| named_argument_section_keyword(source, tokens, at))
                     });
                     for t in &tokens[lead_end..arg_start] {
-                        children.push(token_leaf(b, t));
+                        children.push(token_leaf(cursor.builder(), t));
                     }
-                    if let Some(arg_list) =
-                        build_call_argument_list_node(b, source, tokens, arg_start, period_i)
-                    {
+                    if let Some(arg_list) = build_call_argument_list_node(
+                        cursor.builder(),
+                        source,
+                        tokens,
+                        arg_start,
+                        period_i,
+                    ) {
                         children.push(arg_list);
                     }
-                    children.push(token_leaf(b, &tokens[period_i]));
+                    children.push(period);
                 }
             }
         }
-        let node = b.branch(
+        let node = cursor.builder().branch(
             kind,
             first.range.start..tokens[period_i].range.end,
             &children,
         );
-        return Some((node, period_i + 1));
-    }
-
-    let err_end = tokens
-        .iter()
-        .rfind(|t| t.kind != TokenKind::Eof)
-        .map(|t| t.range.end)
-        .unwrap_or(first.range.end);
-    errors.push(crate::ParseError {
-        message: "syntax error: expected '.' to end call-like statement".to_string(),
-        range: first.range.start..err_end,
-    });
-    let mut children = Vec::new();
-    for t in &tokens[idx..] {
-        if t.kind == TokenKind::Eof {
-            break;
-        }
-        children.push(token_leaf(b, t));
-    }
-    let node = b.branch(SyntaxKind::Error, first.range.start..err_end, &children);
-    Some((node, tokens.len()))
+        Some(node)
+    })
 }
 
 pub fn try_parse_read_table_stmt(
@@ -9501,40 +10404,58 @@ pub fn try_parse_read_table_stmt(
         return None;
     }
 
-    Some(match scan_read_table_stmt_period(tokens, source, idx + 2) {
-        StmtPeriodScan::Found(period_i) => {
-            let mut children = Vec::with_capacity(period_i - idx + 1);
-            children.push(token_leaf(b, read_tok));
-            children.push(token_leaf(b, &tokens[idx + 1]));
-            if tokens
-                .get(idx + 2)
-                .is_some_and(|token| token.kind == TokenKind::Colon)
-            {
-                children.push(token_leaf(b, &tokens[idx + 2]));
-                let mut cursor = idx + 3;
-                let mut parsed_entry = false;
-                while cursor < period_i {
-                    while cursor < period_i && tokens[cursor].kind == TokenKind::Comment {
-                        children.push(token_leaf(b, &tokens[cursor]));
-                        cursor += 1;
+    Some(
+        match cursor_stmt_period(b, source, tokens, idx + 2, errors, |source, tokens, at| {
+            read_table_line_start_continues(source, tokens, idx + 2, at)
+        }) {
+            StmtPeriodScan::Found(period_i) => {
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                children.push(token_leaf(b, read_tok));
+                children.push(token_leaf(b, &tokens[idx + 1]));
+                if tokens
+                    .get(idx + 2)
+                    .is_some_and(|token| token.kind == TokenKind::Colon)
+                {
+                    children.push(token_leaf(b, &tokens[idx + 2]));
+                    let mut cursor = idx + 3;
+                    let mut parsed_entry = false;
+                    while cursor < period_i {
+                        while cursor < period_i && tokens[cursor].kind == TokenKind::Comment {
+                            children.push(token_leaf(b, &tokens[cursor]));
+                            cursor += 1;
+                        }
+                        if cursor >= period_i {
+                            break;
+                        }
+                        let entry_end =
+                            find_top_level_token_kind(tokens, cursor, period_i, TokenKind::Comma)
+                                .unwrap_or(period_i);
+                        let entry_start = skip_trivia(tokens, cursor);
+                        if entry_start >= entry_end
+                            || !push_read_table_entry_children(
+                                b,
+                                &mut children,
+                                source,
+                                tokens,
+                                entry_start,
+                                entry_end,
+                            )
+                        {
+                            let raw = token_children(b, tokens, idx, period_i + 1);
+                            let node = b.branch(
+                                SyntaxKind::Error,
+                                read_tok.range.start..tokens[period_i].range.end,
+                                &raw,
+                            );
+                            return Some((node, period_i + 1));
+                        }
+                        parsed_entry = true;
+                        if entry_end < period_i && tokens[entry_end].kind == TokenKind::Comma {
+                            children.push(token_leaf(b, &tokens[entry_end]));
+                        }
+                        cursor = entry_end + 1;
                     }
-                    if cursor >= period_i {
-                        break;
-                    }
-                    let entry_end =
-                        find_top_level_token_kind(tokens, cursor, period_i, TokenKind::Comma)
-                            .unwrap_or(period_i);
-                    let entry_start = skip_trivia(tokens, cursor);
-                    if entry_start >= entry_end
-                        || !push_read_table_entry_children(
-                            b,
-                            &mut children,
-                            source,
-                            tokens,
-                            entry_start,
-                            entry_end,
-                        )
-                    {
+                    if !parsed_entry {
                         let raw = token_children(b, tokens, idx, period_i + 1);
                         let node = b.branch(
                             SyntaxKind::Error,
@@ -9543,13 +10464,14 @@ pub fn try_parse_read_table_stmt(
                         );
                         return Some((node, period_i + 1));
                     }
-                    parsed_entry = true;
-                    if entry_end < period_i && tokens[entry_end].kind == TokenKind::Comma {
-                        children.push(token_leaf(b, &tokens[entry_end]));
-                    }
-                    cursor = entry_end + 1;
-                }
-                if !parsed_entry {
+                } else if !push_read_table_entry_children(
+                    b,
+                    &mut children,
+                    source,
+                    tokens,
+                    idx + 2,
+                    period_i,
+                ) {
                     let raw = token_children(b, tokens, idx, period_i + 1);
                     let node = b.branch(
                         SyntaxKind::Error,
@@ -9558,41 +10480,26 @@ pub fn try_parse_read_table_stmt(
                     );
                     return Some((node, period_i + 1));
                 }
-            } else if !push_read_table_entry_children(
-                b,
-                &mut children,
-                source,
-                tokens,
-                idx + 2,
-                period_i,
-            ) {
-                let raw = token_children(b, tokens, idx, period_i + 1);
+                children.push(token_leaf(b, &tokens[period_i]));
                 let node = b.branch(
-                    SyntaxKind::Error,
+                    SyntaxKind::ReadTableStmt,
                     read_tok.range.start..tokens[period_i].range.end,
-                    &raw,
+                    &children,
                 );
-                return Some((node, period_i + 1));
+                (node, period_i + 1)
             }
-            children.push(token_leaf(b, &tokens[period_i]));
-            let node = b.branch(
-                SyntaxKind::ReadTableStmt,
-                read_tok.range.start..tokens[period_i].range.end,
-                &children,
-            );
-            (node, period_i + 1)
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, read_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after READ TABLE statement".to_string(),
-                range: read_tok.range.start..err_end,
-            });
-            let children = token_children(b, tokens, idx, end_exclusive);
-            let node = b.branch(SyntaxKind::Error, read_tok.range.start..err_end, &children);
-            (node, end_exclusive)
-        }
-    })
+            StmtPeriodScan::Unterminated { end_exclusive } => {
+                let err_end = unterminated_err_end(tokens, end_exclusive, read_tok.range.end);
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected '.' after READ TABLE statement".to_string(),
+                    range: read_tok.range.start..err_end,
+                });
+                let children = token_children(b, tokens, idx, end_exclusive);
+                let node = b.branch(SyntaxKind::Error, read_tok.range.start..err_end, &children);
+                (node, end_exclusive)
+            }
+        },
+    )
 }
 
 fn authority_check_stmt_clause_starts(source: &str, tokens: &[Token], idx: usize) -> bool {
@@ -9629,7 +10536,7 @@ pub fn try_parse_authority_check_stmt(
     let keyword_end = match_hyphenated_keyword(source, tokens, idx, &["authority", "check"])?;
     let authority_tok = tokens.get(idx)?;
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -9785,7 +10692,7 @@ pub fn try_parse_append_stmt(
     if !is_keyword(source, append_tok, "append") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -9937,7 +10844,9 @@ pub fn try_parse_insert_table_stmt(
     if !is_keyword(source, insert_tok, "insert") {
         return None;
     }
-    match scan_until_statement_period(tokens, source, idx + 1) {
+    match cursor_stmt_period(b, source, tokens, idx + 1, errors, |source, tokens, at| {
+        legacy_line_start_continues(source, tokens, idx + 1, at)
+    }) {
         StmtPeriodScan::Found(period_i) => {
             if tokens
                 .get(idx + 1)
@@ -10141,7 +11050,7 @@ pub fn try_parse_move_corresponding_stmt(
 ) -> Option<(NodeId, usize)> {
     let move_tok = tokens.get(idx)?;
     let keyword_end = match_hyphenated_keyword(source, tokens, idx, &["move", "corresponding"])?;
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -10309,7 +11218,7 @@ pub fn try_parse_move_stmt(
     if !is_keyword(source, move_tok, "move") {
         return None;
     }
-    Some(parse_chained_stmt_with_period_scan(
+    Some(parse_chained_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -10537,7 +11446,7 @@ pub fn try_parse_sort_stmt(
     if !is_keyword(source, sort_tok, "sort") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -10693,6 +11602,7 @@ pub fn try_parse_modify_stmt(
     if modify_line_stmt_lead(source, tokens, idx) {
         return Some(parse_raw_stmt_until_top_level_period(
             b,
+            source,
             tokens,
             idx,
             SyntaxKind::ModifyLineStmt,
@@ -10701,7 +11611,7 @@ pub fn try_parse_modify_stmt(
             errors,
         ));
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -10851,7 +11761,7 @@ pub fn try_parse_delete_stmt(
     if !is_keyword(source, delete_tok, "delete") {
         return None;
     }
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -11623,7 +12533,7 @@ pub fn try_parse_refresh_stmt(
         return None;
     }
 
-    Some(parse_chained_stmt_with_period_scan(
+    Some(parse_chained_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -11719,7 +12629,7 @@ pub fn try_parse_collect_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -11772,7 +12682,7 @@ pub fn try_parse_free_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -11840,7 +12750,7 @@ pub fn try_parse_unassign_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -11885,7 +12795,9 @@ pub fn try_parse_import_memory_stmt(
         return None;
     }
 
-    match scan_until_statement_period_with_named_args(tokens, source, idx + 1, true) {
+    match cursor_stmt_period(b, source, tokens, idx + 1, errors, |source, tokens, at| {
+        legacy_line_start_continues_with_named_args(source, tokens, idx + 1, at, true)
+    }) {
         StmtPeriodScan::Found(period_i) => {
             let (from_idx, operand_start, medium_kind) =
                 find_import_cluster_sequence_index(source, tokens, idx + 1, period_i)?;
@@ -11983,7 +12895,9 @@ pub fn try_parse_export_memory_stmt(
         return None;
     }
 
-    match scan_until_statement_period_with_named_args(tokens, source, idx + 1, true) {
+    match cursor_stmt_period(b, source, tokens, idx + 1, errors, |source, tokens, at| {
+        legacy_line_start_continues_with_named_args(source, tokens, idx + 1, at, true)
+    }) {
         StmtPeriodScan::Found(period_i) => {
             let (to_idx, operand_start, medium_kind) =
                 find_export_cluster_sequence_index(source, tokens, idx + 1, period_i)?;
@@ -12056,208 +12970,214 @@ pub fn try_parse_update_stmt(
         return None;
     }
 
-    Some(match scan_update_stmt_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => {
-            let mut children = Vec::with_capacity(period_i - idx + 1);
-            children.push(token_leaf(b, update_tok));
+    Some(
+        match cursor_stmt_period(b, source, tokens, idx + 1, errors, |source, tokens, at| {
+            update_line_start_continues(source, tokens, idx + 1, at)
+        }) {
+            StmtPeriodScan::Found(period_i) => {
+                let mut children = Vec::with_capacity(period_i - idx + 1);
+                children.push(token_leaf(b, update_tok));
 
-            let clause_start = find_top_level_clause_index(
-                source,
-                tokens,
-                idx + 1,
-                period_i,
-                &["set", "from", "where", "using", "connection", "client"],
-            )
-            .unwrap_or(period_i);
-            if let Some(target) = build_sql_data_source(b, source, tokens, idx + 1, clause_start) {
-                let range = tokens[idx + 1].range.start..tokens[clause_start - 1].range.end;
-                children.push(b.branch(SyntaxKind::UpdateTarget, range, &[target]));
-            }
+                let clause_start = find_top_level_clause_index(
+                    source,
+                    tokens,
+                    idx + 1,
+                    period_i,
+                    &["set", "from", "where", "using", "connection", "client"],
+                )
+                .unwrap_or(period_i);
+                if let Some(target) =
+                    build_sql_data_source(b, source, tokens, idx + 1, clause_start)
+                {
+                    let range = tokens[idx + 1].range.start..tokens[clause_start - 1].range.end;
+                    children.push(b.branch(SyntaxKind::UpdateTarget, range, &[target]));
+                }
 
-            let mut i = clause_start;
-            while i < period_i {
-                let token = &tokens[i];
-                if is_keyword(source, token, "set") {
-                    let clause_end = find_top_level_clause_index(
-                        source,
-                        tokens,
-                        i + 1,
-                        period_i,
-                        &["where", "using", "connection", "client", "from"],
-                    )
-                    .unwrap_or(period_i);
-                    let mut clause_children = vec![token_leaf(b, token)];
-                    let mut assign_start = i + 1;
-                    while assign_start < clause_end {
-                        while assign_start < clause_end
-                            && tokens[assign_start].kind == TokenKind::Comma
-                        {
-                            clause_children.push(token_leaf(b, &tokens[assign_start]));
-                            assign_start += 1;
-                        }
-                        if assign_start >= clause_end {
-                            break;
-                        }
-                        let assign_end = scan_update_set_assignment_end(
-                            source,
-                            tokens,
-                            assign_start,
-                            clause_end,
-                        );
-                        let Some(eq_idx) = find_top_level_token_kind(
-                            tokens,
-                            assign_start,
-                            assign_end,
-                            TokenKind::Eq,
-                        )
-                        .or_else(|| {
-                            find_top_level_token_kind(
-                                tokens,
-                                assign_start,
-                                assign_end,
-                                TokenKind::QuestionEq,
-                            )
-                        }) else {
-                            push_token_children(
-                                b,
-                                &mut clause_children,
-                                tokens,
-                                assign_start,
-                                assign_end,
-                            );
-                            assign_start = assign_end;
-                            continue;
-                        };
-                        let mut assignment_children = Vec::new();
-                        push_token_children(
-                            b,
-                            &mut assignment_children,
-                            tokens,
-                            assign_start,
-                            eq_idx + 1,
-                        );
-                        if eq_idx + 1 < assign_end {
-                            push_wrapped_expr_child(
-                                b,
-                                &mut assignment_children,
-                                source,
-                                tokens,
-                                eq_idx + 1,
-                                assign_end,
-                                Some(&tokens[eq_idx]),
-                                SyntaxKind::UpdateSetValueOperand,
-                            );
-                        }
-                        let assignment = b.branch(
-                            SyntaxKind::UpdateSetAssignment,
-                            tokens[assign_start].range.start..tokens[assign_end - 1].range.end,
-                            &assignment_children,
-                        );
-                        clause_children.push(assignment);
-                        assign_start = assign_end;
-                    }
-                    let clause = b.branch(
-                        SyntaxKind::UpdateSetClause,
-                        token.range.start..tokens[clause_end.saturating_sub(1)].range.end,
-                        &clause_children,
-                    );
-                    children.push(clause);
-                    i = clause_end;
-                    continue;
-                }
-                if is_keyword(source, token, "from") {
-                    children.push(token_leaf(b, token));
-                    let from_end = find_top_level_clause_index(
-                        source,
-                        tokens,
-                        i + 1,
-                        period_i,
-                        &["where", "using", "connection", "client"],
-                    )
-                    .unwrap_or(period_i);
-                    if i + 1 < from_end {
-                        push_wrapped_expr_child(
-                            b,
-                            &mut children,
-                            source,
-                            tokens,
-                            i + 1,
-                            from_end,
-                            Some(token),
-                            SyntaxKind::UpdateFromOperand,
-                        );
-                    }
-                    i = from_end;
-                    continue;
-                }
-                if is_keyword(source, token, "where") {
-                    let mut clause_children = vec![token_leaf(b, token)];
-                    let predicate_start = skip_trivia(tokens, i + 1);
-                    if predicate_start < period_i
-                        && tokens.get(predicate_start).map(|token| token.kind)
-                            == Some(TokenKind::LParen)
-                        && let Some(dynamic_end) = find_matching_delim(
-                            tokens,
-                            predicate_start,
-                            TokenKind::LParen,
-                            TokenKind::RParen,
-                        )
-                        && dynamic_end + 1 == period_i
-                        && let Some(dynamic_node) = build_token_branch(
-                            b,
-                            SyntaxKind::SqlDynamicWhere,
-                            tokens,
-                            predicate_start,
-                            dynamic_end + 1,
-                        )
-                    {
-                        clause_children.push(dynamic_node);
-                    } else if i + 1 < period_i {
-                        push_logical_expr_child(
-                            b,
-                            &mut clause_children,
+                let mut i = clause_start;
+                while i < period_i {
+                    let token = &tokens[i];
+                    if is_keyword(source, token, "set") {
+                        let clause_end = find_top_level_clause_index(
                             source,
                             tokens,
                             i + 1,
                             period_i,
-                            Some(token),
+                            &["where", "using", "connection", "client", "from"],
+                        )
+                        .unwrap_or(period_i);
+                        let mut clause_children = vec![token_leaf(b, token)];
+                        let mut assign_start = i + 1;
+                        while assign_start < clause_end {
+                            while assign_start < clause_end
+                                && tokens[assign_start].kind == TokenKind::Comma
+                            {
+                                clause_children.push(token_leaf(b, &tokens[assign_start]));
+                                assign_start += 1;
+                            }
+                            if assign_start >= clause_end {
+                                break;
+                            }
+                            let assign_end = scan_update_set_assignment_end(
+                                source,
+                                tokens,
+                                assign_start,
+                                clause_end,
+                            );
+                            let Some(eq_idx) = find_top_level_token_kind(
+                                tokens,
+                                assign_start,
+                                assign_end,
+                                TokenKind::Eq,
+                            )
+                            .or_else(|| {
+                                find_top_level_token_kind(
+                                    tokens,
+                                    assign_start,
+                                    assign_end,
+                                    TokenKind::QuestionEq,
+                                )
+                            }) else {
+                                push_token_children(
+                                    b,
+                                    &mut clause_children,
+                                    tokens,
+                                    assign_start,
+                                    assign_end,
+                                );
+                                assign_start = assign_end;
+                                continue;
+                            };
+                            let mut assignment_children = Vec::new();
+                            push_token_children(
+                                b,
+                                &mut assignment_children,
+                                tokens,
+                                assign_start,
+                                eq_idx + 1,
+                            );
+                            if eq_idx + 1 < assign_end {
+                                push_wrapped_expr_child(
+                                    b,
+                                    &mut assignment_children,
+                                    source,
+                                    tokens,
+                                    eq_idx + 1,
+                                    assign_end,
+                                    Some(&tokens[eq_idx]),
+                                    SyntaxKind::UpdateSetValueOperand,
+                                );
+                            }
+                            let assignment = b.branch(
+                                SyntaxKind::UpdateSetAssignment,
+                                tokens[assign_start].range.start..tokens[assign_end - 1].range.end,
+                                &assignment_children,
+                            );
+                            clause_children.push(assignment);
+                            assign_start = assign_end;
+                        }
+                        let clause = b.branch(
+                            SyntaxKind::UpdateSetClause,
+                            token.range.start..tokens[clause_end.saturating_sub(1)].range.end,
+                            &clause_children,
                         );
+                        children.push(clause);
+                        i = clause_end;
+                        continue;
                     }
-                    let clause = b.branch(
-                        SyntaxKind::UpdateWhereClause,
-                        token.range.start..tokens[period_i - 1].range.end,
-                        &clause_children,
-                    );
-                    children.push(clause);
-                    i = period_i;
-                    continue;
+                    if is_keyword(source, token, "from") {
+                        children.push(token_leaf(b, token));
+                        let from_end = find_top_level_clause_index(
+                            source,
+                            tokens,
+                            i + 1,
+                            period_i,
+                            &["where", "using", "connection", "client"],
+                        )
+                        .unwrap_or(period_i);
+                        if i + 1 < from_end {
+                            push_wrapped_expr_child(
+                                b,
+                                &mut children,
+                                source,
+                                tokens,
+                                i + 1,
+                                from_end,
+                                Some(token),
+                                SyntaxKind::UpdateFromOperand,
+                            );
+                        }
+                        i = from_end;
+                        continue;
+                    }
+                    if is_keyword(source, token, "where") {
+                        let mut clause_children = vec![token_leaf(b, token)];
+                        let predicate_start = skip_trivia(tokens, i + 1);
+                        if predicate_start < period_i
+                            && tokens.get(predicate_start).map(|token| token.kind)
+                                == Some(TokenKind::LParen)
+                            && let Some(dynamic_end) = find_matching_delim(
+                                tokens,
+                                predicate_start,
+                                TokenKind::LParen,
+                                TokenKind::RParen,
+                            )
+                            && dynamic_end + 1 == period_i
+                            && let Some(dynamic_node) = build_token_branch(
+                                b,
+                                SyntaxKind::SqlDynamicWhere,
+                                tokens,
+                                predicate_start,
+                                dynamic_end + 1,
+                            )
+                        {
+                            clause_children.push(dynamic_node);
+                        } else if i + 1 < period_i {
+                            push_logical_expr_child(
+                                b,
+                                &mut clause_children,
+                                source,
+                                tokens,
+                                i + 1,
+                                period_i,
+                                Some(token),
+                            );
+                        }
+                        let clause = b.branch(
+                            SyntaxKind::UpdateWhereClause,
+                            token.range.start..tokens[period_i - 1].range.end,
+                            &clause_children,
+                        );
+                        children.push(clause);
+                        i = period_i;
+                        continue;
+                    }
+                    children.push(token_leaf(b, token));
+                    i += 1;
                 }
-                children.push(token_leaf(b, token));
-                i += 1;
+                children.push(token_leaf(b, &tokens[period_i]));
+                let node = b.branch(
+                    SyntaxKind::UpdateStmt,
+                    update_tok.range.start..tokens[period_i].range.end,
+                    &children,
+                );
+                (node, period_i + 1)
             }
-            children.push(token_leaf(b, &tokens[period_i]));
-            let node = b.branch(
-                SyntaxKind::UpdateStmt,
-                update_tok.range.start..tokens[period_i].range.end,
-                &children,
-            );
-            (node, period_i + 1)
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, update_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after UPDATE statement".to_string(),
-                range: update_tok.range.start..err_end,
-            });
-            let children = token_children(b, tokens, idx, end_exclusive);
-            let node = b.branch(
-                SyntaxKind::Error,
-                update_tok.range.start..err_end,
-                &children,
-            );
-            (node, next_after_unterminated_scan(tokens, end_exclusive))
-        }
-    })
+            StmtPeriodScan::Unterminated { end_exclusive } => {
+                let err_end = unterminated_err_end(tokens, end_exclusive, update_tok.range.end);
+                errors.push(crate::ParseError {
+                    message: "syntax error: expected '.' after UPDATE statement".to_string(),
+                    range: update_tok.range.start..err_end,
+                });
+                let children = token_children(b, tokens, idx, end_exclusive);
+                let node = b.branch(
+                    SyntaxKind::Error,
+                    update_tok.range.start..err_end,
+                    &children,
+                );
+                (node, next_after_unterminated_scan(tokens, end_exclusive))
+            }
+        },
+    )
 }
 
 pub fn try_parse_assign_keyword_stmt(
@@ -12272,7 +13192,7 @@ pub fn try_parse_assign_keyword_stmt(
         return None;
     }
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -12434,648 +13354,364 @@ pub fn try_parse_assign_keyword_stmt(
     ))
 }
 
-pub fn try_parse_event_block(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let start_tok = tokens.get(idx)?;
-    let body_start_idx = event_block_header_end(source, tokens, idx)?;
-
-    let (mut children, mut next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        body_start_idx,
-        errors,
-        "syntax error: expected '.' after event block header",
-    );
-    let (body, after_body) = parse_body_until_keywords(
-        b,
-        source,
-        tokens,
-        next,
-        errors,
-        EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS,
-    );
-    children.extend(body);
-    next = after_body;
-    let end = children
-        .last()
-        .copied()
-        .map(|id| b.span(id).end)
-        .unwrap_or(start_tok.range.end);
-    let node = b.branch(
-        SyntaxKind::EventBlock,
-        start_tok.range.start..end,
-        &children,
-    );
-    Some((node, next))
+pub(crate) fn try_parse_event_block_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    event_block_header_end(cursor.source(), cursor.tokens(), cursor.index())?;
+    Some(parse_event_block_result(cursor))
 }
 
-pub fn try_parse_macro_def(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "define") {
+fn parse_event_block_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let (_, mut children) = parse_raw_header_from_cursor(
+        cursor,
+        "event block header",
+        EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS,
+    )?;
+    children.extend(cursor.parse_stmt_list_until(EVENT_BLOCK_BODY_BOUNDARY_KEYWORDS));
+    Ok(cursor.branch_from_children(SyntaxKind::EventBlock, &children, fallback))
+}
+
+pub(crate) fn try_parse_macro_def_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("DEFINE") {
         return None;
     }
+    Some(parse_macro_def_result(cursor))
+}
 
-    let (mut children, next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        errors,
-        "syntax error: expected '.' after DEFINE header",
-    );
+fn parse_macro_def_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let (_, mut children) = parse_raw_header_from_cursor(cursor, "DEFINE header", &[])?;
 
-    let Some(end_idx) = find_macro_end_keyword(source, tokens, next) else {
-        let eof_idx = tokens
+    let body_start = cursor.index();
+    let Some(end_idx) = find_macro_end_keyword(cursor.source(), cursor.tokens(), body_start) else {
+        let eof_idx = cursor
+            .tokens()
             .iter()
             .position(|token| token.kind == TokenKind::Eof)
-            .unwrap_or(tokens.len());
-        let err_end = unterminated_err_end(tokens, eof_idx, start_tok.range.end);
-        errors.push(crate::ParseError {
-            message: "syntax error: expected END-OF-DEFINITION".to_string(),
-            range: start_tok.range.start..err_end,
-        });
-        children.extend(token_children(b, tokens, next, eof_idx));
-        let node = b.branch(
-            SyntaxKind::MacroDef,
-            start_tok.range.start..err_end,
-            &children,
+            .unwrap_or(cursor.tokens().len());
+        let err_end = unterminated_err_end(cursor.tokens(), eof_idx, fallback.end);
+        cursor.push_error(
+            "syntax error: expected END-OF-DEFINITION".to_string(),
+            fallback.start..err_end,
         );
-        return Some((node, next_after_unterminated_scan(tokens, eof_idx)));
-    };
-
-    children.extend(token_children(b, tokens, next, end_idx));
-    let end_parts_end = macro_end_keyword_end(source, tokens, end_idx).unwrap_or(end_idx + 1);
-    let period_idx = skip_trivia(tokens, end_parts_end);
-    if let Some(period_tok) = tokens.get(period_idx)
-        && period_tok.kind == TokenKind::Period
-    {
-        children.extend(token_children(b, tokens, end_idx, period_idx + 1));
-        let node = b.branch(
+        let tokens = cursor.tokens();
+        let body = {
+            let b = cursor.builder();
+            token_children(b, tokens, body_start, eof_idx)
+        };
+        children.extend(body);
+        let next = next_after_unterminated_scan(cursor.tokens(), eof_idx);
+        cursor.set_position(next, eof_idx.checked_sub(1));
+        return Ok(cursor.branch_from_children(
             SyntaxKind::MacroDef,
-            start_tok.range.start..period_tok.range.end,
             &children,
-        );
-        return Some((node, period_idx + 1));
-    }
-
-    let end_tok = &tokens[end_parts_end.saturating_sub(1)];
-    let err_end = tokens
-        .get(period_idx)
-        .map(|token| token.range.end)
-        .unwrap_or(end_tok.range.end);
-    errors.push(crate::ParseError {
-        message: "syntax error: expected '.' after END-OF-DEFINITION".to_string(),
-        range: end_tok.range.start..err_end,
-    });
-    children.extend(token_children(b, tokens, end_idx, end_parts_end));
-    let node = b.branch(
-        SyntaxKind::MacroDef,
-        start_tok.range.start..err_end,
-        &children,
-    );
-    let next = if tokens.get(period_idx).map(|token| token.kind) == Some(TokenKind::Eof) {
-        tokens.len()
-    } else {
-        end_parts_end
+            fallback.start..err_end,
+        ));
     };
-    Some((node, next))
-}
 
-pub fn try_parse_form_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "form") {
-        return None;
-    }
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => (
-            build_form_header_children(b, source, tokens, idx, period_i),
-            period_i + 1,
-        ),
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after form header".to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                start_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
+    let tokens = cursor.tokens();
+    let body = {
+        let b = cursor.builder();
+        token_children(b, tokens, body_start, end_idx)
     };
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDFORM"]);
     children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        start_tok,
-        "ENDFORM",
-        "syntax error: expected ENDFORM",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::FormDecl,
-        start_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+    cursor.set_position(end_idx, end_idx.checked_sub(1));
+    push_hyphenated_end_from_cursor(
+        cursor,
+        MACRO_END_OF_DEFINITION,
+        "END-OF-DEFINITION",
+        &mut children,
+    )?;
+    Ok(cursor.branch_from_children(SyntaxKind::MacroDef, &children, fallback))
 }
 
-pub fn try_parse_module_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    if starts_hyphenated_keyword(tokens, idx) {
+pub(crate) fn try_parse_form_decl_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("FORM") {
         return None;
     }
-    try_parse_block_stmt(
-        b,
-        source,
-        tokens,
-        idx,
+    Some(parse_form_decl_result(cursor))
+}
+
+fn parse_form_decl_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let idx = cursor.index();
+    let fallback = cursor.current_range();
+    let (period_i, _) = parse_raw_header_with_continuations(
+        cursor,
+        "form header",
+        &["ENDFORM"],
+        FORM_HEADER_CONTINUATION_KEYWORDS,
+    )?;
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    let b = cursor.builder();
+    let mut children = build_form_header_children(b, source, tokens, idx, period_i);
+    children.extend(cursor.parse_stmt_list_until(&["ENDFORM"]));
+    push_end_keyword_from_cursor(cursor, "ENDFORM", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::FormDecl, &children, fallback))
+}
+
+pub(crate) fn try_parse_module_decl_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("MODULE") || starts_hyphenated_keyword(cursor.tokens(), cursor.index()) {
+        return None;
+    }
+    Some(try_parse_block_stmt_from_cursor(
+        cursor,
         "module",
         "ENDMODULE",
         SyntaxKind::ModuleDecl,
-        errors,
-    )
-}
-
-pub fn try_parse_enhancement_point_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let lead_end = match_hyphenated_keyword(source, tokens, idx, &["enhancement", "point"])?;
-    let start_tok = tokens.get(idx)?;
-    Some(parse_stmt_with_period_scan(
-        b,
-        source,
-        tokens,
-        idx,
-        lead_end,
-        start_tok,
-        "syntax error: expected '.' after ENHANCEMENT-POINT statement",
-        errors,
-        next_after_unterminated_scan,
-        |b, period_i, _errors| {
-            let children = token_children(b, tokens, idx, period_i + 1);
-            let node = b.branch(
-                SyntaxKind::EnhancementPointStmt,
-                start_tok.range.start..tokens[period_i].range.end,
-                &children,
-            );
-            (node, period_i + 1)
-        },
     ))
 }
 
-pub fn try_parse_enhancement_section_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let lead_end = match_hyphenated_keyword(source, tokens, idx, &["enhancement", "section"])?;
-    let start_tok = tokens.get(idx)?;
-    let (mut children, next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        lead_end,
-        errors,
-        "syntax error: expected '.' after ENHANCEMENT-SECTION header",
-    );
-    let (body, after_body) = parse_body_until_enhancement_end(
-        b,
-        source,
-        tokens,
-        next,
-        errors,
-        EnhancementEndKind::Section,
-    );
-    children.extend(body);
-    let (end_children, next_after, end_pos) = parse_enhancement_end_keyword(
-        b,
-        source,
-        tokens,
-        after_body,
-        start_tok,
-        EnhancementEndKind::Section,
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::EnhancementSectionStmt,
-        start_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+pub(crate) fn try_parse_enhancement_point_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    match_hyphenated_keyword(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["enhancement", "point"],
+    )?;
+    Some(parse_raw_keyword_stmt_result_from_cursor(
+        cursor,
+        "ENHANCEMENT",
+        SyntaxKind::EnhancementPointStmt,
+        "ENHANCEMENT-POINT statement",
+    ))
 }
 
-pub fn try_parse_enhancement_stmt(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    if starts_hyphenated_keyword(tokens, idx) {
-        return None;
-    }
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "enhancement") {
-        return None;
-    }
-    let (mut children, next) = parse_header_until_period(
-        b,
-        source,
-        tokens,
-        idx,
-        idx + 1,
-        errors,
-        "syntax error: expected '.' after ENHANCEMENT header",
-    );
-    let (body, after_body) = parse_body_until_enhancement_end(
-        b,
-        source,
-        tokens,
-        next,
-        errors,
-        EnhancementEndKind::Enhancement,
-    );
-    children.extend(body);
-    let (end_children, next_after, end_pos) = parse_enhancement_end_keyword(
-        b,
-        source,
-        tokens,
-        after_body,
-        start_tok,
-        EnhancementEndKind::Enhancement,
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::EnhancementStmt,
-        start_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+pub(crate) fn try_parse_enhancement_section_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    match_hyphenated_keyword(
+        cursor.source(),
+        cursor.tokens(),
+        cursor.index(),
+        &["enhancement", "section"],
+    )?;
+    Some(parse_enhancement_section_stmt_result(cursor))
 }
 
-pub fn try_parse_function_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    if starts_hyphenated_keyword(tokens, idx) {
+fn parse_enhancement_section_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let (_, mut children) =
+        parse_raw_header_from_cursor(cursor, "ENHANCEMENT-SECTION header", &["END"])?;
+    children.extend(cursor.parse_stmt_list_until_with(&[], |cursor| {
+        cursor_at_enhancement_end(cursor, EnhancementEndKind::Section)
+    }));
+    push_hyphenated_end_from_cursor(
+        cursor,
+        &["end", "enhancement", "section"],
+        "END-ENHANCEMENT-SECTION",
+        &mut children,
+    )?;
+    Ok(cursor.branch_from_children(SyntaxKind::EnhancementSectionStmt, &children, fallback))
+}
+
+pub(crate) fn try_parse_enhancement_stmt_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("ENHANCEMENT")
+        || starts_hyphenated_keyword(cursor.tokens(), cursor.index())
+    {
         return None;
     }
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "function") {
+    Some(parse_enhancement_stmt_result(cursor))
+}
+
+fn parse_enhancement_stmt_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let (_, mut children) =
+        parse_raw_header_from_cursor(cursor, "ENHANCEMENT header", &["ENDENHANCEMENT"])?;
+    children.extend(
+        cursor.parse_stmt_list_until_with(&["ENDENHANCEMENT"], |cursor| {
+            cursor_at_enhancement_end(cursor, EnhancementEndKind::Enhancement)
+        }),
+    );
+    push_end_keyword_from_cursor(cursor, "ENDENHANCEMENT", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::EnhancementStmt, &children, fallback))
+}
+
+pub(crate) fn try_parse_function_decl_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("FUNCTION") || starts_hyphenated_keyword(cursor.tokens(), cursor.index())
+    {
         return None;
     }
 
-    let mut next = idx + 1;
-    while matches!(tokens.get(next), Some(token) if token.kind == TokenKind::Comment) {
-        next += 1;
-    }
+    let idx = cursor.index();
+    let mut next = skip_trivia(cursor.tokens(), idx + 1);
     if matches!(
-        tokens.get(next).map(|token| token.kind),
+        cursor.tokens().get(next).map(|token| token.kind),
         Some(TokenKind::Eq | TokenKind::QuestionEq)
     ) {
         return None;
     }
-    let Some(name_tok) = tokens.get(next) else {
-        let start_leaf = token_leaf(b, start_tok);
-        let node = b.branch(
-            SyntaxKind::FunctionDecl,
-            start_tok.range.clone(),
-            &[start_leaf],
-        );
-        return Some((node, next));
+    Some(parse_function_decl_result(cursor, idx, &mut next))
+}
+
+fn parse_function_decl_result(
+    cursor: &mut Parser<'_, '_>,
+    idx: usize,
+    next: &mut usize,
+) -> PResult<NodeId> {
+    let fallback = cursor.current_range();
+    let Some(name_tok) = cursor.tokens().get(*next) else {
+        let start = cursor.expect_keyword_result("FUNCTION")?;
+        return Ok(cursor.branch_from_children(SyntaxKind::FunctionDecl, &[start], fallback));
     };
     if name_tok.kind != TokenKind::Ident {
-        let start_leaf = token_leaf(b, start_tok);
-        let name_leaf = token_leaf(b, name_tok);
-        errors.push(crate::ParseError {
-            message: "syntax error: expected function module name after FUNCTION".to_string(),
-            range: start_tok.range.start..name_tok.range.end,
-        });
-        return Some((
-            b.branch(
-                SyntaxKind::FunctionDecl,
-                start_tok.range.start..name_tok.range.end,
-                &[start_leaf, name_leaf],
-            ),
-            next + 1,
+        let mut children = vec![cursor.expect_keyword_result("FUNCTION")?];
+        while cursor
+            .current()
+            .is_some_and(|token| token.kind == TokenKind::Comment)
+        {
+            if let Some(comment) = cursor.bump() {
+                children.push(comment);
+            }
+        }
+        if let Some(name) = cursor.bump() {
+            children.push(name);
+        }
+        cursor.push_error(
+            "syntax error: expected function module name after FUNCTION".to_string(),
+            fallback.start..name_tok.range.end,
+        );
+        return Ok(cursor.branch_from_children(
+            SyntaxKind::FunctionDecl,
+            &children,
+            fallback.start..name_tok.range.end,
         ));
     }
 
-    next += 1;
-    while matches!(tokens.get(next), Some(token) if token.kind == TokenKind::Comment) {
-        next += 1;
+    *next += 1;
+    while matches!(cursor.tokens().get(*next), Some(token) if token.kind == TokenKind::Comment) {
+        *next += 1;
     }
 
-    let (children, next, header_end) = if tokens.get(next).map(|token| token.kind)
+    let mut children = if cursor.tokens().get(*next).map(|token| token.kind)
         == Some(TokenKind::Period)
+        || cursor
+            .tokens()
+            .get(*next)
+            .is_some_and(|token| function_header_section_keyword(cursor.source(), token))
     {
-        (
-            build_function_header_children(b, source, tokens, idx, next),
-            next + 1,
-            tokens[next].range.end,
-        )
-    } else if tokens
-        .get(next)
-        .is_some_and(|token| function_header_section_keyword(source, token))
-    {
-        match scan_until_top_level_period(tokens, next) {
-            Some(period_i) => (
-                build_function_header_children(b, source, tokens, idx, period_i),
-                period_i + 1,
-                tokens[period_i].range.end,
-            ),
-            None => {
-                let end_exclusive = tokens
-                    .iter()
-                    .position(|token| token.kind == TokenKind::Eof)
-                    .unwrap_or(tokens.len());
-                let err_end = unterminated_err_end(tokens, end_exclusive, name_tok.range.end);
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected '.' after function header".to_string(),
-                    range: start_tok.range.start..err_end,
-                });
-                let mut children = build_function_header_children(b, source, tokens, idx, next - 1);
-                let err_children = error_token_children(b, tokens, next, end_exclusive);
-                children.push(b.branch(
-                    SyntaxKind::Error,
-                    tokens[next].range.start..err_end,
-                    &err_children,
-                ));
-                (
-                    children,
-                    next_after_unterminated_scan(tokens, end_exclusive),
-                    err_end,
-                )
-            }
-        }
+        let (period_i, _) = parse_function_header_from_cursor(cursor)?;
+        let source = cursor.source();
+        let tokens = cursor.tokens();
+        let b = cursor.builder();
+        build_function_header_children(b, source, tokens, idx, period_i)
     } else {
-        (
-            build_function_header_children(b, source, tokens, idx, next - 1),
-            next,
-            name_tok.range.end,
-        )
+        cursor.set_position(*next, (*next).checked_sub(1));
+        let source = cursor.source();
+        let tokens = cursor.tokens();
+        let b = cursor.builder();
+        build_function_header_children(b, source, tokens, idx, *next - 1)
     };
 
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDFUNCTION"]);
-    let mut children = children;
-    children.extend(body);
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        after_body,
-        start_tok,
-        "ENDFUNCTION",
-        "syntax error: expected ENDFUNCTION",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::FunctionDecl,
-        start_tok.range.start..end_pos.max(header_end),
-        &children,
-    );
-    Some((node, next_after))
+    children.extend(cursor.parse_stmt_list_until(&["ENDFUNCTION"]));
+    push_end_keyword_from_cursor(cursor, "ENDFUNCTION", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::FunctionDecl, &children, fallback))
 }
 
-pub fn try_parse_class_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    if starts_hyphenated_keyword(tokens, idx) {
+pub(crate) fn try_parse_class_decl_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("CLASS")
+        || starts_hyphenated_keyword(cursor.tokens(), cursor.index())
+        || !class_header_is_block(cursor.tokens(), cursor.source(), cursor.index())
+    {
         return None;
     }
-    if !class_header_is_block(tokens, source, idx) {
-        return None;
-    }
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "class") {
-        return None;
-    }
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => (
-            build_class_header_children(b, source, tokens, idx, period_i),
-            period_i + 1,
-        ),
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after class header".to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                start_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    };
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDCLASS"]);
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        start_tok,
-        "ENDCLASS",
-        "syntax error: expected ENDCLASS",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::ClassDecl,
-        start_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+    Some(parse_class_decl_result(cursor))
 }
 
-pub fn try_parse_interface_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    if starts_hyphenated_keyword(tokens, idx) {
-        return None;
-    }
-    if !interface_header_is_block(tokens, source, idx) {
-        return None;
-    }
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "interface") {
-        return None;
-    }
-    let (mut children, mut next) = match scan_until_statement_period(tokens, source, idx + 1) {
-        StmtPeriodScan::Found(period_i) => (
-            build_interface_header_children(b, tokens, idx, period_i),
-            period_i + 1,
-        ),
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' after interface header".to_string(),
-                range: start_tok.range.start..err_end,
-            });
-            let err_children = error_token_children(b, tokens, idx, end_exclusive);
-            let header = b.branch(
-                SyntaxKind::Error,
-                start_tok.range.start..err_end,
-                &err_children,
-            );
-            (
-                vec![header],
-                next_after_unterminated_scan(tokens, end_exclusive),
-            )
-        }
-    };
-    let (body, after_body) =
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDINTERFACE"]);
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        start_tok,
-        "ENDINTERFACE",
-        "syntax error: expected ENDINTERFACE",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::InterfaceDecl,
-        start_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+fn parse_class_decl_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let idx = cursor.index();
+    let fallback = cursor.current_range();
+    let (period_i, _) = parse_raw_header_from_cursor(cursor, "class header", &["ENDCLASS"])?;
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    let b = cursor.builder();
+    let mut children = build_class_header_children(b, source, tokens, idx, period_i);
+    children.extend(cursor.parse_stmt_list_until(&["ENDCLASS"]));
+    push_end_keyword_from_cursor(cursor, "ENDCLASS", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::ClassDecl, &children, fallback))
 }
 
-pub fn try_parse_method_decl(
-    b: &mut SyntaxTreeBuilder,
-    source: &str,
-    tokens: &[Token],
-    idx: usize,
-    errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let start_tok = tokens.get(idx)?;
-    if !is_keyword(source, start_tok, "method") {
+pub(crate) fn try_parse_interface_decl_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("INTERFACE")
+        || starts_hyphenated_keyword(cursor.tokens(), cursor.index())
+        || !interface_header_is_block(cursor.tokens(), cursor.source(), cursor.index())
+    {
         return None;
     }
-    let (mut children, mut next, is_amdp) =
-        match scan_until_statement_period(tokens, source, idx + 1) {
-            StmtPeriodScan::Found(period_i) => (
-                build_method_header_children(b, source, tokens, idx, period_i),
-                period_i + 1,
-                method_header_is_amdp(source, tokens, idx, period_i),
-            ),
-            StmtPeriodScan::Unterminated { end_exclusive } => {
-                let err_end = unterminated_err_end(tokens, end_exclusive, start_tok.range.end);
-                errors.push(crate::ParseError {
-                    message: "syntax error: expected '.' after method header".to_string(),
-                    range: start_tok.range.start..err_end,
-                });
-                let err_children = error_token_children(b, tokens, idx, end_exclusive);
-                let header = b.branch(
-                    SyntaxKind::Error,
-                    start_tok.range.start..err_end,
-                    &err_children,
-                );
-                (
-                    vec![header],
-                    next_after_unterminated_scan(tokens, end_exclusive),
-                    false,
-                )
-            }
+    Some(parse_interface_decl_result(cursor))
+}
+
+fn parse_interface_decl_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let idx = cursor.index();
+    let fallback = cursor.current_range();
+    let (period_i, _) =
+        parse_raw_header_from_cursor(cursor, "interface header", &["ENDINTERFACE"])?;
+    let tokens = cursor.tokens();
+    let b = cursor.builder();
+    let mut children = build_interface_header_children(b, tokens, idx, period_i);
+    children.extend(cursor.parse_stmt_list_until(&["ENDINTERFACE"]));
+    push_end_keyword_from_cursor(cursor, "ENDINTERFACE", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::InterfaceDecl, &children, fallback))
+}
+
+pub(crate) fn try_parse_method_decl_result_from_cursor(
+    cursor: &mut Parser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("METHOD") {
+        return None;
+    }
+    Some(parse_method_decl_result(cursor))
+}
+
+fn parse_method_decl_result(cursor: &mut Parser<'_, '_>) -> PResult<NodeId> {
+    let idx = cursor.index();
+    let fallback = cursor.current_range();
+    let (period_i, _) = parse_raw_header_from_cursor(cursor, "method header", &["ENDMETHOD"])?;
+    let is_amdp = method_header_is_amdp(cursor.source(), cursor.tokens(), idx, period_i);
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    let b = cursor.builder();
+    let mut children = build_method_header_children(b, source, tokens, idx, period_i);
+    if is_amdp {
+        let source = cursor.source();
+        let tokens = cursor.tokens();
+        let start = cursor.index();
+        let (body, after_body) = {
+            let b = cursor.builder();
+            parse_sqlscript_island_until_endmethod(b, source, tokens, start)
         };
-    let (body, after_body) = if is_amdp {
-        parse_sqlscript_island_until_endmethod(b, source, tokens, next)
+        children.extend(body);
+        cursor.set_position(after_body, after_body.checked_sub(1));
     } else {
-        parse_body_until_keywords(b, source, tokens, next, errors, &["ENDMETHOD"])
-    };
-    children.extend(body);
-    next = after_body;
-    let (end_children, next_after, end_pos) = parse_end_keyword(
-        b,
-        source,
-        tokens,
-        next,
-        start_tok,
-        "ENDMETHOD",
-        "syntax error: expected ENDMETHOD",
-        errors,
-    );
-    children.extend(end_children);
-    let node = b.branch(
-        SyntaxKind::MethodDecl,
-        start_tok.range.start..end_pos,
-        &children,
-    );
-    Some((node, next_after))
+        children.extend(cursor.parse_stmt_list_until(&["ENDMETHOD"]));
+    }
+    push_end_keyword_from_cursor(cursor, "ENDMETHOD", &mut children)?;
+    Ok(cursor.branch_from_children(SyntaxKind::MethodDecl, &children, fallback))
 }
 
 pub fn try_parse_select_stmt(
@@ -13216,15 +13852,13 @@ pub fn try_parse_open_cursor_stmt(
         handle_start = skip_trivia(tokens, with_hold_end);
     }
 
-    let Some(period_i) = scan_until_top_level_period(tokens, cursor_idx + 1) else {
+    let Some(period_i) = top_level_period_from_cursor(b, source, tokens, cursor_idx + 1, errors)
+    else {
         let eof_idx = tokens
             .iter()
             .position(|token| token.kind == TokenKind::Eof)
             .unwrap_or(tokens.len());
-        let err_end = tokens
-            .get(eof_idx.saturating_sub(1))
-            .map(|token| token.range.end)
-            .unwrap_or(open_tok.range.end);
+        let err_end = unterminated_err_end(tokens, eof_idx, open_tok.range.end);
         errors.push(crate::ParseError {
             message: "syntax error: expected '.' after OPEN CURSOR statement".to_string(),
             range: open_tok.range.start..err_end,
@@ -13297,100 +13931,9 @@ pub fn try_parse_fetch_cursor_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    let fetch_tok = tokens.get(idx)?;
-    if !is_keyword(source, fetch_tok, "fetch") {
-        return None;
-    }
-
-    let next_idx = skip_trivia(tokens, idx + 1);
-    let next_tok = tokens.get(next_idx)?;
-    if !is_keyword(source, next_tok, "next") {
-        return None;
-    }
-
-    let cursor_idx = skip_trivia(tokens, next_idx + 1);
-    let cursor_tok = tokens.get(cursor_idx)?;
-    if !is_keyword(source, cursor_tok, "cursor") {
-        return None;
-    }
-
-    let Some(period_i) = scan_until_top_level_period(tokens, cursor_idx + 1) else {
-        let eof_idx = tokens
-            .iter()
-            .position(|token| token.kind == TokenKind::Eof)
-            .unwrap_or(tokens.len());
-        let err_end = tokens
-            .get(eof_idx.saturating_sub(1))
-            .map(|token| token.range.end)
-            .unwrap_or(fetch_tok.range.end);
-        errors.push(crate::ParseError {
-            message: "syntax error: expected '.' after FETCH NEXT CURSOR statement".to_string(),
-            range: fetch_tok.range.start..err_end,
-        });
-        let err_children = error_token_children(b, tokens, idx, eof_idx);
-        let node = b.branch(
-            SyntaxKind::Error,
-            fetch_tok.range.start..err_end,
-            &err_children,
-        );
-        return Some((node, tokens.len()));
-    };
-
-    let handle_start = skip_trivia(tokens, cursor_idx + 1);
-    let tail_start = find_top_level_keyword_in(
-        source,
-        tokens,
-        handle_start,
-        period_i,
-        &["into", "appending"],
-    )?;
-    if handle_start >= tail_start {
-        return None;
-    }
-
-    let mut children = Vec::new();
-    push_token_children(b, &mut children, tokens, idx, handle_start);
-    if let Some(handle) = build_token_branch(
-        b,
-        SyntaxKind::CursorHandleOperand,
-        tokens,
-        handle_start,
-        tail_start,
-    ) {
-        children.push(handle);
-    }
-
-    let mut cursor = tail_start;
-    while cursor < period_i {
-        if let Some(kind) = fetch_cursor_tail_clause_kind(source, tokens, cursor) {
-            let clause_end = scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
-                fetch_cursor_tail_clause_kind(source, tokens, idx).is_some()
-            });
-            if let Some(clause) = build_select_clause(b, source, tokens, kind, cursor, clause_end) {
-                children.push(clause);
-            }
-            cursor = clause_end;
-        } else {
-            let next_clause = scan_until_clause(tokens, cursor + 1, period_i, |tokens, idx| {
-                fetch_cursor_tail_clause_kind(source, tokens, idx).is_some()
-            });
-            push_token_children(b, &mut children, tokens, cursor, next_clause);
-            cursor = next_clause;
-        }
-    }
-    push_token_children(b, &mut children, tokens, period_i, period_i + 1);
-
-    let end = children
-        .last()
-        .copied()
-        .map(|id| b.span(id).end)
-        .unwrap_or(fetch_tok.range.end);
-    let node = b.branch(
-        SyntaxKind::FetchCursorStmt,
-        fetch_tok.range.start..end,
-        &children,
-    );
-    Some((node, period_i + 1))
+    parse_with_cursor(b, source, tokens, idx, errors, |cursor| {
+        try_parse_fetch_cursor_stmt_from_cursor(cursor)
+    })
 }
 
 pub fn try_parse_close_cursor_stmt(
@@ -13400,68 +13943,143 @@ pub fn try_parse_close_cursor_stmt(
     idx: usize,
     errors: &mut Vec<crate::ParseError>,
 ) -> Option<(NodeId, usize)> {
-    let close_tok = tokens.get(idx)?;
-    if !is_keyword(source, close_tok, "close") {
+    parse_with_cursor(b, source, tokens, idx, errors, |cursor| {
+        try_parse_close_cursor_stmt_from_cursor(cursor)
+    })
+}
+
+fn try_parse_fetch_cursor_stmt_from_cursor(cursor: &mut Parser<'_, '_>) -> Option<NodeId> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("FETCH") {
         return None;
     }
 
-    let cursor_idx = skip_trivia(tokens, idx + 1);
-    let cursor_tok = tokens.get(cursor_idx)?;
-    if !is_keyword(source, cursor_tok, "cursor") {
+    let idx = cursor.index();
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    let fetch_tok = tokens.get(idx)?;
+    let next_idx = skip_trivia(tokens, idx + 1);
+    if !tokens
+        .get(next_idx)
+        .is_some_and(|token| is_keyword(source, token, "next"))
+    {
         return None;
     }
 
-    let Some(period_i) = scan_until_top_level_period(tokens, cursor_idx + 1) else {
-        let eof_idx = tokens
-            .iter()
-            .position(|token| token.kind == TokenKind::Eof)
-            .unwrap_or(tokens.len());
-        let err_end = tokens
-            .get(eof_idx.saturating_sub(1))
-            .map(|token| token.range.end)
-            .unwrap_or(close_tok.range.end);
-        errors.push(crate::ParseError {
-            message: "syntax error: expected '.' after CLOSE CURSOR statement".to_string(),
-            range: close_tok.range.start..err_end,
-        });
-        let err_children = error_token_children(b, tokens, idx, eof_idx);
-        let node = b.branch(
-            SyntaxKind::Error,
-            close_tok.range.start..err_end,
-            &err_children,
-        );
-        return Some((node, tokens.len()));
-    };
+    let cursor_idx = skip_trivia(tokens, next_idx + 1);
+    if !tokens
+        .get(cursor_idx)
+        .is_some_and(|token| is_keyword(source, token, "cursor"))
+    {
+        return None;
+    }
 
     let handle_start = skip_trivia(tokens, cursor_idx + 1);
-    if handle_start >= period_i {
+    let stmt_end = stmt_boundary_from_cursor(cursor, handle_start);
+    let tail_start = find_top_level_keyword_in(
+        source,
+        tokens,
+        handle_start,
+        stmt_end,
+        &["into", "appending"],
+    )?;
+    if handle_start >= tail_start {
         return None;
     }
 
     let mut children = Vec::new();
-    push_token_children(b, &mut children, tokens, idx, handle_start);
-    if let Some(handle) = build_token_branch(
-        b,
-        SyntaxKind::CursorHandleOperand,
-        tokens,
-        handle_start,
-        period_i,
-    ) {
-        children.push(handle);
-    }
-    push_token_children(b, &mut children, tokens, period_i, period_i + 1);
+    {
+        let b = cursor.builder();
+        push_token_children(b, &mut children, tokens, idx, handle_start);
+        if let Some(handle) = build_token_branch(
+            b,
+            SyntaxKind::CursorHandleOperand,
+            tokens,
+            handle_start,
+            tail_start,
+        ) {
+            children.push(handle);
+        }
 
-    let end = children
-        .last()
-        .copied()
-        .map(|id| b.span(id).end)
-        .unwrap_or(close_tok.range.end);
-    let node = b.branch(
-        SyntaxKind::CloseCursorStmt,
-        close_tok.range.start..end,
+        let mut clause_start = tail_start;
+        while clause_start < stmt_end {
+            if let Some(kind) = fetch_cursor_tail_clause_kind(source, tokens, clause_start) {
+                let clause_end =
+                    scan_until_clause(tokens, clause_start + 1, stmt_end, |tokens, idx| {
+                        fetch_cursor_tail_clause_kind(source, tokens, idx).is_some()
+                    });
+                if let Some(clause) =
+                    build_select_clause(b, source, tokens, kind, clause_start, clause_end)
+                {
+                    children.push(clause);
+                }
+                clause_start = clause_end;
+            } else {
+                let next_clause =
+                    scan_until_clause(tokens, clause_start + 1, stmt_end, |tokens, idx| {
+                        fetch_cursor_tail_clause_kind(source, tokens, idx).is_some()
+                    });
+                push_token_children(b, &mut children, tokens, clause_start, next_clause);
+                clause_start = next_clause;
+            }
+        }
+    }
+
+    cursor.set_position(stmt_end, stmt_end.checked_sub(1));
+    push_period_or_error(cursor, "FETCH NEXT CURSOR statement", &[], &mut children);
+    Some(cursor.branch_from_children(
+        SyntaxKind::FetchCursorStmt,
         &children,
-    );
-    Some((node, period_i + 1))
+        fetch_tok.range.clone(),
+    ))
+}
+
+fn try_parse_close_cursor_stmt_from_cursor(cursor: &mut Parser<'_, '_>) -> Option<NodeId> {
+    cursor.skip_trivia();
+    if !cursor.at_keyword("CLOSE") {
+        return None;
+    }
+
+    let idx = cursor.index();
+    let source = cursor.source();
+    let tokens = cursor.tokens();
+    let close_tok = tokens.get(idx)?;
+    let cursor_idx = skip_trivia(tokens, idx + 1);
+    if !tokens
+        .get(cursor_idx)
+        .is_some_and(|token| is_keyword(source, token, "cursor"))
+    {
+        return None;
+    }
+
+    let handle_start = skip_trivia(tokens, cursor_idx + 1);
+    let stmt_end = stmt_boundary_from_cursor(cursor, handle_start);
+    if handle_start >= stmt_end {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    {
+        let b = cursor.builder();
+        push_token_children(b, &mut children, tokens, idx, handle_start);
+        if let Some(handle) = build_token_branch(
+            b,
+            SyntaxKind::CursorHandleOperand,
+            tokens,
+            handle_start,
+            stmt_end,
+        ) {
+            children.push(handle);
+        }
+    }
+
+    cursor.set_position(stmt_end, stmt_end.checked_sub(1));
+    push_period_or_error(cursor, "CLOSE CURSOR statement", &[], &mut children);
+    Some(cursor.branch_from_children(
+        SyntaxKind::CloseCursorStmt,
+        &children,
+        close_tok.range.clone(),
+    ))
 }
 
 fn dataset_stmt_lead_kind(
@@ -14015,7 +14633,7 @@ pub fn try_parse_dataset_stmt(
     let start_tok = tokens.get(idx)?;
     let (kind, lead_end) = dataset_stmt_lead_kind(source, tokens, idx)?;
 
-    Some(parse_stmt_with_period_scan(
+    Some(parse_stmt_with_cursor_boundary(
         b,
         source,
         tokens,
@@ -16089,7 +16707,7 @@ SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_p
     }
 
     #[test]
-    fn recovers_missing_period_after_source_maintenance_statement() {
+    fn source_maintenance_missing_period_invalidates_statement() {
         for (src, expected) in [
             (
                 "READ REPORT lv_prog INTO lt_source\nDATA lv_next TYPE i.",
@@ -16123,7 +16741,11 @@ SYNTAX-CHECK FOR lt_source MESSAGE lv_msg LINE lv_line WORD lv_word PROGRAM lv_p
                 1,
                 "{src}"
             );
-            assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 1, "{src}");
+            assert_eq!(
+                parsed.file.count_kind(root, SyntaxKind::InvalidStmt),
+                1,
+                "{src}"
+            );
         }
     }
 
@@ -17180,6 +17802,108 @@ ENDFORM.",
     }
 
     #[test]
+    fn cursor_statements_missing_period_invalidate_and_leave_next_statement() {
+        let parsed = crate::parse(
+            "FETCH NEXT CURSOR lv_cursor INTO TABLE lt_rows\nIF sy-subrc = 0.\nENDIF.\n\
+             CLOSE CURSOR lv_cursor\nDATA lv_done TYPE abap_bool.",
+        );
+        assert!(
+            parsed.errors.iter().any(|error| error
+                .message
+                .contains("expected '.' after FETCH NEXT CURSOR statement")),
+            "{:?}",
+            parsed.errors
+        );
+        assert!(
+            parsed.errors.iter().any(|error| error
+                .message
+                .contains("expected '.' after CLOSE CURSOR statement")),
+            "{:?}",
+            parsed.errors
+        );
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::InvalidStmt), 2);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::IfStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataDecl), 1);
+    }
+
+    #[test]
+    fn call_raise_message_submit_missing_period_invalidates_and_leaves_next_statement() {
+        let parsed = crate::parse(
+            "CALL FUNCTION 'RFC_PING'\nDATA lv_call TYPE i.\n\
+             RAISE EXCEPTION TYPE cx_demo\nDATA lv_raise TYPE i.\n\
+             MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno\nDATA lv_message TYPE i.\n\
+             SUBMIT rsnast00\nDATA lv_submit TYPE i.",
+        );
+        for expected in [
+            "expected '.' to end call-like statement",
+            "expected '.' after RAISE statement",
+            "expected '.' after MESSAGE statement",
+            "expected '.' after SUBMIT",
+        ] {
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "{expected}: {:?}",
+                parsed.errors
+            );
+        }
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            4
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt),
+            4
+        );
+    }
+
+    #[test]
+    fn table_text_update_dataset_missing_period_invalidates_and_leaves_next_statement() {
+        let parsed = crate::parse(
+            "READ TABLE lt_items WITH KEY field = lv_field\nDATA lv_read TYPE i.\n\
+             APPEND lv_item TO lt_items\nDATA lv_append TYPE i.\n\
+             WRITE lv_text\nDATA lv_write TYPE i.\n\
+             UPDATE ztab SET field = lv_value\nDATA lv_update TYPE i.\n\
+             OPEN DATASET lv_file FOR INPUT\nDATA lv_dataset TYPE i.",
+        );
+        for expected in [
+            "expected '.' after READ TABLE statement",
+            "expected '.' after APPEND statement",
+            "expected '.' after WRITE statement",
+            "expected '.' after UPDATE statement",
+            "expected '.' after dataset statement",
+        ] {
+            assert!(
+                parsed
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains(expected)),
+                "{expected}: {:?}",
+                parsed.errors
+            );
+        }
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::DataDecl),
+            5
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(parsed.file.root(), SyntaxKind::InvalidStmt),
+            5
+        );
+    }
+
+    #[test]
     fn parses_direct_static_method_call_with_named_args_as_call_stmt() {
         let parsed = crate::parse(
             "cl_abap_message_digest=>calculate_hash_for_char(\n  EXPORTING\n    if_algorithm = lv_algorithm\n    if_data      = lv_data\n  IMPORTING\n    ef_hashstring = lv_hashstring\n).",
@@ -17700,6 +18424,25 @@ ENDFORM.",
                 .file
                 .count_kind(function.syntax().id(), SyntaxKind::FunctionParam),
             7
+        );
+    }
+
+    #[test]
+    fn function_header_allows_statement_keyword_param_names() {
+        let src = "FUNCTION /AIF/FILE_PROCESS_DATA\n  IMPORTING\n    FILENR TYPE /AIF/FILENR OPTIONAL\n    XIMSGGUID TYPE SXMSMGUID OPTIONAL\n    CLASS_NAME_STD_IMPL TYPE SEOCLSNAME OPTIONAL\n  CHANGING\n    DATA TYPE ANY\n  TABLES\n    RETURN_TAB LIKE BAPIRET2 OPTIONAL\n  EXCEPTIONS\n    NOT_FOUND.\nENDFUNCTION.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let function = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::FunctionDecl)
+            .expect("function decl");
+        assert_eq!(
+            parsed.file.count_kind(function, SyntaxKind::FunctionParam),
+            6
+        );
+        assert_eq!(
+            parsed.file.count_kind(function, SyntaxKind::TypeRefSimple),
+            5
         );
     }
 

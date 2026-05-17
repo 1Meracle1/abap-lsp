@@ -41,6 +41,94 @@ Semantics:
 - `CASE` compares one subject expression against `WHEN` alternatives,
 - `WHEN OTHERS` is the default branch and should normally be last.
 
+## CASE Forms
+
+Normal `CASE` uses a subject expression followed by one or more alternatives.
+Each `WHEN` alternative is an operand value, not a boolean condition.
+
+```abap
+DATA lv_status TYPE c LENGTH 1 VALUE 'O'.
+DATA lv_count TYPE i VALUE -2.
+DATA lv_text TYPE string VALUE `ABAP`.
+DATA lt_numbers TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+lt_numbers = VALUE #( ( 10 ) ( 20 ) ).
+
+CASE lv_status.
+  WHEN 'O'.
+    WRITE / 'Open'.
+  WHEN 'C' OR 'X'.
+    WRITE / 'Closed or cancelled'.
+  WHEN OTHERS.
+    WRITE / 'Other'.
+ENDCASE.
+
+CASE strlen( lv_text ).
+  WHEN abs( lv_count ).
+    WRITE / 'Length matches absolute count'.
+  WHEN lines( lt_numbers ).
+    WRITE / 'Length matches row count'.
+  WHEN CONV i( 4 ).
+    WRITE / 'Length is four'.
+ENDCASE.
+```
+
+Valid normal `WHEN` operands include data objects, literals, selected built-in
+function calls, constructor expressions, and functional method calls. Multiple
+alternatives use `OR`; `AND`, relational comparisons, and range syntax are not
+normal `WHEN` syntax.
+
+```abap
+DATA lv_num TYPE i VALUE 3.
+DATA lt_int TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+
+lt_int = VALUE #( ( 3 ) ).
+
+" Invalid CASE syntax. Use IF for conditions like these.
+CASE lv_num.
+  WHEN lv_num = 3.
+    WRITE / 'Not valid'.
+  WHEN lv_num > 1.
+    WRITE / 'Not valid'.
+  WHEN 1 TO 5.
+    WRITE / 'Not valid'.
+  WHEN lt_int[ 1 ].
+    WRITE / 'Not valid'.
+ENDCASE.
+```
+
+`CASE TYPE OF` is a separate form for object reference type checks.
+
+```abap
+CLASS lcl_base DEFINITION.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_base.
+ENDCLASS.
+
+DATA lo_ref TYPE REF TO lcl_base.
+
+lo_ref = NEW lcl_child( ).
+
+CASE TYPE OF lo_ref.
+  WHEN TYPE lcl_child INTO DATA(lo_child).
+    WRITE / 'Child reference'.
+  WHEN TYPE lcl_base.
+    WRITE / 'Base reference'.
+  WHEN OTHERS.
+    WRITE / 'Other reference'.
+ENDCASE.
+```
+
+`abap-lsp` support notes:
+
+- normal `CASE` supports `WHEN operand [OR operand ...]` and `WHEN OTHERS`,
+- `CASE TYPE OF` supports `WHEN TYPE class_or_interface [INTO target]`,
+  including inline `DATA(...)` targets,
+- direct table expressions after normal `WHEN` are rejected,
+- malformed `WHEN` headers are represented as invalid statements without
+  cascading errors onto later `WHEN` branches or `ENDCASE`.
+
 ## Loops
 
 ```abap
@@ -144,4 +232,3 @@ Semantics:
 - resumable exceptions can use `RESUME`; retryable handling can use `RETRY` in
   supported contexts,
 - `CATCH SYSTEM-EXCEPTIONS` is classic, non-class-based exception handling.
-

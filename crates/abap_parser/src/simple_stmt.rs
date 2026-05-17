@@ -6,9 +6,11 @@ use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::block_helpers::{inline_name_spacing_is_valid, parse_inline_name};
 use crate::expr::{parse_arithmetic_expr, parse_logical_expr};
+use crate::parser::{PResult, Parser as CursorParser};
 use crate::stmt_period::{
-    StmtPeriodScan, delimiter_error, has_non_comment_tokens, is_definite_stmt_lead_keyword,
-    scan_until_statement_period, unterminated_err_end,
+    compact_dynamic_selector_lparen, delimiter_error, find_top_level_keyword_index,
+    has_non_comment_tokens, is_definite_stmt_lead_keyword, line_start_assignment,
+    previous_non_comment_token, token_begins_line,
 };
 use crate::syntax::token_leaf;
 use crate::type_ref::build_type_ref_node;
@@ -786,41 +788,6 @@ fn trim_trailing_comments(tokens: &[Token], start: usize, mut end: usize) -> usi
         end -= 1;
     }
     end
-}
-
-fn find_top_level_keyword_index(
-    source: &str,
-    tokens: &[Token],
-    start: usize,
-    end: usize,
-    keyword: &str,
-) -> Option<usize> {
-    let mut paren = 0i32;
-    let mut bracket = 0i32;
-    let mut brace = 0i32;
-    let mut idx = start;
-    while idx < end {
-        let token = &tokens[idx];
-        if token.kind == TokenKind::Comment {
-            idx += 1;
-            continue;
-        }
-        if paren == 0 && bracket == 0 && brace == 0 && token_matches_keyword(source, token, keyword)
-        {
-            return Some(idx);
-        }
-        match token.kind {
-            TokenKind::LParen => paren += 1,
-            TokenKind::RParen => paren -= 1,
-            TokenKind::LBracket => bracket += 1,
-            TokenKind::RBracket => bracket -= 1,
-            TokenKind::LBrace => brace += 1,
-            TokenKind::RBrace => brace -= 1,
-            _ => {}
-        }
-        idx += 1;
-    }
-    None
 }
 
 fn find_top_level_keyword_sequence_start(
@@ -3128,7 +3095,7 @@ fn direct_call_statement(source: &str, significant: &[&Token]) -> bool {
     for (idx, token) in significant.iter().enumerate() {
         match token.kind {
             TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
-                if dynamic_selector_lparen(significant, idx) {
+                if significant_dynamic_selector_lparen(significant, idx) {
                     paren += 1;
                     continue;
                 }
@@ -3165,7 +3132,7 @@ fn direct_call_statement(source: &str, significant: &[&Token]) -> bool {
     })
 }
 
-fn dynamic_selector_lparen(significant: &[&Token], lparen_idx: usize) -> bool {
+fn significant_dynamic_selector_lparen(significant: &[&Token], lparen_idx: usize) -> bool {
     if significant.get(lparen_idx).map(|token| token.kind) != Some(TokenKind::LParen) {
         return false;
     }
@@ -3175,8 +3142,7 @@ fn dynamic_selector_lparen(significant: &[&Token], lparen_idx: usize) -> bool {
     else {
         return false;
     };
-    matches!(prev.kind, TokenKind::Arrow | TokenKind::FatArrow)
-        && !have_space_between(prev, significant[lparen_idx])
+    compact_dynamic_selector_lparen(prev, significant[lparen_idx])
 }
 
 fn direct_call_paren_pair(significant: &[&Token]) -> Option<(usize, usize)> {
@@ -3187,7 +3153,7 @@ fn direct_call_paren_pair(significant: &[&Token]) -> Option<(usize, usize)> {
     for (idx, token) in significant.iter().enumerate() {
         match token.kind {
             TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
-                if dynamic_selector_lparen(significant, idx) {
+                if significant_dynamic_selector_lparen(significant, idx) {
                     paren += 1;
                     continue;
                 }
@@ -3992,175 +3958,336 @@ fn build_direct_call_stmt_children(
     children
 }
 
-/// Fallback parser for valid statement-shaped token runs when no dedicated parser claims them yet.
-pub fn try_parse_simple_stmt(
+fn build_simple_stmt_node(
     b: &mut SyntaxTreeBuilder,
     source: &str,
     tokens: &[Token],
     idx: usize,
+    period_i: usize,
     errors: &mut Vec<crate::ParseError>,
-) -> Option<(NodeId, usize)> {
-    let first = tokens.get(idx)?;
-    if first.kind != TokenKind::Ident {
+) -> NodeId {
+    let first = &tokens[idx];
+    let period_tok = &tokens[period_i];
+    let significant = significant_stmt_tokens(tokens, idx, period_i);
+    let kind = simple_stmt_kind(source, &significant);
+    if kind != SyntaxKind::MacroCallStmt
+        && let Some(delim_error) = delimiter_error(tokens, idx, period_i)
+    {
+        errors.push(delim_error);
+        let kids = tokens[idx..=period_i]
+            .iter()
+            .map(|t| token_leaf(b, t))
+            .collect::<Vec<_>>();
+        return b.branch(
+            SyntaxKind::Error,
+            first.range.start..period_tok.range.end,
+            &kids,
+        );
+    }
+    if kind != SyntaxKind::MacroCallStmt {
+        validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
+    }
+    if kind == SyntaxKind::StopStmt {
+        validate_stop_stmt(&significant, errors);
+    }
+    if matches!(kind, SyntaxKind::AssertStmt | SyntaxKind::CheckStmt)
+        && !has_non_comment_tokens(tokens, idx + 1, period_i)
+    {
+        let keyword = first.lexeme(source).to_ascii_uppercase();
+        errors.push(crate::ParseError {
+            message: format!("syntax error: expected condition after {keyword}"),
+            range: first.range.start..period_tok.range.end,
+        });
+    }
+    let kids = match kind {
+        SyntaxKind::ClassDeferredStmt => {
+            build_deferred_type_stmt_children(b, tokens, idx, period_i)
+        }
+        SyntaxKind::InterfaceDeferredStmt => {
+            build_deferred_type_stmt_children(b, tokens, idx, period_i)
+        }
+        SyntaxKind::ClassLoadStmt => build_deferred_type_stmt_children(b, tokens, idx, period_i),
+        SyntaxKind::ClassSectionStmt => {
+            build_class_section_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::AliasesStmt => build_aliases_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::MethodsStmt => build_stmt_children_with_type_refs(
+            b,
+            source,
+            tokens,
+            idx,
+            period_i,
+            methods_stmt_type_ref_ranges(source, tokens, idx, period_i),
+        ),
+        SyntaxKind::EventsStmt => build_stmt_children_with_type_refs(
+            b,
+            source,
+            tokens,
+            idx,
+            period_i,
+            events_stmt_type_ref_ranges(source, tokens, idx, period_i),
+        ),
+        SyntaxKind::InterfacesStmt => build_stmt_children_with_type_refs(
+            b,
+            source,
+            tokens,
+            idx,
+            period_i,
+            interfaces_stmt_type_ref_ranges(source, tokens, idx, period_i),
+        ),
+        SyntaxKind::ClearStmt => build_clear_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::ConvertStmt => build_convert_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::DescribeStmt => build_describe_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
+            build_assert_or_check_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::CallStmt => build_direct_call_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::ReplaceStmt => build_replace_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::WaitStmt => build_wait_stmt_children(b, source, tokens, idx, period_i),
+        SyntaxKind::GetTimeStmt | SyntaxKind::GetRunTimeStmt => {
+            build_get_time_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::GetParameterStmt => {
+            build_get_parameter_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::GetLocaleStmt => {
+            build_get_locale_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::GetPfStatusStmt => {
+            build_get_pf_status_stmt_children(b, source, tokens, idx, period_i)
+        }
+        SyntaxKind::AddStmt
+        | SyntaxKind::SubtractStmt
+        | SyntaxKind::ComputeStmt
+        | SyntaxKind::MultiplyStmt
+        | SyntaxKind::DivideStmt => {
+            build_arithmetic_stmt_children(b, source, tokens, idx, period_i, kind)
+        }
+        SyntaxKind::TranslateStmt
+        | SyntaxKind::ShiftStmt
+        | SyntaxKind::SearchStmt
+        | SyntaxKind::OverlayStmt
+        | SyntaxKind::PackStmt
+        | SyntaxKind::UnpackStmt => {
+            build_classic_text_stmt_children(b, source, tokens, idx, period_i, kind)
+        }
+        SyntaxKind::SkipStmt
+        | SyntaxKind::UlineStmt
+        | SyntaxKind::NewLineStmt
+        | SyntaxKind::NewPageStmt
+        | SyntaxKind::ReserveStmt
+        | SyntaxKind::BackStmt => {
+            build_list_control_stmt_children(b, source, tokens, idx, period_i, kind)
+        }
+        _ => tokens[idx..=period_i]
+            .iter()
+            .map(|t| token_leaf(b, t))
+            .collect(),
+    };
+    b.branch(kind, first.range.start..period_tok.range.end, &kids)
+}
+
+fn perform_line_continuation(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+    let Some(first) = tokens.get(start) else {
+        return false;
+    };
+    if !token_matches_keyword(source, first, "perform") {
+        return false;
+    }
+    let Some(token) = tokens.get(idx) else {
+        return false;
+    };
+    token_matches_keyword(source, token, "tables")
+        || (token_matches_keyword(source, token, "if")
+            && tokens
+                .get(idx + 1)
+                .is_some_and(|next| token_matches_keyword(source, next, "found")))
+}
+
+fn chained_method_entry_continuation(
+    source: &str,
+    tokens: &[Token],
+    start: usize,
+    idx: usize,
+) -> bool {
+    let significant = tokens[start..idx]
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect::<Vec<_>>();
+    method_statement_name_idx(source, &significant).is_some()
+        && significant
+            .iter()
+            .any(|token| token.kind == TokenKind::Colon)
+        && previous_non_comment_token(tokens, idx)
+            .is_some_and(|prev| tokens[prev].kind == TokenKind::Comma)
+}
+
+fn simple_stmt_line_continuation(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+    perform_line_continuation(source, tokens, start, idx)
+        || chained_method_entry_continuation(source, tokens, start, idx)
+}
+
+fn simple_stmt_boundary_at(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
+    idx > start
+        && tokens.get(idx).is_some_and(|token| {
+            token_begins_line(token)
+                && !simple_stmt_line_continuation(source, tokens, start, idx)
+                && (is_definite_stmt_lead_keyword(source, token)
+                    || line_start_assignment(tokens, idx))
+        })
+}
+
+fn simple_stmt_period_index(source: &str, tokens: &[Token], start: usize) -> usize {
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    let mut i = start + 1;
+    while let Some(token) = tokens.get(i) {
+        if token.kind == TokenKind::Eof {
+            return i;
+        }
+        let top = paren == 0 && bracket == 0 && brace == 0;
+        if top {
+            if token.kind == TokenKind::Period || simple_stmt_boundary_at(source, tokens, start, i)
+            {
+                return i;
+            }
+        }
+        match token.kind {
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren = paren.saturating_sub(1),
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace = brace.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    tokens.len()
+}
+
+fn direct_call_statement_without_period(source: &str, significant: &[&Token]) -> bool {
+    let Some(first) = significant.first() else {
+        return false;
+    };
+    if token_matches_keyword(source, first, "submit")
+        || token_matches_keyword(source, first, "perform")
+    {
+        return false;
+    }
+
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut first_top_level_lparen = None;
+    for (idx, token) in significant.iter().enumerate() {
+        match token.kind {
+            TokenKind::LParen if paren == 0 && bracket == 0 && brace == 0 => {
+                if significant_dynamic_selector_lparen(significant, idx) {
+                    paren += 1;
+                    continue;
+                }
+                first_top_level_lparen = Some(idx);
+                break;
+            }
+            TokenKind::LParen => paren += 1,
+            TokenKind::RParen => paren -= 1,
+            TokenKind::LBracket => bracket += 1,
+            TokenKind::RBracket => bracket -= 1,
+            TokenKind::LBrace => brace += 1,
+            TokenKind::RBrace => brace -= 1,
+            _ => {}
+        }
+    }
+
+    let Some(lparen_idx) = first_top_level_lparen else {
+        return false;
+    };
+    let target = &significant[..lparen_idx];
+    if target.is_empty() {
+        return false;
+    }
+    if target.len() == 1 {
+        return target[0].kind == TokenKind::Ident;
+    }
+    target.iter().any(|token| {
+        matches!(
+            token.kind,
+            TokenKind::Arrow | TokenKind::FatArrow | TokenKind::Tilde
+        )
+    })
+}
+
+fn try_parse_direct_call_stmt_result_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+    start: usize,
+    saved_previous: Option<usize>,
+) -> Option<PResult<NodeId>> {
+    let Some(expr) = cursor.parse_arithmetic_expr() else {
+        cursor.set_position(start, saved_previous);
+        return None;
+    };
+    cursor.skip_trivia();
+
+    let body_end = cursor.index();
+    let significant = cursor.tokens()[start..body_end]
+        .iter()
+        .filter(|token| token.kind != TokenKind::Comment)
+        .collect::<Vec<_>>();
+    if !direct_call_statement_without_period(cursor.source(), &significant) {
+        cursor.set_position(start, saved_previous);
         return None;
     }
 
-    match scan_until_statement_period(tokens, source, idx) {
-        StmtPeriodScan::Found(period_i) => {
-            let period_tok = &tokens[period_i];
-            let significant = significant_stmt_tokens(tokens, idx, period_i);
-            let kind = simple_stmt_kind(source, &significant);
-            if kind != SyntaxKind::MacroCallStmt
-                && let Some(delim_error) = delimiter_error(tokens, idx, period_i)
-            {
-                errors.push(delim_error);
-                let kids = tokens[idx..=period_i]
-                    .iter()
-                    .map(|t| token_leaf(b, t))
-                    .collect::<Vec<_>>();
-                let node = b.branch(
-                    SyntaxKind::Error,
-                    first.range.start..period_tok.range.end,
-                    &kids,
-                );
-                return Some((node, period_i + 1));
-            }
-            if kind != SyntaxKind::MacroCallStmt {
-                validate_unparsed_stmt(source, &significant, tokens, idx, period_i, errors);
-            }
-            if kind == SyntaxKind::StopStmt {
-                validate_stop_stmt(&significant, errors);
-            }
-            if matches!(kind, SyntaxKind::AssertStmt | SyntaxKind::CheckStmt)
-                && !has_non_comment_tokens(tokens, idx + 1, period_i)
-            {
-                let keyword = first.lexeme(source).to_ascii_uppercase();
-                errors.push(crate::ParseError {
-                    message: format!("syntax error: expected condition after {keyword}"),
-                    range: first.range.start..period_tok.range.end,
-                });
-            }
-            let kids = match kind {
-                SyntaxKind::ClassDeferredStmt => {
-                    build_deferred_type_stmt_children(b, tokens, idx, period_i)
-                }
-                SyntaxKind::InterfaceDeferredStmt => {
-                    build_deferred_type_stmt_children(b, tokens, idx, period_i)
-                }
-                SyntaxKind::ClassLoadStmt => {
-                    build_deferred_type_stmt_children(b, tokens, idx, period_i)
-                }
-                SyntaxKind::ClassSectionStmt => {
-                    build_class_section_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::AliasesStmt => {
-                    build_aliases_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::MethodsStmt => build_stmt_children_with_type_refs(
-                    b,
-                    source,
-                    tokens,
-                    idx,
-                    period_i,
-                    methods_stmt_type_ref_ranges(source, tokens, idx, period_i),
-                ),
-                SyntaxKind::EventsStmt => build_stmt_children_with_type_refs(
-                    b,
-                    source,
-                    tokens,
-                    idx,
-                    period_i,
-                    events_stmt_type_ref_ranges(source, tokens, idx, period_i),
-                ),
-                SyntaxKind::InterfacesStmt => build_stmt_children_with_type_refs(
-                    b,
-                    source,
-                    tokens,
-                    idx,
-                    period_i,
-                    interfaces_stmt_type_ref_ranges(source, tokens, idx, period_i),
-                ),
-                SyntaxKind::ClearStmt => {
-                    build_clear_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::ConvertStmt => {
-                    build_convert_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::DescribeStmt => {
-                    build_describe_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::AssertStmt | SyntaxKind::CheckStmt => {
-                    build_assert_or_check_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::CallStmt => {
-                    build_direct_call_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::ReplaceStmt => {
-                    build_replace_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::WaitStmt => build_wait_stmt_children(b, source, tokens, idx, period_i),
-                SyntaxKind::GetTimeStmt | SyntaxKind::GetRunTimeStmt => {
-                    build_get_time_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::GetParameterStmt => {
-                    build_get_parameter_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::GetLocaleStmt => {
-                    build_get_locale_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::GetPfStatusStmt => {
-                    build_get_pf_status_stmt_children(b, source, tokens, idx, period_i)
-                }
-                SyntaxKind::AddStmt
-                | SyntaxKind::SubtractStmt
-                | SyntaxKind::ComputeStmt
-                | SyntaxKind::MultiplyStmt
-                | SyntaxKind::DivideStmt => {
-                    build_arithmetic_stmt_children(b, source, tokens, idx, period_i, kind)
-                }
-                SyntaxKind::TranslateStmt
-                | SyntaxKind::ShiftStmt
-                | SyntaxKind::SearchStmt
-                | SyntaxKind::OverlayStmt
-                | SyntaxKind::PackStmt
-                | SyntaxKind::UnpackStmt => {
-                    build_classic_text_stmt_children(b, source, tokens, idx, period_i, kind)
-                }
-                SyntaxKind::SkipStmt
-                | SyntaxKind::UlineStmt
-                | SyntaxKind::NewLineStmt
-                | SyntaxKind::NewPageStmt
-                | SyntaxKind::ReserveStmt
-                | SyntaxKind::BackStmt => {
-                    build_list_control_stmt_children(b, source, tokens, idx, period_i, kind)
-                }
-                _ => tokens[idx..=period_i]
-                    .iter()
-                    .map(|t| token_leaf(b, t))
-                    .collect(),
-            };
-            let node = b.branch(kind, first.range.start..period_tok.range.end, &kids);
-            Some((node, period_i + 1))
-        }
-        StmtPeriodScan::Unterminated { end_exclusive } => {
-            let err_end = unterminated_err_end(tokens, end_exclusive, first.range.end);
-            errors.push(crate::ParseError {
-                message: "syntax error: expected '.' to end statement".to_string(),
-                range: first.range.start..err_end,
-            });
-            let mut kids = Vec::with_capacity(end_exclusive.saturating_sub(idx));
-            for t in &tokens[idx..end_exclusive] {
-                kids.push(token_leaf(b, t));
-            }
-            let node = b.branch(SyntaxKind::Error, first.range.start..err_end, &kids);
-            let next = if tokens.get(end_exclusive).map(|t| t.kind) == Some(TokenKind::Eof) {
-                tokens.len()
-            } else {
-                end_exclusive
-            };
-            Some((node, next))
-        }
+    let period = match cursor.expect_token_after_result(TokenKind::Period, "method call") {
+        Ok(period) => period,
+        Err(failure) => return Some(Err(failure)),
+    };
+    let children = vec![expr, period];
+    let kind = if direct_call_padding_is_valid(&significant) {
+        SyntaxKind::CallStmt
+    } else {
+        let range = cursor.children_range(&children, cursor.span(expr));
+        cursor.push_error(
+            "syntax error: method call arguments must have whitespace or a line break immediately inside parentheses"
+                .to_string(),
+            range,
+        );
+        SyntaxKind::Error
+    };
+    let range = cursor.children_range(&children, cursor.span(expr));
+    Some(Ok(cursor.builder().branch(kind, range, &children)))
+}
+
+pub(crate) fn try_parse_simple_stmt_result_from_cursor(
+    cursor: &mut CursorParser<'_, '_>,
+) -> Option<PResult<NodeId>> {
+    cursor.skip_trivia();
+    let start = cursor.index();
+    let saved_previous = cursor.previous_index();
+    if cursor.current().map(|token| token.kind) != Some(TokenKind::Ident) {
+        return None;
     }
+
+    if let Some(result) =
+        try_parse_direct_call_stmt_result_from_cursor(cursor, start, saved_previous)
+    {
+        return Some(result);
+    }
+
+    let period_i = simple_stmt_period_index(cursor.source(), cursor.tokens(), start);
+    cursor.set_position(period_i, period_i.checked_sub(1));
+    if let Err(mut failure) = cursor.expect_token_after_result(TokenKind::Period, "statement") {
+        failure.message = "syntax error: expected '.' to end statement".to_string();
+        return Some(Err(failure));
+    }
+
+    let node = {
+        let (b, source, tokens, errors) = cursor.parts_mut();
+        build_simple_stmt_node(b, source, tokens, start, period_i, errors)
+    };
+    Some(Ok(node))
 }
 
 #[cfg(test)]
