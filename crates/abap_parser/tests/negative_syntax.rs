@@ -409,6 +409,7 @@ fn case_when_bad_expression_uses_blunt_invalid_statement() {
 fn case_when_rejects_non_operand_forms_validated_in_sap() {
     for src in [
         "CASE lv_num. WHEN 1 + 1. lv = 1. ENDCASE.",
+        "CASE lv_num. WHEN 1 - 1. lv = 1. ENDCASE.",
         "CASE lv_num. WHEN lv_num = 1. lv = 1. ENDCASE.",
         "CASE lv_num. WHEN lv_num > 1. lv = 1. ENDCASE.",
         "CASE lv_num. WHEN 1 TO 5. lv = 1. ENDCASE.",

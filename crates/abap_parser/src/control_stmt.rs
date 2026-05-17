@@ -1,6 +1,6 @@
 use abap_ast::SyntaxKind;
 use abap_ast::arena::{NodeId, SyntaxTreeBuilder};
-use abap_lexer::{Token, TokenKind};
+use abap_lexer::{Token, TokenKind, have_space_between};
 
 use crate::block_helpers::{
     inline_name_spacing_is_valid, is_keyword, parse_inline_name, skip_trivia,
@@ -971,11 +971,21 @@ fn first_significant_token(tokens: &[Token], start: usize, end: usize) -> Option
     (start..end).find(|index| tokens[*index].kind != TokenKind::Comment)
 }
 
+fn minus_is_selector(tokens: &[Token], prev: Option<usize>, idx: usize) -> bool {
+    let Some(prev) = prev else { return false };
+    let Some(next) = tokens.get(idx + 1) else {
+        return false;
+    };
+    matches!(next.kind, TokenKind::Ident | TokenKind::Star)
+        && !have_space_between(&tokens[prev], &tokens[idx])
+}
+
 fn invalid_when_operand_token(cursor: &Parser<'_, '_>, start: usize, end: usize) -> Option<usize> {
     let mut paren = 0usize;
     let mut bracket = 0usize;
     let mut brace = 0usize;
     let mut seen_operand_token = false;
+    let mut prev_significant = None;
 
     for idx in start..end {
         let token = &cursor.tokens()[idx];
@@ -1001,7 +1011,9 @@ fn invalid_when_operand_token(cursor: &Parser<'_, '_>, start: usize, end: usize)
                     }
                 }
                 TokenKind::Minus => {
-                    if seen_operand_token {
+                    if seen_operand_token
+                        && !minus_is_selector(cursor.tokens(), prev_significant, idx)
+                    {
                         return Some(idx);
                     }
                 }
@@ -1026,6 +1038,7 @@ fn invalid_when_operand_token(cursor: &Parser<'_, '_>, start: usize, end: usize)
             TokenKind::RBrace => brace = brace.saturating_sub(1),
             _ => {}
         }
+        prev_significant = Some(idx);
         seen_operand_token = true;
     }
     None
@@ -1254,6 +1267,21 @@ mod tests {
                 .count_kind(parsed.file.root(), SyntaxKind::WhenClause),
             1
         );
+    }
+
+    #[test]
+    fn parses_case_selector_operands() {
+        let parsed = crate::parse(
+            "CASE cs_itf-tdline.
+               WHEN c_section_token-cause.
+                 cs_itf-tdline = c_section_text-cause.
+             ENDCASE.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::CaseStmt), 1);
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::WhenClause), 1);
+        assert!(parsed.file.count_kind(root, SyntaxKind::SelectorExpr) >= 4);
     }
 
     #[test]
