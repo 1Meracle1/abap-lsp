@@ -1632,3 +1632,77 @@ ENDCLASS.
     let symbol = &parent.symbols[handle.symbol.as_usize()];
     assert_eq!(symbol.name.as_ref(), "gv_dummy_msg");
 }
+
+#[test]
+fn infers_inline_method_result_from_inherited_protected_receiver() {
+    let message_src = r#"
+INTERFACE zif_message_container PUBLIC.
+ENDINTERFACE.
+"#;
+    let context_src = r#"
+INTERFACE zif_context PUBLIC.
+  METHODS get_message_container
+    RETURNING VALUE(ro_message_container) TYPE REF TO zif_message_container.
+ENDINTERFACE.
+"#;
+    let parent_src = r#"
+CLASS zcl_parent DEFINITION.
+  PROTECTED SECTION.
+    DATA mo_context TYPE REF TO zif_context.
+ENDCLASS.
+
+CLASS zcl_parent IMPLEMENTATION.
+ENDCLASS.
+"#;
+    let child_src = r#"
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS m.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD m.
+    DATA(lo_msg) = mo_context->get_message_container( ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let message_parse = parse(message_src);
+    let context_parse = parse(context_src);
+    let parent_parse = parse(parent_src);
+    let child_parse = parse(child_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "zif_message_container.abap",
+            source: message_src,
+            parse: &message_parse,
+        },
+        ProjectInput {
+            uri: "zif_context.abap",
+            source: context_src,
+            parse: &context_parse,
+        },
+        ProjectInput {
+            uri: "zcl_parent.abap",
+            source: parent_src,
+            parse: &parent_parse,
+        },
+        ProjectInput {
+            uri: "zcl_child.abap",
+            source: child_src,
+            parse: &child_parse,
+        },
+    ]);
+
+    let child = project.unit_by_uri("zcl_child.abap").expect("child unit");
+    let lo_msg = child
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name.as_ref() == "lo_msg")
+        .expect("inline variable");
+    let declared_type = lo_msg.declared_type.as_ref().expect("inferred type");
+
+    assert_eq!(declared_type.namespace, Namespace::Type);
+    assert!(declared_type.is_ref);
+    assert_eq!(declared_type.base_name.as_ref(), "zif_message_container");
+}

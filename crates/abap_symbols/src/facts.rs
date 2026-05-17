@@ -1744,22 +1744,58 @@ impl<'a> FactBuilder<'a> {
         match base_namespace {
             Namespace::Type => self.resolve_type_symbol_handle(unit_idx, scope, base_name.as_ref()),
             Namespace::Value => {
-                let symbol_id = lookup_scope_chain(
-                    &self.units[unit_idx],
-                    &self.scope_indexes[unit_idx],
-                    scope,
-                    Namespace::Value,
-                    base_name,
-                )?;
-                let symbol = self.units[unit_idx].symbol(symbol_id);
+                let handle = self.value_handle_for_method_receiver(unit_idx, scope, base_name)?;
+                let symbol_unit_idx = self.unit_index(handle.unit)?;
+                let symbol = self.units[symbol_unit_idx].symbol(handle.symbol);
                 let declared_type = symbol.declared_type.as_ref()?;
                 if !declared_type.is_ref || !declared_type.field_path.is_empty() {
                     return None;
                 }
-                self.resolve_type_symbol_handle(unit_idx, scope, declared_type.base_name.as_ref())
+                self.resolve_type_symbol_handle(
+                    symbol_unit_idx,
+                    symbol.scope,
+                    declared_type.base_name.as_ref(),
+                )
             }
             Namespace::Routine => None,
         }
+    }
+
+    fn value_handle_for_method_receiver(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        name: &Arc<str>,
+    ) -> Option<SymbolHandle> {
+        if let Some(symbol) = lookup_scope_chain(
+            &self.units[unit_idx],
+            &self.scope_indexes[unit_idx],
+            scope,
+            Namespace::Value,
+            name,
+        ) {
+            return Some(SymbolHandle {
+                unit: self.units[unit_idx].unit_id,
+                symbol,
+            });
+        }
+
+        let mut resolved = None;
+        for reference in self.units[unit_idx].references.iter().filter(|reference| {
+            reference.scope == scope
+                && reference.namespace == Namespace::Value
+                && reference.kind == ReferenceKind::Identifier
+                && reference.name == *name
+        }) {
+            let Some(Resolution::Symbol(handle)) = reference.resolution else {
+                continue;
+            };
+            if resolved.is_some_and(|existing| existing != handle) {
+                return None;
+            }
+            resolved = Some(handle);
+        }
+        resolved
     }
 
     fn resolve_current_interface_method_member(
