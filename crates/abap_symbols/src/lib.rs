@@ -637,6 +637,66 @@ ENDCLASS.\n";
     }
 
     #[test]
+    fn implicit_me_resolves_in_instance_method_body_split_across_includes() {
+        let main_src = "\
+REPORT z_demo.\n\
+INCLUDE z_demo_top.\n\
+INCLUDE z_demo_f01.\n";
+        let top_src = "\
+CLASS lcl_demo DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS get_value RETURNING VALUE(rv_value) TYPE i.\n\
+  PRIVATE SECTION.\n\
+    DATA mv_value TYPE i.\n\
+ENDCLASS.\n";
+        let f01_src = "\
+CLASS lcl_demo IMPLEMENTATION.\n\
+  METHOD get_value.\n\
+    rv_value = me->mv_value.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let main_parse = parse(main_src);
+        let top_parse = parse(top_src);
+        let f01_parse = parse(f01_src);
+        let project = analyze_project(&[
+            ProjectInput {
+                uri: "file:///workspace/z_demo/z_demo.abap",
+                source: main_src,
+                parse: &main_parse,
+            },
+            ProjectInput {
+                uri: "file:///workspace/z_demo/Includes/z_demo_top.abap",
+                source: top_src,
+                parse: &top_parse,
+            },
+            ProjectInput {
+                uri: "file:///workspace/z_demo/Includes/z_demo_f01.abap",
+                source: f01_src,
+                parse: &f01_parse,
+            },
+        ]);
+        let unit = project
+            .unit_by_uri("file:///workspace/z_demo/Includes/z_demo_f01.abap")
+            .expect("method include unit");
+
+        assert!(
+            unit.diagnostics
+                .iter()
+                .all(|diag| !diag.message.contains("unknown symbol 'me'")),
+            "{:#?}",
+            unit.diagnostics
+        );
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.name.as_ref() == "me"
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "{:#?}",
+            unit.references
+        );
+    }
+
+    #[test]
     fn delete_where_row_field_from_project_table_type_does_not_trigger_definite_assignment_warning()
     {
         let main_src = r#"

@@ -1800,8 +1800,7 @@ fn resolve_declared_method_context<'a>(
     };
     let method_unit = &project.units[handle.unit.as_usize()];
     let member = method_unit.class_member(handle.symbol, method_name)?;
-    (member.kind == ClassMemberKind::Method && !member.parameters.is_empty())
-        .then_some((method_unit, member))
+    (member.kind == ClassMemberKind::Method).then_some((method_unit, member))
 }
 
 fn inject_symbol_into_scope_index(
@@ -1815,6 +1814,41 @@ fn inject_symbol_into_scope_index(
         .entry((namespace, name))
         .or_default()
         .push(symbol_id);
+}
+
+fn push_implicit_me_symbol_spec(
+    out: &mut Vec<(ScopeId, crate::SymbolData)>,
+    unit: &crate::UnitAnalysis,
+    scope_id: ScopeId,
+    class_symbol: SymbolId,
+) {
+    if unit.symbols.iter().any(|symbol| {
+        symbol.scope == scope_id
+            && symbol.kind == SymbolKind::Variable
+            && symbol.name.as_ref() == "me"
+    }) {
+        return;
+    }
+
+    out.push((
+        scope_id,
+        crate::SymbolData {
+            id: SymbolId(0),
+            name: Arc::from("me"),
+            kind: SymbolKind::Variable,
+            scope: scope_id,
+            decl_range: 0..0,
+            structure: None,
+            declared_type: Some(FieldTypeRefData {
+                namespace: Namespace::Type,
+                is_ref: true,
+                base_name: Arc::clone(&unit.symbol(class_symbol).name),
+                field_path: Vec::new(),
+            }),
+            type_clause_display: None,
+            value_clause_display: None,
+        },
+    ));
 }
 
 fn qualified_interface_method_scope_symbol_specs(
@@ -1844,33 +1878,9 @@ fn qualified_interface_method_scope_symbol_specs(
         let Some(class_symbol) = enclosing_class_owner(unit, scope_id) else {
             continue;
         };
-        let class_name = Arc::clone(&unit.symbol(class_symbol).name);
 
-        let has_me = unit.symbols.iter().any(|symbol| {
-            symbol.scope == scope_id
-                && symbol.kind == SymbolKind::Variable
-                && symbol.name.as_ref() == "me"
-        });
-        if !member_is_static && !has_me {
-            out.push((
-                scope_id,
-                crate::SymbolData {
-                    id: SymbolId(0),
-                    name: Arc::from("me"),
-                    kind: SymbolKind::Variable,
-                    scope: scope_id,
-                    decl_range: 0..0,
-                    structure: None,
-                    declared_type: Some(FieldTypeRefData {
-                        namespace: Namespace::Type,
-                        is_ref: true,
-                        base_name: class_name,
-                        field_path: Vec::new(),
-                    }),
-                    type_clause_display: None,
-                    value_clause_display: None,
-                },
-            ));
+        if !member_is_static {
+            push_implicit_me_symbol_spec(&mut out, unit, scope_id, class_symbol);
         }
 
         for param in &member_parameters {
@@ -1920,6 +1930,12 @@ fn inherited_redefinition_method_scope_symbol_specs(
         else {
             continue;
         };
+        if member.kind == ClassMemberKind::Method
+            && !member.is_static
+            && let Some(class_symbol) = enclosing_class_owner(unit, scope_id)
+        {
+            push_implicit_me_symbol_spec(&mut out, unit, scope_id, class_symbol);
+        }
         for param in &member.parameters {
             let has_param = unit.symbols.iter().any(|symbol| {
                 symbol.scope == scope_id
@@ -1967,6 +1983,11 @@ fn declared_method_scope_symbol_specs(
         else {
             continue;
         };
+        if !member.is_static
+            && let Some(class_symbol) = enclosing_class_owner(unit, scope_id)
+        {
+            push_implicit_me_symbol_spec(&mut out, unit, scope_id, class_symbol);
+        }
         for param in &member.parameters {
             let has_param = unit.symbols.iter().any(|symbol| {
                 symbol.scope == scope_id
@@ -2034,6 +2055,11 @@ fn event_handler_method_scope_symbol_specs(
         else {
             continue;
         };
+        if !member.is_static
+            && let Some(class_symbol) = enclosing_class_owner(unit, scope_id)
+        {
+            push_implicit_me_symbol_spec(&mut out, unit, scope_id, class_symbol);
+        }
         for param in &member.parameters {
             let has_param = unit.symbols.iter().any(|symbol| {
                 symbol.scope == scope_id
