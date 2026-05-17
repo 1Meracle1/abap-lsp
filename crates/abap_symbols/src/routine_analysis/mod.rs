@@ -25,10 +25,10 @@ use crate::builtin_routine_spec;
 use crate::def_map::{
     AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
     FormParameterSection, FunctionModuleParameterSection, IfRegionData, InternalTableOrderData,
-    LoopRegionData, MethodParameterSection, NamedArgumentSection, PerformParameterSection,
-    ReadTableBinarySearchData, ReferenceData, Resolution, RoutineControlRegionData,
-    RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind, TryRegionData, UnitAnalysis,
-    ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
+    LoopRegionData, MethodParameterSection, NamedArgumentSection, NamedArgumentTarget,
+    PerformParameterSection, ReadTableBinarySearchData, ReferenceData, Resolution,
+    RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind,
+    TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
@@ -483,6 +483,7 @@ fn build_project_routine_analysis_filtered(
         out.routines[routine_idx].diagnostics = diagnostics;
     }
     out.metrics.cfg_micros = cfg_timer.elapsed().as_micros();
+    let non_returning_method_impls = build_non_returning_method_impls(&out.routines);
 
     if out.routines.len() > MAX_ROUTINES_FOR_DATAFLOW {
         finish_routine_metrics(&mut out, total_timer);
@@ -561,6 +562,7 @@ fn build_project_routine_analysis_filtered(
                 &tracked_symbols_by_routine[routine_id],
                 &call_argument_effects_by_unit[descriptor.unit.as_usize()],
                 &form_parameter_effects,
+                &non_returning_method_impls,
             );
             out.metrics.dead_store_micros += dead_store_micros;
             out.routines[routine_id].dataflow_inputs = inputs;
@@ -741,6 +743,7 @@ struct ConditionalAssignedTarget {
 
 type SelectorStructureWriteCache = HashMap<(usize, usize), Option<SelectorStructureWrite>>;
 type DirectWriteCache = HashMap<(usize, usize), Option<DataflowValueId>>;
+type RoutineImplKey = (UnitId, usize, usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldSymbolBindingTransfer {
@@ -1669,6 +1672,38 @@ fn unreachable_diagnostics_for_cfg(routine: &RoutineAnalysis, cfg: &RoutineCfg) 
     diagnostics
 }
 
+fn build_non_returning_method_impls(routines: &[RoutineAnalysis]) -> HashSet<RoutineImplKey> {
+    routines
+        .iter()
+        .filter(|routine| routine.descriptor.kind == RoutineKind::Method)
+        .filter(|routine| routine_never_returns_to_caller(routine))
+        .map(|routine| {
+            (
+                routine.descriptor.unit,
+                routine.descriptor.decl_range.start,
+                routine.descriptor.decl_range.end,
+            )
+        })
+        .collect()
+}
+
+fn routine_never_returns_to_caller(routine: &RoutineAnalysis) -> bool {
+    let Some(exit) = routine.cfg.exit else {
+        return false;
+    };
+    let mut has_exit_edge = false;
+    for edge in routine.cfg.edges.iter().filter(|edge| edge.to == exit) {
+        has_exit_edge = true;
+        if !matches!(
+            edge.kind,
+            RoutineEdgeKind::Raise | RoutineEdgeKind::Leave | RoutineEdgeKind::Stop
+        ) {
+            return false;
+        }
+    }
+    has_exit_edge
+}
+
 fn build_routine_dataflow(
     project: &ProjectAnalysis,
     resolution_index: &RoutineResolutionIndex,
@@ -1679,6 +1714,7 @@ fn build_routine_dataflow(
     tracked_symbols: &[&SymbolData],
     call_argument_effects: &CallArgumentEffectMap,
     form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
+    non_returning_method_impls: &HashSet<RoutineImplKey>,
 ) -> (
     RoutineDataflowInputs,
     RoutineDataflowResult,
@@ -1844,14 +1880,17 @@ fn build_routine_dataflow(
         sy_subrc_guard_structure_field_block_refinements,
         sy_subrc_guard_bound_block_refinements,
     ) = resolve_sy_subrc_success_guard_block_refinements(
+        project,
         unit,
         routine,
+        &routine_index,
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
         &mut selector_structure_writes,
         &mut direct_writes,
         &values,
+        non_returning_method_impls,
     );
     union_dense_scope_refinements(
         &mut block_assigned_entry_refinements,
@@ -4351,14 +4390,17 @@ fn conditional_assignment_targets_for_subrc_success_update(
 }
 
 fn resolve_sy_subrc_success_guard_block_refinements(
+    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
     routine: &RoutineAnalysis,
+    routine_index: &RoutineBuildIndex<'_>,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
+    non_returning_method_impls: &HashSet<RoutineImplKey>,
 ) -> (Vec<DenseBitSet>, Vec<Vec<u64>>, Vec<DenseBitSet>) {
     let mut assigned = vec![DenseBitSet::new(values.len()); routine.cfg.blocks.len()];
     let mut structure_fields = vec![vec![0u64; values.len()]; routine.cfg.blocks.len()];
@@ -4391,7 +4433,16 @@ fn resolve_sy_subrc_success_guard_block_refinements(
         let Some(continuation) = routine.cfg.blocks.get(continuation_block.as_usize()) else {
             continue;
         };
-        if continuation.predecessors.len() != 1 || continuation.predecessors[0] != block.id {
+        if (continuation.predecessors.len() != 1 || continuation.predecessors[0] != block.id)
+            && !scope_ends_with_non_returning_call(
+                project,
+                unit,
+                routine,
+                routine_index,
+                region.then_scope,
+                non_returning_method_impls,
+            )
+        {
             continue;
         }
         let Some(update) = latest_subrc_update_before_check(unit, check) else {
@@ -4426,6 +4477,101 @@ fn resolve_sy_subrc_success_guard_block_refinements(
     }
 
     (assigned, structure_fields, bound)
+}
+
+fn scope_ends_with_non_returning_call(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
+    routine_index: &RoutineBuildIndex<'_>,
+    scope: ScopeId,
+    non_returning_method_impls: &HashSet<RoutineImplKey>,
+) -> bool {
+    let Some(instruction_id) = routine_index
+        .instructions_by_scope
+        .get(scope.as_usize())
+        .and_then(|instructions| instructions.last())
+    else {
+        return false;
+    };
+    let Some(instruction) = routine.ir.instructions.get(instruction_id.as_usize()) else {
+        return false;
+    };
+    let RoutineInstructionSite::Call { index } = instruction.site else {
+        return false;
+    };
+    unit.call_sites
+        .get(index as usize)
+        .and_then(|call| non_returning_method_impl_for_call(project, unit, call))
+        .is_some_and(|key| non_returning_method_impls.contains(&key))
+}
+
+fn non_returning_method_impl_for_call(
+    project: &ProjectAnalysis,
+    unit: &UnitAnalysis,
+    call: &crate::CallSiteData,
+) -> Option<RoutineImplKey> {
+    let implementation = match &call.target {
+        NamedArgumentTarget::ImplicitMethod { method_name } => {
+            current_class_method_implementation(project, unit, call.scope, method_name.as_ref())
+        }
+        NamedArgumentTarget::Method {
+            base_namespace: Namespace::Value,
+            base_name,
+            method_name,
+            interface_qualified: false,
+        } if base_name.eq_ignore_ascii_case("me") => {
+            current_class_method_implementation(project, unit, call.scope, method_name.as_ref())
+        }
+        _ => None,
+    }?;
+    Some((
+        implementation.unit,
+        implementation.range.start,
+        implementation.range.end,
+    ))
+}
+
+fn current_class_method_implementation<'a>(
+    project: &'a ProjectAnalysis,
+    unit: &UnitAnalysis,
+    scope: ScopeId,
+    method_name: &str,
+) -> Option<&'a crate::ClassMemberImplementationData> {
+    let class_symbol = enclosing_class_owner(unit, scope)?;
+    let class_name = Arc::clone(&unit.symbol(class_symbol).name);
+    let handle = project
+        .visible_type_owner_handle(unit.unit_id, &class_name)
+        .unwrap_or(SymbolHandle {
+            unit: unit.unit_id,
+            symbol: class_symbol,
+        });
+    method_implementation(project, handle, method_name)
+}
+
+fn method_implementation<'a>(
+    project: &'a ProjectAnalysis,
+    class: SymbolHandle,
+    method_name: &str,
+) -> Option<&'a crate::ClassMemberImplementationData> {
+    project
+        .units
+        .get(class.unit.as_usize())?
+        .class_member(class.symbol, method_name)?
+        .implementation
+        .as_ref()
+}
+
+fn enclosing_class_owner(unit: &UnitAnalysis, scope: ScopeId) -> Option<SymbolId> {
+    let mut current = Some(scope);
+    while let Some(scope_id) = current {
+        let scope = unit.scopes.get(scope_id.as_usize())?;
+        if scope.kind == ScopeKind::Class {
+            return scope.owner;
+        }
+        current = scope.parent;
+    }
+    None
 }
 
 fn unique_fallthrough_successor(

@@ -1200,6 +1200,66 @@ ENDFORM.\n";
     }
 
     #[test]
+    fn read_table_target_is_assigned_after_negative_sy_subrc_guard_raising_helper() {
+        let src = "\
+CLASS lcl_demo DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS build.\n\
+  PRIVATE SECTION.\n\
+    METHODS raise_bad_request RAISING cx_static_check.\n\
+ENDCLASS.\n\
+\n\
+CLASS lcl_demo IMPLEMENTATION.\n\
+  METHOD build.\n\
+    TYPES: BEGIN OF ty_order,\n\
+             odata_property TYPE string,\n\
+             sql_column TYPE string,\n\
+           END OF ty_order.\n\
+    TYPES tt_order TYPE HASHED TABLE OF ty_order WITH UNIQUE KEY odata_property.\n\
+    DATA lt_allowed_order TYPE tt_order.\n\
+    DATA lt_used_cols TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.\n\
+    DATA lv_property TYPE string.\n\
+\n\
+    READ TABLE lt_allowed_order\n\
+      WITH TABLE KEY odata_property = lv_property\n\
+      INTO DATA(ls_allowed_order).\n\
+\n\
+    IF sy-subrc <> 0.\n\
+      me->raise_bad_request( ).\n\
+    ENDIF.\n\
+\n\
+    IF line_exists( lt_used_cols[ table_line = ls_allowed_order-sql_column ] ).\n\
+    ENDIF.\n\
+  ENDMETHOD.\n\
+\n\
+  METHOD raise_bad_request.\n\
+    RAISE EXCEPTION TYPE cx_static_check.\n\
+  ENDMETHOD.\n\
+ENDCLASS.\n";
+        let parsed = parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let unit = analyze_unit(
+            "file:///read_table_negative_guard_raising_helper.abap",
+            src,
+            &parsed,
+        );
+        let project = analyze_project_from_units(vec![unit.clone()]);
+        let routine_analysis = build_project_routine_analysis(&project);
+
+        assert!(
+            routine_analysis
+                .diagnostics_for_unit(unit.unit_id)
+                .iter()
+                .all(|diagnostic| {
+                    diagnostic.kind != DiagnosticKind::UseBeforeDefiniteAssignment
+                        || !src[diagnostic.range.clone()].contains("ls_allowed_order")
+                }),
+            "{:#?}",
+            routine_analysis.diagnostics_for_unit(unit.unit_id)
+        );
+    }
+
+    #[test]
     fn loop_at_inline_sql_table_source_does_not_require_definite_assignment() {
         let src = "\
 FORM run.\n\
