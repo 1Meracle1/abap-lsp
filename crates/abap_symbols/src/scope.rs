@@ -18,6 +18,7 @@ pub enum ScopeKind {
     Class,
     Interface,
     Method,
+    Signature,
     IfBranch,
     ElseifBranch,
     ElseBranch,

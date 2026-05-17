@@ -6058,6 +6058,7 @@ fn routine_kind(kind: ScopeKind) -> Option<RoutineKind> {
         ScopeKind::EventBlock => Some(RoutineKind::EventBlock),
         ScopeKind::Class
         | ScopeKind::Interface
+        | ScopeKind::Signature
         | ScopeKind::IfBranch
         | ScopeKind::ElseifBranch
         | ScopeKind::ElseBranch
@@ -6141,6 +6142,7 @@ fn scope_maps_to_global_declarations(
             }
             ScopeKind::Class
             | ScopeKind::Interface
+            | ScopeKind::Signature
             | ScopeKind::IfBranch
             | ScopeKind::ElseifBranch
             | ScopeKind::ElseBranch

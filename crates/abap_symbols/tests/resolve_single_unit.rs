@@ -1,7 +1,7 @@
 use abap_parser::parse;
 
 use abap_symbols::{
-    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, ScopeId,
+    DiagnosticKind, Namespace, ProjectInput, ReferenceKind, Resolution, RoutineKind, ScopeId,
     SqlDynamicFragmentKind, SqlNameRefKind, SqlPredicateKind, SqlProjectionKind, SqlResolution,
     SqlSourceKind, SqlTargetKind, StructureFieldShape, SymbolHandle, SymbolKind, ValueFlowKind,
     analyze_project, analyze_project_from_units, analyze_unit, build_project_routine_analysis,
@@ -14888,6 +14888,50 @@ ENDFORM.
         }),
         "{:?}",
         diagnostics
+    );
+}
+
+#[test]
+fn method_signature_parameter_scopes_are_not_routines() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PRIVATE SECTION.
+    METHODS build_orderby_from_request
+      IMPORTING
+        it_orderby TYPE /iwbep/t_mgw_tech_order
+      RETURNING
+        VALUE(rv_orderby) TYPE string
+      RAISING
+        /iwbep/cx_mgw_busi_exception.
+
+    METHODS raise_bad_request
+      IMPORTING
+        iv_message TYPE string
+      RAISING
+        /iwbep/cx_mgw_busi_exception.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD build_orderby_from_request.
+  ENDMETHOD.
+
+  METHOD raise_bad_request.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze_ok(src, "file:///method_signature_parameter_scopes.abap");
+    let project = analyze_project_from_units(vec![unit.clone()]);
+    let routine_analysis = build_project_routine_analysis(&project);
+    let method_names: Vec<_> = routine_analysis
+        .routines_for_unit(unit.unit_id)
+        .filter(|routine| routine.descriptor.kind == RoutineKind::Method)
+        .map(|routine| routine.descriptor.name.as_ref().to_string())
+        .collect();
+
+    assert_eq!(
+        method_names,
+        vec!["build_orderby_from_request", "raise_bad_request"],
+        "method declaration signatures must not create synthetic routines"
     );
 }
 

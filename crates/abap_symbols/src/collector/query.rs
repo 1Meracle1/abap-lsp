@@ -150,7 +150,8 @@ impl<'a> Collector<'a> {
                 | ScopeKind::EventBlock
                 | ScopeKind::Class
                 | ScopeKind::Interface
-                | ScopeKind::Method => return current,
+                | ScopeKind::Method
+                | ScopeKind::Signature => return current,
                 _ => {
                     let Some(parent) = self.scopes[current.as_usize()].parent else {
                         return current;

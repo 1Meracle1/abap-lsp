@@ -747,7 +747,7 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
                 &mut signature,
             );
             member.parameters = self.class_member_parameters(&signature);
-            self.declare_method_signature_parameter_symbols(stmt_range, &signature);
+            self.declare_method_signature_parameter_symbols(class_scope, stmt_range, &signature);
             self.collector
                 .class_method_signatures
                 .entry(class_symbol)
@@ -1279,15 +1279,19 @@ impl<'ctx, 'a> ClassLowering<'ctx, 'a> {
 
     fn declare_method_signature_parameter_symbols(
         &mut self,
+        parent_scope: ScopeId,
         signature_range: TextRange,
         signature: &PendingMethodSignature,
     ) {
         if signature.parameters.is_empty() {
             return;
         }
-        let signature_scope =
-            self.collector
-                .push_scope(ScopeKind::Method, signature_range, None, None);
+        let signature_scope = self.collector.push_scope(
+            ScopeKind::Signature,
+            signature_range,
+            Some(parent_scope),
+            None,
+        );
         for param in &signature.parameters {
             self.collector.declare_symbol(
                 signature_scope,

@@ -1558,6 +1558,7 @@ fn scope_kind_name(kind: ScopeKind) -> &'static str {
         ScopeKind::Class => "class",
         ScopeKind::Interface => "interface",
         ScopeKind::Method => "method",
+        ScopeKind::Signature => "signature",
         ScopeKind::IfBranch => "if_branch",
         ScopeKind::ElseifBranch => "elseif_branch",
         ScopeKind::ElseBranch => "else_branch",

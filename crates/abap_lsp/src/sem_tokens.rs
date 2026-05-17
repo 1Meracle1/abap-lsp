@@ -1246,6 +1246,90 @@ ENDFUNCTION.
     }
 
     #[test]
+    fn semantic_tokens_cover_second_private_method_declaration_signature() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_demo DEFINITION.
+  PUBLIC SECTION.
+  PROTECTED SECTION.
+    METHODS first REDEFINITION.
+  PRIVATE SECTION.
+    METHODS build_orderby_from_request
+      IMPORTING
+        it_orderby TYPE /iwbep/t_mgw_tech_order
+      RETURNING
+        VALUE(rv_orderby) TYPE string
+      RAISING
+        /iwbep/cx_mgw_busi_exception.
+
+    METHODS raise_bad_request
+      IMPORTING
+        iv_message TYPE string
+      RAISING
+        /iwbep/cx_mgw_busi_exception.
+ENDCLASS.
+
+CLASS zcl_demo IMPLEMENTATION.
+  METHOD build_orderby_from_request.
+    me->raise_bad_request( `x` ).
+  ENDMETHOD.
+
+  METHOD raise_bad_request.
+  ENDMETHOD.
+ENDCLASS.";
+        let snapshot = store.publish("file:///second_private_method.abap", 1, src);
+        let tokens = build_semantic_tokens(snapshot.as_ref());
+        let legend = semantic_tokens_legend();
+        let method_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::METHOD)
+            .expect("legend has method") as u32;
+        let parameter_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::PARAMETER)
+            .expect("legend has parameter") as u32;
+        let type_idx = legend
+            .token_types
+            .iter()
+            .position(|t| *t == SemanticTokenType::TYPE)
+            .expect("legend has type") as u32;
+
+        for (needle, offset, expected) in [
+            (
+                "raise_bad_request",
+                src.find("raise_bad_request").expect("second method name"),
+                method_idx,
+            ),
+            (
+                "iv_message",
+                src.find("iv_message").expect("second method parameter"),
+                parameter_idx,
+            ),
+            (
+                "string",
+                src.rfind("string").expect("second method string type"),
+                type_idx,
+            ),
+            (
+                "/iwbep/cx_mgw_busi_exception",
+                src.rfind("/iwbep/cx_mgw_busi_exception")
+                    .expect("second method exception type"),
+                type_idx,
+            ),
+        ] {
+            let (line, character) =
+                byte_offset_to_line_character_utf16_reference(src, offset).expect("position");
+            assert_eq!(
+                semantic_token_type_at(&tokens.data, line, character),
+                Some(expected),
+                "expected semantic token for `{needle}`"
+            );
+        }
+    }
+
+    #[test]
     fn dependency_snapshot_keeps_semantic_tokens_for_public_methods_after_class_methods() {
         let store = DocumentStore::default();
         let snapshots = store.replace_all(vec![DocumentInput {
