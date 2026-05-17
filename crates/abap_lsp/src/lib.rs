@@ -22455,7 +22455,7 @@ ENDCLASS.
         let HoverContents::Markup(routine_markup) = routine_hover.contents else {
             panic!("expected markdown hover");
         };
-        assert!(routine_markup.value.contains("to_lower( arg )"));
+        assert!(routine_markup.value.contains("to_lower( val )"));
         assert!(routine_markup.value.contains("returns `string`"));
     }
 
