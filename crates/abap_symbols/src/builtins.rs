@@ -675,6 +675,30 @@ const ARG_STRING_PARAMS: &[BuiltinRoutineParamSpec] = &[
     },
 ];
 
+const VAL_STRING_PARAMS: &[BuiltinRoutineParamSpec] = &[BuiltinRoutineParamSpec {
+    name: "val",
+    type_name: "string",
+}];
+
+const MIXED_CASE_STRING_PARAMS: &[BuiltinRoutineParamSpec] = &[
+    BuiltinRoutineParamSpec {
+        name: "val",
+        type_name: "string",
+    },
+    BuiltinRoutineParamSpec {
+        name: "sep",
+        type_name: "string",
+    },
+    BuiltinRoutineParamSpec {
+        name: "case",
+        type_name: "string",
+    },
+    BuiltinRoutineParamSpec {
+        name: "min",
+        type_name: "i",
+    },
+];
+
 const ARG_XSTRING_PARAMS: &[BuiltinRoutineParamSpec] = &[
     BuiltinRoutineParamSpec {
         name: "arg",
@@ -865,11 +889,35 @@ pub const BUILTIN_ROUTINES: &[BuiltinRoutineSpec] = &[
     },
     BuiltinRoutineSpec {
         name: "to_lower",
-        params: ARG_STRING_PARAMS,
-        hover_params: &["arg"],
+        params: VAL_STRING_PARAMS,
+        hover_params: &["val"],
         return_type: "string",
         description: "Returns a text value converted to lowercase.",
-        supports_named_arguments: false,
+        supports_named_arguments: true,
+    },
+    BuiltinRoutineSpec {
+        name: "to_upper",
+        params: VAL_STRING_PARAMS,
+        hover_params: &["val"],
+        return_type: "string",
+        description: "Returns a text value converted to uppercase.",
+        supports_named_arguments: true,
+    },
+    BuiltinRoutineSpec {
+        name: "to_mixed",
+        params: MIXED_CASE_STRING_PARAMS,
+        hover_params: &["val", "sep", "case", "min"],
+        return_type: "string",
+        description: "Converts separator-delimited text to mixed case.",
+        supports_named_arguments: true,
+    },
+    BuiltinRoutineSpec {
+        name: "from_mixed",
+        params: MIXED_CASE_STRING_PARAMS,
+        hover_params: &["val", "sep", "case", "min"],
+        return_type: "string",
+        description: "Converts mixed-case text to separator-delimited text.",
+        supports_named_arguments: true,
     },
     BuiltinRoutineSpec {
         name: "xstrlen",

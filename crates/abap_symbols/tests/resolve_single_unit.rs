@@ -16164,6 +16164,41 @@ fn resolves_to_lower_as_builtin_routine() {
 }
 
 #[test]
+fn resolves_string_case_builtins_with_documented_named_arguments() {
+    let src = "\
+DATA text TYPE string.\n\
+DATA sep TYPE string VALUE '_'.\n\
+DATA min TYPE i VALUE 2.\n\
+DATA out TYPE string.\n\
+out = to_lower( val = text ).\n\
+out = to_upper( text ).\n\
+out = to_mixed( val = text sep = sep case = 'A' min = min ).\n\
+out = from_mixed( val = text sep = sep case = 'A' min = min ).\n\
+";
+    let unit = analyze_ok(src, "file:///builtin_string_case.abap");
+
+    for name in ["to_lower", "to_upper", "to_mixed", "from_mixed"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::RoutineCall
+                    && reference.namespace == Namespace::Routine
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::BuiltinRoutine))
+            }),
+            "missing builtin reference for `{name}`: refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+        assert!(!unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidBuiltinNamedArgument && diag.message.contains(name)
+        }));
+        assert!(!unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains(name)
+        }));
+    }
+}
+
+#[test]
 fn resolves_substring_builtin_with_named_arguments() {
     let src = "\
 DATA iv_string TYPE string.\n\
