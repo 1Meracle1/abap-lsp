@@ -4865,6 +4865,38 @@ WRITE lt_rows.
 }
 
 #[test]
+fn reports_unresolved_dynamic_order_by_operand() {
+    let src = r#"
+TYPES: BEGIN OF ty_row,
+         id TYPE i,
+       END OF ty_row.
+DATA lt_rows TYPE STANDARD TABLE OF ty_row.
+
+SELECT *
+  FROM ty_row
+  ORDER BY (lv_order_by)
+  INTO TABLE @lt_rows.
+"#;
+    let unit = analyze(src, "file:///opensql_dynamic_order_by.abap");
+
+    assert!(unit.references.iter().any(|reference| {
+        reference.namespace == Namespace::Value
+            && reference.name.as_ref() == "lv_order_by"
+            && reference.resolution.is_none()
+    }));
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("lv_order_by")
+        }),
+        "expected UnresolvedReference for dynamic ORDER BY operand, got {:?}",
+        unit.diagnostics
+    );
+    assert!(!unit.sql_name_refs.iter().any(|reference| {
+        reference.kind == SqlNameRefKind::Column && reference.name.as_ref() == "lv_order_by"
+    }));
+}
+
+#[test]
 fn reports_invalid_into_table_when_target_is_not_internal_table() {
     let src = r#"
 TYPES ty_row TYPE i.

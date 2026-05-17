@@ -785,7 +785,7 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
                 SyntaxKind::SelectOrderByClause => {
                     order_by_clause = Some(child_range);
                     order_by_clause_node = Some(child_id);
-                    self.collect_sql_host_and_name_refs_in_node(query_id, child_id, scope, false);
+                    self.collect_select_order_by_clause(query_id, child_id, scope);
                 }
                 SyntaxKind::SelectForAllEntriesClause => {
                     for_all_entries_clause = Some(child_range);
@@ -1089,6 +1089,28 @@ impl<'ctx, 'a> SqlLowering<'ctx, 'a> {
             return Some((Self::lower_arc(field.text.as_ref()), start + 3));
         }
         Some((Self::lower_arc(token.text.as_ref()), start + 1))
+    }
+
+    fn collect_select_order_by_clause(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
+        let tokens: Vec<_> = self
+            .ctx
+            .syntax_token_nodes(node)
+            .into_iter()
+            .filter(|token| !self.ctx.syntax_token_is_comment(token))
+            .collect();
+        self.collect_sql_host_refs_from_syntax_tokens(&tokens, scope);
+
+        if let Some(by_idx) = tokens
+            .iter()
+            .position(|token| token.text.eq_ignore_ascii_case("by"))
+            && let Some(inner) = Self::dynamic_parenthesized_operand_tokens(&tokens[by_idx + 1..])
+            && self.dynamic_sql_operand_is_value_reference(inner)
+        {
+            self.ctx
+                .collect_token_expression_refs_infos(inner, scope, true);
+            return;
+        }
+        self.collect_sql_name_refs_from_syntax_tokens(query_id, scope, &tokens, false);
     }
 
     fn collect_select_projection_list(&mut self, query_id: usize, node: NodeId, scope: ScopeId) {
