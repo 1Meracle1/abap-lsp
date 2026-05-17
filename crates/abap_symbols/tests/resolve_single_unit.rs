@@ -8105,14 +8105,24 @@ ENDCLASS.
 CLASS zcl_demo IMPLEMENTATION.
   METHOD exec.
     me->exec( ).
+    IF sy-subrc <> 0.
+      me->exec( ).
+    ENDIF.
+    me->exec( ).
   ENDMETHOD.
 ENDCLASS.
 "#;
     let unit = analyze(src, "file:///static_me.abap");
 
-    assert!(unit.diagnostics.iter().any(|diag| {
-        diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("me")
-    }));
+    let me_diagnostics = unit
+        .diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'me'")
+        })
+        .count();
+    assert_eq!(me_diagnostics, 3, "{:#?}", unit.diagnostics);
 }
 
 #[test]

@@ -4457,18 +4457,9 @@ fn reference_depends_on_unresolved_field_access_base(
         let matching_segment_idx = access.field_path.iter().position(|segment| {
             segment.range == reference.range && segment.name.as_ref() == reference.name.as_ref()
         });
-        let segment_idx = matching_segment_idx.unwrap_or(access.field_path.len());
-        if matching_segment_idx.is_none() {
-            let Some(last_segment) = access.field_path.last() else {
-                return false;
-            };
-            if access.scope != reference.scope
-                || last_segment.range.end > reference.range.start
-                || reference.range.start.saturating_sub(last_segment.range.end) > 16
-            {
-                return false;
-            }
-        }
+        let Some(segment_idx) = matching_segment_idx else {
+            return false;
+        };
 
         let Some(base_handle) = resolve_field_access_base_symbol(
             project,
