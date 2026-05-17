@@ -11,10 +11,10 @@ use abap_ast::ast::{
 use abap_lexer::TextRange;
 
 use crate::def_map::{
-    AssignmentSiteData, CallSiteData, FieldAccess, FieldAccessSegment, FieldTypeRefData,
-    FindSiteData, FindWriteTargetData, MessageUseData, NamedArgumentTarget, ReferenceKind,
-    RoutineSiteData, RoutineSiteKind, SymbolKind, SystemFieldStatementKind, TypeFactData,
-    ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    AssignmentSiteData, CallSiteData, ConcatenateLinesOfSiteData, FieldAccess, FieldAccessSegment,
+    FieldTypeRefData, FindSiteData, FindWriteTargetData, MessageUseData, NamedArgumentTarget,
+    ReferenceKind, RoutineSiteData, RoutineSiteKind, SymbolKind, SystemFieldStatementKind,
+    TypeFactData, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::ScopeId;
 use crate::scope::Namespace;
@@ -5571,6 +5571,26 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         }
     }
 
+    fn concatenate_source_is_lines_of(&self, node: NodeId) -> bool {
+        let mut saw_lines = false;
+        for child in self.collector.file.children(node) {
+            if self.collector.file.kind(child) != SyntaxKind::Token {
+                continue;
+            }
+            let Some(token) = self.collector.syntax_token_nodes(child).into_iter().next() else {
+                continue;
+            };
+            if token.text.eq_ignore_ascii_case("lines") {
+                saw_lines = true;
+            } else if saw_lines && token.text.eq_ignore_ascii_case("of") {
+                return true;
+            } else {
+                saw_lines = false;
+            }
+        }
+        false
+    }
+
     pub(super) fn collect_concatenate_stmt(&mut self, node: NodeId, scope: ScopeId) {
         self.record_unknown_effect(node, scope);
         if ConcatenateStmt::cast(self.collector.syntax(node)).is_some() {
@@ -5603,12 +5623,19 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                             .next()
                             .is_some_and(|token| token.text.eq_ignore_ascii_case("byte"))
                 });
-                let operand_ids: Vec<_> = children[entry_start..entry_end]
+                let source_operands: Vec<_> = children[entry_start..entry_end]
                     .iter()
                     .copied()
                     .filter(|&child| {
                         self.collector.file.kind(child) == SyntaxKind::ConcatenateSourceOperand
                     })
+                    .collect();
+                let source_is_lines_of = source_operands
+                    .iter()
+                    .any(|&operand| self.concatenate_source_is_lines_of(operand));
+                let operand_ids: Vec<_> = source_operands
+                    .iter()
+                    .copied()
                     .filter_map(|operand| self.collector.first_non_token_child(operand))
                     .collect();
                 let target_id = children[entry_start..entry_end]
@@ -5639,17 +5666,44 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 if let Some(separator) = separator_id {
                     self.collector.walk_node(separator, scope);
                 }
+                if source_is_lines_of && let Some(&source) = operand_ids.first() {
+                    self.collector
+                        .emit_concatenate_lines_of_site(ConcatenateLinesOfSiteData {
+                            scope,
+                            range: stmt_range.clone(),
+                            source_range: self.collector.file.range(source),
+                            source: self.type_fact_from_assignment_node(source, scope),
+                            byte_mode,
+                        });
+                }
                 if let Some(target) = target_id {
-                    let mut rhs_nodes = operand_ids;
-                    if let Some(separator) = separator_id {
-                        rhs_nodes.push(separator);
+                    if source_is_lines_of {
+                        let mut rhs_nodes = source_operands;
+                        if let Some(separator) = separator_id {
+                            rhs_nodes.push(separator);
+                        }
+                        self.emit_assignment_site_with_type_facts(
+                            scope,
+                            stmt_range.clone(),
+                            target,
+                            &rhs_nodes,
+                            None,
+                            None,
+                            false,
+                            false,
+                        );
+                    } else {
+                        let mut rhs_nodes = operand_ids;
+                        if let Some(separator) = separator_id {
+                            rhs_nodes.push(separator);
+                        }
+                        self.emit_assignment_site_from_ranges(
+                            scope,
+                            stmt_range.clone(),
+                            target,
+                            &rhs_nodes,
+                        );
                     }
-                    self.emit_assignment_site_from_ranges(
-                        scope,
-                        stmt_range.clone(),
-                        target,
-                        &rhs_nodes,
-                    );
                 }
 
                 entry_start = entry_end.saturating_add(1);

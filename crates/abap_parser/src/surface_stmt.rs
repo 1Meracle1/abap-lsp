@@ -3018,6 +3018,33 @@ fn push_wrapped_expr_child(
     ));
 }
 
+fn push_concatenate_lines_of_source_child(
+    b: &mut SyntaxTreeBuilder,
+    children: &mut Vec<NodeId>,
+    source: &str,
+    tokens: &[Token],
+    lines_idx: usize,
+    expr_start: usize,
+    expr_end: usize,
+) {
+    let expr = parse_arithmetic_expr(
+        b,
+        source,
+        &tokens[expr_start..expr_end],
+        Some(&tokens[lines_idx + 1]),
+    );
+    let source_children = vec![
+        token_leaf(b, &tokens[lines_idx]),
+        token_leaf(b, &tokens[lines_idx + 1]),
+        expr,
+    ];
+    children.push(b.branch(
+        SyntaxKind::ConcatenateSourceOperand,
+        tokens[lines_idx].range.start..tokens[expr_end - 1].range.end,
+        &source_children,
+    ));
+}
+
 fn push_wrapped_data_inline_decl_child(
     b: &mut SyntaxTreeBuilder,
     children: &mut Vec<NodeId>,
@@ -4054,29 +4081,42 @@ fn push_concatenate_entry_children(
         return false;
     };
 
-    let mut i = entry_start;
-    while i < into_idx {
-        let end_idx = consume_concatenate_operand(source, tokens, i, into_idx, &["into"]);
-        if end_idx == i {
-            i += 1;
-            continue;
+    let lines_idx = skip_trivia(tokens, entry_start);
+    if token_keyword_sequence_matches(source, tokens, lines_idx, &["lines", "of"]) {
+        let expr_start = skip_trivia(tokens, lines_idx + 2);
+        let expr_end = consume_concatenate_operand(source, tokens, expr_start, into_idx, &["into"]);
+        if expr_start >= into_idx || expr_end != into_idx {
+            return false;
         }
-        push_wrapped_expr_child(
-            b,
-            children,
-            source,
-            tokens,
-            i,
-            end_idx,
-            tokens
-                .get(i.checked_sub(1).unwrap_or(entry_start))
-                .filter(|_| i > entry_start),
-            SyntaxKind::ConcatenateSourceOperand,
+        push_concatenate_lines_of_source_child(
+            b, children, source, tokens, lines_idx, expr_start, expr_end,
         );
-        i = end_idx;
+    } else {
+        let mut i = entry_start;
+        while i < into_idx {
+            let end_idx = consume_concatenate_operand(source, tokens, i, into_idx, &["into"]);
+            if end_idx == i {
+                i += 1;
+                continue;
+            }
+            push_wrapped_expr_child(
+                b,
+                children,
+                source,
+                tokens,
+                i,
+                end_idx,
+                tokens
+                    .get(i.checked_sub(1).unwrap_or(entry_start))
+                    .filter(|_| i > entry_start),
+                SyntaxKind::ConcatenateSourceOperand,
+            );
+            i = end_idx;
+        }
     }
 
     children.push(token_leaf(b, &tokens[into_idx]));
+    let mut i;
     if let Some(next_i) = push_wrapped_data_inline_decl_child(
         b,
         children,
@@ -15056,6 +15096,34 @@ SELECT hierarchy~*, hierarchy_level
                 .count_kind(parsed.file.root(), SyntaxKind::ConcatenateStmt),
             1
         );
+    }
+
+    #[test]
+    fn parses_concatenate_lines_of_stmt() {
+        let parsed =
+            crate::parse("CONCATENATE LINES OF lt_order_parts INTO rv_orderby SEPARATED BY `, `.");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let root = parsed.file.root();
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::ConcatenateStmt), 1);
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateSourceOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateTargetOperand),
+            1
+        );
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(root, SyntaxKind::ConcatenateSeparatorOperand),
+            1
+        );
+        assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
     }
 
     #[test]

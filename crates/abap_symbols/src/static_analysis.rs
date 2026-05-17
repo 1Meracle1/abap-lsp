@@ -250,6 +250,7 @@ fn static_analysis_finding(diagnostic: &Diagnostic) -> Option<StaticAnalysisFind
         | DiagnosticKind::InvalidParameterType
         | DiagnosticKind::IncompatibleAssignmentType
         | DiagnosticKind::IncompatibleArgumentType
+        | DiagnosticKind::InvalidConcatenateSource
         | DiagnosticKind::UnknownNamedParameter
         | DiagnosticKind::UnknownFunctionModuleException
         | DiagnosticKind::DuplicateNamedParameter

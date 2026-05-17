@@ -51,6 +51,13 @@ pub(crate) enum TypeCompatibility {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InternalTableLineFactResult {
+    Line(TypeFactData),
+    NotInternalTable,
+    Unknown,
+}
+
 #[derive(Clone, Copy)]
 struct CompatibilityContext<'a> {
     project: &'a ProjectAnalysis,
@@ -228,6 +235,26 @@ pub(crate) fn type_facts_strict_table_kind_compatibility<'a>(
         false,
         true,
     )
+}
+
+pub(crate) fn internal_table_line_fact_result<'a>(
+    project: &'a ProjectAnalysis,
+    lookup: &'a TypeFactLookup,
+    unit: &'a UnitAnalysis,
+    fact: &TypeFactData,
+) -> InternalTableLineFactResult {
+    let ctx = CompatibilityContext { project, lookup };
+    let Some((unit, fact)) = normalize_type_fact(ctx, unit, fact, 0) else {
+        return InternalTableLineFactResult::Unknown;
+    };
+    if let Some((_, line)) = internal_table_line_fact(ctx, unit, &fact, 0) {
+        return InternalTableLineFactResult::Line(line);
+    }
+    match classify_normalized_type_fact(ctx, unit, &fact, 0) {
+        Some(ClassifiedType::Table { .. }) => InternalTableLineFactResult::Unknown,
+        Some(_) if fact.is_known() => InternalTableLineFactResult::NotInternalTable,
+        _ => InternalTableLineFactResult::Unknown,
+    }
 }
 
 fn type_facts_compatibility_inner<'a>(

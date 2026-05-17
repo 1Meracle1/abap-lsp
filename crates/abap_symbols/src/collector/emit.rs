@@ -1,8 +1,8 @@
 use crate::def_map::{
-    AssignmentSiteData, CallSiteData, ClassMemberData, FieldAccess, FormRoutineData,
-    FunctionModuleData, NamedArgumentAccess, PerformCallData, SqlDynamicFragmentData,
-    SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData, SqlSourceData,
-    SqlTargetData, ValueFlowEdgeData,
+    AssignmentSiteData, CallSiteData, ClassMemberData, ConcatenateLinesOfSiteData, FieldAccess,
+    FormRoutineData, FunctionModuleData, NamedArgumentAccess, PerformCallData,
+    SqlDynamicFragmentData, SqlNameRefData, SqlPredicateData, SqlProjectionData, SqlQueryData,
+    SqlSourceData, SqlTargetData, ValueFlowEdgeData,
 };
 
 use super::Collector;
@@ -12,6 +12,7 @@ pub(super) trait RefSink {
     fn emit_named_argument(&mut self, access: NamedArgumentAccess);
     fn emit_call_site(&mut self, site: CallSiteData);
     fn emit_assignment_site(&mut self, site: AssignmentSiteData);
+    fn emit_concatenate_lines_of_site(&mut self, site: ConcatenateLinesOfSiteData);
     fn emit_value_flow_edge(&mut self, edge: ValueFlowEdgeData);
 }
 
@@ -50,6 +51,10 @@ impl<'a> RefSink for Collector<'a> {
 
     fn emit_assignment_site(&mut self, site: AssignmentSiteData) {
         self.assignment_sites.push(site);
+    }
+
+    fn emit_concatenate_lines_of_site(&mut self, site: ConcatenateLinesOfSiteData) {
+        self.concatenate_lines_of_sites.push(site);
     }
 
     fn emit_value_flow_edge(&mut self, edge: ValueFlowEdgeData) {

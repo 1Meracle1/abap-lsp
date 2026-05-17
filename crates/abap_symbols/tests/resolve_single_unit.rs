@@ -5687,6 +5687,111 @@ CONCATENATE lo_prog->to_string( ) mv_odlv INTO lv_delivery_msg SEPARATED BY ': '
 }
 
 #[test]
+fn resolves_concatenate_lines_of_source_without_table_assignment_diagnostic() {
+    let src = r#"
+TYPES ty_order_parts TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+DATA lt_order_parts TYPE ty_order_parts.
+DATA rv_orderby TYPE string.
+DATA lv_separator TYPE string.
+
+CONCATENATE LINES OF lt_order_parts INTO rv_orderby SEPARATED BY lv_separator.
+"#;
+    let unit = analyze_ok(src, "file:///concatenate_lines_of.abap");
+
+    for name in ["lt_order_parts", "rv_orderby", "lv_separator"] {
+        assert!(
+            unit.references.iter().any(|reference| {
+                reference.namespace == Namespace::Value
+                    && reference.kind == ReferenceKind::Identifier
+                    && reference.name.as_ref() == name
+                    && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+            }),
+            "expected resolved CONCATENATE LINES OF reference for `{name}`, refs={:?} diagnostics={:?}",
+            unit.references,
+            unit.diagnostics
+        );
+    }
+
+    assert!(
+        !unit
+            .references
+            .iter()
+            .any(|reference| matches!(reference.name.as_ref(), "lines" | "of")),
+        "LINES OF keywords must not be collected as value references, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            DiagnosticKind::IncompatibleAssignmentType | DiagnosticKind::InvalidConcatenateSource
+        )),
+        "CONCATENATE LINES OF should not validate the table itself as the result source: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_concatenate_lines_of_non_table_source() {
+    let src = r#"
+DATA lv_order_part TYPE string.
+DATA rv_orderby TYPE string.
+
+CONCATENATE LINES OF lv_order_part INTO rv_orderby.
+"#;
+    let unit = analyze_ok(src, "file:///concatenate_lines_of_scalar.abap");
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidConcatenateSource
+                && diag.message.contains("must be an internal table")
+        }),
+        "expected CONCATENATE LINES OF table diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn reports_concatenate_lines_of_non_character_line_type() {
+    let src = r#"
+DATA lt_numbers TYPE STANDARD TABLE OF i WITH EMPTY KEY.
+DATA rv_text TYPE string.
+
+CONCATENATE LINES OF lt_numbers INTO rv_text.
+"#;
+    let unit = analyze_ok(src, "file:///concatenate_lines_of_numeric.abap");
+
+    assert!(
+        unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::InvalidConcatenateSource
+                && diag.message.contains("line type must be character-like")
+        }),
+        "expected CONCATENATE LINES OF line-type diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_concatenate_lines_of_byte_table_in_byte_mode() {
+    let src = r#"
+TYPES ty_byte TYPE x LENGTH 1.
+DATA lt_bytes TYPE STANDARD TABLE OF ty_byte WITH EMPTY KEY.
+DATA rv_bytes TYPE xstring.
+
+CONCATENATE LINES OF lt_bytes INTO rv_bytes IN BYTE MODE.
+"#;
+    let unit = analyze_ok(src, "file:///concatenate_lines_of_bytes.abap");
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::InvalidConcatenateSource),
+        "unexpected CONCATENATE LINES OF byte-mode diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn concatenate_stmt_declares_inline_data_target_from_substring_operands() {
     let src = r#"
 FORM build_timestamp.

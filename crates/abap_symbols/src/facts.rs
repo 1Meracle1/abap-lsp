@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
-    ExpressionFactData, ExpressionFactKind, FieldAccess, FieldAccessSegment, FieldTypeRefData,
-    MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, Resolution,
-    RoutineControlRegionData, RoutineLoopKind, RoutineSiteKind, SymbolKind, TypeFactData,
-    UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
+    ConcatenateLinesOfSiteData, ExpressionFactData, ExpressionFactKind, FieldAccess,
+    FieldAccessSegment, FieldTypeRefData, MethodParameterSection, NamedArgumentSection,
+    NamedArgumentTarget, ReferenceKind, Resolution, RoutineControlRegionData, RoutineLoopKind,
+    RoutineSiteKind, SymbolKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
+    ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::ScopeIndex;
@@ -19,6 +20,7 @@ struct InferredUnitFacts {
     value_flow_edges: Vec<ValueFlowEdgeData>,
     symbol_type_facts: Vec<SymbolTypeFactUpdate>,
     assignment_type_facts: Vec<(usize, TypeFactData, TypeFactData)>,
+    concatenate_lines_of_type_facts: Vec<(usize, TypeFactData)>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +150,11 @@ fn apply_unit_facts(unit: &mut UnitAnalysis, facts: InferredUnitFacts) -> bool {
         if let Some(assignment) = unit.assignment_sites.get_mut(assignment_idx) {
             assignment.lhs = lhs;
             assignment.rhs = rhs;
+        }
+    }
+    for (site_idx, source) in facts.concatenate_lines_of_type_facts {
+        if let Some(site) = unit.concatenate_lines_of_sites.get_mut(site_idx) {
+            site.source = source;
         }
     }
     rerun
@@ -340,6 +347,13 @@ impl<'a> FactBuilder<'a> {
             if let Some(update) = self.infer_inline_assignment_symbol_type(unit_idx, assignment) {
                 out.symbol_type_facts.push(update);
             }
+        }
+
+        for (site_idx, site) in unit.concatenate_lines_of_sites.iter().enumerate() {
+            out.concatenate_lines_of_type_facts.push((
+                site_idx,
+                self.concatenate_lines_of_source_type(unit_idx, site),
+            ));
         }
 
         dedup_expression_facts(&mut out.expression_facts);
@@ -632,17 +646,38 @@ impl<'a> FactBuilder<'a> {
         unit_idx: usize,
         assignment: &crate::AssignmentSiteData,
     ) -> Option<TypeFactData> {
+        self.expression_type_fact_for_range(unit_idx, assignment.scope, &assignment.rhs_range)
+    }
+
+    fn concatenate_lines_of_source_type(
+        &self,
+        unit_idx: usize,
+        site: &ConcatenateLinesOfSiteData,
+    ) -> TypeFactData {
+        self.expression_type_fact_for_range(unit_idx, site.scope, &site.source_range)
+            .unwrap_or_else(|| {
+                self.enrich_existing_type_fact(unit_idx, site.scope, unit_idx, &site.source)
+            })
+    }
+
+    fn expression_type_fact_for_range(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        range: &std::ops::Range<usize>,
+    ) -> Option<TypeFactData> {
         let unit = &self.units[unit_idx];
-        let key = scoped_range_key(assignment.scope, &assignment.rhs_range);
+        let key = scoped_range_key(scope, range);
         if let Some(accesses) = self.field_accesses_by_range[unit_idx].get(&key)
             && accesses.len() == 1
         {
             let access = &unit.field_accesses[accesses[0]];
             return Some(self.type_fact_for_access(unit_idx, access));
         }
-        let mut calls = unit.call_sites.iter().filter(|call_site| {
-            call_site.scope == assignment.scope && call_site.range == assignment.rhs_range
-        });
+        let mut calls = unit
+            .call_sites
+            .iter()
+            .filter(|call_site| call_site.scope == scope && call_site.range == *range);
         if let Some(call_site) = calls.next()
             && calls.next().is_none()
         {
@@ -661,7 +696,7 @@ impl<'a> FactBuilder<'a> {
         let Some(Resolution::Symbol(handle)) = reference.resolution else {
             return None;
         };
-        Some(self.symbol_type_fact_for_site(unit_idx, assignment.scope, handle))
+        Some(self.symbol_type_fact_for_site(unit_idx, scope, handle))
     }
 
     fn selector_expression_facts(

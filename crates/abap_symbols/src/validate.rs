@@ -5,8 +5,9 @@ use abap_lexer::TextRange;
 
 use crate::builtins::builtin_routine_spec;
 use crate::compatibility::{
-    TypeFactLookup, call_section_matches_parameter, parameter_is_required,
-    positional_parameter_section, type_facts_compatibility, type_facts_parameter_compatibility,
+    InternalTableLineFactResult, TypeFactLookup, call_section_matches_parameter,
+    internal_table_line_fact_result, parameter_is_required, positional_parameter_section,
+    type_facts_compatibility, type_facts_parameter_compatibility,
     type_facts_strict_table_kind_compatibility,
 };
 use crate::def_map::{
@@ -2496,6 +2497,76 @@ fn type_fact_label(fact: &TypeFactData) -> String {
         return "structure".to_string();
     }
     "value".to_string()
+}
+
+fn builtin_type_fact(name: &'static str) -> TypeFactData {
+    TypeFactData {
+        structure: None,
+        declared_type: Some(FieldTypeRefData {
+            namespace: Namespace::Type,
+            is_ref: false,
+            base_name: Arc::from(name),
+            field_path: Vec::new(),
+        }),
+        type_clause_display: None,
+        table_line: None,
+    }
+}
+
+fn validate_concatenate_lines_of_sites(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for site in &unit.concatenate_lines_of_sites {
+        let line = match internal_table_line_fact_result(
+            project,
+            &lookup.type_fact_lookup,
+            unit,
+            &site.source,
+        ) {
+            InternalTableLineFactResult::Line(line) => line,
+            InternalTableLineFactResult::NotInternalTable => {
+                diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::InvalidConcatenateSource,
+                    range: site.source_range.clone(),
+                    message: format!(
+                        "CONCATENATE LINES OF source must be an internal table, found '{}'",
+                        type_fact_label(&site.source)
+                    ),
+                });
+                continue;
+            }
+            InternalTableLineFactResult::Unknown => continue,
+        };
+        let expected = builtin_type_fact(if site.byte_mode { "xsequence" } else { "clike" });
+        if type_facts_parameter_compatibility(
+            project,
+            &lookup.type_fact_lookup,
+            unit,
+            &expected,
+            unit,
+            &line,
+        )
+        .is_incompatible()
+        {
+            diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidConcatenateSource,
+                range: site.source_range.clone(),
+                message: format!(
+                    "CONCATENATE LINES OF table line type must be {}, found '{}'",
+                    if site.byte_mode {
+                        "byte-like in BYTE MODE"
+                    } else {
+                        "character-like"
+                    },
+                    type_fact_label(&line)
+                ),
+            });
+        }
+    }
+    diagnostics
 }
 
 enum MoveCorrespondingOperand<'a> {
@@ -5744,6 +5815,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 declared_type = field.type_ref.clone();
             }
         }
+
+        unit_diagnostics.extend(validate_concatenate_lines_of_sites(project, &lookup, unit));
 
         for assignment in &unit.assignment_sites {
             if assignment.is_corresponding {

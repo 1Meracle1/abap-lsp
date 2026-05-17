@@ -344,6 +344,7 @@ pub enum DiagnosticKind {
     InvalidParameterType,
     IncompatibleAssignmentType,
     IncompatibleArgumentType,
+    InvalidConcatenateSource,
     UnknownNamedParameter,
     UnknownFunctionModuleException,
     DuplicateNamedParameter,
@@ -709,6 +710,15 @@ pub struct AssignmentSiteData {
     pub is_corresponding: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConcatenateLinesOfSiteData {
+    pub scope: ScopeId,
+    pub range: TextRange,
+    pub source_range: TextRange,
+    pub source: TypeFactData,
+    pub byte_mode: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpressionFactKind {
     Reference,
@@ -1041,6 +1051,7 @@ pub struct UnitAnalysis {
     pub named_arguments: Vec<NamedArgumentAccess>,
     pub call_sites: Vec<CallSiteData>,
     pub assignment_sites: Vec<AssignmentSiteData>,
+    pub concatenate_lines_of_sites: Vec<ConcatenateLinesOfSiteData>,
     pub expression_facts: Vec<ExpressionFactData>,
     pub value_flow_edges: Vec<ValueFlowEdgeData>,
     pub perform_calls: Vec<PerformCallData>,

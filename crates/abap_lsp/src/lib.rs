@@ -6769,6 +6769,7 @@ fn semantic_diagnostic_severity(kind: DiagnosticKind) -> DiagnosticSeverity {
         | DiagnosticKind::MissingSuperConstructorCall
         | DiagnosticKind::InvalidObjectTypeReference
         | DiagnosticKind::InvalidParameterType
+        | DiagnosticKind::InvalidConcatenateSource
         | DiagnosticKind::UnknownNamedParameter
         | DiagnosticKind::DuplicateNamedParameter
         | DiagnosticKind::MissingRequiredParameter
