@@ -682,7 +682,7 @@ fn is_letter(c: char) -> bool {
 
 #[inline]
 fn is_digit(c: char) -> bool {
-    c.is_ascii_digit() || get_general_category(c) == GeneralCategory::DecimalNumber
+    c.is_ascii_digit()
 }
 
 #[inline]
@@ -722,6 +722,24 @@ mod tests {
         let r = tokenize("<fs>");
         assert_eq!(r.tokens[0].kind, TokenKind::Ident);
         assert_eq!(r.tokens[0].lexeme("<fs>"), "<fs>");
+    }
+
+    #[test]
+    fn unicode_decimal_digits_do_not_extend_tokens() {
+        let src = "lv_\u{0661} 1\u{0661}";
+        let r = tokenize(src);
+        assert_eq!(
+            r.tokens.iter().map(|t| t.kind).collect::<Vec<_>>(),
+            vec![
+                TokenKind::Ident,
+                TokenKind::Other,
+                TokenKind::Number,
+                TokenKind::Other,
+                TokenKind::Eof,
+            ]
+        );
+        assert_eq!(r.tokens[0].lexeme(src), "lv_");
+        assert_eq!(r.tokens[2].lexeme(src), "1");
     }
 
     #[test]
