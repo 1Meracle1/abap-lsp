@@ -3055,8 +3055,65 @@ impl AnalysisSnapshot {
     fn bare_identifier_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
         let mut completion = self.method_parameter_completion_at(offset);
         merge_completion(&mut completion, self.visible_symbol_completion_at(offset));
+        merge_completion(&mut completion, self.class_member_completion_at(offset));
         merge_completion(&mut completion, self.keyword_completion_at(offset));
         completion
+    }
+
+    fn class_member_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
+        let context = self.bare_identifier_completion_context(offset)?;
+        if context.in_type_position {
+            return None;
+        }
+        let scope = innermost_scope_at(&self.symbols, context.replace_range.start);
+        let method_scope = enclosing_method_scope_with_owner(&self.symbols, scope)?;
+        let class_symbol = enclosing_class_owner(&self.symbols, method_scope)?;
+        let requires_static = lookup_scope_chain(
+            &self.symbols,
+            self.scope_index(),
+            method_scope,
+            Namespace::Value,
+            &Arc::<str>::from("me"),
+        )
+        .is_none();
+        let mut items: Vec<_> =
+            collect_class_value_members_in_hierarchy(self, self.symbols.as_ref(), class_symbol)
+                .into_iter()
+                .filter(|(member_unit, member)| {
+                    (!requires_static || member.is_static)
+                        && class_member_visible_to(
+                            self,
+                            self.symbols.as_ref(),
+                            scope,
+                            member_unit,
+                            member,
+                        )
+                        && member.name.as_ref().starts_with(context.prefix.as_ref())
+                })
+                .map(|(member_unit, member)| {
+                    CompletionItem::Selector(SelectorCompletionItem {
+                        name: Arc::clone(&member.name),
+                        declared_type: None,
+                        declaration: Some(format_class_member_signature(member_unit, member)),
+                        kind: hovered_component_kind_for_class_member(member),
+                        field_owner_structure_name: None,
+                        insertion: if member.kind == ClassMemberKind::Method {
+                            callable_completion_insertion(member)
+                        } else {
+                            identifier_completion_insertion(member.name.as_ref())
+                        },
+                    })
+                })
+                .collect();
+        if items.is_empty() {
+            return None;
+        }
+        items.sort_by(|left, right| completion_item_name(left).cmp(completion_item_name(right)));
+        Some(CompletionInfo {
+            replace_range: context.replace_range,
+            items,
+            in_type_position: false,
+        })
     }
 
     fn visible_symbol_completion_at(&self, offset: usize) -> Option<CompletionInfo> {
@@ -14417,6 +14474,49 @@ ENDCLASS.";
             "{:?}",
             snapshot.symbols.diagnostics
         );
+    }
+
+    #[test]
+    fn completes_bare_inherited_attributes_inside_instance_method() {
+        let store = DocumentStore::default();
+        let src = "\
+CLASS zcl_base DEFINITION.
+  PROTECTED SECTION.
+    DATA mo_context TYPE REF TO object.
+ENDCLASS.
+CLASS zcl_base IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_parent DEFINITION INHERITING FROM zcl_base.
+  PROTECTED SECTION.
+    DATA mo_injection TYPE REF TO object.
+ENDCLASS.
+CLASS zcl_parent IMPLEMENTATION.
+ENDCLASS.
+
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    mo
+  ENDMETHOD.
+ENDCLASS.";
+
+        let snapshot = store.publish("file:///main.abap", 1, src);
+        let offset = src.rfind("mo").expect("prefix") + 2;
+        let completion = snapshot.completion_at(offset).expect("completion");
+        let labels = completion
+            .items
+            .iter()
+            .map(|item| super::completion_item_name(item))
+            .collect::<Vec<_>>();
+
+        assert_eq!(&src[completion.replace_range], "mo");
+        assert!(labels.contains(&"mo_context"), "{labels:?}");
+        assert!(labels.contains(&"mo_injection"), "{labels:?}");
     }
 
     #[test]
