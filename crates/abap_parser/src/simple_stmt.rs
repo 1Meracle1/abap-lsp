@@ -4104,27 +4104,37 @@ fn perform_line_continuation(source: &str, tokens: &[Token], start: usize, idx: 
                 .is_some_and(|next| token_matches_keyword(source, next, "found")))
 }
 
-fn chained_method_entry_continuation(
+fn chained_decl_entry_continuation(
     source: &str,
     tokens: &[Token],
     start: usize,
     idx: usize,
 ) -> bool {
+    let Some(prev) = previous_non_comment_token(tokens, idx) else {
+        return false;
+    };
+    if !matches!(tokens[prev].kind, TokenKind::Colon | TokenKind::Comma) {
+        return false;
+    }
     let significant = tokens[start..idx]
         .iter()
         .filter(|token| token.kind != TokenKind::Comment)
         .collect::<Vec<_>>();
+    if !significant
+        .iter()
+        .any(|token| token.kind == TokenKind::Colon)
+    {
+        return false;
+    }
     method_statement_name_idx(source, &significant).is_some()
-        && significant
-            .iter()
-            .any(|token| token.kind == TokenKind::Colon)
-        && previous_non_comment_token(tokens, idx)
-            .is_some_and(|prev| tokens[prev].kind == TokenKind::Comma)
+        || significant
+            .first()
+            .is_some_and(|first| token_matches_keyword(source, first, "aliases"))
 }
 
 fn simple_stmt_line_continuation(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
     perform_line_continuation(source, tokens, start, idx)
-        || chained_method_entry_continuation(source, tokens, start, idx)
+        || chained_decl_entry_continuation(source, tokens, start, idx)
 }
 
 fn simple_stmt_boundary_at(source: &str, tokens: &[Token], start: usize, idx: usize) -> bool {
@@ -4348,6 +4358,35 @@ ENDCLASS.";
                 .count_kind(parsed.file.root(), SyntaxKind::MethodsStmt),
             1
         );
+    }
+
+    #[test]
+    fn chained_methods_allow_keyword_names_after_colon() {
+        let src = "\
+CLASS lcl DEFINITION.\n\
+  PUBLIC SECTION.\n\
+    METHODS:\n\
+      read,\n\
+      delete.\n\
+ENDCLASS.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let methods = MethodsStmt::cast(SyntaxNodeRef::new(
+            &parsed.file,
+            parsed
+                .file
+                .find_first_kind(parsed.file.root(), SyntaxKind::MethodsStmt)
+                .expect("methods stmt"),
+        ))
+        .expect("methods stmt");
+        let names = methods
+            .entries(src)
+            .iter()
+            .filter_map(|entry| entry.name_token(src))
+            .filter_map(|name| name.text(src))
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["read".to_string(), "delete".to_string()]);
     }
 
     #[test]
@@ -5371,6 +5410,22 @@ GET PF-STATUS DATA(status) PROGRAM prog EXCLUDING excl.";
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::DataInlineDecl), 5);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::UnparsedStmt), 0);
         assert_eq!(parsed.file.count_kind(root, SyntaxKind::Error), 0);
+    }
+
+    #[test]
+    fn chained_aliases_allow_keyword_alias_names() {
+        let parsed = crate::parse(
+            "\
+ALIASES:
+  set_null FOR zif_demo~set_null,
+  delete FOR zif_demo~delete.",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let aliases = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::AliasesStmt)
+            .expect("aliases stmt");
+        assert_eq!(parsed.file.count_kind(aliases, SyntaxKind::AliasEntry), 2);
     }
 
     #[test]
