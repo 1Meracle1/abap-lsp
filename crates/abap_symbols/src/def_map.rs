@@ -1157,6 +1157,12 @@ impl UnitAnalysis {
         self.references.get(reference.reference_id.as_usize())
     }
 
+    pub(crate) fn reference_at_range(&self, range: &TextRange) -> Option<&ReferenceData> {
+        let semantic_id = self.semantic_index.reference_at_range(range)?;
+        let reference = self.semantic_index.reference(semantic_id);
+        self.references.get(reference.reference_id.as_usize())
+    }
+
     pub(crate) fn type_reference_at_offset(&self, offset: usize) -> Option<&ReferenceData> {
         let reference = self.reference_at_offset(offset)?;
         (reference.kind == ReferenceKind::TypeRef).then_some(reference)

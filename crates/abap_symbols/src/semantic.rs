@@ -94,6 +94,7 @@ pub(crate) struct SemanticIndex {
     structure_fields: Vec<SemStructureField>,
     references_by_resolution: HashMap<SymbolHandle, Vec<SemReferenceId>>,
     references_by_scope: HashMap<ScopeId, Vec<SemReferenceId>>,
+    references_by_range: HashMap<(usize, usize), SemReferenceId>,
     type_references_by_name: HashMap<String, Vec<SemReferenceId>>,
     sql_source_name_refs_by_name: HashMap<String, Vec<SemSqlNameRefId>>,
     sql_sources_by_name: HashMap<String, Vec<usize>>,
@@ -125,6 +126,8 @@ impl SemanticIndex {
             HashMap::with_capacity(unit.references.len());
         let mut references_by_scope: HashMap<ScopeId, Vec<SemReferenceId>> =
             HashMap::with_capacity(unit.scopes.len());
+        let mut references_by_range: HashMap<(usize, usize), SemReferenceId> =
+            HashMap::with_capacity(unit.references.len());
         let mut type_references_by_name: HashMap<String, Vec<SemReferenceId>> = HashMap::new();
         for (idx, reference) in unit.references.iter().enumerate() {
             let id = SemReferenceId(idx as u32);
@@ -133,6 +136,9 @@ impl SemanticIndex {
                 scope: reference.scope,
                 range: reference.range.clone(),
             });
+            references_by_range
+                .entry((reference.range.start, reference.range.end))
+                .or_insert(id);
             if let Some(Resolution::Symbol(handle)) = reference.resolution {
                 references_by_resolution.entry(handle).or_default().push(id);
             }
@@ -234,6 +240,7 @@ impl SemanticIndex {
             structure_fields,
             references_by_resolution,
             references_by_scope,
+            references_by_range,
             type_references_by_name,
             sql_source_name_refs_by_name,
             sql_sources_by_name,
@@ -339,6 +346,12 @@ impl SemanticIndex {
             })
             .min_by_key(|(_, reference)| reference.range.end.saturating_sub(reference.range.start))
             .map(|(idx, _)| SemReferenceId(idx as u32))
+    }
+
+    pub(crate) fn reference_at_range(&self, range: &TextRange) -> Option<SemReferenceId> {
+        self.references_by_range
+            .get(&(range.start, range.end))
+            .copied()
     }
 
     pub(crate) fn references_resolving_to(

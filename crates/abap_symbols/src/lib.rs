@@ -2609,6 +2609,10 @@ ASSIGN ls_xmlparse-xi_data->* TO <ls_raw_data>.
             .reference_at_offset(use_offset)
             .expect("reference at use offset");
         assert_eq!(reference.name.as_ref(), "lv_value");
+        let range_reference = unit
+            .reference_at_range(&reference.range)
+            .expect("reference at exact range");
+        assert_eq!(range_reference.id, reference.id);
 
         let refs: Vec<_> = semantic
             .refs()

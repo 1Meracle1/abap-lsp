@@ -5209,11 +5209,7 @@ fn resolved_symbol_handle_for_access_base(
     }
     let reference = exact_reference_use_in_range(reference_uses, &access.base_range)
         .and_then(|use_site| unit.references.get(use_site.reference.as_usize()))
-        .or_else(|| {
-            unit.references
-                .iter()
-                .find(|reference| reference.range == access.base_range)
-        });
+        .or_else(|| unit.reference_at_range(&access.base_range));
     if let Some(reference) = reference
         && let Some(Resolution::Symbol(handle)) = reference.resolution
     {
