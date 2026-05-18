@@ -8559,6 +8559,38 @@ fn resolves_any_as_builtin_type() {
 }
 
 #[test]
+fn resolves_generic_character_builtin_types() {
+    let src = r#"
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS take IMPORTING iv_text TYPE clike iv_seq TYPE csequence.
+ENDCLASS.
+"#;
+    let unit = analyze_ok(src, "file:///builtin_character_generics.abap");
+
+    for name in ["clike", "csequence"] {
+        let type_ref = unit
+            .references
+            .iter()
+            .find(|reference| {
+                reference.kind == ReferenceKind::TypeRef
+                    && reference.namespace == Namespace::Type
+                    && reference.name.as_ref() == name
+            })
+            .expect("generic character type reference");
+        assert_eq!(type_ref.resolution, Some(Resolution::BuiltinType));
+        assert!(
+            !unit
+                .diagnostics
+                .iter()
+                .any(|diag| diag.message.contains(name)),
+            "unexpected diagnostic for {name}: {:?}",
+            unit.diagnostics
+        );
+    }
+}
+
+#[test]
 fn resolves_builtin_sy_and_common_ddic_aliases() {
     let src = "\
 DATA lv_tabix TYPE sy-tabix.\n\
