@@ -745,6 +745,125 @@ type SelectorStructureWriteCache = HashMap<(usize, usize), Option<SelectorStruct
 type DirectWriteCache = HashMap<(usize, usize), Option<DataflowValueId>>;
 type RoutineImplKey = (UnitId, usize, usize);
 
+#[derive(Debug, Clone)]
+struct FieldSymbolTargetIndex {
+    by_decl: HashMap<(usize, usize, Arc<str>), DataflowValueId>,
+    direct_by_range: HashMap<(usize, usize), Option<DataflowValueId>>,
+}
+
+impl FieldSymbolTargetIndex {
+    fn new(
+        unit: &UnitAnalysis,
+        tracked_symbols: &[&SymbolData],
+        reference_uses: &[ReferenceUse],
+        value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
+        values: &[RoutineDataflowValue],
+    ) -> Self {
+        let mut by_decl = HashMap::new();
+        for symbol in tracked_symbols {
+            if symbol.kind != SymbolKind::FieldSymbol {
+                continue;
+            }
+            let Some(value_id) = value_ids_by_symbol
+                .get(&SymbolHandle {
+                    unit: unit.unit_id,
+                    symbol: symbol.id,
+                })
+                .copied()
+            else {
+                continue;
+            };
+            by_decl
+                .entry((
+                    symbol.decl_range.start,
+                    symbol.decl_range.end,
+                    Arc::clone(&symbol.name),
+                ))
+                .or_insert(value_id);
+        }
+
+        let mut direct_by_range = HashMap::new();
+        for use_site in reference_uses {
+            let value = (values[use_site.value.as_usize()].kind == DataflowValueKind::FieldSymbol)
+                .then_some(use_site.value);
+            direct_by_range
+                .entry((use_site.range.start, use_site.range.end))
+                .and_modify(|existing| *existing = None)
+                .or_insert(value);
+        }
+
+        Self {
+            by_decl,
+            direct_by_range,
+        }
+    }
+
+    fn resolve(&self, edge: &crate::ValueFlowEdgeData) -> Option<DataflowValueId> {
+        let ValueFlowTargetData::FieldSymbol { range, name } = &edge.target else {
+            return None;
+        };
+        if let Some(name) = name.as_ref()
+            && let Some(value) = self
+                .by_decl
+                .get(&(range.start, range.end, Arc::clone(name)))
+        {
+            return Some(*value);
+        }
+        self.direct_by_range
+            .get(&(range.start, range.end))
+            .copied()
+            .flatten()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ConditionalFieldSymbolBindIndex {
+    by_scope: Vec<Vec<usize>>,
+}
+
+impl ConditionalFieldSymbolBindIndex {
+    fn new(unit: &UnitAnalysis) -> Self {
+        let mut by_scope = vec![Vec::new(); unit.scopes.len()];
+        for (idx, edge) in unit.value_flow_edges.iter().enumerate() {
+            if edge.kind == ValueFlowKind::ConditionalFieldSymbolAssignment
+                && let Some(edges) = by_scope.get_mut(edge.scope.as_usize())
+            {
+                edges.push(idx);
+            }
+        }
+        Self { by_scope }
+    }
+
+    fn targets_for_update(
+        &self,
+        unit: &UnitAnalysis,
+        update: &crate::SystemFieldUpdateData,
+        field_symbol_targets: &FieldSymbolTargetIndex,
+    ) -> Vec<DataflowValueId> {
+        if !matches!(
+            update.statement,
+            SystemFieldStatementKind::Assign | SystemFieldStatementKind::ReadTable
+        ) {
+            return Vec::new();
+        }
+        let Some(edges) = self.by_scope.get(update.scope.as_usize()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for &idx in edges {
+            let Some(edge) = unit.value_flow_edges.get(idx) else {
+                continue;
+            };
+            if system_field_update_contains_field_symbol_bind(update, edge)
+                && let Some(target_value) = field_symbol_targets.resolve(edge)
+            {
+                out.push(target_value);
+            }
+        }
+        sorted_unique_value_ids(out)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldSymbolBindingTransfer {
     Set(DataflowValueId),
@@ -1764,6 +1883,14 @@ fn build_routine_dataflow(
     });
     let mut selector_structure_writes = SelectorStructureWriteCache::default();
     let mut direct_writes = DirectWriteCache::default();
+    let field_symbol_targets = FieldSymbolTargetIndex::new(
+        unit,
+        tracked_symbols,
+        &reference_uses,
+        &value_ids_by_symbol,
+        &values,
+    );
+    let conditional_field_symbol_binds = ConditionalFieldSymbolBindIndex::new(unit);
 
     let safe_field_symbol_checks =
         resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
@@ -1803,9 +1930,8 @@ fn build_routine_dataflow(
     let mut sy_subrc_success_bound_scope_refinements =
         resolve_sy_subrc_success_bound_scope_refinements(
             unit,
-            &reference_uses,
-            &value_ids_by_symbol,
-            &values,
+            &field_symbol_targets,
+            &conditional_field_symbol_binds,
             values.len(),
         );
     union_dense_scope_refinements(
@@ -1889,6 +2015,8 @@ fn build_routine_dataflow(
         &structure_assignment_trackers,
         &mut selector_structure_writes,
         &mut direct_writes,
+        &field_symbol_targets,
+        &conditional_field_symbol_binds,
         &values,
         non_returning_method_impls,
     );
@@ -2334,13 +2462,7 @@ fn build_routine_dataflow(
             }
             RoutineInstructionSite::FieldSymbolBind { index } => {
                 if let Some(edge) = unit.value_flow_edges.get(index as usize)
-                    && let Some(target_value) = resolve_field_symbol_target_value_id(
-                        unit,
-                        edge,
-                        &reference_uses,
-                        &value_ids_by_symbol,
-                        &values,
-                    )
+                    && let Some(target_value) = field_symbol_targets.resolve(edge)
                 {
                     candidate_field_symbols.insert(target_value);
                     transfer.writes.push(target_value);
@@ -3977,9 +4099,8 @@ fn single_negative_sy_subrc_guard_check_for_scope(
 
 fn resolve_sy_subrc_success_bound_scope_refinements(
     unit: &UnitAnalysis,
-    reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
-    values: &[RoutineDataflowValue],
+    field_symbol_targets: &FieldSymbolTargetIndex,
+    conditional_field_symbol_binds: &ConditionalFieldSymbolBindIndex,
     value_count: usize,
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
@@ -3993,28 +4114,10 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
         let Some(update) = latest_subrc_update_before_check(unit, check) else {
             continue;
         };
-        if !matches!(
-            update.statement,
-            SystemFieldStatementKind::Assign | SystemFieldStatementKind::ReadTable
-        ) {
-            continue;
-        }
-        for edge in &unit.value_flow_edges {
-            if edge.kind != ValueFlowKind::ConditionalFieldSymbolAssignment
-                || edge.scope != update.scope
-                || !system_field_update_contains_field_symbol_bind(update, edge)
-            {
-                continue;
-            }
-            if let Some(target_value) = resolve_field_symbol_target_value_id(
-                unit,
-                edge,
-                reference_uses,
-                value_ids_by_symbol,
-                values,
-            ) {
-                scope_bits.insert(target_value);
-            }
+        for target_value in
+            conditional_field_symbol_binds.targets_for_update(unit, update, field_symbol_targets)
+        {
+            scope_bits.insert(target_value);
         }
     }
     out
@@ -4293,40 +4396,6 @@ fn latest_subrc_update_before_check<'a>(
         .max_by_key(|update| (update.range.end, update.range.start))
 }
 
-fn conditional_bound_targets_for_subrc_success_update(
-    unit: &UnitAnalysis,
-    update: &crate::SystemFieldUpdateData,
-    reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
-    values: &[RoutineDataflowValue],
-) -> Vec<DataflowValueId> {
-    if !matches!(
-        update.statement,
-        SystemFieldStatementKind::Assign | SystemFieldStatementKind::ReadTable
-    ) {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for edge in &unit.value_flow_edges {
-        if edge.kind != ValueFlowKind::ConditionalFieldSymbolAssignment
-            || edge.scope != update.scope
-            || !system_field_update_contains_field_symbol_bind(update, edge)
-        {
-            continue;
-        }
-        if let Some(target_value) = resolve_field_symbol_target_value_id(
-            unit,
-            edge,
-            reference_uses,
-            value_ids_by_symbol,
-            values,
-        ) {
-            out.push(target_value);
-        }
-    }
-    sorted_unique_value_ids(out)
-}
-
 fn conditional_assignment_targets_for_subrc_success_update(
     unit: &UnitAnalysis,
     update: &crate::SystemFieldUpdateData,
@@ -4399,6 +4468,8 @@ fn resolve_sy_subrc_success_guard_block_refinements(
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
+    field_symbol_targets: &FieldSymbolTargetIndex,
+    conditional_field_symbol_binds: &ConditionalFieldSymbolBindIndex,
     values: &[RoutineDataflowValue],
     non_returning_method_impls: &HashSet<RoutineImplKey>,
 ) -> (Vec<DenseBitSet>, Vec<Vec<u64>>, Vec<DenseBitSet>) {
@@ -4465,13 +4536,9 @@ fn resolve_sy_subrc_success_guard_block_refinements(
                 assigned[continuation_block.as_usize()].insert(target.value);
             }
         }
-        for target in conditional_bound_targets_for_subrc_success_update(
-            unit,
-            update,
-            reference_uses,
-            value_ids_by_symbol,
-            values,
-        ) {
+        for target in
+            conditional_field_symbol_binds.targets_for_update(unit, update, field_symbol_targets)
+        {
             bound[continuation_block.as_usize()].insert(target);
         }
     }
@@ -5657,36 +5724,6 @@ fn is_safe_builtin_call(call_site: &crate::CallSiteData) -> bool {
             if builtin_routine_spec(routine_name.as_ref())
                 .is_some_and(|spec| spec.name.eq_ignore_ascii_case("lines"))
     )
-}
-
-fn resolve_field_symbol_target_value_id(
-    unit: &UnitAnalysis,
-    edge: &crate::ValueFlowEdgeData,
-    reference_uses: &[ReferenceUse],
-    value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
-    values: &[RoutineDataflowValue],
-) -> Option<DataflowValueId> {
-    let ValueFlowTargetData::FieldSymbol { range, name } = &edge.target else {
-        return None;
-    };
-    if let Some(name) = name.as_ref() {
-        for symbol in &unit.symbols {
-            if symbol.kind != SymbolKind::FieldSymbol || symbol.name != *name {
-                continue;
-            }
-            let handle = SymbolHandle {
-                unit: unit.unit_id,
-                symbol: symbol.id,
-            };
-            if let Some(value_id) = value_ids_by_symbol.get(&handle).copied()
-                && symbol.decl_range == *range
-            {
-                return Some(value_id);
-            }
-        }
-    }
-    let direct = exact_reference_use_in_range(reference_uses, range)?;
-    (values[direct.value.as_usize()].kind == DataflowValueKind::FieldSymbol).then_some(direct.value)
 }
 
 fn direct_field_symbol_values_in_range(
