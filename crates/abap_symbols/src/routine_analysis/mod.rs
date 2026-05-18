@@ -470,7 +470,6 @@ fn build_project_routine_analysis_filtered(
             }
         })
         .collect();
-
     let cfg_timer = std::time::Instant::now();
     for routine_idx in 0..out.routines.len() {
         let descriptor = out.routines[routine_idx].descriptor.clone();
@@ -499,6 +498,17 @@ fn build_project_routine_analysis_filtered(
 
     let dataflow_timer = std::time::Instant::now();
     let resolution_index = RoutineResolutionIndex::new(project);
+    let if_scope_indexes: Vec<_> = project
+        .units
+        .iter()
+        .map(|unit| {
+            if routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+                IfScopeIndex::new(unit)
+            } else {
+                IfScopeIndex::default()
+            }
+        })
+        .collect();
     let value_references_by_routine = build_value_references_by_routine(
         project,
         &out.scope_to_routine,
@@ -510,6 +520,18 @@ fn build_project_routine_analysis_filtered(
         &out.routines,
         &out.scope_to_routine,
         &value_references_by_routine,
+    );
+    let value_state_checks_by_routine = build_value_state_checks_by_routine(
+        project,
+        &out.scope_to_routine,
+        out.routines.len(),
+        unit_filter,
+    );
+    let field_symbol_state_checks_by_routine = build_field_symbol_state_checks_by_routine(
+        project,
+        &out.scope_to_routine,
+        out.routines.len(),
+        unit_filter,
     );
     let call_argument_effects_by_unit: Vec<_> = project
         .units
@@ -574,10 +596,13 @@ fn build_project_routine_analysis_filtered(
                 project,
                 &resolution_index,
                 unit,
+                &if_scope_indexes[descriptor.unit.as_usize()],
                 &selector_structure_write_indexes[descriptor.unit.as_usize()],
                 routine_control_regions,
                 &out.routines[routine_id],
                 &value_references_by_routine[routine_id],
+                &value_state_checks_by_routine[routine_id],
+                &field_symbol_state_checks_by_routine[routine_id],
                 &tracked_symbols_by_routine[routine_id],
                 &call_argument_effects_by_unit[descriptor.unit.as_usize()],
                 &form_parameter_effects,
@@ -1094,6 +1119,11 @@ struct RoutineBuildIndex<'a> {
     loop_regions: HashMap<ControlKey, &'a LoopRegionData>,
 }
 
+#[derive(Debug, Default)]
+struct IfScopeIndex {
+    else_scope_by_then_scope: HashMap<ScopeId, ScopeId>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RangeContainmentEntry {
     start: usize,
@@ -1218,6 +1248,29 @@ impl<'a> RoutineBuildIndex<'a> {
                 loop_tag_kind(kind),
             ))
             .copied()
+    }
+}
+
+impl IfScopeIndex {
+    fn new(unit: &UnitAnalysis) -> Self {
+        let mut else_scope_by_then_scope = HashMap::new();
+        for region in &unit.routine_control_regions {
+            let RoutineControlRegionData::If(if_region) = region else {
+                continue;
+            };
+            if let Some(else_scope) = if_region.else_scope {
+                else_scope_by_then_scope
+                    .entry(if_region.then_scope)
+                    .or_insert(else_scope);
+            }
+        }
+        Self {
+            else_scope_by_then_scope,
+        }
+    }
+
+    fn explicit_else_scope_for_then_scope(&self, then_scope: ScopeId) -> Option<ScopeId> {
+        self.else_scope_by_then_scope.get(&then_scope).copied()
     }
 }
 
@@ -1879,10 +1932,13 @@ fn build_routine_dataflow(
     project: &ProjectAnalysis,
     resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
+    if_scope_index: &IfScopeIndex,
     selector_structure_write_index: &SelectorStructureWriteIndex,
     control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
     routine_references: &[&ReferenceData],
+    value_state_checks: &[&crate::ValueStateCheckData],
+    field_symbol_state_checks: &[&crate::FieldSymbolStateCheckData],
     tracked_symbols: &[&SymbolData],
     call_argument_effects: &CallArgumentEffectMap,
     form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
@@ -1947,12 +2003,24 @@ fn build_routine_dataflow(
     let conditional_field_symbol_binds = ConditionalFieldSymbolBindIndex::new(unit);
     let sy_subrc_updates = SySubrcUpdateIndex::new(unit);
 
-    let safe_field_symbol_checks =
-        resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
-    let safe_value_state_checks =
-        resolve_safe_value_state_checks(unit, &reference_uses, &value_ids_by_symbol);
-    let condition_probe_reads =
-        resolve_condition_probe_reads(unit, &reference_uses, &value_ids_by_symbol);
+    let safe_field_symbol_checks = resolve_safe_field_symbol_checks(
+        unit,
+        field_symbol_state_checks,
+        &reference_uses,
+        &value_ids_by_symbol,
+    );
+    let safe_value_state_checks = resolve_safe_value_state_checks(
+        unit,
+        value_state_checks,
+        &reference_uses,
+        &value_ids_by_symbol,
+    );
+    let condition_probe_reads = resolve_condition_probe_reads(
+        unit,
+        value_state_checks,
+        &reference_uses,
+        &value_ids_by_symbol,
+    );
     let mut safe_loop_field_refs = resolve_safe_loop_where_field_refs(
         project,
         resolution_index,
@@ -1969,6 +2037,8 @@ fn build_routine_dataflow(
     ));
     let is_not_initial_scope_refinements = resolve_is_not_initial_scope_refinements(
         unit,
+        if_scope_index,
+        value_state_checks,
         &reference_uses,
         &value_ids_by_symbol,
         values.len(),
@@ -1977,6 +2047,8 @@ fn build_routine_dataflow(
         project,
         resolution_index,
         unit,
+        if_scope_index,
+        value_state_checks,
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
@@ -1985,6 +2057,7 @@ fn build_routine_dataflow(
     let mut sy_subrc_success_bound_scope_refinements =
         resolve_sy_subrc_success_bound_scope_refinements(
             unit,
+            value_state_checks,
             &sy_subrc_updates,
             &field_symbol_targets,
             &conditional_field_symbol_binds,
@@ -1994,6 +2067,7 @@ fn build_routine_dataflow(
         &mut sy_subrc_success_bound_scope_refinements,
         &resolve_is_assigned_bound_scope_refinements(
             unit,
+            field_symbol_state_checks,
             &reference_uses,
             &value_ids_by_symbol,
             values.len(),
@@ -2013,6 +2087,7 @@ fn build_routine_dataflow(
         &mut selector_structure_writes,
         &mut direct_writes,
         &values,
+        value_state_checks,
         values.len(),
     );
     let structure_field_reads = resolve_structure_field_reads(
@@ -2032,6 +2107,8 @@ fn build_routine_dataflow(
     let initial_guard_edge_refinements = resolve_initial_guard_edge_refinements(
         unit,
         routine,
+        &routine_index,
+        value_state_checks,
         &reference_uses,
         &value_ids_by_symbol,
         values.len(),
@@ -2069,6 +2146,7 @@ fn build_routine_dataflow(
         unit,
         routine,
         &routine_index,
+        value_state_checks,
         &sy_subrc_updates,
         &reference_uses,
         &value_ids_by_symbol,
@@ -2099,6 +2177,8 @@ fn build_routine_dataflow(
         &resolve_field_symbol_assigned_guard_block_refinements(
             unit,
             routine,
+            &routine_index,
+            field_symbol_state_checks,
             &reference_uses,
             &value_ids_by_symbol,
             values.len(),
@@ -2997,6 +3077,7 @@ fn build_routine_dataflow(
         &value_ids_by_symbol,
         &instruction_summaries,
         call_argument_effects,
+        value_state_checks,
         &mut direct_writes,
     ));
     sort_diagnostics(&mut diagnostics);
@@ -3068,6 +3149,7 @@ fn build_dead_store_diagnostics(
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     instruction_summaries: &[InstructionDataflowSummary],
     call_argument_effects: &CallArgumentEffectMap,
+    value_state_checks: &[&crate::ValueStateCheckData],
     direct_writes: &mut DirectWriteCache,
 ) -> Vec<Diagnostic> {
     if values.is_empty() || routine.cfg.blocks.is_empty() {
@@ -3085,8 +3167,12 @@ fn build_dead_store_diagnostics(
     if !tracked_values.any() {
         return Vec::new();
     }
-    let value_state_check_refs =
-        resolve_safe_value_state_checks(unit, reference_uses, value_ids_by_symbol);
+    let value_state_check_refs = resolve_safe_value_state_checks(
+        unit,
+        value_state_checks,
+        reference_uses,
+        value_ids_by_symbol,
+    );
 
     let instruction_summaries = build_dead_store_instruction_summaries(
         unit,
@@ -3756,11 +3842,12 @@ fn call_argument_effect_for_parameter(
 
 fn resolve_safe_field_symbol_checks(
     unit: &UnitAnalysis,
+    field_symbol_state_checks: &[&crate::FieldSymbolStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
 ) -> std::collections::HashSet<crate::ReferenceId> {
     let mut out = std::collections::HashSet::new();
-    for check in &unit.field_symbol_state_checks {
+    for &check in field_symbol_state_checks {
         if !matches!(
             check.kind,
             FieldSymbolStateCheckKind::IsAssigned | FieldSymbolStateCheckKind::IsNotAssigned
@@ -3792,11 +3879,12 @@ fn resolve_safe_field_symbol_checks(
 
 fn resolve_safe_value_state_checks(
     unit: &UnitAnalysis,
+    value_state_checks: &[&crate::ValueStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
 ) -> std::collections::HashSet<crate::ReferenceId> {
     let mut out = std::collections::HashSet::new();
-    for check in &unit.value_state_checks {
+    for &check in value_state_checks {
         if !matches!(
             check.kind,
             ValueStateCheckKind::IsInitial | ValueStateCheckKind::IsNotInitial
@@ -3828,11 +3916,12 @@ fn resolve_safe_value_state_checks(
 
 fn resolve_condition_probe_reads(
     unit: &UnitAnalysis,
+    value_state_checks: &[&crate::ValueStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
 ) -> std::collections::HashSet<crate::ReferenceId> {
     let mut out = std::collections::HashSet::new();
-    for check in &unit.value_state_checks {
+    for &check in value_state_checks {
         if check.kind != ValueStateCheckKind::ConditionProbe {
             continue;
         }
@@ -3962,13 +4051,16 @@ fn resolve_safe_loop_field_refs<'a>(
 
 fn resolve_is_not_initial_scope_refinements(
     unit: &UnitAnalysis,
+    if_scope_index: &IfScopeIndex,
+    value_state_checks: &[&crate::ValueStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     value_count: usize,
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
-    for check in &unit.value_state_checks {
-        let Some(refinement_scope) = non_initial_refinement_scope_for_check(unit, check) else {
+    for &check in value_state_checks {
+        let Some(refinement_scope) = non_initial_refinement_scope_for_check(if_scope_index, check)
+        else {
             continue;
         };
         let Some(scope_bits) = out.get_mut(refinement_scope.as_usize()) else {
@@ -4001,14 +4093,17 @@ fn resolve_is_not_initial_field_scope_refinements(
     project: &ProjectAnalysis,
     resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
+    if_scope_index: &IfScopeIndex,
+    value_state_checks: &[&crate::ValueStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
     values: &[RoutineDataflowValue],
 ) -> Vec<Vec<u64>> {
     let mut out = vec![vec![0u64; values.len()]; unit.scopes.len()];
-    for check in &unit.value_state_checks {
-        let Some(refinement_scope) = non_initial_refinement_scope_for_check(unit, check) else {
+    for &check in value_state_checks {
+        let Some(refinement_scope) = non_initial_refinement_scope_for_check(if_scope_index, check)
+        else {
             continue;
         };
         let Some(field_name) = check.field_name.as_ref() else {
@@ -4056,6 +4151,8 @@ fn resolve_is_not_initial_field_scope_refinements(
 fn resolve_initial_guard_edge_refinements(
     unit: &UnitAnalysis,
     routine: &RoutineAnalysis,
+    routine_index: &RoutineBuildIndex<'_>,
+    value_state_checks: &[&crate::ValueStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     value_count: usize,
@@ -4072,13 +4169,14 @@ fn resolve_initial_guard_edge_refinements(
         else {
             continue;
         };
-        let Some(region) = if_region_for_instruction(unit, instruction) else {
+        let Some(region) = routine_index.if_region(instruction) else {
             continue;
         };
         if region.else_scope.is_some() || !region.elseif_scopes.is_empty() {
             continue;
         }
-        let Some(check) = single_initial_value_guard_check_for_scope(unit, region.then_scope)
+        let Some(check) =
+            single_initial_value_guard_check_for_scope(value_state_checks, region.then_scope)
         else {
             continue;
         };
@@ -4096,11 +4194,11 @@ fn resolve_initial_guard_edge_refinements(
     out
 }
 
-fn single_initial_value_guard_check_for_scope(
-    unit: &UnitAnalysis,
+fn single_initial_value_guard_check_for_scope<'a>(
+    value_state_checks: &[&'a crate::ValueStateCheckData],
     scope: ScopeId,
-) -> Option<&crate::ValueStateCheckData> {
-    let mut checks = unit.value_state_checks.iter().filter(|candidate| {
+) -> Option<&'a crate::ValueStateCheckData> {
+    let mut checks = value_state_checks.iter().copied().filter(|candidate| {
         candidate.scope == scope
             && candidate.field_name.is_none()
             && candidate.kind == ValueStateCheckKind::IsInitial
@@ -4110,50 +4208,29 @@ fn single_initial_value_guard_check_for_scope(
 }
 
 fn non_initial_refinement_scope_for_check(
-    unit: &UnitAnalysis,
+    if_scope_index: &IfScopeIndex,
     check: &crate::ValueStateCheckData,
 ) -> Option<ScopeId> {
     match check.kind {
         ValueStateCheckKind::IsNotInitial => Some(check.scope),
-        ValueStateCheckKind::IsInitial => explicit_else_scope_for_then_scope(unit, check.scope),
+        ValueStateCheckKind::IsInitial => {
+            if_scope_index.explicit_else_scope_for_then_scope(check.scope)
+        }
         ValueStateCheckKind::EqualsZero
         | ValueStateCheckKind::NotEqualsZero
         | ValueStateCheckKind::ConditionProbe => None,
     }
 }
 
-fn explicit_else_scope_for_then_scope(unit: &UnitAnalysis, then_scope: ScopeId) -> Option<ScopeId> {
-    unit.routine_control_regions.iter().find_map(|region| {
-        let RoutineControlRegionData::If(if_region) = region else {
-            return None;
-        };
-        (if_region.then_scope == then_scope)
-            .then_some(if_region.else_scope)
-            .flatten()
-    })
-}
-
-fn if_region_for_instruction<'a>(
-    unit: &'a UnitAnalysis,
-    instruction: &RoutineInstruction,
-) -> Option<&'a IfRegionData> {
-    unit.routine_control_regions.iter().find_map(|region| {
-        let RoutineControlRegionData::If(if_region) = region else {
-            return None;
-        };
-        (if_region.scope == instruction.scope && if_region.range == instruction.range)
-            .then_some(if_region)
-    })
-}
-
-fn single_negative_sy_subrc_guard_check_for_scope(
+fn single_negative_sy_subrc_guard_check_for_scope<'a>(
     unit: &UnitAnalysis,
+    value_state_checks: &[&'a crate::ValueStateCheckData],
     scope: ScopeId,
-) -> Option<&crate::ValueStateCheckData> {
+) -> Option<&'a crate::ValueStateCheckData> {
     let mut check = None;
-    for candidate in unit
-        .value_state_checks
+    for candidate in value_state_checks
         .iter()
+        .copied()
         .filter(|candidate| candidate.scope == scope)
         .filter(|candidate| sy_subrc_negative_guard_check(unit, candidate))
     {
@@ -4167,13 +4244,14 @@ fn single_negative_sy_subrc_guard_check_for_scope(
 
 fn resolve_sy_subrc_success_bound_scope_refinements(
     unit: &UnitAnalysis,
+    value_state_checks: &[&crate::ValueStateCheckData],
     sy_subrc_updates: &SySubrcUpdateIndex,
     field_symbol_targets: &FieldSymbolTargetIndex,
     conditional_field_symbol_binds: &ConditionalFieldSymbolBindIndex,
     value_count: usize,
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
-    for check in &unit.value_state_checks {
+    for &check in value_state_checks {
         if !sy_subrc_success_check(unit, check) {
             continue;
         }
@@ -4194,12 +4272,13 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
 
 fn resolve_is_assigned_bound_scope_refinements(
     unit: &UnitAnalysis,
+    field_symbol_state_checks: &[&crate::FieldSymbolStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     value_count: usize,
 ) -> Vec<DenseBitSet> {
     let mut out = vec![DenseBitSet::new(value_count); unit.scopes.len()];
-    for check in &unit.field_symbol_state_checks {
+    for &check in field_symbol_state_checks {
         let Some(value) =
             field_symbol_check_value_id(unit, check, reference_uses, value_ids_by_symbol)
         else {
@@ -4250,6 +4329,8 @@ fn resolve_is_assigned_bound_scope_refinements(
 fn resolve_field_symbol_assigned_guard_block_refinements(
     unit: &UnitAnalysis,
     routine: &RoutineAnalysis,
+    routine_index: &RoutineBuildIndex<'_>,
+    field_symbol_state_checks: &[&crate::FieldSymbolStateCheckData],
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     value_count: usize,
@@ -4266,15 +4347,16 @@ fn resolve_field_symbol_assigned_guard_block_refinements(
         else {
             continue;
         };
-        let Some(region) = if_region_for_instruction(unit, instruction) else {
+        let Some(region) = routine_index.if_region(instruction) else {
             continue;
         };
         if region.else_scope.is_some() || !region.elseif_scopes.is_empty() {
             continue;
         }
-        let Some(check) =
-            single_unassigned_field_symbol_guard_check_for_scope(unit, region.then_scope)
-        else {
+        let Some(check) = single_unassigned_field_symbol_guard_check_for_scope(
+            field_symbol_state_checks,
+            region.then_scope,
+        ) else {
             continue;
         };
         let Some(continuation_block) = unique_fallthrough_successor(routine, block.id) else {
@@ -4298,13 +4380,13 @@ fn resolve_field_symbol_assigned_guard_block_refinements(
     out
 }
 
-fn single_unassigned_field_symbol_guard_check_for_scope(
-    unit: &UnitAnalysis,
+fn single_unassigned_field_symbol_guard_check_for_scope<'a>(
+    field_symbol_state_checks: &[&'a crate::FieldSymbolStateCheckData],
     scope: ScopeId,
-) -> Option<&crate::FieldSymbolStateCheckData> {
-    let mut checks = unit
-        .field_symbol_state_checks
+) -> Option<&'a crate::FieldSymbolStateCheckData> {
+    let mut checks = field_symbol_state_checks
         .iter()
+        .copied()
         .filter(|candidate| candidate.scope == scope)
         .filter(|candidate| candidate.kind == FieldSymbolStateCheckKind::IsNotAssigned);
     let check = checks.next()?;
@@ -4366,11 +4448,12 @@ fn resolve_sy_subrc_success_assignment_scope_refinements(
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
+    value_state_checks: &[&crate::ValueStateCheckData],
     value_count: usize,
 ) -> (Vec<DenseBitSet>, Vec<Vec<u64>>) {
     let mut assigned = vec![DenseBitSet::new(value_count); unit.scopes.len()];
     let mut structure_fields = vec![vec![0u64; values.len()]; unit.scopes.len()];
-    for check in &unit.value_state_checks {
+    for &check in value_state_checks {
         if !sy_subrc_success_check(unit, check) {
             continue;
         }
@@ -4594,6 +4677,7 @@ fn resolve_sy_subrc_success_guard_block_refinements(
     unit: &UnitAnalysis,
     routine: &RoutineAnalysis,
     routine_index: &RoutineBuildIndex<'_>,
+    value_state_checks: &[&crate::ValueStateCheckData],
     sy_subrc_updates: &SySubrcUpdateIndex,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
@@ -4622,14 +4706,17 @@ fn resolve_sy_subrc_success_guard_block_refinements(
         else {
             continue;
         };
-        let Some(region) = if_region_for_instruction(unit, instruction) else {
+        let Some(region) = routine_index.if_region(instruction) else {
             continue;
         };
         if region.else_scope.is_some() || !region.elseif_scopes.is_empty() {
             continue;
         }
-        let Some(check) = single_negative_sy_subrc_guard_check_for_scope(unit, region.then_scope)
-        else {
+        let Some(check) = single_negative_sy_subrc_guard_check_for_scope(
+            unit,
+            value_state_checks,
+            region.then_scope,
+        ) else {
             continue;
         };
         let Some(continuation_block) = unique_fallthrough_successor(routine, block.id) else {
@@ -6251,6 +6338,58 @@ fn build_value_references_by_routine<'a>(
             };
             if let Some(references) = out.get_mut(routine_id.as_usize()) {
                 references.push(reference);
+            }
+        }
+    }
+    out
+}
+
+fn build_value_state_checks_by_routine<'a>(
+    project: &'a ProjectAnalysis,
+    scope_to_routine: &[Vec<Option<RoutineId>>],
+    routine_count: usize,
+    unit_filter: Option<&HashSet<UnitId>>,
+) -> Vec<Vec<&'a crate::ValueStateCheckData>> {
+    let mut out = vec![Vec::new(); routine_count];
+    for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
+        let Some(scope_map) = scope_to_routine.get(unit.unit_id.as_usize()) else {
+            continue;
+        };
+        for check in &unit.value_state_checks {
+            let Some(routine_id) = scope_map.get(check.scope.as_usize()).copied().flatten() else {
+                continue;
+            };
+            if let Some(checks) = out.get_mut(routine_id.as_usize()) {
+                checks.push(check);
+            }
+        }
+    }
+    out
+}
+
+fn build_field_symbol_state_checks_by_routine<'a>(
+    project: &'a ProjectAnalysis,
+    scope_to_routine: &[Vec<Option<RoutineId>>],
+    routine_count: usize,
+    unit_filter: Option<&HashSet<UnitId>>,
+) -> Vec<Vec<&'a crate::FieldSymbolStateCheckData>> {
+    let mut out = vec![Vec::new(); routine_count];
+    for unit in &project.units {
+        if !routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+            continue;
+        }
+        let Some(scope_map) = scope_to_routine.get(unit.unit_id.as_usize()) else {
+            continue;
+        };
+        for check in &unit.field_symbol_state_checks {
+            let Some(routine_id) = scope_map.get(check.scope.as_usize()).copied().flatten() else {
+                continue;
+            };
+            if let Some(checks) = out.get_mut(routine_id.as_usize()) {
+                checks.push(check);
             }
         }
     }
