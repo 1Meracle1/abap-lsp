@@ -13,9 +13,9 @@ use crate::compatibility::{
 use crate::def_map::{
     Diagnostic, DiagnosticKind, FieldAccess, FieldTypeRefData, FormParameterData,
     FormParameterSection, FunctionModuleData, FunctionModuleParameterData,
-    FunctionModuleParameterSection, NamedArgumentTarget, PerformParameterSection, ReferenceKind,
-    Resolution, SqlNameRefData, SqlNameRefKind, SqlSourceData, StructureFieldShape, TypeFactData,
-    ValueFlowKind, ValueFlowTargetData,
+    FunctionModuleParameterSection, NamedArgumentTarget, PerformParameterSection, ReferenceData,
+    ReferenceKind, Resolution, SqlNameRefData, SqlNameRefKind, SqlSourceData, StructureFieldShape,
+    TypeFactData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
@@ -1537,6 +1537,59 @@ fn resolve_inherited_attribute_symbol<'a>(
             symbol: symbol.id,
         });
     }
+}
+
+fn reference_is_external_exception_previous_like(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit: &crate::UnitAnalysis,
+    reference: &ReferenceData,
+) -> bool {
+    if reference.kind != ReferenceKind::TypeRef
+        || reference.namespace != Namespace::Value
+        || reference.name.as_ref() != "previous"
+    {
+        return false;
+    }
+
+    let mut current_unit = unit;
+    let mut current_symbol = match enclosing_class_owner(unit, reference.scope) {
+        Some(symbol) => symbol,
+        None => return false,
+    };
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert((current_unit.unit_id, current_symbol)) {
+            return false;
+        }
+        let Some(inheritance) = current_unit.class_superclass(current_symbol) else {
+            return false;
+        };
+        if is_standard_exception_class(inheritance.superclass_name.as_ref()) {
+            return true;
+        }
+        let Some(handle) = resolve_project_class_symbol(
+            project,
+            lookup,
+            current_unit,
+            &inheritance.superclass_name,
+        ) else {
+            return false;
+        };
+        current_unit = &project.units[handle.unit.as_usize()];
+        current_symbol = handle.symbol;
+    }
+}
+
+fn is_standard_exception_class(name: &str) -> bool {
+    [
+        "cx_root",
+        "cx_static_check",
+        "cx_dynamic_check",
+        "cx_no_check",
+    ]
+    .iter()
+    .any(|class_name| name.eq_ignore_ascii_case(class_name))
 }
 
 fn class_member_uses_inherited_signature(member: &crate::ClassMemberData) -> bool {
@@ -5209,23 +5262,31 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                     ) {
                         return Some((
                             idx,
-                            SymbolHandle {
+                            Resolution::Symbol(SymbolHandle {
                                 unit: unit.unit_id,
                                 symbol: symbol_id,
-                            },
+                            }),
                         ));
                     }
                     if reference.namespace == Namespace::Value
-                        && reference.kind == ReferenceKind::Identifier
-                    {
-                        let handle = resolve_inherited_attribute_symbol(
+                        && matches!(
+                            reference.kind,
+                            ReferenceKind::Identifier | ReferenceKind::TypeRef
+                        )
+                        && let Some(handle) = resolve_inherited_attribute_symbol(
                             project,
                             &lookup,
                             unit,
                             reference.scope,
                             reference.name.as_ref(),
-                        )?;
-                        return Some((idx, handle));
+                        )
+                    {
+                        return Some((idx, Resolution::Symbol(handle)));
+                    }
+                    if reference_is_external_exception_previous_like(
+                        project, &lookup, unit, reference,
+                    ) {
+                        return Some((idx, Resolution::External));
                     }
                     None
                 })
@@ -5233,8 +5294,8 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         };
         {
             let unit = &mut project.units[unit_idx];
-            for (idx, handle) in synthetic_reference_resolutions {
-                unit.references[idx].resolution = Some(Resolution::Symbol(handle));
+            for (idx, resolution) in synthetic_reference_resolutions {
+                unit.references[idx].resolution = Some(resolution);
             }
         }
         let scope_names = build_scope_names(&project.units[unit_idx]);

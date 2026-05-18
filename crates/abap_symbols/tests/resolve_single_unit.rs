@@ -10524,6 +10524,91 @@ ENDCLASS.
 }
 
 #[test]
+fn resolves_exception_constructor_like_previous_as_value_reference() {
+    let src = r#"
+CLASS cx_root DEFINITION.
+  PUBLIC SECTION.
+    DATA previous TYPE REF TO cx_root READ-ONLY.
+ENDCLASS.
+
+CLASS cx_static_check DEFINITION INHERITING FROM cx_root.
+ENDCLASS.
+
+CLASS zcx_demo DEFINITION INHERITING FROM cx_static_check.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        !previous LIKE previous OPTIONAL.
+ENDCLASS.
+
+CLASS zcx_demo IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///exception_like_previous.abap");
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef && reference.name.as_ref() == "previous"
+        })
+        .collect();
+    assert_eq!(refs.len(), 1, "refs={refs:?}");
+    assert_eq!(refs[0].namespace, Namespace::Value);
+    assert!(
+        matches!(refs[0].resolution, Some(Resolution::Symbol(_))),
+        "refs={refs:?}"
+    );
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("previous")),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
+fn accepts_exception_constructor_like_previous_with_external_standard_superclass() {
+    let src = r#"
+CLASS zcx_demo DEFINITION INHERITING FROM cx_static_check.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        !previous LIKE previous OPTIONAL.
+ENDCLASS.
+
+CLASS zcx_demo IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///external_exception_like_previous.abap");
+
+    let refs: Vec<_> = unit
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::TypeRef && reference.name.as_ref() == "previous"
+        })
+        .collect();
+    assert_eq!(refs.len(), 1, "refs={refs:?}");
+    assert_eq!(refs[0].namespace, Namespace::Value);
+    assert_eq!(refs[0].resolution, Some(Resolution::External));
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("previous")),
+        "{:#?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_inherited_class_type_refs_across_project_units() {
     let base_src = r#"
 CLASS /cdbasis/cl_messages DEFINITION.

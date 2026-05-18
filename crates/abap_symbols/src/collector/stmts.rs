@@ -5,8 +5,8 @@ use abap_ast::arena::NodeId;
 use abap_ast::ast::{
     AliasesStmt, AstNode, AuthorityCheckStmt, CallMethodStmt, CallStmt, CallStmtKind, ClearStmt,
     ConcatenateStmt, ConvertStmt, CreateDataStmt, CreateObjectStmt, DeleteStmt, DescribeStmt,
-    EventsStmt, FindStmt, MessageStmt, MethodsStmt, RaiseStmt, ReadTableStmt, ReplaceStmt,
-    SplitStmt, SubmitStmt, WaitStmt, WriteStmt,
+    EventsStmt, FindStmt, MessageStmt, MethodsStmt, MethodsTypeClauseKind, RaiseStmt,
+    ReadTableStmt, ReplaceStmt, SplitStmt, SubmitStmt, WaitStmt, WriteStmt,
 };
 use abap_lexer::TextRange;
 
@@ -33,6 +33,26 @@ impl<'a> Collector<'a> {
 }
 
 impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
+    fn type_clause_namespace(kind: MethodsTypeClauseKind) -> Namespace {
+        match kind {
+            MethodsTypeClauseKind::Type => Namespace::Type,
+            MethodsTypeClauseKind::Like => Namespace::Value,
+        }
+    }
+
+    fn collect_type_ref_in_namespace(
+        &mut self,
+        type_ref: NodeId,
+        namespace: Namespace,
+        scope: ScopeId,
+    ) {
+        self.collector.type_clause_ns_stack.push(namespace);
+        self.collector
+            .decl_lowering()
+            .collect_type_ref(type_ref, scope);
+        self.collector.type_clause_ns_stack.pop();
+    }
+
     pub(super) fn collect_move_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let stmt_range = self.collector.file.range(node);
         let mut source_expr = None;
@@ -4611,11 +4631,25 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
         let (type_refs, qualifier_refs, handler_infos) = {
             let methods_stmt =
                 MethodsStmt::cast(self.collector.syntax(node)).expect("methods stmt");
-            let type_refs = methods_stmt
-                .type_refs()
-                .map(|type_ref| type_ref.syntax().id())
-                .collect::<Vec<_>>();
             let entries = methods_stmt.entries(self.collector.source);
+            let mut type_refs = Vec::new();
+            for entry in &entries {
+                let signature = entry.signature(self.collector.source);
+                for param in signature.parameters() {
+                    if let Some(type_ref) = param.type_ref() {
+                        type_refs.push((
+                            type_ref.syntax().id(),
+                            Self::type_clause_namespace(param.type_clause()),
+                        ));
+                    }
+                }
+                for raising in signature.raising() {
+                    type_refs.push((raising.type_ref().syntax().id(), Namespace::Type));
+                }
+                if let Some(handler) = entry.event_handler(self.collector.source) {
+                    type_refs.push((handler.source_type_ref().syntax().id(), Namespace::Type));
+                }
+            }
             let qualifier_refs = entries
                 .iter()
                 .filter_map(|entry| {
@@ -4660,10 +4694,8 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
                 .collect::<Vec<_>>();
             (type_refs, qualifier_refs, handler_infos)
         };
-        for type_ref in type_refs {
-            self.collector
-                .decl_lowering()
-                .collect_type_ref(type_ref, scope);
+        for (type_ref, namespace) in type_refs {
+            self.collect_type_ref_in_namespace(type_ref, namespace, scope);
         }
         for (name, range) in qualifier_refs {
             self.collector.add_reference(
@@ -4715,13 +4747,24 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     pub(super) fn collect_events_stmt(&mut self, node: NodeId, scope: ScopeId) {
         let events_stmt = EventsStmt::cast(self.collector.syntax(node)).expect("events stmt");
         let type_refs: Vec<_> = events_stmt
-            .type_refs()
-            .map(|type_ref| type_ref.syntax().id())
+            .entries(self.collector.source)
+            .into_iter()
+            .flat_map(|entry| {
+                entry
+                    .signature(self.collector.source)
+                    .parameters()
+                    .iter()
+                    .filter_map(|param| {
+                        Some((
+                            param.type_ref()?.syntax().id(),
+                            Self::type_clause_namespace(param.type_clause()),
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            })
             .collect();
-        for type_ref in type_refs {
-            self.collector
-                .decl_lowering()
-                .collect_type_ref(type_ref, scope);
+        for (type_ref, namespace) in type_refs {
+            self.collect_type_ref_in_namespace(type_ref, namespace, scope);
         }
     }
 
