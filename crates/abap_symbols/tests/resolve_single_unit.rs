@@ -17754,6 +17754,53 @@ ENDCLASS.
 }
 
 #[test]
+fn accepts_omitted_optional_parent_constructor_arguments_in_super_call() {
+    let src = r#"
+CLASS cx_root DEFINITION.
+  PUBLIC SECTION.
+    DATA textid TYPE string.
+    DATA previous TYPE REF TO cx_root.
+ENDCLASS.
+
+CLASS cx_static_check DEFINITION INHERITING FROM cx_root.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING
+        textid LIKE textid OPTIONAL
+        previous LIKE previous OPTIONAL.
+ENDCLASS.
+
+CLASS cx_static_check IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor( ).
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS zcx_demo DEFINITION INHERITING FROM cx_static_check.
+  PUBLIC SECTION.
+    METHODS constructor
+      IMPORTING previous LIKE previous OPTIONAL.
+ENDCLASS.
+
+CLASS zcx_demo IMPLEMENTATION.
+  METHOD constructor.
+    super->constructor( previous = previous ).
+  ENDMETHOD.
+ENDCLASS.
+"#;
+    let unit = analyze(src, "file:///optional_super_ctor_args.abap");
+
+    assert!(
+        !unit
+            .diagnostics
+            .iter()
+            .any(|diag| diag.kind == DiagnosticKind::MissingSuperConstructorCall),
+        "unexpected constructor diagnostics: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn accepts_valid_super_constructor_call_without_unresolved_super() {
     let src = r#"
 CLASS zcl_parent DEFINITION.

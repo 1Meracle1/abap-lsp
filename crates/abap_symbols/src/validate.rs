@@ -1025,6 +1025,7 @@ fn validate_super_constructor_calls(
         let missing: Vec<_> = super_constructor
             .parameters
             .iter()
+            .filter(|parameter| parameter_is_required(parameter.section, parameter.is_optional))
             .filter(|parameter| !provided_args.contains(parameter.name.as_ref()))
             .map(|parameter| parameter.name.to_string())
             .collect();
