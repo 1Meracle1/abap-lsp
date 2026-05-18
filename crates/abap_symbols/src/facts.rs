@@ -1242,13 +1242,7 @@ impl<'a> FactBuilder<'a> {
             && let Some((member_unit_idx, member)) =
                 self.resolve_class_member_in_hierarchy(class_handle, segment.name.as_ref())
         {
-            let fact = self.class_member_type_fact(
-                site_unit_idx,
-                scope,
-                member_unit_idx,
-                member,
-                segment.name.as_ref(),
-            );
+            let fact = self.class_member_type_fact(site_unit_idx, scope, member_unit_idx, member);
             return (
                 member_unit_idx,
                 self.portable_fact(site_unit_idx, member_unit_idx, fact),
@@ -1294,14 +1288,9 @@ impl<'a> FactBuilder<'a> {
         scope: ScopeId,
         member_unit_idx: usize,
         member: &crate::ClassMemberData,
-        member_name: &str,
     ) -> TypeFactData {
         let unit = &self.units[member_unit_idx];
-        if let Some(symbol) = unit.symbols.iter().find(|symbol| {
-            symbol.name.as_ref() == member_name
-                && unit.scope(symbol.scope).kind == ScopeKind::Class
-                && unit.scope(symbol.scope).owner == Some(member.class_symbol)
-        }) {
+        if let Some(symbol) = unit.class_member_symbol(member.class_symbol, member.name.as_ref()) {
             return self.symbol_type_fact_for_site(
                 site_unit_idx,
                 scope,

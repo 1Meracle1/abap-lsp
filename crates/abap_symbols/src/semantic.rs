@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use abap_lexer::TextRange;
 
@@ -8,6 +9,7 @@ use crate::def_map::{
     ClassMemberKind, ReferenceKind, Resolution, SqlNameRefKind, SymbolKind, UnitAnalysis,
 };
 use crate::ids::{ReferenceId, ScopeId, StructureId, SymbolHandle, SymbolId};
+use crate::scope::ScopeKind;
 
 macro_rules! semantic_id_type {
     ($name:ident) => {
@@ -99,6 +101,8 @@ pub(crate) struct SemanticIndex {
     sql_source_name_refs_by_name: HashMap<String, Vec<SemSqlNameRefId>>,
     sql_sources_by_name: HashMap<String, Vec<usize>>,
     symbols_by_kind_and_range: HashMap<(u8, usize, usize), SemSymbolId>,
+    class_members_by_owner: HashMap<SymbolId, HashMap<Arc<str>, SemClassMemberId>>,
+    class_member_symbols_by_owner: HashMap<SymbolId, HashMap<Arc<str>, SymbolId>>,
 }
 
 impl SemanticIndex {
@@ -106,6 +110,8 @@ impl SemanticIndex {
         let mut symbols = Vec::with_capacity(unit.symbols.len());
         let mut symbols_by_kind_and_range: HashMap<(u8, usize, usize), SemSymbolId> =
             HashMap::with_capacity(unit.symbols.len());
+        let mut class_member_symbols_by_owner: HashMap<SymbolId, HashMap<Arc<str>, SymbolId>> =
+            HashMap::new();
         for (idx, symbol) in unit.symbols.iter().enumerate() {
             let id = SemSymbolId(idx as u32);
             symbols.push(SemSymbol {
@@ -120,6 +126,16 @@ impl SemanticIndex {
                     symbol.decl_range.end,
                 ))
                 .or_insert(id);
+            let scope = unit.scope(symbol.scope);
+            if scope.kind == ScopeKind::Class
+                && let Some(owner) = scope.owner
+            {
+                class_member_symbols_by_owner
+                    .entry(owner)
+                    .or_default()
+                    .entry(Arc::clone(&symbol.name))
+                    .or_insert(symbol.id);
+            }
         }
         let mut references = Vec::with_capacity(unit.references.len());
         let mut references_by_resolution: HashMap<SymbolHandle, Vec<SemReferenceId>> =
@@ -191,18 +207,24 @@ impl SemanticIndex {
                     .push(id);
             }
         }
-        let class_members = unit
-            .class_members
-            .iter()
-            .enumerate()
-            .map(|(idx, member)| SemClassMember {
+        let mut class_members = Vec::with_capacity(unit.class_members.len());
+        let mut class_members_by_owner: HashMap<SymbolId, HashMap<Arc<str>, SemClassMemberId>> =
+            HashMap::new();
+        for (idx, member) in unit.class_members.iter().enumerate() {
+            let id = SemClassMemberId(idx as u32);
+            class_members.push(SemClassMember {
                 raw_index: idx,
                 class_symbol: member.class_symbol,
                 kind: member.kind,
                 decl_range: member.decl_range.clone(),
                 implementation_range: member.implementation_range.clone(),
-            })
-            .collect();
+            });
+            class_members_by_owner
+                .entry(member.class_symbol)
+                .or_default()
+                .entry(Arc::clone(&member.name))
+                .or_insert(id);
+        }
         let structure_fields = unit
             .structures
             .iter()
@@ -245,6 +267,8 @@ impl SemanticIndex {
             sql_source_name_refs_by_name,
             sql_sources_by_name,
             symbols_by_kind_and_range,
+            class_members_by_owner,
+            class_member_symbols_by_owner,
         }
     }
 
@@ -270,6 +294,28 @@ impl SemanticIndex {
 
     pub(crate) fn class_member(&self, id: SemClassMemberId) -> &SemClassMember {
         &self.class_members[id.as_usize()]
+    }
+
+    pub(crate) fn class_member_by_owner(
+        &self,
+        class_symbol: SymbolId,
+        name: &str,
+    ) -> Option<SemClassMemberId> {
+        self.class_members_by_owner
+            .get(&class_symbol)?
+            .get(name)
+            .copied()
+    }
+
+    pub(crate) fn class_member_symbol(
+        &self,
+        class_symbol: SymbolId,
+        name: &str,
+    ) -> Option<SymbolId> {
+        self.class_member_symbols_by_owner
+            .get(&class_symbol)?
+            .get(name)
+            .copied()
     }
 
     pub(crate) fn structure_field(&self, id: SemStructureFieldId) -> &SemStructureField {

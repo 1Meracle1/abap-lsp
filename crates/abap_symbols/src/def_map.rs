@@ -1329,9 +1329,22 @@ impl UnitAnalysis {
     }
 
     pub fn class_member(&self, class_symbol: SymbolId, name: &str) -> Option<&ClassMemberData> {
-        self.class_members
-            .iter()
-            .find(|member| member.class_symbol == class_symbol && member.name.as_ref() == name)
+        let semantic_id = self
+            .semantic_index
+            .class_member_by_owner(class_symbol, name)?;
+        let member = self.semantic_index.class_member(semantic_id);
+        self.class_members.get(member.raw_index)
+    }
+
+    pub(crate) fn class_member_symbol(
+        &self,
+        class_symbol: SymbolId,
+        name: &str,
+    ) -> Option<&SymbolData> {
+        let symbol_id = self
+            .semantic_index
+            .class_member_symbol(class_symbol, name)?;
+        self.symbols.get(symbol_id.as_usize())
     }
 
     pub fn class_members_for(
