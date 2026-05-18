@@ -1609,11 +1609,19 @@ fn build_replace_stmt_children(
                 continue;
             }
             children.push(token_leaf(b, &tokens[cursor]));
-            let target_start = next_non_comment(tokens, cursor + 1, period_i);
+            let mut target_start = next_non_comment(tokens, cursor + 1, period_i);
+            push_token_range(b, &mut children, tokens, cursor + 1, target_start);
+            if target_start < period_i
+                && token_matches_keyword(source, &tokens[target_start], "table")
+            {
+                children.push(token_leaf(b, &tokens[target_start]));
+                let after_table = next_non_comment(tokens, target_start + 1, period_i);
+                push_token_range(b, &mut children, tokens, target_start + 1, after_table);
+                target_start = after_table;
+            }
             let target_end =
                 scan_expr_end(source, tokens, target_start, period_i, &["with", "in"], &[]);
             if target_start < target_end {
-                push_token_range(b, &mut children, tokens, cursor + 1, target_start);
                 children.push(build_wrapped_expr_child(
                     b,
                     source,
@@ -5280,6 +5288,34 @@ WAIT UP TO lv_stamp SECONDS.",
         );
         assert_eq!(parsed.file.count_kind(pattern, SyntaxKind::ExprIdent), 0);
         assert_eq!(parsed.file.count_kind(replace, SyntaxKind::SelectorExpr), 1);
+    }
+
+    #[test]
+    fn replace_in_table_keeps_table_keyword_out_of_target_operand() {
+        let src = "REPLACE ALL OCCURRENCES OF '&V1&' IN TABLE rt_itf WITH <lv_msgv>.";
+        let parsed = crate::parse(src);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let replace = parsed
+            .file
+            .find_first_kind(parsed.file.root(), SyntaxKind::ReplaceStmt)
+            .expect("replace stmt");
+        let target = parsed
+            .file
+            .find_first_kind(replace, SyntaxKind::ReplaceTargetOperand)
+            .expect("replace target");
+        let target_ident = parsed
+            .file
+            .find_first_kind(target, SyntaxKind::ExprIdent)
+            .expect("target ident");
+
+        assert_eq!(
+            parsed
+                .file
+                .count_kind(replace, SyntaxKind::ReplaceTargetOperand),
+            1
+        );
+        assert_eq!(&src[parsed.file.range(target)], "rt_itf");
+        assert_eq!(&src[parsed.file.range(target_ident)], "rt_itf");
     }
 
     #[test]

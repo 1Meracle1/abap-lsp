@@ -12584,19 +12584,28 @@ TYPES: BEGIN OF ty_destination,
 
 FORM run USING iv_id TYPE string.
   DATA ev_timestamp_iso TYPE string.
+  DATA rt_itf TYPE STANDARD TABLE OF string WITH EMPTY KEY.
   DATA ls_destination TYPE ty_destination.
   FIELD-SYMBOLS <fs_destination> TYPE ty_destination.
+  FIELD-SYMBOLS <lv_msgv> TYPE string.
 
   ASSIGN ls_destination TO <fs_destination>.
   REPLACE ',' IN ev_timestamp_iso WITH '.'.
   REPLACE FIRST OCCURRENCE OF zattp_cl_rep_constants=>gv_url_locat_replace_from IN <fs_destination>-content WITH zattp_cl_rep_constants=>gv_url_locat_replace_to.
+  REPLACE ALL OCCURRENCES OF '&V1&' IN TABLE rt_itf WITH <lv_msgv>.
   REPLACE ALL OCCURRENCES OF '%22' IN iv_id WITH '"' IN CHARACTER MODE.
   REPLACE ALL OCCURRENCES OF REGEX '%2F|%2f' IN iv_id WITH '/' IN CHARACTER MODE.
 ENDFORM.
 "#;
     let unit = analyze(src, "file:///replace_stmt.abap");
 
-    for name in ["ev_timestamp_iso", "iv_id", "<fs_destination>"] {
+    for name in [
+        "ev_timestamp_iso",
+        "iv_id",
+        "rt_itf",
+        "<fs_destination>",
+        "<lv_msgv>",
+    ] {
         assert!(
             unit.references.iter().any(|reference| {
                 reference.namespace == Namespace::Value
@@ -12616,6 +12625,13 @@ ENDFORM.
             unit.diagnostics
         );
     }
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("table")
+        }),
+        "unexpected REPLACE diagnostic for `table`: {:?}",
+        unit.diagnostics
+    );
 
     let static_target_refs = unit
         .references
