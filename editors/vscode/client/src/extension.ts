@@ -72,6 +72,10 @@ interface WorkspaceAnalysisStatusParams {
 	totalDocumentCount: number;
 	analyzedDocumentCount: number;
 	remoteResolutionInFlight: boolean;
+	remoteDependencyProcessedCount?: number;
+	remoteDependencyTotalCount?: number;
+	remoteDependencyFetchedCount?: number;
+	remoteDependencyFailedCount?: number;
 }
 
 interface WorkspaceAnalysisProgressHandle {
@@ -577,6 +581,23 @@ function finishWorkspaceAnalysisProgress(params: WorkspaceAnalysisStatusParams):
 	const workspaceFolder = workspaceFolderForUri(params.workspaceUri);
 	const workspaceLabel = workspaceFolder?.name ?? "workspace";
 	const analyzedCount = params.analyzedDocumentCount;
+	if (params.trigger === "remote-dependency-fetch") {
+		const total = remoteDependencyCount(
+			params.remoteDependencyTotalCount ?? params.totalDocumentCount,
+		);
+		const processed = remoteDependencyCount(
+			params.remoteDependencyProcessedCount ?? params.processedDocumentCount,
+		);
+		const fetched = remoteDependencyCount(params.remoteDependencyFetchedCount);
+		const failed = remoteDependencyCount(params.remoteDependencyFailedCount);
+		const failedText = failed > 0 ? `, ${failed} failed` : "";
+		workspaceAnalysisStatusBarMessage?.dispose();
+		workspaceAnalysisStatusBarMessage = vscode.window.setStatusBarMessage(
+			`ABAP: checked ${processed}/${total} external dependencies in ${workspaceLabel}; ${fetched} fetched${failedText}.`,
+			5000,
+		);
+		return;
+	}
 	if (params.remoteResolutionInFlight) {
 		workspaceAnalysisStatusBarMessage?.dispose();
 		workspaceAnalysisStatusBarMessage = vscode.window.setStatusBarMessage(
@@ -601,6 +622,8 @@ function workspaceAnalysisProgressTitle(params: WorkspaceAnalysisStatusParams): 
 			return `ABAP: refreshing ${workspaceLabel} after manifest change`;
 		case "dependency-cache-refresh":
 			return `ABAP: refreshing ${workspaceLabel} dependency cache`;
+		case "remote-dependency-fetch":
+			return `ABAP: fetching ${workspaceLabel} external dependencies`;
 		case "remote-dependencies-updated":
 			return `ABAP: refreshing ${workspaceLabel} after dependency fetch`;
 		default:
@@ -612,7 +635,28 @@ function formatWorkspaceDocumentCount(value: number): string {
 	return Math.max(0, Math.trunc(value)).toLocaleString();
 }
 
+function remoteDependencyCount(value: number | undefined): number {
+	return Math.max(0, Math.trunc(value ?? 0));
+}
+
 function workspaceAnalysisProgressMessage(params: WorkspaceAnalysisStatusParams): string {
+	if (params.trigger === "remote-dependency-fetch") {
+		const total = remoteDependencyCount(
+			params.remoteDependencyTotalCount ?? params.totalDocumentCount,
+		);
+		const processed = Math.min(
+			total,
+			remoteDependencyCount(
+				params.remoteDependencyProcessedCount ?? params.processedDocumentCount,
+			),
+		);
+		const fetched = remoteDependencyCount(params.remoteDependencyFetchedCount);
+		const failed = remoteDependencyCount(params.remoteDependencyFailedCount);
+		const remaining = Math.max(total - processed, 0);
+		const percent = total > 0 ? Math.floor((processed / total) * 100) : 0;
+		const failedText = failed > 0 ? `, ${failed} failed` : "";
+		return `Checking ${formatWorkspaceDocumentCount(processed)}/${formatWorkspaceDocumentCount(total)} external dependencies (${percent}%); ${formatWorkspaceDocumentCount(fetched)} fetched, ${formatWorkspaceDocumentCount(remaining)} remaining${failedText}`;
+	}
 	const total = Math.max(0, Math.trunc(params.totalDocumentCount));
 	const processedRaw = Math.max(0, Math.trunc(params.processedDocumentCount));
 	if (params.remoteResolutionInFlight && total > 0 && processedRaw >= total) {

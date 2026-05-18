@@ -117,6 +117,7 @@ dependencies = [
  "crossbeam-channel",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

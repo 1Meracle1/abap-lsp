@@ -640,6 +640,8 @@ pub struct RemoteDependenciesUpdatedParams {
     pub fetched: Vec<String>,
     #[serde(default)]
     pub failed: Vec<RemoteDependencyCandidate>,
+    #[serde(rename = "resolutionFinished", default = "default_true")]
+    pub resolution_finished: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -724,6 +726,10 @@ fn default_sap_atc_check_variant() -> String {
     "DEFAULT".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_sap_atc_severity() -> String {
     "warning".to_string()
 }
@@ -756,6 +762,30 @@ pub struct WorkspaceAnalysisStatusParams {
     pub analyzed_document_count: usize,
     #[serde(rename = "remoteResolutionInFlight", default)]
     pub remote_resolution_in_flight: bool,
+    #[serde(
+        rename = "remoteDependencyProcessedCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_dependency_processed_count: Option<usize>,
+    #[serde(
+        rename = "remoteDependencyTotalCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_dependency_total_count: Option<usize>,
+    #[serde(
+        rename = "remoteDependencyFetchedCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_dependency_fetched_count: Option<usize>,
+    #[serde(
+        rename = "remoteDependencyFailedCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_dependency_failed_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -4940,8 +4970,13 @@ pub fn handle_remote_dependencies_updated_with_progress(
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     let targeted_refresh = if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
-        workspace.remote_resolution_in_flight = false;
-        workspace.remote_resolution_seen.clear();
+        if params.resolution_finished {
+            workspace.remote_resolution_in_flight = false;
+            workspace.remote_resolution_seen.clear();
+        }
+        if params.fetched.is_empty() && params.failed.is_empty() {
+            return Vec::new();
+        }
         if !params.fetched.is_empty() {
             prime_workspace_manifest_state(workspace);
             let source_uris = if params.source_uris.is_empty() {
@@ -10361,6 +10396,7 @@ ENDCLASS.";
                 source_uris: vec![source_uri.clone()],
                 fetched: vec!["ZCL_HELPER".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
         let _ = publish_open_document_mut(
@@ -10655,6 +10691,7 @@ ENDCLASS.\n";
                     "/STTP/T_DM_OBJ_ITM".to_string(),
                 ],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -10876,6 +10913,7 @@ ENDCLASS.\n";
                     "/STTP/T_DM_OBJ_ITM".to_string(),
                 ],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -14993,6 +15031,7 @@ ENDFORM.";
                 source_uris: vec![source_uri],
                 fetched: vec!["ZTOP".to_string(), "ZF02".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -15126,6 +15165,7 @@ ENDFORM.";
                 source_uris: vec![source_uri],
                 fetched: vec!["ZTOP".to_string(), "ZF02".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -15261,6 +15301,7 @@ ENDFORM.";
                 source_uris: vec![source_uri],
                 fetched: vec!["ZTOP".to_string(), "ZF01".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -16961,6 +17002,7 @@ dependency_mode = "remote-on-demand"
                     name: "zcl_second".to_string(),
                     kind: "static".to_string(),
                 }],
+                resolution_finished: true,
             },
         );
         assert!(
@@ -17230,6 +17272,7 @@ root_file = "src/ZMAIN.abap"
                 source_uris: vec![source_uri.clone()],
                 fetched: vec!["ZCL_DEP".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
         let dependency_uri = dependency_uri_for_object_name(&state, &workspace_uri, "ZCL_DEP");
@@ -17302,6 +17345,7 @@ dependency_mode = "remote-on-demand"
                 source_uris: first.source_uris,
                 fetched: Vec::new(),
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -17526,6 +17570,7 @@ dependency_mode = "remote-on-demand"
                 source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -17640,6 +17685,7 @@ ENDCLASS."
                 source_uris: vec![source_uri.clone()],
                 fetched: vec!["ZCL_DEP".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -17740,6 +17786,7 @@ dependency_mode = "remote-on-demand"
                 source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -17887,6 +17934,7 @@ dependency_mode = "remote-on-demand"
                 source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -18146,6 +18194,7 @@ dependency_mode = "remote-on-demand"
                     source_uris: Vec::new(),
                     fetched: vec!["ZCL_FIRST".to_string()],
                     failed: Vec::new(),
+                    resolution_finished: true,
                 },
             );
 
@@ -18334,6 +18383,7 @@ dependency_mode = "remote-on-demand"
                 source_uris: Vec::new(),
                 fetched: vec!["ZCL_FIRST".to_string()],
                 failed: Vec::new(),
+                resolution_finished: true,
             },
         );
 
@@ -19420,6 +19470,7 @@ dependency_mode = "remote-on-demand"
                     name: "zattp_rs_leg_ctr".to_string(),
                     kind: "type".to_string(),
                 }],
+                resolution_finished: true,
             },
         );
         assert!(!snapshots.is_empty());
@@ -19506,6 +19557,7 @@ dependency_mode = "remote-on-demand"
                     name: "/sttp/t_objid".to_string(),
                     kind: "type".to_string(),
                 }],
+                resolution_finished: true,
             },
         );
         assert!(!snapshots.is_empty());

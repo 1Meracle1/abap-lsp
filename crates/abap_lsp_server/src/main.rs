@@ -4,7 +4,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Component, Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -50,6 +50,8 @@ const INVALID_PARAMS: i64 = -32602;
 const CHANGE_ANALYSIS_DEBOUNCE: Duration = Duration::from_millis(250);
 const EDITOR_FIRST_DIAGNOSTIC_LIMIT: usize = 16;
 const MAX_BACKGROUND_ANALYSIS_WORKERS: usize = 4;
+const MAX_ANALYSIS_COMPLETIONS_PER_FLUSH: usize = 16;
+const MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH: usize = 16;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,12 +215,29 @@ struct RemoteDependencyTask {
 }
 
 struct RemoteDependencyCompletion {
-    request: abap_lsp::RemoteDependencyResolveParams,
+    workspace_uri: String,
+    source_uri: String,
+    source_uris: Vec<String>,
     connection_key: Option<String>,
     artifacts: Vec<abap_lsp::DependencyArtifactPayload>,
     negative: Vec<abap_lsp::RemoteDependencyCandidate>,
     fetched: Vec<String>,
     failed: Vec<abap_lsp::RemoteDependencyCandidate>,
+    resolution_finished: bool,
+}
+
+#[derive(Clone)]
+struct RemoteFetchJob {
+    candidate: abap_lsp::RemoteDependencyCandidate,
+    source_uris: Vec<String>,
+    local_config: LocalExportConfig,
+}
+
+struct RemoteFetchResult {
+    candidate: abap_lsp::RemoteDependencyCandidate,
+    source_uris: Vec<String>,
+    local_config: LocalExportConfig,
+    result: Result<Vec<abap_lsp::DependencyArtifactPayload>, String>,
 }
 
 struct ScheduledBackgroundWork {
@@ -273,7 +292,7 @@ fn workspace_uses_editor_first_mode(state: &ServerState, workspace_uri: &str) ->
 
 fn enqueue_background_task(
     task: AnalysisTask,
-    task_tx: &SyncSender<String>,
+    task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let workspace_uri = task.workspace_uri.clone();
@@ -305,7 +324,7 @@ fn take_pending_background_task(
 
 fn finish_background_task(
     workspace_uri: &str,
-    task_tx: &SyncSender<String>,
+    task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let should_reschedule = {
@@ -350,6 +369,13 @@ fn refresh_pending_task_workspace(
     workspace
         .pending_open_dependency_requests
         .clone_from(&staged_workspace.pending_open_dependency_requests);
+    workspace
+        .remote_resolution_seen
+        .clone_from(&staged_workspace.remote_resolution_seen);
+    workspace
+        .remote_lookup_failures
+        .clone_from(&staged_workspace.remote_lookup_failures);
+    workspace.remote_resolution_in_flight = staged_workspace.remote_resolution_in_flight;
     pending.workspace = workspace;
 }
 
@@ -362,7 +388,7 @@ fn background_analysis_worker_count() -> usize {
 fn flush_due_debounced_tasks(
     now: Instant,
     debounced_tasks: &mut HashMap<String, DebouncedAnalysisTask>,
-    task_tx: &SyncSender<String>,
+    task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
 ) -> Result<Vec<WorkspaceAnalysisStatusParams>, Box<dyn std::error::Error>> {
     let mut ready = Vec::new();
@@ -389,7 +415,7 @@ fn flush_due_debounced_tasks(
 fn try_schedule_background_analysis(
     state: &mut ServerState,
     message: &Value,
-    task_tx: &SyncSender<String>,
+    task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
     debounced_tasks: &mut HashMap<String, DebouncedAnalysisTask>,
@@ -645,11 +671,25 @@ fn try_schedule_background_analysis(
                     continue;
                 }
                 debounced_tasks.remove(&workspace_uri);
+                let started = WorkspaceAnalysisStatusParams {
+                    workspace_uri: workspace_uri.clone(),
+                    phase: WorkspaceAnalysisPhase::Started,
+                    trigger: "initialized".to_string(),
+                    processed_document_count: 0,
+                    total_document_count: 0,
+                    analyzed_document_count: 0,
+                    remote_resolution_in_flight: false,
+                    remote_dependency_processed_count: None,
+                    remote_dependency_total_count: None,
+                    remote_dependency_fetched_count: None,
+                    remote_dependency_failed_count: None,
+                };
+                started_statuses.push(started.clone());
                 enqueue_background_task(
                     AnalysisTask {
                         workspace_uri: workspace_uri.clone(),
                         generation: next_workspace_generation(generations, &workspace_uri),
-                        started: workspace_analysis_status_started(state, message)?,
+                        started: Some(started),
                         workspace,
                         kind: AnalysisTaskKind::Initialized,
                     },
@@ -723,9 +763,12 @@ fn flush_analysis_completions(
     writer: &mut impl Write,
     completion_rx: &Receiver<AnalysisCompletion>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
-    remote_task_tx: &SyncSender<RemoteDependencyTask>,
+    remote_task_tx: &Sender<RemoteDependencyTask>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    while let Ok(completion) = completion_rx.try_recv() {
+    for _ in 0..MAX_ANALYSIS_COMPLETIONS_PER_FLUSH {
+        let Ok(completion) = completion_rx.try_recv() else {
+            break;
+        };
         if completion.generation
             != current_workspace_generation(generations, &completion.workspace_uri)
         {
@@ -772,7 +815,7 @@ fn send_analysis_completion(
 
 fn send_or_enqueue_notification(
     writer: &mut impl Write,
-    remote_task_tx: &SyncSender<RemoteDependencyTask>,
+    remote_task_tx: &Sender<RemoteDependencyTask>,
     method: &str,
     params: Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -784,32 +827,57 @@ fn send_or_enqueue_notification(
     send_notification(writer, method, params)
 }
 
-fn run_remote_dependency_task(task: RemoteDependencyTask) -> RemoteDependencyCompletion {
+async fn run_remote_dependency_task(
+    task: RemoteDependencyTask,
+    completion_tx: Sender<RemoteDependencyCompletion>,
+    progress_tx: Sender<WorkspaceAnalysisStatusParams>,
+) {
     let request = task.request;
     let workspace_root = file_uri_to_path(&request.workspace_uri);
     let mut resolver = LocalExportResolver::default();
-    let mut connection = workspace_root
-        .as_deref()
-        .and_then(|root| abap_adt::ConnectionConfig::from_env_and_dotenv(Some(root)).ok());
-    let mut client = connection
-        .clone()
-        .and_then(|connection| abap_adt::AdtClient::new(connection).ok());
+    let mut connection_error = None::<String>;
+    let connection = workspace_root.as_deref().and_then(|root| {
+        match abap_adt::ConnectionConfig::from_env_and_dotenv(Some(root)) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                connection_error = Some(error);
+                None
+            }
+        }
+    });
     let connection_key = connection
         .as_ref()
         .map(abap_adt::ConnectionConfig::connection_key);
-    let mut artifacts = Vec::new();
-    let mut negative = Vec::new();
-    let mut fetched = Vec::new();
-    let mut failed = Vec::new();
-    let source_uris_by_candidate = remote_dependency_candidate_source_uris(&request);
     let mut seen = HashSet::new();
-    let mut last_remote_request = None::<Instant>;
-
-    for candidate in request
+    let candidates = request
         .candidates
         .iter()
         .filter(|candidate| seen.insert(remote_dependency_candidate_key(candidate)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let total = candidates.len();
+    let mut processed = 0usize;
+    let mut fetched = 0usize;
+    let mut failed = 0usize;
+
+    if total > 0
+        && !send_remote_dependency_progress(
+            &progress_tx,
+            &request.workspace_uri,
+            WorkspaceAnalysisPhase::Started,
+            processed,
+            total,
+            fetched,
+            failed,
+        )
     {
+        return;
+    }
+
+    let source_uris_by_candidate = remote_dependency_candidate_source_uris(&request);
+    let mut jobs = Vec::new();
+
+    for candidate in &candidates {
         let source_uris = source_uris_by_candidate
             .get(&remote_dependency_candidate_key(candidate))
             .cloned()
@@ -823,108 +891,408 @@ fn run_remote_dependency_task(task: RemoteDependencyTask) -> RemoteDependencyCom
             && let Some(artifact) =
                 resolve_remote_local_export(candidate, &local_config, &mut resolver)
         {
-            fetched.push(candidate.name.clone());
-            artifacts.push(artifact);
+            if !send_remote_dependency_completion(
+                &completion_tx,
+                &request,
+                source_uris,
+                connection_key.clone(),
+                vec![artifact],
+                Vec::new(),
+                vec![candidate.name.clone()],
+                Vec::new(),
+                false,
+            ) {
+                return;
+            }
+            fetched += 1;
+            processed += 1;
+            if !send_remote_dependency_progress(
+                &progress_tx,
+                &request.workspace_uri,
+                WorkspaceAnalysisPhase::Progress,
+                processed,
+                total,
+                fetched,
+                failed,
+            ) {
+                return;
+            }
             continue;
         }
         if local_config.mode == LocalDependencySourceMode::LocalOnly {
+            processed += 1;
+            if !send_remote_dependency_progress(
+                &progress_tx,
+                &request.workspace_uri,
+                WorkspaceAnalysisPhase::Progress,
+                processed,
+                total,
+                fetched,
+                failed,
+            ) {
+                return;
+            }
             continue;
         }
 
-        if client.is_none() {
-            if connection.is_none()
-                && let Some(root) = workspace_root.as_deref()
+        if connection.is_none() {
+            warn!(
+                workspace_uri = %request.workspace_uri,
+                candidate = %candidate.name,
+                error = %connection_error.as_deref().unwrap_or("workspace root is unavailable"),
+                "skipping ADT dependency fetch because credentials are missing"
+            );
+            if local_config.mode == LocalDependencySourceMode::AdtFirst
+                && let Some(artifact) =
+                    resolve_remote_local_export(candidate, &local_config, &mut resolver)
             {
-                match abap_adt::ConnectionConfig::from_env_and_dotenv(Some(root)) {
-                    Ok(config) => {
-                        connection = Some(config.clone());
-                        client = abap_adt::AdtClient::new(config).ok();
-                    }
-                    Err(error) => {
-                        warn!(
-                            workspace_uri = %request.workspace_uri,
-                            candidate = %candidate.name,
-                            error = %error,
-                            "skipping ADT dependency fetch because credentials are missing"
-                        );
-                    }
+                if !send_remote_dependency_completion(
+                    &completion_tx,
+                    &request,
+                    source_uris,
+                    connection_key.clone(),
+                    vec![artifact],
+                    Vec::new(),
+                    vec![candidate.name.clone()],
+                    Vec::new(),
+                    false,
+                ) {
+                    return;
                 }
-            }
-            if client.is_none() {
-                if local_config.mode == LocalDependencySourceMode::AdtFirst
-                    && let Some(artifact) =
-                        resolve_remote_local_export(candidate, &local_config, &mut resolver)
-                {
-                    fetched.push(candidate.name.clone());
-                    artifacts.push(artifact);
+                fetched += 1;
+                processed += 1;
+                if !send_remote_dependency_progress(
+                    &progress_tx,
+                    &request.workspace_uri,
+                    WorkspaceAnalysisPhase::Progress,
+                    processed,
+                    total,
+                    fetched,
+                    failed,
+                ) {
+                    return;
                 }
                 continue;
             }
+            processed += 1;
+            if !send_remote_dependency_progress(
+                &progress_tx,
+                &request.workspace_uri,
+                WorkspaceAnalysisPhase::Progress,
+                processed,
+                total,
+                fetched,
+                failed,
+            ) {
+                return;
+            }
+            continue;
         }
 
-        rate_limit_remote_request(&mut last_remote_request, request.remote_requests_per_second);
-        let result =
-            fetch_remote_dependency_candidate(client.as_mut().expect("ADT client"), candidate);
-        match result {
-            Ok(candidate_artifacts) => {
-                fetched.push(candidate.name.clone());
-                artifacts.extend(candidate_artifacts);
-            }
-            Err(error) => {
-                if local_config.mode == LocalDependencySourceMode::AdtFirst
-                    && let Some(artifact) =
-                        resolve_remote_local_export(candidate, &local_config, &mut resolver)
-                {
-                    fetched.push(candidate.name.clone());
-                    artifacts.push(artifact);
-                    continue;
+        jobs.push(RemoteFetchJob {
+            candidate: candidate.clone(),
+            source_uris,
+            local_config,
+        });
+    }
+
+    if let Some(connection) = connection
+        && !jobs.is_empty()
+    {
+        let parallelism = remote_dependency_parallelism(&request);
+        let mut results = fetch_remote_dependency_jobs(
+            connection,
+            jobs,
+            parallelism,
+            request.remote_requests_per_second,
+        )
+        .await;
+        while let Some(job_result) = results.recv().await {
+            processed += 1;
+            match job_result.result {
+                Ok(candidate_artifacts) => {
+                    fetched += 1;
+                    if !send_remote_dependency_completion(
+                        &completion_tx,
+                        &request,
+                        job_result.source_uris,
+                        connection_key.clone(),
+                        candidate_artifacts,
+                        Vec::new(),
+                        vec![job_result.candidate.name],
+                        Vec::new(),
+                        false,
+                    ) {
+                        return;
+                    }
                 }
-                warn!(
-                    workspace_uri = %request.workspace_uri,
-                    candidate = %candidate.name,
-                    kind = %candidate.kind,
-                    error = %error,
-                    "ADT dependency lookup failed"
-                );
-                negative.push(candidate.clone());
-                failed.push(candidate.clone());
+                Err(error) => {
+                    if job_result.local_config.mode == LocalDependencySourceMode::AdtFirst
+                        && let Some(artifact) = resolve_remote_local_export(
+                            &job_result.candidate,
+                            &job_result.local_config,
+                            &mut resolver,
+                        )
+                    {
+                        fetched += 1;
+                        if !send_remote_dependency_completion(
+                            &completion_tx,
+                            &request,
+                            job_result.source_uris,
+                            connection_key.clone(),
+                            vec![artifact],
+                            Vec::new(),
+                            vec![job_result.candidate.name],
+                            Vec::new(),
+                            false,
+                        ) {
+                            return;
+                        }
+                        if !send_remote_dependency_progress(
+                            &progress_tx,
+                            &request.workspace_uri,
+                            WorkspaceAnalysisPhase::Progress,
+                            processed,
+                            total,
+                            fetched,
+                            failed,
+                        ) {
+                            return;
+                        }
+                        continue;
+                    }
+                    failed += 1;
+                    warn!(
+                        workspace_uri = %request.workspace_uri,
+                        candidate = %job_result.candidate.name,
+                        kind = %job_result.candidate.kind,
+                        error = %error,
+                        "ADT dependency lookup failed"
+                    );
+                    if !send_remote_dependency_completion(
+                        &completion_tx,
+                        &request,
+                        job_result.source_uris,
+                        connection_key.clone(),
+                        Vec::new(),
+                        vec![job_result.candidate.clone()],
+                        Vec::new(),
+                        vec![job_result.candidate],
+                        false,
+                    ) {
+                        return;
+                    }
+                }
+            }
+            if !send_remote_dependency_progress(
+                &progress_tx,
+                &request.workspace_uri,
+                WorkspaceAnalysisPhase::Progress,
+                processed,
+                total,
+                fetched,
+                failed,
+            ) {
+                return;
             }
         }
     }
+    if total > 0 {
+        let _ = send_remote_dependency_progress(
+            &progress_tx,
+            &request.workspace_uri,
+            WorkspaceAnalysisPhase::Finished,
+            processed,
+            total,
+            fetched,
+            failed,
+        );
+    }
 
-    RemoteDependencyCompletion {
-        request,
+    let _ = send_remote_dependency_completion(
+        &completion_tx,
+        &request,
+        request.source_uris.clone(),
         connection_key,
-        artifacts,
-        negative,
-        fetched,
-        failed,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+}
+
+fn send_remote_dependency_progress(
+    progress_tx: &Sender<WorkspaceAnalysisStatusParams>,
+    workspace_uri: &str,
+    phase: WorkspaceAnalysisPhase,
+    processed: usize,
+    total: usize,
+    fetched: usize,
+    failed: usize,
+) -> bool {
+    progress_tx
+        .send(remote_dependency_fetch_status(
+            workspace_uri,
+            phase,
+            processed,
+            total,
+            fetched,
+            failed,
+        ))
+        .is_ok()
+}
+
+fn remote_dependency_fetch_status(
+    workspace_uri: &str,
+    phase: WorkspaceAnalysisPhase,
+    processed: usize,
+    total: usize,
+    fetched: usize,
+    failed: usize,
+) -> WorkspaceAnalysisStatusParams {
+    WorkspaceAnalysisStatusParams {
+        workspace_uri: abap_lsp::normalize_lsp_uri(workspace_uri),
+        phase,
+        trigger: "remote-dependency-fetch".to_string(),
+        processed_document_count: processed,
+        total_document_count: total,
+        analyzed_document_count: 0,
+        remote_resolution_in_flight: phase != WorkspaceAnalysisPhase::Finished,
+        remote_dependency_processed_count: Some(processed),
+        remote_dependency_total_count: Some(total),
+        remote_dependency_fetched_count: Some(fetched),
+        remote_dependency_failed_count: Some(failed),
     }
 }
 
-fn rate_limit_remote_request(last: &mut Option<Instant>, requests_per_second: Option<usize>) {
+fn send_remote_dependency_completion(
+    completion_tx: &Sender<RemoteDependencyCompletion>,
+    request: &abap_lsp::RemoteDependencyResolveParams,
+    source_uris: Vec<String>,
+    connection_key: Option<String>,
+    artifacts: Vec<abap_lsp::DependencyArtifactPayload>,
+    negative: Vec<abap_lsp::RemoteDependencyCandidate>,
+    fetched: Vec<String>,
+    failed: Vec<abap_lsp::RemoteDependencyCandidate>,
+    resolution_finished: bool,
+) -> bool {
+    let source_uri = source_uris
+        .first()
+        .cloned()
+        .filter(|uri| !uri.is_empty())
+        .unwrap_or_else(|| request.source_uri.clone());
+    completion_tx
+        .send(RemoteDependencyCompletion {
+            workspace_uri: request.workspace_uri.clone(),
+            source_uri,
+            source_uris,
+            connection_key,
+            artifacts,
+            negative,
+            fetched,
+            failed,
+            resolution_finished,
+        })
+        .is_ok()
+}
+
+fn remote_dependency_parallelism(request: &abap_lsp::RemoteDependencyResolveParams) -> usize {
+    const MAX_REMOTE_DEPENDENCY_PARALLELISM: usize = 16;
+    if let Some(parallelism) = request.remote_request_parallelism {
+        return parallelism.clamp(1, MAX_REMOTE_DEPENDENCY_PARALLELISM);
+    }
+    request
+        .remote_requests_per_second
+        .map(|rate| (rate / 24).clamp(1, MAX_REMOTE_DEPENDENCY_PARALLELISM))
+        .unwrap_or(4)
+}
+
+async fn fetch_remote_dependency_jobs(
+    connection: abap_adt::ConnectionConfig,
+    jobs: Vec<RemoteFetchJob>,
+    parallelism: usize,
+    requests_per_second: Option<usize>,
+) -> tokio::sync::mpsc::Receiver<RemoteFetchResult> {
+    let capacity = jobs.len().max(1);
+    let (job_tx, job_rx) = tokio::sync::mpsc::channel(capacity);
+    for job in jobs {
+        let _ = job_tx.send(job).await;
+    }
+    drop(job_tx);
+
+    let (result_tx, result_rx) = tokio::sync::mpsc::channel(capacity);
+    let job_rx = Arc::new(tokio::sync::Mutex::new(job_rx));
+    let last_remote_request = Arc::new(tokio::sync::Mutex::new(None::<tokio::time::Instant>));
+    for _ in 0..parallelism {
+        let job_rx = Arc::clone(&job_rx);
+        let result_tx = result_tx.clone();
+        let connection = connection.clone();
+        let last_remote_request = Arc::clone(&last_remote_request);
+        tokio::spawn(async move {
+            let mut client = abap_adt::AsyncAdtClient::new(connection);
+            loop {
+                let job = {
+                    let mut receiver = job_rx.lock().await;
+                    receiver.recv().await
+                };
+                let Some(job) = job else {
+                    break;
+                };
+                let result = match client.as_mut() {
+                    Ok(client) => {
+                        rate_limit_remote_request_async(&last_remote_request, requests_per_second)
+                            .await;
+                        fetch_remote_dependency_candidate_async(client, &job.candidate).await
+                    }
+                    Err(error) => Err(error.clone()),
+                };
+                if result_tx
+                    .send(RemoteFetchResult {
+                        candidate: job.candidate,
+                        source_uris: job.source_uris,
+                        local_config: job.local_config,
+                        result,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+    drop(result_tx);
+    result_rx
+}
+
+async fn rate_limit_remote_request_async(
+    last: &tokio::sync::Mutex<Option<tokio::time::Instant>>,
+    requests_per_second: Option<usize>,
+) {
     let Some(rate) = requests_per_second.filter(|rate| *rate > 0) else {
         return;
     };
     let delay = Duration::from_secs_f64(1.0 / rate as f64);
+    let mut last = last.lock().await;
     if let Some(previous) = *last {
         let elapsed = previous.elapsed();
         if elapsed < delay {
-            thread::sleep(delay - elapsed);
+            tokio::time::sleep(delay - elapsed).await;
         }
     }
-    *last = Some(Instant::now());
+    *last = Some(tokio::time::Instant::now());
 }
 
-fn fetch_remote_dependency_candidate(
-    client: &mut abap_adt::AdtClient,
+async fn fetch_remote_dependency_candidate_async(
+    client: &mut abap_adt::AsyncAdtClient,
     candidate: &abap_lsp::RemoteDependencyCandidate,
 ) -> Result<Vec<abap_lsp::DependencyArtifactPayload>, String> {
     let direct_refs =
         abap_adt::direct_dependency_object_refs(&candidate.name, Some(&candidate.kind));
     if !direct_refs.is_empty() {
         for object_ref in &direct_refs {
-            if let Ok(fetched) = client.fetch_dependency_object(object_ref) {
+            if let Ok(fetched) = client.fetch_dependency_object(object_ref).await {
                 return Ok(dependency_payloads_from_fetch(object_ref, fetched));
             }
         }
@@ -933,14 +1301,16 @@ fn fetch_remote_dependency_candidate(
         }
     }
 
-    let objects = client.search_repository_objects(&candidate.name, 25)?;
+    let objects = client
+        .search_repository_objects(&candidate.name, 25)
+        .await?;
     let object_refs =
         abap_adt::select_dependency_objects(&candidate.name, &objects, Some(&candidate.kind));
     if object_refs.is_empty() {
         return Err("no supported ADT object match".to_string());
     }
     for object_ref in &object_refs {
-        if let Ok(fetched) = client.fetch_dependency_object(object_ref) {
+        if let Ok(fetched) = client.fetch_dependency_object(object_ref).await {
             return Ok(dependency_payloads_from_fetch(object_ref, fetched));
         }
     }
@@ -1121,25 +1491,28 @@ fn remote_dependency_candidate_key(candidate: &abap_lsp::RemoteDependencyCandida
 
 fn flush_remote_dependency_completions(
     state: &mut ServerState,
-    writer: &mut impl Write,
+    _writer: &mut impl Write,
     completion_rx: &Receiver<RemoteDependencyCompletion>,
-    task_tx: &SyncSender<String>,
+    task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    while let Ok(completion) = completion_rx.try_recv() {
+    for _ in 0..MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH {
+        let Ok(completion) = completion_rx.try_recv() else {
+            break;
+        };
         if !completion.artifacts.is_empty() || !completion.negative.is_empty() {
             if let Err(error) = store_remote_dependency_artifacts(
                 state,
                 &StoreRemoteDependencyArtifactsParams {
-                    workspace_uri: completion.request.workspace_uri.clone(),
+                    workspace_uri: completion.workspace_uri.clone(),
                     connection_key: completion.connection_key.clone(),
                     artifacts: completion.artifacts,
                     negative: completion.negative,
                 },
             ) {
                 warn!(
-                    workspace_uri = %completion.request.workspace_uri,
+                    workspace_uri = %completion.workspace_uri,
                     error = %error,
                     "failed to store server-resolved dependency artifacts"
                 );
@@ -1147,35 +1520,22 @@ fn flush_remote_dependency_completions(
         }
 
         let params = abap_lsp::RemoteDependenciesUpdatedParams {
-            workspace_uri: completion.request.workspace_uri.clone(),
-            source_uri: completion.request.source_uri.clone(),
-            source_uris: completion.request.source_uris.clone(),
+            workspace_uri: completion.workspace_uri.clone(),
+            source_uri: completion.source_uri.clone(),
+            source_uris: completion.source_uris.clone(),
             fetched: completion.fetched,
             failed: completion.failed,
+            resolution_finished: completion.resolution_finished,
         };
         let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
         let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
             continue;
         };
-        let started = WorkspaceAnalysisStatusParams {
-            workspace_uri: workspace_uri.clone(),
-            phase: WorkspaceAnalysisPhase::Started,
-            trigger: "remote-dependencies-updated".to_string(),
-            processed_document_count: 0,
-            total_document_count: 0,
-            analyzed_document_count: 0,
-            remote_resolution_in_flight: false,
-        };
-        send_notification(
-            writer,
-            WORKSPACE_ANALYSIS_STATUS,
-            serde_json::to_value(&started)?,
-        )?;
         enqueue_background_task(
             AnalysisTask {
                 workspace_uri: workspace_uri.clone(),
                 generation: next_workspace_generation(generations, &workspace_uri),
-                started: Some(started),
+                started: None,
                 workspace,
                 kind: AnalysisTaskKind::RemoteDependenciesUpdated(params),
             },
@@ -1261,6 +1621,22 @@ fn flush_analysis_progress(
     Ok(())
 }
 
+fn flush_remote_dependency_progress(
+    writer: &mut impl Write,
+    progress_rx: &Receiver<WorkspaceAnalysisStatusParams>,
+) -> Result<Option<bool>, Box<dyn std::error::Error>> {
+    let mut in_flight = None;
+    while let Ok(params) = progress_rx.try_recv() {
+        in_flight = Some(params.phase != WorkspaceAnalysisPhase::Finished);
+        send_notification(
+            writer,
+            WORKSPACE_ANALYSIS_STATUS,
+            serde_json::to_value(params)?,
+        )?;
+    }
+    Ok(in_flight)
+}
+
 fn serve(
     reader: &mut (impl BufRead + Send),
     writer: &mut impl Write,
@@ -1270,13 +1646,14 @@ fn serve(
     let generations = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     let (message_tx, message_rx) = mpsc::channel();
     let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
-    let (task_tx, task_rx): (SyncSender<String>, Receiver<String>) = mpsc::sync_channel(8);
+    let (task_tx, task_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let task_rx = Arc::new(Mutex::new(task_rx));
     let (completion_tx, completion_rx) = mpsc::channel();
     let (progress_tx, progress_rx) = mpsc::channel();
-    let (remote_task_tx, remote_task_rx) = mpsc::sync_channel::<RemoteDependencyTask>(64);
+    let (remote_task_tx, remote_task_rx) = mpsc::channel::<RemoteDependencyTask>();
     let (remote_completion_tx, remote_completion_rx) =
         mpsc::channel::<RemoteDependencyCompletion>();
+    let (remote_progress_tx, remote_progress_rx) = mpsc::channel::<WorkspaceAnalysisStatusParams>();
     let mut debounced_tasks = HashMap::<String, DebouncedAnalysisTask>::new();
 
     thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
@@ -1364,9 +1741,14 @@ fn serve(
                     let fallback_finished = task.started.as_ref().map(|started| {
                         workspace_analysis_status_finished_for_workspace(started, &task.workspace)
                     });
-                    match catch_unwind(AssertUnwindSafe(|| {
-                        run_analysis_task(task, Some(&progress))
-                    })) {
+                    let progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)> =
+                        if task.started.is_some() {
+                            Some(&progress)
+                        } else {
+                            None
+                        };
+                    match catch_unwind(AssertUnwindSafe(|| run_analysis_task(task, progress_sink)))
+                    {
                         Ok(completion) => match completion {
                             Ok(completion) => {
                                 refresh_pending_task_workspace(
@@ -1413,15 +1795,28 @@ fn serve(
         }
 
         scope.spawn(move || {
-            while let Ok(task) = remote_task_rx.recv() {
-                let completion = run_remote_dependency_task(task);
-                if remote_completion_tx.send(completion).is_err() {
-                    break;
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(2)
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    warn!(error = %error, "failed to start async remote dependency runtime");
+                    return;
                 }
+            };
+            while let Ok(task) = remote_task_rx.recv() {
+                runtime.block_on(run_remote_dependency_task(
+                    task,
+                    remote_completion_tx.clone(),
+                    remote_progress_tx.clone(),
+                ));
             }
         });
 
         let mut reader_closed = false;
+        let mut remote_dependency_fetch_in_flight = false;
         loop {
             for params in flush_due_debounced_tasks(
                 Instant::now(),
@@ -1436,14 +1831,20 @@ fn serve(
                 )?;
             }
             flush_analysis_progress(writer, &progress_rx, &generations)?;
-            flush_remote_dependency_completions(
-                &mut state,
-                writer,
-                &remote_completion_rx,
-                &task_tx,
-                &queue_state,
-                &generations,
-            )?;
+            if let Some(in_flight) = flush_remote_dependency_progress(writer, &remote_progress_rx)?
+            {
+                remote_dependency_fetch_in_flight = in_flight;
+            }
+            if !remote_dependency_fetch_in_flight {
+                flush_remote_dependency_completions(
+                    &mut state,
+                    writer,
+                    &remote_completion_rx,
+                    &task_tx,
+                    &queue_state,
+                    &generations,
+                )?;
+            }
             flush_analysis_completions(
                 &mut state,
                 writer,
@@ -1517,14 +1918,21 @@ fn serve(
                         )?;
                     }
                     flush_analysis_progress(writer, &progress_rx, &generations)?;
-                    flush_remote_dependency_completions(
-                        &mut state,
-                        writer,
-                        &remote_completion_rx,
-                        &task_tx,
-                        &queue_state,
-                        &generations,
-                    )?;
+                    if let Some(in_flight) =
+                        flush_remote_dependency_progress(writer, &remote_progress_rx)?
+                    {
+                        remote_dependency_fetch_in_flight = in_flight;
+                    }
+                    if !remote_dependency_fetch_in_flight {
+                        flush_remote_dependency_completions(
+                            &mut state,
+                            writer,
+                            &remote_completion_rx,
+                            &task_tx,
+                            &queue_state,
+                            &generations,
+                        )?;
+                    }
                     flush_analysis_completions(
                         &mut state,
                         writer,
@@ -1563,6 +1971,7 @@ fn serve(
             )?;
         }
         flush_analysis_progress(writer, &progress_rx, &generations)?;
+        let _ = flush_remote_dependency_progress(writer, &remote_progress_rx)?;
         flush_remote_dependency_completions(
             &mut state,
             writer,
@@ -3663,6 +4072,10 @@ fn workspace_analysis_status_started(
                 total_document_count: 0,
                 analyzed_document_count: 0,
                 remote_resolution_in_flight: false,
+                remote_dependency_processed_count: None,
+                remote_dependency_total_count: None,
+                remote_dependency_fetched_count: None,
+                remote_dependency_failed_count: None,
             }
         }
         WORKSPACE_MANIFEST_UPDATED => {
@@ -3677,6 +4090,10 @@ fn workspace_analysis_status_started(
                 total_document_count: 0,
                 analyzed_document_count: 0,
                 remote_resolution_in_flight: false,
+                remote_dependency_processed_count: None,
+                remote_dependency_total_count: None,
+                remote_dependency_fetched_count: None,
+                remote_dependency_failed_count: None,
             }
         }
         DEPENDENCY_CACHE_REFRESH_REQUESTED => {
@@ -3691,6 +4108,10 @@ fn workspace_analysis_status_started(
                 total_document_count: 0,
                 analyzed_document_count: 0,
                 remote_resolution_in_flight: false,
+                remote_dependency_processed_count: None,
+                remote_dependency_total_count: None,
+                remote_dependency_fetched_count: None,
+                remote_dependency_failed_count: None,
             }
         }
         REMOTE_DEPENDENCIES_UPDATED => {
@@ -3706,6 +4127,10 @@ fn workspace_analysis_status_started(
                 total_document_count: 0,
                 analyzed_document_count: 0,
                 remote_resolution_in_flight: false,
+                remote_dependency_processed_count: None,
+                remote_dependency_total_count: None,
+                remote_dependency_fetched_count: None,
+                remote_dependency_failed_count: None,
             }
         }
         _ => return Ok(None),
@@ -3737,6 +4162,10 @@ fn workspace_analysis_status_finished_for_workspace(
         total_document_count: document_count,
         analyzed_document_count: document_count,
         remote_resolution_in_flight: workspace.remote_resolution_in_flight,
+        remote_dependency_processed_count: None,
+        remote_dependency_total_count: None,
+        remote_dependency_fetched_count: None,
+        remote_dependency_failed_count: None,
     }
 }
 
@@ -3756,6 +4185,10 @@ fn emit_workspace_analysis_progress(
         total_document_count: total,
         analyzed_document_count: 0,
         remote_resolution_in_flight: false,
+        remote_dependency_processed_count: None,
+        remote_dependency_total_count: None,
+        remote_dependency_fetched_count: None,
+        remote_dependency_failed_count: None,
     };
     if let Some(sink) = sink {
         sink(params);
@@ -3783,19 +4216,21 @@ mod tests {
 
     use super::{
         AnalysisCompletion, AnalysisTask, AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE,
-        EDITOR_FIRST_DIAGNOSTIC_LIMIT, PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED,
-        RESOLVE_REMOTE_DEPENDENCIES, RemoteDependencyTask, finish_background_task,
-        flush_analysis_completions, flush_due_debounced_tasks, handle_did_change_notifications,
-        handle_message, refresh_pending_task_workspace, run_analysis_task,
-        run_remote_dependency_task, send_analysis_completion, take_pending_background_task,
-        try_schedule_background_analysis, workspace_analysis_status_finished,
-        workspace_analysis_status_started,
+        EDITOR_FIRST_DIAGNOSTIC_LIMIT, MAX_ANALYSIS_COMPLETIONS_PER_FLUSH,
+        MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH, PendingAnalysisQueue,
+        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, RemoteDependencyCompletion,
+        RemoteDependencyTask, finish_background_task, flush_analysis_completions,
+        flush_due_debounced_tasks, flush_remote_dependency_completions,
+        handle_did_change_notifications, handle_message, refresh_pending_task_workspace,
+        run_analysis_task, run_remote_dependency_task, send_analysis_completion,
+        take_pending_background_task, try_schedule_background_analysis,
+        workspace_analysis_status_finished, workspace_analysis_status_started,
     };
     use abap_lsp::{
         DependencyArtifactPayload, DidChangeTextDocumentParams, OpenDocumentOverlay,
         SAP_ATC_RESULTS_UPDATED, ServerConfig, ServerState, StoreRemoteDependencyArtifactsParams,
-        WorkspacePerformanceMode, WorkspaceState, normalize_lsp_uri, refresh_workspace,
-        store_remote_dependency_artifacts,
+        WorkspaceAnalysisPhase, WorkspaceAnalysisStatusParams, WorkspacePerformanceMode,
+        WorkspaceState, normalize_lsp_uri, refresh_workspace, store_remote_dependency_artifacts,
     };
     use serde_json::{Value, json};
 
@@ -3811,6 +4246,22 @@ mod tests {
 
     fn file_uri(path: &std::path::Path) -> String {
         format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
+    }
+
+    fn run_remote_dependency_task_for_test(
+        task: RemoteDependencyTask,
+    ) -> (
+        Vec<super::RemoteDependencyCompletion>,
+        Vec<WorkspaceAnalysisStatusParams>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(run_remote_dependency_task(task, tx, progress_tx));
+        (rx.try_iter().collect(), progress_rx.try_iter().collect())
     }
 
     fn lsp_position_for_offset(text: &str, offset: usize) -> Value {
@@ -3999,7 +4450,7 @@ mod tests {
 
         let workspace_uri = file_uri(&workspace_path);
         let source_uri = format!("{workspace_uri}/src/main.abap");
-        let completion = run_remote_dependency_task(RemoteDependencyTask {
+        let (completions, progress) = run_remote_dependency_task_for_test(RemoteDependencyTask {
             request: abap_lsp::RemoteDependencyResolveParams {
                 workspace_uri,
                 source_uri: source_uri.clone(),
@@ -4020,13 +4471,50 @@ mod tests {
                 }],
             },
         });
+        let fetched = completions
+            .iter()
+            .flat_map(|completion| completion.fetched.iter().cloned())
+            .collect::<Vec<_>>();
+        let failed = completions
+            .iter()
+            .flat_map(|completion| completion.failed.iter().cloned())
+            .collect::<Vec<_>>();
+        let negative = completions
+            .iter()
+            .flat_map(|completion| completion.negative.iter().cloned())
+            .collect::<Vec<_>>();
+        let artifacts = completions
+            .iter()
+            .flat_map(|completion| completion.artifacts.iter().cloned())
+            .collect::<Vec<_>>();
 
-        assert_eq!(completion.fetched, vec!["ZCL_DEP"]);
-        assert!(completion.failed.is_empty());
-        assert!(completion.negative.is_empty());
-        assert_eq!(completion.artifacts.len(), 1);
-        assert_eq!(completion.artifacts[0].object_name, "zcl_dep");
-        assert_eq!(completion.artifacts[0].object_kind, "global-class");
+        assert_eq!(fetched, vec!["ZCL_DEP"]);
+        assert!(failed.is_empty());
+        assert!(negative.is_empty());
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].object_name, "zcl_dep");
+        assert_eq!(artifacts[0].object_kind, "global-class");
+        assert!(
+            completions
+                .iter()
+                .any(|completion| completion.resolution_finished)
+        );
+        assert_eq!(
+            progress
+                .iter()
+                .map(|params| (
+                    params.phase,
+                    params.remote_dependency_processed_count,
+                    params.remote_dependency_total_count,
+                    params.remote_dependency_fetched_count
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (WorkspaceAnalysisPhase::Started, Some(0), Some(1), Some(0)),
+                (WorkspaceAnalysisPhase::Progress, Some(1), Some(1), Some(1)),
+                (WorkspaceAnalysisPhase::Finished, Some(1), Some(1), Some(1)),
+            ]
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -4049,7 +4537,7 @@ mod tests {
 
         let workspace_uri = file_uri(&workspace_path);
         let source_uri = format!("{workspace_uri}/src/main.abap");
-        let completion = run_remote_dependency_task(RemoteDependencyTask {
+        let (completions, progress) = run_remote_dependency_task_for_test(RemoteDependencyTask {
             request: abap_lsp::RemoteDependencyResolveParams {
                 workspace_uri,
                 source_uri: source_uri.clone(),
@@ -4071,10 +4559,47 @@ mod tests {
             },
         });
 
-        assert!(completion.artifacts.is_empty());
-        assert!(completion.fetched.is_empty());
-        assert!(completion.failed.is_empty());
-        assert!(completion.negative.is_empty());
+        assert!(
+            completions
+                .iter()
+                .all(|completion| completion.artifacts.is_empty())
+        );
+        assert!(
+            completions
+                .iter()
+                .all(|completion| completion.fetched.is_empty())
+        );
+        assert!(
+            completions
+                .iter()
+                .all(|completion| completion.failed.is_empty())
+        );
+        assert!(
+            completions
+                .iter()
+                .all(|completion| completion.negative.is_empty())
+        );
+        assert!(
+            completions
+                .iter()
+                .any(|completion| completion.resolution_finished)
+        );
+        assert_eq!(
+            progress
+                .iter()
+                .map(|params| (
+                    params.phase,
+                    params.remote_dependency_processed_count,
+                    params.remote_dependency_total_count,
+                    params.remote_dependency_fetched_count
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (WorkspaceAnalysisPhase::Started, Some(0), Some(1), Some(0)),
+                (WorkspaceAnalysisPhase::Progress, Some(1), Some(1), Some(0)),
+                (WorkspaceAnalysisPhase::Finished, Some(1), Some(1), Some(0)),
+            ]
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
@@ -4326,6 +4851,26 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn remote_dependency_fetch_status_serializes_progress_counts() {
+        let status = super::remote_dependency_fetch_status(
+            "file:///c:/workspace",
+            abap_lsp::WorkspaceAnalysisPhase::Progress,
+            7,
+            12,
+            5,
+            2,
+        );
+        let payload = serde_json::to_value(status).expect("status payload");
+
+        assert_eq!(payload["trigger"], "remote-dependency-fetch");
+        assert_eq!(payload["remoteResolutionInFlight"], true);
+        assert_eq!(payload["remoteDependencyProcessedCount"], 7);
+        assert_eq!(payload["remoteDependencyTotalCount"], 12);
+        assert_eq!(payload["remoteDependencyFetchedCount"], 5);
+        assert_eq!(payload["remoteDependencyFailedCount"], 2);
+    }
+
+    #[test]
     fn initialize_registers_root_uri_when_workspace_folders_are_missing() {
         let mut state = ServerState::default();
         let config = ServerConfig::default();
@@ -4393,7 +4938,7 @@ START-OF-SELECTION.
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let (task_tx, task_rx) = mpsc::channel();
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -4449,13 +4994,79 @@ START-OF-SELECTION.
     }
 
     #[test]
+    fn background_scheduler_emits_started_status_for_initialized_workspace() {
+        let workspace_path = temp_workspace_path("background_initialized_schedule");
+        let source_dir = workspace_path.join("src");
+        fs::create_dir_all(&source_dir).expect("source dir");
+        write_manifest_workspace(
+            &workspace_path,
+            Some("full-workspace"),
+            None,
+            &[("ZREPORT_INIT", "report", "root", "src/ZREPORT_INIT.abap")],
+            0,
+        );
+        fs::write(source_dir.join("ZREPORT_INIT.abap"), "REPORT zreport_init.").expect("report");
+
+        let workspace_uri = file_uri(&workspace_path);
+        let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&workspace_uri);
+        let mut state = ServerState::default();
+        state.register_workspace_folder(workspace_uri);
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
+        let mut debounced_tasks = HashMap::new();
+        let (task_tx, task_rx) = mpsc::channel();
+
+        let scheduled = try_schedule_background_analysis(
+            &mut state,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            }),
+            &task_tx,
+            &queue_state,
+            &generations,
+            &mut debounced_tasks,
+        )
+        .expect("schedule initialized")
+        .expect("scheduled work");
+
+        assert_eq!(scheduled.started_statuses.len(), 1);
+        assert_eq!(scheduled.started_statuses[0].trigger, "initialized");
+        assert_eq!(
+            scheduled.started_statuses[0].phase,
+            WorkspaceAnalysisPhase::Started
+        );
+        assert!(scheduled.notifications.is_empty());
+        assert_eq!(
+            task_rx.recv().expect("scheduled task"),
+            normalized_workspace_uri
+        );
+        let queue = queue_state.lock().expect("pending analysis queue");
+        let task = queue
+            .pending_tasks
+            .get(&normalized_workspace_uri)
+            .expect("pending task");
+        assert_eq!(
+            task.started.as_ref().map(|status| status.trigger.as_str()),
+            Some("initialized")
+        );
+
+        let _ = fs::remove_dir_all(&workspace_path);
+    }
+
+    #[test]
     fn pending_background_task_reuses_completed_workspace_cache() {
         let workspace_uri = "file:///workspace".to_string();
         let source_uri = "file:///workspace/main.abap".to_string();
         let source_text = "DATA lv_value TYPE i.";
 
-        let completed = WorkspaceState::new(workspace_uri.clone());
+        let mut completed = WorkspaceState::new(workspace_uri.clone());
         completed.cache.publish(source_uri.clone(), 0, source_text);
+        completed.remote_resolution_in_flight = true;
+        completed
+            .remote_resolution_seen
+            .insert("type:zcl_from_completed".to_string());
         let mut staged = WorkspaceState::new(workspace_uri.clone());
         staged.open_documents.insert(
             source_uri.clone(),
@@ -4494,6 +5105,88 @@ START-OF-SELECTION.
             .get(&source_uri)
             .expect("open overlay");
         assert_eq!(overlay.version, 3);
+        assert!(!pending.workspace.remote_resolution_in_flight);
+        assert!(pending.workspace.remote_resolution_seen.is_empty());
+    }
+
+    #[test]
+    fn analysis_completion_flush_is_bounded() {
+        let workspace_uri = "file:///workspace".to_string();
+        let mut state = ServerState::default();
+        state.workspaces.insert(
+            workspace_uri.clone(),
+            WorkspaceState::new(workspace_uri.clone()),
+        );
+        let (completion_tx, completion_rx) = mpsc::channel();
+        for _ in 0..(MAX_ANALYSIS_COMPLETIONS_PER_FLUSH + 1) {
+            completion_tx
+                .send(AnalysisCompletion {
+                    workspace_uri: workspace_uri.clone(),
+                    generation: 0,
+                    started: None,
+                    workspace: WorkspaceState::new(workspace_uri.clone()),
+                    notifications: Vec::new(),
+                })
+                .expect("completion");
+        }
+        drop(completion_tx);
+
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let (remote_task_tx, _remote_task_rx) = mpsc::channel();
+        let mut writer = Vec::new();
+        flush_analysis_completions(
+            &mut state,
+            &mut writer,
+            &completion_rx,
+            &generations,
+            &remote_task_tx,
+        )
+        .expect("flush completions");
+
+        assert_eq!(completion_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn remote_dependency_completion_flush_is_bounded() {
+        let workspace_uri = "file:///workspace".to_string();
+        let mut state = ServerState::default();
+        state.workspaces.insert(
+            workspace_uri.clone(),
+            WorkspaceState::new(workspace_uri.clone()),
+        );
+        let (completion_tx, completion_rx) = mpsc::channel();
+        for _ in 0..(MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH + 1) {
+            completion_tx
+                .send(RemoteDependencyCompletion {
+                    workspace_uri: workspace_uri.clone(),
+                    source_uri: String::new(),
+                    source_uris: Vec::new(),
+                    connection_key: None,
+                    artifacts: Vec::new(),
+                    negative: Vec::new(),
+                    fetched: Vec::new(),
+                    failed: Vec::new(),
+                    resolution_finished: false,
+                })
+                .expect("completion");
+        }
+        drop(completion_tx);
+
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
+        let generations = Arc::new(Mutex::new(HashMap::new()));
+        let (task_tx, _task_rx) = mpsc::channel();
+        let mut writer = Vec::new();
+        flush_remote_dependency_completions(
+            &mut state,
+            &mut writer,
+            &completion_rx,
+            &task_tx,
+            &queue_state,
+            &generations,
+        )
+        .expect("flush completions");
+
+        assert_eq!(completion_rx.try_iter().count(), 1);
     }
 
     #[test]
@@ -4581,7 +5274,7 @@ ENDCLASS.",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, _task_rx) = mpsc::sync_channel(1);
+        let (task_tx, _task_rx) = mpsc::channel();
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -4644,7 +5337,7 @@ ENDCLASS.",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, _task_rx) = mpsc::sync_channel(1);
+        let (task_tx, _task_rx) = mpsc::channel();
         let changed_text = "DATA lv_value TYPE i.\n* lv_value = 1.\n";
         let message = json!({
             "jsonrpc": "2.0",
@@ -4762,7 +5455,7 @@ lo_helper->",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, _task_rx) = mpsc::sync_channel(1);
+        let (task_tx, _task_rx) = mpsc::channel();
         let changed_text = "\
 REPORT zreport_main.
 DATA lo_helper TYPE REF TO zcl_helper.
@@ -4839,7 +5532,7 @@ lo_helper->r";
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(4);
+        let (task_tx, task_rx) = mpsc::channel();
 
         for version in [2, 3] {
             let message = json!({
@@ -4897,7 +5590,7 @@ lo_helper->r";
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(4);
+        let (task_tx, task_rx) = mpsc::channel();
 
         let mut schedule_change = |state: &mut ServerState, version| {
             try_schedule_background_analysis(
@@ -5016,7 +5709,7 @@ lo_helper->r";
         drop(completion_tx);
 
         let mut writer = Vec::new();
-        let (remote_task_tx, _remote_task_rx) = mpsc::sync_channel(1);
+        let (remote_task_tx, _remote_task_rx) = mpsc::channel();
         flush_analysis_completions(
             &mut state,
             &mut writer,
@@ -5091,7 +5784,7 @@ lo_helper->",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let (task_tx, task_rx) = mpsc::channel();
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -5176,7 +5869,7 @@ lo_helper->r"
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(4);
+        let (task_tx, task_rx) = mpsc::channel();
 
         for version in [2, 3] {
             let message = json!({
@@ -5280,7 +5973,7 @@ lo_helper->",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let (task_tx, task_rx) = mpsc::channel();
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -5419,7 +6112,7 @@ lo_provider->value( )."
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let (task_tx, task_rx) = mpsc::channel();
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -8296,7 +8989,7 @@ object_name = "ZREPORT_INIT"
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let (task_tx, task_rx) = mpsc::channel();
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &json!({

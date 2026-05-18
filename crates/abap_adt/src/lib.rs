@@ -4,7 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use reqwest::blocking::Client;
+use reqwest::Client as AsyncHttpClient;
+use reqwest::blocking::Client as BlockingClient;
 use reqwest::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE};
 use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
@@ -291,14 +292,14 @@ pub struct ChildEntry {
 }
 
 pub struct AdtClient {
-    http: Client,
+    http: BlockingClient,
     connection: ConnectionConfig,
     csrf_token: Option<String>,
 }
 
 impl AdtClient {
     pub fn new(connection: ConnectionConfig) -> AdtResult<Self> {
-        let http = Client::builder()
+        let http = BlockingClient::builder()
             .cookie_store(true)
             .timeout(Duration::from_secs(60))
             .build()
@@ -725,6 +726,340 @@ impl AdtClient {
         let status = response.status();
         let body = response
             .bytes()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(|e| format!("failed to read ADT response body: {e}"))?;
+
+        if !status.is_success() {
+            return Err(format!(
+                "ADT request failed ({}): {}",
+                status.as_u16(),
+                body
+            ));
+        }
+        Ok(body)
+    }
+
+    fn base_endpoint(&self, relative_path: &str) -> AdtResult<Url> {
+        self.absolute_url(relative_path)
+    }
+
+    fn absolute_url(&self, path_or_url: &str) -> AdtResult<Url> {
+        let mut normalized_path = path_or_url.to_string();
+        if !path_or_url.starts_with("http://")
+            && !path_or_url.starts_with("https://")
+            && self
+                .connection
+                .base_url
+                .to_ascii_lowercase()
+                .contains("/sap/bc/adt")
+            && path_or_url.to_ascii_lowercase().starts_with("/sap/bc/adt/")
+        {
+            normalized_path = path_or_url["/sap/bc/adt".len()..].to_string();
+        }
+
+        let mut url =
+            if normalized_path.starts_with("http://") || normalized_path.starts_with("https://") {
+                Url::parse(&normalized_path)
+                    .map_err(|e| format!("invalid URL {normalized_path:?}: {e}"))?
+            } else {
+                let separator = if normalized_path.starts_with('/') {
+                    ""
+                } else {
+                    "/"
+                };
+                Url::parse(&format!(
+                    "{}{}{}",
+                    self.connection.base_url, separator, normalized_path
+                ))
+                .map_err(|e| format!("invalid ADT endpoint {normalized_path:?}: {e}"))?
+            };
+
+        if let Some(client) = &self.connection.sap_client {
+            if !url.query_pairs().any(|(key, _)| key == "sap-client") {
+                url.query_pairs_mut().append_pair("sap-client", client);
+            }
+        }
+
+        Ok(url)
+    }
+}
+
+pub struct AsyncAdtClient {
+    http: AsyncHttpClient,
+    connection: ConnectionConfig,
+    csrf_token: Option<String>,
+}
+
+impl AsyncAdtClient {
+    pub fn new(connection: ConnectionConfig) -> AdtResult<Self> {
+        let http = AsyncHttpClient::builder()
+            .cookie_store(true)
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+        Ok(Self {
+            http,
+            connection,
+            csrf_token: None,
+        })
+    }
+
+    pub async fn search_repository_objects(
+        &mut self,
+        query: &str,
+        max_results: usize,
+    ) -> AdtResult<Vec<AdtObjectRef>> {
+        let mut url = self.base_endpoint("/repository/informationsystem/search")?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("operation", "quickSearch");
+            pairs.append_pair("query", query);
+            pairs.append_pair("maxResults", &max_results.to_string());
+        }
+        let body = self
+            .send_text(Method::GET, url, "application/xml", None)
+            .await?;
+        Ok(parse_object_references(&body))
+    }
+
+    pub async fn fetch_dependency_object(
+        &mut self,
+        object_ref: &AdtObjectRef,
+    ) -> AdtResult<AdtDependencyFetchResult> {
+        if is_message_class_dependency_object(object_ref) {
+            return Ok(AdtDependencyFetchResult {
+                body: self.fetch_message_class(&object_ref.name).await?,
+                file_extension: "xml".to_string(),
+                manifest_kind: "message-class".to_string(),
+                shared_dependencies: Vec::new(),
+            });
+        }
+        if is_fetchable_ddic_dependency_object(object_ref) {
+            let kind = infer_ddic_manifest_kind(object_ref);
+            if kind == "ddic-domain" {
+                return Err(format!(
+                    "DDIC domain {} is not fetchable through ADT",
+                    object_ref.name
+                ));
+            }
+            return Ok(AdtDependencyFetchResult {
+                body: self.fetch_ddic_object(&kind, &object_ref.name).await?,
+                file_extension: "xml".to_string(),
+                manifest_kind: kind,
+                shared_dependencies: Vec::new(),
+            });
+        }
+        if is_function_module_object(object_ref) {
+            return self
+                .fetch_function_module_dependency_source(object_ref)
+                .await;
+        }
+
+        Ok(AdtDependencyFetchResult {
+            body: self.fetch_object_source(&object_ref.uri).await?,
+            file_extension: "abap".to_string(),
+            manifest_kind: infer_repository_manifest_kind(object_ref),
+            shared_dependencies: Vec::new(),
+        })
+    }
+
+    pub async fn fetch_ddic(&mut self, kind: DdicKind, name: &str) -> AdtResult<DdicFetch> {
+        match kind {
+            DdicKind::DataElement => {
+                let path = format!("/ddic/dataelements/{}", encode_path_segment(name));
+                let url = self.base_endpoint(&path)?;
+                let request_url = url.to_string();
+                let body = self.send_text(
+                    Method::GET,
+                    url,
+                    "application/vnd.sap.adt.dataelements.v1+xml, application/vnd.sap.adt.dataelements.v2+xml",
+                    None,
+                ).await?;
+                Ok(DdicFetch { request_url, body })
+            }
+            DdicKind::TableType | DdicKind::Structure | DdicKind::View | DdicKind::Table => {
+                let mut url = self.base_endpoint("/ddic/elementinfo")?;
+                url.query_pairs_mut().append_pair("path", name);
+                let request_url = url.to_string();
+                let body = self
+                    .send_text(
+                        Method::GET,
+                        url,
+                        "application/vnd.sap.adt.elementinfo+xml",
+                        None,
+                    )
+                    .await?;
+                Ok(DdicFetch { request_url, body })
+            }
+        }
+    }
+
+    pub async fn fetch_ddic_object(&mut self, kind: &str, name: &str) -> AdtResult<String> {
+        let kind = match kind.trim().to_ascii_lowercase().as_str() {
+            "ddic-data-element" => DdicKind::DataElement,
+            "ddic-table-type" => DdicKind::TableType,
+            "ddic-table" => DdicKind::Table,
+            "ddic-view" => DdicKind::View,
+            _ => DdicKind::Structure,
+        };
+        self.fetch_ddic(kind, name)
+            .await
+            .map(|fetched| format_ddic_xml(&fetched.body))
+    }
+
+    pub async fn fetch_message_class(&mut self, name: &str) -> AdtResult<String> {
+        let path = format!("/messageclass/{}", encode_path_segment(name));
+        let url = self.base_endpoint(&path)?;
+        let body = self
+            .send_text(
+                Method::GET,
+                url,
+                "application/vnd.sap.adt.elementinfo+xml",
+                None,
+            )
+            .await?;
+        Ok(format_ddic_xml(&body))
+    }
+
+    async fn fetch_function_module_dependency_source(
+        &mut self,
+        object_ref: &AdtObjectRef,
+    ) -> AdtResult<AdtDependencyFetchResult> {
+        let function_module_source = self.fetch_object_source(&object_ref.uri).await?;
+        let Some(function_group_uri) = infer_function_group_uri(object_ref) else {
+            return Ok(AdtDependencyFetchResult {
+                body: function_module_source,
+                file_extension: "abap".to_string(),
+                manifest_kind: "function-module".to_string(),
+                shared_dependencies: Vec::new(),
+            });
+        };
+
+        let Ok(function_group_source) = self.fetch_object_source(&function_group_uri).await else {
+            return Ok(AdtDependencyFetchResult {
+                body: function_module_source,
+                file_extension: "abap".to_string(),
+                manifest_kind: "function-module".to_string(),
+                shared_dependencies: Vec::new(),
+            });
+        };
+
+        let mut shared_dependencies = Vec::new();
+        for include_name in extract_active_top_level_include_names(&function_group_source) {
+            if is_function_group_dispatcher_include(&include_name) {
+                continue;
+            }
+            if let Ok(body) = self
+                .fetch_object_source(&format!(
+                    "/programs/includes/{}",
+                    encode_path_segment(&include_name)
+                ))
+                .await
+            {
+                shared_dependencies.push(AdtDependencyArtifact {
+                    object_ref: build_include_object_ref(&include_name, &object_ref.package_name),
+                    body,
+                    file_extension: "abap".to_string(),
+                    manifest_kind: "include".to_string(),
+                });
+            }
+        }
+        shared_dependencies.sort_by(|left, right| left.object_ref.name.cmp(&right.object_ref.name));
+        Ok(AdtDependencyFetchResult {
+            body: build_function_module_dependency_source(
+                &function_group_source,
+                &function_module_source,
+            ),
+            file_extension: "abap".to_string(),
+            manifest_kind: "function-module".to_string(),
+            shared_dependencies,
+        })
+    }
+
+    async fn fetch_object_source(&mut self, object_uri: &str) -> AdtResult<String> {
+        let source_path = if object_uri.ends_with("/source/main") {
+            object_uri.to_string()
+        } else {
+            format!("{object_uri}/source/main")
+        };
+        let url = self.absolute_url(&source_path)?;
+        self.send_text(Method::GET, url, "text/plain", None).await
+    }
+
+    async fn ensure_session(&mut self) -> AdtResult<()> {
+        if self.csrf_token.is_some() {
+            return Ok(());
+        }
+
+        let url = self.base_endpoint("/runtime/systemmessages")?;
+        let response = self
+            .http
+            .request(Method::GET, url)
+            .basic_auth(&self.connection.username, Some(&self.connection.password))
+            .header(CACHE_CONTROL, "no-cache")
+            .header(ACCEPT, SESSION_BOOTSTRAP_ACCEPT)
+            .header("x-csrf-token", "Fetch")
+            .send()
+            .await
+            .map_err(|e| format!("failed to establish ADT session: {e}"))?;
+
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response
+            .bytes()
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(|e| format!("failed to read ADT session response: {e}"))?;
+
+        if !status.is_success() {
+            return Err(format!(
+                "failed to establish ADT session ({}): {}",
+                status.as_u16(),
+                body
+            ));
+        }
+
+        let token = headers
+            .get("x-csrf-token")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "SAP ADT did not return a CSRF token.".to_string())?;
+        self.csrf_token = Some(token);
+        Ok(())
+    }
+
+    async fn send_text(
+        &mut self,
+        method: Method,
+        url: Url,
+        accept: &'static str,
+        body: Option<(&'static str, String)>,
+    ) -> AdtResult<String> {
+        self.ensure_session().await?;
+
+        let mut request = self
+            .http
+            .request(method, url)
+            .basic_auth(&self.connection.username, Some(&self.connection.password))
+            .header(CACHE_CONTROL, "no-cache")
+            .header(ACCEPT, accept);
+        if let Some(token) = &self.csrf_token {
+            request = request.header("x-csrf-token", token);
+        }
+        if let Some((content_type, payload)) = body {
+            request = request.header(CONTENT_TYPE, content_type).body(payload);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("ADT request failed: {e}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .map_err(|e| format!("failed to read ADT response body: {e}"))?;
 
