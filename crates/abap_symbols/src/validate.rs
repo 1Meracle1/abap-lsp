@@ -49,11 +49,74 @@ struct OpenSqlOrderByValidation {
     resolved_primary_key_fields: Vec<(usize, Vec<Arc<str>>)>,
 }
 
+type InterfaceQualifierMethodMap<'a> = HashMap<&'a str, Vec<InterfaceQualifierCandidate<'a>>>;
+type InterfaceQualifierBaseMap<'a> = HashMap<&'a str, InterfaceQualifierMethodMap<'a>>;
+
+struct InterfaceQualifierCandidate<'a> {
+    base_start: usize,
+    field_end: usize,
+    interface_name: &'a str,
+}
+
+#[derive(Default)]
+struct CallSiteInterfaceQualifiers<'a> {
+    by_target: HashMap<(ScopeId, Namespace), InterfaceQualifierBaseMap<'a>>,
+}
+
+impl<'a> CallSiteInterfaceQualifiers<'a> {
+    fn new(unit: &'a crate::UnitAnalysis) -> Self {
+        let mut by_target: HashMap<(ScopeId, Namespace), InterfaceQualifierBaseMap<'a>> =
+            HashMap::new();
+        for access in &unit.field_accesses {
+            if access.field_path.len() < 2 {
+                continue;
+            }
+            let last = &access.field_path[access.field_path.len() - 1];
+            let interface = &access.field_path[access.field_path.len() - 2];
+            by_target
+                .entry((access.scope, access.base_namespace))
+                .or_default()
+                .entry(access.base_name.as_ref())
+                .or_default()
+                .entry(last.name.as_ref())
+                .or_default()
+                .push(InterfaceQualifierCandidate {
+                    base_start: access.base_range.start,
+                    field_end: last.range.end,
+                    interface_name: interface.name.as_ref(),
+                });
+        }
+        Self { by_target }
+    }
+
+    fn get(&self, call_site: &crate::CallSiteData, method_name: &str) -> Option<&'a str> {
+        let NamedArgumentTarget::Method {
+            base_namespace,
+            base_name,
+            ..
+        } = &call_site.target
+        else {
+            return None;
+        };
+        self.by_target
+            .get(&(call_site.scope, *base_namespace))?
+            .get(base_name.as_ref())?
+            .get(method_name)?
+            .iter()
+            .find_map(|candidate| {
+                (candidate.base_start >= call_site.range.start
+                    && candidate.field_end <= call_site.range.end)
+                    .then_some(candidate.interface_name)
+            })
+    }
+}
+
 fn unresolved_reference_is_resolved_implicit_method_call(
     project: &ProjectAnalysis,
     lookup: &ValidationLookup<'_>,
     unit: &crate::UnitAnalysis,
     scope_index: &ScopeIndex,
+    interface_qualifiers: &CallSiteInterfaceQualifiers<'_>,
     reference: &crate::ReferenceData,
 ) -> bool {
     reference.namespace == Namespace::Routine
@@ -67,18 +130,25 @@ fn unresolved_reference_is_resolved_implicit_method_call(
                     NamedArgumentTarget::ImplicitMethod { method_name }
                         if method_name == &reference.name
                 )
-                && resolve_call_target_member(project, lookup, unit, scope_index, call_site)
-                    .is_some_and(|(target_unit, member)| {
-                        member.kind == ClassMemberKind::Method
-                            && class_member_visible_to(
-                                project,
-                                lookup,
-                                unit,
-                                reference.scope,
-                                target_unit,
-                                member,
-                            )
-                    })
+                && resolve_call_target_member(
+                    project,
+                    lookup,
+                    unit,
+                    scope_index,
+                    interface_qualifiers,
+                    call_site,
+                )
+                .is_some_and(|(target_unit, member)| {
+                    member.kind == ClassMemberKind::Method
+                        && class_member_visible_to(
+                            project,
+                            lookup,
+                            unit,
+                            reference.scope,
+                            target_unit,
+                            member,
+                        )
+                })
         })
 }
 
@@ -3187,6 +3257,7 @@ fn resolve_call_target_member<'a>(
     lookup: &ValidationLookup<'_>,
     unit: &'a crate::UnitAnalysis,
     scope_index: &ScopeIndex,
+    interface_qualifiers: &CallSiteInterfaceQualifiers<'_>,
     call_site: &crate::CallSiteData,
 ) -> Option<(&'a crate::UnitAnalysis, &'a crate::ClassMemberData)> {
     let handle = resolve_method_target_handle(
@@ -3207,7 +3278,7 @@ fn resolve_call_target_member<'a>(
         | NamedArgumentTarget::Report { .. }
         | NamedArgumentTarget::Routine { .. } => return None,
     };
-    if let Some(interface_name) = call_site_interface_qualifier(unit, call_site, method_name)
+    if let Some(interface_name) = interface_qualifiers.get(call_site, method_name)
         && let Some(interface_handle) =
             resolve_exposed_interface_handle(project, lookup, handle, interface_name)
     {
@@ -3226,38 +3297,6 @@ fn resolve_call_target_member<'a>(
             let member = target_unit.class_member(handle.symbol, method_name)?;
             (!class_member_uses_inherited_signature(member)).then_some((target_unit, member))
         })
-}
-
-fn call_site_interface_qualifier<'a>(
-    unit: &'a crate::UnitAnalysis,
-    call_site: &crate::CallSiteData,
-    method_name: &str,
-) -> Option<&'a str> {
-    let NamedArgumentTarget::Method {
-        base_namespace,
-        base_name,
-        ..
-    } = &call_site.target
-    else {
-        return None;
-    };
-    unit.field_accesses.iter().find_map(|access| {
-        if access.scope != call_site.scope
-            || access.base_namespace != *base_namespace
-            || access.base_name.as_ref() != base_name.as_ref()
-            || access.base_range.start < call_site.range.start
-        {
-            return None;
-        }
-        let last = access.field_path.last()?;
-        if last.name.as_ref() != method_name || last.range.end > call_site.range.end {
-            return None;
-        }
-        access
-            .field_path
-            .get(access.field_path.len().checked_sub(2)?)
-            .map(|segment| segment.name.as_ref())
-    })
 }
 
 fn call_section_matches_event_parameter(
@@ -5284,6 +5323,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
         }
 
         let unit = &project.units[unit_idx];
+        let interface_qualifiers = CallSiteInterfaceQualifiers::new(unit);
         let retained: Vec<_> = unit
             .diagnostics
             .iter()
@@ -5376,6 +5416,7 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 &lookup,
                 unit,
                 &scope_index,
+                &interface_qualifiers,
                 reference,
             ) {
                 continue;
@@ -6079,9 +6120,14 @@ pub(crate) fn validate_project_with_scope_indexes_for_units(
                 continue;
             }
 
-            let Some((target_unit, member)) =
-                resolve_call_target_member(project, &lookup, unit, &scope_index, call_site)
-            else {
+            let Some((target_unit, member)) = resolve_call_target_member(
+                project,
+                &lookup,
+                unit,
+                &scope_index,
+                &interface_qualifiers,
+                call_site,
+            ) else {
                 continue;
             };
             if member.kind != ClassMemberKind::Method {
