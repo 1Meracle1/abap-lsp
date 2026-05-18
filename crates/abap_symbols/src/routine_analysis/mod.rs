@@ -107,38 +107,44 @@ fn routine_analysis_includes_unit(unit_filter: Option<&HashSet<UnitId>>, unit: U
 }
 
 struct RoutineResolutionIndex {
+    unit_scope_symbols: Vec<Vec<HashMap<(Namespace, Arc<str>), SymbolId>>>,
     unit_root_symbols: Vec<HashMap<(Namespace, Arc<str>), SymbolId>>,
     project_root_symbols: HashMap<(Namespace, Arc<str>), (UnitId, SymbolId)>,
 }
 
 impl RoutineResolutionIndex {
     fn new(project: &ProjectAnalysis) -> Self {
+        let mut unit_scope_symbols = Vec::with_capacity(project.units.len());
         let mut unit_root_symbols = Vec::with_capacity(project.units.len());
         let mut project_root_symbols = HashMap::new();
 
         for unit in &project.units {
+            let mut scope_symbols = vec![HashMap::new(); unit.scopes.len()];
             let mut root_symbols = HashMap::new();
 
-            for symbol in unit
-                .symbols
-                .iter()
-                .filter(|symbol| symbol.scope == unit.root_scope)
-            {
+            for symbol in &unit.symbols {
                 let name = symbol_lookup_key(&symbol.name);
                 for &namespace in symbol.kind.namespaces() {
-                    root_symbols
+                    scope_symbols[symbol.scope.as_usize()]
                         .entry((namespace, Arc::clone(&name)))
                         .or_insert(symbol.id);
-                    project_root_symbols
-                        .entry((namespace, Arc::clone(&name)))
-                        .or_insert((unit.unit_id, symbol.id));
+                    if symbol.scope == unit.root_scope {
+                        root_symbols
+                            .entry((namespace, Arc::clone(&name)))
+                            .or_insert(symbol.id);
+                        project_root_symbols
+                            .entry((namespace, Arc::clone(&name)))
+                            .or_insert((unit.unit_id, symbol.id));
+                    }
                 }
             }
 
+            unit_scope_symbols.push(scope_symbols);
             unit_root_symbols.push(root_symbols);
         }
 
         Self {
+            unit_scope_symbols,
             unit_root_symbols,
             project_root_symbols,
         }
@@ -3857,6 +3863,10 @@ fn resolve_safe_loop_field_refs<'a>(
 ) -> std::collections::HashSet<crate::ReferenceId> {
     let mut out = std::collections::HashSet::new();
     for (source_access, target_access, range) in contexts {
+        let mut uses_in_range = reference_uses_in_range(reference_uses, range).peekable();
+        if uses_in_range.peek().is_none() {
+            continue;
+        }
         let mut field_names = std::collections::HashSet::new();
         for access in std::iter::once(Some(source_access)).chain(std::iter::once(target_access)) {
             let Some(access) = access else {
@@ -3880,7 +3890,7 @@ fn resolve_safe_loop_field_refs<'a>(
         if field_names.is_empty() {
             continue;
         }
-        for use_site in reference_uses_in_range(reference_uses, range) {
+        for use_site in uses_in_range {
             let Some(reference) = unit.references.get(use_site.reference.as_usize()) else {
                 continue;
             };
@@ -5370,19 +5380,21 @@ fn resolve_type_ref_symbol_project<'a>(
     };
     for &namespace in type_ref_lookup_namespaces(type_ref.namespace) {
         if let Some(symbol_id) = resolve_symbol_id_in_scope_chain(
+            resolution_index,
             current_unit,
             scope,
             namespace,
-            type_ref.base_name.as_ref(),
+            &type_ref.base_name,
         ) {
             return Some((current_unit, symbol_id));
         }
         if current_unit.unit_id != origin_unit.unit_id
             && let Some(symbol_id) = resolve_symbol_id_in_scope_chain(
+                resolution_index,
                 origin_unit,
                 scope,
                 namespace,
-                type_ref.base_name.as_ref(),
+                &type_ref.base_name,
             )
         {
             return Some((origin_unit, symbol_id));
@@ -5397,19 +5409,21 @@ fn resolve_type_ref_symbol_project<'a>(
 }
 
 fn resolve_symbol_id_in_scope_chain(
+    index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
     scope: ScopeId,
     namespace: Namespace,
-    name: &str,
+    name: &Arc<str>,
 ) -> Option<SymbolId> {
+    let key = (namespace, symbol_lookup_key(name));
+    let unit_scope_symbols = index.unit_scope_symbols.get(unit.unit_id.as_usize())?;
     let mut current = Some(scope);
     while let Some(scope_id) = current {
-        if let Some(symbol_id) = unit.symbols.iter().find_map(|symbol| {
-            (symbol.scope == scope_id
-                && symbol.kind.occupies(namespace)
-                && symbol.name.as_ref().eq_ignore_ascii_case(name))
-            .then_some(symbol.id)
-        }) {
+        if let Some(symbol_id) = unit_scope_symbols
+            .get(scope_id.as_usize())
+            .and_then(|symbols| symbols.get(&key))
+            .copied()
+        {
             return Some(symbol_id);
         }
         current = unit
