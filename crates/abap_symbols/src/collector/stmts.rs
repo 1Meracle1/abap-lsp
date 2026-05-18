@@ -4125,23 +4125,54 @@ impl<'ctx, 'a> StmtLowering<'ctx, 'a> {
     }
 
     pub(super) fn collect_raise_stmt(&mut self, node: NodeId, scope: ScopeId) {
-        let Some((type_ref_id, trailing_children)) =
-            (match RaiseStmt::cast(self.collector.syntax(node)) {
-                Some(stmt) => stmt.exception_type_ref().map(|type_ref| {
-                    (
-                        type_ref.syntax().id(),
-                        stmt.trailing_children()
-                            .into_iter()
-                            .map(|child| (child.id(), child.kind()))
-                            .collect::<Vec<_>>(),
-                    )
-                }),
-                None => None,
-            })
-        else {
+        let Some(stmt) = RaiseStmt::cast(self.collector.syntax(node)) else {
             self.collect_generic_simple_stmt(node, scope);
             return;
         };
+        let Some(type_ref) = stmt.exception_type_ref() else {
+            let significant = self.collector.significant_stmt_token_infos(node);
+            let mut exception_idx = 1usize;
+            if significant
+                .get(exception_idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("resumable"))
+            {
+                exception_idx += 1;
+            }
+            if !significant
+                .get(exception_idx)
+                .is_some_and(|token| token.text.eq_ignore_ascii_case("exception"))
+            {
+                self.collect_generic_simple_stmt(node, scope);
+                return;
+            }
+
+            self.record_routine_site(
+                scope,
+                self.collector.file.range(node),
+                RoutineSiteKind::Raise,
+            );
+            let operand_start = exception_idx + 1;
+            let operand_end = significant[operand_start..]
+                .iter()
+                .position(|token| token.text.as_ref() == ".")
+                .map(|idx| operand_start + idx)
+                .unwrap_or(significant.len());
+            if operand_start < operand_end {
+                self.collector.collect_token_expression_refs_infos(
+                    &significant[operand_start..operand_end],
+                    scope,
+                    true,
+                );
+            }
+            return;
+        };
+
+        let type_ref_id = type_ref.syntax().id();
+        let trailing_children = stmt
+            .trailing_children()
+            .into_iter()
+            .map(|child| (child.id(), child.kind()))
+            .collect::<Vec<_>>();
 
         self.record_routine_site(
             scope,

@@ -10712,6 +10712,49 @@ ENDCLASS.
 }
 
 #[test]
+fn raise_exception_object_ref_resolves_operand_without_keyword_reference() {
+    let src = r#"
+CLASS cx_static_check DEFINITION.
+ENDCLASS.
+
+CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+FORM run.
+  DATA lx TYPE REF TO cx_demo.
+  raise exception lx.
+ENDFORM.
+"#;
+    let unit = analyze_ok(src, "file:///raise_exception_object.abap");
+
+    assert!(
+        unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.name.as_ref() == "lx"
+                && matches!(reference.resolution, Some(Resolution::Symbol(_)))
+        }),
+        "expected resolved lx operand reference, refs={:?}",
+        unit.references
+    );
+    assert!(
+        !unit.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Identifier
+                && reference.name.eq_ignore_ascii_case("exception")
+        }),
+        "`exception` keyword became an identifier reference: {:?}",
+        unit.references
+    );
+    assert!(
+        !unit.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference
+                && diag.message.contains("unknown symbol 'exception'")
+        }),
+        "unexpected exception keyword diagnostic: {:?}",
+        unit.diagnostics
+    );
+}
+
+#[test]
 fn resolves_raise_exception_type_refs_with_message_clause() {
     let src = r#"
 CLASS cx_demo DEFINITION INHERITING FROM cx_static_check.
