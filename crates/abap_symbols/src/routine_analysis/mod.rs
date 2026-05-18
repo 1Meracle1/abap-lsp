@@ -23,12 +23,13 @@ pub use metrics::ProjectRoutineAnalysisMetrics;
 
 use crate::builtin_routine_spec;
 use crate::def_map::{
-    AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldSymbolStateCheckKind,
-    FormParameterSection, FunctionModuleParameterSection, IfRegionData, InternalTableOrderData,
-    LoopRegionData, MethodParameterSection, NamedArgumentSection, NamedArgumentTarget,
-    PerformParameterSection, ReadTableBinarySearchData, ReferenceData, Resolution,
-    RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind, SystemFieldStatementKind,
-    TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData, ValueStateCheckKind,
+    AtRegionData, CaseRegionData, Diagnostic, DiagnosticKind, FieldAccess,
+    FieldSymbolStateCheckKind, FormParameterSection, FunctionModuleParameterSection, IfRegionData,
+    InternalTableOrderData, LoopRegionData, MethodParameterSection, NamedArgumentSection,
+    NamedArgumentTarget, PerformParameterSection, ReadTableBinarySearchData, ReferenceData,
+    Resolution, RoutineControlRegionData, RoutineSiteKind, SymbolData, SymbolKind,
+    SystemFieldStatementKind, TryRegionData, UnitAnalysis, ValueFlowKind, ValueFlowTargetData,
+    ValueStateCheckKind,
 };
 use crate::ids::{ScopeId, StructureId, SymbolHandle, SymbolId, UnitId};
 use crate::project::ProjectAnalysis;
@@ -521,6 +522,17 @@ fn build_project_routine_analysis_filtered(
             }
         })
         .collect();
+    let selector_structure_write_indexes: Vec<_> = project
+        .units
+        .iter()
+        .map(|unit| {
+            if routine_analysis_includes_unit(unit_filter, unit.unit_id) {
+                SelectorStructureWriteIndex::new(unit)
+            } else {
+                SelectorStructureWriteIndex::default()
+            }
+        })
+        .collect();
     let has_perform_calls = project.units.iter().any(|unit| {
         routine_analysis_includes_unit(unit_filter, unit.unit_id) && !unit.perform_calls.is_empty()
     });
@@ -562,6 +574,7 @@ fn build_project_routine_analysis_filtered(
                 project,
                 &resolution_index,
                 unit,
+                &selector_structure_write_indexes[descriptor.unit.as_usize()],
                 routine_control_regions,
                 &out.routines[routine_id],
                 &value_references_by_routine[routine_id],
@@ -747,7 +760,40 @@ struct ConditionalAssignedTarget {
     field_mask: Option<u64>,
 }
 
+#[derive(Debug, Default)]
+struct SelectorStructureWriteIndex {
+    by_range: HashMap<(usize, usize), usize>,
+}
+
+impl SelectorStructureWriteIndex {
+    fn new(unit: &UnitAnalysis) -> Self {
+        let mut by_range = HashMap::new();
+        for (idx, access) in unit.field_accesses.iter().enumerate() {
+            if access.base_namespace != Namespace::Value {
+                continue;
+            }
+            let Some(last_segment) = access.field_path.last() else {
+                continue;
+            };
+            if access.field_path.iter().any(|segment| segment.is_deref()) {
+                continue;
+            }
+            by_range
+                .entry((access.base_range.start, last_segment.range.end))
+                .or_insert(idx);
+        }
+        Self { by_range }
+    }
+
+    fn get<'a>(&self, unit: &'a UnitAnalysis, range: &TextRange) -> Option<&'a FieldAccess> {
+        unit.field_accesses
+            .get(*self.by_range.get(&(range.start, range.end))?)
+    }
+}
+
 type SelectorStructureWriteCache = HashMap<(usize, usize), Option<SelectorStructureWrite>>;
+type ConditionalAssignmentTargetCache =
+    HashMap<(usize, usize, usize), Vec<ConditionalAssignedTarget>>;
 type DirectWriteCache = HashMap<(usize, usize), Option<DataflowValueId>>;
 type RoutineImplKey = (UnitId, usize, usize);
 
@@ -1833,6 +1879,7 @@ fn build_routine_dataflow(
     project: &ProjectAnalysis,
     resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
+    selector_structure_write_index: &SelectorStructureWriteIndex,
     control_regions: &[&RoutineControlRegionData],
     routine: &RoutineAnalysis,
     routine_references: &[&ReferenceData],
@@ -1888,6 +1935,7 @@ fn build_routine_dataflow(
             .then(left.value.as_usize().cmp(&right.value.as_usize()))
     });
     let mut selector_structure_writes = SelectorStructureWriteCache::default();
+    let mut conditional_assignment_targets = ConditionalAssignmentTargetCache::default();
     let mut direct_writes = DirectWriteCache::default();
     let field_symbol_targets = FieldSymbolTargetIndex::new(
         unit,
@@ -1960,6 +2008,8 @@ fn build_routine_dataflow(
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
+        &mut conditional_assignment_targets,
+        selector_structure_write_index,
         &mut selector_structure_writes,
         &mut direct_writes,
         &values,
@@ -2023,6 +2073,8 @@ fn build_routine_dataflow(
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
+        &mut conditional_assignment_targets,
+        selector_structure_write_index,
         &mut selector_structure_writes,
         &mut direct_writes,
         &field_symbol_targets,
@@ -2374,6 +2426,7 @@ fn build_routine_dataflow(
                             &target.range,
                             &reference_uses,
                             &structure_assignment_trackers,
+                            selector_structure_write_index,
                             &mut selector_structure_writes,
                         ) {
                             transfer.reads.retain(|read| {
@@ -2589,6 +2642,7 @@ fn build_routine_dataflow(
                     &reference_uses,
                     &value_ids_by_symbol,
                     &structure_assignment_trackers,
+                    selector_structure_write_index,
                     &mut selector_structure_writes,
                     &mut direct_writes,
                     &values,
@@ -4307,6 +4361,8 @@ fn resolve_sy_subrc_success_assignment_scope_refinements(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    conditional_assignment_targets: &mut ConditionalAssignmentTargetCache,
+    selector_structure_write_index: &SelectorStructureWriteIndex,
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
@@ -4333,6 +4389,8 @@ fn resolve_sy_subrc_success_assignment_scope_refinements(
             reference_uses,
             value_ids_by_symbol,
             structure_assignment_trackers,
+            conditional_assignment_targets,
+            selector_structure_write_index,
             selector_structure_writes,
             direct_writes,
             values,
@@ -4461,11 +4519,21 @@ fn conditional_assignment_targets_for_subrc_success_update(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    conditional_assignment_targets: &mut ConditionalAssignmentTargetCache,
+    selector_structure_write_index: &SelectorStructureWriteIndex,
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
 ) -> Vec<ConditionalAssignedTarget> {
-    match update.statement {
+    let key = (
+        update.scope.as_usize(),
+        update.range.start,
+        update.range.end,
+    );
+    if let Some(cached) = conditional_assignment_targets.get(&key) {
+        return cached.clone();
+    }
+    let out = match update.statement {
         SystemFieldStatementKind::ReadTable => unit
             .routine_sites
             .iter()
@@ -4484,6 +4552,7 @@ fn conditional_assignment_targets_for_subrc_success_update(
                         reference_uses,
                         value_ids_by_symbol,
                         structure_assignment_trackers,
+                        selector_structure_write_index,
                         selector_structure_writes,
                         direct_writes,
                         values,
@@ -4507,6 +4576,7 @@ fn conditional_assignment_targets_for_subrc_success_update(
                     reference_uses,
                     value_ids_by_symbol,
                     structure_assignment_trackers,
+                    selector_structure_write_index,
                     selector_structure_writes,
                     direct_writes,
                     values,
@@ -4514,7 +4584,9 @@ fn conditional_assignment_targets_for_subrc_success_update(
             })
             .collect(),
         _ => Vec::new(),
-    }
+    };
+    conditional_assignment_targets.insert(key, out.clone());
+    out
 }
 
 fn resolve_sy_subrc_success_guard_block_refinements(
@@ -4526,6 +4598,8 @@ fn resolve_sy_subrc_success_guard_block_refinements(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    conditional_assignment_targets: &mut ConditionalAssignmentTargetCache,
+    selector_structure_write_index: &SelectorStructureWriteIndex,
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     field_symbol_targets: &FieldSymbolTargetIndex,
@@ -4586,6 +4660,8 @@ fn resolve_sy_subrc_success_guard_block_refinements(
             reference_uses,
             value_ids_by_symbol,
             structure_assignment_trackers,
+            conditional_assignment_targets,
+            selector_structure_write_index,
             selector_structure_writes,
             direct_writes,
             values,
@@ -4975,6 +5051,7 @@ fn conditional_assignment_target_for_range(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_write_index: &SelectorStructureWriteIndex,
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
@@ -4984,6 +5061,7 @@ fn conditional_assignment_target_for_range(
         range,
         reference_uses,
         structure_assignment_trackers,
+        selector_structure_write_index,
         selector_structure_writes,
     ) {
         return Some(ConditionalAssignedTarget {
@@ -5011,6 +5089,7 @@ fn sql_query_conditional_assignment_targets(
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    selector_structure_write_index: &SelectorStructureWriteIndex,
     selector_structure_writes: &mut SelectorStructureWriteCache,
     direct_writes: &mut DirectWriteCache,
     values: &[RoutineDataflowValue],
@@ -5025,6 +5104,7 @@ fn sql_query_conditional_assignment_targets(
                 reference_uses,
                 value_ids_by_symbol,
                 structure_assignment_trackers,
+                selector_structure_write_index,
                 selector_structure_writes,
                 direct_writes,
                 values,
@@ -5697,6 +5777,7 @@ fn selector_structure_write_for_range(
     range: &TextRange,
     reference_uses: &[ReferenceUse],
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    index: &SelectorStructureWriteIndex,
     cache: &mut SelectorStructureWriteCache,
 ) -> Option<SelectorStructureWrite> {
     let key = (range.start, range.end);
@@ -5708,6 +5789,7 @@ fn selector_structure_write_for_range(
         range,
         reference_uses,
         structure_assignment_trackers,
+        index,
     );
     cache.insert(key, out);
     out
@@ -5718,17 +5800,9 @@ fn selector_structure_write_for_range_uncached(
     range: &TextRange,
     reference_uses: &[ReferenceUse],
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
+    index: &SelectorStructureWriteIndex,
 ) -> Option<SelectorStructureWrite> {
-    let access = unit.field_accesses.iter().find(|access| {
-        if access.base_namespace != Namespace::Value || access.base_range.start != range.start {
-            return false;
-        }
-        let Some(last_segment) = access.field_path.last() else {
-            return false;
-        };
-        last_segment.range.end == range.end
-            && !access.field_path.iter().any(|segment| segment.is_deref())
-    })?;
+    let access = index.get(unit, range)?;
     let base_use = reference_uses_in_range(reference_uses, range)
         .filter(|use_site| {
             unit.references
