@@ -1897,6 +1897,7 @@ fn build_routine_dataflow(
         &values,
     );
     let conditional_field_symbol_binds = ConditionalFieldSymbolBindIndex::new(unit);
+    let sy_subrc_updates = SySubrcUpdateIndex::new(unit);
 
     let safe_field_symbol_checks =
         resolve_safe_field_symbol_checks(unit, &reference_uses, &value_ids_by_symbol);
@@ -1936,6 +1937,7 @@ fn build_routine_dataflow(
     let mut sy_subrc_success_bound_scope_refinements =
         resolve_sy_subrc_success_bound_scope_refinements(
             unit,
+            &sy_subrc_updates,
             &field_symbol_targets,
             &conditional_field_symbol_binds,
             values.len(),
@@ -1954,6 +1956,7 @@ fn build_routine_dataflow(
         sy_subrc_success_structure_field_scope_refinements,
     ) = resolve_sy_subrc_success_assignment_scope_refinements(
         unit,
+        &sy_subrc_updates,
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
@@ -2016,6 +2019,7 @@ fn build_routine_dataflow(
         unit,
         routine,
         &routine_index,
+        &sy_subrc_updates,
         &reference_uses,
         &value_ids_by_symbol,
         &structure_assignment_trackers,
@@ -4109,6 +4113,7 @@ fn single_negative_sy_subrc_guard_check_for_scope(
 
 fn resolve_sy_subrc_success_bound_scope_refinements(
     unit: &UnitAnalysis,
+    sy_subrc_updates: &SySubrcUpdateIndex,
     field_symbol_targets: &FieldSymbolTargetIndex,
     conditional_field_symbol_binds: &ConditionalFieldSymbolBindIndex,
     value_count: usize,
@@ -4121,7 +4126,7 @@ fn resolve_sy_subrc_success_bound_scope_refinements(
         let Some(scope_bits) = out.get_mut(check.scope.as_usize()) else {
             continue;
         };
-        let Some(update) = latest_subrc_update_before_check(unit, check) else {
+        let Some(update) = sy_subrc_updates.latest_before_check(unit, check) else {
             continue;
         };
         for target_value in
@@ -4298,6 +4303,7 @@ fn value_state_check_value_id(
 
 fn resolve_sy_subrc_success_assignment_scope_refinements(
     unit: &UnitAnalysis,
+    sy_subrc_updates: &SySubrcUpdateIndex,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
@@ -4318,7 +4324,7 @@ fn resolve_sy_subrc_success_assignment_scope_refinements(
         let Some(scope_masks) = structure_fields.get_mut(check.scope.as_usize()) else {
             continue;
         };
-        let Some(update) = latest_subrc_update_before_check(unit, check) else {
+        let Some(update) = sy_subrc_updates.latest_before_check(unit, check) else {
             continue;
         };
         for target in conditional_assignment_targets_for_subrc_success_update(
@@ -4392,18 +4398,61 @@ fn union_structure_field_refinements(out: &mut [Vec<u64>], incoming: &[Vec<u64>]
     }
 }
 
-fn latest_subrc_update_before_check<'a>(
-    unit: &'a UnitAnalysis,
-    check: &crate::ValueStateCheckData,
-) -> Option<&'a crate::SystemFieldUpdateData> {
-    unit.system_field_updates
-        .iter()
-        .filter(|update| {
-            update.field_name.eq_ignore_ascii_case("subrc")
-                && update.range.end <= check.range.start
-                && scope_descends_from(unit, check.scope, update.scope)
-        })
-        .max_by_key(|update| (update.range.end, update.range.start))
+struct SySubrcUpdateIndex {
+    by_scope: Vec<Vec<usize>>,
+}
+
+impl SySubrcUpdateIndex {
+    fn new(unit: &UnitAnalysis) -> Self {
+        let mut by_scope = vec![Vec::new(); unit.scopes.len()];
+        for (idx, update) in unit.system_field_updates.iter().enumerate() {
+            if update.field_name.eq_ignore_ascii_case("subrc")
+                && let Some(updates) = by_scope.get_mut(update.scope.as_usize())
+            {
+                updates.push(idx);
+            }
+        }
+        for updates in &mut by_scope {
+            updates.sort_by_key(|&idx| {
+                let update = &unit.system_field_updates[idx];
+                (update.range.end, update.range.start)
+            });
+        }
+        Self { by_scope }
+    }
+
+    fn latest_before_check<'a>(
+        &self,
+        unit: &'a UnitAnalysis,
+        check: &crate::ValueStateCheckData,
+    ) -> Option<&'a crate::SystemFieldUpdateData> {
+        let mut latest = None;
+        let mut scope = Some(check.scope);
+        while let Some(scope_id) = scope {
+            if let Some(updates) = self.by_scope.get(scope_id.as_usize()) {
+                let cutoff = updates.partition_point(|&idx| {
+                    unit.system_field_updates[idx].range.end <= check.range.start
+                });
+                if cutoff > 0 {
+                    let update = &unit.system_field_updates[updates[cutoff - 1]];
+                    if latest
+                        .is_none_or(|latest| update_range_key(update) > update_range_key(latest))
+                    {
+                        latest = Some(update);
+                    }
+                }
+            }
+            scope = unit
+                .scopes
+                .get(scope_id.as_usize())
+                .and_then(|scope| scope.parent);
+        }
+        latest
+    }
+}
+
+fn update_range_key(update: &crate::SystemFieldUpdateData) -> (usize, usize) {
+    (update.range.end, update.range.start)
 }
 
 fn conditional_assignment_targets_for_subrc_success_update(
@@ -4473,6 +4522,7 @@ fn resolve_sy_subrc_success_guard_block_refinements(
     unit: &UnitAnalysis,
     routine: &RoutineAnalysis,
     routine_index: &RoutineBuildIndex<'_>,
+    sy_subrc_updates: &SySubrcUpdateIndex,
     reference_uses: &[ReferenceUse],
     value_ids_by_symbol: &HashMap<SymbolHandle, DataflowValueId>,
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
@@ -4526,7 +4576,7 @@ fn resolve_sy_subrc_success_guard_block_refinements(
         {
             continue;
         }
-        let Some(update) = latest_subrc_update_before_check(unit, check) else {
+        let Some(update) = sy_subrc_updates.latest_before_check(unit, check) else {
             continue;
         };
 
