@@ -40,7 +40,6 @@ fn is_builtin_routine(name: &str) -> bool {
 }
 
 pub(crate) type ScopeIndex = Vec<HashMap<(Namespace, Arc<str>), Vec<SymbolId>>>;
-type SymbolStructureCache = HashMap<(u32, u32), StructureId>;
 type ClassScopeIndex = Vec<NamespaceCache<SymbolId>>;
 type PerUnitRootIndex = Vec<NamespaceCache<SymbolId>>;
 type RootIndex = NamespaceCache<Vec<SymbolHandle>>;
@@ -105,6 +104,14 @@ struct TypeRefImportCache {
 struct TypeBaseStructureCache {
     entries: NamespaceCache<Option<StructureId>>,
 }
+
+#[derive(Clone, Copy)]
+enum SymbolStructureCacheEntry {
+    Resolving,
+    Resolved(Option<StructureId>),
+}
+
+type SymbolStructureCache = HashMap<(u32, u32), SymbolStructureCacheEntry>;
 
 impl RootHandleCache {
     fn new() -> Self {
@@ -1298,7 +1305,7 @@ fn resolve_type_base_structure_for_target(
         return structure_id;
     }
 
-    let structure_id = resolve_root_symbol_handle(
+    let structure_id = if let Some(handle) = resolve_root_symbol_handle(
         snapshot,
         unit_idx,
         type_ref,
@@ -1306,9 +1313,7 @@ fn resolve_type_base_structure_for_target(
         visible_units,
         root_index,
         root_handle_cache,
-    )
-    .and_then(|handle| {
-        let mut seen = HashSet::new();
+    ) {
         resolve_symbol_structure_for_target(
             snapshot,
             unit_idx,
@@ -1321,9 +1326,10 @@ fn resolve_type_base_structure_for_target(
             imported,
             root_handle_cache,
             symbol_structure_cache,
-            &mut seen,
         )
-    });
+    } else {
+        None
+    };
     type_base_structure_cache.insert(
         type_ref.namespace,
         Arc::clone(&type_ref.base_name),
@@ -1445,40 +1451,39 @@ fn resolve_symbol_structure_for_target(
     imported: &mut HashMap<(u32, u32), StructureId>,
     root_handle_cache: &mut RootHandleCache,
     symbol_structure_cache: &mut SymbolStructureCache,
-    seen: &mut HashSet<(u32, u32)>,
 ) -> Option<StructureId> {
     let cache_key = (current_unit_idx as u32, symbol_id.0);
-    if let Some(structure_id) = symbol_structure_cache.get(&cache_key).copied() {
-        return Some(structure_id);
+    match symbol_structure_cache.get(&cache_key).copied() {
+        Some(SymbolStructureCacheEntry::Resolved(structure_id)) => return structure_id,
+        Some(SymbolStructureCacheEntry::Resolving) => return None,
+        None => {}
     }
-    if !seen.insert(cache_key) {
-        return None;
-    }
+    symbol_structure_cache.insert(cache_key, SymbolStructureCacheEntry::Resolving);
 
-    let structure_id =
-        if let Some(structure_id) = snapshot.symbol_structure(current_unit_idx, symbol_id) {
-            if current_unit_idx == target_unit_idx {
-                structure_id
-            } else {
-                import_structure(
-                    snapshot,
-                    current_unit_idx,
-                    structure_id,
-                    target_structures,
-                    imported,
-                )
-            }
+    let structure_id = if let Some(structure_id) =
+        snapshot.symbol_structure(current_unit_idx, symbol_id)
+    {
+        Some(if current_unit_idx == target_unit_idx {
+            structure_id
         } else {
-            let next_type_ref = snapshot.symbol_declared_type(current_unit_idx, symbol_id)?;
-            let handle = resolve_root_symbol_handle(
+            import_structure(
                 snapshot,
                 current_unit_idx,
-                next_type_ref,
-                per_unit_root_index,
-                visible_units,
-                root_index,
-                root_handle_cache,
-            )?;
+                structure_id,
+                target_structures,
+                imported,
+            )
+        })
+    } else if let Some(next_type_ref) = snapshot.symbol_declared_type(current_unit_idx, symbol_id) {
+        if let Some(handle) = resolve_root_symbol_handle(
+            snapshot,
+            current_unit_idx,
+            next_type_ref,
+            per_unit_root_index,
+            visible_units,
+            root_index,
+            root_handle_cache,
+        ) {
             resolve_symbol_structure_for_target(
                 snapshot,
                 target_unit_idx,
@@ -1491,11 +1496,15 @@ fn resolve_symbol_structure_for_target(
                 imported,
                 root_handle_cache,
                 symbol_structure_cache,
-                seen,
-            )?
-        };
-    symbol_structure_cache.insert(cache_key, structure_id);
-    Some(structure_id)
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    symbol_structure_cache.insert(cache_key, SymbolStructureCacheEntry::Resolved(structure_id));
+    structure_id
 }
 
 fn normalize_field_type_ref_for_target(

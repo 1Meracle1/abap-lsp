@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use crate::compatibility::positional_parameter_section;
 use crate::def_map::{
-    ConcatenateLinesOfSiteData, ExpressionFactData, ExpressionFactKind, FieldAccess,
-    FieldAccessSegment, FieldTypeRefData, MethodParameterSection, NamedArgumentSection,
-    NamedArgumentTarget, ReferenceKind, Resolution, RoutineControlRegionData, RoutineLoopKind,
-    RoutineSiteKind, SymbolKind, TypeFactData, UnitAnalysis, ValueFlowEdgeData, ValueFlowKind,
-    ValueFlowTargetData,
+    ClassMemberParameterData, ConcatenateLinesOfSiteData, ExpressionFactData, ExpressionFactKind,
+    FieldAccess, FieldAccessSegment, FieldTypeRefData, FunctionModuleParameterData,
+    MethodParameterSection, NamedArgumentSection, NamedArgumentTarget, ReferenceKind, Resolution,
+    RoutineControlRegionData, RoutineLoopKind, RoutineSiteKind, SymbolKind, TypeFactData,
+    UnitAnalysis, ValueFlowEdgeData, ValueFlowKind, ValueFlowTargetData,
 };
 use crate::ids::{ScopeId, SymbolHandle, SymbolId, UnitId};
 use crate::resolver::ScopeIndex;
@@ -36,7 +36,21 @@ struct CallParameterInfo {
     decl_unit: Option<crate::ids::UnitId>,
     decl_range: Option<abap_lexer::TextRange>,
     type_fact: TypeFactData,
-    positional: bool,
+}
+
+enum CallParameters<'a> {
+    Method {
+        unit_idx: usize,
+        parameters: &'a [ClassMemberParameterData],
+    },
+    Function {
+        unit_idx: usize,
+        parameters: &'a [FunctionModuleParameterData],
+    },
+    Event {
+        unit_idx: usize,
+        parameters: &'a [ClassMemberParameterData],
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -745,28 +759,25 @@ impl<'a> FactBuilder<'a> {
         unit_idx: usize,
         call_site: &crate::CallSiteData,
     ) -> Vec<ValueFlowEdgeData> {
+        if call_site.arguments.is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         let Some(parameters) =
-            self.call_parameter_infos(unit_idx, call_site.scope, &call_site.target)
+            self.resolve_call_parameters(unit_idx, call_site.scope, &call_site.target)
         else {
             return out;
         };
         let mut positional_idx = 0usize;
 
         for argument in &call_site.arguments {
-            let parameter = if let Some(argument_name) = argument.name.as_ref() {
-                parameters
-                    .iter()
-                    .find(|parameter| parameter.name.as_ref() == Some(argument_name))
-            } else {
-                let parameter = parameters
-                    .iter()
-                    .filter(|parameter| parameter.positional)
-                    .nth(positional_idx);
-                positional_idx += 1;
-                parameter
-            };
-            let Some(parameter) = parameter else {
+            let Some(parameter) = self.call_parameter_info_for_argument(
+                unit_idx,
+                call_site.scope,
+                &parameters,
+                argument,
+                &mut positional_idx,
+            ) else {
                 continue;
             };
             out.push(ValueFlowEdgeData {
@@ -791,6 +802,80 @@ impl<'a> FactBuilder<'a> {
         }
 
         out
+    }
+
+    fn call_parameter_info_for_argument(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        parameters: &CallParameters,
+        argument: &crate::CallArgumentData,
+        positional_idx: &mut usize,
+    ) -> Option<CallParameterInfo> {
+        match parameters {
+            CallParameters::Method {
+                unit_idx: member_unit_idx,
+                parameters,
+            } => {
+                let parameter = if let Some(argument_name) = argument.name.as_ref() {
+                    parameters
+                        .iter()
+                        .find(|parameter| parameter.name.as_ref() == argument_name.as_ref())
+                } else {
+                    let parameter = parameters
+                        .iter()
+                        .filter(|parameter| {
+                            positional_parameter_section(method_parameter_section(
+                                parameter.section,
+                            ))
+                        })
+                        .nth(*positional_idx);
+                    *positional_idx += 1;
+                    parameter
+                }?;
+                Some(self.method_call_parameter_info(unit_idx, scope, *member_unit_idx, parameter))
+            }
+            CallParameters::Function {
+                unit_idx: function_unit_idx,
+                parameters,
+            } => {
+                let parameter = if let Some(argument_name) = argument.name.as_ref() {
+                    parameters
+                        .iter()
+                        .find(|parameter| parameter.name.as_ref() == argument_name.as_ref())
+                } else {
+                    let parameter = parameters
+                        .iter()
+                        .filter(|parameter| {
+                            matches!(
+                                parameter.section,
+                                crate::FunctionModuleParameterSection::Importing
+                                    | crate::FunctionModuleParameterSection::Changing
+                                    | crate::FunctionModuleParameterSection::Tables
+                            )
+                        })
+                        .nth(*positional_idx);
+                    *positional_idx += 1;
+                    parameter
+                }?;
+                Some(self.function_call_parameter_info(
+                    unit_idx,
+                    scope,
+                    *function_unit_idx,
+                    parameter,
+                ))
+            }
+            CallParameters::Event {
+                unit_idx: member_unit_idx,
+                parameters,
+            } => {
+                let argument_name = argument.name.as_ref()?;
+                let parameter = parameters
+                    .iter()
+                    .find(|parameter| parameter.name.as_ref() == argument_name.as_ref())?;
+                Some(self.method_call_parameter_info(unit_idx, scope, *member_unit_idx, parameter))
+            }
+        }
     }
 
     fn field_symbol_binding_facts(
@@ -961,12 +1046,12 @@ impl<'a> FactBuilder<'a> {
         self.type_fact_for_access(unit_idx, access)
     }
 
-    fn call_parameter_infos(
+    fn resolve_call_parameters(
         &self,
         unit_idx: usize,
         scope: ScopeId,
         target: &NamedArgumentTarget,
-    ) -> Option<Vec<CallParameterInfo>> {
+    ) -> Option<CallParameters<'a>> {
         match target {
             NamedArgumentTarget::Method {
                 base_namespace,
@@ -974,7 +1059,7 @@ impl<'a> FactBuilder<'a> {
                 method_name,
                 interface_qualified,
             } => {
-                let (member_unit_idx, member) = if *interface_qualified {
+                let (unit_idx, member) = if *interface_qualified {
                     self.resolve_current_interface_method_member(
                         unit_idx,
                         scope,
@@ -990,33 +1075,10 @@ impl<'a> FactBuilder<'a> {
                     )?;
                     self.resolve_class_member_in_hierarchy(class_handle, method_name.as_ref())?
                 };
-                Some(
-                    member
-                        .parameters
-                        .iter()
-                        .map(|parameter| CallParameterInfo {
-                            name: Some(Arc::clone(&parameter.name)),
-                            decl_unit: Some(self.units[member_unit_idx].unit_id),
-                            decl_range: Some(parameter.range.clone()),
-                            type_fact: parameter
-                                .declared_type
-                                .clone()
-                                .map(|declared_type| {
-                                    self.type_fact_from_declared_type(
-                                        unit_idx,
-                                        scope,
-                                        member_unit_idx,
-                                        declared_type,
-                                        parameter.type_clause_display.clone(),
-                                    )
-                                })
-                                .unwrap_or_default(),
-                            positional: positional_parameter_section(method_parameter_section(
-                                parameter.section,
-                            )),
-                        })
-                        .collect(),
-                )
+                Some(CallParameters::Method {
+                    unit_idx,
+                    parameters: &member.parameters,
+                })
             }
             NamedArgumentTarget::ImplicitMethod { method_name } => {
                 let class_symbol = enclosing_class_owner(&self.units[unit_idx], scope)?;
@@ -1024,109 +1086,93 @@ impl<'a> FactBuilder<'a> {
                     unit: self.units[unit_idx].unit_id,
                     symbol: class_symbol,
                 };
-                let (member_unit_idx, member) =
+                let (unit_idx, member) =
                     self.resolve_class_member_in_hierarchy(class_handle, method_name.as_ref())?;
-                Some(
-                    member
-                        .parameters
-                        .iter()
-                        .map(|parameter| CallParameterInfo {
-                            name: Some(Arc::clone(&parameter.name)),
-                            decl_unit: Some(self.units[member_unit_idx].unit_id),
-                            decl_range: Some(parameter.range.clone()),
-                            type_fact: parameter
-                                .declared_type
-                                .clone()
-                                .map(|declared_type| {
-                                    self.type_fact_from_declared_type(
-                                        unit_idx,
-                                        scope,
-                                        member_unit_idx,
-                                        declared_type,
-                                        parameter.type_clause_display.clone(),
-                                    )
-                                })
-                                .unwrap_or_default(),
-                            positional: positional_parameter_section(method_parameter_section(
-                                parameter.section,
-                            )),
-                        })
-                        .collect(),
-                )
+                Some(CallParameters::Method {
+                    unit_idx,
+                    parameters: &member.parameters,
+                })
             }
             NamedArgumentTarget::Function { function_name } => {
-                let (function_unit_idx, function_module) =
+                let (unit_idx, function_module) =
                     self.resolve_function_module(function_name.as_ref())?;
-                Some(
-                    function_module
-                        .parameters
-                        .iter()
-                        .map(|parameter| CallParameterInfo {
-                            name: Some(Arc::clone(&parameter.name)),
-                            decl_unit: Some(self.units[function_unit_idx].unit_id),
-                            decl_range: Some(parameter.range.clone()),
-                            type_fact: parameter
-                                .declared_type
-                                .clone()
-                                .map(|declared_type| {
-                                    self.type_fact_from_declared_type(
-                                        unit_idx,
-                                        scope,
-                                        function_unit_idx,
-                                        declared_type,
-                                        parameter.type_clause_display.clone(),
-                                    )
-                                })
-                                .unwrap_or_default(),
-                            positional: matches!(
-                                parameter.section,
-                                crate::FunctionModuleParameterSection::Importing
-                                    | crate::FunctionModuleParameterSection::Changing
-                                    | crate::FunctionModuleParameterSection::Tables
-                            ),
-                        })
-                        .collect(),
-                )
+                Some(CallParameters::Function {
+                    unit_idx,
+                    parameters: &function_module.parameters,
+                })
             }
             NamedArgumentTarget::Event {
                 qualifier,
                 event_name,
             } => {
-                let (member_unit_idx, member) = self.resolve_event_target_member(
+                let (unit_idx, member) = self.resolve_event_target_member(
                     unit_idx,
                     scope,
                     qualifier.as_ref(),
                     event_name,
                 )?;
-                Some(
-                    member
-                        .parameters
-                        .iter()
-                        .map(|parameter| CallParameterInfo {
-                            name: Some(Arc::clone(&parameter.name)),
-                            decl_unit: Some(self.units[member_unit_idx].unit_id),
-                            decl_range: Some(parameter.range.clone()),
-                            type_fact: parameter
-                                .declared_type
-                                .clone()
-                                .map(|declared_type| {
-                                    self.type_fact_from_declared_type(
-                                        unit_idx,
-                                        scope,
-                                        member_unit_idx,
-                                        declared_type,
-                                        parameter.type_clause_display.clone(),
-                                    )
-                                })
-                                .unwrap_or_default(),
-                            positional: false,
-                        })
-                        .collect(),
-                )
+                Some(CallParameters::Event {
+                    unit_idx,
+                    parameters: &member.parameters,
+                })
             }
             NamedArgumentTarget::Constructor { .. }
             | NamedArgumentTarget::Report { .. }
             | NamedArgumentTarget::Routine { .. } => None,
+        }
+    }
+
+    fn method_call_parameter_info(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        member_unit_idx: usize,
+        parameter: &ClassMemberParameterData,
+    ) -> CallParameterInfo {
+        CallParameterInfo {
+            name: Some(Arc::clone(&parameter.name)),
+            decl_unit: Some(self.units[member_unit_idx].unit_id),
+            decl_range: Some(parameter.range.clone()),
+            type_fact: parameter
+                .declared_type
+                .clone()
+                .map(|declared_type| {
+                    self.type_fact_from_declared_type(
+                        unit_idx,
+                        scope,
+                        member_unit_idx,
+                        declared_type,
+                        parameter.type_clause_display.clone(),
+                    )
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    fn function_call_parameter_info(
+        &self,
+        unit_idx: usize,
+        scope: ScopeId,
+        function_unit_idx: usize,
+        parameter: &FunctionModuleParameterData,
+    ) -> CallParameterInfo {
+        CallParameterInfo {
+            name: Some(Arc::clone(&parameter.name)),
+            decl_unit: Some(self.units[function_unit_idx].unit_id),
+            decl_range: Some(parameter.range.clone()),
+            type_fact: parameter
+                .declared_type
+                .clone()
+                .map(|declared_type| {
+                    self.type_fact_from_declared_type(
+                        unit_idx,
+                        scope,
+                        function_unit_idx,
+                        declared_type,
+                        parameter.type_clause_display.clone(),
+                    )
+                })
+                .unwrap_or_default(),
         }
     }
 

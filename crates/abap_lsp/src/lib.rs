@@ -221,6 +221,14 @@ struct CachedDependencyDocumentSnapshot {
     snapshot: Arc<AnalysisSnapshot>,
 }
 
+#[derive(Default)]
+struct DependencyStorePrehydration {
+    parent_uris: Vec<(String, String)>,
+    dependency_uris: HashSet<Arc<str>>,
+    queried_candidates: HashSet<String>,
+    expanded_artifacts: HashSet<i64>,
+}
+
 fn local_export_dependency_candidate_cache()
 -> &'static Mutex<HashMap<String, CachedLocalExportDependencyCandidates>> {
     static CACHE: OnceLock<Mutex<HashMap<String, CachedLocalExportDependencyCandidates>>> =
@@ -1459,7 +1467,7 @@ pub fn replace_all_workspace_documents_with_local_exports_for_build_plan(
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
-        store, root_path, None, None, documents, build_plan, progress,
+        store, root_path, None, None, None, documents, build_plan, progress,
     )
 }
 
@@ -1480,6 +1488,7 @@ pub fn replace_all_workspace_documents_with_manifest_dependencies_for_build_plan
         store,
         root_path,
         dependency_store.as_mut(),
+        None,
         None,
         documents,
         build_plan,
@@ -1505,32 +1514,43 @@ pub fn replace_all_workspace_documents_with_local_exports_for_build_plan_profile
 fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
     store: &DocumentStore,
     root_path: &Path,
-    dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    mut dependency_store: Option<&mut DependencyStoreResolutionContext>,
     local_export_resolver: Option<&mut LocalExportResolver>,
+    prehydration: Option<&mut DependencyStorePrehydration>,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
     progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
-    let mut inputs: Vec<_> = documents
-        .iter()
-        .map(document_input_from_workspace_document)
-        .collect();
+    let mut all_documents = documents.to_vec();
+    let mut prehydration_candidate_seeds = Vec::<(String, Vec<RemoteDependencyCandidate>)>::new();
     let mut additions = collect_local_export_dependency_closure_documents(
         root_path,
-        dependency_store,
+        dependency_store.as_deref_mut(),
         local_export_resolver,
         documents,
         local_export_dependency_max_waves(build_plan),
+        Some(&mut prehydration_candidate_seeds),
     );
     additions.sort_by(|left, right| left.uri.cmp(&right.uri));
-    inputs.extend(additions.iter().map(document_input_from_workspace_document));
+    all_documents.extend(additions);
+    let prehydrated = collect_dependency_store_prehydration_documents(
+        dependency_store,
+        &all_documents,
+        &prehydration_candidate_seeds,
+        prehydration,
+    );
+    all_documents.extend(prehydrated);
+    let inputs = all_documents
+        .iter()
+        .map(document_input_from_workspace_document)
+        .collect();
     store.replace_all_with_build_plan_and_progress(inputs, build_plan, progress)
 }
 
 fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan_profiled(
     store: &DocumentStore,
     root_path: &Path,
-    dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    mut dependency_store: Option<&mut DependencyStoreResolutionContext>,
     local_export_resolver: Option<&mut LocalExportResolver>,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
@@ -1539,19 +1559,29 @@ fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan_pro
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     LocalExportDependencyClosureProfile,
 ) {
-    let mut inputs: Vec<_> = documents
-        .iter()
-        .map(document_input_from_workspace_document)
-        .collect();
+    let mut all_documents = documents.to_vec();
+    let mut prehydration_candidate_seeds = Vec::<(String, Vec<RemoteDependencyCandidate>)>::new();
     let (mut additions, profile) = collect_local_export_dependency_closure_documents_profiled(
         root_path,
-        dependency_store,
+        dependency_store.as_deref_mut(),
         local_export_resolver,
         documents,
         local_export_dependency_max_waves(build_plan),
+        Some(&mut prehydration_candidate_seeds),
     );
     additions.sort_by(|left, right| left.uri.cmp(&right.uri));
-    inputs.extend(additions.iter().map(document_input_from_workspace_document));
+    all_documents.extend(additions);
+    let prehydrated = collect_dependency_store_prehydration_documents(
+        dependency_store,
+        &all_documents,
+        &prehydration_candidate_seeds,
+        None,
+    );
+    all_documents.extend(prehydrated);
+    let inputs = all_documents
+        .iter()
+        .map(document_input_from_workspace_document)
+        .collect();
     (
         store.replace_all_with_build_plan_and_progress(inputs, build_plan, progress),
         profile,
@@ -1602,19 +1632,26 @@ impl DependencyStoreResolutionContext {
     }
 
     fn read_candidate(&self, candidate: &RemoteDependencyCandidate) -> Option<WorkspaceDocument> {
-        let reader = self.reader.as_ref()?;
-        let record = reader
+        let record = self.read_candidate_record(candidate)?;
+        Some(workspace_document_from_dependency_record(
+            &self.workspace_uri,
+            &record,
+        ))
+    }
+
+    fn read_candidate_record(
+        &self,
+        candidate: &RemoteDependencyCandidate,
+    ) -> Option<StoredArtifactRecord> {
+        self.reader
+            .as_ref()?
             .find_artifact_for_candidate(
                 &self.profile,
                 candidate.name.as_str(),
                 candidate.kind.as_str(),
             )
             .ok()
-            .flatten()?;
-        Some(workspace_document_from_dependency_record(
-            &self.workspace_uri,
-            &record,
-        ))
+            .flatten()
     }
 
     fn store_local_export_documents(
@@ -1662,6 +1699,101 @@ fn workspace_document_from_dependency_record(
         is_dependency: true,
         object_name: Some(Arc::from(record.object_name.as_str())),
     }
+}
+
+fn collect_dependency_store_prehydration_documents(
+    dependency_store: Option<&mut DependencyStoreResolutionContext>,
+    documents: &[WorkspaceDocument],
+    candidate_seeds: &[(String, Vec<RemoteDependencyCandidate>)],
+    mut prehydration: Option<&mut DependencyStorePrehydration>,
+) -> Vec<WorkspaceDocument> {
+    let Some(context) = dependency_store else {
+        return Vec::new();
+    };
+    if context.reader.is_none() {
+        return Vec::new();
+    }
+
+    let workspace_candidate_names = workspace_local_candidate_names(documents);
+    let mut known_uris = documents
+        .iter()
+        .map(|document| normalize_lsp_uri(document.uri.as_ref()))
+        .collect::<HashSet<_>>();
+    let mut queried_candidates = HashSet::<String>::new();
+    let mut expanded_artifacts = HashSet::<i64>::new();
+    let mut out = Vec::<WorkspaceDocument>::new();
+    let mut queue = VecDeque::<(RemoteDependencyCandidate, String)>::new();
+    let mut seeded_uris = HashSet::<String>::new();
+
+    for (uri, candidates) in candidate_seeds {
+        let parent_uri = normalize_lsp_uri(uri);
+        seeded_uris.insert(parent_uri.clone());
+        let mut candidates = candidates.clone();
+        candidates.sort_by_key(remote_candidate_key);
+        queue.extend(
+            candidates
+                .into_iter()
+                .map(|candidate| (candidate, parent_uri.clone())),
+        );
+    }
+
+    for document in documents.iter().filter(|document| !document.is_dependency) {
+        let parent_uri = normalize_lsp_uri(document.uri.as_ref());
+        if seeded_uris.contains(&parent_uri) {
+            continue;
+        }
+        let mut candidates = collect_local_export_dependency_candidates(document);
+        candidates.sort_by_key(remote_candidate_key);
+        queue.extend(
+            candidates
+                .into_iter()
+                .map(|candidate| (candidate, parent_uri.clone())),
+        );
+    }
+
+    while let Some((candidate, parent_uri)) = queue.pop_front() {
+        let candidate_name = candidate.name.trim().to_ascii_lowercase();
+        let candidate_key = remote_candidate_key(&candidate);
+        if workspace_candidate_names.contains(&candidate_name)
+            || !queried_candidates.insert(candidate_key.clone())
+        {
+            continue;
+        }
+        if let Some(prehydration) = prehydration.as_deref_mut() {
+            prehydration.queried_candidates.insert(candidate_key);
+        }
+        let Some(record) = context.read_candidate_record(&candidate) else {
+            continue;
+        };
+        let document = workspace_document_from_dependency_record(&context.workspace_uri, &record);
+        let document_uri = normalize_lsp_uri(document.uri.as_ref());
+        if let Some(prehydration) = prehydration.as_deref_mut() {
+            prehydration
+                .parent_uris
+                .push((document_uri.clone(), parent_uri));
+            prehydration
+                .dependency_uris
+                .insert(Arc::from(document_uri.as_str()));
+        }
+        if known_uris.insert(document_uri.clone()) {
+            out.push(document);
+        }
+        if expanded_artifacts.insert(record.artifact_id) {
+            if let Some(prehydration) = prehydration.as_deref_mut() {
+                prehydration.expanded_artifacts.insert(record.artifact_id);
+            }
+            let mut candidates = dependency_record_hydration_candidates(&record);
+            candidates.sort_by_key(remote_candidate_key);
+            queue.extend(
+                candidates
+                    .into_iter()
+                    .map(|candidate| (candidate, document_uri.clone())),
+            );
+        }
+    }
+
+    out.sort_by(|left, right| left.uri.cmp(&right.uri));
+    out
 }
 
 fn local_export_document_artifact(
@@ -1934,6 +2066,7 @@ fn collect_local_export_dependency_closure_documents(
     local_export_resolver: Option<&mut LocalExportResolver>,
     documents: &[WorkspaceDocument],
     max_waves: Option<usize>,
+    mut candidate_seeds: Option<&mut Vec<(String, Vec<RemoteDependencyCandidate>)>>,
 ) -> Vec<WorkspaceDocument> {
     let mut documents_by_uri: HashMap<String, WorkspaceDocument> = documents
         .iter()
@@ -1983,6 +2116,13 @@ fn collect_local_export_dependency_closure_documents(
             batch.push((uri, config, document));
         }
         let batch_candidates = collect_local_export_dependency_candidate_batch(batch);
+        if let Some(candidate_seeds) = candidate_seeds.as_deref_mut() {
+            candidate_seeds.extend(
+                batch_candidates
+                    .iter()
+                    .map(|(uri, _config, candidates)| (uri.clone(), candidates.clone())),
+            );
+        }
 
         for (_uri, config, candidates) in batch_candidates {
             for candidate in candidates {
@@ -2034,6 +2174,7 @@ fn collect_local_export_dependency_closure_documents_profiled(
     local_export_resolver: Option<&mut LocalExportResolver>,
     documents: &[WorkspaceDocument],
     max_waves: Option<usize>,
+    mut candidate_seeds: Option<&mut Vec<(String, Vec<RemoteDependencyCandidate>)>>,
 ) -> (Vec<WorkspaceDocument>, LocalExportDependencyClosureProfile) {
     let total_start = Instant::now();
     let mut profile = LocalExportDependencyClosureProfile::default();
@@ -2096,6 +2237,13 @@ fn collect_local_export_dependency_closure_documents_profiled(
         let candidate_collection_start = Instant::now();
         let batch_candidates = collect_local_export_dependency_candidate_batch_profiled(batch);
         wave_profile.candidate_collection_time = candidate_collection_start.elapsed();
+        if let Some(candidate_seeds) = candidate_seeds.as_deref_mut() {
+            candidate_seeds.extend(
+                batch_candidates
+                    .iter()
+                    .map(|(uri, _config, candidates, _profile)| (uri.clone(), candidates.clone())),
+            );
+        }
 
         let mut wave_resolve_profile = LocalExportResolveProfile::default();
         for (_uri, config, candidates, candidate_profile) in batch_candidates {
@@ -3127,9 +3275,20 @@ fn workspace_committed_build_plan(_workspace: &WorkspaceState) -> SnapshotBuildP
 fn hydrate_workspace_dependency_documents(
     workspace: &mut WorkspaceState,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
+    hydrate_workspace_dependency_documents_after_prehydration(
+        workspace,
+        &DependencyStorePrehydration::default(),
+    )
+}
+
+fn hydrate_workspace_dependency_documents_after_prehydration(
+    workspace: &mut WorkspaceState,
+    prehydration: &DependencyStorePrehydration,
+) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let total_start = Instant::now();
     let mut metrics = DependencyStoreHydrationMetrics::default();
-    let hydrated = hydrate_workspace_dependency_documents_with_metrics(workspace, &mut metrics);
+    let hydrated =
+        hydrate_workspace_dependency_documents_with_metrics(workspace, &mut metrics, prehydration);
     metrics.elapsed = total_start.elapsed();
     workspace.dependency_store_hydration_metrics = Some(metrics);
     workspace.local_export_chain_candidates.clear();
@@ -3140,6 +3299,7 @@ fn hydrate_workspace_dependency_documents(
 fn hydrate_workspace_dependency_documents_with_metrics(
     workspace: &mut WorkspaceState,
     metrics: &mut DependencyStoreHydrationMetrics,
+    prehydration: &DependencyStorePrehydration,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     if !workspace_supports_dependency_store_resolution(workspace) {
         return HashMap::new();
@@ -3157,11 +3317,11 @@ fn hydrate_workspace_dependency_documents_with_metrics(
     };
     metrics.reader_available = true;
 
-    let mut queried_candidates = HashSet::<String>::new();
-    let mut scanned_candidate_sources = HashSet::<Arc<str>>::new();
-    let mut candidate_dependency_uris = HashSet::<Arc<str>>::new();
+    let mut queried_candidates = prehydration.queried_candidates.clone();
+    let mut scanned_candidate_sources = prehydration.dependency_uris.clone();
+    let mut candidate_dependency_uris = prehydration.dependency_uris.clone();
     let mut hydrated_uris = HashSet::<Arc<str>>::new();
-    let mut expanded_artifacts = HashSet::<i64>::new();
+    let mut expanded_artifacts = prehydration.expanded_artifacts.clone();
     let mut inputs = Vec::<DocumentInput>::new();
     let mut input_uris = HashSet::<Arc<str>>::new();
 
@@ -3968,6 +4128,7 @@ fn rebuild_workspace_cache_with_progress(
     let documents = loaded.documents;
     let build_plan = workspace_committed_build_plan(workspace);
     let mut dependency_store_resolution = DependencyStoreResolutionContext::new(workspace);
+    let mut prehydration = DependencyStorePrehydration::default();
     let mut snapshots = {
         let mut resolver = local_export_resolver
             .lock()
@@ -3985,6 +4146,7 @@ fn rebuild_workspace_cache_with_progress(
                 &loaded.root_path,
                 dependency_store_resolution.as_mut(),
                 Some(&mut resolver),
+                Some(&mut prehydration),
                 &documents,
                 build_plan,
                 Some(&analysis_progress),
@@ -3995,12 +4157,16 @@ fn rebuild_workspace_cache_with_progress(
                 &loaded.root_path,
                 dependency_store_resolution.as_mut(),
                 Some(&mut resolver),
+                Some(&mut prehydration),
                 &documents,
                 build_plan,
                 None,
             )
         }
     };
+    for (dependency_uri, parent_uri) in &prehydration.parent_uris {
+        record_dependency_parent_uri(workspace, dependency_uri, parent_uri);
+    }
     let open_dependency_inputs = open_dependency_document_inputs(workspace);
     if !open_dependency_inputs.is_empty() {
         snapshots.extend(
@@ -4009,7 +4175,8 @@ fn rebuild_workspace_cache_with_progress(
                 .publish_inputs_with_build_plan(open_dependency_inputs, build_plan),
         );
     }
-    let hydrated = hydrate_workspace_dependency_documents(workspace);
+    let hydrated =
+        hydrate_workspace_dependency_documents_after_prehydration(workspace, &prehydration);
     if !hydrated.is_empty() {
         snapshots.extend(hydrated);
         for uri in snapshots.keys().cloned().collect::<Vec<_>>() {
@@ -4702,6 +4869,17 @@ pub fn handle_remote_dependencies_updated(
     handle_remote_dependencies_updated_with_progress(state, params, None)
 }
 
+pub fn record_remote_dependencies_updated(
+    state: &mut ServerState,
+    params: &RemoteDependenciesUpdatedParams,
+) -> bool {
+    let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
+    state
+        .workspaces
+        .get_mut(&workspace_uri)
+        .is_some_and(|workspace| record_workspace_remote_dependencies_updated(workspace, params))
+}
+
 fn canonicalize_dependency_artifact_source(artifact: &DependencyArtifactPayload) -> String {
     let kind = artifact.object_kind.trim().to_ascii_lowercase();
     let file_extension = artifact.file_extension.trim().to_ascii_lowercase();
@@ -4970,34 +5148,8 @@ pub fn handle_remote_dependencies_updated_with_progress(
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     let targeted_refresh = if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
-        if params.resolution_finished {
-            workspace.remote_resolution_in_flight = false;
-            workspace.remote_resolution_seen.clear();
-        }
-        if params.fetched.is_empty() && params.failed.is_empty() {
+        if !record_workspace_remote_dependencies_updated(workspace, params) {
             return Vec::new();
-        }
-        if !params.fetched.is_empty() {
-            prime_workspace_manifest_state(workspace);
-            let source_uris = if params.source_uris.is_empty() {
-                vec![normalize_lsp_uri(&params.source_uri)]
-            } else {
-                params.source_uris.clone()
-            };
-            record_fetched_dependency_parent_uris(workspace, &params.fetched, &source_uris);
-        }
-        for name in &params.fetched {
-            workspace
-                .remote_lookup_failures
-                .remove(&remote_candidate_key(&RemoteDependencyCandidate {
-                    name: name.clone(),
-                    kind: "type".to_string(),
-                }));
-        }
-        for candidate in &params.failed {
-            workspace
-                .remote_lookup_failures
-                .insert(remote_candidate_key(candidate));
         }
         workspace_remote_dependency_refresh_inputs(workspace, params)
             .map(|inputs| refresh_workspace_inputs_with_progress(workspace, inputs, progress))
@@ -5007,6 +5159,41 @@ pub fn handle_remote_dependencies_updated_with_progress(
 
     targeted_refresh
         .unwrap_or_else(|| refresh_workspace_with_progress(state, &params.workspace_uri, progress))
+}
+
+fn record_workspace_remote_dependencies_updated(
+    workspace: &mut WorkspaceState,
+    params: &RemoteDependenciesUpdatedParams,
+) -> bool {
+    if params.resolution_finished {
+        workspace.remote_resolution_in_flight = false;
+    }
+    if params.fetched.is_empty() && params.failed.is_empty() {
+        return false;
+    }
+    if !params.fetched.is_empty() {
+        prime_workspace_manifest_state(workspace);
+        let source_uris = if params.source_uris.is_empty() {
+            vec![normalize_lsp_uri(&params.source_uri)]
+        } else {
+            params.source_uris.clone()
+        };
+        record_fetched_dependency_parent_uris(workspace, &params.fetched, &source_uris);
+    }
+    for name in &params.fetched {
+        workspace
+            .remote_lookup_failures
+            .remove(&remote_candidate_key(&RemoteDependencyCandidate {
+                name: name.clone(),
+                kind: "type".to_string(),
+            }));
+    }
+    for candidate in &params.failed {
+        workspace
+            .remote_lookup_failures
+            .insert(remote_candidate_key(candidate));
+    }
+    true
 }
 
 pub fn handle_sap_atc_results_updated(
@@ -8967,7 +9154,7 @@ mod tests {
         ABAP_LSP_IGNORED_CALL_FUNCTION_RESULT, ABAP_LSP_SELECT_SINGLE_WITHOUT_FULL_KEY,
         ABAP_LSP_SELECT_STAR, ABAP_LSP_UNREACHABLE_CODE, DocumentInput, DocumentStore,
         ManifestPerformance, ManifestResolution, ManifestUnit, ManifestUnitMember,
-        WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
+        SnapshotBuildPlan, WorkspaceDocument, WorkspaceManifest, path_to_file_uri,
     };
     use abap_dependency_store::{StoredArtifactInput, StoredArtifactRecord};
     use abap_symbols::DiagnosticKind;
@@ -9013,6 +9200,7 @@ mod tests {
         initialize_result, inlay_hints, normalize_lsp_uri, offset_to_position, prepare_rename,
         publish_changed_document, publish_changed_document_mut, publish_open_document,
         publish_open_document_mut, read_dependency_document, references, refresh_workspace, rename,
+        replace_all_workspace_documents_with_local_exports_for_build_plan_profiled,
         semantic_tokens, snapshot_for_uri, stage_workspace_preview_snapshot,
         store_local_export_dependency_candidates, store_remote_dependency_artifacts,
         workspace_committed_build_plan, workspace_dependency_store,
@@ -13574,6 +13762,82 @@ ENDCLASS.
     }
 
     #[test]
+    fn local_export_closure_does_not_seed_committed_analysis() {
+        clear_local_export_dependency_candidate_cache_for_tests();
+
+        let workspace_path = temp_workspace_path("local_export_no_seed_analysis");
+        let export_root = temp_workspace_path("local_export_no_seed_analysis_export");
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+        fs::create_dir_all(workspace_path.join("src")).expect("workspace src");
+        fs::create_dir_all(export_root.join("packages/ZPKG/global-class")).expect("export class");
+        fs::write(
+            workspace_path.join("abapls.toml"),
+            format!(
+                "version = 1\n\n[local_export]\nroots = [\"{}\"]\n\n[dependencies]\nsource = \"local-first\"\n",
+                export_root.to_string_lossy().replace('\\', "/")
+            ),
+        )
+        .expect("manifest");
+        fs::write(
+            export_root.join("packages/ZPKG/global-class/ZCL_EXT.abap"),
+            "\
+CLASS zcl_ext DEFINITION PUBLIC FINAL CREATE PUBLIC.
+  PUBLIC SECTION.
+    CLASS-METHODS assist.
+ENDCLASS.
+CLASS zcl_ext IMPLEMENTATION.
+  METHOD assist.
+  ENDMETHOD.
+ENDCLASS.
+",
+        )
+        .expect("export");
+
+        let source_text = "\
+REPORT zrep.
+START-OF-SELECTION.
+  zcl_ext=>assist( ).
+";
+        let source_uri = path_to_file_uri(&workspace_path.join("src/ZREP.abap"));
+        let document = WorkspaceDocument {
+            uri: Arc::from(source_uri.as_str()),
+            version: 0,
+            text: source_text.to_string(),
+            is_dependency: false,
+            object_name: Some(Arc::from("ZREP")),
+        };
+        let store = DocumentStore::default();
+
+        let (snapshots, profile) =
+            replace_all_workspace_documents_with_local_exports_for_build_plan_profiled(
+                &store,
+                &workspace_path,
+                &[document],
+                SnapshotBuildPlan::EDITOR_WORKSPACE,
+                None,
+            );
+
+        let source_profile = profile
+            .candidate_documents
+            .iter()
+            .find(|candidate| candidate.uri == source_uri)
+            .expect("source candidate profile");
+        let metrics = store
+            .last_analysis_metrics_snapshot()
+            .expect("analysis metrics");
+
+        assert!(!source_profile.cache_hit);
+        assert_eq!(store.last_analysis_revision(), 1);
+        assert_eq!(metrics.parse_count, 2);
+        assert_eq!(metrics.local_phase_count, 2);
+        assert!(snapshots.values().any(|snapshot| snapshot.is_dependency));
+
+        let _ = fs::remove_dir_all(&workspace_path);
+        let _ = fs::remove_dir_all(&export_root);
+    }
+
+    #[test]
     fn workspace_refresh_uses_editor_workspace_build_plan() {
         let workspace_path = temp_workspace_path("workspace_editor_build_plan");
         let _ = fs::remove_dir_all(&workspace_path);
@@ -17293,8 +17557,8 @@ root_file = "src/ZMAIN.abap"
     }
 
     #[test]
-    fn remote_dependency_updates_clear_seen_candidates_for_same_session_retry() {
-        let workspace_path = temp_workspace_path("workspace_remote_retry_after_update");
+    fn remote_dependency_finished_update_does_not_reissue_same_wave() {
+        let workspace_path = temp_workspace_path("workspace_remote_no_reissue_after_finished");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
             workspace_path.join("abapls.toml"),
@@ -17349,14 +17613,19 @@ dependency_mode = "remote-on-demand"
             },
         );
 
-        let second = build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri)
-            .expect("second batch");
         assert!(
-            second
+            build_remote_dependency_batch_for_workspace(&mut state, &workspace_uri).is_none(),
+            "automatic completion should not reissue the same unresolved wave"
+        );
+
+        let retry = build_remote_dependency_refresh_for_workspace(&mut state, &workspace_uri)
+            .expect("manual refresh can retry");
+        assert!(
+            retry
                 .candidates
                 .iter()
                 .any(|candidate| candidate.name == "zcl_retry"),
-            "{second:#?}"
+            "{retry:#?}"
         );
 
         let _ = fs::remove_dir_all(&workspace_path);
@@ -18773,7 +19042,7 @@ dependency_mode = "remote-on-demand"
     }
 
     #[test]
-    fn workspace_refresh_hydrates_transitive_central_dependencies_in_one_batch() {
+    fn workspace_refresh_prehydrates_transitive_central_dependencies_before_publish() {
         let workspace_path = temp_workspace_path("central_dependency_transitive_hydration");
         fs::create_dir_all(&workspace_path).expect("workspace dir");
         fs::write(
@@ -18848,6 +19117,12 @@ ENDCLASS."
         )
         .expect("store dependency artifacts");
 
+        let before_refresh_revision = state
+            .workspaces
+            .get(&normalize_lsp_uri(&workspace_uri))
+            .expect("workspace")
+            .cache
+            .last_analysis_revision();
         refresh_workspace(&mut state, &workspace_uri);
         let workspace = state
             .workspaces
@@ -18870,8 +19145,14 @@ ENDCLASS."
             .dependency_store_hydration_metrics
             .as_ref()
             .expect("hydration metrics");
-        assert_eq!(metrics.hydrated_input_count, 2);
-        assert_eq!(metrics.published_batch_count, 1);
+        assert_eq!(metrics.unique_candidate_queries, 0);
+        assert_eq!(metrics.artifact_hits, 0);
+        assert_eq!(metrics.hydrated_input_count, 0);
+        assert_eq!(metrics.published_batch_count, 0);
+        assert_eq!(
+            workspace.cache.last_analysis_revision(),
+            before_refresh_revision + 1
+        );
 
         let _ = fs::remove_dir_all(&workspace_path);
     }

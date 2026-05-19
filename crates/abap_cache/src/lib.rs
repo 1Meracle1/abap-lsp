@@ -11325,7 +11325,7 @@ fn bare_identifier_token_context_is_type_position(
 #[derive(Debug, Default)]
 pub struct DocumentStore {
     documents: RwLock<HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
-    analysis: RwLock<Option<CachedWorkspaceAnalysis>>,
+    analysis: RwLock<Option<Arc<CachedWorkspaceAnalysis>>>,
     analysis_revision: RwLock<u64>,
     preview_metrics: RwLock<Option<PreviewMetrics>>,
     lint_policy: RwLock<Arc<LintPolicy>>,
@@ -13791,7 +13791,7 @@ impl DocumentStore {
         let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
             &inputs,
             has_matching_input_set(&existing, &inputs).then_some(&existing),
-            analysis.as_ref(),
+            analysis.as_deref(),
             progress,
             &changed_uris,
             true,
@@ -13801,7 +13801,7 @@ impl DocumentStore {
         drop(analysis);
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
-        *self.analysis.write() = Some(rebuilt_analysis);
+        *self.analysis.write() = Some(Arc::new(rebuilt_analysis));
         *self.analysis_revision.write() += 1;
         rebuilt
     }
@@ -13838,7 +13838,7 @@ impl DocumentStore {
             && current.is_dependency == input.is_dependency
             && current.object_name == input.object_name
             && build_plan_matches_cached_analysis(
-                analysis.as_ref(),
+                analysis.as_deref(),
                 build_plan,
                 lint_policy.as_ref(),
             )
@@ -13851,13 +13851,13 @@ impl DocumentStore {
                 .insert(Arc::clone(&input.uri), Arc::clone(&snapshot));
             return snapshot;
         }
-        let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
-        let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
+        let inputs = document_inputs_for_publish(&existing, analysis.as_deref(), &input);
+        let force_full = force_full_rebuild(analysis.as_deref(), &inputs);
         let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
         let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
             &inputs,
             Some(&existing),
-            analysis.as_ref(),
+            analysis.as_deref(),
             None,
             &changed_uris,
             force_full,
@@ -13867,7 +13867,7 @@ impl DocumentStore {
         drop(analysis);
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
-        *self.analysis.write() = Some(rebuilt_analysis);
+        *self.analysis.write() = Some(Arc::new(rebuilt_analysis));
         *self.analysis_revision.write() += 1;
         rebuilt
             .get(input.uri.as_ref())
@@ -13922,7 +13922,7 @@ impl DocumentStore {
             .collect();
         if changed_uris.is_empty()
             && build_plan_matches_cached_analysis(
-                analysis.as_ref(),
+                analysis.as_deref(),
                 build_plan,
                 lint_policy.as_ref(),
             )
@@ -13943,12 +13943,13 @@ impl DocumentStore {
             return updated;
         }
 
-        let merged_inputs = document_inputs_for_publish_many(&existing, analysis.as_ref(), &inputs);
-        let force_full = force_full_rebuild(analysis.as_ref(), &merged_inputs);
+        let merged_inputs =
+            document_inputs_for_publish_many(&existing, analysis.as_deref(), &inputs);
+        let force_full = force_full_rebuild(analysis.as_deref(), &merged_inputs);
         let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
             &merged_inputs,
             Some(&existing),
-            analysis.as_ref(),
+            analysis.as_deref(),
             progress,
             &changed_uris,
             force_full,
@@ -13958,7 +13959,7 @@ impl DocumentStore {
         drop(analysis);
         drop(existing);
         self.documents.write().clone_from(&rebuilt);
-        *self.analysis.write() = Some(rebuilt_analysis);
+        *self.analysis.write() = Some(Arc::new(rebuilt_analysis));
         *self.analysis_revision.write() += 1;
         rebuilt
     }
@@ -13984,16 +13985,16 @@ impl DocumentStore {
             return snapshot;
         }
         let build_plan = analysis
-            .as_ref()
+            .as_deref()
             .map(|analysis| analysis.build_plan)
             .unwrap_or(SnapshotBuildPlan::FULL);
-        let inputs = document_inputs_for_publish(&existing, analysis.as_ref(), &input);
-        let force_full = force_full_rebuild(analysis.as_ref(), &inputs);
+        let inputs = document_inputs_for_publish(&existing, analysis.as_deref(), &input);
+        let force_full = force_full_rebuild(analysis.as_deref(), &inputs);
         let changed_uris = HashSet::from([Arc::clone(&input.uri)]);
         let (rebuilt, rebuilt_analysis) = analyze_inputs_with_progress(
             &inputs,
             Some(&existing),
-            analysis.as_ref(),
+            analysis.as_deref(),
             None,
             &changed_uris,
             force_full,

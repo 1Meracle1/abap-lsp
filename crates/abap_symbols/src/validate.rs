@@ -534,6 +534,78 @@ where
     })
 }
 
+fn visible_type_owner_handle(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    from_unit: UnitId,
+    name: &Arc<str>,
+) -> Option<SymbolHandle> {
+    project.units.get(from_unit.as_usize())?;
+    let key = (Namespace::Type, Arc::clone(name));
+    for require_definition in [true, false] {
+        for unit_id in std::iter::once(from_unit).chain(
+            lookup
+                .include_predecessors
+                .get(from_unit.as_usize())
+                .into_iter()
+                .flatten()
+                .rev()
+                .copied(),
+        ) {
+            if let Some(handle) =
+                root_type_owner_handle_in_unit(project, lookup, unit_id, &key, require_definition)
+            {
+                return Some(handle);
+            }
+        }
+        if let Some(handles) = lookup.root_index.get(&key)
+            && let Some(handle) = handles.iter().copied().find(|handle| {
+                root_type_owner_matches(
+                    &project.units[handle.unit.as_usize()],
+                    handle.symbol,
+                    require_definition,
+                )
+            })
+        {
+            return Some(handle);
+        }
+    }
+    None
+}
+
+fn root_type_owner_handle_in_unit(
+    project: &ProjectAnalysis,
+    lookup: &ValidationLookup<'_>,
+    unit_id: UnitId,
+    key: &(Namespace, Arc<str>),
+    require_definition: bool,
+) -> Option<SymbolHandle> {
+    let unit = project.units.get(unit_id.as_usize())?;
+    lookup
+        .per_unit_root_index
+        .get(unit_id.as_usize())?
+        .get(key)?
+        .iter()
+        .copied()
+        .find(|&symbol| root_type_owner_matches(unit, symbol, require_definition))
+        .map(|symbol| SymbolHandle {
+            unit: unit_id,
+            symbol,
+        })
+}
+
+fn root_type_owner_matches(
+    unit: &crate::UnitAnalysis,
+    symbol: SymbolId,
+    require_definition: bool,
+) -> bool {
+    match unit.symbol(symbol).kind {
+        SymbolKind::Interface => true,
+        SymbolKind::Class => !require_definition || unit.class_definition(symbol).is_some(),
+        _ => false,
+    }
+}
+
 fn collect_global_names(project: &ProjectAnalysis) -> HashMap<Arc<str>, u8> {
     let mut out = HashMap::new();
     for unit in &project.units {
@@ -807,11 +879,7 @@ fn resolve_class_scoped_type_handle(
 ) -> Option<SymbolHandle> {
     let class_symbol = enclosing_class_owner(unit, scope)?;
     let class_name = Arc::clone(&unit.symbol(class_symbol).name);
-    let mut current = project.visible_type_owner_handle_with_predecessors(
-        unit.unit_id,
-        &class_name,
-        &lookup.include_predecessors,
-    )?;
+    let mut current = visible_type_owner_handle(project, lookup, unit.unit_id, &class_name)?;
     let mut seen = HashSet::new();
     loop {
         if !seen.insert((current.unit, current.symbol)) {
@@ -3198,11 +3266,7 @@ fn resolve_type_owner_symbol(
     preferred_unit: &crate::UnitAnalysis,
     name: &Arc<str>,
 ) -> Option<SymbolHandle> {
-    if let Some(handle) = project.visible_type_owner_handle_with_predecessors(
-        preferred_unit.unit_id,
-        name,
-        &lookup.include_predecessors,
-    ) {
+    if let Some(handle) = visible_type_owner_handle(project, lookup, preferred_unit.unit_id, name) {
         return Some(handle);
     }
     root_symbol_handle_matching(

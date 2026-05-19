@@ -36,6 +36,7 @@ use crate::project::ProjectAnalysis;
 use crate::scope::{Namespace, ScopeKind};
 
 const MAX_ROUTINES_FOR_DATAFLOW: usize = 5000;
+const ROUTINES_PER_PARALLEL_WORKER: usize = 64;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectRoutineAnalysis {
@@ -471,20 +472,11 @@ fn build_project_routine_analysis_filtered(
         })
         .collect();
     let cfg_timer = std::time::Instant::now();
-    for routine_idx in 0..out.routines.len() {
-        let descriptor = out.routines[routine_idx].descriptor.clone();
-        let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
-            continue;
-        };
-        let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
-            .get(&descriptor.id)
-            .map_or([].as_slice(), Vec::as_slice);
-        let (cfg, diagnostics) = build_routine_cfg_and_diagnostics(
-            unit,
-            routine_control_regions,
-            &out.routines[routine_idx],
-        );
-        out.unit_diagnostics[descriptor.unit.as_usize()].extend(diagnostics.iter().cloned());
+    for (routine_idx, cfg, diagnostics) in
+        build_routine_cfg_results(project, &control_region_indexes, &out.routines)
+    {
+        let unit_idx = out.routines[routine_idx].descriptor.unit.as_usize();
+        out.unit_diagnostics[unit_idx].extend(diagnostics.iter().cloned());
         out.routines[routine_idx].cfg = cfg;
         out.routines[routine_idx].diagnostics = diagnostics;
     }
@@ -533,12 +525,13 @@ fn build_project_routine_analysis_filtered(
         out.routines.len(),
         unit_filter,
     );
+    let call_parameter_effects = build_call_parameter_effects(project);
     let call_argument_effects_by_unit: Vec<_> = project
         .units
         .iter()
         .map(|unit| {
             if routine_analysis_includes_unit(unit_filter, unit.unit_id) {
-                build_call_argument_effects(project, unit)
+                build_call_argument_effects(unit, &call_parameter_effects)
             } else {
                 HashMap::new()
             }
@@ -575,54 +568,76 @@ fn build_project_routine_analysis_filtered(
     let mut form_parameter_effects = HashMap::new();
     let mut final_dataflow_diagnostics = vec![Vec::new(); out.routines.len()];
 
-    for pass_idx in 0..max_dataflow_passes {
+    if !has_perform_calls {
         out.metrics.dataflow_pass_count += 1;
-        for routine_id in 0..out.routines.len() {
-            if out.routines[routine_id].ir.instructions.is_empty() {
-                continue;
+        let dataflow_results = build_routine_dataflow_results(
+            project,
+            &resolution_index,
+            &control_region_indexes,
+            &out.routines,
+            &if_scope_indexes,
+            &selector_structure_write_indexes,
+            &value_references_by_routine,
+            &value_state_checks_by_routine,
+            &field_symbol_state_checks_by_routine,
+            &tracked_symbols_by_routine,
+            &call_argument_effects_by_unit,
+            &form_parameter_effects,
+            &non_returning_method_impls,
+        );
+        out.metrics.dataflow_routine_runs += dataflow_results.len();
+        for dataflow in dataflow_results {
+            out.metrics.dead_store_micros += dataflow.dead_store_micros;
+            out.routines[dataflow.routine_id].dataflow_inputs = dataflow.inputs;
+            out.routines[dataflow.routine_id].dataflow_result = dataflow.result;
+            final_dataflow_diagnostics[dataflow.routine_id] = dataflow.diagnostics;
+        }
+    } else {
+        for pass_idx in 0..max_dataflow_passes {
+            out.metrics.dataflow_pass_count += 1;
+            for routine_id in 0..out.routines.len() {
+                if out.routines[routine_id].ir.instructions.is_empty() {
+                    continue;
+                }
+                if pass_idx > 0 && !routine_has_perform_instruction[routine_id] {
+                    continue;
+                }
+                let descriptor = out.routines[routine_id].descriptor.clone();
+                let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
+                    continue;
+                };
+                let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
+                    .get(&descriptor.id)
+                    .map_or([].as_slice(), Vec::as_slice);
+                out.metrics.dataflow_routine_runs += 1;
+                let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
+                    project,
+                    &resolution_index,
+                    unit,
+                    &if_scope_indexes[descriptor.unit.as_usize()],
+                    &selector_structure_write_indexes[descriptor.unit.as_usize()],
+                    routine_control_regions,
+                    &out.routines[routine_id],
+                    &value_references_by_routine[routine_id],
+                    &value_state_checks_by_routine[routine_id],
+                    &field_symbol_state_checks_by_routine[routine_id],
+                    &tracked_symbols_by_routine[routine_id],
+                    &call_argument_effects_by_unit[descriptor.unit.as_usize()],
+                    &form_parameter_effects,
+                    &non_returning_method_impls,
+                );
+                out.metrics.dead_store_micros += dead_store_micros;
+                out.routines[routine_id].dataflow_inputs = inputs;
+                out.routines[routine_id].dataflow_result = result;
+                final_dataflow_diagnostics[routine_id] = diagnostics;
             }
-            if pass_idx > 0 && !routine_has_perform_instruction[routine_id] {
-                continue;
+
+            let next_effects = build_form_parameter_effect_summaries(project, &out.routines);
+            if next_effects == form_parameter_effects {
+                break;
             }
-            let descriptor = out.routines[routine_id].descriptor.clone();
-            let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
-                continue;
-            };
-            let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
-                .get(&descriptor.id)
-                .map_or([].as_slice(), Vec::as_slice);
-            out.metrics.dataflow_routine_runs += 1;
-            let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
-                project,
-                &resolution_index,
-                unit,
-                &if_scope_indexes[descriptor.unit.as_usize()],
-                &selector_structure_write_indexes[descriptor.unit.as_usize()],
-                routine_control_regions,
-                &out.routines[routine_id],
-                &value_references_by_routine[routine_id],
-                &value_state_checks_by_routine[routine_id],
-                &field_symbol_state_checks_by_routine[routine_id],
-                &tracked_symbols_by_routine[routine_id],
-                &call_argument_effects_by_unit[descriptor.unit.as_usize()],
-                &form_parameter_effects,
-                &non_returning_method_impls,
-            );
-            out.metrics.dead_store_micros += dead_store_micros;
-            out.routines[routine_id].dataflow_inputs = inputs;
-            out.routines[routine_id].dataflow_result = result;
-            final_dataflow_diagnostics[routine_id] = diagnostics;
+            form_parameter_effects = next_effects;
         }
-
-        if !has_perform_calls {
-            break;
-        }
-
-        let next_effects = build_form_parameter_effect_summaries(project, &out.routines);
-        if next_effects == form_parameter_effects {
-            break;
-        }
-        form_parameter_effects = next_effects;
     }
 
     for (routine_id, diagnostics) in final_dataflow_diagnostics.into_iter().enumerate() {
@@ -709,6 +724,232 @@ fn compare_diagnostics(left: &Diagnostic, right: &Diagnostic) -> std::cmp::Order
 fn sort_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
     diagnostics.sort_by(compare_diagnostics);
     diagnostics.dedup();
+}
+
+fn routine_overlaps_range(routine: &RoutineAnalysis, range: &TextRange) -> bool {
+    routine
+        .descriptor
+        .executable_range
+        .as_ref()
+        .is_none_or(|routine_range| {
+            range.start <= routine_range.end && routine_range.start <= range.end
+        })
+}
+
+fn routine_analysis_worker_count(item_count: usize) -> usize {
+    let desired = item_count / ROUTINES_PER_PARALLEL_WORKER;
+    if desired <= 1 {
+        return 1;
+    }
+    std::thread::available_parallelism().map_or(1, |count| count.get().min(desired))
+}
+
+fn build_routine_cfg_results(
+    project: &ProjectAnalysis,
+    control_region_indexes: &[HashMap<RoutineId, Vec<&RoutineControlRegionData>>],
+    routines: &[RoutineAnalysis],
+) -> Vec<(usize, RoutineCfg, Vec<Diagnostic>)> {
+    let worker_count = routine_analysis_worker_count(routines.len());
+    if worker_count == 1 {
+        return build_routine_cfg_results_for_range(
+            project,
+            control_region_indexes,
+            routines,
+            0,
+            routines.len(),
+        );
+    }
+
+    let chunk_size = routines.len().div_ceil(worker_count);
+    let mut results = Vec::with_capacity(routines.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..worker_count)
+            .filter_map(|worker_idx| {
+                let start = worker_idx * chunk_size;
+                let end = routines.len().min(start + chunk_size);
+                (start < end).then(|| {
+                    scope.spawn(move || {
+                        build_routine_cfg_results_for_range(
+                            project,
+                            control_region_indexes,
+                            routines,
+                            start,
+                            end,
+                        )
+                    })
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            results.extend(handle.join().expect("routine CFG worker panicked"));
+        }
+    });
+    results
+}
+
+fn build_routine_cfg_results_for_range(
+    project: &ProjectAnalysis,
+    control_region_indexes: &[HashMap<RoutineId, Vec<&RoutineControlRegionData>>],
+    routines: &[RoutineAnalysis],
+    start: usize,
+    end: usize,
+) -> Vec<(usize, RoutineCfg, Vec<Diagnostic>)> {
+    let mut results = Vec::with_capacity(end - start);
+    for routine_idx in start..end {
+        let descriptor = &routines[routine_idx].descriptor;
+        let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
+            continue;
+        };
+        let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
+            .get(&descriptor.id)
+            .map_or([].as_slice(), Vec::as_slice);
+        let (cfg, diagnostics) = build_routine_cfg_and_diagnostics(
+            unit,
+            routine_control_regions,
+            &routines[routine_idx],
+        );
+        results.push((routine_idx, cfg, diagnostics));
+    }
+    results
+}
+
+struct RoutineDataflowBuildResult {
+    routine_id: usize,
+    inputs: RoutineDataflowInputs,
+    result: RoutineDataflowResult,
+    diagnostics: Vec<Diagnostic>,
+    dead_store_micros: u128,
+}
+
+fn build_routine_dataflow_results(
+    project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
+    control_region_indexes: &[HashMap<RoutineId, Vec<&RoutineControlRegionData>>],
+    routines: &[RoutineAnalysis],
+    if_scope_indexes: &[IfScopeIndex],
+    selector_structure_write_indexes: &[SelectorStructureWriteIndex],
+    value_references_by_routine: &[Vec<&ReferenceData>],
+    value_state_checks_by_routine: &[Vec<&crate::ValueStateCheckData>],
+    field_symbol_state_checks_by_routine: &[Vec<&crate::FieldSymbolStateCheckData>],
+    tracked_symbols_by_routine: &[Vec<&SymbolData>],
+    call_argument_effects_by_unit: &[CallArgumentEffectMap],
+    form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
+    non_returning_method_impls: &HashSet<RoutineImplKey>,
+) -> Vec<RoutineDataflowBuildResult> {
+    let worker_count = routine_analysis_worker_count(routines.len());
+    if worker_count == 1 {
+        return build_routine_dataflow_results_for_range(
+            project,
+            resolution_index,
+            control_region_indexes,
+            routines,
+            if_scope_indexes,
+            selector_structure_write_indexes,
+            value_references_by_routine,
+            value_state_checks_by_routine,
+            field_symbol_state_checks_by_routine,
+            tracked_symbols_by_routine,
+            call_argument_effects_by_unit,
+            form_parameter_effects,
+            non_returning_method_impls,
+            0,
+            routines.len(),
+        );
+    }
+
+    let chunk_size = routines.len().div_ceil(worker_count);
+    let mut results = Vec::with_capacity(routines.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..worker_count)
+            .filter_map(|worker_idx| {
+                let start = worker_idx * chunk_size;
+                let end = routines.len().min(start + chunk_size);
+                (start < end).then(|| {
+                    scope.spawn(move || {
+                        build_routine_dataflow_results_for_range(
+                            project,
+                            resolution_index,
+                            control_region_indexes,
+                            routines,
+                            if_scope_indexes,
+                            selector_structure_write_indexes,
+                            value_references_by_routine,
+                            value_state_checks_by_routine,
+                            field_symbol_state_checks_by_routine,
+                            tracked_symbols_by_routine,
+                            call_argument_effects_by_unit,
+                            form_parameter_effects,
+                            non_returning_method_impls,
+                            start,
+                            end,
+                        )
+                    })
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            results.extend(handle.join().expect("routine dataflow worker panicked"));
+        }
+    });
+    results
+}
+
+fn build_routine_dataflow_results_for_range(
+    project: &ProjectAnalysis,
+    resolution_index: &RoutineResolutionIndex,
+    control_region_indexes: &[HashMap<RoutineId, Vec<&RoutineControlRegionData>>],
+    routines: &[RoutineAnalysis],
+    if_scope_indexes: &[IfScopeIndex],
+    selector_structure_write_indexes: &[SelectorStructureWriteIndex],
+    value_references_by_routine: &[Vec<&ReferenceData>],
+    value_state_checks_by_routine: &[Vec<&crate::ValueStateCheckData>],
+    field_symbol_state_checks_by_routine: &[Vec<&crate::FieldSymbolStateCheckData>],
+    tracked_symbols_by_routine: &[Vec<&SymbolData>],
+    call_argument_effects_by_unit: &[CallArgumentEffectMap],
+    form_parameter_effects: &HashMap<SymbolHandle, FormParameterEffectSummary>,
+    non_returning_method_impls: &HashSet<RoutineImplKey>,
+    start: usize,
+    end: usize,
+) -> Vec<RoutineDataflowBuildResult> {
+    let mut results = Vec::with_capacity(end - start);
+    for routine_id in start..end {
+        if routines[routine_id].ir.instructions.is_empty() {
+            continue;
+        }
+        let descriptor = &routines[routine_id].descriptor;
+        let Some(unit) = project.units.get(descriptor.unit.as_usize()) else {
+            continue;
+        };
+        let routine_control_regions = control_region_indexes[descriptor.unit.as_usize()]
+            .get(&descriptor.id)
+            .map_or([].as_slice(), Vec::as_slice);
+        let (inputs, result, diagnostics, dead_store_micros) = build_routine_dataflow(
+            project,
+            resolution_index,
+            unit,
+            &if_scope_indexes[descriptor.unit.as_usize()],
+            &selector_structure_write_indexes[descriptor.unit.as_usize()],
+            routine_control_regions,
+            &routines[routine_id],
+            &value_references_by_routine[routine_id],
+            &value_state_checks_by_routine[routine_id],
+            &field_symbol_state_checks_by_routine[routine_id],
+            &tracked_symbols_by_routine[routine_id],
+            &call_argument_effects_by_unit[descriptor.unit.as_usize()],
+            form_parameter_effects,
+            non_returning_method_impls,
+        );
+        results.push(RoutineDataflowBuildResult {
+            routine_id,
+            inputs,
+            result,
+            diagnostics,
+            dead_store_micros,
+        });
+    }
+    results
 }
 
 #[derive(Debug, Clone)]
@@ -899,10 +1140,11 @@ struct ConditionalFieldSymbolBindIndex {
 }
 
 impl ConditionalFieldSymbolBindIndex {
-    fn new(unit: &UnitAnalysis) -> Self {
+    fn new(unit: &UnitAnalysis, routine: &RoutineAnalysis) -> Self {
         let mut by_scope = vec![Vec::new(); unit.scopes.len()];
         for (idx, edge) in unit.value_flow_edges.iter().enumerate() {
             if edge.kind == ValueFlowKind::ConditionalFieldSymbolAssignment
+                && routine_overlaps_range(routine, &edge.source_range)
                 && let Some(edges) = by_scope.get_mut(edge.scope.as_usize())
             {
                 edges.push(idx);
@@ -2000,8 +2242,8 @@ fn build_routine_dataflow(
         &value_ids_by_symbol,
         &values,
     );
-    let conditional_field_symbol_binds = ConditionalFieldSymbolBindIndex::new(unit);
-    let sy_subrc_updates = SySubrcUpdateIndex::new(unit);
+    let conditional_field_symbol_binds = ConditionalFieldSymbolBindIndex::new(unit, routine);
+    let sy_subrc_updates = SySubrcUpdateIndex::new(unit, routine);
 
     let safe_field_symbol_checks = resolve_safe_field_symbol_checks(
         unit,
@@ -2094,6 +2336,7 @@ fn build_routine_dataflow(
         project,
         resolution_index,
         unit,
+        routine,
         &reference_uses,
         &structure_assignment_trackers,
         &values,
@@ -3764,9 +4007,47 @@ fn resolved_value_id_for_reference(
     value_ids_by_symbol.get(&handle).copied()
 }
 
+type CallParameterEffectMap = HashMap<(UnitId, usize, usize), CallArgumentEffect>;
+
+fn build_call_parameter_effects(project: &ProjectAnalysis) -> CallParameterEffectMap {
+    let mut effects = HashMap::new();
+    for unit in &project.units {
+        for member in &unit.class_members {
+            for parameter in &member.parameters {
+                let effect = match parameter.section {
+                    MethodParameterSection::Importing => CallArgumentEffect::InputOnly,
+                    MethodParameterSection::Changing => CallArgumentEffect::InOut,
+                    MethodParameterSection::Exporting
+                    | MethodParameterSection::Receiving
+                    | MethodParameterSection::Returning => CallArgumentEffect::OutputOnly,
+                };
+                effects.insert(
+                    (unit.unit_id, parameter.range.start, parameter.range.end),
+                    effect,
+                );
+            }
+        }
+        for function_module in &unit.function_modules {
+            for parameter in &function_module.parameters {
+                let effect = match parameter.section {
+                    FunctionModuleParameterSection::Importing => CallArgumentEffect::InputOnly,
+                    FunctionModuleParameterSection::Exporting => CallArgumentEffect::OutputOnly,
+                    FunctionModuleParameterSection::Changing
+                    | FunctionModuleParameterSection::Tables => CallArgumentEffect::AssignsOnly,
+                };
+                effects.insert(
+                    (unit.unit_id, parameter.range.start, parameter.range.end),
+                    effect,
+                );
+            }
+        }
+    }
+    effects
+}
+
 fn build_call_argument_effects(
-    project: &ProjectAnalysis,
     unit: &UnitAnalysis,
+    parameter_effects: &CallParameterEffectMap,
 ) -> CallArgumentEffectMap {
     let mut effects = HashMap::new();
     for edge in &unit.value_flow_edges {
@@ -3782,13 +4063,13 @@ fn build_call_argument_effects(
         else {
             continue;
         };
-        let effect = parameter_decl_unit
-            .and_then(|unit_id| {
-                parameter_decl_range
-                    .as_ref()
-                    .map(|range| call_argument_effect_for_parameter(project, unit_id, range))
-            })
-            .unwrap_or(CallArgumentEffect::Unknown);
+        let effect = match (parameter_decl_unit, parameter_decl_range.as_ref()) {
+            (Some(unit_id), Some(range)) => parameter_effects
+                .get(&(*unit_id, range.start, range.end))
+                .copied()
+                .unwrap_or(CallArgumentEffect::Unknown),
+            _ => CallArgumentEffect::Unknown,
+        };
         effects.insert(
             (
                 call_range.start,
@@ -3800,44 +4081,6 @@ fn build_call_argument_effects(
         );
     }
     effects
-}
-
-fn call_argument_effect_for_parameter(
-    project: &ProjectAnalysis,
-    unit_id: UnitId,
-    range: &TextRange,
-) -> CallArgumentEffect {
-    let Some(unit) = project.units.get(unit_id.as_usize()) else {
-        return CallArgumentEffect::Unknown;
-    };
-    for member in &unit.class_members {
-        for parameter in &member.parameters {
-            if &parameter.range != range {
-                continue;
-            }
-            return match parameter.section {
-                MethodParameterSection::Importing => CallArgumentEffect::InputOnly,
-                MethodParameterSection::Changing => CallArgumentEffect::InOut,
-                MethodParameterSection::Exporting
-                | MethodParameterSection::Receiving
-                | MethodParameterSection::Returning => CallArgumentEffect::OutputOnly,
-            };
-        }
-    }
-    for function_module in &unit.function_modules {
-        for parameter in &function_module.parameters {
-            if &parameter.range != range {
-                continue;
-            }
-            return match parameter.section {
-                FunctionModuleParameterSection::Importing => CallArgumentEffect::InputOnly,
-                FunctionModuleParameterSection::Exporting => CallArgumentEffect::OutputOnly,
-                FunctionModuleParameterSection::Changing
-                | FunctionModuleParameterSection::Tables => CallArgumentEffect::AssignsOnly,
-            };
-        }
-    }
-    CallArgumentEffect::Unknown
 }
 
 fn resolve_safe_field_symbol_checks(
@@ -4544,10 +4787,11 @@ struct SySubrcUpdateIndex {
 }
 
 impl SySubrcUpdateIndex {
-    fn new(unit: &UnitAnalysis) -> Self {
+    fn new(unit: &UnitAnalysis, routine: &RoutineAnalysis) -> Self {
         let mut by_scope = vec![Vec::new(); unit.scopes.len()];
         for (idx, update) in unit.system_field_updates.iter().enumerate() {
             if update.field_name.eq_ignore_ascii_case("subrc")
+                && routine_overlaps_range(routine, &update.range)
                 && let Some(updates) = by_scope.get_mut(update.scope.as_usize())
             {
                 updates.push(idx);
@@ -5308,6 +5552,7 @@ fn resolve_structure_field_reads(
     project: &ProjectAnalysis,
     resolution_index: &RoutineResolutionIndex,
     unit: &UnitAnalysis,
+    routine: &RoutineAnalysis,
     reference_uses: &[ReferenceUse],
     structure_assignment_trackers: &[Option<StructureAssignmentTracker>],
     values: &[RoutineDataflowValue],
@@ -5317,6 +5562,7 @@ fn resolve_structure_field_reads(
         if access.base_namespace != Namespace::Value
             || access.field_path.len() != 1
             || access.field_path[0].is_deref()
+            || !routine_overlaps_range(routine, &access.base_range)
         {
             continue;
         }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::net::{SocketAddr, TcpListener};
@@ -36,10 +36,10 @@ use abap_lsp::{
     handle_workspace_manifest_updated_with_progress, hover, initialize_result, inlay_hints,
     local_export_document_artifact_payload, prepare_rename, prune_workspace_preview_snapshots,
     publish_changed_document_mut_with_progress, publish_diagnostics_params,
-    publish_open_document_mut_with_progress, read_dependency_document, references,
-    refresh_workspace_with_progress, rename, semantic_tokens, stage_workspace_preview_snapshot,
-    store_remote_dependency_artifacts, workspace_manifest_diagnostics_params,
-    workspace_uri_is_dependency_source,
+    publish_open_document_mut_with_progress, read_dependency_document,
+    record_remote_dependencies_updated, references, refresh_workspace_with_progress, rename,
+    semantic_tokens, stage_workspace_preview_snapshot, store_remote_dependency_artifacts,
+    workspace_manifest_diagnostics_params, workspace_uri_is_dependency_source,
 };
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
@@ -184,6 +184,7 @@ enum AnalysisTaskKind {
     DidChange(DidChangeTextDocumentParams),
     ManifestUpdated(WorkspaceManifestUpdatedParams),
     DependencyCacheRefreshRequested(WorkspaceManifestUpdatedParams),
+    RemoteDependencyCompleted,
     RemoteDependenciesUpdated(abap_lsp::RemoteDependenciesUpdatedParams),
     Initialized,
 }
@@ -193,6 +194,7 @@ struct AnalysisTask {
     generation: u64,
     started: Option<WorkspaceAnalysisStatusParams>,
     workspace: WorkspaceState,
+    remote_completions: Vec<RemoteDependencyCompletion>,
     kind: AnalysisTaskKind,
 }
 
@@ -291,7 +293,7 @@ fn workspace_uses_editor_first_mode(state: &ServerState, workspace_uri: &str) ->
 }
 
 fn enqueue_background_task(
-    task: AnalysisTask,
+    mut task: AnalysisTask,
     task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -300,7 +302,24 @@ fn enqueue_background_task(
         let mut queue = queue_state
             .lock()
             .expect("pending analysis queue should not be poisoned");
-        queue.pending_tasks.insert(workspace_uri.clone(), task);
+        if matches!(task.kind, AnalysisTaskKind::RemoteDependencyCompleted)
+            && let Some(pending) = queue.pending_tasks.get_mut(&workspace_uri)
+        {
+            pending.generation = task.generation;
+            pending
+                .remote_completions
+                .append(&mut task.remote_completions);
+            return Ok(());
+        }
+        if let Some(previous) = queue.pending_tasks.insert(workspace_uri.clone(), task) {
+            let pending = queue
+                .pending_tasks
+                .get_mut(&workspace_uri)
+                .expect("inserted pending task should exist");
+            let mut remote_completions = previous.remote_completions;
+            remote_completions.append(&mut pending.remote_completions);
+            pending.remote_completions = remote_completions;
+        }
         queue.scheduled_workspaces.insert(workspace_uri.clone())
     };
     if should_send {
@@ -470,6 +489,7 @@ fn try_schedule_background_analysis(
                 generation: next_workspace_generation(generations, &workspace_uri),
                 started,
                 workspace,
+                remote_completions: Vec::new(),
                 kind: AnalysisTaskKind::DidOpen(params),
             };
             debounced_tasks.remove(&workspace_uri);
@@ -516,6 +536,7 @@ fn try_schedule_background_analysis(
                 generation: next_workspace_generation(generations, &workspace_uri),
                 started,
                 workspace,
+                remote_completions: Vec::new(),
                 kind: AnalysisTaskKind::DidChange(params),
             };
             if workspace_uses_editor_first_mode(state, &workspace_uri) {
@@ -565,6 +586,7 @@ fn try_schedule_background_analysis(
                     generation: next_workspace_generation(generations, &workspace_uri),
                     started,
                     workspace,
+                    remote_completions: Vec::new(),
                     kind: AnalysisTaskKind::ManifestUpdated(WorkspaceManifestUpdatedParams {
                         workspace_uri: workspace_uri.clone(),
                     }),
@@ -602,6 +624,7 @@ fn try_schedule_background_analysis(
                     generation: next_workspace_generation(generations, &workspace_uri),
                     started,
                     workspace,
+                    remote_completions: Vec::new(),
                     kind: AnalysisTaskKind::DependencyCacheRefreshRequested(
                         WorkspaceManifestUpdatedParams {
                             workspace_uri: workspace_uri.clone(),
@@ -642,6 +665,7 @@ fn try_schedule_background_analysis(
                     generation: next_workspace_generation(generations, &workspace_uri),
                     started,
                     workspace,
+                    remote_completions: Vec::new(),
                     kind: AnalysisTaskKind::RemoteDependenciesUpdated(
                         abap_lsp::RemoteDependenciesUpdatedParams {
                             workspace_uri: workspace_uri.clone(),
@@ -691,6 +715,7 @@ fn try_schedule_background_analysis(
                         generation: next_workspace_generation(generations, &workspace_uri),
                         started: Some(started),
                         workspace,
+                        remote_completions: Vec::new(),
                         kind: AnalysisTaskKind::Initialized,
                     },
                     task_tx,
@@ -717,7 +742,21 @@ fn run_analysis_task(
     state.refresh_workspace_routing();
     state.index_workspace_members(&task.workspace_uri);
 
-    let notifications = match &task.kind {
+    let mut notifications = Vec::new();
+    if !task.remote_completions.is_empty() {
+        let stored_artifact_completions =
+            store_remote_dependency_completion_artifacts(&mut state, &task.remote_completions);
+        for (idx, completion) in task.remote_completions.iter().enumerate() {
+            notifications.extend(handle_remote_dependency_completion_notifications(
+                &mut state,
+                completion,
+                stored_artifact_completions.contains(&idx),
+                progress_sink,
+            )?);
+        }
+    }
+
+    notifications.extend(match &task.kind {
         AnalysisTaskKind::DidOpen(params) => {
             handle_did_open_notifications(&mut state, params, progress_sink)?
         }
@@ -734,6 +773,7 @@ fn run_analysis_task(
                 progress_sink,
             )?
         }
+        AnalysisTaskKind::RemoteDependencyCompleted => Vec::new(),
         AnalysisTaskKind::RemoteDependenciesUpdated(params) => {
             handle_remote_dependencies_updated_notifications(&mut state, params, progress_sink)?
         }
@@ -742,7 +782,7 @@ fn run_analysis_task(
             &task.workspace_uri,
             progress_sink,
         )?,
-    };
+    });
 
     let workspace = state
         .workspaces
@@ -1497,37 +1537,19 @@ fn flush_remote_dependency_completions(
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut completions_by_workspace: BTreeMap<String, Vec<RemoteDependencyCompletion>> =
+        BTreeMap::new();
     for _ in 0..MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH {
         let Ok(completion) = completion_rx.try_recv() else {
             break;
         };
-        if !completion.artifacts.is_empty() || !completion.negative.is_empty() {
-            if let Err(error) = store_remote_dependency_artifacts(
-                state,
-                &StoreRemoteDependencyArtifactsParams {
-                    workspace_uri: completion.workspace_uri.clone(),
-                    connection_key: completion.connection_key.clone(),
-                    artifacts: completion.artifacts,
-                    negative: completion.negative,
-                },
-            ) {
-                warn!(
-                    workspace_uri = %completion.workspace_uri,
-                    error = %error,
-                    "failed to store server-resolved dependency artifacts"
-                );
-            }
-        }
-
-        let params = abap_lsp::RemoteDependenciesUpdatedParams {
-            workspace_uri: completion.workspace_uri.clone(),
-            source_uri: completion.source_uri.clone(),
-            source_uris: completion.source_uris.clone(),
-            fetched: completion.fetched,
-            failed: completion.failed,
-            resolution_finished: completion.resolution_finished,
-        };
-        let workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
+        let workspace_uri = abap_lsp::normalize_lsp_uri(&completion.workspace_uri);
+        completions_by_workspace
+            .entry(workspace_uri)
+            .or_default()
+            .push(completion);
+    }
+    for (workspace_uri, remote_completions) in completions_by_workspace {
         let Some(workspace) = state.workspaces.get(&workspace_uri).cloned() else {
             continue;
         };
@@ -1537,7 +1559,8 @@ fn flush_remote_dependency_completions(
                 generation: next_workspace_generation(generations, &workspace_uri),
                 started: None,
                 workspace,
-                kind: AnalysisTaskKind::RemoteDependenciesUpdated(params),
+                remote_completions,
+                kind: AnalysisTaskKind::RemoteDependencyCompleted,
             },
             task_tx,
             queue_state,
@@ -2908,10 +2931,112 @@ fn push_remote_dependency_update_diagnostics(
     Ok(())
 }
 
+fn handle_remote_dependency_completion_notifications(
+    state: &mut ServerState,
+    completion: &RemoteDependencyCompletion,
+    artifacts_stored: bool,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    let params = abap_lsp::RemoteDependenciesUpdatedParams {
+        workspace_uri: completion.workspace_uri.clone(),
+        source_uri: completion.source_uri.clone(),
+        source_uris: completion.source_uris.clone(),
+        fetched: completion.fetched.clone(),
+        failed: completion.failed.clone(),
+        resolution_finished: completion.resolution_finished,
+    };
+    if artifacts_stored
+        && completion.failed.is_empty()
+        && completion.negative.is_empty()
+        && completion_artifacts_cover_fetched(completion)
+    {
+        handle_remote_dependencies_updated_notifications_without_refresh(state, &params)
+    } else {
+        handle_remote_dependencies_updated_notifications(state, &params, progress_sink)
+    }
+}
+
+fn store_remote_dependency_completion_artifacts(
+    state: &mut ServerState,
+    completions: &[RemoteDependencyCompletion],
+) -> HashSet<usize> {
+    let mut stored_artifact_completions = HashSet::new();
+    let mut artifacts = Vec::new();
+    let mut negative = Vec::new();
+    let mut connection_key = None;
+    let Some(first) = completions.first() else {
+        return stored_artifact_completions;
+    };
+    for (idx, completion) in completions.iter().enumerate() {
+        if connection_key.is_none() {
+            connection_key = completion.connection_key.clone();
+        }
+        if !completion.artifacts.is_empty() {
+            stored_artifact_completions.insert(idx);
+            artifacts.extend(completion.artifacts.iter().cloned());
+        }
+        negative.extend(completion.negative.iter().cloned());
+    }
+    if artifacts.is_empty() && negative.is_empty() {
+        return stored_artifact_completions;
+    }
+    if let Err(error) = store_remote_dependency_artifacts(
+        state,
+        &StoreRemoteDependencyArtifactsParams {
+            workspace_uri: first.workspace_uri.clone(),
+            connection_key,
+            artifacts,
+            negative,
+        },
+    ) {
+        warn!(
+            workspace_uri = %first.workspace_uri,
+            error = %error,
+            "failed to store server-resolved dependency artifacts"
+        );
+        stored_artifact_completions.clear();
+    }
+    stored_artifact_completions
+}
+
+fn completion_artifacts_cover_fetched(completion: &RemoteDependencyCompletion) -> bool {
+    let artifact_names: HashSet<_> = completion
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.object_name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+    completion
+        .fetched
+        .iter()
+        .all(|name| artifact_names.contains(&name.trim().to_ascii_lowercase()))
+}
+
 fn handle_remote_dependencies_updated_notifications(
     state: &mut ServerState,
     params: &abap_lsp::RemoteDependenciesUpdatedParams,
     progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    handle_remote_dependencies_updated_notifications_with_refresh(
+        state,
+        params,
+        progress_sink,
+        true,
+    )
+}
+
+fn handle_remote_dependencies_updated_notifications_without_refresh(
+    state: &mut ServerState,
+    params: &abap_lsp::RemoteDependenciesUpdatedParams,
+) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
+    handle_remote_dependencies_updated_notifications_with_refresh(state, params, None, false)
+}
+
+fn handle_remote_dependencies_updated_notifications_with_refresh(
+    state: &mut ServerState,
+    params: &abap_lsp::RemoteDependenciesUpdatedParams,
+    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    refresh: bool,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let progress_notifications = Mutex::new(Vec::new());
     let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
@@ -2933,8 +3058,12 @@ fn handle_remote_dependencies_updated_notifications(
     if !params.source_uri.is_empty() {
         source_uris.insert(abap_lsp::normalize_lsp_uri(&params.source_uri));
     }
-    let snapshots =
-        handle_remote_dependencies_updated_with_progress(state, params, Some(&progress));
+    let snapshots = if refresh {
+        handle_remote_dependencies_updated_with_progress(state, params, Some(&progress))
+    } else {
+        record_remote_dependencies_updated(state, params);
+        cached_workspace_snapshots_for_uris(state, &normalized_workspace_uri, &source_uris)
+    };
     let mut notifications = progress_notifications
         .into_inner()
         .expect("progress notification collection should not be poisoned");
@@ -2980,6 +3109,21 @@ fn handle_remote_dependencies_updated_notifications(
         ));
     }
     Ok(notifications)
+}
+
+fn cached_workspace_snapshots_for_uris(
+    state: &ServerState,
+    workspace_uri: &str,
+    uris: &HashSet<String>,
+) -> Vec<Arc<abap_lsp::AnalysisSnapshot>> {
+    let Some(workspace) = state.workspaces.get(workspace_uri) else {
+        return Vec::new();
+    };
+    let mut uris: Vec<_> = uris.iter().collect();
+    uris.sort();
+    uris.into_iter()
+        .filter_map(|uri| workspace.cache.get(uri.as_ref()))
+        .collect()
 }
 
 fn handle_initialized_workspace_notifications(
@@ -5087,6 +5231,7 @@ START-OF-SELECTION.
                     generation: 2,
                     started: None,
                     workspace: staged,
+                    remote_completions: Vec::new(),
                     kind: AnalysisTaskKind::Initialized,
                 },
             );
@@ -5174,6 +5319,77 @@ START-OF-SELECTION.
 
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let generations = Arc::new(Mutex::new(HashMap::new()));
+        let (task_tx, task_rx) = mpsc::channel();
+        let mut writer = Vec::new();
+        flush_remote_dependency_completions(
+            &mut state,
+            &mut writer,
+            &completion_rx,
+            &task_tx,
+            &queue_state,
+            &generations,
+        )
+        .expect("flush completions");
+
+        let task = take_pending_background_task(&workspace_uri, &queue_state).expect("task");
+        assert_eq!(
+            task.remote_completions.len(),
+            MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH
+        );
+        assert_eq!(task.generation, 1);
+        assert_eq!(task_rx.try_iter().count(), 1);
+        assert_eq!(completion_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn remote_dependency_completion_flush_defers_artifact_storage_to_worker() {
+        let workspace_uri = "file:///workspace".to_string();
+        let mut state = ServerState::default();
+        state.workspaces.insert(
+            workspace_uri.clone(),
+            WorkspaceState::new(workspace_uri.clone()),
+        );
+        let (completion_tx, completion_rx) = mpsc::channel();
+        completion_tx
+            .send(RemoteDependencyCompletion {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: "file:///workspace/main.abap".to_string(),
+                source_uris: vec!["file:///workspace/main.abap".to_string()],
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: vec![DependencyArtifactPayload {
+                    package_name: "ZPKG".to_string(),
+                    object_kind: "global-class".to_string(),
+                    object_name: "ZCL_DEP".to_string(),
+                    object_uri: "/sap/bc/adt/oo/classes/zcl_dep".to_string(),
+                    object_type: "CLAS/OC".to_string(),
+                    description: "Remote class".to_string(),
+                    file_extension: "abap".to_string(),
+                    source_text: "CLASS zcl_dep DEFINITION.\nENDCLASS.".to_string(),
+                    fetched_at: "2026-04-23T00:00:00Z".to_string(),
+                }],
+                negative: Vec::new(),
+                fetched: vec!["ZCL_DEP".to_string()],
+                failed: Vec::new(),
+                resolution_finished: true,
+            })
+            .expect("completion");
+        completion_tx
+            .send(RemoteDependencyCompletion {
+                workspace_uri: workspace_uri.clone(),
+                source_uri: "file:///workspace/main.abap".to_string(),
+                source_uris: vec!["file:///workspace/main.abap".to_string()],
+                connection_key: Some("https://example.sap.local".to_string()),
+                artifacts: Vec::new(),
+                negative: Vec::new(),
+                fetched: vec!["ZCL_OTHER".to_string()],
+                failed: Vec::new(),
+                resolution_finished: true,
+            })
+            .expect("completion");
+        drop(completion_tx);
+
+        let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
+        let generations = Arc::new(Mutex::new(HashMap::new()));
         let (task_tx, _task_rx) = mpsc::channel();
         let mut writer = Vec::new();
         flush_remote_dependency_completions(
@@ -5186,7 +5402,23 @@ START-OF-SELECTION.
         )
         .expect("flush completions");
 
-        assert_eq!(completion_rx.try_iter().count(), 1);
+        let task = take_pending_background_task(&workspace_uri, &queue_state).expect("task");
+        assert_eq!(task.generation, 1);
+        match task.kind {
+            AnalysisTaskKind::RemoteDependencyCompleted => {
+                assert_eq!(task.remote_completions.len(), 2);
+                assert_eq!(task.remote_completions[0].artifacts.len(), 1);
+                assert_eq!(
+                    task.remote_completions[0].fetched,
+                    vec!["ZCL_DEP".to_string()]
+                );
+                assert_eq!(
+                    task.remote_completions[1].fetched,
+                    vec!["ZCL_OTHER".to_string()]
+                );
+            }
+            _ => panic!("remote completion should be handled by the worker"),
+        }
     }
 
     #[test]
