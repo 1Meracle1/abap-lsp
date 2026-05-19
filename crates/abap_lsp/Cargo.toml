@@ -11,6 +11,7 @@ abap_dependency_store = { path = "../abap_dependency_store" }
 abap_jsonrpc = { path = "../abap_jsonrpc" }
 abap_lexer = { path = "../abap_lexer" }
 abap_parser = { path = "../abap_parser" }
+abap_runtime = { path = "../abap_runtime" }
 abap_symbols = { path = "../abap_symbols" }
 lsp-types.workspace = true
 serde.workspace = true

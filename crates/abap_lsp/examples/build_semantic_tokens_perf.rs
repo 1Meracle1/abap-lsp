@@ -28,6 +28,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    abap_runtime::init_global_executor();
     let config = parse_args(env::args().skip(1))?;
     let text = fs::read_to_string(&config.sample_path).map_err(|err| {
         format!(

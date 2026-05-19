@@ -15,9 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use abap_cache::{
     CallableCompletionKind, DependencyDiagnosticsMode, DocumentInput, DocumentStore,
     LintDiagnostic, LintLevel, LintPolicy, LocalExportConfig, LocalExportResolveProfile,
-    LocalExportResolver, ManifestDiagnostic, SnapshotBuildPlan, WorkspaceDocument,
-    WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source, file_uri_to_path,
-    function_module_completion_items_from_source, is_remote_lookup_candidate,
+    LocalExportResolver, ManifestDiagnostic, ProgressCallback, SnapshotBuildPlan,
+    WorkspaceDocument, WorkspaceManifest, analysis_text_for_document, ddic_xml_to_abap_source,
+    file_uri_to_path, function_module_completion_items_from_source, is_remote_lookup_candidate,
     is_remote_lookup_candidate_after_local_resolution, lint_docs_anchor,
     lint_id_for_diagnostic_kind, load_effective_manifest_from_workspace_result,
     load_manifest_diagnostics_from_workspace, load_workspace_documents_with_progress,
@@ -1448,7 +1448,7 @@ pub fn replace_all_workspace_documents_with_local_exports(
     store: &DocumentStore,
     root_path: &Path,
     documents: &[WorkspaceDocument],
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     replace_all_workspace_documents_with_local_exports_for_build_plan(
         store,
@@ -1464,7 +1464,7 @@ pub fn replace_all_workspace_documents_with_local_exports_for_build_plan(
     root_path: &Path,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
         store, root_path, None, None, None, documents, build_plan, progress,
@@ -1478,7 +1478,7 @@ pub fn replace_all_workspace_documents_with_manifest_dependencies_for_build_plan
     manifest: Option<&WorkspaceManifest>,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let mut dependency_store = manifest
         .filter(|manifest| manifest_supports_remote_resolution(Some(manifest)))
@@ -1501,7 +1501,7 @@ pub fn replace_all_workspace_documents_with_local_exports_for_build_plan_profile
     root_path: &Path,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> (
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     LocalExportDependencyClosureProfile,
@@ -1519,7 +1519,7 @@ fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
     prehydration: Option<&mut DependencyStorePrehydration>,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let mut all_documents = documents.to_vec();
     let mut prehydration_candidate_seeds = Vec::<(String, Vec<RemoteDependencyCandidate>)>::new();
@@ -1554,7 +1554,7 @@ fn replace_all_workspace_documents_with_dependency_resolution_for_build_plan_pro
     local_export_resolver: Option<&mut LocalExportResolver>,
     documents: &[WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> (
     HashMap<Arc<str>, Arc<AnalysisSnapshot>>,
     LocalExportDependencyClosureProfile,
@@ -2487,51 +2487,12 @@ fn collect_local_export_dependency_candidate_batch(
             .collect();
     }
 
-    let parallelism = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1)
-        .min(batch.len());
-    if parallelism <= 1 {
-        return batch
-            .into_iter()
-            .map(|(uri, config, document)| {
-                (
-                    uri,
-                    config,
-                    collect_local_export_dependency_candidates(&document),
-                )
-            })
-            .collect();
-    }
-
-    let chunk_size = batch.len().div_ceil(parallelism);
-    let chunks = into_owned_chunks(batch, chunk_size);
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for chunk in chunks {
-            handles.push(scope.spawn(move || {
-                chunk
-                    .into_iter()
-                    .map(|(uri, config, document)| {
-                        (
-                            uri,
-                            config,
-                            collect_local_export_dependency_candidates(&document),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            }));
-        }
-
-        let mut out = Vec::new();
-        for handle in handles {
-            out.extend(
-                handle
-                    .join()
-                    .expect("local export candidate worker should not panic"),
-            );
-        }
-        out
+    abap_runtime::run_cpu_batch(batch, |(uri, config, document)| {
+        (
+            uri,
+            config,
+            collect_local_export_dependency_candidates(&document),
+        )
     })
 }
 
@@ -2554,60 +2515,10 @@ fn collect_local_export_dependency_candidate_batch_profiled(
             .collect();
     }
 
-    let parallelism = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1)
-        .min(batch.len());
-    if parallelism <= 1 {
-        return batch
-            .into_iter()
-            .map(|(uri, config, document)| {
-                let (candidates, profile) =
-                    collect_local_export_dependency_candidates_profiled(&document);
-                (uri, config, candidates, profile)
-            })
-            .collect();
-    }
-
-    let chunk_size = batch.len().div_ceil(parallelism);
-    let chunks = into_owned_chunks(batch, chunk_size);
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for chunk in chunks {
-            handles.push(scope.spawn(move || {
-                chunk
-                    .into_iter()
-                    .map(|(uri, config, document)| {
-                        let (candidates, profile) =
-                            collect_local_export_dependency_candidates_profiled(&document);
-                        (uri, config, candidates, profile)
-                    })
-                    .collect::<Vec<_>>()
-            }));
-        }
-
-        let mut out = Vec::new();
-        for handle in handles {
-            out.extend(
-                handle
-                    .join()
-                    .expect("local export candidate worker should not panic"),
-            );
-        }
-        out
+    abap_runtime::run_cpu_batch(batch, |(uri, config, document)| {
+        let (candidates, profile) = collect_local_export_dependency_candidates_profiled(&document);
+        (uri, config, candidates, profile)
     })
-}
-
-fn into_owned_chunks<T>(items: Vec<T>, chunk_size: usize) -> Vec<Vec<T>> {
-    let mut chunks = Vec::new();
-    let mut iter = items.into_iter();
-    loop {
-        let chunk: Vec<_> = iter.by_ref().take(chunk_size).collect();
-        if chunk.is_empty() {
-            return chunks;
-        }
-        chunks.push(chunk);
-    }
 }
 
 fn collect_local_export_dependency_candidates(
@@ -2820,7 +2731,7 @@ fn collect_incremental_local_export_dependency_documents(
 fn publish_workspace_input_with_local_export_resolution(
     workspace: &mut WorkspaceState,
     input: DocumentInput,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Arc<AnalysisSnapshot> {
     let uri = Arc::clone(&input.uri);
     let source_document = workspace_document_from_input(&input);
@@ -3231,7 +3142,7 @@ fn extend_remote_dependency_source_candidates(
 fn refresh_workspace_inputs_with_progress(
     workspace: &mut WorkspaceState,
     inputs: Vec<DocumentInput>,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     if inputs.is_empty() {
         return Vec::new();
@@ -4101,7 +4012,7 @@ fn insert_dependency_inheritance_candidates(
 
 fn rebuild_workspace_cache_with_progress(
     workspace: &mut WorkspaceState,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     let local_export_resolver = Arc::clone(&workspace.local_export_resolver);
     *local_export_resolver
@@ -4110,7 +4021,9 @@ fn rebuild_workspace_cache_with_progress(
     let loaded = load_workspace_documents_with_progress(
         &workspace.root_uri,
         &workspace.open_documents,
-        progress,
+        progress
+            .as_deref()
+            .map(|progress| progress as &(dyn Fn(usize, usize) + Sync)),
     );
     workspace.performance_mode =
         resolve_workspace_performance_mode(loaded.manifest.as_ref(), loaded.manifest_len_bytes);
@@ -4135,12 +4048,12 @@ fn rebuild_workspace_cache_with_progress(
             .unwrap_or_else(|error| error.into_inner());
         if let Some(progress) = progress {
             let stage_count = documents.len();
-            let analysis_progress = |processed: usize, _total: usize| {
+            let analysis_progress: ProgressCallback = Arc::new(move |processed, _total| {
                 progress(
                     stage_count.saturating_add(processed),
                     stage_count.saturating_mul(2),
                 );
-            };
+            });
             replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
                 &workspace.cache,
                 &loaded.root_path,
@@ -4149,7 +4062,7 @@ fn rebuild_workspace_cache_with_progress(
                 Some(&mut prehydration),
                 &documents,
                 build_plan,
-                Some(&analysis_progress),
+                Some(analysis_progress),
             )
         } else {
             replace_all_workspace_documents_with_dependency_resolution_for_build_plan(
@@ -4480,7 +4393,7 @@ fn publish_workspace_input_with_dependency_hydration(
 pub fn publish_open_document_mut_with_progress(
     state: &mut ServerState,
     params: &DidOpenTextDocumentParams,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Arc<AnalysisSnapshot> {
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
     let workspace_result = if let Some(workspace) = state.workspace_for_uri_mut(&uri) {
@@ -4501,7 +4414,7 @@ pub fn publish_open_document_mut_with_progress(
                 },
             );
             if manifest_dependency_open {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress.clone());
                 Some((
                     workspace_uri,
                     snapshots
@@ -4541,7 +4454,7 @@ pub fn publish_open_document_mut_with_progress(
                 },
             );
             if manifest_dependency_open {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress.clone());
                 Some((
                     workspace_uri,
                     snapshots
@@ -4560,12 +4473,15 @@ pub fn publish_open_document_mut_with_progress(
                     Some((
                         workspace_uri,
                         publish_workspace_input_with_local_export_resolution(
-                            workspace, input, progress,
+                            workspace,
+                            input,
+                            progress.clone(),
                         ),
                         false,
                     ))
                 } else {
-                    let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                    let snapshots =
+                        rebuild_workspace_cache_with_progress(workspace, progress.clone());
                     Some((
                         workspace_uri,
                         snapshots.get(uri.as_str()).cloned().expect(
@@ -4586,7 +4502,7 @@ pub fn publish_open_document_mut_with_progress(
                     false,
                 ))
             } else {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress.clone());
                 Some((
                     workspace_uri,
                     snapshots
@@ -4695,7 +4611,7 @@ pub fn publish_changed_document_mut(
 pub fn publish_changed_document_mut_with_progress(
     state: &mut ServerState,
     params: &DidChangeTextDocumentParams,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Option<Arc<AnalysisSnapshot>> {
     let change = params.content_changes.last()?;
     let uri = normalize_lsp_uri(params.text_document.uri.as_str());
@@ -4757,12 +4673,15 @@ pub fn publish_changed_document_mut_with_progress(
                     Some((
                         workspace_uri,
                         Some(publish_workspace_input_with_local_export_resolution(
-                            workspace, input, progress,
+                            workspace,
+                            input,
+                            progress.clone(),
                         )),
                         false,
                     ))
                 } else {
-                    let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                    let snapshots =
+                        rebuild_workspace_cache_with_progress(workspace, progress.clone());
                     Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
                 }
             } else if let Some(input) = incremental_workspace_document_input(
@@ -4779,7 +4698,7 @@ pub fn publish_changed_document_mut_with_progress(
                     false,
                 ))
             } else {
-                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress);
+                let snapshots = rebuild_workspace_cache_with_progress(workspace, progress.clone());
                 Some((workspace_uri, snapshots.get(uri.as_str()).cloned(), true))
             }
         }
@@ -4812,7 +4731,7 @@ pub fn refresh_workspace(
 pub fn refresh_workspace_with_progress(
     state: &mut ServerState,
     workspace_uri: &str,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(workspace_uri);
     let Some(workspace) = state.workspaces.get_mut(&workspace_uri) else {
@@ -4836,7 +4755,7 @@ pub fn handle_workspace_manifest_updated(
 pub fn handle_workspace_manifest_updated_with_progress(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     refresh_workspace_with_progress(state, &params.workspace_uri, progress)
 }
@@ -4851,7 +4770,7 @@ pub fn handle_dependency_cache_refresh_requested(
 pub fn handle_dependency_cache_refresh_requested_with_progress(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
@@ -5144,21 +5063,23 @@ pub fn read_dependency_document(
 pub fn handle_remote_dependencies_updated_with_progress(
     state: &mut ServerState,
     params: &RemoteDependenciesUpdatedParams,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> Vec<Arc<AnalysisSnapshot>> {
     let workspace_uri = normalize_lsp_uri(&params.workspace_uri);
     let targeted_refresh = if let Some(workspace) = state.workspaces.get_mut(&workspace_uri) {
         if !record_workspace_remote_dependencies_updated(workspace, params) {
             return Vec::new();
         }
-        workspace_remote_dependency_refresh_inputs(workspace, params)
-            .map(|inputs| refresh_workspace_inputs_with_progress(workspace, inputs, progress))
+        workspace_remote_dependency_refresh_inputs(workspace, params).map(|inputs| {
+            refresh_workspace_inputs_with_progress(workspace, inputs, progress.clone())
+        })
     } else {
         return Vec::new();
     };
 
-    targeted_refresh
-        .unwrap_or_else(|| refresh_workspace_with_progress(state, &params.workspace_uri, progress))
+    targeted_refresh.unwrap_or_else(|| {
+        refresh_workspace_with_progress(state, &params.workspace_uri, progress.clone())
+    })
 }
 
 fn record_workspace_remote_dependencies_updated(

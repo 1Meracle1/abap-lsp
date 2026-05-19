@@ -34,10 +34,10 @@ dependencies = [
  "abap_lexer",
  "abap_lints",
  "abap_parser",
+ "abap_runtime",
  "abap_symbols",
  "parking_lot",
  "quick-xml",
- "rayon",
  "serde",
  "toml",
 ]
@@ -51,6 +51,7 @@ dependencies = [
  "abap_lexer",
  "abap_lsp",
  "abap_parser",
+ "abap_runtime",
  "abap_symbols",
  "serde_json",
  "toml",
@@ -99,6 +100,7 @@ dependencies = [
  "abap_jsonrpc",
  "abap_lexer",
  "abap_parser",
+ "abap_runtime",
  "abap_symbols",
  "lsp-types",
  "serde",
@@ -114,6 +116,7 @@ dependencies = [
  "abap_cache",
  "abap_jsonrpc",
  "abap_lsp",
+ "abap_runtime",
  "crossbeam-channel",
  "serde",
  "serde_json",
@@ -128,6 +131,13 @@ version = "0.1.0"
 dependencies = [
  "abap_ast",
  "abap_lexer",
+]
+
+[[package]]
+name = "abap_runtime"
+version = "0.1.0"
+dependencies = [
+ "tokio",
 ]
 
 [[package]]
@@ -258,25 +268,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-deque"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd111b7b7f7d55b72c0a6ae361660ee5853c9af73f70c3c2ef6858b950e2e51"
-dependencies = [
- "crossbeam-epoch",
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-epoch"
-version = "0.9.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,12 +301,6 @@ checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
 ]
-
-[[package]]
-name = "either"
-version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "equivalent"
@@ -1017,26 +1002,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
-]
-
-[[package]]
-name = "rayon"
-version = "1.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "368f01d005bf8fd9b1206fb6fa653e6c4a81ceb1466406b81792d87c5677a58f"
-dependencies = [
- "either",
- "rayon-core",
-]
-
-[[package]]
-name = "rayon-core"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
-dependencies = [
- "crossbeam-deque",
- "crossbeam-utils",
 ]
 
 [[package]]

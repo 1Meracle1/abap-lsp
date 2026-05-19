@@ -31,8 +31,8 @@ use abap_cache::{
     AnalysisSnapshot, CallDataflowLifecycle, CallDataflowMatch, CallDataflowParameterTrace,
     CallDataflowProvenanceGraph, CallDataflowQuery, CallDataflowSelectedCall, CallDataflowTrace,
     CallGraphEdge, CallGraphNode, DocumentInput, DocumentStore, EffectiveSource, LintDiagnostic,
-    LintLevel, LintPolicy, LocalExportResolver, SnapshotBuildPlan, build_call_dataflow_trace,
-    build_effective_source, file_uri_to_path, load_workspace_documents,
+    LintLevel, LintPolicy, LocalExportResolver, ProgressCallback, SnapshotBuildPlan,
+    build_call_dataflow_trace, build_effective_source, file_uri_to_path, load_workspace_documents,
     local_export_candidate_kind_for_reference, local_export_config_for_source,
     manifest_document_metadata, path_to_file_uri, resolve_local_export_dependency_document,
 };
@@ -484,6 +484,7 @@ fn main() {
 }
 
 fn run() -> Result<i32, String> {
+    abap_runtime::init_global_executor();
     let cli = parse_cli_args(std::env::args().skip(1))?;
 
     match cli.command {
@@ -3755,7 +3756,7 @@ fn replace_workspace_documents_for_cli(
     workspace: &abap_cache::WorkspaceLoadResult,
     documents: &[abap_cache::WorkspaceDocument],
     build_plan: SnapshotBuildPlan,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
 ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
     replace_all_workspace_documents_with_manifest_dependencies_for_build_plan(
         store,

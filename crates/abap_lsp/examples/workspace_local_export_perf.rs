@@ -31,6 +31,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    abap_runtime::init_global_executor();
     let config = parse_args(std::env::args().skip(1))?;
     let workspace_uri = path_to_file_uri(&config.workspace_root);
 

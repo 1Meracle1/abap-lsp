@@ -47,6 +47,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    abap_runtime::init_global_executor();
     let config = parse_args(env::args().skip(1))?;
     let baseline = run_baseline(&config)?;
     let rendered = if config.pretty {

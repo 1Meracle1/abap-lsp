@@ -42,7 +42,6 @@ use abap_symbols::{
     },
 };
 use parking_lot::RwLock;
-use rayon::prelude::*;
 
 mod call_dataflow;
 mod call_graph;
@@ -91,6 +90,8 @@ pub use workspace::{
     resolve_local_export_function_module_documents_by_prefix, resolve_workspace_performance_mode,
     uri_starts_with_workspace, workspace_relative_path,
 };
+
+pub type ProgressCallback = Arc<dyn Fn(usize, usize) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisSnapshot {
@@ -227,6 +228,13 @@ struct StagedDocument {
     is_dependency: bool,
     object_name: Option<Arc<str>>,
     previous: Option<Arc<AnalysisSnapshot>>,
+}
+
+#[derive(Debug)]
+struct PreparedDocumentJob {
+    idx: usize,
+    entry: StagedDocument,
+    previous_local: Option<LocalAnalysis>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11567,7 +11575,7 @@ fn prepare_documents(
     inputs: &[DocumentInput],
     existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     previous_analysis: Option<&CachedWorkspaceAnalysis>,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
     build_plan: SnapshotBuildPlan,
 ) -> (Vec<PreparedDocument>, AnalysisMetrics) {
     let parse_timer = std::time::Instant::now();
@@ -11577,18 +11585,38 @@ fn prepare_documents(
         existing.unwrap_or(&empty_existing),
         previous_analysis,
     );
-    let processed = AtomicUsize::new(0);
-    let parse_count = AtomicUsize::new(0);
-    let local_phase_count = AtomicUsize::new(0);
-    let dependency_projection_micros = AtomicU64::new(0);
-    let parse_work_micros = AtomicU64::new(0);
-    let local_phase_work_micros = AtomicU64::new(0);
+    let processed = Arc::new(AtomicUsize::new(0));
+    let parse_count = Arc::new(AtomicUsize::new(0));
+    let local_phase_count = Arc::new(AtomicUsize::new(0));
+    let dependency_projection_micros = Arc::new(AtomicU64::new(0));
+    let parse_work_micros = Arc::new(AtomicU64::new(0));
+    let local_phase_work_micros = Arc::new(AtomicU64::new(0));
     let total = staged.len();
     let metrics = AnalysisMetrics::default();
-    let prepared: Vec<_> = staged
-        .par_iter()
+    let jobs: Vec<_> = staged
+        .into_iter()
         .enumerate()
-        .map(|(idx, entry)| {
+        .map(|(idx, entry)| PreparedDocumentJob {
+            previous_local: previous_analysis
+                .and_then(|analysis| analysis.locals.get(entry.uri.as_ref()))
+                .cloned(),
+            idx,
+            entry,
+        })
+        .collect();
+    let prepared: Vec<_> = abap_runtime::run_cpu_batch(jobs, {
+        let processed = Arc::clone(&processed);
+        let parse_count = Arc::clone(&parse_count);
+        let local_phase_count = Arc::clone(&local_phase_count);
+        let dependency_projection_micros = Arc::clone(&dependency_projection_micros);
+        let parse_work_micros = Arc::clone(&parse_work_micros);
+        let local_phase_work_micros = Arc::clone(&local_phase_work_micros);
+        move |job| {
+            let PreparedDocumentJob {
+                idx,
+                entry,
+                previous_local,
+            } = job;
             let input = DocumentInput {
                 uri: Arc::clone(&entry.uri),
                 version: entry.version,
@@ -11596,8 +11624,7 @@ fn prepare_documents(
                 is_dependency: entry.is_dependency,
                 object_name: entry.object_name.clone(),
             };
-            let previous_local =
-                previous_analysis.and_then(|analysis| analysis.locals.get(entry.uri.as_ref()));
+            let previous_local = previous_local.as_ref();
             let previous_snapshot = entry.previous.as_ref();
             let previous = previous_snapshot
                 .filter(|snapshot| snapshot_matches_input(snapshot, &input))
@@ -11671,7 +11698,7 @@ fn prepare_documents(
                 local.unit.provided_names.sort();
                 local.unit.provided_names.dedup();
             }
-            if let Some(progress) = progress {
+            if let Some(progress) = progress.as_ref() {
                 let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
                 progress(done, total);
             }
@@ -11686,8 +11713,8 @@ fn prepare_documents(
                 parse,
                 local,
             }
-        })
-        .collect();
+        }
+    });
 
     let mut metrics = metrics;
     metrics.parse_count = parse_count.load(Ordering::Relaxed);
@@ -13235,7 +13262,7 @@ fn analyze_inputs_with_progress(
     inputs: &[DocumentInput],
     existing: Option<&HashMap<Arc<str>, Arc<AnalysisSnapshot>>>,
     previous_analysis: Option<&CachedWorkspaceAnalysis>,
-    progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+    progress: Option<ProgressCallback>,
     changed_uris: &HashSet<Arc<str>>,
     force_full: bool,
     build_plan: SnapshotBuildPlan,
@@ -13765,7 +13792,7 @@ impl DocumentStore {
     pub fn replace_all_with_progress(
         &self,
         inputs: Vec<DocumentInput>,
-        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+        progress: Option<ProgressCallback>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         self.replace_all_with_build_plan_and_progress(inputs, SnapshotBuildPlan::FULL, progress)
     }
@@ -13782,7 +13809,7 @@ impl DocumentStore {
         &self,
         inputs: Vec<DocumentInput>,
         build_plan: SnapshotBuildPlan,
-        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+        progress: Option<ProgressCallback>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         let existing = self.documents.read();
         let analysis = self.analysis.read();
@@ -13885,7 +13912,7 @@ impl DocumentStore {
     pub fn publish_inputs_with_progress(
         &self,
         inputs: Vec<DocumentInput>,
-        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+        progress: Option<ProgressCallback>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         self.publish_inputs_with_build_plan_and_progress(inputs, SnapshotBuildPlan::FULL, progress)
     }
@@ -13902,7 +13929,7 @@ impl DocumentStore {
         &self,
         inputs: Vec<DocumentInput>,
         build_plan: SnapshotBuildPlan,
-        progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+        progress: Option<ProgressCallback>,
     ) -> HashMap<Arc<str>, Arc<AnalysisSnapshot>> {
         if inputs.is_empty() {
             return self.documents.read().clone();

@@ -10,8 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use abap_cache::{
-    LocalDependencySourceMode, LocalExportConfig, LocalExportResolver, file_uri_to_path,
-    local_export_config_for_source, path_to_file_uri, resolve_local_export_dependency_document,
+    LocalDependencySourceMode, LocalExportConfig, LocalExportResolver, ProgressCallback,
+    file_uri_to_path, local_export_config_for_source, path_to_file_uri,
+    resolve_local_export_dependency_document,
 };
 use abap_jsonrpc::{JSON_RPC_VERSION, Response, read_frame, write_frame};
 use abap_lsp::{
@@ -49,9 +50,10 @@ const INVALID_REQUEST: i64 = -32600;
 const INVALID_PARAMS: i64 = -32602;
 const CHANGE_ANALYSIS_DEBOUNCE: Duration = Duration::from_millis(250);
 const EDITOR_FIRST_DIAGNOSTIC_LIMIT: usize = 16;
-const MAX_BACKGROUND_ANALYSIS_WORKERS: usize = 4;
 const MAX_ANALYSIS_COMPLETIONS_PER_FLUSH: usize = 16;
 const MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH: usize = 16;
+
+type WorkspaceProgressCallback = Arc<dyn Fn(WorkspaceAnalysisStatusParams) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         build_profile = if cfg!(debug_assertions) { "debug" } else { "release" },
         "starting abap_lsp_server"
     );
+    abap_runtime::init_global_executor();
 
     if let Some(addr) = listen_address_from_cli_or_env()? {
         let listener = TcpListener::bind(addr)?;
@@ -258,6 +261,89 @@ struct PendingAnalysisQueue {
     scheduled_workspaces: HashSet<String>,
 }
 
+#[derive(Clone)]
+struct BackgroundScheduler {
+    generations: Arc<Mutex<HashMap<String, u64>>>,
+    completion_tx: Sender<AnalysisCompletion>,
+    progress_tx: Sender<AnalysisProgress>,
+    queue_state: Arc<Mutex<PendingAnalysisQueue>>,
+    #[cfg(test)]
+    auto_start: bool,
+}
+
+impl BackgroundScheduler {
+    fn new(
+        generations: Arc<Mutex<HashMap<String, u64>>>,
+        completion_tx: Sender<AnalysisCompletion>,
+        progress_tx: Sender<AnalysisProgress>,
+        queue_state: Arc<Mutex<PendingAnalysisQueue>>,
+    ) -> Self {
+        Self {
+            generations,
+            completion_tx,
+            progress_tx,
+            queue_state,
+            #[cfg(test)]
+            auto_start: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn paused_for_test(
+        generations: Arc<Mutex<HashMap<String, u64>>>,
+        completion_tx: Sender<AnalysisCompletion>,
+        progress_tx: Sender<AnalysisProgress>,
+        queue_state: Arc<Mutex<PendingAnalysisQueue>>,
+    ) -> Self {
+        Self {
+            generations,
+            completion_tx,
+            progress_tx,
+            queue_state,
+            auto_start: false,
+        }
+    }
+
+    fn enqueue(&self, mut task: AnalysisTask) {
+        let workspace_uri = task.workspace_uri.clone();
+        let should_spawn = {
+            let mut queue = self
+                .queue_state
+                .lock()
+                .expect("pending analysis queue should not be poisoned");
+            if matches!(task.kind, AnalysisTaskKind::RemoteDependencyCompleted)
+                && let Some(pending) = queue.pending_tasks.get_mut(&workspace_uri)
+            {
+                pending.generation = task.generation;
+                pending
+                    .remote_completions
+                    .append(&mut task.remote_completions);
+                return;
+            }
+            if let Some(previous) = queue.pending_tasks.insert(workspace_uri.clone(), task) {
+                let pending = queue
+                    .pending_tasks
+                    .get_mut(&workspace_uri)
+                    .expect("inserted pending task should exist");
+                let mut remote_completions = previous.remote_completions;
+                remote_completions.append(&mut pending.remote_completions);
+                pending.remote_completions = remote_completions;
+            }
+            queue.scheduled_workspaces.insert(workspace_uri.clone())
+        };
+        #[cfg(test)]
+        if !self.auto_start {
+            return;
+        }
+        if should_spawn {
+            let scheduler = self.clone();
+            abap_runtime::spawn_cpu(move || {
+                run_background_workspace_loop(workspace_uri, scheduler)
+            });
+        }
+    }
+}
+
 fn next_workspace_generation(
     generations: &Arc<Mutex<HashMap<String, u64>>>,
     workspace_uri: &str,
@@ -293,40 +379,10 @@ fn workspace_uses_editor_first_mode(state: &ServerState, workspace_uri: &str) ->
 }
 
 fn enqueue_background_task(
-    mut task: AnalysisTask,
-    task_tx: &Sender<String>,
-    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+    task: AnalysisTask,
+    scheduler: &BackgroundScheduler,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let workspace_uri = task.workspace_uri.clone();
-    let should_send = {
-        let mut queue = queue_state
-            .lock()
-            .expect("pending analysis queue should not be poisoned");
-        if matches!(task.kind, AnalysisTaskKind::RemoteDependencyCompleted)
-            && let Some(pending) = queue.pending_tasks.get_mut(&workspace_uri)
-        {
-            pending.generation = task.generation;
-            pending
-                .remote_completions
-                .append(&mut task.remote_completions);
-            return Ok(());
-        }
-        if let Some(previous) = queue.pending_tasks.insert(workspace_uri.clone(), task) {
-            let pending = queue
-                .pending_tasks
-                .get_mut(&workspace_uri)
-                .expect("inserted pending task should exist");
-            let mut remote_completions = previous.remote_completions;
-            remote_completions.append(&mut pending.remote_completions);
-            pending.remote_completions = remote_completions;
-        }
-        queue.scheduled_workspaces.insert(workspace_uri.clone())
-    };
-    if should_send {
-        task_tx
-            .send(workspace_uri)
-            .map_err(|error| format!("failed to enqueue analysis task: {error}"))?;
-    }
+    scheduler.enqueue(task);
     Ok(())
 }
 
@@ -343,26 +399,17 @@ fn take_pending_background_task(
 
 fn finish_background_task(
     workspace_uri: &str,
-    task_tx: &Sender<String>,
     queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let should_reschedule = {
-        let mut queue = queue_state
-            .lock()
-            .expect("pending analysis queue should not be poisoned");
-        if queue.pending_tasks.contains_key(workspace_uri) {
-            true
-        } else {
-            queue.scheduled_workspaces.remove(workspace_uri);
-            false
-        }
-    };
-    if should_reschedule {
-        task_tx
-            .send(workspace_uri.to_owned())
-            .map_err(|error| format!("failed to requeue analysis task: {error}"))?;
+) -> bool {
+    let mut queue = queue_state
+        .lock()
+        .expect("pending analysis queue should not be poisoned");
+    if queue.pending_tasks.contains_key(workspace_uri) {
+        true
+    } else {
+        queue.scheduled_workspaces.remove(workspace_uri);
+        false
     }
-    Ok(())
 }
 
 fn refresh_pending_task_workspace(
@@ -398,17 +445,10 @@ fn refresh_pending_task_workspace(
     pending.workspace = workspace;
 }
 
-fn background_analysis_worker_count() -> usize {
-    thread::available_parallelism()
-        .map(|parallelism| parallelism.get().min(MAX_BACKGROUND_ANALYSIS_WORKERS))
-        .unwrap_or(1)
-}
-
 fn flush_due_debounced_tasks(
     now: Instant,
     debounced_tasks: &mut HashMap<String, DebouncedAnalysisTask>,
-    task_tx: &Sender<String>,
-    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+    scheduler: &BackgroundScheduler,
 ) -> Result<Vec<WorkspaceAnalysisStatusParams>, Box<dyn std::error::Error>> {
     let mut ready = Vec::new();
     let mut ready_keys = Vec::new();
@@ -426,7 +466,7 @@ fn flush_due_debounced_tasks(
         if let Some(started) = entry.task.started.clone() {
             ready.push(started);
         }
-        enqueue_background_task(entry.task, task_tx, queue_state)?;
+        enqueue_background_task(entry.task, scheduler)?;
     }
     Ok(ready)
 }
@@ -434,8 +474,7 @@ fn flush_due_debounced_tasks(
 fn try_schedule_background_analysis(
     state: &mut ServerState,
     message: &Value,
-    task_tx: &Sender<String>,
-    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+    scheduler: &BackgroundScheduler,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
     debounced_tasks: &mut HashMap<String, DebouncedAnalysisTask>,
 ) -> Result<Option<ScheduledBackgroundWork>, Box<dyn std::error::Error>> {
@@ -493,7 +532,7 @@ fn try_schedule_background_analysis(
                 kind: AnalysisTaskKind::DidOpen(params),
             };
             debounced_tasks.remove(&workspace_uri);
-            enqueue_background_task(task, task_tx, queue_state)?;
+            enqueue_background_task(task, scheduler)?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
                 notifications,
@@ -554,7 +593,7 @@ fn try_schedule_background_analysis(
                 );
                 started_statuses.clear();
             } else {
-                enqueue_background_task(task, task_tx, queue_state)?;
+                enqueue_background_task(task, scheduler)?;
             }
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -591,8 +630,7 @@ fn try_schedule_background_analysis(
                         workspace_uri: workspace_uri.clone(),
                     }),
                 },
-                task_tx,
-                queue_state,
+                scheduler,
             )?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -631,8 +669,7 @@ fn try_schedule_background_analysis(
                         },
                     ),
                 },
-                task_tx,
-                queue_state,
+                scheduler,
             )?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -673,8 +710,7 @@ fn try_schedule_background_analysis(
                         },
                     ),
                 },
-                task_tx,
-                queue_state,
+                scheduler,
             )?;
             Ok(Some(ScheduledBackgroundWork {
                 started_statuses,
@@ -718,8 +754,7 @@ fn try_schedule_background_analysis(
                         remote_completions: Vec::new(),
                         kind: AnalysisTaskKind::Initialized,
                     },
-                    task_tx,
-                    queue_state,
+                    scheduler,
                 )?;
             }
             Ok(Some(ScheduledBackgroundWork {
@@ -733,7 +768,7 @@ fn try_schedule_background_analysis(
 
 fn run_analysis_task(
     task: AnalysisTask,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<AnalysisCompletion, Box<dyn std::error::Error>> {
     let mut state = ServerState::default();
     state
@@ -751,36 +786,44 @@ fn run_analysis_task(
                 &mut state,
                 completion,
                 stored_artifact_completions.contains(&idx),
-                progress_sink,
+                progress_sink.clone(),
             )?);
         }
     }
 
     notifications.extend(match &task.kind {
         AnalysisTaskKind::DidOpen(params) => {
-            handle_did_open_notifications(&mut state, params, progress_sink)?
+            handle_did_open_notifications(&mut state, params, progress_sink.clone())?
         }
         AnalysisTaskKind::DidChange(params) => {
-            handle_did_change_notifications(&mut state, params, progress_sink)?
+            handle_did_change_notifications(&mut state, params, progress_sink.clone())?
         }
         AnalysisTaskKind::ManifestUpdated(params) => {
-            handle_workspace_manifest_updated_notifications(&mut state, params, progress_sink)?
+            handle_workspace_manifest_updated_notifications(
+                &mut state,
+                params,
+                progress_sink.clone(),
+            )?
         }
         AnalysisTaskKind::DependencyCacheRefreshRequested(params) => {
             handle_dependency_cache_refresh_requested_notifications(
                 &mut state,
                 params,
-                progress_sink,
+                progress_sink.clone(),
             )?
         }
         AnalysisTaskKind::RemoteDependencyCompleted => Vec::new(),
         AnalysisTaskKind::RemoteDependenciesUpdated(params) => {
-            handle_remote_dependencies_updated_notifications(&mut state, params, progress_sink)?
+            handle_remote_dependencies_updated_notifications(
+                &mut state,
+                params,
+                progress_sink.clone(),
+            )?
         }
         AnalysisTaskKind::Initialized => handle_initialized_workspace_notifications(
             &mut state,
             &task.workspace_uri,
-            progress_sink,
+            progress_sink.clone(),
         )?,
     });
 
@@ -798,12 +841,84 @@ fn run_analysis_task(
     })
 }
 
+fn run_background_workspace_loop(workspace_uri: String, scheduler: BackgroundScheduler) {
+    loop {
+        let Some(task) = take_pending_background_task(&workspace_uri, &scheduler.queue_state)
+        else {
+            if !finish_background_task(&workspace_uri, &scheduler.queue_state) {
+                break;
+            }
+            continue;
+        };
+        if task.generation
+            != current_workspace_generation(&scheduler.generations, &task.workspace_uri)
+        {
+            if !finish_background_task(&workspace_uri, &scheduler.queue_state) {
+                break;
+            }
+            continue;
+        }
+        let progress_workspace_uri = task.workspace_uri.clone();
+        let progress_generation = task.generation;
+        let progress_tx = scheduler.progress_tx.clone();
+        let progress: WorkspaceProgressCallback = Arc::new(move |params| {
+            let _ = progress_tx.send(AnalysisProgress {
+                workspace_uri: progress_workspace_uri.clone(),
+                generation: progress_generation,
+                params,
+            });
+        });
+        let fallback_finished = task.started.as_ref().map(|started| {
+            workspace_analysis_status_finished_for_workspace(started, &task.workspace)
+        });
+        let progress_sink = task.started.as_ref().map(|_| Arc::clone(&progress));
+        match catch_unwind(AssertUnwindSafe(|| run_analysis_task(task, progress_sink))) {
+            Ok(completion) => match completion {
+                Ok(completion) => {
+                    refresh_pending_task_workspace(
+                        &workspace_uri,
+                        &completion.workspace,
+                        &scheduler.queue_state,
+                    );
+                    if send_analysis_completion(&scheduler.completion_tx, completion).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, "background analysis task failed");
+                    if let Some(params) = fallback_finished.clone() {
+                        let _ = scheduler.progress_tx.send(AnalysisProgress {
+                            workspace_uri: workspace_uri.clone(),
+                            generation: progress_generation,
+                            params,
+                        });
+                    }
+                }
+            },
+            Err(_) => {
+                warn!("background analysis task panicked");
+                if let Some(params) = fallback_finished {
+                    let _ = scheduler.progress_tx.send(AnalysisProgress {
+                        workspace_uri: workspace_uri.clone(),
+                        generation: progress_generation,
+                        params,
+                    });
+                }
+            }
+        }
+        if !finish_background_task(&workspace_uri, &scheduler.queue_state) {
+            break;
+        }
+    }
+}
+
 fn flush_analysis_completions(
     state: &mut ServerState,
     writer: &mut impl Write,
     completion_rx: &Receiver<AnalysisCompletion>,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
-    remote_task_tx: &Sender<RemoteDependencyTask>,
+    remote_completion_tx: &Sender<RemoteDependencyCompletion>,
+    remote_progress_tx: &Sender<WorkspaceAnalysisStatusParams>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..MAX_ANALYSIS_COMPLETIONS_PER_FLUSH {
         let Ok(completion) = completion_rx.try_recv() else {
@@ -828,7 +943,13 @@ fn flush_analysis_completions(
         state.index_workspace_members(&completion.workspace_uri);
 
         for (method, params) in completion.notifications {
-            send_or_enqueue_notification(writer, remote_task_tx, &method, params)?;
+            send_or_enqueue_notification(
+                writer,
+                remote_completion_tx,
+                remote_progress_tx,
+                &method,
+                params,
+            )?;
         }
         if let Some(params) = completion
             .started
@@ -855,13 +976,20 @@ fn send_analysis_completion(
 
 fn send_or_enqueue_notification(
     writer: &mut impl Write,
-    remote_task_tx: &Sender<RemoteDependencyTask>,
+    remote_completion_tx: &Sender<RemoteDependencyCompletion>,
+    remote_progress_tx: &Sender<WorkspaceAnalysisStatusParams>,
     method: &str,
     params: Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if method == RESOLVE_REMOTE_DEPENDENCIES {
         let request = serde_json::from_value::<abap_lsp::RemoteDependencyResolveParams>(params)?;
-        remote_task_tx.send(RemoteDependencyTask { request })?;
+        let completion_tx = remote_completion_tx.clone();
+        let progress_tx = remote_progress_tx.clone();
+        abap_runtime::spawn_async(run_remote_dependency_task(
+            RemoteDependencyTask { request },
+            completion_tx,
+            progress_tx,
+        ));
         return Ok(());
     }
     send_notification(writer, method, params)
@@ -1533,8 +1661,7 @@ fn flush_remote_dependency_completions(
     state: &mut ServerState,
     _writer: &mut impl Write,
     completion_rx: &Receiver<RemoteDependencyCompletion>,
-    task_tx: &Sender<String>,
-    queue_state: &Arc<Mutex<PendingAnalysisQueue>>,
+    scheduler: &BackgroundScheduler,
     generations: &Arc<Mutex<HashMap<String, u64>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut completions_by_workspace: BTreeMap<String, Vec<RemoteDependencyCompletion>> =
@@ -1562,8 +1689,7 @@ fn flush_remote_dependency_completions(
                 remote_completions,
                 kind: AnalysisTaskKind::RemoteDependencyCompleted,
             },
-            task_tx,
-            queue_state,
+            scheduler,
         )?;
     }
     Ok(())
@@ -1669,11 +1795,14 @@ fn serve(
     let generations = Arc::new(Mutex::new(HashMap::<String, u64>::new()));
     let (message_tx, message_rx) = mpsc::channel();
     let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
-    let (task_tx, task_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
-    let task_rx = Arc::new(Mutex::new(task_rx));
     let (completion_tx, completion_rx) = mpsc::channel();
     let (progress_tx, progress_rx) = mpsc::channel();
-    let (remote_task_tx, remote_task_rx) = mpsc::channel::<RemoteDependencyTask>();
+    let scheduler = BackgroundScheduler::new(
+        Arc::clone(&generations),
+        completion_tx.clone(),
+        progress_tx.clone(),
+        Arc::clone(&queue_state),
+    );
     let (remote_completion_tx, remote_completion_rx) =
         mpsc::channel::<RemoteDependencyCompletion>();
     let (remote_progress_tx, remote_progress_rx) = mpsc::channel::<WorkspaceAnalysisStatusParams>();
@@ -1706,147 +1835,12 @@ fn serve(
             }
         });
 
-        let worker_count = background_analysis_worker_count();
-        debug!(worker_count, "starting background analysis workers");
-        for _ in 0..worker_count {
-            let worker_generations = Arc::clone(&generations);
-            let worker_completion_tx = completion_tx.clone();
-            let worker_progress_tx = progress_tx.clone();
-            let worker_queue_state = Arc::clone(&queue_state);
-            let worker_task_rx = Arc::clone(&task_rx);
-            let worker_task_tx = task_tx.clone();
-            scope.spawn(move || {
-                loop {
-                    let workspace_uri = {
-                        let receiver = worker_task_rx
-                            .lock()
-                            .expect("analysis task receiver should not be poisoned");
-                        match receiver.recv() {
-                            Ok(workspace_uri) => workspace_uri,
-                            Err(_) => break,
-                        }
-                    };
-                    let Some(task) =
-                        take_pending_background_task(&workspace_uri, &worker_queue_state)
-                    else {
-                        if let Err(error) = finish_background_task(
-                            &workspace_uri,
-                            &worker_task_tx,
-                            &worker_queue_state,
-                        ) {
-                            warn!(error = %error, "background analysis queue cleanup failed");
-                            break;
-                        }
-                        continue;
-                    };
-                    if task.generation
-                        != current_workspace_generation(&worker_generations, &task.workspace_uri)
-                    {
-                        if let Err(error) = finish_background_task(
-                            &workspace_uri,
-                            &worker_task_tx,
-                            &worker_queue_state,
-                        ) {
-                            warn!(error = %error, "background analysis queue cleanup failed");
-                            break;
-                        }
-                        continue;
-                    }
-                    let progress_workspace_uri = task.workspace_uri.clone();
-                    let progress_generation = task.generation;
-                    let progress = |params: WorkspaceAnalysisStatusParams| {
-                        let _ = worker_progress_tx.send(AnalysisProgress {
-                            workspace_uri: progress_workspace_uri.clone(),
-                            generation: progress_generation,
-                            params,
-                        });
-                    };
-                    let fallback_finished = task.started.as_ref().map(|started| {
-                        workspace_analysis_status_finished_for_workspace(started, &task.workspace)
-                    });
-                    let progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)> =
-                        if task.started.is_some() {
-                            Some(&progress)
-                        } else {
-                            None
-                        };
-                    match catch_unwind(AssertUnwindSafe(|| run_analysis_task(task, progress_sink)))
-                    {
-                        Ok(completion) => match completion {
-                            Ok(completion) => {
-                                refresh_pending_task_workspace(
-                                    &workspace_uri,
-                                    &completion.workspace,
-                                    &worker_queue_state,
-                                );
-                                if send_analysis_completion(&worker_completion_tx, completion)
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Err(error) => {
-                                warn!(error = %error, "background analysis task failed");
-                                if let Some(params) = fallback_finished.clone() {
-                                    let _ = worker_progress_tx.send(AnalysisProgress {
-                                        workspace_uri: progress_workspace_uri.clone(),
-                                        generation: progress_generation,
-                                        params,
-                                    });
-                                }
-                            }
-                        },
-                        Err(_) => {
-                            warn!("background analysis task panicked");
-                            if let Some(params) = fallback_finished {
-                                let _ = worker_progress_tx.send(AnalysisProgress {
-                                    workspace_uri: progress_workspace_uri.clone(),
-                                    generation: progress_generation,
-                                    params,
-                                });
-                            }
-                        }
-                    }
-                    if let Err(error) =
-                        finish_background_task(&workspace_uri, &worker_task_tx, &worker_queue_state)
-                    {
-                        warn!(error = %error, "background analysis queue cleanup failed");
-                        break;
-                    }
-                }
-            });
-        }
-
-        scope.spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .worker_threads(2)
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    warn!(error = %error, "failed to start async remote dependency runtime");
-                    return;
-                }
-            };
-            while let Ok(task) = remote_task_rx.recv() {
-                runtime.block_on(run_remote_dependency_task(
-                    task,
-                    remote_completion_tx.clone(),
-                    remote_progress_tx.clone(),
-                ));
-            }
-        });
-
         let mut reader_closed = false;
         let mut remote_dependency_fetch_in_flight = false;
         loop {
-            for params in flush_due_debounced_tasks(
-                Instant::now(),
-                &mut debounced_tasks,
-                &task_tx,
-                &queue_state,
-            )? {
+            for params in
+                flush_due_debounced_tasks(Instant::now(), &mut debounced_tasks, &scheduler)?
+            {
                 send_notification(
                     writer,
                     WORKSPACE_ANALYSIS_STATUS,
@@ -1863,8 +1857,7 @@ fn serve(
                     &mut state,
                     writer,
                     &remote_completion_rx,
-                    &task_tx,
-                    &queue_state,
+                    &scheduler,
                     &generations,
                 )?;
             }
@@ -1873,7 +1866,8 @@ fn serve(
                 writer,
                 &completion_rx,
                 &generations,
-                &remote_task_tx,
+                &remote_completion_tx,
+                &remote_progress_tx,
             )?;
 
             match message_rx.recv_timeout(Duration::from_millis(10)) {
@@ -1885,13 +1879,18 @@ fn serve(
                     if let Some(started_statuses) = try_schedule_background_analysis(
                         &mut state,
                         &message,
-                        &task_tx,
-                        &queue_state,
+                        &scheduler,
                         &generations,
                         &mut debounced_tasks,
                     )? {
                         for (method, params) in started_statuses.notifications {
-                            send_or_enqueue_notification(writer, &remote_task_tx, &method, params)?;
+                            send_or_enqueue_notification(
+                                writer,
+                                &remote_completion_tx,
+                                &remote_progress_tx,
+                                &method,
+                                params,
+                            )?;
                         }
                         for params in started_statuses.started_statuses {
                             send_notification(
@@ -1911,7 +1910,13 @@ fn serve(
                         }
                         let handled = handle_message(&mut state, &config, message)?;
                         for (method, params) in handled.notifications {
-                            send_or_enqueue_notification(writer, &remote_task_tx, &method, params)?;
+                            send_or_enqueue_notification(
+                                writer,
+                                &remote_completion_tx,
+                                &remote_progress_tx,
+                                &method,
+                                params,
+                            )?;
                         }
                         if let Some(response) = handled.response {
                             send_response(writer, &response)?;
@@ -1928,12 +1933,9 @@ fn serve(
                         }
                     }
 
-                    for params in flush_due_debounced_tasks(
-                        Instant::now(),
-                        &mut debounced_tasks,
-                        &task_tx,
-                        &queue_state,
-                    )? {
+                    for params in
+                        flush_due_debounced_tasks(Instant::now(), &mut debounced_tasks, &scheduler)?
+                    {
                         send_notification(
                             writer,
                             WORKSPACE_ANALYSIS_STATUS,
@@ -1951,8 +1953,7 @@ fn serve(
                             &mut state,
                             writer,
                             &remote_completion_rx,
-                            &task_tx,
-                            &queue_state,
+                            &scheduler,
                             &generations,
                         )?;
                     }
@@ -1961,7 +1962,8 @@ fn serve(
                         writer,
                         &completion_rx,
                         &generations,
-                        &remote_task_tx,
+                        &remote_completion_tx,
+                        &remote_progress_tx,
                     )?;
 
                     if state.shutdown_requested && method.as_deref() == Some("exit") {
@@ -1984,8 +1986,7 @@ fn serve(
         for params in flush_due_debounced_tasks(
             Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
             &mut debounced_tasks,
-            &task_tx,
-            &queue_state,
+            &scheduler,
         )? {
             send_notification(
                 writer,
@@ -1999,8 +2000,7 @@ fn serve(
             &mut state,
             writer,
             &remote_completion_rx,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
         )?;
         flush_analysis_completions(
@@ -2008,10 +2008,9 @@ fn serve(
             writer,
             &completion_rx,
             &generations,
-            &remote_task_tx,
+            &remote_completion_tx,
+            &remote_progress_tx,
         )?;
-        drop(task_tx);
-        drop(remote_task_tx);
         Ok(())
     })
 }
@@ -2482,7 +2481,7 @@ struct HandledMessage {
 fn handle_did_open_notifications(
     state: &mut ServerState,
     params: &DidOpenTextDocumentParams,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     let mut notifications = Vec::new();
@@ -2500,26 +2499,31 @@ fn handle_did_open_notifications(
         .and_then(|workspace| workspace.cache.get(&normalized_uri))
         .is_some_and(|snapshot| snapshot.text.as_ref() == params.text_document.text.as_str());
     let unchanged_elapsed = unchanged_start.elapsed();
-    let progress_notifications = Mutex::new(Vec::new());
-    let progress = |processed: usize, total: usize| {
-        if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
-            emit_workspace_analysis_progress(
-                Some(&progress_notifications),
-                progress_sink,
-                workspace_uri,
-                "open",
-                processed,
-                total,
-            );
+    let progress_notifications = Arc::new(Mutex::new(Vec::new()));
+    let progress: ProgressCallback = Arc::new({
+        let progress_notifications = Arc::clone(&progress_notifications);
+        let progress_sink = progress_sink.clone();
+        move |processed, total| {
+            if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
+                emit_workspace_analysis_progress(
+                    Some(progress_notifications.as_ref()),
+                    progress_sink.clone(),
+                    workspace_uri,
+                    "open",
+                    processed,
+                    total,
+                );
+            }
         }
-    };
+    });
     let publish_start = Instant::now();
-    let snapshot = publish_open_document_mut_with_progress(state, params, Some(&progress));
+    let snapshot = publish_open_document_mut_with_progress(state, params, Some(progress));
     let publish_elapsed = publish_start.elapsed();
     notifications.extend(
         progress_notifications
-            .into_inner()
-            .expect("progress notification collection should not be poisoned"),
+            .lock()
+            .expect("progress notification collection should not be poisoned")
+            .drain(..),
     );
     let workspace_lookup_start = Instant::now();
     let workspace_uri = workspace_uri_for_cached_snapshot(state, snapshot.uri.as_ref());
@@ -2660,12 +2664,12 @@ fn handle_did_open_notifications(
 fn handle_did_change_notifications(
     state: &mut ServerState,
     params: &DidChangeTextDocumentParams,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let total_start = Instant::now();
     let mut notifications = Vec::new();
     let normalized_uri = abap_lsp::normalize_lsp_uri(params.text_document.uri.as_str());
-    let progress_notifications = Mutex::new(Vec::new());
+    let progress_notifications = Arc::new(Mutex::new(Vec::new()));
     let progress_workspace_uri = state
         .workspace_for_uri(normalized_uri.as_str())
         .map(|workspace| workspace.root_uri.clone());
@@ -2682,27 +2686,32 @@ fn handle_did_change_notifications(
             .map(|snapshot| snapshot.text.as_ref() == change.text.as_str())
     }) == Some(true);
     let unchanged_elapsed = unchanged_start.elapsed();
-    let progress = |processed: usize, total: usize| {
-        if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
-            emit_workspace_analysis_progress(
-                Some(&progress_notifications),
-                progress_sink,
-                workspace_uri,
-                "change",
-                processed,
-                total,
-            );
+    let progress: ProgressCallback = Arc::new({
+        let progress_notifications = Arc::clone(&progress_notifications);
+        let progress_sink = progress_sink.clone();
+        move |processed, total| {
+            if let Some(workspace_uri) = progress_workspace_uri.as_ref() {
+                emit_workspace_analysis_progress(
+                    Some(progress_notifications.as_ref()),
+                    progress_sink.clone(),
+                    workspace_uri,
+                    "change",
+                    processed,
+                    total,
+                );
+            }
         }
-    };
+    });
     let publish_start = Instant::now();
     if let Some(snapshot) =
-        publish_changed_document_mut_with_progress(state, params, Some(&progress))
+        publish_changed_document_mut_with_progress(state, params, Some(progress))
     {
         let publish_elapsed = publish_start.elapsed();
         notifications.extend(
             progress_notifications
-                .into_inner()
-                .expect("progress notification collection should not be poisoned"),
+                .lock()
+                .expect("progress notification collection should not be poisoned")
+                .drain(..),
         );
         let workspace_lookup_start = Instant::now();
         let workspace_uri = workspace_uri_for_cached_snapshot(state, snapshot.uri.as_ref());
@@ -2791,25 +2800,31 @@ fn handle_did_change_notifications(
 fn handle_workspace_manifest_updated_notifications(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
-    let progress_notifications = Mutex::new(Vec::new());
-    let progress = |processed: usize, total: usize| {
-        emit_workspace_analysis_progress(
-            Some(&progress_notifications),
-            progress_sink,
-            &params.workspace_uri,
-            "manifest-updated",
-            processed,
-            total,
-        );
-    };
-    let snapshots = handle_workspace_manifest_updated_with_progress(state, params, Some(&progress));
+    let progress_notifications = Arc::new(Mutex::new(Vec::new()));
+    let progress: ProgressCallback = Arc::new({
+        let progress_notifications = Arc::clone(&progress_notifications);
+        let progress_sink = progress_sink.clone();
+        let workspace_uri = params.workspace_uri.clone();
+        move |processed, total| {
+            emit_workspace_analysis_progress(
+                Some(progress_notifications.as_ref()),
+                progress_sink.clone(),
+                &workspace_uri,
+                "manifest-updated",
+                processed,
+                total,
+            );
+        }
+    });
+    let snapshots = handle_workspace_manifest_updated_with_progress(state, params, Some(progress));
     let mut notifications = Vec::new();
     notifications.extend(
         progress_notifications
-            .into_inner()
-            .expect("progress notification collection should not be poisoned"),
+            .lock()
+            .expect("progress notification collection should not be poisoned")
+            .drain(..),
     );
     if let Some(params_value) = workspace_manifest_diagnostics_params(state, &params.workspace_uri)
         .and_then(|params| serde_json::to_value(params).ok())
@@ -2833,26 +2848,32 @@ fn handle_workspace_manifest_updated_notifications(
 fn handle_dependency_cache_refresh_requested_notifications(
     state: &mut ServerState,
     params: &WorkspaceManifestUpdatedParams,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
-    let progress_notifications = Mutex::new(Vec::new());
-    let progress = |processed: usize, total: usize| {
-        emit_workspace_analysis_progress(
-            Some(&progress_notifications),
-            progress_sink,
-            &params.workspace_uri,
-            "dependency-cache-refresh",
-            processed,
-            total,
-        );
-    };
+    let progress_notifications = Arc::new(Mutex::new(Vec::new()));
+    let progress: ProgressCallback = Arc::new({
+        let progress_notifications = Arc::clone(&progress_notifications);
+        let progress_sink = progress_sink.clone();
+        let workspace_uri = params.workspace_uri.clone();
+        move |processed, total| {
+            emit_workspace_analysis_progress(
+                Some(progress_notifications.as_ref()),
+                progress_sink.clone(),
+                &workspace_uri,
+                "dependency-cache-refresh",
+                processed,
+                total,
+            );
+        }
+    });
     let snapshots =
-        handle_dependency_cache_refresh_requested_with_progress(state, params, Some(&progress));
+        handle_dependency_cache_refresh_requested_with_progress(state, params, Some(progress));
     let mut notifications = Vec::new();
     notifications.extend(
         progress_notifications
-            .into_inner()
-            .expect("progress notification collection should not be poisoned"),
+            .lock()
+            .expect("progress notification collection should not be poisoned")
+            .drain(..),
     );
     if let Some(params_value) = workspace_manifest_diagnostics_params(state, &params.workspace_uri)
         .and_then(|params| serde_json::to_value(params).ok())
@@ -2935,7 +2956,7 @@ fn handle_remote_dependency_completion_notifications(
     state: &mut ServerState,
     completion: &RemoteDependencyCompletion,
     artifacts_stored: bool,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     let params = abap_lsp::RemoteDependenciesUpdatedParams {
         workspace_uri: completion.workspace_uri.clone(),
@@ -3015,7 +3036,7 @@ fn completion_artifacts_cover_fetched(completion: &RemoteDependencyCompletion) -
 fn handle_remote_dependencies_updated_notifications(
     state: &mut ServerState,
     params: &abap_lsp::RemoteDependenciesUpdatedParams,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
     handle_remote_dependencies_updated_notifications_with_refresh(
         state,
@@ -3035,21 +3056,26 @@ fn handle_remote_dependencies_updated_notifications_without_refresh(
 fn handle_remote_dependencies_updated_notifications_with_refresh(
     state: &mut ServerState,
     params: &abap_lsp::RemoteDependenciesUpdatedParams,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
     refresh: bool,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
-    let progress_notifications = Mutex::new(Vec::new());
+    let progress_notifications = Arc::new(Mutex::new(Vec::new()));
     let normalized_workspace_uri = abap_lsp::normalize_lsp_uri(&params.workspace_uri);
-    let progress = |processed: usize, total: usize| {
-        emit_workspace_analysis_progress(
-            Some(&progress_notifications),
-            progress_sink,
-            &params.workspace_uri,
-            "remote-dependencies-updated",
-            processed,
-            total,
-        );
-    };
+    let progress: ProgressCallback = Arc::new({
+        let progress_notifications = Arc::clone(&progress_notifications);
+        let progress_sink = progress_sink.clone();
+        let workspace_uri = params.workspace_uri.clone();
+        move |processed, total| {
+            emit_workspace_analysis_progress(
+                Some(progress_notifications.as_ref()),
+                progress_sink.clone(),
+                &workspace_uri,
+                "remote-dependencies-updated",
+                processed,
+                total,
+            );
+        }
+    });
     let mut source_uris: HashSet<String> = params
         .source_uris
         .iter()
@@ -3059,14 +3085,16 @@ fn handle_remote_dependencies_updated_notifications_with_refresh(
         source_uris.insert(abap_lsp::normalize_lsp_uri(&params.source_uri));
     }
     let snapshots = if refresh {
-        handle_remote_dependencies_updated_with_progress(state, params, Some(&progress))
+        handle_remote_dependencies_updated_with_progress(state, params, Some(progress))
     } else {
         record_remote_dependencies_updated(state, params);
         cached_workspace_snapshots_for_uris(state, &normalized_workspace_uri, &source_uris)
     };
     let mut notifications = progress_notifications
-        .into_inner()
-        .expect("progress notification collection should not be poisoned");
+        .lock()
+        .expect("progress notification collection should not be poisoned")
+        .drain(..)
+        .collect::<Vec<_>>();
     push_remote_dependency_update_diagnostics(
         state,
         &params.workspace_uri,
@@ -3129,23 +3157,30 @@ fn cached_workspace_snapshots_for_uris(
 fn handle_initialized_workspace_notifications(
     state: &mut ServerState,
     workspace_uri: &str,
-    progress_sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    progress_sink: Option<WorkspaceProgressCallback>,
 ) -> Result<Vec<(String, Value)>, Box<dyn std::error::Error>> {
-    let progress_notifications = Mutex::new(Vec::new());
-    let progress = |processed: usize, total: usize| {
-        emit_workspace_analysis_progress(
-            Some(&progress_notifications),
-            progress_sink,
-            workspace_uri,
-            "initialized",
-            processed,
-            total,
-        );
-    };
-    let _ = refresh_workspace_with_progress(state, workspace_uri, Some(&progress));
+    let progress_notifications = Arc::new(Mutex::new(Vec::new()));
+    let progress: ProgressCallback = Arc::new({
+        let progress_notifications = Arc::clone(&progress_notifications);
+        let progress_sink = progress_sink.clone();
+        let workspace_uri = workspace_uri.to_string();
+        move |processed, total| {
+            emit_workspace_analysis_progress(
+                Some(progress_notifications.as_ref()),
+                progress_sink.clone(),
+                &workspace_uri,
+                "initialized",
+                processed,
+                total,
+            );
+        }
+    });
+    let _ = refresh_workspace_with_progress(state, workspace_uri, Some(progress));
     let mut notifications = progress_notifications
-        .into_inner()
-        .expect("progress notification collection should not be poisoned");
+        .lock()
+        .expect("progress notification collection should not be poisoned")
+        .drain(..)
+        .collect::<Vec<_>>();
     if let Some(params_value) = workspace_manifest_diagnostics_params(state, workspace_uri)
         .and_then(|params| serde_json::to_value(params).ok())
     {
@@ -4315,7 +4350,7 @@ fn workspace_analysis_status_finished_for_workspace(
 
 fn emit_workspace_analysis_progress(
     notifications: Option<&Mutex<Vec<(String, Value)>>>,
-    sink: Option<&(dyn Fn(WorkspaceAnalysisStatusParams) + Sync)>,
+    sink: Option<WorkspaceProgressCallback>,
     workspace_uri: &str,
     trigger: &str,
     processed: usize,
@@ -4359,12 +4394,12 @@ mod tests {
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use super::{
-        AnalysisCompletion, AnalysisTask, AnalysisTaskKind, CHANGE_ANALYSIS_DEBOUNCE,
-        EDITOR_FIRST_DIAGNOSTIC_LIMIT, MAX_ANALYSIS_COMPLETIONS_PER_FLUSH,
-        MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH, PendingAnalysisQueue,
-        REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES, RemoteDependencyCompletion,
-        RemoteDependencyTask, finish_background_task, flush_analysis_completions,
-        flush_due_debounced_tasks, flush_remote_dependency_completions,
+        AnalysisCompletion, AnalysisProgress, AnalysisTask, AnalysisTaskKind, BackgroundScheduler,
+        CHANGE_ANALYSIS_DEBOUNCE, EDITOR_FIRST_DIAGNOSTIC_LIMIT,
+        MAX_ANALYSIS_COMPLETIONS_PER_FLUSH, MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH,
+        PendingAnalysisQueue, REMOTE_DEPENDENCIES_UPDATED, RESOLVE_REMOTE_DEPENDENCIES,
+        RemoteDependencyCompletion, RemoteDependencyTask, finish_background_task,
+        flush_analysis_completions, flush_due_debounced_tasks, flush_remote_dependency_completions,
         handle_did_change_notifications, handle_message, refresh_pending_task_workspace,
         run_analysis_task, run_remote_dependency_task, send_analysis_completion,
         take_pending_background_task, try_schedule_background_analysis,
@@ -4390,6 +4425,28 @@ mod tests {
 
     fn file_uri(path: &std::path::Path) -> String {
         format!("file:///{}", path.to_string_lossy().replace('\\', "/"))
+    }
+
+    fn paused_background_scheduler(
+        generations: Arc<Mutex<HashMap<String, u64>>>,
+        queue_state: Arc<Mutex<PendingAnalysisQueue>>,
+    ) -> (
+        BackgroundScheduler,
+        mpsc::Receiver<AnalysisCompletion>,
+        mpsc::Receiver<AnalysisProgress>,
+    ) {
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (progress_tx, progress_rx) = mpsc::channel();
+        (
+            BackgroundScheduler::paused_for_test(
+                generations,
+                completion_tx,
+                progress_tx,
+                queue_state,
+            ),
+            completion_rx,
+            progress_rx,
+        )
     }
 
     fn run_remote_dependency_task_for_test(
@@ -5082,7 +5139,8 @@ START-OF-SELECTION.
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -5099,8 +5157,7 @@ START-OF-SELECTION.
         let started = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -5122,13 +5179,15 @@ START-OF-SELECTION.
         assert_eq!(overlay.text.as_ref(), "DATA lv_value TYPE i.");
         assert!(!workspace.preview_snapshots.contains_key(&normalized_uri));
 
-        let queued_workspace_uri = task_rx.recv().expect("scheduled task");
-        assert_eq!(queued_workspace_uri, normalized_workspace_uri);
-        let task = queue_state
-            .lock()
-            .expect("pending analysis queue")
+        let queue = queue_state.lock().expect("pending analysis queue");
+        assert!(
+            queue
+                .scheduled_workspaces
+                .contains(&normalized_workspace_uri)
+        );
+        let task = queue
             .pending_tasks
-            .get(&queued_workspace_uri)
+            .get(&normalized_workspace_uri)
             .expect("pending analysis task")
             .workspace_uri
             .clone();
@@ -5158,7 +5217,8 @@ START-OF-SELECTION.
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
 
         let scheduled = try_schedule_background_analysis(
             &mut state,
@@ -5167,8 +5227,7 @@ START-OF-SELECTION.
                 "method": "initialized",
                 "params": {}
             }),
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -5182,11 +5241,12 @@ START-OF-SELECTION.
             WorkspaceAnalysisPhase::Started
         );
         assert!(scheduled.notifications.is_empty());
-        assert_eq!(
-            task_rx.recv().expect("scheduled task"),
-            normalized_workspace_uri
-        );
         let queue = queue_state.lock().expect("pending analysis queue");
+        assert!(
+            queue
+                .scheduled_workspaces
+                .contains(&normalized_workspace_uri)
+        );
         let task = queue
             .pending_tasks
             .get(&normalized_workspace_uri)
@@ -5277,14 +5337,16 @@ START-OF-SELECTION.
         drop(completion_tx);
 
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let (remote_task_tx, _remote_task_rx) = mpsc::channel();
+        let (remote_completion_tx, _remote_completion_rx) = mpsc::channel();
+        let (remote_progress_tx, _remote_progress_rx) = mpsc::channel();
         let mut writer = Vec::new();
         flush_analysis_completions(
             &mut state,
             &mut writer,
             &completion_rx,
             &generations,
-            &remote_task_tx,
+            &remote_completion_tx,
+            &remote_progress_tx,
         )
         .expect("flush completions");
 
@@ -5319,14 +5381,14 @@ START-OF-SELECTION.
 
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _analysis_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let mut writer = Vec::new();
         flush_remote_dependency_completions(
             &mut state,
             &mut writer,
             &completion_rx,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
         )
         .expect("flush completions");
@@ -5337,7 +5399,13 @@ START-OF-SELECTION.
             MAX_REMOTE_DEPENDENCY_COMPLETIONS_PER_FLUSH
         );
         assert_eq!(task.generation, 1);
-        assert_eq!(task_rx.try_iter().count(), 1);
+        assert!(
+            !queue_state
+                .lock()
+                .expect("pending analysis queue")
+                .scheduled_workspaces
+                .is_empty()
+        );
         assert_eq!(completion_rx.try_iter().count(), 1);
     }
 
@@ -5390,14 +5458,14 @@ START-OF-SELECTION.
 
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let generations = Arc::new(Mutex::new(HashMap::new()));
-        let (task_tx, _task_rx) = mpsc::channel();
+        let (scheduler, _analysis_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let mut writer = Vec::new();
         flush_remote_dependency_completions(
             &mut state,
             &mut writer,
             &completion_rx,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
         )
         .expect("flush completions");
@@ -5506,7 +5574,8 @@ ENDCLASS.",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, _task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -5523,8 +5592,7 @@ ENDCLASS.",
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -5569,7 +5637,8 @@ ENDCLASS.",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, _task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let changed_text = "DATA lv_value TYPE i.\n* lv_value = 1.\n";
         let message = json!({
             "jsonrpc": "2.0",
@@ -5588,8 +5657,7 @@ ENDCLASS.",
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -5687,7 +5755,8 @@ lo_helper->",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, _task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let changed_text = "\
 REPORT zreport_main.
 DATA lo_helper TYPE REF TO zcl_helper.
@@ -5709,8 +5778,7 @@ lo_helper->r";
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -5764,7 +5832,8 @@ lo_helper->r";
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
 
         for version in [2, 3] {
             let message = json!({
@@ -5783,8 +5852,7 @@ lo_helper->r";
             try_schedule_background_analysis(
                 &mut state,
                 &message,
-                &task_tx,
-                &queue_state,
+                &scheduler,
                 &generations,
                 &mut debounced_tasks,
             )
@@ -5792,9 +5860,14 @@ lo_helper->r";
             .expect("background job");
         }
 
-        let first_workspace = task_rx.recv().expect("first queued workspace");
+        let first_workspace = abap_lsp::normalize_lsp_uri(&workspace_uri);
         assert_eq!(first_workspace, abap_lsp::normalize_lsp_uri(&workspace_uri));
         let pending_guard = queue_state.lock().expect("pending analysis queue");
+        assert!(
+            pending_guard
+                .scheduled_workspaces
+                .contains(&first_workspace)
+        );
         let latest_task = pending_guard
             .pending_tasks
             .get(&first_workspace)
@@ -5822,7 +5895,8 @@ lo_helper->r";
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
 
         let mut schedule_change = |state: &mut ServerState, version| {
             try_schedule_background_analysis(
@@ -5840,8 +5914,7 @@ lo_helper->r";
                         }]
                     }
                 }),
-                &task_tx,
-                &queue_state,
+                &scheduler,
                 &generations,
                 &mut debounced_tasks,
             )
@@ -5850,7 +5923,7 @@ lo_helper->r";
         };
 
         schedule_change(&mut state, 2);
-        let first_workspace = task_rx.recv().expect("first queued workspace");
+        let first_workspace = normalized_workspace_uri.clone();
         assert_eq!(first_workspace, normalized_workspace_uri);
         let in_flight = take_pending_background_task(&first_workspace, &queue_state)
             .expect("in-flight task should exist");
@@ -5863,12 +5936,16 @@ lo_helper->r";
 
         schedule_change(&mut state, 3);
         assert!(
-            task_rx.try_recv().is_err(),
+            queue_state
+                .lock()
+                .expect("pending analysis queue")
+                .scheduled_workspaces
+                .contains(&first_workspace),
             "workspace should not be enqueued twice while already in flight"
         );
 
-        finish_background_task(&first_workspace, &task_tx, &queue_state).expect("requeue");
-        let requeued_workspace = task_rx.recv().expect("requeued workspace");
+        assert!(finish_background_task(&first_workspace, &queue_state));
+        let requeued_workspace = first_workspace.clone();
         assert_eq!(requeued_workspace, normalized_workspace_uri);
         let pending_guard = queue_state.lock().expect("pending analysis queue");
         match &pending_guard
@@ -5941,13 +6018,15 @@ lo_helper->r";
         drop(completion_tx);
 
         let mut writer = Vec::new();
-        let (remote_task_tx, _remote_task_rx) = mpsc::channel();
+        let (remote_completion_tx, _remote_completion_rx) = mpsc::channel();
+        let (remote_progress_tx, _remote_progress_rx) = mpsc::channel();
         flush_analysis_completions(
             &mut state,
             &mut writer,
             &completion_rx,
             &generations,
-            &remote_task_tx,
+            &remote_completion_tx,
+            &remote_progress_tx,
         )
         .expect("flush completions");
 
@@ -6016,7 +6095,8 @@ lo_helper->",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -6038,8 +6118,7 @@ lo_helper->r"
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -6071,7 +6150,11 @@ lo_helper->r"
                 .all(|(method, _)| method != RESOLVE_REMOTE_DEPENDENCIES)
         );
         assert!(
-            task_rx.try_recv().is_err(),
+            queue_state
+                .lock()
+                .expect("pending analysis queue")
+                .pending_tasks
+                .is_empty(),
             "editor-first changes should stay debounced"
         );
 
@@ -6101,7 +6184,8 @@ lo_helper->r"
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
 
         for version in [2, 3] {
             let message = json!({
@@ -6120,8 +6204,7 @@ lo_helper->r"
             let scheduled = try_schedule_background_analysis(
                 &mut state,
                 &message,
-                &task_tx,
-                &queue_state,
+                &scheduler,
                 &generations,
                 &mut debounced_tasks,
             )
@@ -6131,18 +6214,21 @@ lo_helper->r"
         }
 
         assert!(
-            task_rx.try_recv().is_err(),
+            queue_state
+                .lock()
+                .expect("pending analysis queue")
+                .pending_tasks
+                .is_empty(),
             "debounced tasks should not enqueue immediately"
         );
         let _started = flush_due_debounced_tasks(
             Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
             &mut debounced_tasks,
-            &task_tx,
-            &queue_state,
+            &scheduler,
         )
         .expect("flush");
         assert!(debounced_tasks.is_empty());
-        let queued_workspace = task_rx.recv().expect("queued workspace");
+        let queued_workspace = abap_lsp::normalize_lsp_uri(&workspace_uri);
         let pending = queue_state.lock().expect("pending analysis queue");
         match &pending
             .pending_tasks
@@ -6205,7 +6291,8 @@ lo_helper->",
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -6226,15 +6313,20 @@ lo_helper->r"
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
         .expect("schedule")
         .expect("background job");
         assert!(scheduled.started_statuses.is_empty());
-        assert!(task_rx.try_recv().is_err());
+        assert!(
+            queue_state
+                .lock()
+                .expect("pending analysis queue")
+                .pending_tasks
+                .is_empty()
+        );
 
         let completion = handle_message(
             &mut state,
@@ -6344,7 +6436,8 @@ lo_provider->value( )."
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let message = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
@@ -6367,8 +6460,7 @@ ENDCLASS."
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &message,
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -6394,11 +6486,10 @@ ENDCLASS."
         let _started = flush_due_debounced_tasks(
             Instant::now() + CHANGE_ANALYSIS_DEBOUNCE,
             &mut debounced_tasks,
-            &task_tx,
-            &queue_state,
+            &scheduler,
         )
         .expect("flush");
-        let queued_workspace = task_rx.recv().expect("queued workspace");
+        let queued_workspace = abap_lsp::normalize_lsp_uri(&workspace_uri);
         let task = queue_state
             .lock()
             .expect("pending analysis queue")
@@ -9221,7 +9312,8 @@ object_name = "ZREPORT_INIT"
         let generations = Arc::new(Mutex::new(HashMap::new()));
         let queue_state = Arc::new(Mutex::new(PendingAnalysisQueue::default()));
         let mut debounced_tasks = HashMap::new();
-        let (task_tx, task_rx) = mpsc::channel();
+        let (scheduler, _completion_rx, _progress_rx) =
+            paused_background_scheduler(Arc::clone(&generations), Arc::clone(&queue_state));
         let scheduled = try_schedule_background_analysis(
             &mut state,
             &json!({
@@ -9229,8 +9321,7 @@ object_name = "ZREPORT_INIT"
                 "method": "initialized",
                 "params": {}
             }),
-            &task_tx,
-            &queue_state,
+            &scheduler,
             &generations,
             &mut debounced_tasks,
         )
@@ -9246,7 +9337,6 @@ object_name = "ZREPORT_INIT"
                 .pending_tasks
                 .is_empty()
         );
-        assert!(task_rx.try_recv().is_err());
 
         let _ = fs::remove_dir_all(&workspace_path);
     }
