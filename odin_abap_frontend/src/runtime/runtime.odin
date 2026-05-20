@@ -517,6 +517,98 @@ then_on_nbio :: proc(task: Task($T), loop: ^nbio.Event_Loop, cb: proc(T, rawptr)
 	return .None
 }
 
+// then_all consumes every task in `tasks` and schedules `work(results) -> R`
+// after they all complete. The `results` slice is temporary and is only valid
+// during the call to `work`.
+then_all :: proc(pool: ^Pool, tasks: []Task($T), work: proc([]T) -> $R) -> (Task(R), Submit_Error)
+	where size_of(T) <= INLINE_BYTES_MAX,
+	      size_of(R) <= INLINE_BYTES_MAX {
+	child: Task(R)
+	if pool == nil {
+		return child, .Invalid_Task
+	}
+	if size_of(R) > pool.options.inline_bytes {
+		return child, .Result_Too_Large
+	}
+
+	cell, index, err := reserve_cell(pool)
+	if err != .None {
+		return child, err
+	}
+
+	Then_All_Data :: struct {
+		tasks:     []Task(T),
+		results:   []T,
+		work:      proc([]T) -> R,
+		allocator: mem.Allocator,
+	}
+
+	data := new(Then_All_Data, pool.allocator)
+	data.tasks = make([]Task(T), len(tasks), pool.allocator)
+	data.results = make([]T, len(tasks), pool.allocator)
+	data.work = work
+	data.allocator = pool.allocator
+	copy(data.tasks, tasks)
+
+	then_all_invoke :: proc(cell: ^Task_Cell) {
+		data := cast(^Then_All_Data)cell.user_data
+		ok := true
+		for task, i in data.tasks {
+			value, wait_err := wait(task)
+			if wait_err != .None {
+				ok = false
+			}
+			data.results[i] = value
+		}
+		result: R
+		if ok {
+			result = data.work(data.results)
+		}
+		if size_of(R) > 0 {
+			intrinsics.mem_copy_non_overlapping(raw_data(cell.result[:]), &result, size_of(R))
+		}
+		delete(data.tasks, data.allocator)
+		delete(data.results, data.allocator)
+		free(data, data.allocator)
+	}
+
+	cell.kind = .Continuation
+	cell.invoke = then_all_invoke
+	cell.user_data = data
+	cell.result_size = u16(size_of(R))
+
+	for task in tasks {
+		parent := cell_from_task(task)
+		if parent == nil || parent.pool != pool {
+			delete(data.tasks, data.allocator)
+			delete(data.results, data.allocator)
+			free(data, data.allocator)
+			release_cell(cell)
+			return child, .Invalid_Task
+		}
+		if !attach_continuation(parent, index) {
+			delete(data.tasks, data.allocator)
+			delete(data.results, data.allocator)
+			free(data, data.allocator)
+			release_cell(cell)
+			return child, .Continuation_Already_Set
+		}
+	}
+
+	child = Task(R){pool = pool, index = index, generation = cell.generation}
+	if len(tasks) == 0 {
+		_ = schedule_cell(pool, index, true)
+	} else {
+		for task in tasks {
+			parent := cell_from_task(task)
+			if parent != nil {
+				schedule_if_parent_completed(parent, pool, index)
+			}
+		}
+	}
+	return child, .None
+}
+
 // make_deferred creates a task that is completed externally by its paired
 // completer.
 make_deferred :: proc(pool: ^Pool, $T: typeid) -> (Task(T), Completer(T), Submit_Error)

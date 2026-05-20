@@ -13,6 +13,14 @@ inc :: proc(v: int) -> int {
 	return v + 1
 }
 
+sum_values :: proc(values: []int) -> int {
+	total := 0
+	for value in values {
+		total += value
+	}
+	return total
+}
+
 add_one_ptr :: proc(data: rawptr) {
 	p := cast(^int)data
 	sync.atomic_add_explicit(p, 1, .Relaxed)
@@ -168,6 +176,52 @@ continuation_chain_runs_in_order :: proc(t: ^testing.T) {
 	value, wait_err := wait(final_task)
 	testing.expect_value(t, wait_err, Wait_Error.None)
 	testing.expect_value(t, value, 4)
+}
+
+@(test)
+then_all_runs_after_all_parent_tasks :: proc(t: ^testing.T) {
+	allocator := base_runtime.heap_allocator()
+	pool: Pool
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 16}, allocator), Submit_Error.None)
+	defer pool_destroy(&pool)
+
+	tasks: [4]Task(int)
+	for i in 0 ..< len(tasks) {
+		task, err := submit_value(&pool, i, inc)
+		testing.expect_value(t, err, Submit_Error.None)
+		tasks[i] = task
+	}
+
+	all_task, err := then_all(&pool, tasks[:], sum_values)
+	testing.expect_value(t, err, Submit_Error.None)
+	value, wait_err := wait(all_task)
+	testing.expect_value(t, wait_err, Wait_Error.None)
+	testing.expect_value(t, value, 10)
+	testing.expect_value(t, pool_stats(&pool).outstanding, u64(0))
+}
+
+@(test)
+then_all_works_with_threaded_parents :: proc(t: ^testing.T) {
+	allocator := base_runtime.heap_allocator()
+	pool: Pool
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 4, task_capacity = 64, queue_capacity = 16, deque_capacity = 16}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
+	defer pool_destroy(&pool)
+
+	tasks: [16]Task(int)
+	for i in 0 ..< len(tasks) {
+		task, err := submit_value(&pool, i, inc)
+		testing.expect_value(t, err, Submit_Error.None)
+		tasks[i] = task
+	}
+
+	all_task, err := then_all(&pool, tasks[:], sum_values)
+	testing.expect_value(t, err, Submit_Error.None)
+	value, wait_err := wait(all_task)
+	testing.expect_value(t, wait_err, Wait_Error.None)
+	testing.expect_value(t, value, 136)
+	testing.expect_value(t, pool_stats(&pool).outstanding, u64(0))
+	pool_join(&pool)
 }
 
 @(test)
