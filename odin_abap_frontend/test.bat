@@ -11,4 +11,5 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\tokenizer" -vet -warnings-as-errors %* || exit /b
+"%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %* || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %*

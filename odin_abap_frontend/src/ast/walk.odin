@@ -50,6 +50,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.expr)
 	case ^Ident_Expr:
 	case ^Literal_Expr:
+	case ^Type_Ref_Expr:
+	case ^Host_Expr:
+		walk(next, n.value)
 	case ^Table_Expr:
 		walk(next, n.table)
 		walk_expr_list(next, n.selectors)
@@ -74,13 +77,74 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Constructor_Expr:
 		walk(next, n.type_ref)
 		walk_expr_list(next, n.args)
+	case ^Is_Predicate_Expr:
+		walk(next, n.subject)
+	case ^Instance_Of_Predicate_Expr:
+		walk(next, n.subject)
+		walk(next, n.type_ref)
+	case ^Between_Expr:
+		walk(next, n.subject)
+		walk(next, n.low)
+		walk(next, n.high)
+	case ^Let_Expr:
+		walk_expr_list(next, n.bindings)
+		walk_expr_list(next, n.body)
+	case ^Constructor_Let_Binding_Expr:
+		walk(next, n.value)
+	case ^Constructor_When_Clause_Expr:
+		walk(next, n.condition)
+		walk(next, n.result)
+	case ^Constructor_Else_Clause_Expr:
+		walk(next, n.result)
+	case ^Constructor_For_Clause_Expr:
+		walk(next, n.init)
+		walk(next, n.then_expr)
+		walk(next, n.condition)
+		walk(next, n.source)
+		walk(next, n.where_clause)
+		walk_expr_list(next, n.body)
+	case ^Constructor_Where_Clause_Expr:
+		walk(next, n.condition)
+	case ^Constructor_Init_Clause_Expr:
+		walk_expr_list(next, n.assignments)
+	case ^Constructor_Next_Clause_Expr:
+		walk_expr_list(next, n.assignments)
+	case ^Constructor_Named_Assignment_Expr:
+		walk(next, n.value)
+	case ^Constructor_Base_Clause_Expr:
+		walk(next, n.value)
+	case ^Constructor_Lines_Of_Clause_Expr:
+		walk(next, n.source)
+		walk(next, n.from)
+		walk(next, n.to)
+	case ^Constructor_Optional_Expr:
+		walk(next, n.value)
+	case ^Constructor_Corresponding_Mapping_Clause_Expr:
+		walk_expr_list(next, n.assignments)
+	case ^Constructor_Corresponding_Mapping_Assignment_Expr:
+		walk(next, n.source)
+		walk(next, n.default_value)
+		walk(next, n.mapping)
+		walk(next, n.except)
+	case ^Constructor_Corresponding_Except_Clause_Expr:
+		walk_expr_list(next, n.names)
 	case ^Data_Inline_Name_Expr:
 	case ^Field_Symbol_Inline_Name_Expr:
 	case ^Data_Decl:
+		walk_paren_length_clause(next, n.paren_length)
+		walk_length_clauses(next, n.length_clauses)
 		walk_data_type_clause(next, n.type_clause)
+		walk_value_clause(next, n.value_clause)
+		walk(next, n.occurs)
+		walk(next, n.include_ref)
 	case ^Data_Chained_Decl:
 		for branch in n.decls {
+			walk_paren_length_clause(next, branch.paren_length)
+			walk_length_clauses(next, branch.length_clauses)
 			walk_data_type_clause(next, branch.type_clause)
+			walk_value_clause(next, branch.value_clause)
+			walk(next, branch.occurs)
+			walk(next, branch.include_ref)
 		}
 	case ^Data_Inline_Decl:
 		walk(next, n.expr)
@@ -89,6 +153,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk_paren_length_clause(next, clause.paren_length)
 			walk_length_clauses(next, clause.length_clauses)
 			walk_data_type_clause(next, clause.type_clause)
+			walk(next, clause.occurs)
+			walk(next, clause.include_ref)
 		}
 	case ^Constants_Decl:
 		for clause in n.constants {
@@ -96,6 +162,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk_length_clauses(next, clause.length_clauses)
 			walk_data_type_clause(next, clause.type_clause)
 			walk_value_clause(next, clause.value_clause)
+			walk(next, clause.occurs)
+			walk(next, clause.include_ref)
 		}
 	case ^Field_Symbols_Decl:
 		for clause in n.field_symbols {
@@ -107,6 +175,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk_length_clauses(next, clause.length_clauses)
 			walk_data_type_clause(next, clause.type_clause)
 			walk_value_clause(next, clause.value_clause)
+			walk(next, clause.occurs)
+			walk(next, clause.include_ref)
 		}
 	case ^Tables_Decl:
 	case ^Ranges_Decl:
@@ -143,7 +213,11 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk_length_clauses(next, clause.length_clauses)
 			walk_data_type_clause(next, clause.type_clause)
 			walk_value_clause(next, clause.value_clause)
+			walk(next, clause.occurs)
+			walk(next, clause.include_ref)
 		}
+	case ^Type_Pools_Decl:
+	case ^Function_Pool_Decl:
 	case ^Assign_Stmt:
 		walk(next, n.lhs)
 		walk(next, n.rhs)
@@ -268,6 +342,67 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk(next, clause.position)
 			walk(next, clause.length)
 		}
+	case ^Assert_Stmt:
+		walk(next, n.condition)
+	case ^Check_Stmt:
+		walk(next, n.condition)
+	case ^Flow_Stmt:
+	case ^Transaction_Stmt:
+	case ^Describe_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.target)
+		}
+	case ^Runtime_Stmt:
+		walk(next, n.id)
+		walk(next, n.field)
+		walk(next, n.target)
+		walk(next, n.value)
+		walk(next, n.line)
+		walk(next, n.offset)
+		walk_expr_list(next, n.excluding)
+		walk_expr_list(next, n.operands)
+	case ^Raise_Stmt:
+		walk(next, n.target)
+		walk_expr_list(next, n.operands)
+	case ^Authority_Check_Stmt:
+		walk_expr_list(next, n.operands)
+		walk(next, n.object)
+		for clause in n.ids {
+			walk(next, clause.id)
+			walk(next, clause.field)
+		}
+	case ^Field_Groups_Stmt:
+		walk_expr_list(next, n.groups)
+	case ^Insert_Dummy_Stmt:
+		walk(next, n.target)
+	case ^Field_Stmt:
+		walk_expr_list(next, n.operands)
+	case ^Assign_Field_Stmt:
+		walk_expr_list(next, n.operands)
+	case ^Create_Object_Stmt:
+		walk_expr_list(next, n.operands)
+	case ^Text_Transform_Stmt:
+		walk_expr_list(next, n.operands)
+	case ^List_Control_Stmt:
+		walk_expr_list(next, n.operands)
+	case ^Line_Stmt:
+		walk(next, n.line)
+		walk(next, n.index)
+		walk(next, n.into)
+		for clause in n.fields {
+			walk(next, clause.field)
+			walk(next, clause.target)
+		}
+	case ^Macro_Def_Stmt:
+	case ^Macro_Call_Stmt:
+		walk_expr_list(next, n.args)
+	case ^Oop_Simple_Stmt:
+		for member in n.members {
+			for clause in member.signatures {
+				walk_expr_list(next, clause.values)
+			}
+		}
 	case ^If_Stmt:
 		walk(next, n.condition)
 		walk_stmt_list(next, n.body)
@@ -277,6 +412,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk_else_clause(next, n.else_clause)
 	case ^Case_Stmt:
 		walk(next, n.expr)
+		walk_stmt_list(next, n.recovery)
 		for clause in n.whens {
 			walk_when_clause(next, clause)
 		}
@@ -321,6 +457,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Test_Injection_Stmt:
 		walk_stmt_list(next, n.body)
 	case ^Select_Stmt:
+		walk_select_with(next, n.with)
 		walk_select_query(next, n.query)
 		walk_stmt_list(next, n.body)
 	case ^Open_Cursor_Stmt:
@@ -339,6 +476,20 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.assigning)
 		walk(next, n.reference_into)
 		walk_sql_assignments(next, n.assignments)
+	case ^Append_Stmt:
+		walk(next, n.source)
+		walk(next, n.target)
+		walk(next, n.assigning)
+		walk(next, n.reference_into)
+	case ^Modify_Stmt:
+		walk(next, n.target)
+		walk(next, n.source)
+		walk(next, n.index)
+		walk(next, n.where_cond)
+		walk_expr_list(next, n.transporting)
+	case ^Sort_Stmt:
+		walk(next, n.target)
+		walk_expr_list(next, n.fields)
 	case ^Update_Stmt:
 		walk(next, n.target)
 		walk(next, n.source)
@@ -383,6 +534,16 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.program)
 		walk(next, n.table)
 		walk(next, n.language)
+	case ^Exec_Sql_Stmt:
+	case ^Generate_Stmt:
+		walk(next, n.source)
+		walk(next, n.name)
+		walk(next, n.program)
+		walk(next, n.dynpro)
+		walk(next, n.message)
+		walk(next, n.line)
+		walk(next, n.word)
+		walk(next, n.offset)
 	case ^Invalid_Stmt:
 	}
 
@@ -484,13 +645,46 @@ walk_to_clause :: proc(v: ^Visitor, clause: ^To_Clause) {
 }
 
 walk_select_query :: proc(v: ^Visitor, clause: Select_Query_Clause) {
-	walk_expr_list(v, clause.projections)
-	walk(v, clause.source)
+	if len(clause.projection_clauses) > 0 {
+		for projection in clause.projection_clauses {
+			walk(v, projection.value)
+		}
+	} else {
+		walk_expr_list(v, clause.projections)
+	}
+	if clause.source_clause != nil {
+		walk_select_source(v, clause.source_clause)
+	} else {
+		walk(v, clause.source)
+	}
 	walk_select_result(v, clause.result)
 	walk(v, clause.where_cond)
 	walk(v, clause.for_all_entries)
 	walk(v, clause.package_size)
 	walk(v, clause.up_to_rows)
+	for set_op in clause.set_ops {
+		walk_select_query(v, set_op.query)
+	}
+}
+
+walk_select_with :: proc(v: ^Visitor, clause: ^Select_With_Clause) {
+	if clause == nil {
+		return
+	}
+	for entry in clause.entries {
+		walk_select_query(v, entry.query)
+	}
+}
+
+walk_select_source :: proc(v: ^Visitor, clause: ^Select_Source_Clause) {
+	if clause == nil {
+		return
+	}
+	walk(v, clause.source)
+	for join in clause.joins {
+		walk(v, join.source)
+		walk(v, join.on)
+	}
 }
 
 walk_select_result :: proc(v: ^Visitor, clause: ^Select_Result_Clause) {

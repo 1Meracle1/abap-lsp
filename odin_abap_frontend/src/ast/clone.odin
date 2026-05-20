@@ -89,6 +89,15 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return clone_shallow(n, allocator)
 	case ^Literal_Expr:
 		return clone_shallow(n, allocator)
+	case ^Type_Ref_Expr:
+		r := clone_shallow(n, allocator)
+		r.key = clone_type_ref_key_clause(n.key, allocator)
+		r.keys = clone_type_ref_key_clauses(n.keys, allocator)
+		return r
+	case ^Host_Expr:
+		r := clone_shallow(n, allocator)
+		r.value = clone(n.value, allocator)
+		return r
 	case ^Table_Expr:
 		r := clone_shallow(n, allocator)
 		r.table = clone(n.table, allocator)
@@ -131,13 +140,105 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.type_ref = clone(n.type_ref, allocator)
 		r.args = clone_expr_list(n.args, allocator)
 		return r
+	case ^Is_Predicate_Expr:
+		r := clone_shallow(n, allocator)
+		r.subject = clone(n.subject, allocator)
+		return r
+	case ^Instance_Of_Predicate_Expr:
+		r := clone_shallow(n, allocator)
+		r.subject = clone(n.subject, allocator)
+		r.type_ref = clone(n.type_ref, allocator)
+		return r
+	case ^Between_Expr:
+		r := clone_shallow(n, allocator)
+		r.subject = clone(n.subject, allocator)
+		r.low = clone(n.low, allocator)
+		r.high = clone(n.high, allocator)
+		return r
+	case ^Let_Expr:
+		r := clone_shallow(n, allocator)
+		r.bindings = clone_expr_list(n.bindings, allocator)
+		r.body = clone_expr_list(n.body, allocator)
+		return r
+	case ^Constructor_Let_Binding_Expr:
+		r := clone_shallow(n, allocator)
+		r.value = clone(n.value, allocator)
+		return r
+	case ^Constructor_When_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.condition = clone(n.condition, allocator)
+		r.result = clone(n.result, allocator)
+		return r
+	case ^Constructor_Else_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.result = clone(n.result, allocator)
+		return r
+	case ^Constructor_For_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.init = clone(n.init, allocator)
+		r.then_expr = clone(n.then_expr, allocator)
+		r.condition = clone(n.condition, allocator)
+		r.source = clone(n.source, allocator)
+		r.where_clause = clone(n.where_clause, allocator)
+		r.body = clone_expr_list(n.body, allocator)
+		return r
+	case ^Constructor_Where_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.condition = clone(n.condition, allocator)
+		return r
+	case ^Constructor_Init_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.assignments = clone_expr_list(n.assignments, allocator)
+		return r
+	case ^Constructor_Next_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.assignments = clone_expr_list(n.assignments, allocator)
+		return r
+	case ^Constructor_Named_Assignment_Expr:
+		r := clone_shallow(n, allocator)
+		r.value = clone(n.value, allocator)
+		return r
+	case ^Constructor_Base_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.value = clone(n.value, allocator)
+		return r
+	case ^Constructor_Lines_Of_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.source = clone(n.source, allocator)
+		r.from = clone(n.from, allocator)
+		r.to = clone(n.to, allocator)
+		return r
+	case ^Constructor_Optional_Expr:
+		r := clone_shallow(n, allocator)
+		r.value = clone(n.value, allocator)
+		return r
+	case ^Constructor_Corresponding_Mapping_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.assignments = clone_expr_list(n.assignments, allocator)
+		return r
+	case ^Constructor_Corresponding_Mapping_Assignment_Expr:
+		r := clone_shallow(n, allocator)
+		r.source = clone(n.source, allocator)
+		r.default_value = clone(n.default_value, allocator)
+		r.mapping = clone(n.mapping, allocator)
+		r.except = clone(n.except, allocator)
+		return r
+	case ^Constructor_Corresponding_Except_Clause_Expr:
+		r := clone_shallow(n, allocator)
+		r.names = clone_expr_list(n.names, allocator)
+		return r
 	case ^Data_Inline_Name_Expr:
 		return clone_shallow(n, allocator)
 	case ^Field_Symbol_Inline_Name_Expr:
 		return clone_shallow(n, allocator)
 	case ^Data_Decl:
 		r := clone_shallow(n, allocator)
+		r.paren_length = clone_paren_length_clause(n.paren_length, allocator)
+		r.length_clauses = clone_length_clauses(n.length_clauses, allocator)
 		r.type_clause = clone_type_clause(n.type_clause, allocator)
+		r.value_clause = clone_value_clause(n.value_clause, allocator)
+		r.occurs = clone(n.occurs, allocator)
+		r.include_ref = clone(n.include_ref, allocator)
 		return r
 	case ^Data_Chained_Decl:
 		r := clone_shallow(n, allocator)
@@ -187,6 +288,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.decls = clone_class_data_clauses(n.decls, allocator)
 		return r
+	case ^Type_Pools_Decl:
+		r := clone_shallow(n, allocator)
+		r.pools = clone_string_list(n.pools, allocator)
+		return r
+	case ^Function_Pool_Decl:
+		return clone_shallow(n, allocator)
 	case ^Assign_Stmt:
 		r := clone_shallow(n, allocator)
 		r.lhs = clone(n.lhs, allocator)
@@ -317,6 +424,89 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.operands = clone_write_operands(n.operands, allocator)
 		return r
+	case ^Assert_Stmt:
+		r := clone_shallow(n, allocator)
+		r.condition = clone(n.condition, allocator)
+		return r
+	case ^Check_Stmt:
+		r := clone_shallow(n, allocator)
+		r.condition = clone(n.condition, allocator)
+		return r
+	case ^Flow_Stmt:
+		return clone_shallow(n, allocator)
+	case ^Transaction_Stmt:
+		return clone_shallow(n, allocator)
+	case ^Describe_Stmt:
+		r := clone_shallow(n, allocator)
+		r.entries = clone_describe_entries(n.entries, allocator)
+		return r
+	case ^Runtime_Stmt:
+		r := clone_shallow(n, allocator)
+		r.id = clone(n.id, allocator)
+		r.field = clone(n.field, allocator)
+		r.target = clone(n.target, allocator)
+		r.value = clone(n.value, allocator)
+		r.line = clone(n.line, allocator)
+		r.offset = clone(n.offset, allocator)
+		r.excluding = clone_expr_list(n.excluding, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^Raise_Stmt:
+		r := clone_shallow(n, allocator)
+		r.target = clone(n.target, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^Authority_Check_Stmt:
+		r := clone_shallow(n, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		r.object = clone(n.object, allocator)
+		r.ids = clone_authority_check_ids(n.ids, allocator)
+		return r
+	case ^Field_Groups_Stmt:
+		r := clone_shallow(n, allocator)
+		r.groups = clone_expr_list(n.groups, allocator)
+		return r
+	case ^Insert_Dummy_Stmt:
+		r := clone_shallow(n, allocator)
+		r.target = clone(n.target, allocator)
+		return r
+	case ^Field_Stmt:
+		r := clone_shallow(n, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^Assign_Field_Stmt:
+		r := clone_shallow(n, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^Create_Object_Stmt:
+		r := clone_shallow(n, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^Text_Transform_Stmt:
+		r := clone_shallow(n, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^List_Control_Stmt:
+		r := clone_shallow(n, allocator)
+		r.operands = clone_expr_list(n.operands, allocator)
+		return r
+	case ^Line_Stmt:
+		r := clone_shallow(n, allocator)
+		r.line = clone(n.line, allocator)
+		r.index = clone(n.index, allocator)
+		r.into = clone(n.into, allocator)
+		r.fields = clone_line_fields(n.fields, allocator)
+		return r
+	case ^Macro_Def_Stmt:
+		return clone_shallow(n, allocator)
+	case ^Macro_Call_Stmt:
+		r := clone_shallow(n, allocator)
+		r.args = clone_expr_list(n.args, allocator)
+		return r
+	case ^Oop_Simple_Stmt:
+		r := clone_shallow(n, allocator)
+		r.members = clone_oop_members(n.members, allocator)
+		return r
 	case ^If_Stmt:
 		r := clone_shallow(n, allocator)
 		r.condition = clone(n.condition, allocator)
@@ -328,6 +518,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.expr = clone(n.expr, allocator)
 		r.whens = clone_when_clause_list(n.whens, allocator)
+		r.recovery = clone_stmt_list(n.recovery, allocator)
 		return r
 	case ^While_Stmt:
 		r := clone_shallow(n, allocator)
@@ -429,6 +620,26 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.reference_into = clone(n.reference_into, allocator)
 		r.assignments = clone_sql_assignments(n.assignments, allocator)
 		return r
+	case ^Append_Stmt:
+		r := clone_shallow(n, allocator)
+		r.source = clone(n.source, allocator)
+		r.target = clone(n.target, allocator)
+		r.assigning = clone(n.assigning, allocator)
+		r.reference_into = clone(n.reference_into, allocator)
+		return r
+	case ^Modify_Stmt:
+		r := clone_shallow(n, allocator)
+		r.target = clone(n.target, allocator)
+		r.source = clone(n.source, allocator)
+		r.index = clone(n.index, allocator)
+		r.where_cond = clone(n.where_cond, allocator)
+		r.transporting = clone_expr_list(n.transporting, allocator)
+		return r
+	case ^Sort_Stmt:
+		r := clone_shallow(n, allocator)
+		r.target = clone(n.target, allocator)
+		r.fields = clone_expr_list(n.fields, allocator)
+		return r
 	case ^Update_Stmt:
 		r := clone_shallow(n, allocator)
 		r.target = clone(n.target, allocator)
@@ -474,6 +685,19 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.table = clone(n.table, allocator)
 		r.language = clone(n.language, allocator)
 		return r
+	case ^Exec_Sql_Stmt:
+		return clone_shallow(n, allocator)
+	case ^Generate_Stmt:
+		r := clone_shallow(n, allocator)
+		r.source = clone(n.source, allocator)
+		r.name = clone(n.name, allocator)
+		r.program = clone(n.program, allocator)
+		r.dynpro = clone(n.dynpro, allocator)
+		r.message = clone(n.message, allocator)
+		r.line = clone(n.line, allocator)
+		r.word = clone(n.word, allocator)
+		r.offset = clone(n.offset, allocator)
+		return r
 	case ^Invalid_Stmt:
 		return clone_shallow(n, allocator)
 	}
@@ -485,6 +709,9 @@ clone_shallow :: proc(src: ^$T, allocator: mem.Allocator) -> ^T {
 	dst, _ := mem.new(T, allocator)
 	dst^ = src^
 	set_derived(dst)
+	when intrinsics.type_has_field(T, "leading_comments") {
+		dst.leading_comments = clone_string_list(src.leading_comments, allocator)
+	}
 	return dst
 }
 
@@ -500,6 +727,68 @@ clone_stmt_list :: proc(list: [dynamic]^Stmt, allocator: mem.Allocator) -> [dyna
 	res := make([dynamic]^Stmt, 0, len(list), allocator)
 	for x in list {
 		append(&res, clone(x, allocator))
+	}
+	return res
+}
+
+clone_string_list :: proc(list: [dynamic]string, allocator: mem.Allocator) -> [dynamic]string {
+	res := make([dynamic]string, 0, len(list), allocator)
+	for x in list {
+		append(&res, x)
+	}
+	return res
+}
+
+clone_type_ref_key_clause :: proc(clause: ^Type_Ref_Key_Clause, allocator: mem.Allocator) -> ^Type_Ref_Key_Clause {
+	if clause == nil {
+		return nil
+	}
+	res, _ := mem.new(Type_Ref_Key_Clause, allocator)
+	res.kind = clause.kind
+	res.default_key = clause.default_key
+	res.sorted = clause.sorted
+	res.hashed = clause.hashed
+	res.name = clause.name
+	res.components = clone_string_list(clause.components, allocator)
+	return res
+}
+
+clone_type_ref_key_clauses :: proc(list: [dynamic]^Type_Ref_Key_Clause, allocator: mem.Allocator) -> [dynamic]^Type_Ref_Key_Clause {
+	res := make([dynamic]^Type_Ref_Key_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, clone_type_ref_key_clause(clause, allocator))
+	}
+	return res
+}
+
+clone_line_fields :: proc(list: [dynamic]Line_Field_Value_Clause, allocator: mem.Allocator) -> [dynamic]Line_Field_Value_Clause {
+	res := make([dynamic]Line_Field_Value_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Line_Field_Value_Clause{field = clone(clause.field, allocator), target = clone(clause.target, allocator)})
+	}
+	return res
+}
+
+clone_oop_signatures :: proc(list: [dynamic]Oop_Signature_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Signature_Clause {
+	res := make([dynamic]Oop_Signature_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Oop_Signature_Clause{kind = clause.kind, values = clone_expr_list(clause.values, allocator)})
+	}
+	return res
+}
+
+clone_oop_members :: proc(list: [dynamic]Oop_Member_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Member_Clause {
+	res := make([dynamic]Oop_Member_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Oop_Member_Clause{name = clause.name, signatures = clone_oop_signatures(clause.signatures, allocator)})
+	}
+	return res
+}
+
+clone_authority_check_ids :: proc(list: [dynamic]Authority_Check_ID_Clause, allocator: mem.Allocator) -> [dynamic]Authority_Check_ID_Clause {
+	res := make([dynamic]Authority_Check_ID_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Authority_Check_ID_Clause{id = clone(clause.id, allocator), field = clone(clause.field, allocator)})
 	}
 	return res
 }
@@ -642,13 +931,16 @@ clone_select_query :: proc(clause: Select_Query_Clause, allocator: mem.Allocator
 		single          = clause.single,
 		is_distinct     = clause.is_distinct,
 		projections     = clone_expr_list(clause.projections, allocator),
+		projection_clauses = clone_select_projections(clause.projection_clauses, allocator),
 		source          = clone(clause.source, allocator),
+		source_clause   = clone_select_source(clause.source_clause, allocator),
 		result          = clone_select_result(clause.result, allocator),
 		where_cond      = clone(clause.where_cond, allocator),
 		dynamic_where   = clause.dynamic_where,
 		for_all_entries = clone(clause.for_all_entries, allocator),
 		package_size    = clone(clause.package_size, allocator),
 		up_to_rows      = clone(clause.up_to_rows, allocator),
+		set_ops         = clone_select_set_ops(clause.set_ops, allocator),
 	}
 }
 
@@ -658,6 +950,51 @@ clone_select_with :: proc(clause: ^Select_With_Clause, allocator: mem.Allocator)
 	}
 	res, _ := mem.new(Select_With_Clause, allocator)
 	res^ = clause^
+	res.entries = clone_select_ctes(clause.entries, allocator)
+	return res
+}
+
+clone_select_ctes :: proc(list: [dynamic]Select_Cte_Clause, allocator: mem.Allocator) -> [dynamic]Select_Cte_Clause {
+	res := make([dynamic]Select_Cte_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Select_Cte_Clause{name = clause.name, query = clone_select_query(clause.query, allocator)})
+	}
+	return res
+}
+
+clone_select_projections :: proc(list: [dynamic]Select_Projection_Clause, allocator: mem.Allocator) -> [dynamic]Select_Projection_Clause {
+	res := make([dynamic]Select_Projection_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clause.alias})
+	}
+	return res
+}
+
+clone_select_source :: proc(clause: ^Select_Source_Clause, allocator: mem.Allocator) -> ^Select_Source_Clause {
+	if clause == nil {
+		return nil
+	}
+	res, _ := mem.new(Select_Source_Clause, allocator)
+	res.source = clone(clause.source, allocator)
+	res.alias = clause.alias
+	res.dynamic_source = clause.dynamic_source
+	res.joins = clone_select_joins(clause.joins, allocator)
+	return res
+}
+
+clone_select_joins :: proc(list: [dynamic]Select_Join_Clause, allocator: mem.Allocator) -> [dynamic]Select_Join_Clause {
+	res := make([dynamic]Select_Join_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Select_Join_Clause{kind = clause.kind, source = clone(clause.source, allocator), alias = clause.alias, on = clone(clause.on, allocator)})
+	}
+	return res
+}
+
+clone_select_set_ops :: proc(list: [dynamic]Select_Set_Clause, allocator: mem.Allocator) -> [dynamic]Select_Set_Clause {
+	res := make([dynamic]Select_Set_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Select_Set_Clause{kind = clause.kind, all = clause.all, query = clone_select_query(clause.query, allocator)})
+	}
 	return res
 }
 
@@ -723,6 +1060,18 @@ clone_write_operands :: proc(list: [dynamic]Write_Operand_Clause, allocator: mem
 	return res
 }
 
+clone_describe_entries :: proc(list: [dynamic]Describe_Entry_Clause, allocator: mem.Allocator) -> [dynamic]Describe_Entry_Clause {
+	res := make([dynamic]Describe_Entry_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Describe_Entry_Clause {
+			source = clone(clause.source, allocator),
+			target = clone(clause.target, allocator),
+			table  = clause.table,
+		})
+	}
+	return res
+}
+
 clone_data_chained_branches :: proc(
 	list: [dynamic]Data_Chained_Branch,
 	allocator: mem.Allocator,
@@ -732,8 +1081,18 @@ clone_data_chained_branches :: proc(
 		append(
 			&res,
 			Data_Chained_Branch {
-				name = branch.name,
-				type_clause = clone_type_clause(branch.type_clause, allocator),
+				kind            = branch.kind,
+				depth           = branch.depth,
+				name            = branch.name,
+				paren_length    = clone_paren_length_clause(branch.paren_length, allocator),
+				length_clauses  = clone_length_clauses(branch.length_clauses, allocator),
+				type_clause     = clone_type_clause(branch.type_clause, allocator),
+				value_clause    = clone_value_clause(branch.value_clause, allocator),
+				occurs          = clone(branch.occurs, allocator),
+				include_ref     = clone(branch.include_ref, allocator),
+				as_name         = branch.as_name,
+				renaming_suffix = branch.renaming_suffix,
+				read_only       = branch.read_only,
 			},
 		)
 	}
@@ -832,10 +1191,16 @@ clone_types_clauses :: proc(list: [dynamic]Types_Clause, allocator: mem.Allocato
 	res := make([dynamic]Types_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Types_Clause {
+			kind           = clause.kind,
+			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
+			occurs         = clone(clause.occurs, allocator),
+			include_ref    = clone(clause.include_ref, allocator),
+			as_name        = clause.as_name,
+			renaming_suffix = clause.renaming_suffix,
 		})
 	}
 	return res
@@ -845,11 +1210,17 @@ clone_constants_clauses :: proc(list: [dynamic]Constants_Clause, allocator: mem.
 	res := make([dynamic]Constants_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Constants_Clause {
+			kind           = clause.kind,
+			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
 			value_clause   = clone_value_clause(clause.value_clause, allocator),
+			occurs         = clone(clause.occurs, allocator),
+			include_ref    = clone(clause.include_ref, allocator),
+			as_name        = clause.as_name,
+			renaming_suffix = clause.renaming_suffix,
 		})
 	}
 	return res
@@ -867,11 +1238,17 @@ clone_statics_clauses :: proc(list: [dynamic]Statics_Clause, allocator: mem.Allo
 	res := make([dynamic]Statics_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Statics_Clause {
+			kind           = clause.kind,
+			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
 			value_clause   = clone_value_clause(clause.value_clause, allocator),
+			occurs         = clone(clause.occurs, allocator),
+			include_ref    = clone(clause.include_ref, allocator),
+			as_name        = clause.as_name,
+			renaming_suffix = clause.renaming_suffix,
 		})
 	}
 	return res
@@ -948,11 +1325,18 @@ clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: me
 	res := make([dynamic]Class_Data_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Class_Data_Clause {
+			kind           = clause.kind,
+			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
 			length_clauses = clone_length_clauses(clause.length_clauses, allocator),
 			type_clause    = clone_type_clause(clause.type_clause, allocator),
 			value_clause   = clone_value_clause(clause.value_clause, allocator),
+			occurs         = clone(clause.occurs, allocator),
+			include_ref    = clone(clause.include_ref, allocator),
+			as_name        = clause.as_name,
+			renaming_suffix = clause.renaming_suffix,
+			read_only      = clause.read_only,
 		})
 	}
 	return res
@@ -991,6 +1375,7 @@ clone_value_clause :: proc(clause: ^Value_Clause, allocator: mem.Allocator) -> ^
 	}
 	res, _ := mem.new(Value_Clause, allocator)
 	res.expr = clone(clause.expr, allocator)
+	res.is_initial = clause.is_initial
 	return res
 }
 

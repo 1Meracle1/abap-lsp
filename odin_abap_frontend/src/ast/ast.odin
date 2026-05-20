@@ -5,8 +5,10 @@ import "../tokenizer"
 import "core:mem"
 
 Node :: struct {
-	range:   tokenizer.Range,
-	derived: Any_Node,
+	range:            tokenizer.Range,
+	derived:          Any_Node,
+	leading_comments: [dynamic]string,
+	trailing_comment: string,
 }
 
 Expr :: struct {
@@ -52,6 +54,13 @@ Binary_Op :: enum {
 	Covers_Pattern,
 	Covers_No_Pattern,
 	In,
+	Not_In,
+	Bit_And,
+	Bit_Or,
+	Bit_Xor,
+	Bit_O,
+	Bit_Z,
+	Bit_M,
 	And,
 	Or,
 	Is,
@@ -141,6 +150,39 @@ Literal_Expr :: struct {
 	value:      string,
 }
 
+Type_Ref_Key_Kind :: enum {
+	Default,
+	Empty,
+	Unique,
+	Non_Unique,
+	Generic,
+}
+
+// ABAP syntax: type-reference key addition such as `WITH DEFAULT KEY` or `WITH UNIQUE KEY id`.
+Type_Ref_Key_Clause :: struct {
+	kind:       Type_Ref_Key_Kind,
+	default_key: bool,
+	sorted:     bool,
+	hashed:     bool,
+	name:       string,
+	components: [dynamic]string,
+}
+
+// ABAP syntax: declaration type reference such as `ty_line WITH DEFAULT KEY`.
+Type_Ref_Expr :: struct {
+	using node: Expr,
+	text:       string,
+	name:       string,
+	key:        ^Type_Ref_Key_Clause,
+	keys:       [dynamic]^Type_Ref_Key_Clause,
+}
+
+// ABAP syntax: Open SQL host expression such as `@lv_value`.
+Host_Expr :: struct {
+	using node: Expr,
+	value:      ^Expr,
+}
+
 // ABAP syntax: table expression such as `itab[ 1 ]` or `itab[ key = value ]`.
 Table_Expr :: struct {
 	using node: Expr,
@@ -209,6 +251,21 @@ Constructor_Kind :: enum {
 	Reduce,
 	Switch,
 	Cond,
+	Throw,
+}
+
+Is_Predicate_Kind :: enum {
+	Initial,
+	Bound,
+	Assigned,
+	Requested,
+	Supplied,
+}
+
+Constructor_For_Kind :: enum {
+	For_In,
+	For_Then_Until,
+	For_Then_While,
 }
 
 // ABAP syntax: constructor expression such as `VALUE type( ... )`, `NEW class( ... )`, or `CONV type( expr )`.
@@ -217,6 +274,139 @@ Constructor_Expr :: struct {
 	kind:       Constructor_Kind,
 	type_ref:   ^Expr,
 	args:       [dynamic]^Expr,
+}
+
+// ABAP syntax: `operand IS [NOT] INITIAL|BOUND|ASSIGNED|REQUESTED|SUPPLIED`.
+Is_Predicate_Expr :: struct {
+	using node: Expr,
+	subject:    ^Expr,
+	negated:    bool,
+	kind:       Is_Predicate_Kind,
+}
+
+// ABAP syntax: `operand IS [NOT] INSTANCE OF type`.
+Instance_Of_Predicate_Expr :: struct {
+	using node: Expr,
+	subject:    ^Expr,
+	negated:    bool,
+	type_ref:   ^Expr,
+}
+
+// ABAP syntax: `operand BETWEEN low AND high`.
+Between_Expr :: struct {
+	using node: Expr,
+	subject:    ^Expr,
+	low:        ^Expr,
+	high:       ^Expr,
+}
+
+// ABAP syntax: `LET name = value ... IN expr`.
+Let_Expr :: struct {
+	using node: Expr,
+	bindings:   [dynamic]^Expr,
+	body:       [dynamic]^Expr,
+}
+
+// ABAP syntax: one `name = value` binding inside a constructor `LET`.
+Constructor_Let_Binding_Expr :: struct {
+	using node: Expr,
+	name:       string,
+	value:      ^Expr,
+}
+
+// ABAP syntax: `WHEN condition THEN result` inside `COND` or `SWITCH`.
+Constructor_When_Clause_Expr :: struct {
+	using node: Expr,
+	condition:  ^Expr,
+	result:     ^Expr,
+}
+
+// ABAP syntax: `ELSE result` inside `COND` or `SWITCH`.
+Constructor_Else_Clause_Expr :: struct {
+	using node: Expr,
+	result:     ^Expr,
+}
+
+// ABAP syntax: `FOR name IN source [WHERE (...)] ...` or `FOR name = init THEN next UNTIL|WHILE condition ...`.
+Constructor_For_Clause_Expr :: struct {
+	using node: Expr,
+	kind:       Constructor_For_Kind,
+	variable:   string,
+	init:       ^Expr,
+	then_expr:  ^Expr,
+	condition:  ^Expr,
+	source:     ^Expr,
+	where_clause: ^Expr,
+	body:       [dynamic]^Expr,
+}
+
+// ABAP syntax: `WHERE condition` inside a constructor `FOR ... IN` clause.
+Constructor_Where_Clause_Expr :: struct {
+	using node: Expr,
+	condition:  ^Expr,
+}
+
+// ABAP syntax: `INIT name = value ...` inside `REDUCE`.
+Constructor_Init_Clause_Expr :: struct {
+	using node:  Expr,
+	assignments: [dynamic]^Expr,
+}
+
+// ABAP syntax: `NEXT name = value ...` inside `REDUCE`.
+Constructor_Next_Clause_Expr :: struct {
+	using node:  Expr,
+	assignments: [dynamic]^Expr,
+}
+
+// ABAP syntax: constructor component assignment `name = value`.
+Constructor_Named_Assignment_Expr :: struct {
+	using node: Expr,
+	name:       string,
+	value:      ^Expr,
+}
+
+// ABAP syntax: `BASE value` inside constructor expressions.
+Constructor_Base_Clause_Expr :: struct {
+	using node: Expr,
+	value:      ^Expr,
+}
+
+// ABAP syntax: `LINES OF itab [FROM a] [TO b] [USING KEY key]`.
+Constructor_Lines_Of_Clause_Expr :: struct {
+	using node: Expr,
+	source:     ^Expr,
+	from:       ^Expr,
+	to:         ^Expr,
+	using_key:  string,
+}
+
+// ABAP syntax: `expr OPTIONAL` inside constructor expressions.
+Constructor_Optional_Expr :: struct {
+	using node: Expr,
+	value:      ^Expr,
+}
+
+// ABAP syntax: `MAPPING ...` inside `CORRESPONDING`.
+Constructor_Corresponding_Mapping_Clause_Expr :: struct {
+	using node:  Expr,
+	assignments: [dynamic]^Expr,
+}
+
+// ABAP syntax: one `dst = src [DEFAULT value] [MAPPING ...] [EXCEPT ...]` mapping entry.
+Constructor_Corresponding_Mapping_Assignment_Expr :: struct {
+	using node:            Expr,
+	target:                string,
+	source:                ^Expr,
+	default_value:         ^Expr,
+	discarding_duplicates: bool,
+	mapping:               ^Expr,
+	except:                ^Expr,
+}
+
+// ABAP syntax: `EXCEPT name ...` inside `CORRESPONDING`.
+Constructor_Corresponding_Except_Clause_Expr :: struct {
+	using node: Expr,
+	names:      [dynamic]^Expr,
 }
 
 // ABAP syntax: inline declaration expression `DATA(name)`, mainly used at call sites for imported parameters.
@@ -234,8 +424,17 @@ Field_Symbol_Inline_Name_Expr :: struct {
 // ABAP syntax: DATA statement, for example `DATA name TYPE i.`.
 Data_Decl :: struct {
 	using node:  Decl,
+	kind:        Decl_Clause_Kind,
 	name:        string,
+	paren_length: ^Paren_Length_Clause,
+	length_clauses: [dynamic]Length_Clause,
 	type_clause: ^Data_Type_Clause, // nil if untyped
+	value_clause: ^Value_Clause,
+	occurs:      ^Expr,
+	include_ref: ^Expr,
+	as_name:     string,
+	renaming_suffix: string,
+	read_only:   bool,
 }
 
 // ABAP syntax: inline DATA statement, for example `DATA(name) = 3.`.
@@ -251,10 +450,28 @@ Data_Chained_Decl :: struct {
 	decls:      [dynamic]Data_Chained_Branch,
 }
 
+Decl_Clause_Kind :: enum {
+	Normal,
+	Begin_Group,
+	End_Group,
+	Include_Type,
+	Include_Structure,
+}
+
 // ABAP syntax: one entry inside a chained DATA statement, for example `a TYPE i` in `DATA: a TYPE i, b.`
 Data_Chained_Branch :: struct {
-	name:        string,
-	type_clause: ^Data_Type_Clause, // nil if untyped
+	kind:            Decl_Clause_Kind,
+	depth:           int,
+	name:            string,
+	paren_length:    ^Paren_Length_Clause,
+	length_clauses:  [dynamic]Length_Clause,
+	type_clause:     ^Data_Type_Clause, // nil if untyped
+	value_clause:    ^Value_Clause,
+	occurs:          ^Expr,
+	include_ref:     ^Expr,
+	as_name:         string,
+	renaming_suffix: string,
+	read_only:       bool,
 }
 
 // ABAP syntax: type-clause form keyword sequence, for example `TYPE REF TO`, `LIKE LINE OF`, or `TYPE STANDARD TABLE`.
@@ -263,9 +480,16 @@ Data_Type_Form :: enum {
 	Like,
 	Ref_To,
 	Like_Line_Of,
+	Type_Line_Of,
+	Table,
+	Like_Table,
 	Standard_Table,
 	Sorted_Table,
 	Hashed_Table,
+	Like_Standard_Table,
+	Like_Sorted_Table,
+	Like_Hashed_Table,
+	Range_Of,
 }
 
 // ABAP syntax: typed declaration addition such as `TYPE ty_line`, `LIKE other`, or `LIKE LINE OF itab`.
@@ -282,10 +506,16 @@ Types_Decl :: struct {
 
 // ABAP syntax: one TYPES entry, for example `ty_i TYPE i` in `TYPES: ty_i TYPE i.`
 Types_Clause :: struct {
+	kind:            Decl_Clause_Kind,
+	depth:           int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
 	length_clauses: [dynamic]Length_Clause,
 	type_clause:    ^Data_Type_Clause,
+	occurs:          ^Expr,
+	include_ref:     ^Expr,
+	as_name:         string,
+	renaming_suffix: string,
 }
 
 // ABAP syntax: CONSTANTS statement, for example `CONSTANTS c TYPE i VALUE 1.`
@@ -296,11 +526,17 @@ Constants_Decl :: struct {
 
 // ABAP syntax: one CONSTANTS entry, for example `c TYPE i VALUE 1`.
 Constants_Clause :: struct {
+	kind:           Decl_Clause_Kind,
+	depth:          int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
 	length_clauses: [dynamic]Length_Clause,
 	type_clause:    ^Data_Type_Clause,
 	value_clause:   ^Value_Clause,
+	occurs:         ^Expr,
+	include_ref:    ^Expr,
+	as_name:        string,
+	renaming_suffix: string,
 }
 
 // ABAP syntax: FIELD-SYMBOLS statement, for example `FIELD-SYMBOLS <fs> TYPE any.`
@@ -323,11 +559,17 @@ Statics_Decl :: struct {
 
 // ABAP syntax: one STATICS entry, for example `counter TYPE i VALUE 0`.
 Statics_Clause :: struct {
+	kind:           Decl_Clause_Kind,
+	depth:          int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
 	length_clauses: [dynamic]Length_Clause,
 	type_clause:    ^Data_Type_Clause,
 	value_clause:   ^Value_Clause,
+	occurs:         ^Expr,
+	include_ref:    ^Expr,
+	as_name:        string,
+	renaming_suffix: string,
 }
 
 // ABAP syntax: TABLES statement, for example `TABLES mara.`
@@ -448,11 +690,31 @@ Class_Data_Decl :: struct {
 
 // ABAP syntax: one CLASS-DATA entry, for example `gv TYPE i VALUE 0`.
 Class_Data_Clause :: struct {
+	kind:           Decl_Clause_Kind,
+	depth:          int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
 	length_clauses: [dynamic]Length_Clause,
 	type_clause:    ^Data_Type_Clause,
 	value_clause:   ^Value_Clause,
+	occurs:         ^Expr,
+	include_ref:    ^Expr,
+	as_name:        string,
+	renaming_suffix: string,
+	read_only:      bool,
+}
+
+// ABAP syntax: TYPE-POOLS statement, for example `TYPE-POOLS abap.`
+Type_Pools_Decl :: struct {
+	using node: Decl,
+	pools:      [dynamic]string,
+}
+
+// ABAP syntax: FUNCTION-POOL statement, for example `FUNCTION-POOL zfg MESSAGE-ID sv.`
+Function_Pool_Decl :: struct {
+	using node:  Decl,
+	name:        string,
+	message_id:  string,
 }
 
 // ABAP syntax: legacy parenthesized length after a declaration name, for example `c(14)` or `p_pass(30)`.
@@ -473,7 +735,8 @@ Length_Clause :: struct {
 
 // ABAP syntax: declaration value addition, for example `VALUE 1`.
 Value_Clause :: struct {
-	expr: ^Expr,
+	expr:       ^Expr,
+	is_initial: bool,
 }
 
 // ABAP syntax: selection parameter default addition, for example `DEFAULT 'X'`.
@@ -942,6 +1205,265 @@ Write_Stmt :: struct {
 	operands:   [dynamic]Write_Operand_Clause,
 }
 
+// ABAP syntax: `ASSERT condition.`
+Assert_Stmt :: struct {
+	using node: Stmt,
+	condition:  ^Expr,
+}
+
+// ABAP syntax: `CHECK condition.`
+Check_Stmt :: struct {
+	using node: Stmt,
+	condition:  ^Expr,
+}
+
+Flow_Kind :: enum {
+	Return,
+	Continue,
+	Exit,
+	Stop,
+}
+
+// ABAP syntax: simple control-flow statements such as `RETURN.`, `CONTINUE.`, `EXIT.`, or `STOP.`
+Flow_Stmt :: struct {
+	using node: Stmt,
+	kind:       Flow_Kind,
+}
+
+Transaction_Kind :: enum {
+	Commit,
+	Rollback,
+}
+
+// ABAP syntax: `COMMIT WORK [AND WAIT].` or `ROLLBACK WORK.`
+Transaction_Stmt :: struct {
+	using node: Stmt,
+	kind:       Transaction_Kind,
+	wait:       bool,
+}
+
+// ABAP syntax: one `DESCRIBE TABLE itab LINES target` entry.
+Describe_Entry_Clause :: struct {
+	source: ^Expr,
+	target: ^Expr,
+	table:  bool,
+}
+
+// ABAP syntax: `DESCRIBE ... .`
+Describe_Stmt :: struct {
+	using node: Stmt,
+	entries:    [dynamic]Describe_Entry_Clause,
+}
+
+Runtime_Kind :: enum {
+	Get,
+	Set,
+	Log_Point,
+	Set_Handler,
+	Get_Badi,
+	Export,
+	Import,
+	Receive,
+}
+
+Runtime_Subject :: enum {
+	None,
+	Run_Time_Field,
+	Parameter_ID_Field,
+	Cursor,
+	Reference,
+	PF_Status,
+	Titlebar,
+	Screen,
+	User_Command,
+	Badi,
+	Handler,
+	Update_Task_Local,
+}
+
+// ABAP syntax: compact runtime/environment statements such as `GET`, `SET`, `LOG-POINT`, `SET HANDLER`, and `GET BADI`.
+Runtime_Stmt :: struct {
+	using node: Stmt,
+	kind:       Runtime_Kind,
+	subject:    Runtime_Subject,
+	id:         ^Expr,
+	field:      ^Expr,
+	target:     ^Expr,
+	value:      ^Expr,
+	line:       ^Expr,
+	offset:     ^Expr,
+	excluding:  [dynamic]^Expr,
+	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: one `ID auth_field FIELD value` clause inside `AUTHORITY-CHECK OBJECT`.
+Authority_Check_ID_Clause :: struct {
+	id:    ^Expr,
+	field: ^Expr,
+}
+
+Raise_Kind :: enum {
+	Exception,
+	Event,
+}
+
+// ABAP syntax: `RAISE EXCEPTION ...` or `RAISE EVENT ...`.
+Raise_Stmt :: struct {
+	using node: Stmt,
+	kind:       Raise_Kind,
+	target:     ^Expr,
+	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: `AUTHORITY-CHECK ...`.
+Authority_Check_Stmt :: struct {
+	using node: Stmt,
+	operands:   [dynamic]^Expr,
+	object:     ^Expr,
+	ids:        [dynamic]Authority_Check_ID_Clause,
+}
+
+// ABAP syntax: `FIELD-GROUPS ...`.
+Field_Groups_Stmt :: struct {
+	using node: Stmt,
+	groups:     [dynamic]^Expr,
+}
+
+// ABAP syntax: `INSERT DUMMY INTO fg.`
+Insert_Dummy_Stmt :: struct {
+	using node: Stmt,
+	target:     ^Expr,
+}
+
+// ABAP syntax: dynpro `FIELD ...` statements.
+Field_Stmt :: struct {
+	using node: Stmt,
+	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: field-symbol assignment `ASSIGN ... TO <fs>.`
+Assign_Field_Stmt :: struct {
+	using node: Stmt,
+	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: object creation `CREATE OBJECT ref ...`.
+Create_Object_Stmt :: struct {
+	using node: Stmt,
+	operands:   [dynamic]^Expr,
+}
+
+Text_Transform_Kind :: enum {
+	Overlay,
+	Pack,
+	Unpack,
+	Convert,
+	Wait,
+}
+
+// ABAP syntax: compact classic string/runtime statements such as `OVERLAY`, `PACK`, `UNPACK`, `CONVERT`, and `WAIT`.
+Text_Transform_Stmt :: struct {
+	using node: Stmt,
+	kind:       Text_Transform_Kind,
+	operands:   [dynamic]^Expr,
+}
+
+List_Control_Kind :: enum {
+	Skip,
+	Uline,
+	New_Line,
+	New_Page,
+	Reserve,
+	Back,
+	Format,
+	Position,
+	Hide,
+}
+
+// ABAP syntax: list-control statements such as `SKIP`, `ULINE`, `NEW-LINE`, `NEW-PAGE`, and `RESERVE`.
+List_Control_Stmt :: struct {
+	using node: Stmt,
+	kind:       List_Control_Kind,
+	operands:   [dynamic]^Expr,
+}
+
+Line_Kind :: enum {
+	Read,
+	Modify,
+}
+
+Line_Field_Value_Clause :: struct {
+	field:  ^Expr,
+	target: ^Expr,
+}
+
+// ABAP syntax: list-buffer line access such as `READ LINE n ...` or `MODIFY CURRENT LINE ...`.
+Line_Stmt :: struct {
+	using node: Stmt,
+	kind:       Line_Kind,
+	current:    bool,
+	line:       ^Expr,
+	index:      ^Expr,
+	into:       ^Expr,
+	fields:     [dynamic]Line_Field_Value_Clause,
+}
+
+// ABAP syntax: `DEFINE name. ... END-OF-DEFINITION.`
+Macro_Def_Stmt :: struct {
+	using node: Stmt,
+	name:       string,
+	body:       string,
+}
+
+// ABAP syntax: macro invocation such as `macro arg1 arg2.`
+Macro_Call_Stmt :: struct {
+	using node: Stmt,
+	name:       string,
+	args:       [dynamic]^Expr,
+}
+
+Oop_Simple_Kind :: enum {
+	Class_Section,
+	Methods,
+	Class_Methods,
+	Interfaces,
+	Events,
+	Class_Events,
+	Aliases,
+	Class_Deferred,
+	Interface_Deferred,
+	Class_Load,
+	Interface_Load,
+}
+
+Oop_Signature_Kind :: enum {
+	Importing,
+	Exporting,
+	Changing,
+	Returning,
+	Raising,
+	Exceptions,
+	For,
+}
+
+Oop_Signature_Clause :: struct {
+	kind:   Oop_Signature_Kind,
+	values: [dynamic]^Expr,
+}
+
+Oop_Member_Clause :: struct {
+	name:       string,
+	signatures: [dynamic]Oop_Signature_Clause,
+}
+
+// ABAP syntax: class/interface member declarations handled as simple OOP statements.
+Oop_Simple_Stmt :: struct {
+	using node: Stmt,
+	kind:       Oop_Simple_Kind,
+	text:       string,
+	members:    [dynamic]Oop_Member_Clause,
+}
+
 // ABAP syntax: `ELSEIF condition.` arm inside an IF block.
 Elseif_Clause :: struct {
 	range:     tokenizer.Range,
@@ -977,6 +1499,7 @@ Case_Stmt :: struct {
 	using node: Stmt,
 	expr:       ^Expr,
 	whens:      [dynamic]^When_Clause,
+	recovery:   [dynamic]^Stmt,
 	is_type_of: bool,
 }
 
@@ -1000,6 +1523,7 @@ Loop_Stmt :: struct {
 	source:       ^Expr,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 // ABAP syntax: group-processing block `AT FIRST. ... ENDAT.` or `AT NEW field. ... ENDAT.`
@@ -1037,6 +1561,7 @@ Class_Decl :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Interface_Decl :: struct {
@@ -1044,6 +1569,7 @@ Interface_Decl :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Method_Decl :: struct {
@@ -1051,6 +1577,9 @@ Method_Decl :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
+	is_amdp:      bool,
+	amdp_body:    string,
 }
 
 Form_Decl :: struct {
@@ -1058,6 +1587,7 @@ Form_Decl :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Function_Decl :: struct {
@@ -1065,6 +1595,7 @@ Function_Decl :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Module_Decl :: struct {
@@ -1072,6 +1603,7 @@ Module_Decl :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Event_Block_Stmt :: struct {
@@ -1079,6 +1611,7 @@ Event_Block_Stmt :: struct {
 	kind:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Enhancement_Stmt :: struct {
@@ -1086,6 +1619,7 @@ Enhancement_Stmt :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Enhancement_Section_Stmt :: struct {
@@ -1093,6 +1627,7 @@ Enhancement_Section_Stmt :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Test_Seam_Stmt :: struct {
@@ -1100,6 +1635,7 @@ Test_Seam_Stmt :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
 }
 
 Test_Injection_Stmt :: struct {
@@ -1107,6 +1643,37 @@ Test_Injection_Stmt :: struct {
 	name:         string,
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
+	header_text:  string,
+}
+
+// ABAP syntax: one SELECT projection, optionally with `AS alias`.
+Select_Projection_Clause :: struct {
+	value: ^Expr,
+	alias: string,
+}
+
+Select_Join_Kind :: enum {
+	Inner,
+	Left_Outer,
+	Right_Outer,
+	Full_Outer,
+	Cross,
+}
+
+// ABAP syntax: one joined Open SQL data source and optional `ON` condition.
+Select_Join_Clause :: struct {
+	kind:   Select_Join_Kind,
+	source: ^Expr,
+	alias:  string,
+	on:     ^Expr,
+}
+
+// ABAP syntax: Open SQL `FROM` source with optional alias and joins.
+Select_Source_Clause :: struct {
+	source:  ^Expr,
+	alias:   string,
+	dynamic_source: bool,
+	joins:   [dynamic]Select_Join_Clause,
 }
 
 Select_Result_Kind :: enum {
@@ -1128,19 +1695,42 @@ Select_Query_Clause :: struct {
 	single:          bool,
 	is_distinct:     bool,
 	projections:     [dynamic]^Expr,
+	projection_clauses: [dynamic]Select_Projection_Clause,
 	source:          ^Expr,
+	source_clause:   ^Select_Source_Clause,
 	result:          ^Select_Result_Clause,
 	where_cond:      ^Expr,
 	dynamic_where:   bool,
 	for_all_entries: ^Expr,
 	package_size:    ^Expr,
 	up_to_rows:      ^Expr,
+	set_ops:         [dynamic]Select_Set_Clause,
+}
+
+Select_Set_Kind :: enum {
+	Union,
+	Intersect,
+	Except,
+}
+
+// ABAP syntax: `UNION`, `INTERSECT`, or `EXCEPT` followed by another SELECT query.
+Select_Set_Clause :: struct {
+	kind:  Select_Set_Kind,
+	all:   bool,
+	query: Select_Query_Clause,
+}
+
+// ABAP syntax: one `WITH name AS ( SELECT ... )` common table expression.
+Select_Cte_Clause :: struct {
+	name:  string,
+	query: Select_Query_Clause,
 }
 
 // ABAP syntax: WITH common table expression prefix before the main SELECT query.
 Select_With_Clause :: struct {
 	range:      tokenizer.Range,
 	query_count: int,
+	entries:    [dynamic]Select_Cte_Clause,
 }
 
 // ABAP syntax: `SELECT ... .` optionally followed by a loop body and `ENDSELECT.`.
@@ -1232,6 +1822,38 @@ Insert_Stmt :: struct {
 	assignments:             [dynamic]Sql_Assignment_Clause,
 	from_table:              bool,
 	accepting_duplicate_keys: bool,
+}
+
+// ABAP syntax: `APPEND wa TO itab` or `APPEND LINES OF src TO dst`.
+Append_Stmt :: struct {
+	using node:     Stmt,
+	source:         ^Expr,
+	target:         ^Expr,
+	assigning:      ^Expr,
+	reference_into: ^Expr,
+	lines_of:       bool,
+	sorted:         bool,
+}
+
+// ABAP syntax: `MODIFY itab FROM wa ...` or database `MODIFY dbtab FROM wa`.
+Modify_Stmt :: struct {
+	using node:  Stmt,
+	target:      ^Expr,
+	source:      ^Expr,
+	index:       ^Expr,
+	where_cond:  ^Expr,
+	transporting: [dynamic]^Expr,
+	from_table:  bool,
+}
+
+// ABAP syntax: `SORT itab [BY fields ...]`.
+Sort_Stmt :: struct {
+	using node: Stmt,
+	target:     ^Expr,
+	fields:     [dynamic]^Expr,
+	stable:     bool,
+	as_text:    bool,
+	descending: bool,
 }
 
 // ABAP syntax: `UPDATE dbtab FROM wa` or `UPDATE dbtab SET col = value WHERE cond`.
@@ -1336,6 +1958,32 @@ Textpool_Stmt :: struct {
 	language:   ^Expr,
 }
 
+// ABAP syntax: native SQL island `EXEC SQL. ... ENDEXEC.`
+Exec_Sql_Stmt :: struct {
+	using node:  Stmt,
+	body:        string,
+	header_range: tokenizer.Range,
+}
+
+Generate_Kind :: enum {
+	Subroutine_Pool,
+	Dynpro,
+}
+
+// ABAP syntax: generated-source statements such as `GENERATE SUBROUTINE POOL ...` or `GENERATE DYNPRO ...`.
+Generate_Stmt :: struct {
+	using node: Stmt,
+	kind:       Generate_Kind,
+	source:     ^Expr,
+	name:       ^Expr,
+	program:    ^Expr,
+	dynpro:     ^Expr,
+	message:    ^Expr,
+	line:       ^Expr,
+	word:       ^Expr,
+	offset:     ^Expr,
+}
+
 // ABAP syntax: no valid source form; recovered malformed statement text.
 Invalid_Stmt :: struct {
 	using node: Stmt,
@@ -1354,6 +2002,8 @@ Any_Node :: union {
 	^Paren_Expr,
 	^Ident_Expr,
 	^Literal_Expr,
+	^Type_Ref_Expr,
+	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,
 	^Substring_Expr,
@@ -1363,6 +2013,24 @@ Any_Node :: union {
 	^Call_Named_Arg_Expr,
 	^Call_Positional_Arg_Expr,
 	^Constructor_Expr,
+	^Is_Predicate_Expr,
+	^Instance_Of_Predicate_Expr,
+	^Between_Expr,
+	^Let_Expr,
+	^Constructor_Let_Binding_Expr,
+	^Constructor_When_Clause_Expr,
+	^Constructor_Else_Clause_Expr,
+	^Constructor_For_Clause_Expr,
+	^Constructor_Where_Clause_Expr,
+	^Constructor_Init_Clause_Expr,
+	^Constructor_Next_Clause_Expr,
+	^Constructor_Named_Assignment_Expr,
+	^Constructor_Base_Clause_Expr,
+	^Constructor_Lines_Of_Clause_Expr,
+	^Constructor_Optional_Expr,
+	^Constructor_Corresponding_Mapping_Clause_Expr,
+	^Constructor_Corresponding_Mapping_Assignment_Expr,
+	^Constructor_Corresponding_Except_Clause_Expr,
 	^Data_Inline_Name_Expr,
 	^Field_Symbol_Inline_Name_Expr,
 	^Data_Decl,
@@ -1378,6 +2046,8 @@ Any_Node :: union {
 	^Select_Options_Decl,
 	^Controls_Decl,
 	^Class_Data_Decl,
+	^Type_Pools_Decl,
+	^Function_Pool_Decl,
 	^Assign_Stmt,
 	^Downcast_Assign_Stmt,
 	^Expr_Stmt,
@@ -1404,6 +2074,25 @@ Any_Node :: union {
 	^Submit_Stmt,
 	^Message_Stmt,
 	^Write_Stmt,
+	^Assert_Stmt,
+	^Check_Stmt,
+	^Flow_Stmt,
+	^Transaction_Stmt,
+	^Describe_Stmt,
+	^Runtime_Stmt,
+	^Raise_Stmt,
+	^Authority_Check_Stmt,
+	^Field_Groups_Stmt,
+	^Insert_Dummy_Stmt,
+	^Field_Stmt,
+	^Assign_Field_Stmt,
+	^Create_Object_Stmt,
+	^Text_Transform_Stmt,
+	^List_Control_Stmt,
+	^Line_Stmt,
+	^Macro_Def_Stmt,
+	^Macro_Call_Stmt,
+	^Oop_Simple_Stmt,
 	^If_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
@@ -1427,12 +2116,17 @@ Any_Node :: union {
 	^Fetch_Stmt,
 	^Close_Cursor_Stmt,
 	^Insert_Stmt,
+	^Append_Stmt,
+	^Modify_Stmt,
+	^Sort_Stmt,
 	^Update_Stmt,
 	^Delete_Stmt,
 	^Read_Table_Stmt,
 	^Dataset_Stmt,
 	^Report_Stmt,
 	^Textpool_Stmt,
+	^Exec_Sql_Stmt,
+	^Generate_Stmt,
 	^Invalid_Stmt,
 }
 
@@ -1448,6 +2142,8 @@ Any_Expr :: union {
 	^Paren_Expr,
 	^Ident_Expr,
 	^Literal_Expr,
+	^Type_Ref_Expr,
+	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,
 	^Substring_Expr,
@@ -1457,6 +2153,24 @@ Any_Expr :: union {
 	^Call_Named_Arg_Expr,
 	^Call_Positional_Arg_Expr,
 	^Constructor_Expr,
+	^Is_Predicate_Expr,
+	^Instance_Of_Predicate_Expr,
+	^Between_Expr,
+	^Let_Expr,
+	^Constructor_Let_Binding_Expr,
+	^Constructor_When_Clause_Expr,
+	^Constructor_Else_Clause_Expr,
+	^Constructor_For_Clause_Expr,
+	^Constructor_Where_Clause_Expr,
+	^Constructor_Init_Clause_Expr,
+	^Constructor_Next_Clause_Expr,
+	^Constructor_Named_Assignment_Expr,
+	^Constructor_Base_Clause_Expr,
+	^Constructor_Lines_Of_Clause_Expr,
+	^Constructor_Optional_Expr,
+	^Constructor_Corresponding_Mapping_Clause_Expr,
+	^Constructor_Corresponding_Mapping_Assignment_Expr,
+	^Constructor_Corresponding_Except_Clause_Expr,
 	^Data_Inline_Name_Expr,
 	^Field_Symbol_Inline_Name_Expr,
 }
@@ -1479,6 +2193,8 @@ Any_Stmt :: union {
 	^Select_Options_Decl,
 	^Controls_Decl,
 	^Class_Data_Decl,
+	^Type_Pools_Decl,
+	^Function_Pool_Decl,
 	^Clear_Stmt,
 	^Refresh_Stmt,
 	^Free_Stmt,
@@ -1502,6 +2218,25 @@ Any_Stmt :: union {
 	^Submit_Stmt,
 	^Message_Stmt,
 	^Write_Stmt,
+	^Assert_Stmt,
+	^Check_Stmt,
+	^Flow_Stmt,
+	^Transaction_Stmt,
+	^Describe_Stmt,
+	^Runtime_Stmt,
+	^Raise_Stmt,
+	^Authority_Check_Stmt,
+	^Field_Groups_Stmt,
+	^Insert_Dummy_Stmt,
+	^Field_Stmt,
+	^Assign_Field_Stmt,
+	^Create_Object_Stmt,
+	^Text_Transform_Stmt,
+	^List_Control_Stmt,
+	^Line_Stmt,
+	^Macro_Def_Stmt,
+	^Macro_Call_Stmt,
+	^Oop_Simple_Stmt,
 	^If_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
@@ -1525,10 +2260,15 @@ Any_Stmt :: union {
 	^Fetch_Stmt,
 	^Close_Cursor_Stmt,
 	^Insert_Stmt,
+	^Append_Stmt,
+	^Modify_Stmt,
+	^Sort_Stmt,
 	^Update_Stmt,
 	^Delete_Stmt,
 	^Read_Table_Stmt,
 	^Dataset_Stmt,
 	^Report_Stmt,
 	^Textpool_Stmt,
+	^Exec_Sql_Stmt,
+	^Generate_Stmt,
 }

@@ -45,11 +45,19 @@ emit_newline :: proc(p: ^Printer) {
 	}
 }
 
+emit_leading_comments :: proc(p: ^Printer, node: ^Node) {
+	for comment in node.leading_comments {
+		emit(p, comment)
+		emit_newline(p)
+	}
+}
+
 emit_node :: proc(p: ^Printer, node: ^Node) {
 	if node == nil {
 		return
 	}
-	#partial switch n in node.derived {
+	emit_leading_comments(p, node)
+	switch n in node.derived {
 	case ^File:
 		emit_file(p, n)
 	case ^Bad_Expr:
@@ -87,6 +95,11 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, n.name)
 	case ^Literal_Expr:
 		emit(p, n.value)
+	case ^Type_Ref_Expr:
+		emit_type_ref_expr(p, n)
+	case ^Host_Expr:
+		emit(p, "@")
+		emit_node(p, n.value)
 	case ^Table_Expr:
 		emit_node(p, n.table)
 		emit(p, "[")
@@ -137,6 +150,76 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, "( ")
 		emit_expr_list(p, n.args, " ")
 		emit(p, " )")
+	case ^Is_Predicate_Expr:
+		emit_node(p, n.subject)
+		emit(p, " IS ")
+		if n.negated {
+			emit(p, "NOT ")
+		}
+		emit(p, is_predicate_kind_text(n.kind))
+	case ^Instance_Of_Predicate_Expr:
+		emit_node(p, n.subject)
+		emit(p, " IS ")
+		if n.negated {
+			emit(p, "NOT ")
+		}
+		emit(p, "INSTANCE OF ")
+		emit_node(p, n.type_ref)
+	case ^Between_Expr:
+		emit_node(p, n.subject)
+		emit(p, " BETWEEN ")
+		emit_node(p, n.low)
+		emit(p, " AND ")
+		emit_node(p, n.high)
+	case ^Let_Expr:
+		emit(p, "LET ")
+		emit_expr_list(p, n.bindings, " ")
+		emit(p, " IN ")
+		emit_expr_list(p, n.body, " ")
+	case ^Constructor_Let_Binding_Expr:
+		emit(p, n.name)
+		emit(p, " = ")
+		emit_node(p, n.value)
+	case ^Constructor_When_Clause_Expr:
+		emit(p, "WHEN ")
+		emit_node(p, n.condition)
+		emit(p, " THEN ")
+		emit_node(p, n.result)
+	case ^Constructor_Else_Clause_Expr:
+		emit(p, "ELSE ")
+		emit_node(p, n.result)
+	case ^Constructor_For_Clause_Expr:
+		emit_constructor_for_clause(p, n)
+	case ^Constructor_Where_Clause_Expr:
+		emit(p, "WHERE ( ")
+		emit_node(p, n.condition)
+		emit(p, " )")
+	case ^Constructor_Init_Clause_Expr:
+		emit(p, "INIT ")
+		emit_expr_list(p, n.assignments, " ")
+	case ^Constructor_Next_Clause_Expr:
+		emit(p, "NEXT ")
+		emit_expr_list(p, n.assignments, " ")
+	case ^Constructor_Named_Assignment_Expr:
+		emit(p, n.name)
+		emit(p, " = ")
+		emit_node(p, n.value)
+	case ^Constructor_Base_Clause_Expr:
+		emit(p, "BASE ")
+		emit_node(p, n.value)
+	case ^Constructor_Lines_Of_Clause_Expr:
+		emit_constructor_lines_of_clause(p, n)
+	case ^Constructor_Optional_Expr:
+		emit_node(p, n.value)
+		emit(p, " OPTIONAL")
+	case ^Constructor_Corresponding_Mapping_Clause_Expr:
+		emit(p, "MAPPING ")
+		emit_expr_list(p, n.assignments, " ")
+	case ^Constructor_Corresponding_Mapping_Assignment_Expr:
+		emit_constructor_mapping_assignment(p, n)
+	case ^Constructor_Corresponding_Except_Clause_Expr:
+		emit(p, "EXCEPT ")
+		emit_expr_list(p, n.names, " ")
 	case ^Data_Inline_Name_Expr:
 		emit(p, "DATA(")
 		emit(p, n.name)
@@ -175,6 +258,10 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_controls_decl(p, n)
 	case ^Class_Data_Decl:
 		emit_class_data_decl(p, n)
+	case ^Type_Pools_Decl:
+		emit_type_pools_decl(p, n)
+	case ^Function_Pool_Decl:
+		emit_function_pool_decl(p, n)
 	case ^Assign_Stmt:
 		emit_node(p, n.lhs)
 		emit(p, " = ")
@@ -239,6 +326,94 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_message_stmt(p, n)
 	case ^Write_Stmt:
 		emit_write_stmt(p, n)
+	case ^Assert_Stmt:
+		emit(p, "ASSERT ")
+		emit_node(p, n.condition)
+		emit(p, ".")
+	case ^Check_Stmt:
+		emit(p, "CHECK ")
+		emit_node(p, n.condition)
+		emit(p, ".")
+	case ^Flow_Stmt:
+		emit(p, flow_kind_text(n.kind))
+		emit(p, ".")
+	case ^Transaction_Stmt:
+		emit(p, transaction_kind_text(n.kind))
+		emit(p, " WORK")
+		if n.wait {
+			emit(p, " AND WAIT")
+		}
+		emit(p, ".")
+	case ^Describe_Stmt:
+		emit_describe_stmt(p, n)
+	case ^Runtime_Stmt:
+		emit_runtime_stmt(p, n)
+	case ^Raise_Stmt:
+		emit_raise_stmt(p, n)
+	case ^Authority_Check_Stmt:
+		emit_authority_check_stmt(p, n)
+	case ^Field_Groups_Stmt:
+		emit(p, "FIELD-GROUPS")
+		if len(n.groups) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.groups, " ")
+		}
+		emit(p, ".")
+	case ^Insert_Dummy_Stmt:
+		emit(p, "INSERT DUMMY")
+		if n.target != nil {
+			emit(p, " INTO ")
+			emit_node(p, n.target)
+		}
+		emit(p, ".")
+	case ^Field_Stmt:
+		emit(p, "FIELD")
+		if len(n.operands) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.operands, " ")
+		}
+		emit(p, ".")
+	case ^Assign_Field_Stmt:
+		emit(p, "ASSIGN")
+		if len(n.operands) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.operands, " ")
+		}
+		emit(p, ".")
+	case ^Create_Object_Stmt:
+		emit(p, "CREATE OBJECT")
+		if len(n.operands) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.operands, " ")
+		}
+		emit(p, ".")
+	case ^Text_Transform_Stmt:
+		emit(p, text_transform_kind_text(n.kind))
+		if len(n.operands) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.operands, " ")
+		}
+		emit(p, ".")
+	case ^List_Control_Stmt:
+		emit(p, list_control_kind_text(n.kind))
+		if len(n.operands) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.operands, " ")
+		}
+		emit(p, ".")
+	case ^Line_Stmt:
+		emit_line_stmt(p, n)
+	case ^Macro_Def_Stmt:
+		emit_macro_def_stmt(p, n)
+	case ^Macro_Call_Stmt:
+		emit(p, n.name)
+		if len(n.args) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.args, " ")
+		}
+		emit(p, ".")
+	case ^Oop_Simple_Stmt:
+		emit_oop_simple_stmt(p, n)
 	case ^If_Stmt:
 		emit_if_stmt(p, n)
 	case ^Case_Stmt:
@@ -256,8 +431,12 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		}
 		emit_block(p, n.body, "ENDDO")
 	case ^Loop_Stmt:
-		emit(p, "LOOP AT ")
-		emit_node(p, n.source)
+		if n.header_text != "" {
+			emit(p, n.header_text)
+		} else {
+			emit(p, "LOOP AT ")
+			emit_node(p, n.source)
+		}
 		emit_block(p, n.body, "ENDLOOP")
 	case ^At_Stmt:
 		emit(p, "AT ")
@@ -270,31 +449,71 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Try_Stmt:
 		emit_try_stmt(p, n)
 	case ^Class_Decl:
-		emit_named_block(p, "CLASS", n.name, n.body, "ENDCLASS")
+		emit_named_block(p, "CLASS", n.name, n.header_text, n.body, "ENDCLASS")
 	case ^Interface_Decl:
-		emit_named_block(p, "INTERFACE", n.name, n.body, "ENDINTERFACE")
+		emit_named_block(p, "INTERFACE", n.name, n.header_text, n.body, "ENDINTERFACE")
 	case ^Method_Decl:
-		emit_named_block(p, "METHOD", n.name, n.body, "ENDMETHOD")
+		if n.is_amdp {
+			emit_amdp_method(p, n)
+		} else {
+			emit_named_block(p, "METHOD", n.name, n.header_text, n.body, "ENDMETHOD")
+		}
 	case ^Form_Decl:
-		emit_named_block(p, "FORM", n.name, n.body, "ENDFORM")
+		emit_named_block(p, "FORM", n.name, n.header_text, n.body, "ENDFORM")
 	case ^Function_Decl:
-		emit_named_block(p, "FUNCTION", n.name, n.body, "ENDFUNCTION")
+		emit_named_block(p, "FUNCTION", n.name, n.header_text, n.body, "ENDFUNCTION")
 	case ^Module_Decl:
-		emit_named_block(p, "MODULE", n.name, n.body, "ENDMODULE")
+		emit_named_block(p, "MODULE", n.name, n.header_text, n.body, "ENDMODULE")
 	case ^Event_Block_Stmt:
-		emit_named_block(p, n.kind, "", n.body, "")
+		emit_named_block(p, n.kind, "", n.header_text, n.body, "")
 	case ^Enhancement_Stmt:
-		emit_named_block(p, "ENHANCEMENT", n.name, n.body, "ENDENHANCEMENT")
+		emit_named_block(p, "ENHANCEMENT", n.name, n.header_text, n.body, "ENDENHANCEMENT")
 	case ^Enhancement_Section_Stmt:
-		emit_named_block(p, "ENHANCEMENT-SECTION", n.name, n.body, "END-ENHANCEMENT-SECTION")
+		emit_named_block(p, "ENHANCEMENT-SECTION", n.name, n.header_text, n.body, "END-ENHANCEMENT-SECTION")
 	case ^Test_Seam_Stmt:
-		emit_named_block(p, "TEST-SEAM", n.name, n.body, "END-TEST-SEAM")
+		emit_named_block(p, "TEST-SEAM", n.name, n.header_text, n.body, "END-TEST-SEAM")
 	case ^Test_Injection_Stmt:
-		emit_named_block(p, "TEST-INJECTION", n.name, n.body, "END-TEST-INJECTION")
+		emit_named_block(p, "TEST-INJECTION", n.name, n.header_text, n.body, "END-TEST-INJECTION")
+	case ^Select_Stmt:
+		emit_select_stmt(p, n)
+	case ^Open_Cursor_Stmt:
+		emit_open_cursor_stmt(p, n)
+	case ^Fetch_Stmt:
+		emit_fetch_stmt(p, n)
+	case ^Close_Cursor_Stmt:
+		emit(p, "CLOSE CURSOR ")
+		emit_node(p, n.handle)
+		emit(p, ".")
+	case ^Insert_Stmt:
+		emit_insert_stmt(p, n)
+	case ^Append_Stmt:
+		emit_append_stmt(p, n)
+	case ^Modify_Stmt:
+		emit_modify_stmt(p, n)
+	case ^Sort_Stmt:
+		emit_sort_stmt(p, n)
+	case ^Update_Stmt:
+		emit_update_stmt(p, n)
+	case ^Delete_Stmt:
+		emit_delete_stmt(p, n)
+	case ^Read_Table_Stmt:
+		emit_read_table_stmt(p, n)
+	case ^Dataset_Stmt:
+		emit_dataset_stmt(p, n)
+	case ^Report_Stmt:
+		emit_report_stmt(p, n)
+	case ^Textpool_Stmt:
+		emit_textpool_stmt(p, n)
+	case ^Exec_Sql_Stmt:
+		emit_exec_sql_stmt(p, n)
+	case ^Generate_Stmt:
+		emit_generate_stmt(p, n)
 	case ^Invalid_Stmt:
 		emit(p, "?")
-	case:
-		emit(p, "?")
+	}
+	if node.trailing_comment != "" {
+		emit_space(p)
+		emit(p, node.trailing_comment)
 	}
 }
 
@@ -356,10 +575,147 @@ emit_template_interpolation :: proc(p: ^Printer, expr: ^Template_Interpolation_E
 	emit(p, " }")
 }
 
+emit_type_ref_expr :: proc(p: ^Printer, expr: ^Type_Ref_Expr) {
+	if expr.name == "" {
+		emit(p, expr.text)
+		return
+	}
+	emit(p, expr.name)
+	if len(expr.keys) > 0 {
+		for key in expr.keys {
+			emit_type_ref_key_clause(p, key)
+		}
+	} else if expr.key != nil {
+		emit_type_ref_key_clause(p, expr.key)
+	}
+}
+
+emit_type_ref_key_clause :: proc(p: ^Printer, key: ^Type_Ref_Key_Clause) {
+	emit(p, " WITH ")
+	switch key.kind {
+	case .Default:
+		emit(p, "DEFAULT KEY")
+		return
+	case .Empty:
+		emit(p, "EMPTY KEY")
+		return
+	case .Unique:
+		emit(p, "UNIQUE ")
+	case .Non_Unique:
+		emit(p, "NON-UNIQUE ")
+	case .Generic:
+	}
+	if key.default_key {
+		emit(p, "DEFAULT KEY")
+		return
+	}
+	if key.sorted {
+		emit(p, "SORTED ")
+	} else if key.hashed {
+		emit(p, "HASHED ")
+	}
+	emit(p, "KEY")
+	if key.name != "" {
+		emit_space(p)
+		emit(p, key.name)
+	}
+	if len(key.components) > 0 {
+		emit(p, " COMPONENTS " if key.name != "" else " ")
+		for component, i in key.components {
+			if i > 0 {
+				emit_space(p)
+			}
+			emit(p, component)
+		}
+	}
+}
+
+emit_constructor_for_clause :: proc(p: ^Printer, expr: ^Constructor_For_Clause_Expr) {
+	emit(p, "FOR ")
+	emit(p, expr.variable)
+	if expr.source != nil {
+		emit(p, " IN ")
+		emit_node(p, expr.source)
+		if expr.where_clause != nil {
+			emit_space(p)
+			emit_node(p, expr.where_clause)
+		}
+	} else {
+		emit(p, " = ")
+		emit_node(p, expr.init)
+		if expr.then_expr != nil {
+			emit(p, " THEN ")
+			emit_node(p, expr.then_expr)
+		}
+		emit(p, " ")
+		emit(p, "WHILE" if expr.kind == .For_Then_While else "UNTIL")
+		emit_space(p)
+		emit_node(p, expr.condition)
+	}
+	if len(expr.body) > 0 {
+		emit_space(p)
+		emit_expr_list(p, expr.body, " ")
+	}
+}
+
+emit_constructor_lines_of_clause :: proc(p: ^Printer, expr: ^Constructor_Lines_Of_Clause_Expr) {
+	emit(p, "LINES OF ")
+	emit_node(p, expr.source)
+	if expr.from != nil {
+		emit(p, " FROM ")
+		emit_node(p, expr.from)
+	}
+	if expr.to != nil {
+		emit(p, " TO ")
+		emit_node(p, expr.to)
+	}
+	if expr.using_key != "" {
+		emit(p, " USING KEY ")
+		emit(p, expr.using_key)
+	}
+}
+
+emit_constructor_mapping_assignment :: proc(
+	p: ^Printer,
+	expr: ^Constructor_Corresponding_Mapping_Assignment_Expr,
+) {
+	emit(p, expr.target)
+	emit(p, " = ")
+	if expr.source != nil {
+		emit_node(p, expr.source)
+	} else if expr.default_value != nil {
+		emit(p, "DEFAULT ")
+		emit_node(p, expr.default_value)
+	}
+	if expr.discarding_duplicates {
+		emit(p, " DISCARDING DUPLICATES")
+	}
+	if expr.source != nil && expr.default_value != nil {
+		emit(p, " DEFAULT ")
+		emit_node(p, expr.default_value)
+	}
+	if expr.mapping != nil {
+		emit_space(p)
+		emit_node(p, expr.mapping)
+	}
+	if expr.except != nil {
+		emit_space(p)
+		emit_node(p, expr.except)
+	}
+}
+
 emit_data_decl :: proc(p: ^Printer, decl: ^Data_Decl) {
 	emit(p, "DATA ")
-	emit(p, decl.name)
+	emit_decl_prefix(p, decl.kind, decl.name, decl.include_ref)
+	emit_paren_length(p, decl.paren_length)
+	emit_occurs(p, decl.occurs)
+	emit_include_additions(p, decl.as_name, decl.renaming_suffix)
+	emit_length_clauses(p, decl.length_clauses)
 	emit_type_clause(p, decl.type_clause)
+	emit_value_clause(p, decl.value_clause)
+	if decl.read_only {
+		emit(p, " READ-ONLY")
+	}
 	emit(p, ".")
 }
 
@@ -369,8 +725,16 @@ emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit(p, branch.name)
+		emit_decl_prefix(p, branch.kind, branch.name, branch.include_ref)
+		emit_paren_length(p, branch.paren_length)
+		emit_occurs(p, branch.occurs)
+		emit_include_additions(p, branch.as_name, branch.renaming_suffix)
+		emit_length_clauses(p, branch.length_clauses)
 		emit_type_clause(p, branch.type_clause)
+		emit_value_clause(p, branch.value_clause)
+		if branch.read_only {
+			emit(p, " READ-ONLY")
+		}
 	}
 	emit(p, ".")
 }
@@ -382,8 +746,10 @@ emit_types_decl :: proc(p: ^Printer, decl: ^Types_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit(p, clause.name)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
 		emit_paren_length(p, clause.paren_length)
+		emit_occurs(p, clause.occurs)
+		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
 	}
@@ -397,8 +763,10 @@ emit_constants_decl :: proc(p: ^Printer, decl: ^Constants_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit(p, clause.name)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
 		emit_paren_length(p, clause.paren_length)
+		emit_occurs(p, clause.occurs)
+		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
 		emit_value_clause(p, clause.value_clause)
@@ -426,8 +794,10 @@ emit_statics_decl :: proc(p: ^Printer, decl: ^Statics_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit(p, clause.name)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
 		emit_paren_length(p, clause.paren_length)
+		emit_occurs(p, clause.occurs)
+		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
 		emit_value_clause(p, clause.value_clause)
@@ -534,13 +904,77 @@ emit_class_data_decl :: proc(p: ^Printer, decl: ^Class_Data_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit(p, clause.name)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
 		emit_paren_length(p, clause.paren_length)
+		emit_occurs(p, clause.occurs)
+		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
 		emit_value_clause(p, clause.value_clause)
+		if clause.read_only {
+			emit(p, " READ-ONLY")
+		}
 	}
 	emit(p, ".")
+}
+
+emit_type_pools_decl :: proc(p: ^Printer, decl: ^Type_Pools_Decl) {
+	emit(p, "TYPE-POOLS")
+	emit(p, ": " if len(decl.pools) > 1 else " ")
+	for pool, i in decl.pools {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		emit(p, pool)
+	}
+	emit(p, ".")
+}
+
+emit_function_pool_decl :: proc(p: ^Printer, decl: ^Function_Pool_Decl) {
+	emit(p, "FUNCTION-POOL ")
+	emit(p, decl.name)
+	if decl.message_id != "" {
+		emit(p, " MESSAGE-ID ")
+		emit(p, decl.message_id)
+	}
+	emit(p, ".")
+}
+
+emit_decl_prefix :: proc(p: ^Printer, kind: Decl_Clause_Kind, name: string, include_ref: ^Expr) {
+	switch kind {
+	case .Begin_Group:
+		emit(p, "BEGIN OF ")
+		emit(p, name)
+	case .End_Group:
+		emit(p, "END OF ")
+		emit(p, name)
+	case .Include_Type:
+		emit(p, "INCLUDE TYPE ")
+		emit_node(p, include_ref)
+	case .Include_Structure:
+		emit(p, "INCLUDE STRUCTURE ")
+		emit_node(p, include_ref)
+	case .Normal:
+		emit(p, name)
+	}
+}
+
+emit_include_additions :: proc(p: ^Printer, as_name, suffix: string) {
+	if as_name != "" {
+		emit(p, " AS ")
+		emit(p, as_name)
+	}
+	if suffix != "" {
+		emit(p, " RENAMING WITH SUFFIX ")
+		emit(p, suffix)
+	}
+}
+
+emit_occurs :: proc(p: ^Printer, occurs: ^Expr) {
+	if occurs != nil {
+		emit(p, " OCCURS ")
+		emit_node(p, occurs)
+	}
 }
 
 emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
@@ -557,15 +991,36 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 		emit(p, "TYPE REF TO")
 	case .Like_Line_Of:
 		emit(p, "LIKE LINE OF")
+	case .Type_Line_Of:
+		emit(p, "TYPE LINE OF")
+	case .Table:
+		emit(p, "TYPE TABLE")
+	case .Like_Table:
+		emit(p, "LIKE TABLE")
 	case .Standard_Table:
 		emit(p, "TYPE STANDARD TABLE")
 	case .Sorted_Table:
 		emit(p, "TYPE SORTED TABLE")
 	case .Hashed_Table:
 		emit(p, "TYPE HASHED TABLE")
+	case .Like_Standard_Table:
+		emit(p, "LIKE STANDARD TABLE")
+	case .Like_Sorted_Table:
+		emit(p, "LIKE SORTED TABLE")
+	case .Like_Hashed_Table:
+		emit(p, "LIKE HASHED TABLE")
+	case .Range_Of:
+		emit(p, "TYPE RANGE OF")
 	}
 	if clause.type_ref != nil {
-		if clause.form == .Standard_Table || clause.form == .Sorted_Table || clause.form == .Hashed_Table {
+		if clause.form == .Table ||
+		   clause.form == .Like_Table ||
+		   clause.form == .Standard_Table ||
+		   clause.form == .Sorted_Table ||
+		   clause.form == .Hashed_Table ||
+		   clause.form == .Like_Standard_Table ||
+		   clause.form == .Like_Sorted_Table ||
+		   clause.form == .Like_Hashed_Table {
 			emit(p, " OF")
 		}
 		emit_space(p)
@@ -593,7 +1048,11 @@ emit_length_clauses :: proc(p: ^Printer, clauses: [dynamic]Length_Clause) {
 emit_value_clause :: proc(p: ^Printer, clause: ^Value_Clause) {
 	if clause != nil {
 		emit(p, " VALUE ")
-		emit_node(p, clause.expr)
+		if clause.is_initial {
+			emit(p, "IS INITIAL")
+		} else {
+			emit_node(p, clause.expr)
+		}
 	}
 }
 
@@ -605,13 +1064,27 @@ emit_default_clause :: proc(p: ^Printer, clause: ^Default_Clause) {
 }
 
 emit_parameter_additions :: proc(p: ^Printer, clause: Parameters_Clause) {
-	if .As_Checkbox in clause.flags {emit(p, " AS CHECKBOX")}
-	if .Lower_Case in clause.flags {emit(p, " LOWER CASE")}
-	if .Obligatory in clause.flags {emit(p, " OBLIGATORY")}
-	if .No_Display in clause.flags {emit(p, " NO-DISPLAY")}
-	if .Value_Check in clause.flags {emit(p, " VALUE CHECK")}
-	if .Help_Request in clause.flags {emit(p, " HELP-REQUEST")}
-	if .Value_Request in clause.flags {emit(p, " VALUE-REQUEST")}
+	if .As_Checkbox in clause.flags {
+		emit(p, " AS CHECKBOX")
+	}
+	if .Lower_Case in clause.flags {
+		emit(p, " LOWER CASE")
+	}
+	if .Obligatory in clause.flags {
+		emit(p, " OBLIGATORY")
+	}
+	if .No_Display in clause.flags {
+		emit(p, " NO-DISPLAY")
+	}
+	if .Value_Check in clause.flags {
+		emit(p, " VALUE CHECK")
+	}
+	if .Help_Request in clause.flags {
+		emit(p, " HELP-REQUEST")
+	}
+	if .Value_Request in clause.flags {
+		emit(p, " VALUE-REQUEST")
+	}
 	if clause.radiobutton_group != nil {
 		emit(p, " RADIOBUTTON GROUP ")
 		emit(p, clause.radiobutton_group.group)
@@ -639,12 +1112,24 @@ emit_parameter_additions :: proc(p: ^Printer, clause: Parameters_Clause) {
 }
 
 emit_select_option_additions :: proc(p: ^Printer, clause: Select_Options_Clause) {
-	if .Lower_Case in clause.flags {emit(p, " LOWER CASE")}
-	if .Obligatory in clause.flags {emit(p, " OBLIGATORY")}
-	if .No_Display in clause.flags {emit(p, " NO-DISPLAY")}
-	if .No_Extension in clause.flags {emit(p, " NO-EXTENSION")}
-	if .No_Intervals in clause.flags {emit(p, " NO INTERVALS")}
-	if .No_Database_Selection in clause.flags {emit(p, " NO DATABASE SELECTION")}
+	if .Lower_Case in clause.flags {
+		emit(p, " LOWER CASE")
+	}
+	if .Obligatory in clause.flags {
+		emit(p, " OBLIGATORY")
+	}
+	if .No_Display in clause.flags {
+		emit(p, " NO-DISPLAY")
+	}
+	if .No_Extension in clause.flags {
+		emit(p, " NO-EXTENSION")
+	}
+	if .No_Intervals in clause.flags {
+		emit(p, " NO INTERVALS")
+	}
+	if .No_Database_Selection in clause.flags {
+		emit(p, " NO DATABASE SELECTION")
+	}
 	if clause.modif_id != nil {
 		emit(p, " MODIF ID ")
 		emit(p, clause.modif_id.id)
@@ -675,7 +1160,9 @@ emit_clear_stmt :: proc(p: ^Printer, stmt: ^Clear_Stmt) {
 	emit(p, "CLEAR")
 	emit(p, ": " if len(stmt.operands) > 1 else " ")
 	for clause, i in stmt.operands {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, clause.target)
 		if clause.mode == .With_Value {
 			emit(p, " WITH ")
@@ -691,8 +1178,12 @@ emit_refresh_stmt :: proc(p: ^Printer, stmt: ^Refresh_Stmt) {
 	emit(p, "REFRESH")
 	emit(p, ": " if len(stmt.operands) > 1 else " ")
 	for clause, i in stmt.operands {
-		if i > 0 {emit(p, ", ")}
-		if clause.table {emit(p, "TABLE ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
+		if clause.table {
+			emit(p, "TABLE ")
+		}
 		emit_node(p, clause.target)
 	}
 	emit(p, ".")
@@ -713,8 +1204,12 @@ emit_free_stmt :: proc(p: ^Printer, stmt: ^Free_Stmt) {
 		emit(p, ": ")
 	}
 	for clause, i in stmt.operands {
-		if i > 0 {emit(p, ", ")}
-		if clause.object {emit(p, "OBJECT ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
+		if clause.object {
+			emit(p, "OBJECT ")
+		}
 		emit_node(p, clause.target)
 	}
 	emit(p, ".")
@@ -724,7 +1219,9 @@ emit_unassign_stmt :: proc(p: ^Printer, stmt: ^Unassign_Stmt) {
 	emit(p, "UNASSIGN")
 	emit(p, ": " if len(stmt.operands) > 1 else " ")
 	for clause, i in stmt.operands {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, clause.target)
 	}
 	emit(p, ".")
@@ -734,7 +1231,9 @@ emit_move_stmt :: proc(p: ^Printer, stmt: ^Move_Stmt) {
 	emit(p, "MOVE")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, entry.source)
 		emit(p, " TO ")
 		emit_node(p, entry.target)
@@ -746,7 +1245,9 @@ emit_add_stmt :: proc(p: ^Printer, stmt: ^Add_Stmt) {
 	emit(p, "ADD")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, entry.source)
 		emit(p, " TO ")
 		emit_node(p, entry.target)
@@ -762,7 +1263,9 @@ emit_subtract_stmt :: proc(p: ^Printer, stmt: ^Subtract_Stmt) {
 	emit(p, "SUBTRACT")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, entry.source)
 		emit(p, " FROM ")
 		emit_node(p, entry.target)
@@ -778,7 +1281,9 @@ emit_multiply_stmt :: proc(p: ^Printer, stmt: ^Multiply_Stmt) {
 	emit(p, "MULTIPLY")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, entry.target)
 		emit(p, " BY ")
 		emit_node(p, entry.source)
@@ -794,7 +1299,9 @@ emit_divide_stmt :: proc(p: ^Printer, stmt: ^Divide_Stmt) {
 	emit(p, "DIVIDE")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		if entry.form == .Into {
 			emit_node(p, entry.source)
 			emit(p, " INTO ")
@@ -816,8 +1323,12 @@ emit_compute_stmt :: proc(p: ^Printer, stmt: ^Compute_Stmt) {
 	emit(p, "COMPUTE")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
-		if entry.exact {emit(p, "EXACT ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
+		if entry.exact {
+			emit(p, "EXACT ")
+		}
 		emit_node(p, entry.target)
 		emit(p, " = ")
 		emit_node(p, entry.source)
@@ -829,8 +1340,12 @@ emit_concatenate_stmt :: proc(p: ^Printer, stmt: ^Concatenate_Stmt) {
 	emit(p, "CONCATENATE")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
-		if entry.lines_of {emit(p, "LINES OF ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
+		if entry.lines_of {
+			emit(p, "LINES OF ")
+		}
 		emit_expr_list(p, entry.sources, " ")
 		emit(p, " INTO ")
 		emit_node(p, entry.target)
@@ -849,12 +1364,16 @@ emit_split_stmt :: proc(p: ^Printer, stmt: ^Split_Stmt) {
 	emit(p, "SPLIT")
 	emit(p, ": " if len(stmt.entries) > 1 else " ")
 	for entry, i in stmt.entries {
-		if i > 0 {emit(p, ", ")}
+		if i > 0 {
+			emit(p, ", ")
+		}
 		emit_node(p, entry.source)
 		emit(p, " AT ")
 		emit_node(p, entry.separator)
 		emit(p, " INTO ")
-		if entry.into_table {emit(p, "TABLE ")}
+		if entry.into_table {
+			emit(p, "TABLE ")
+		}
 		emit_expr_list(p, entry.targets, " ")
 	}
 	emit(p, ".")
@@ -867,11 +1386,15 @@ emit_replace_stmt :: proc(p: ^Printer, stmt: ^Replace_Stmt) {
 	} else if stmt.occurrence == .All {
 		emit(p, "ALL OCCURRENCES OF ")
 	}
-	if stmt.regex {emit(p, "REGEX ")}
+	if stmt.regex {
+		emit(p, "REGEX ")
+	}
 	emit_node(p, stmt.pattern)
 	if stmt.target != nil {
 		emit(p, " IN ")
-		if stmt.in_table {emit(p, "TABLE ")}
+		if stmt.in_table {
+			emit(p, "TABLE ")
+		}
 		emit_node(p, stmt.target)
 	}
 	if stmt.replacement != nil {
@@ -922,7 +1445,9 @@ emit_shift_stmt :: proc(p: ^Printer, stmt: ^Shift_Stmt) {
 		emit_node(p, stmt.places)
 		emit(p, " PLACES")
 	}
-	if stmt.circular {emit(p, " CIRCULAR")}
+	if stmt.circular {
+		emit(p, " CIRCULAR")
+	}
 	if stmt.delete_direction != .None {
 		emit(p, " DELETING ")
 		emit(p, "LEADING" if stmt.delete_direction == .Leading else "TRAILING")
@@ -939,7 +1464,9 @@ emit_find_stmt :: proc(p: ^Printer, stmt: ^Find_Stmt) {
 	} else if stmt.occurrence == .All {
 		emit(p, "ALL OCCURRENCES OF ")
 	}
-	if stmt.regex {emit(p, "REGEX ")}
+	if stmt.regex {
+		emit(p, "REGEX ")
+	}
 	emit_node(p, stmt.pattern)
 	if stmt.target != nil {
 		emit(p, " IN ")
@@ -979,7 +1506,9 @@ emit_search_stmt :: proc(p: ^Printer, stmt: ^Search_Stmt) {
 		emit(p, " ENDING AT ")
 		emit_node(p, stmt.ending_at)
 	}
-	if stmt.abbreviated {emit(p, " ABBREVIATED")}
+	if stmt.abbreviated {
+		emit(p, " ABBREVIATED")
+	}
 	emit(p, ".")
 }
 
@@ -1002,7 +1531,9 @@ emit_perform_stmt :: proc(p: ^Printer, stmt: ^Perform_Stmt) {
 		emit(p, " CHANGING ")
 		emit_expr_list(p, stmt.changing, " ")
 	}
-	if stmt.if_found {emit(p, " IF FOUND")}
+	if stmt.if_found {
+		emit(p, " IF FOUND")
+	}
 	emit(p, ".")
 }
 
@@ -1027,11 +1558,21 @@ emit_submit_stmt :: proc(p: ^Printer, stmt: ^Submit_Stmt) {
 	for option in stmt.options {
 		emit_submit_option(p, option)
 	}
-	if stmt.via_selection_screen {emit(p, " VIA SELECTION-SCREEN")}
-	if stmt.exporting_list_to_memory {emit(p, " EXPORTING LIST TO MEMORY")}
-	if stmt.to_sap_spool {emit(p, " TO SAP-SPOOL")}
-	if stmt.without_spool_dynpro {emit(p, " WITHOUT SPOOL DYNPRO")}
-	if stmt.and_return {emit(p, " AND RETURN")}
+	if stmt.via_selection_screen {
+		emit(p, " VIA SELECTION-SCREEN")
+	}
+	if stmt.exporting_list_to_memory {
+		emit(p, " EXPORTING LIST TO MEMORY")
+	}
+	if stmt.to_sap_spool {
+		emit(p, " TO SAP-SPOOL")
+	}
+	if stmt.without_spool_dynpro {
+		emit(p, " WITHOUT SPOOL DYNPRO")
+	}
+	if stmt.and_return {
+		emit(p, " AND RETURN")
+	}
 	emit(p, ".")
 }
 
@@ -1103,7 +1644,9 @@ emit_message_stmt :: proc(p: ^Printer, stmt: ^Message_Stmt) {
 }
 
 emit_message_head :: proc(p: ^Printer, head: ^Message_Head_Clause) {
-	if head == nil {return}
+	if head == nil {
+		return
+	}
 	if head.id != nil {
 		emit(p, " ID ")
 		emit_node(p, head.id)
@@ -1129,12 +1672,20 @@ emit_message_head :: proc(p: ^Printer, head: ^Message_Head_Clause) {
 
 emit_write_stmt :: proc(p: ^Printer, stmt: ^Write_Stmt) {
 	emit(p, "WRITE")
-	if len(stmt.operands) > 0 {emit_space(p)}
+	if len(stmt.operands) > 0 {
+		emit_space(p)
+	}
 	for clause, i in stmt.operands {
-		if i > 0 {emit_space(p)}
-		if clause.line_break {emit(p, "/")}
+		if i > 0 {
+			emit_space(p)
+		}
+		if clause.line_break {
+			emit(p, "/")
+		}
 		if clause.position != nil {
-			if !clause.line_break {emit(p, "AT ")}
+			if !clause.line_break {
+				emit(p, "AT ")
+			}
 			emit_node(p, clause.position)
 		}
 		if clause.length != nil {
@@ -1143,11 +1694,221 @@ emit_write_stmt :: proc(p: ^Printer, stmt: ^Write_Stmt) {
 			emit(p, ")")
 		}
 		if clause.value != nil {
-			if clause.line_break || clause.position != nil || clause.length != nil {emit_space(p)}
+			if clause.line_break || clause.position != nil || clause.length != nil {
+				emit_space(p)
+			}
 			emit_node(p, clause.value)
 		}
 	}
 	emit(p, ".")
+}
+
+emit_describe_stmt :: proc(p: ^Printer, stmt: ^Describe_Stmt) {
+	emit(p, "DESCRIBE")
+	emit(p, ": " if len(stmt.entries) > 1 else " ")
+	for entry, i in stmt.entries {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		if entry.table {
+			emit(p, "TABLE ")
+		}
+		emit_node(p, entry.source)
+		if entry.target != nil {
+			emit(p, " LINES ")
+			emit_node(p, entry.target)
+		}
+	}
+	emit(p, ".")
+}
+
+emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
+	emit(p, runtime_kind_text(stmt.kind))
+	switch stmt.subject {
+	case .None:
+	case .Run_Time_Field:
+		emit(p, " RUN TIME FIELD ")
+		emit_node(p, stmt.target)
+	case .Parameter_ID_Field:
+		emit(p, " PARAMETER ID ")
+		emit_node(p, stmt.id)
+		emit(p, " FIELD ")
+		emit_node(p, stmt.field)
+	case .Cursor:
+		emit(p, " CURSOR")
+		if stmt.field != nil {
+			emit(p, " FIELD ")
+			emit_node(p, stmt.field)
+		}
+		if stmt.line != nil {
+			emit(p, " LINE ")
+			emit_node(p, stmt.line)
+		}
+		if stmt.offset != nil {
+			emit(p, " OFFSET ")
+			emit_node(p, stmt.offset)
+		}
+		if stmt.value != nil {
+			emit(p, " VALUE ")
+			emit_node(p, stmt.value)
+		}
+	case .Reference:
+		emit(p, " REFERENCE")
+		if stmt.value != nil {
+			emit(p, " OF ")
+			emit_node(p, stmt.value)
+		}
+		if stmt.target != nil {
+			emit(p, " INTO ")
+			emit_node(p, stmt.target)
+		}
+	case .PF_Status:
+		emit(p, " PF-STATUS ")
+		emit_node(p, stmt.target)
+		if len(stmt.excluding) > 0 {
+			emit(p, " EXCLUDING ")
+			emit_expr_list(p, stmt.excluding, " ")
+		}
+	case .Titlebar:
+		emit(p, " TITLEBAR ")
+		emit_node(p, stmt.target)
+	case .Screen:
+		emit(p, " SCREEN ")
+		emit_node(p, stmt.target)
+	case .User_Command:
+		emit(p, " USER-COMMAND ")
+		emit_node(p, stmt.target)
+	case .Badi:
+		emit(p, " BADI ")
+		emit_node(p, stmt.target)
+	case .Handler:
+	case .Update_Task_Local:
+		emit(p, " UPDATE TASK LOCAL")
+	}
+	if len(stmt.operands) > 0 {
+		emit_space(p)
+		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_authority_check_stmt :: proc(p: ^Printer, stmt: ^Authority_Check_Stmt) {
+	emit(p, "AUTHORITY-CHECK")
+	if stmt.object != nil {
+		emit(p, " OBJECT ")
+		emit_node(p, stmt.object)
+		for clause in stmt.ids {
+			emit(p, " ID ")
+			emit_node(p, clause.id)
+			if clause.field != nil {
+				emit(p, " FIELD ")
+				emit_node(p, clause.field)
+			}
+		}
+	} else if len(stmt.operands) > 0 {
+		emit_space(p)
+		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_line_stmt :: proc(p: ^Printer, stmt: ^Line_Stmt) {
+	emit(p, "READ" if stmt.kind == .Read else "MODIFY")
+	if stmt.current {
+		emit(p, " CURRENT LINE")
+	} else {
+		emit(p, " LINE")
+		if stmt.line != nil {
+			emit_space(p)
+			emit_node(p, stmt.line)
+		}
+	}
+	if stmt.index != nil {
+		emit(p, " INDEX ")
+		emit_node(p, stmt.index)
+	}
+	if stmt.into != nil {
+		emit(p, " INTO ")
+		emit_node(p, stmt.into)
+	}
+	for clause in stmt.fields {
+		emit(p, " FIELD VALUE ")
+		emit_node(p, clause.field)
+		if clause.target != nil {
+			emit(p, " INTO ")
+			emit_node(p, clause.target)
+		}
+	}
+	emit(p, ".")
+}
+
+emit_raise_stmt :: proc(p: ^Printer, stmt: ^Raise_Stmt) {
+	emit(p, "RAISE ")
+	emit(p, "EVENT" if stmt.kind == .Event else "EXCEPTION")
+	if stmt.target != nil {
+		emit_space(p)
+		emit_node(p, stmt.target)
+	}
+	if len(stmt.operands) > 0 {
+		emit_space(p)
+		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_macro_def_stmt :: proc(p: ^Printer, stmt: ^Macro_Def_Stmt) {
+	emit(p, "DEFINE ")
+	emit(p, stmt.name)
+	emit(p, ".")
+	if stmt.body != "" {
+		emit_newline(p)
+		emit(p, stmt.body)
+	}
+	emit_newline(p)
+	emit(p, "END-OF-DEFINITION.")
+}
+
+emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
+	if len(stmt.members) == 0 {
+		emit(p, stmt.text)
+		return
+	}
+	emit(p, oop_simple_kind_text(stmt.kind))
+	if len(stmt.members) > 1 {
+		emit(p, ":")
+	}
+	for member, i in stmt.members {
+		if i > 0 {
+			emit(p, ",")
+		}
+		emit_space(p)
+		emit(p, member.name)
+		for sig in member.signatures {
+			emit_space(p)
+			emit(p, oop_signature_kind_text(sig.kind))
+			if len(sig.values) > 0 {
+				emit_space(p)
+				emit_expr_list(p, sig.values, " ")
+			}
+		}
+	}
+	emit(p, ".")
+}
+
+emit_amdp_method :: proc(p: ^Printer, stmt: ^Method_Decl) {
+	if stmt.header_text != "" {
+		emit(p, stmt.header_text)
+	} else {
+		emit(p, "METHOD ")
+		emit(p, stmt.name)
+	}
+	emit(p, ".")
+	if stmt.amdp_body != "" {
+		emit(p, stmt.amdp_body)
+	} else {
+		emit_newline(p)
+	}
+	emit(p, "ENDMETHOD.")
 }
 
 emit_if_stmt :: proc(p: ^Printer, stmt: ^If_Stmt) {
@@ -1188,6 +1949,9 @@ emit_if_stmt :: proc(p: ^Printer, stmt: ^If_Stmt) {
 
 emit_case_stmt :: proc(p: ^Printer, stmt: ^Case_Stmt) {
 	emit(p, "CASE ")
+	if stmt.is_type_of {
+		emit(p, "TYPE OF ")
+	}
 	emit_node(p, stmt.expr)
 	emit(p, ".")
 	for clause in stmt.whens {
@@ -1249,11 +2013,20 @@ emit_try_stmt :: proc(p: ^Printer, stmt: ^Try_Stmt) {
 	emit(p, "ENDTRY.")
 }
 
-emit_named_block :: proc(p: ^Printer, start_keyword, name: string, body: [dynamic]^Stmt, end_keyword: string) {
-	emit(p, start_keyword)
-	if name != "" {
-		emit_space(p)
-		emit(p, name)
+emit_named_block :: proc(
+	p: ^Printer,
+	start_keyword, name, header_text: string,
+	body: [dynamic]^Stmt,
+	end_keyword: string,
+) {
+	if header_text != "" {
+		emit(p, header_text)
+	} else {
+		emit(p, start_keyword)
+		if name != "" {
+			emit_space(p)
+			emit(p, name)
+		}
 	}
 	if end_keyword == "" {
 		emit(p, ".")
@@ -1265,6 +2038,496 @@ emit_named_block :: proc(p: ^Printer, start_keyword, name: string, body: [dynami
 		p.indent_level -= 1
 	} else {
 		emit_block(p, body, end_keyword)
+	}
+}
+
+emit_select_stmt :: proc(p: ^Printer, stmt: ^Select_Stmt) {
+	if stmt.with != nil {
+		emit_select_with(p, stmt.with)
+		emit_space(p)
+	}
+	emit_select_query(p, stmt.query)
+	if len(stmt.body) == 0 {
+		emit(p, ".")
+		return
+	}
+	emit_block(p, stmt.body, "ENDSELECT")
+}
+
+emit_select_with :: proc(p: ^Printer, clause: ^Select_With_Clause) {
+	emit(p, "WITH")
+	if len(clause.entries) == 0 {
+		return
+	}
+	emit_space(p)
+	for entry, i in clause.entries {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		emit(p, entry.name)
+		emit(p, " AS ( ")
+		emit_select_query(p, entry.query)
+		emit(p, " )")
+	}
+}
+
+emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
+	emit(p, "SELECT")
+	if query.single {
+		emit(p, " SINGLE")
+	}
+	if query.is_distinct {
+		emit(p, " DISTINCT")
+	}
+	if len(query.projection_clauses) > 0 {
+		emit_space(p)
+		emit_select_projections(p, query.projection_clauses)
+	} else if len(query.projections) > 0 {
+		emit_space(p)
+		emit_expr_list(p, query.projections, " ")
+	}
+	if query.source_clause != nil {
+		emit(p, " FROM ")
+		emit_select_source(p, query.source_clause)
+	} else if query.source != nil {
+		emit(p, " FROM ")
+		emit_node(p, query.source)
+	}
+	if query.result != nil {
+		emit_select_result(p, query.result)
+	}
+	if query.for_all_entries != nil {
+		emit(p, " FOR ALL ENTRIES IN ")
+		emit_node(p, query.for_all_entries)
+	}
+	if query.where_cond != nil {
+		emit(p, " WHERE ")
+		emit_node(p, query.where_cond)
+	}
+	if query.package_size != nil {
+		emit(p, " PACKAGE SIZE ")
+		emit_node(p, query.package_size)
+	}
+	if query.up_to_rows != nil {
+		emit(p, " UP TO ")
+		emit_node(p, query.up_to_rows)
+		emit(p, " ROWS")
+	}
+	for set_op in query.set_ops {
+		emit_space(p)
+		emit(p, select_set_kind_text(set_op.kind))
+		if set_op.all {
+			emit(p, " ALL")
+		}
+		emit_space(p)
+		emit_select_query(p, set_op.query)
+	}
+}
+
+emit_select_projections :: proc(p: ^Printer, clauses: [dynamic]Select_Projection_Clause) {
+	for clause, i in clauses {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		emit_node(p, clause.value)
+		if clause.alias != "" {
+			emit(p, " AS ")
+			emit(p, clause.alias)
+		}
+	}
+}
+
+emit_select_source :: proc(p: ^Printer, clause: ^Select_Source_Clause) {
+	emit_node(p, clause.source)
+	if clause.alias != "" {
+		emit(p, " AS ")
+		emit(p, clause.alias)
+	}
+	for join in clause.joins {
+		emit_space(p)
+		emit(p, select_join_kind_text(join.kind))
+		emit(p, " JOIN ")
+		emit_node(p, join.source)
+		if join.alias != "" {
+			emit(p, " AS ")
+			emit(p, join.alias)
+		}
+		if join.on != nil {
+			emit(p, " ON ")
+			emit_node(p, join.on)
+		}
+	}
+}
+
+emit_select_result :: proc(p: ^Printer, clause: ^Select_Result_Clause) {
+	emit(p, " ")
+	emit(p, "APPENDING" if clause.kind == .Appending else "INTO")
+	if clause.corresponding_fields {
+		emit(p, " CORRESPONDING FIELDS OF")
+	}
+	if clause.table {
+		emit(p, " TABLE")
+	}
+	if clause.target != nil {
+		emit_space(p)
+		emit_node(p, clause.target)
+	}
+}
+
+emit_open_cursor_stmt :: proc(p: ^Printer, stmt: ^Open_Cursor_Stmt) {
+	emit(p, "OPEN CURSOR")
+	if stmt.with_hold {
+		emit(p, " WITH HOLD")
+	}
+	if stmt.handle != nil {
+		emit_space(p)
+		emit_node(p, stmt.handle)
+	}
+	emit(p, " FOR ")
+	emit_select_query(p, stmt.query)
+	emit(p, ".")
+}
+
+emit_fetch_stmt :: proc(p: ^Printer, stmt: ^Fetch_Stmt) {
+	emit(p, "FETCH NEXT CURSOR ")
+	emit_node(p, stmt.handle)
+	if stmt.result != nil {
+		emit_select_result(p, stmt.result)
+	}
+	if stmt.package_size != nil {
+		emit(p, " PACKAGE SIZE ")
+		emit_node(p, stmt.package_size)
+	}
+	emit(p, ".")
+}
+
+emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
+	emit(p, "READ TABLE")
+	for entry, i in stmt.entries {
+		if i > 0 {
+			emit(p, ",")
+		}
+		emit_space(p)
+		emit_node(p, entry.table)
+		if entry.into != nil {
+			emit(p, " INTO ")
+			emit_node(p, entry.into)
+		}
+		if entry.assigning != nil {
+			emit(p, " ASSIGNING ")
+			emit_node(p, entry.assigning)
+		}
+		if entry.reference_into != nil {
+			emit(p, " REFERENCE INTO ")
+			emit_node(p, entry.reference_into)
+		}
+		if entry.key_kind != .None {
+			emit(p, " WITH")
+			if entry.key_kind == .Table_Key {
+				emit(p, " TABLE")
+			}
+			emit(p, " KEY")
+			if entry.key_name != "" {
+				emit_space(p)
+				emit(p, entry.key_name)
+			}
+			for key in entry.key_values {
+				emit_space(p)
+				emit(p, key.name)
+				emit(p, " = ")
+				emit_node(p, key.value)
+			}
+		}
+		if entry.index != nil {
+			emit(p, " INDEX ")
+			emit_node(p, entry.index)
+		}
+		if entry.using_key != nil {
+			emit(p, " USING KEY ")
+			emit_node(p, entry.using_key)
+		}
+		if entry.transporting_no_fields {
+			emit(p, " TRANSPORTING NO FIELDS")
+		}
+		if entry.binary_search {
+			emit(p, " BINARY SEARCH")
+		}
+		if len(entry.comparing) > 0 {
+			emit(p, " COMPARING ")
+			emit_expr_list(p, entry.comparing, " ")
+		}
+	}
+	emit(p, ".")
+}
+
+emit_insert_stmt :: proc(p: ^Printer, stmt: ^Insert_Stmt) {
+	emit(p, "INSERT ")
+	if stmt.form == .Lines_Of {
+		emit(p, "LINES OF ")
+	}
+	emit_node(p, stmt.source)
+	if stmt.target != nil {
+		emit(p, " INTO")
+		if stmt.form == .Internal_Table || stmt.form == .Lines_Of {
+			emit(p, " TABLE")
+		}
+		emit_space(p)
+		emit_node(p, stmt.target)
+	}
+	if stmt.index != nil {
+		emit(p, " INDEX ")
+		emit_node(p, stmt.index)
+	}
+	if stmt.assigning != nil {
+		emit(p, " ASSIGNING ")
+		emit_node(p, stmt.assigning)
+	}
+	if stmt.reference_into != nil {
+		emit(p, " REFERENCE INTO ")
+		emit_node(p, stmt.reference_into)
+	}
+	emit(p, ".")
+}
+
+emit_append_stmt :: proc(p: ^Printer, stmt: ^Append_Stmt) {
+	emit(p, "APPEND ")
+	if stmt.lines_of {
+		emit(p, "LINES OF ")
+	}
+	emit_node(p, stmt.source)
+	if stmt.target != nil {
+		emit(p, " TO ")
+		if stmt.sorted {
+			emit(p, "SORTED ")
+		}
+		emit_node(p, stmt.target)
+	}
+	if stmt.assigning != nil {
+		emit(p, " ASSIGNING ")
+		emit_node(p, stmt.assigning)
+	}
+	if stmt.reference_into != nil {
+		emit(p, " REFERENCE INTO ")
+		emit_node(p, stmt.reference_into)
+	}
+	emit(p, ".")
+}
+
+emit_modify_stmt :: proc(p: ^Printer, stmt: ^Modify_Stmt) {
+	emit(p, "MODIFY ")
+	emit_node(p, stmt.target)
+	if stmt.source != nil {
+		emit(p, " FROM ")
+		emit_node(p, stmt.source)
+	}
+	if stmt.index != nil {
+		emit(p, " INDEX ")
+		emit_node(p, stmt.index)
+	}
+	if len(stmt.transporting) > 0 {
+		emit(p, " TRANSPORTING ")
+		emit_expr_list(p, stmt.transporting, " ")
+	}
+	if stmt.where_cond != nil {
+		emit(p, " WHERE ")
+		emit_node(p, stmt.where_cond)
+	}
+	emit(p, ".")
+}
+
+emit_sort_stmt :: proc(p: ^Printer, stmt: ^Sort_Stmt) {
+	emit(p, "SORT ")
+	if stmt.stable {
+		emit(p, "STABLE ")
+	}
+	emit_node(p, stmt.target)
+	if stmt.as_text {
+		emit(p, " AS TEXT")
+	}
+	if len(stmt.fields) > 0 {
+		emit(p, " BY ")
+		emit_expr_list(p, stmt.fields, " ")
+	}
+	if stmt.descending {
+		emit(p, " DESCENDING")
+	}
+	emit(p, ".")
+}
+
+emit_update_stmt :: proc(p: ^Printer, stmt: ^Update_Stmt) {
+	emit(p, "UPDATE ")
+	emit_node(p, stmt.target)
+	if stmt.source != nil {
+		emit(p, " FROM ")
+		if stmt.from_table {
+			emit(p, "TABLE ")
+		}
+		emit_node(p, stmt.source)
+	}
+	if len(stmt.assignments) > 0 {
+		emit(p, " SET ")
+		emit_sql_assignments(p, stmt.assignments)
+	}
+	if stmt.where_cond != nil {
+		emit(p, " WHERE ")
+		emit_node(p, stmt.where_cond)
+	}
+	emit(p, ".")
+}
+
+emit_delete_stmt :: proc(p: ^Printer, stmt: ^Delete_Stmt) {
+	emit(p, "DELETE ")
+	if stmt.form == .Adjacent_Duplicates {
+		emit(p, "ADJACENT DUPLICATES FROM ")
+	} else if stmt.form == .Db_Table {
+		emit(p, "FROM ")
+	}
+	emit_node(p, stmt.target)
+	if stmt.source != nil {
+		emit(p, " FROM ")
+		if stmt.from_table {
+			emit(p, "TABLE ")
+		}
+		emit_node(p, stmt.source)
+	}
+	if stmt.index != nil {
+		emit(p, " INDEX ")
+		emit_node(p, stmt.index)
+	}
+	if stmt.where_cond != nil {
+		emit(p, " WHERE ")
+		emit_node(p, stmt.where_cond)
+	}
+	if stmt.using_key != nil {
+		emit(p, " USING KEY ")
+		emit_node(p, stmt.using_key)
+	}
+	if len(stmt.comparing) > 0 {
+		emit(p, " COMPARING ")
+		emit_expr_list(p, stmt.comparing, " ")
+	}
+	emit(p, ".")
+}
+
+emit_dataset_stmt :: proc(p: ^Printer, stmt: ^Dataset_Stmt) {
+	switch stmt.kind {
+	case .Open:
+		emit(p, "OPEN DATASET ")
+	case .Read:
+		emit(p, "READ DATASET ")
+	case .Transfer:
+		emit(p, "TRANSFER ")
+		emit_node(p, stmt.source)
+		emit(p, " TO ")
+	case .Close:
+		emit(p, "CLOSE DATASET ")
+	case .Delete:
+		emit(p, "DELETE DATASET ")
+	case .Get:
+		emit(p, "GET DATASET ")
+	case .Set:
+		emit(p, "SET DATASET ")
+	case .Truncate:
+		emit(p, "TRUNCATE DATASET ")
+	}
+	emit_node(p, stmt.dataset)
+	if stmt.target != nil {
+		emit(p, " INTO ")
+		emit_node(p, stmt.target)
+	}
+	emit(p, ".")
+}
+
+emit_report_stmt :: proc(p: ^Printer, stmt: ^Report_Stmt) {
+	switch stmt.kind {
+	case .Report:
+		emit(p, "REPORT ")
+	case .Program:
+		emit(p, "PROGRAM ")
+	case .Read_Report:
+		emit(p, "READ REPORT ")
+	case .Insert_Report:
+		emit(p, "INSERT REPORT ")
+	case .Delete_Report:
+		emit(p, "DELETE REPORT ")
+	}
+	emit_node(p, stmt.name)
+	if stmt.source != nil {
+		emit(p, " INTO ")
+		emit_node(p, stmt.source)
+	}
+	emit(p, ".")
+}
+
+emit_textpool_stmt :: proc(p: ^Printer, stmt: ^Textpool_Stmt) {
+	emit(p, "READ" if stmt.kind == .Read else "INSERT" if stmt.kind == .Insert else "DELETE")
+	emit(p, " TEXTPOOL ")
+	emit_node(p, stmt.program)
+	if stmt.table != nil {
+		emit(p, " INTO ")
+		emit_node(p, stmt.table)
+	}
+	if stmt.language != nil {
+		emit(p, " LANGUAGE ")
+		emit_node(p, stmt.language)
+	}
+	emit(p, ".")
+}
+
+emit_exec_sql_stmt :: proc(p: ^Printer, stmt: ^Exec_Sql_Stmt) {
+	emit(p, "EXEC SQL.")
+	if stmt.body != "" {
+		emit(p, stmt.body)
+	} else {
+		emit_newline(p)
+	}
+	emit(p, "ENDEXEC.")
+}
+
+emit_generate_stmt :: proc(p: ^Printer, stmt: ^Generate_Stmt) {
+	emit(p, "GENERATE ")
+	if stmt.kind == .Subroutine_Pool {
+		emit(p, "SUBROUTINE POOL ")
+		emit_node(p, stmt.source)
+		if stmt.name != nil {
+			emit(p, " NAME ")
+			emit_node(p, stmt.name)
+		}
+		if stmt.message != nil {
+			emit(p, " MESSAGE ")
+			emit_node(p, stmt.message)
+		}
+		if stmt.line != nil {
+			emit(p, " LINE ")
+			emit_node(p, stmt.line)
+		}
+		if stmt.word != nil {
+			emit(p, " WORD ")
+			emit_node(p, stmt.word)
+		}
+		if stmt.offset != nil {
+			emit(p, " OFFSET ")
+			emit_node(p, stmt.offset)
+		}
+	} else {
+		emit(p, "DYNPRO ")
+		emit_node(p, stmt.program)
+		if stmt.dynpro != nil {
+			emit_space(p)
+			emit_node(p, stmt.dynpro)
+		}
+	}
+	emit(p, ".")
+}
+
+emit_sql_assignments :: proc(p: ^Printer, list: [dynamic]Sql_Assignment_Clause) {
+	for item, i in list {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		emit_node(p, item.name)
+		emit(p, " = ")
+		emit_node(p, item.value)
 	}
 }
 
@@ -1292,6 +2555,13 @@ binary_op_text :: proc(op: Binary_Op) -> string {
 	case .Covers_Pattern: return "CP"
 	case .Covers_No_Pattern: return "NP"
 	case .In: return "IN"
+	case .Not_In: return "NOT IN"
+	case .Bit_And: return "BIT-AND"
+	case .Bit_Or: return "BIT-OR"
+	case .Bit_Xor: return "BIT-XOR"
+	case .Bit_O: return "O"
+	case .Bit_Z: return "Z"
+	case .Bit_M: return "M"
 	case .And: return "AND"
 	case .Or: return "OR"
 	case .Is: return "IS"
@@ -1305,6 +2575,17 @@ unary_op_text :: proc(op: Unary_Op) -> string {
 	case .Minus: return "-"
 	case .Plus: return "+"
 	case .Not: return "NOT"
+	}
+	return "?"
+}
+
+is_predicate_kind_text :: proc(kind: Is_Predicate_Kind) -> string {
+	switch kind {
+	case .Initial: return "INITIAL"
+	case .Bound: return "BOUND"
+	case .Assigned: return "ASSIGNED"
+	case .Requested: return "REQUESTED"
+	case .Supplied: return "SUPPLIED"
 	}
 	return "?"
 }
@@ -1332,6 +2613,7 @@ constructor_kind_text :: proc(kind: Constructor_Kind) -> string {
 	case .Reduce: return "REDUCE"
 	case .Switch: return "SWITCH"
 	case .Cond: return "COND"
+	case .Throw: return "THROW"
 	}
 	return "?"
 }
@@ -1371,4 +2653,112 @@ submit_operator_text :: proc(op: Submit_Option_Operator) -> string {
 	case .Other: return "="
 	}
 	return "?"
+}
+
+flow_kind_text :: proc(kind: Flow_Kind) -> string {
+	switch kind {
+	case .Return: return "RETURN"
+	case .Continue: return "CONTINUE"
+	case .Exit: return "EXIT"
+	case .Stop: return "STOP"
+	}
+	return "?"
+}
+
+transaction_kind_text :: proc(kind: Transaction_Kind) -> string {
+	switch kind {
+	case .Commit: return "COMMIT"
+	case .Rollback: return "ROLLBACK"
+	}
+	return "?"
+}
+
+runtime_kind_text :: proc(kind: Runtime_Kind) -> string {
+	switch kind {
+	case .Get: return "GET"
+	case .Set: return "SET"
+	case .Log_Point: return "LOG-POINT"
+	case .Set_Handler: return "SET HANDLER"
+	case .Get_Badi: return "GET BADI"
+	case .Export: return "EXPORT"
+	case .Import: return "IMPORT"
+	case .Receive: return "RECEIVE"
+	}
+	return "?"
+}
+
+text_transform_kind_text :: proc(kind: Text_Transform_Kind) -> string {
+	switch kind {
+	case .Overlay: return "OVERLAY"
+	case .Pack: return "PACK"
+	case .Unpack: return "UNPACK"
+	case .Convert: return "CONVERT"
+	case .Wait: return "WAIT"
+	}
+	return "?"
+}
+
+list_control_kind_text :: proc(kind: List_Control_Kind) -> string {
+	switch kind {
+	case .Skip: return "SKIP"
+	case .Uline: return "ULINE"
+	case .New_Line: return "NEW-LINE"
+	case .New_Page: return "NEW-PAGE"
+	case .Reserve: return "RESERVE"
+	case .Back: return "BACK"
+	case .Format: return "FORMAT"
+	case .Position: return "POSITION"
+	case .Hide: return "HIDE"
+	}
+	return "?"
+}
+
+oop_simple_kind_text :: proc(kind: Oop_Simple_Kind) -> string {
+	switch kind {
+	case .Methods: return "METHODS"
+	case .Class_Methods: return "CLASS-METHODS"
+	case .Interfaces: return "INTERFACES"
+	case .Events: return "EVENTS"
+	case .Class_Events: return "CLASS-EVENTS"
+	case .Aliases: return "ALIASES"
+	case .Class_Section: return "PUBLIC SECTION"
+	case .Class_Deferred: return "CLASS DEFERRED"
+	case .Interface_Deferred: return "INTERFACE DEFERRED"
+	case .Class_Load: return "CLASS LOAD"
+	case .Interface_Load: return "INTERFACE LOAD"
+	}
+	return "?"
+}
+
+oop_signature_kind_text :: proc(kind: Oop_Signature_Kind) -> string {
+	switch kind {
+	case .Importing: return "IMPORTING"
+	case .Exporting: return "EXPORTING"
+	case .Changing: return "CHANGING"
+	case .Returning: return "RETURNING"
+	case .Raising: return "RAISING"
+	case .Exceptions: return "EXCEPTIONS"
+	case .For: return "FOR"
+	}
+	return "?"
+}
+
+select_join_kind_text :: proc(kind: Select_Join_Kind) -> string {
+	switch kind {
+	case .Inner: return "INNER"
+	case .Left_Outer: return "LEFT OUTER"
+	case .Right_Outer: return "RIGHT OUTER"
+	case .Full_Outer: return "FULL OUTER"
+	case .Cross: return "CROSS"
+	}
+	return "INNER"
+}
+
+select_set_kind_text :: proc(kind: Select_Set_Kind) -> string {
+	switch kind {
+	case .Union: return "UNION"
+	case .Intersect: return "INTERSECT"
+	case .Except: return "EXCEPT"
+	}
+	return "UNION"
 }

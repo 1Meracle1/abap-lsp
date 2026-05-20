@@ -6,7 +6,6 @@ import "../../src/tokenizer"
 
 import "base:runtime"
 import "core:fmt"
-import "core:mem"
 import "core:os"
 
 Node_Count :: struct {
@@ -23,8 +22,6 @@ Tree_State :: struct {
 }
 
 main :: proc() {
-	init_global_temporary_allocator(mem.Gigabyte)
-
 	args := os.args
 	if len(args) == 2 && args[1] == "--help" {
 		print_usage()
@@ -72,12 +69,13 @@ read_source :: proc(path: string, allocator: runtime.Allocator) -> (string, bool
 }
 
 run_tokens :: proc(path: string) {
-	source, ok := read_source(path, context.temp_allocator)
+	allocator := runtime.heap_allocator()
+	source, ok := read_source(path, allocator)
 	if !ok {
 		os.exit(1)
 	}
 
-	lexed := tokenizer.tokenize(source, context.temp_allocator)
+	lexed := tokenizer.tokenize(source, allocator)
 	fmt.printf("file\t%s\n", path)
 	fmt.printf("tokens\t%d\n", len(lexed.tokens))
 	for tok in lexed.tokens {
@@ -93,20 +91,22 @@ run_parse :: proc(path: string, dump_tree: bool) {
 		os.exit(1)
 	}
 
-	context.temp_allocator = allocator
-	parsed := parser.parse(source, path, allocator)
-	fmt.printf("file\t%s\n", path)
-	fmt.printf(
-		"root\t%s\t%d\t%d\n",
-		node_type_name(parsed.root),
-		parsed.root.range.start,
-		parsed.root.range.end,
-	)
-	fmt.printf("top_level_stmts\t%d\n", len(parsed.root.stmts))
-	print_parse_errors(parsed.errors)
-	print_node_counts(parsed.root, allocator)
-	if dump_tree {
-		print_tree(parsed.root)
+	{
+		context.temp_allocator = allocator
+		parsed := parser.parse(source, path, allocator)
+		fmt.printf("file\t%s\n", path)
+		fmt.printf(
+			"root\t%s\t%d\t%d\n",
+			node_type_name(parsed.root),
+			parsed.root.range.start,
+			parsed.root.range.end,
+		)
+		fmt.printf("top_level_stmts\t%d\n", len(parsed.root.stmts))
+		print_parse_errors(parsed.errors)
+		if dump_tree {
+			print_node_counts(parsed.root, allocator)
+			print_tree(parsed.root)
+		}
 	}
 }
 
@@ -212,6 +212,10 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Ident_Expr"
 	case ^ast.Literal_Expr:
 		return "Literal_Expr"
+	case ^ast.Type_Ref_Expr:
+		return "Type_Ref_Expr"
+	case ^ast.Host_Expr:
+		return "Host_Expr"
 	case ^ast.Table_Expr:
 		return "Table_Expr"
 	case ^ast.Selector_Expr:
@@ -230,6 +234,42 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Call_Positional_Arg_Expr"
 	case ^ast.Constructor_Expr:
 		return "Constructor_Expr"
+	case ^ast.Is_Predicate_Expr:
+		return "Is_Predicate_Expr"
+	case ^ast.Instance_Of_Predicate_Expr:
+		return "Instance_Of_Predicate_Expr"
+	case ^ast.Between_Expr:
+		return "Between_Expr"
+	case ^ast.Let_Expr:
+		return "Let_Expr"
+	case ^ast.Constructor_Let_Binding_Expr:
+		return "Constructor_Let_Binding_Expr"
+	case ^ast.Constructor_When_Clause_Expr:
+		return "Constructor_When_Clause_Expr"
+	case ^ast.Constructor_Else_Clause_Expr:
+		return "Constructor_Else_Clause_Expr"
+	case ^ast.Constructor_For_Clause_Expr:
+		return "Constructor_For_Clause_Expr"
+	case ^ast.Constructor_Where_Clause_Expr:
+		return "Constructor_Where_Clause_Expr"
+	case ^ast.Constructor_Init_Clause_Expr:
+		return "Constructor_Init_Clause_Expr"
+	case ^ast.Constructor_Next_Clause_Expr:
+		return "Constructor_Next_Clause_Expr"
+	case ^ast.Constructor_Named_Assignment_Expr:
+		return "Constructor_Named_Assignment_Expr"
+	case ^ast.Constructor_Base_Clause_Expr:
+		return "Constructor_Base_Clause_Expr"
+	case ^ast.Constructor_Lines_Of_Clause_Expr:
+		return "Constructor_Lines_Of_Clause_Expr"
+	case ^ast.Constructor_Optional_Expr:
+		return "Constructor_Optional_Expr"
+	case ^ast.Constructor_Corresponding_Mapping_Clause_Expr:
+		return "Constructor_Corresponding_Mapping_Clause_Expr"
+	case ^ast.Constructor_Corresponding_Mapping_Assignment_Expr:
+		return "Constructor_Corresponding_Mapping_Assignment_Expr"
+	case ^ast.Constructor_Corresponding_Except_Clause_Expr:
+		return "Constructor_Corresponding_Except_Clause_Expr"
 	case ^ast.Data_Inline_Name_Expr:
 		return "Data_Inline_Name_Expr"
 	case ^ast.Field_Symbol_Inline_Name_Expr:
@@ -260,6 +300,10 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Controls_Decl"
 	case ^ast.Class_Data_Decl:
 		return "Class_Data_Decl"
+	case ^ast.Type_Pools_Decl:
+		return "Type_Pools_Decl"
+	case ^ast.Function_Pool_Decl:
+		return "Function_Pool_Decl"
 	case ^ast.Assign_Stmt:
 		return "Assign_Stmt"
 	case ^ast.Downcast_Assign_Stmt:
@@ -312,6 +356,44 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Message_Stmt"
 	case ^ast.Write_Stmt:
 		return "Write_Stmt"
+	case ^ast.Assert_Stmt:
+		return "Assert_Stmt"
+	case ^ast.Check_Stmt:
+		return "Check_Stmt"
+	case ^ast.Flow_Stmt:
+		return "Flow_Stmt"
+	case ^ast.Transaction_Stmt:
+		return "Transaction_Stmt"
+	case ^ast.Describe_Stmt:
+		return "Describe_Stmt"
+	case ^ast.Runtime_Stmt:
+		return "Runtime_Stmt"
+	case ^ast.Raise_Stmt:
+		return "Raise_Stmt"
+	case ^ast.Authority_Check_Stmt:
+		return "Authority_Check_Stmt"
+	case ^ast.Field_Groups_Stmt:
+		return "Field_Groups_Stmt"
+	case ^ast.Insert_Dummy_Stmt:
+		return "Insert_Dummy_Stmt"
+	case ^ast.Field_Stmt:
+		return "Field_Stmt"
+	case ^ast.Assign_Field_Stmt:
+		return "Assign_Field_Stmt"
+	case ^ast.Create_Object_Stmt:
+		return "Create_Object_Stmt"
+	case ^ast.Text_Transform_Stmt:
+		return "Text_Transform_Stmt"
+	case ^ast.List_Control_Stmt:
+		return "List_Control_Stmt"
+	case ^ast.Line_Stmt:
+		return "Line_Stmt"
+	case ^ast.Macro_Def_Stmt:
+		return "Macro_Def_Stmt"
+	case ^ast.Macro_Call_Stmt:
+		return "Macro_Call_Stmt"
+	case ^ast.Oop_Simple_Stmt:
+		return "Oop_Simple_Stmt"
 	case ^ast.If_Stmt:
 		return "If_Stmt"
 	case ^ast.Case_Stmt:
@@ -358,6 +440,12 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Close_Cursor_Stmt"
 	case ^ast.Insert_Stmt:
 		return "Insert_Stmt"
+	case ^ast.Append_Stmt:
+		return "Append_Stmt"
+	case ^ast.Modify_Stmt:
+		return "Modify_Stmt"
+	case ^ast.Sort_Stmt:
+		return "Sort_Stmt"
 	case ^ast.Update_Stmt:
 		return "Update_Stmt"
 	case ^ast.Delete_Stmt:
@@ -370,6 +458,10 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Report_Stmt"
 	case ^ast.Textpool_Stmt:
 		return "Textpool_Stmt"
+	case ^ast.Exec_Sql_Stmt:
+		return "Exec_Sql_Stmt"
+	case ^ast.Generate_Stmt:
+		return "Generate_Stmt"
 	case ^ast.Invalid_Stmt:
 		return "Invalid_Stmt"
 	}
