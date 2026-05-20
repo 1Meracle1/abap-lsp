@@ -1,0 +1,534 @@
+package abap_frontend_ast
+
+Visitor :: struct {
+	visit: proc(visitor: ^Visitor, node: ^Node) -> ^Visitor,
+	data:  rawptr,
+}
+
+inspect :: proc(node: ^Node, f: proc(^Node) -> bool) {
+	v := &Visitor {
+		visit = proc(v: ^Visitor, node: ^Node) -> ^Visitor {
+			f := (proc(^Node) -> bool)(v.data)
+			if f(node) {
+				return v
+			}
+			return nil
+		},
+		data = rawptr(f),
+	}
+	walk(v, node)
+}
+
+walk :: proc(v: ^Visitor, node: ^Node) {
+	if node == nil {
+		return
+	}
+	next := v->visit(node)
+	if next == nil {
+		return
+	}
+	switch n in node.derived {
+	case ^File:
+		walk_stmt_list(next, n.stmts)
+	case ^Bad_Expr:
+	case ^Char_String_Template_Expr:
+		walk_expr_list(next, n.parts)
+	case ^Template_Literal_Expr:
+	case ^Template_Interpolation_Expr:
+		walk(next, n.expr)
+		walk_expr_list(next, n.format_specs)
+	case ^Template_Expr:
+		walk(next, n.expr)
+	case ^Template_Format_Spec_Expr:
+		walk(next, n.value)
+	case ^Binary_Expr:
+		walk(next, n.left)
+		walk(next, n.right)
+	case ^Unary_Expr:
+		walk(next, n.expr)
+	case ^Paren_Expr:
+		walk(next, n.expr)
+	case ^Ident_Expr:
+	case ^Literal_Expr:
+	case ^Table_Expr:
+		walk(next, n.table)
+		walk_expr_list(next, n.selectors)
+	case ^Selector_Expr:
+		walk(next, n.base)
+		walk(next, n.field)
+	case ^Substring_Expr:
+		walk(next, n.base)
+		walk(next, n.offset)
+		walk(next, n.length)
+	case ^Call_Expr:
+		walk(next, n.callee)
+		walk(next, n.args)
+	case ^Call_Arg_List_Expr:
+		walk_expr_list(next, n.args)
+	case ^Call_Arg_Section_Expr:
+		walk_expr_list(next, n.args)
+	case ^Call_Named_Arg_Expr:
+		walk(next, n.value)
+	case ^Call_Positional_Arg_Expr:
+		walk(next, n.value)
+	case ^Constructor_Expr:
+		walk(next, n.type_ref)
+		walk_expr_list(next, n.args)
+	case ^Data_Inline_Name_Expr:
+	case ^Field_Symbol_Inline_Name_Expr:
+	case ^Data_Decl:
+		walk_data_type_clause(next, n.type_clause)
+	case ^Data_Chained_Decl:
+		for branch in n.decls {
+			walk_data_type_clause(next, branch.type_clause)
+		}
+	case ^Data_Inline_Decl:
+		walk(next, n.expr)
+	case ^Types_Decl:
+		for clause in n.types {
+			walk_paren_length_clause(next, clause.paren_length)
+			walk_length_clauses(next, clause.length_clauses)
+			walk_data_type_clause(next, clause.type_clause)
+		}
+	case ^Constants_Decl:
+		for clause in n.constants {
+			walk_paren_length_clause(next, clause.paren_length)
+			walk_length_clauses(next, clause.length_clauses)
+			walk_data_type_clause(next, clause.type_clause)
+			walk_value_clause(next, clause.value_clause)
+		}
+	case ^Field_Symbols_Decl:
+		for clause in n.field_symbols {
+			walk_data_type_clause(next, clause.type_clause)
+		}
+	case ^Statics_Decl:
+		for clause in n.statics {
+			walk_paren_length_clause(next, clause.paren_length)
+			walk_length_clauses(next, clause.length_clauses)
+			walk_data_type_clause(next, clause.type_clause)
+			walk_value_clause(next, clause.value_clause)
+		}
+	case ^Tables_Decl:
+	case ^Ranges_Decl:
+		for clause in n.ranges {
+			walk_for_clause(next, clause.for_clause)
+		}
+	case ^Parameters_Decl:
+		for clause in n.parameters {
+			walk_paren_length_clause(next, clause.paren_length)
+			walk_length_clauses(next, clause.length_clauses)
+			walk_data_type_clause(next, clause.type_clause)
+			walk_default_clause(next, clause.default_clause)
+			walk_memory_id_clause(next, clause.memory_id)
+			walk_matchcode_object_clause(next, clause.matchcode_object)
+			walk_visible_length_clause(next, clause.visible_length)
+		}
+	case ^Select_Options_Decl:
+		for clause in n.options {
+			walk_for_clause(next, clause.for_clause)
+			walk_default_clause(next, clause.default_clause)
+			walk_to_clause(next, clause.to_clause)
+			walk_memory_id_clause(next, clause.memory_id)
+			walk_matchcode_object_clause(next, clause.matchcode_object)
+			walk_visible_length_clause(next, clause.visible_length)
+		}
+	case ^Controls_Decl:
+		for clause in n.controls {
+			walk_data_type_clause(next, clause.type_clause)
+			walk_using_screen_clause(next, clause.using_screen)
+		}
+	case ^Class_Data_Decl:
+		for clause in n.decls {
+			walk_paren_length_clause(next, clause.paren_length)
+			walk_length_clauses(next, clause.length_clauses)
+			walk_data_type_clause(next, clause.type_clause)
+			walk_value_clause(next, clause.value_clause)
+		}
+	case ^Assign_Stmt:
+		walk(next, n.lhs)
+		walk(next, n.rhs)
+	case ^Downcast_Assign_Stmt:
+		walk(next, n.lhs)
+		walk(next, n.rhs)
+	case ^Expr_Stmt:
+		walk(next, n.expr)
+	case ^Clear_Stmt:
+		for clause in n.operands {
+			walk(next, clause.target)
+			walk(next, clause.value)
+		}
+	case ^Refresh_Stmt:
+		for clause in n.operands {
+			walk(next, clause.target)
+		}
+	case ^Free_Stmt:
+		for clause in n.operands {
+			walk(next, clause.target)
+		}
+		walk(next, n.memory_id)
+	case ^Unassign_Stmt:
+		for clause in n.operands {
+			walk(next, clause.target)
+		}
+	case ^Move_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.target)
+		}
+	case ^Add_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.target)
+			walk(next, clause.result)
+		}
+	case ^Subtract_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.target)
+			walk(next, clause.result)
+		}
+	case ^Multiply_Stmt:
+		for clause in n.entries {
+			walk(next, clause.target)
+			walk(next, clause.source)
+			walk(next, clause.result)
+		}
+	case ^Divide_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.target)
+			walk(next, clause.result)
+		}
+	case ^Compute_Stmt:
+		for clause in n.entries {
+			walk(next, clause.target)
+			walk(next, clause.source)
+		}
+	case ^Concatenate_Stmt:
+		for clause in n.entries {
+			walk_expr_list(next, clause.sources)
+			walk(next, clause.target)
+			walk(next, clause.separator)
+		}
+	case ^Split_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.separator)
+			walk_expr_list(next, clause.targets)
+		}
+	case ^Condense_Stmt:
+		walk(next, n.target)
+	case ^Replace_Stmt:
+		walk(next, n.pattern)
+		walk(next, n.target)
+		walk(next, n.replacement)
+	case ^Translate_Stmt:
+		walk(next, n.target)
+		walk(next, n.operand)
+	case ^Shift_Stmt:
+		walk(next, n.target)
+		walk(next, n.places)
+		walk(next, n.delete_pattern)
+	case ^Find_Stmt:
+		walk(next, n.pattern)
+		walk(next, n.target)
+		walk(next, n.match_offset)
+		walk(next, n.match_length)
+		walk(next, n.results)
+		walk_expr_list(next, n.submatches)
+	case ^Search_Stmt:
+		walk(next, n.target)
+		walk(next, n.pattern)
+		walk(next, n.starting_at)
+		walk(next, n.ending_at)
+	case ^Perform_Stmt:
+		walk(next, n.form)
+		walk(next, n.program)
+		walk_expr_list(next, n.tables)
+		walk_expr_list(next, n.using_args)
+		walk_expr_list(next, n.changing)
+	case ^Call_Stmt:
+		walk(next, n.call)
+		walk(next, n.target)
+	case ^Submit_Stmt:
+		walk(next, n.target)
+		for clause in n.options {
+			walk(next, clause.value)
+			walk(next, clause.high_value)
+		}
+	case ^Message_Stmt:
+		walk_message_head(next, n.head)
+		walk_expr_list(next, n.with_args)
+		walk(next, n.into)
+		walk(next, n.display_like)
+		walk(next, n.raising)
+	case ^Write_Stmt:
+		for clause in n.operands {
+			walk(next, clause.value)
+			walk(next, clause.position)
+			walk(next, clause.length)
+		}
+	case ^If_Stmt:
+		walk(next, n.condition)
+		walk_stmt_list(next, n.body)
+		for clause in n.elseif_clauses {
+			walk_elseif_clause(next, clause)
+		}
+		walk_else_clause(next, n.else_clause)
+	case ^Case_Stmt:
+		walk(next, n.expr)
+		for clause in n.whens {
+			walk_when_clause(next, clause)
+		}
+	case ^While_Stmt:
+		walk(next, n.condition)
+		walk_stmt_list(next, n.body)
+	case ^Do_Stmt:
+		walk(next, n.count)
+		walk_stmt_list(next, n.body)
+	case ^Loop_Stmt:
+		walk(next, n.source)
+		walk_stmt_list(next, n.body)
+	case ^At_Stmt:
+		walk(next, n.expr)
+		walk_stmt_list(next, n.body)
+	case ^Try_Stmt:
+		walk_stmt_list(next, n.body)
+		for clause in n.catches {
+			walk_catch_clause(next, clause)
+		}
+		walk_cleanup_clause(next, n.cleanup)
+	case ^Class_Decl:
+		walk_stmt_list(next, n.body)
+	case ^Interface_Decl:
+		walk_stmt_list(next, n.body)
+	case ^Method_Decl:
+		walk_stmt_list(next, n.body)
+	case ^Form_Decl:
+		walk_stmt_list(next, n.body)
+	case ^Function_Decl:
+		walk_stmt_list(next, n.body)
+	case ^Module_Decl:
+		walk_stmt_list(next, n.body)
+	case ^Event_Block_Stmt:
+		walk_stmt_list(next, n.body)
+	case ^Enhancement_Stmt:
+		walk_stmt_list(next, n.body)
+	case ^Enhancement_Section_Stmt:
+		walk_stmt_list(next, n.body)
+	case ^Test_Seam_Stmt:
+		walk_stmt_list(next, n.body)
+	case ^Test_Injection_Stmt:
+		walk_stmt_list(next, n.body)
+	case ^Select_Stmt:
+		walk_select_query(next, n.query)
+		walk_stmt_list(next, n.body)
+	case ^Open_Cursor_Stmt:
+		walk(next, n.handle)
+		walk_select_query(next, n.query)
+	case ^Fetch_Stmt:
+		walk(next, n.handle)
+		walk_select_result(next, n.result)
+		walk(next, n.package_size)
+	case ^Close_Cursor_Stmt:
+		walk(next, n.handle)
+	case ^Insert_Stmt:
+		walk(next, n.source)
+		walk(next, n.target)
+		walk(next, n.index)
+		walk(next, n.assigning)
+		walk(next, n.reference_into)
+		walk_sql_assignments(next, n.assignments)
+	case ^Update_Stmt:
+		walk(next, n.target)
+		walk(next, n.source)
+		walk_sql_assignments(next, n.assignments)
+		walk(next, n.where_cond)
+	case ^Delete_Stmt:
+		walk(next, n.target)
+		walk(next, n.source)
+		walk(next, n.index)
+		walk(next, n.where_cond)
+		walk(next, n.using_key)
+		walk_expr_list(next, n.comparing)
+	case ^Read_Table_Stmt:
+		for clause in n.entries {
+			walk(next, clause.table)
+			walk(next, clause.into)
+			walk(next, clause.assigning)
+			walk(next, clause.reference_into)
+			for key_value in clause.key_values {
+				walk(next, key_value.value)
+			}
+			walk(next, clause.index)
+			walk(next, clause.using_key)
+			walk_expr_list(next, clause.comparing)
+		}
+	case ^Dataset_Stmt:
+		walk(next, n.dataset)
+		walk(next, n.source)
+		walk(next, n.target)
+		walk(next, n.position)
+		walk(next, n.message)
+		walk(next, n.maximum_length)
+		walk(next, n.actual_length)
+		walk(next, n.length)
+		walk(next, n.attributes)
+	case ^Report_Stmt:
+		walk(next, n.name)
+		walk(next, n.source)
+		walk(next, n.line_size)
+		walk(next, n.line_count)
+	case ^Textpool_Stmt:
+		walk(next, n.program)
+		walk(next, n.table)
+		walk(next, n.language)
+	case ^Invalid_Stmt:
+	}
+
+	next->visit(nil)
+}
+
+walk_expr_list :: proc(v: ^Visitor, list: [dynamic]^Expr) {
+	for x in list {
+		walk(v, x)
+	}
+}
+
+walk_stmt_list :: proc(v: ^Visitor, list: [dynamic]^Stmt) {
+	for x in list {
+		walk(v, x)
+	}
+}
+
+walk_elseif_clause :: proc(v: ^Visitor, clause: ^Elseif_Clause) {
+	if clause != nil {
+		walk(v, clause.condition)
+		walk_stmt_list(v, clause.body)
+	}
+}
+
+walk_else_clause :: proc(v: ^Visitor, clause: ^Else_Clause) {
+	if clause != nil {
+		walk_stmt_list(v, clause.body)
+	}
+}
+
+walk_when_clause :: proc(v: ^Visitor, clause: ^When_Clause) {
+	if clause != nil {
+		walk_expr_list(v, clause.operands)
+		walk_stmt_list(v, clause.body)
+	}
+}
+
+walk_catch_clause :: proc(v: ^Visitor, clause: ^Catch_Clause) {
+	if clause != nil {
+		walk_expr_list(v, clause.exceptions)
+		walk(v, clause.into)
+		walk_stmt_list(v, clause.body)
+	}
+}
+
+walk_cleanup_clause :: proc(v: ^Visitor, clause: ^Cleanup_Clause) {
+	if clause != nil {
+		walk_stmt_list(v, clause.body)
+	}
+}
+
+walk_data_type_clause :: proc(v: ^Visitor, clause: ^Data_Type_Clause) {
+	if clause != nil {
+		walk(v, clause.type_ref)
+	}
+}
+
+walk_paren_length_clause :: proc(v: ^Visitor, clause: ^Paren_Length_Clause) {
+	if clause != nil {
+		walk(v, clause.expr)
+	}
+}
+
+walk_length_clauses :: proc(v: ^Visitor, list: [dynamic]Length_Clause) {
+	for clause in list {
+		walk(v, clause.expr)
+	}
+}
+
+walk_value_clause :: proc(v: ^Visitor, clause: ^Value_Clause) {
+	if clause != nil {
+		walk(v, clause.expr)
+	}
+}
+
+walk_default_clause :: proc(v: ^Visitor, clause: ^Default_Clause) {
+	if clause != nil {
+		walk(v, clause.expr)
+	}
+}
+
+walk_for_clause :: proc(v: ^Visitor, clause: ^For_Clause) {
+	if clause != nil {
+		walk(v, clause.expr)
+	}
+}
+
+walk_using_screen_clause :: proc(v: ^Visitor, clause: ^Using_Screen_Clause) {
+	if clause != nil {
+		walk(v, clause.screen)
+	}
+}
+
+walk_to_clause :: proc(v: ^Visitor, clause: ^To_Clause) {
+	if clause != nil {
+		walk(v, clause.expr)
+	}
+}
+
+walk_select_query :: proc(v: ^Visitor, clause: Select_Query_Clause) {
+	walk_expr_list(v, clause.projections)
+	walk(v, clause.source)
+	walk_select_result(v, clause.result)
+	walk(v, clause.where_cond)
+	walk(v, clause.for_all_entries)
+	walk(v, clause.package_size)
+	walk(v, clause.up_to_rows)
+}
+
+walk_select_result :: proc(v: ^Visitor, clause: ^Select_Result_Clause) {
+	if clause != nil {
+		walk(v, clause.target)
+	}
+}
+
+walk_sql_assignments :: proc(v: ^Visitor, list: [dynamic]Sql_Assignment_Clause) {
+	for clause in list {
+		walk(v, clause.name)
+		walk(v, clause.value)
+	}
+}
+
+walk_message_head :: proc(v: ^Visitor, clause: ^Message_Head_Clause) {
+	if clause != nil {
+		walk(v, clause.code)
+		walk(v, clause.id)
+		walk(v, clause.msg_type)
+		walk(v, clause.number)
+	}
+}
+
+walk_memory_id_clause :: proc(v: ^Visitor, clause: ^Memory_Id_Clause) {
+	if clause != nil {
+		walk(v, clause.id)
+	}
+}
+
+walk_matchcode_object_clause :: proc(v: ^Visitor, clause: ^Matchcode_Object_Clause) {
+	if clause != nil {
+		walk(v, clause.object)
+	}
+}
+
+walk_visible_length_clause :: proc(v: ^Visitor, clause: ^Visible_Length_Clause) {
+	if clause != nil {
+		walk(v, clause.length)
+	}
+}

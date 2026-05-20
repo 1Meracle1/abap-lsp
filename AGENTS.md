@@ -37,6 +37,9 @@ Use the wrapper scripts on Windows, or run Cargo directly.
 ## Coding Style & Naming Conventions
 Follow standard Rust style with `rustfmt` formatting and 4-space indentation. Use `snake_case` for functions, modules, and test names, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Keep crates focused by responsibility and prefer small internal modules such as `control_stmt.rs` or `type_ref.rs` over oversized files. Avoid async unless there is measured need; prefer immutable `Arc`-published snapshots, one foreground protocol loop, and bounded worker pools for CPU-heavy work. Ask before adding new external dependencies or changing workspace dependency versions.
 
+## Odin Frontend Notes
+Odin's implicit `context` value is local to each scope. When temporarily setting fields such as `context.temp_allocator`, put the assignment in a small block and let scope exit restore the outer context; do not save the old value and restore it with `defer`.
+
 ## Testing Guidelines
 Place unit tests alongside implementation when they are tightly scoped, and integration tests under `crates/<crate>/tests/`. Existing tests use descriptive `snake_case` names such as `parses_workspace_examples` and `resolves_do_times_count_variable_in_header`. Reuse `examples/*.abap` for parser coverage when possible, add regression tests for each parser or semantic-analysis fix, and port tests into the crate they exercise instead of rebuilding a root-level monolithic suite.
 
