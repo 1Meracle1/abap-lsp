@@ -4,6 +4,7 @@ import "../../src/ast"
 import "../../src/parser"
 import frontend_runtime "../../src/runtime"
 import semantic "../../src/semantic"
+import stack_trace "../../src/stack_trace"
 import "../../src/tokenizer"
 
 import "base:runtime"
@@ -26,6 +27,8 @@ Tree_State :: struct {
 }
 
 main :: proc() {
+	stack_trace.install_debug_crash_trace()
+
 	args := os.args
 	if len(args) == 2 && args[1] == "--help" {
 		print_usage()
