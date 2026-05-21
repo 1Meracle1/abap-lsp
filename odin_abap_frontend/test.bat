@@ -29,6 +29,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\runtime" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\http" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\semantic" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\persistence\sqlite3" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\dependency_store" -no-entry-point %ODIN_FLAGS% || exit /b
@@ -37,6 +38,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\runtime" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\http" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\semantic" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\persistence\sqlite3" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\dependency_store" -vet -warnings-as-errors %TEST_FLAGS%
