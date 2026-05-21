@@ -132,22 +132,14 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 
 run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	target_path := args[2]
-	target_source, ok := read_source(target_path, allocator)
-	if !ok {
-		os.exit(1)
-	}
 
-	candidates := make([dynamic]semantic.Source_Input, 0, 4, allocator)
+	include_paths := make([dynamic]string, 0, 4, allocator)
 	for i := 3; i < len(args); i += 2 {
 		if args[i] != "--include" || i + 1 >= len(args) {
 			print_usage()
 			os.exit(1)
 		}
-		source, include_ok := read_source(args[i + 1], allocator)
-		if !include_ok {
-			os.exit(1)
-		}
-		append(&candidates, semantic.Source_Input{uri = args[i + 1], source = source})
+		append(&include_paths, args[i + 1])
 	}
 
 	pool: frontend_runtime.Pool
@@ -172,18 +164,19 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		}
 	}
 
-	target := semantic.Source_Input {
-		uri    = target_path,
-		source = target_source,
-	}
-	project := semantic.analyze_target(
-		target,
-		candidates[:],
+	result := semantic.analyze_path(
+		target_path,
+		include_paths[:],
 		semantic.Analyze_Options{pool = &pool},
 		allocator,
 	)
-	print_analyze_counts(&project)
-	print_analyze_diagnostics(&project)
+	if !result.ok {
+		fmt.printf("error\tanalyze\t%s\n", result.error)
+		frontend_runtime.pool_destroy(&pool)
+		os.exit(1)
+	}
+	print_analyze_counts(&result.project)
+	print_analyze_diagnostics(&result.project)
 	frontend_runtime.pool_destroy(&pool)
 }
 

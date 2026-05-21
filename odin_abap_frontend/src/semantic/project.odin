@@ -25,6 +25,11 @@ Candidate_Name :: struct {
 	candidate_index: int,
 }
 
+Project_Candidate_Input :: struct {
+	input:       Source_Input,
+	object_name: string,
+}
+
 Project_Work_State :: struct {
 	units:     [dynamic]Unit_Analysis,
 	inputs:    [dynamic]Source_Input,
@@ -66,27 +71,49 @@ analyze_target :: proc(
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
+	wrapped := make([dynamic]Project_Candidate_Input, 0, len(candidates), allocator)
+	for candidate in candidates {
+		append(&wrapped, Project_Candidate_Input{input = candidate})
+	}
+	return analyze_target_with_candidate_inputs(target, wrapped[:], {}, options, allocator)
+}
+
+analyze_target_with_candidate_inputs :: proc(
+	target: Source_Input,
+	candidates: []Project_Candidate_Input,
+	dependencies: []Source_Input,
+	options: Analyze_Options,
+	allocator: mem.Allocator,
+) -> Project_Analysis {
 	assert(options.pool != nil)
 	state := Project_Work_State {
-		units = make([dynamic]Unit_Analysis, 0, 1, allocator),
-		inputs = make([dynamic]Source_Input, 0, 1, allocator),
+		units = make([dynamic]Unit_Analysis, 0, 1 + len(dependencies), allocator),
+		inputs = make([dynamic]Source_Input, 0, 1 + len(dependencies), allocator),
 		allocator = allocator,
 	}
-	unit_dirs := make([dynamic]string, 0, 1, allocator)
-	unit_candidate_indices := make([dynamic]int, 0, 1, allocator)
+	unit_dirs := make([dynamic]string, 0, 1 + len(dependencies), allocator)
+	unit_candidate_indices := make([dynamic]int, 0, 1 + len(dependencies), allocator)
 
 	append(&state.inputs, target)
 	append(&state.units, parse_collect_input(Unit_Id(0), target, allocator))
 	append(&unit_dirs, uri_parent_dir_key(target.uri, allocator))
 	append(&unit_candidate_indices, -1)
+	for dependency in dependencies {
+		id := Unit_Id(u32(len(state.units)))
+		append(&state.inputs, dependency)
+		append(&state.units, parse_collect_input(id, dependency, allocator))
+		append(&unit_dirs, uri_parent_dir_key(dependency.uri, allocator))
+		append(&unit_candidate_indices, -1)
+	}
 
 	candidate_dirs := make([]string, len(candidates), allocator)
 	candidate_to_unit := make([]Unit_Id, len(candidates), allocator)
 	candidate_names := make([dynamic]Candidate_Name, 0, len(candidates), allocator)
 	for candidate, i in candidates {
-		candidate_dirs[i] = uri_parent_dir_key(candidate.uri, allocator)
+		candidate_dirs[i] = uri_parent_dir_key(candidate.input.uri, allocator)
 		candidate_to_unit[i] = INVALID_UNIT_ID
-		add_candidate_name(&candidate_names, uri_file_stem(candidate.uri), i, allocator)
+		add_candidate_name(&candidate_names, uri_file_stem(candidate.input.uri), i, allocator)
+		add_candidate_name(&candidate_names, candidate.object_name, i, allocator)
 	}
 
 	for {
@@ -180,7 +207,7 @@ parse_collect_input :: proc(
 resolve_reachable_include_edges :: proc(
 	state: ^Project_Work_State,
 	unit_index: int,
-	candidates: []Source_Input,
+	candidates: []Project_Candidate_Input,
 	candidate_dirs: []string,
 	candidate_names: ^[dynamic]Candidate_Name,
 	candidate_to_unit: []Unit_Id,
@@ -206,7 +233,7 @@ resolve_reachable_include_edges :: proc(
 		if target_unit == INVALID_UNIT_ID {
 			target_unit = Unit_Id(u32(len(state.units)))
 			candidate_to_unit[candidate_index] = target_unit
-			append(&state.inputs, candidates[candidate_index])
+			append(&state.inputs, candidates[candidate_index].input)
 			append(&state.units, Unit_Analysis{})
 			append(unit_dirs, candidate_dirs[candidate_index])
 			append(unit_candidate_indices, candidate_index)

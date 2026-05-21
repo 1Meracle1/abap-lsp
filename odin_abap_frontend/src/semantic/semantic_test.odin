@@ -4,6 +4,8 @@ import "../parser"
 import "../tokenizer"
 import frontend_runtime "../runtime"
 
+import "core:os"
+import filepath "core:path/filepath"
 import "core:testing"
 
 @(test)
@@ -132,6 +134,39 @@ analyze_project_test :: proc(
 	}
 	frontend_runtime.pool_destroy(&pool)
 	return project
+}
+
+analyze_path_test :: proc(t: ^testing.T, target_path: string) -> Manifest_Analysis_Result {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	result := analyze_path(target_path, nil, Analyze_Options{pool = &pool}, context.allocator)
+	frontend_runtime.pool_destroy(&pool)
+	return result
+}
+
+manifest_workspace_path :: proc(name: string) -> string {
+	package_dir := filepath.dir(#file)
+	root, _ := filepath.join(
+		{package_dir, "..", "..", "bin", "test-data", "manifest", name},
+		context.allocator,
+	)
+	os.remove_all(root)
+	os.make_directory_all(root)
+	return root
+}
+
+manifest_test_file :: proc(t: ^testing.T, root, relative, source: string) -> string {
+	path, _ := filepath.join({root, relative}, context.allocator)
+	dir := filepath.dir(path)
+	testing.expect(t, os.make_directory_all(dir) == nil)
+	testing.expect(t, os.write_entire_file(path, source) == nil)
+	cleaned, ok := absolute_clean_path(path, context.allocator)
+	testing.expect(t, ok)
+	return cleaned
 }
 
 analyze_units_project_test :: proc(t: ^testing.T, sources: []Source_Input) -> Project_Analysis {
@@ -1425,6 +1460,199 @@ ENDFORM.
 	testing.expect(t, has_reference(&unit, "lt_report", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lt_pool", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lv_attr", .Value, .Identifier))
+}
+
+@(test)
+manifest_decoder_accepts_rust_compatible_units :: proc(t: ^testing.T) {
+	source := `
+[[unit]]
+name = "ZMAIN"
+kind = "program"
+root_file = "src\\ZMAIN.abap"
+members = [
+  "src/ZMAIN_TOP.abap",
+  { file = "./src/forms/ZMAIN_F01.abap", role = "include", object_name = "ZMAIN_F01" },
+]
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "class"
+root_file = "src/ZCL_DEP.abap"
+dependency_of = ["src/ZMAIN.abap"]
+`
+	manifest, ok, err := parse_workspace_manifest_text("D:/workspace", "D:/workspace/abapls.toml", source, context.allocator)
+
+	testing.expect(t, ok)
+	testing.expect_value(t, err, "")
+	testing.expect_value(t, len(manifest.units), 2)
+	if !ok || len(manifest.units) != 2 {
+		return
+	}
+	testing.expect_value(t, manifest.units[0].name, "ZMAIN")
+	testing.expect_value(t, manifest.units[0].kind, "program")
+	testing.expect_value(t, manifest.units[0].root_file, "src/ZMAIN.abap")
+	testing.expect_value(t, len(manifest.units[0].members), 2)
+	testing.expect_value(t, manifest.units[0].members[0].file, "src/ZMAIN_TOP.abap")
+	testing.expect_value(t, manifest.units[0].members[1].file, "src/forms/ZMAIN_F01.abap")
+	testing.expect_value(t, manifest.units[0].members[1].role, "include")
+	testing.expect_value(t, manifest.units[0].members[1].object_name, "ZMAIN_F01")
+	testing.expect_value(t, manifest.units[1].root_file, "src/ZCL_DEP.abap")
+	testing.expect_value(t, len(manifest.units[1].dependency_of), 1)
+	testing.expect_value(t, manifest.units[1].dependency_of[0].file, "src/ZMAIN.abap")
+}
+
+@(test)
+manifest_root_resolves_explicit_member_include_name :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("explicit-member")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+kind = "program"
+root_file = "src/ZMAIN.abap"
+members = [{ file = "src/includes/generated.abap", role = "include", object_name = "ZTOP" }]
+`,
+	)
+	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. INCLUDE ztop. lv_top = 1.")
+	member_file := manifest_test_file(t, root, "src/includes/generated.abap", "DATA lv_top TYPE i.")
+
+	result := analyze_path_test(t, root_file)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, result.used_manifest)
+	testing.expect_value(t, len(result.project.units), 2)
+	root_unit := project_unit_by_uri(&result.project, root_file)
+	testing.expect(t, root_unit != nil)
+	testing.expect_value(t, include_target_uri(&result.project, root_unit, "ztop"), member_file)
+	testing.expect(t, reference_resolves_to_uri(&result.project, root_unit, "lv_top", .Value, .Identifier, member_file))
+	testing.expect(t, !project_has_diagnostic(&result.project, .Unresolved_Include))
+}
+
+@(test)
+manifest_listed_unreferenced_member_is_not_visible :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("unreferenced-member")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+root_file = "src/ZMAIN.abap"
+members = ["src/ZUNUSED.abap"]
+`,
+	)
+	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. DATA lo_unused TYPE REF TO zcl_unused.")
+	unused_file := manifest_test_file(t, root, "src/ZUNUSED.abap", "CLASS zcl_unused DEFINITION. ENDCLASS.")
+
+	result := analyze_path_test(t, root_file)
+	root_unit := project_unit_by_uri(&result.project, root_file)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, result.used_manifest)
+	testing.expect_value(t, len(result.project.units), 1)
+	testing.expect(t, project_unit_by_uri(&result.project, unused_file) == nil)
+	testing.expect(t, root_unit != nil)
+	testing.expect(t, has_diagnostic(root_unit, .Unresolved_Reference))
+}
+
+@(test)
+manifest_unlisted_reachable_include_joins_root_and_selects_owner :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("unlisted-include")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+root_file = "src/ZMAIN.abap"
+`,
+	)
+	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. INCLUDE zinc. lv_inc = 1.")
+	include_file := manifest_test_file(t, root, "src/ZINC.abap", "DATA lv_inc TYPE i.")
+
+	root_result := analyze_path_test(t, root_file)
+	requested_include_result := analyze_path_test(t, include_file)
+
+	testing.expect(t, root_result.ok)
+	testing.expect(t, root_result.used_manifest)
+	testing.expect(t, project_unit_by_uri(&root_result.project, include_file) != nil)
+	testing.expect(t, requested_include_result.ok)
+	testing.expect(t, requested_include_result.used_manifest)
+	testing.expect(t, project_unit_by_uri(&requested_include_result.project, root_file) != nil)
+	testing.expect(t, project_unit_by_uri(&requested_include_result.project, include_file) != nil)
+	testing.expect_value(t, len(requested_include_result.project.units), 2)
+}
+
+@(test)
+manifest_unclaimed_loose_file_analyzes_standalone :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("loose-file")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+root_file = "src/ZMAIN.abap"
+`,
+	)
+	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain.")
+	loose_file := manifest_test_file(t, root, "src/ZLOOSE.abap", "DATA lv_loose TYPE i.")
+
+	result := analyze_path_test(t, loose_file)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, !result.used_manifest)
+	testing.expect_value(t, len(result.project.units), 1)
+	testing.expect_value(t, result.project.units[0].uri, loose_file)
+	testing.expect(t, project_unit_by_uri(&result.project, root_file) == nil)
+}
+
+@(test)
+manifest_dependency_of_activates_only_selected_root_dependencies :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-of")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+kind = "program"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZCL_DEP"
+kind = "class"
+root_file = "src/ZCL_DEP.abap"
+dependency_of = ["src/ZMAIN.abap"]
+
+[[unit]]
+name = "ZCL_OTHER"
+kind = "class"
+root_file = "src/ZCL_OTHER.abap"
+dependency_of = ["src/ZOTHER.abap"]
+`,
+	)
+	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. DATA lo_dep TYPE REF TO zcl_dep.")
+	dependency_file := manifest_test_file(t, root, "src/ZCL_DEP.abap", "CLASS zcl_dep DEFINITION. ENDCLASS.")
+	other_file := manifest_test_file(t, root, "src/ZCL_OTHER.abap", "CLASS zcl_other DEFINITION. ENDCLASS.")
+
+	result := analyze_path_test(t, root_file)
+	root_unit := project_unit_by_uri(&result.project, root_file)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, result.used_manifest)
+	testing.expect(t, root_unit != nil)
+	testing.expect(t, project_unit_by_uri(&result.project, dependency_file) != nil)
+	testing.expect(t, project_unit_by_uri(&result.project, other_file) == nil)
+	testing.expect(t, reference_resolves_to_uri(&result.project, root_unit, "zcl_dep", .Type, .Type_Ref, dependency_file))
+	testing.expect(t, !has_diagnostic(root_unit, .Unresolved_Reference))
 }
 
 @(test)
