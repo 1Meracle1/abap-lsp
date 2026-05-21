@@ -69,7 +69,7 @@ from_str :: parse_string
 
 destroy_parse_result :: proc(result: Parse_Result, allocator: mem.Allocator) {
 	destroy_table(result.root, allocator)
-	delete(result.errors)
+	delete(result.errors, allocator)
 }
 
 destroy_value :: proc(value: Value, allocator: mem.Allocator) {

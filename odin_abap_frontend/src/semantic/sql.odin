@@ -910,12 +910,14 @@ sql_scan_query :: proc(c: ^Collector, range: tokenizer.Range) -> Sql_Query_Scan 
 	if fields_idx >= 0 {
 		projection_start = fields_idx + 1
 	}
-	projection_end := sql_next_clause_index(tokens[:], projection_start)
-	if projection_start >= 0 && projection_start < projection_end {
-		scan.projection_clause = tokenizer.text_range(
-			tokens[projection_start].range.start,
-			tokens[projection_end - 1].range.end,
-		)
+	if projection_start >= 0 {
+		projection_end := sql_next_clause_index(tokens[:], projection_start)
+		if projection_start < projection_end {
+			scan.projection_clause = tokenizer.text_range(
+				tokens[projection_start].range.start,
+				tokens[projection_end - 1].range.end,
+			)
+		}
 	}
 	if idx := sql_find_keyword(tokens[:], "FROM"); idx >= 0 {
 		scan.from_clause = sql_clause_range(tokens[:], idx + 1)

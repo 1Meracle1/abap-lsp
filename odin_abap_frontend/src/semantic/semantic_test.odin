@@ -1252,6 +1252,16 @@ SELECT (lv_fields)
 }
 
 @(test)
+sql_scan_query_tolerates_ranges_without_select_keyword :: proc(t: ^testing.T) {
+	source := "carrid FROM scarr"
+	c := Collector{source = source, allocator = context.allocator}
+	scan := sql_scan_query(&c, tokenizer.text_range(0, len(source)))
+
+	testing.expect(t, !range_valid(scan.projection_clause))
+	testing.expect(t, range_valid(scan.from_clause))
+}
+
+@(test)
 collects_common_table_expression_sql_facts :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
