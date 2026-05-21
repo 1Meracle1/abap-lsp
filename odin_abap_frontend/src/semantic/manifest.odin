@@ -1,5 +1,6 @@
 package abap_frontend_semantic
 
+import dep_store "../dependency_store"
 import toml "../encoding/toml"
 
 import "core:mem"
@@ -27,9 +28,14 @@ Manifest_Unit :: struct {
 }
 
 Workspace_Manifest :: struct {
-	root_path:     string,
-	manifest_path: string,
-	units:         [dynamic]Manifest_Unit,
+	root_path:            string,
+	manifest_path:        string,
+	connection:           string,
+	dependency_store:     dep_store.Dependency_Profile,
+	has_dependency_store: bool,
+	local_export_roots:   [dynamic]string,
+	dependency_source:    string,
+	units:                [dynamic]Manifest_Unit,
 }
 
 Manifest_Analysis_Result :: struct {
@@ -50,9 +56,38 @@ parse_workspace_manifest_text :: proc(
 	}
 
 	manifest := Workspace_Manifest {
-		root_path     = strings.clone(root_path, allocator),
-		manifest_path = strings.clone(manifest_path, allocator),
-		units         = make([dynamic]Manifest_Unit, 0, 4, allocator),
+		root_path          = strings.clone(root_path, allocator),
+		manifest_path      = strings.clone(manifest_path, allocator),
+		connection         = "default",
+		dependency_source  = "local-first",
+		local_export_roots = make([dynamic]string, 0, 2, allocator),
+		units              = make([dynamic]Manifest_Unit, 0, 4, allocator),
+	}
+	if connection, ok := toml.table_get_string(result.root, "connection"); ok {
+		trimmed := strings.trim_space(connection)
+		if trimmed != "" {
+			manifest.connection = strings.to_lower(trimmed, allocator)
+		}
+	}
+	if table, ok := toml.table_get_table(result.root, "dependency_store"); ok {
+		if profile, profile_ok := decode_dependency_profile(table, allocator); profile_ok {
+			manifest.dependency_store = profile
+			manifest.has_dependency_store = true
+		}
+	}
+	if table, ok := toml.table_get_table(result.root, "local_export"); ok {
+		if roots, roots_ok := toml.table_get_array(table, "roots"); roots_ok {
+			for i in 0 ..< len(roots) {
+				if root, root_ok := toml.array_get_string(roots, i); root_ok {
+					append(&manifest.local_export_roots, normalize_manifest_path(root, allocator))
+				}
+			}
+		}
+	}
+	if table, ok := toml.table_get_table(result.root, "dependencies"); ok {
+		if dependency_source, source_ok := toml.table_get_string(table, "source"); source_ok {
+			manifest.dependency_source = strings.to_lower(strings.trim_space(dependency_source), allocator)
+		}
 	}
 
 	unit_tables, ok := toml.table_get_array(result.root, "unit")
@@ -96,6 +131,43 @@ parse_workspace_manifest_text :: proc(
 	}
 
 	return manifest, true, ""
+}
+
+decode_dependency_profile :: proc(
+	table: toml.Table,
+	allocator: mem.Allocator,
+) -> (dep_store.Dependency_Profile, bool) {
+	product, product_ok := toml.table_get_string(table, "product_version")
+	default_version, default_ok := toml.table_get_string(table, "default_package_version")
+	product = strings.trim_space(product)
+	default_version = strings.trim_space(default_version)
+	if !product_ok || !default_ok || product == "" || default_version == "" {
+		return {}, false
+	}
+	packages := make([dynamic]dep_store.Package_Version, 0, 4, allocator)
+	if package_table, packages_ok := toml.table_get_table(table, "packages"); packages_ok {
+		for package_name, value in package_table.entries {
+			#partial switch version in value {
+			case toml.String:
+				name := strings.trim_space(package_name)
+				trimmed_version := strings.trim_space(version)
+				if name != "" && trimmed_version != "" {
+					append(
+						&packages,
+						dep_store.Package_Version {
+							package_name = strings.clone(name, allocator),
+							version      = strings.clone(trimmed_version, allocator),
+						},
+					)
+				}
+			}
+		}
+	}
+	return dep_store.Dependency_Profile {
+		product_version         = strings.clone(product, allocator),
+		default_package_version = strings.clone(default_version, allocator),
+		packages                = packages[:],
+	}, true
 }
 
 analyze_path :: proc(
@@ -204,15 +276,15 @@ analyze_standalone_path :: proc(
 	if !target_ok {
 		return manifest_analysis_error("failed to read target file")
 	}
-	candidates := make([dynamic]Source_Input, 0, len(include_paths), allocator)
+	candidates := make([dynamic]Project_Candidate_Input, 0, len(include_paths), allocator)
 	for include_path in include_paths {
 		include, include_ok := source_input_from_path(include_path, allocator)
 		if !include_ok {
 			return manifest_analysis_error("failed to read include file")
 		}
-		append(&candidates, include)
+		append(&candidates, Project_Candidate_Input{input = include})
 	}
-	project := analyze_target(target, candidates[:], options, allocator)
+	project := analyze_standalone_with_dependency_drain(target, candidates, options, allocator)
 	return Manifest_Analysis_Result{project = project, ok = true}
 }
 
@@ -274,7 +346,14 @@ analyze_manifest_unit_with_workspace_files :: proc(
 		include_paths,
 		allocator,
 	)
-	project := analyze_target_with_candidate_inputs(target, candidates[:], dependencies[:], options, allocator)
+	project := analyze_with_manifest_dependency_drain(
+		manifest,
+		target,
+		candidates,
+		dependencies,
+		options,
+		allocator,
+	)
 	return Manifest_Analysis_Result{project = project, ok = true, used_manifest = true}
 }
 
@@ -461,6 +540,7 @@ collect_workspace_abap_files :: proc(
 	if err != nil {
 		return
 	}
+	defer os.file_info_slice_delete(entries, allocator)
 	for entry in entries {
 		#partial switch entry.type {
 		case .Directory:

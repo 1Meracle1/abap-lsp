@@ -150,6 +150,30 @@ candidate_lookup_returns_highest_priority_artifact_kind :: proc(t: ^testing.T) {
 }
 
 @(test)
+candidate_lookup_any_profile_reads_central_cache_artifact :: proc(t: ^testing.T) {
+	path := workspace_store_path("candidate_lookup_any_profile.sqlite3")
+	store, err := dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	profile := sample_profile()
+	artifact := sample_artifact()
+
+	_, err = put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+
+	record: Stored_Artifact_Record
+	ok: bool
+	record, ok, err = find_artifact_for_candidate_any_profile(
+		&store,
+		"CL_ABAP_TYPEDESCR",
+		"type",
+		context.allocator,
+	)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.object_kind, "global-class")
+}
+
+@(test)
 lists_artifacts_by_kind_in_profile_scope :: proc(t: ^testing.T) {
 	path := workspace_store_path("lists_artifacts_by_kind_in_profile_scope.sqlite3")
 	store, err := dependency_store_from_override_path(path, context.allocator)

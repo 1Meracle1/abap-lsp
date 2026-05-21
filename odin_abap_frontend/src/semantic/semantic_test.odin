@@ -1,5 +1,6 @@
 package abap_frontend_semantic
 
+import dep_store "../dependency_store"
 import "../parser"
 import "../tokenizer"
 import frontend_runtime "../runtime"
@@ -111,6 +112,15 @@ project_has_diagnostic :: proc(project: ^Project_Analysis, kind: Diagnostic_Kind
 	return false
 }
 
+project_units_have_diagnostic :: proc(project: ^Project_Analysis, kind: Diagnostic_Kind) -> bool {
+	for &unit in project.units {
+		if has_diagnostic(&unit, kind) {
+			return true
+		}
+	}
+	return false
+}
+
 analyze_project_test :: proc(
 	t: ^testing.T,
 	worker_count: int,
@@ -137,13 +147,23 @@ analyze_project_test :: proc(
 }
 
 analyze_path_test :: proc(t: ^testing.T, target_path: string) -> Manifest_Analysis_Result {
+	return analyze_path_test_with_options(t, target_path, {})
+}
+
+analyze_path_test_with_options :: proc(
+	t: ^testing.T,
+	target_path: string,
+	options: Analyze_Options,
+) -> Manifest_Analysis_Result {
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	result := analyze_path(target_path, nil, Analyze_Options{pool = &pool}, context.allocator)
+	run_options := options
+	run_options.pool = &pool
+	result := analyze_path(target_path, nil, run_options, context.allocator)
 	frontend_runtime.pool_destroy(&pool)
 	return result
 }
@@ -152,6 +172,17 @@ manifest_workspace_path :: proc(name: string) -> string {
 	package_dir := filepath.dir(#file)
 	root, _ := filepath.join(
 		{package_dir, "..", "..", "bin", "test-data", "manifest", name},
+		context.allocator,
+	)
+	os.remove_all(root)
+	os.make_directory_all(root)
+	return root
+}
+
+external_export_workspace_path :: proc(name: string) -> string {
+	package_dir := filepath.dir(#file)
+	root, _ := filepath.join(
+		{package_dir, "..", "..", "bin", "test-data", "local-export", name},
 		context.allocator,
 	)
 	os.remove_all(root)
@@ -1465,6 +1496,21 @@ ENDFORM.
 @(test)
 manifest_decoder_accepts_rust_compatible_units :: proc(t: ^testing.T) {
 	source := `
+connection = "SAP-DEV"
+
+[dependency_store]
+product_version = "S4-2023"
+default_package_version = "base"
+
+[dependency_store.packages]
+SAP_BASIS = "basis"
+
+[local_export]
+roots = ["../exports", "D:\\adt\\export"]
+
+[dependencies]
+source = "local-first"
+
 [[unit]]
 name = "ZMAIN"
 kind = "program"
@@ -1484,6 +1530,21 @@ dependency_of = ["src/ZMAIN.abap"]
 
 	testing.expect(t, ok)
 	testing.expect_value(t, err, "")
+	testing.expect_value(t, manifest.connection, "sap-dev")
+	testing.expect(t, manifest.has_dependency_store)
+	testing.expect_value(t, manifest.dependency_store.product_version, "S4-2023")
+	testing.expect_value(t, manifest.dependency_store.default_package_version, "base")
+	testing.expect_value(t, len(manifest.dependency_store.packages), 1)
+	if len(manifest.dependency_store.packages) == 1 {
+		testing.expect_value(t, manifest.dependency_store.packages[0].package_name, "SAP_BASIS")
+		testing.expect_value(t, manifest.dependency_store.packages[0].version, "basis")
+	}
+	testing.expect_value(t, len(manifest.local_export_roots), 2)
+	if len(manifest.local_export_roots) == 2 {
+		testing.expect_value(t, manifest.local_export_roots[0], "../exports")
+		testing.expect_value(t, manifest.local_export_roots[1], "D:/adt/export")
+	}
+	testing.expect_value(t, manifest.dependency_source, "local-first")
 	testing.expect_value(t, len(manifest.units), 2)
 	if !ok || len(manifest.units) != 2 {
 		return
@@ -1557,6 +1618,150 @@ members = ["src/ZUNUSED.abap"]
 	testing.expect(t, project_unit_by_uri(&result.project, unused_file) == nil)
 	testing.expect(t, root_unit != nil)
 	testing.expect(t, has_diagnostic(root_unit, .Unresolved_Reference))
+}
+
+@(test)
+manifest_dependency_store_drains_iteratively :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-drain")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	inputs := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "ZPKG",
+			object_kind    = "global-class",
+			object_name    = "ZCL_OUTER",
+			object_uri     = "/sap/bc/adt/oo/classes/ZCL_OUTER",
+			object_type    = "CLAS/OC",
+			description    = "Outer class",
+			file_extension = "abap",
+			source_text    = "CLASS zcl_outer DEFINITION. PUBLIC SECTION. DATA value TYPE zdep_type. ENDCLASS. CLASS zcl_outer IMPLEMENTATION. ENDCLASS.",
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+		{
+			package_name   = "ZPKG",
+			object_kind    = "ddic-data-element",
+			object_name    = "ZDEP_TYPE",
+			object_uri     = "/sap/bc/adt/ddic/dataelements/ZDEP_TYPE",
+			object_type    = "DTEL/DE",
+			description    = "Dependent type",
+			file_extension = "abap",
+			source_text    = "TYPES zdep_type TYPE string.",
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, inputs[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[dependency_store]
+product_version = "S4-2023"
+default_package_version = "base"
+
+[[unit]]
+name = "ZMAIN"
+root_file = "src/ZMAIN.abap"
+`,
+	)
+	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. DATA lo_outer TYPE REF TO zcl_outer.")
+
+	result := analyze_path_test_with_options(t, root_file, Analyze_Options{dependency_store_path = store_path})
+
+	testing.expect(t, result.ok)
+	testing.expect(t, result.used_manifest)
+	testing.expect_value(t, len(result.project.units), 3)
+	testing.expect(t, !project_has_diagnostic(&result.project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&result.project, .Unresolved_Reference))
+}
+
+@(test)
+standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("standalone-dependency-store-drain")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "ZPKG",
+		object_kind    = "global-class",
+		object_name    = "ZCL_STANDALONE_CACHE",
+		object_uri     = "/sap/bc/adt/oo/classes/ZCL_STANDALONE_CACHE",
+		object_type    = "CLAS/OC",
+		description    = "Standalone cache class",
+		file_extension = "abap",
+		source_text    = "CLASS zcl_standalone_cache DEFINITION. ENDCLASS. CLASS zcl_standalone_cache IMPLEMENTATION. ENDCLASS.",
+		fetched_at     = "2026-05-21T00:00:00Z",
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	root_file := manifest_test_file(
+		t,
+		root,
+		"ZMAIN.abap",
+		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_cache.",
+	)
+	result := analyze_path_test_with_options(t, root_file, Analyze_Options{dependency_store_path = store_path})
+
+	testing.expect(t, result.ok)
+	testing.expect(t, !result.used_manifest)
+	testing.expect_value(t, len(result.project.units), 2)
+	testing.expect(t, !project_has_diagnostic(&result.project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&result.project, .Unresolved_Reference))
+}
+
+@(test)
+manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) {
+	export_root := external_export_workspace_path("external-export-root")
+	export_file := manifest_test_file(
+		t,
+		export_root,
+		"source-code-library/classes/ZCL_LOCAL_EXPORT.abap",
+		"CLASS zcl_local_export DEFINITION. ENDCLASS. CLASS zcl_local_export IMPLEMENTATION. ENDCLASS.",
+	)
+	manifest := Workspace_Manifest {
+		root_path          = export_root,
+		dependency_source  = "local-first",
+		local_export_roots = make([dynamic]string, 0, 1, context.allocator),
+	}
+	append(&manifest.local_export_roots, export_root)
+	target := Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_local_export.",
+	}
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]Source_Input, context.allocator)
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	project := analyze_with_manifest_dependency_drain(
+		&manifest,
+		target,
+		candidates,
+		dependencies,
+		Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 2)
+	testing.expect(t, project_unit_by_uri(&project, export_file) != nil)
+	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 
 @(test)

@@ -12,7 +12,8 @@ Source_Input :: struct {
 }
 
 Analyze_Options :: struct {
-	pool: ^runtime.Pool,
+	pool:                  ^runtime.Pool,
+	dependency_store_path: string,
 }
 
 Project_Analysis :: struct {
@@ -197,10 +198,7 @@ parse_collect_input :: proc(
 	allocator: mem.Allocator,
 ) -> Unit_Analysis {
 	parsed: parser.Parsed_File
-	{
-		context.temp_allocator = allocator
-		parsed = parser.parse(input.source, input.uri, allocator)
-	}
+	parsed = parser.parse(input.source, input.uri, allocator)
 	return collect_unit(unit_id, input.uri, input.source, parsed, allocator)
 }
 

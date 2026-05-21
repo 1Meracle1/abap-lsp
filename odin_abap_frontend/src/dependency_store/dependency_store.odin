@@ -289,6 +289,20 @@ find_artifact_for_candidate :: proc(
 	return reader_find_artifact_for_candidate(&r, profile, candidate_name, candidate_kind, allocator)
 }
 
+find_artifact_for_candidate_any_profile :: proc(
+	store: ^Dependency_Store,
+	candidate_name: string,
+	candidate_kind: string,
+	allocator: mem.Allocator,
+) -> (Stored_Artifact_Record, bool, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return {}, false, err
+	}
+	defer reader_destroy(&r)
+	return reader_find_artifact_for_candidate_any_profile(&r, candidate_name, candidate_kind, allocator)
+}
+
 list_artifacts_by_kind :: proc(
 	store: ^Dependency_Store,
 	profile: ^Dependency_Profile,
@@ -678,6 +692,65 @@ WHERE product_version = ?
 	index := 3
 	index = bind_text_list(stmt, index, package_versions[:])
 	index = bind_text_list(stmt, index, allowed_kinds[:])
+	for kind, rank in allowed_kinds {
+		bind_text(stmt, index, kind)
+		bind_i64(stmt, index + 1, i64(rank))
+		index += 2
+	}
+	bind_i64(stmt, index, i64(len(allowed_kinds)))
+	return step_artifact_record(stmt, allocator)
+}
+
+reader_find_artifact_for_candidate_any_profile :: proc(
+	r: ^Dependency_Store_Reader,
+	candidate_name: string,
+	candidate_kind: string,
+	allocator: mem.Allocator,
+) -> (Stored_Artifact_Record, bool, Store_Error) {
+	allowed_kinds := make([dynamic]string, 0, 8, allocator)
+	candidate_artifact_kinds(candidate_kind, &allowed_kinds, allocator)
+	name := normalize_name(candidate_name, allocator)
+	if len(allowed_kinds) == 0 || name == "" {
+		return {}, false, .None
+	}
+
+	sql := strings.builder_make(allocator)
+	defer strings.builder_destroy(&sql)
+	strings.write_string(
+		&sql,
+		`
+SELECT
+    id,
+    package_name,
+    package_version,
+    object_kind,
+    object_name,
+    object_uri,
+    object_type,
+    description,
+    file_extension,
+    source_text
+FROM dependency_artifacts
+WHERE object_name = ?
+  AND object_kind IN (`,
+	)
+	append_placeholders(&sql, len(allowed_kinds))
+	strings.write_string(&sql, ") ORDER BY CASE object_kind")
+	for _ in allowed_kinds {
+		strings.write_string(&sql, " WHEN ? THEN ?")
+	}
+	strings.write_string(
+		&sql,
+		" ELSE ? END, product_version ASC, package_version ASC, package_name ASC, object_name ASC LIMIT 1",
+	)
+
+	stmt, err := prepare(r.connection, strings.to_string(sql), allocator)
+	if err != .None {
+		return {}, false, err
+	}
+	defer sqlite3.finalize(stmt)
+	bind_text(stmt, 1, name)
+	index := bind_text_list(stmt, 2, allowed_kinds[:])
 	for kind, rank in allowed_kinds {
 		bind_text(stmt, index, kind)
 		bind_i64(stmt, index + 1, i64(rank))
