@@ -30,9 +30,11 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\runtime" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\semantic" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\persistence\sqlite3" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\tokenizer" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\encoding\toml" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\runtime" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
-"%ODIN_EXE%" test "%ROOT%src\semantic" -vet -warnings-as-errors %TEST_FLAGS%
+"%ODIN_EXE%" test "%ROOT%src\semantic" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\persistence\sqlite3" -vet -warnings-as-errors %TEST_FLAGS%
