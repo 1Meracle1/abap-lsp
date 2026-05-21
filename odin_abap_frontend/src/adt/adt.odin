@@ -531,6 +531,57 @@ fetch_message_class :: proc(client: ^Client, name: string, allocator: mem.Alloca
 	return format_ddic_xml(body, allocator), .None
 }
 
+fetch_dependency_object :: proc(
+	client: ^Client,
+	object_ref: ^Object_Ref,
+	allocator: mem.Allocator,
+) -> (Dependency_Fetch_Result, Error) {
+	empty_dependencies := make([dynamic]Dependency_Artifact, allocator)
+	if is_message_class_dependency_object(object_ref) {
+		body, err := fetch_message_class(client, object_ref.name, allocator)
+		if err != .None {
+			delete(empty_dependencies)
+			return {}, err
+		}
+		return Dependency_Fetch_Result {
+			body                = body,
+			file_extension      = strings.clone("xml", allocator),
+			manifest_kind       = strings.clone("message-class", allocator),
+			shared_dependencies = empty_dependencies,
+		}, .None
+	}
+	if is_fetchable_ddic_dependency_object(object_ref) {
+		kind := infer_ddic_manifest_kind(object_ref)
+		body, err := fetch_ddic_object(client, kind, object_ref.name, allocator)
+		if err != .None {
+			delete(empty_dependencies)
+			return {}, err
+		}
+		return Dependency_Fetch_Result {
+			body                = body,
+			file_extension      = strings.clone("xml", allocator),
+			manifest_kind       = strings.clone(kind, allocator),
+			shared_dependencies = empty_dependencies,
+		}, .None
+	}
+	if is_function_module_object(object_ref) {
+		delete(empty_dependencies)
+		return fetch_function_module_dependency_source(client, object_ref, allocator)
+	}
+
+	body, err := fetch_object_source(client, object_ref.uri, allocator)
+	if err != .None {
+		delete(empty_dependencies)
+		return {}, err
+	}
+	return Dependency_Fetch_Result {
+		body                = body,
+		file_extension      = strings.clone("abap", allocator),
+		manifest_kind       = strings.clone(infer_repository_manifest_kind(object_ref), allocator),
+		shared_dependencies = empty_dependencies,
+	}, .None
+}
+
 select_dependency_objects :: proc(
 	query: string,
 	objects: []Object_Ref,
@@ -792,6 +843,76 @@ build_function_module_dependency_source :: proc(
 	return join_trimmed_sources(rendered_group, module, allocator)
 }
 
+fetch_function_module_dependency_source :: proc(
+	client: ^Client,
+	object_ref: ^Object_Ref,
+	allocator: mem.Allocator,
+) -> (Dependency_Fetch_Result, Error) {
+	module_source, err := fetch_object_source(client, object_ref.uri, allocator)
+	if err != .None {
+		return {}, err
+	}
+	group_uri, ok := infer_function_group_uri(object_ref, allocator)
+	if !ok {
+		return Dependency_Fetch_Result {
+			body                = module_source,
+			file_extension      = strings.clone("abap", allocator),
+			manifest_kind       = strings.clone("function-module", allocator),
+			shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
+		}, .None
+	}
+	defer delete(group_uri, allocator)
+
+	group_source, group_err := fetch_object_source(client, group_uri, allocator)
+	if group_err != .None {
+		return Dependency_Fetch_Result {
+			body                = module_source,
+			file_extension      = strings.clone("abap", allocator),
+			manifest_kind       = strings.clone("function-module", allocator),
+			shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
+		}, .None
+	}
+	defer delete(group_source, allocator)
+
+	shared := make([dynamic]Dependency_Artifact, allocator)
+	include_names := extract_active_top_level_include_names(group_source, allocator)
+	defer {
+		for name in include_names {
+			delete(name, allocator)
+		}
+		delete(include_names)
+	}
+	for include_name in include_names {
+		if is_function_group_dispatcher_include(include_name) {
+			continue
+		}
+		include_path := source_path("/programs/includes/", include_name, allocator)
+		body, include_err := fetch_object_source(client, include_path, allocator)
+		delete(include_path, allocator)
+		if include_err != .None {
+			continue
+		}
+		append(
+			&shared,
+			Dependency_Artifact {
+				object_ref     = build_include_object_ref(include_name, object_ref.package_name, allocator),
+				body           = body,
+				file_extension = strings.clone("abap", allocator),
+				manifest_kind  = strings.clone("include", allocator),
+			},
+		)
+	}
+	sort_dependency_artifacts(shared[:])
+	body := build_function_module_dependency_source(group_source, module_source, allocator)
+	delete(module_source, allocator)
+	return Dependency_Fetch_Result {
+		body                = body,
+		file_extension      = strings.clone("abap", allocator),
+		manifest_kind       = strings.clone("function-module", allocator),
+		shared_dependencies = shared,
+	}, .None
+}
+
 format_ddic_xml :: proc(xml: string, allocator: mem.Allocator) -> string {
 	trimmed := strings.trim_space(xml)
 	if !strings.has_prefix(trimmed, "<") {
@@ -949,6 +1070,25 @@ object_refs_destroy :: proc(entries: ^[dynamic]Object_Ref, allocator: mem.Alloca
 	}
 	delete(entries^)
 	entries^ = nil
+}
+
+dependency_fetch_result_destroy :: proc(result: ^Dependency_Fetch_Result, allocator: mem.Allocator) {
+	delete(result.body, allocator)
+	delete(result.file_extension, allocator)
+	delete(result.manifest_kind, allocator)
+	for &artifact in result.shared_dependencies {
+		dependency_artifact_destroy(&artifact, allocator)
+	}
+	delete(result.shared_dependencies)
+	result^ = {}
+}
+
+dependency_artifact_destroy :: proc(artifact: ^Dependency_Artifact, allocator: mem.Allocator) {
+	object_ref_destroy(&artifact.object_ref, allocator)
+	delete(artifact.body, allocator)
+	delete(artifact.file_extension, allocator)
+	delete(artifact.manifest_kind, allocator)
+	artifact^ = {}
 }
 
 repository_node_structure_destroy :: proc(structure: ^Repository_Node_Structure, allocator: mem.Allocator) {
@@ -1641,6 +1781,18 @@ object_ref_less :: proc(left, right: Object_Ref) -> bool {
 		return cmp_type < 0
 	}
 	return strings.compare(left.uri, right.uri) < 0
+}
+
+sort_dependency_artifacts :: proc(values: []Dependency_Artifact) {
+	for i in 1 ..< len(values) {
+		value := values[i]
+		j := i
+		for j > 0 && strings.compare(value.object_ref.name, values[j - 1].object_ref.name) < 0 {
+			values[j] = values[j - 1]
+			j -= 1
+		}
+		values[j] = value
+	}
 }
 
 insert_unique_string :: proc(values: ^[dynamic]string, value: string, allocator: mem.Allocator) {

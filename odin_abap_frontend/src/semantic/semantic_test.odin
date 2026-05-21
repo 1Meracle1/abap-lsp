@@ -1,5 +1,6 @@
 package abap_frontend_semantic
 
+import "../adt"
 import dep_store "../dependency_store"
 import "../parser"
 import "../tokenizer"
@@ -1760,6 +1761,69 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, project_unit_by_uri(&project, export_file) != nil)
+	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+manifest_project_dotenv_gates_adt_dependency_fetch :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("adt-dotenv-gate")
+	manifest := Workspace_Manifest{root_path = root}
+	testing.expect(t, !manifest_has_project_dotenv(&manifest, context.allocator))
+
+	manifest_test_file(
+		t,
+		root,
+		".env",
+		`
+ABAP_ADT_URL=http://127.0.0.1:1
+ABAP_ADT_USER=demo
+ABAP_ADT_PASSWORD=secret
+`,
+	)
+	testing.expect(t, manifest_has_project_dotenv(&manifest, context.allocator))
+}
+
+@(test)
+adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
+	target := Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_adt_fetch.",
+	}
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]Source_Input, context.allocator)
+	object_ref := adt.build_class_object_ref("ZCL_ADT_FETCH", "ZPKG", context.allocator)
+	defer adt.object_ref_destroy(&object_ref, context.allocator)
+
+	added := add_adt_fetched_dependency_input(
+		&candidates,
+		&dependencies,
+		Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = "type"},
+		&object_ref,
+		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
+		"abap",
+		target.uri,
+		context.allocator,
+	)
+	testing.expect(t, added)
+	testing.expect_value(t, len(dependencies), 1)
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	project := analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies[:],
+		Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }

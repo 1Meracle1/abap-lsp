@@ -1,6 +1,7 @@
 package abap_frontend_semantic
 
 import dep_store "../dependency_store"
+import "../adt"
 
 import "core:mem"
 import "core:os"
@@ -24,7 +25,8 @@ analyze_with_manifest_dependency_drain :: proc(
 	project := analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
 	store, has_store := manifest_dependency_store(manifest, options, allocator)
 	roots := manifest_local_export_roots(manifest, allocator)
-	if !has_store && len(roots) == 0 {
+	has_adt := manifest_has_project_dotenv(manifest, allocator)
+	if !has_store && len(roots) == 0 && !has_adt {
 		return project
 	}
 
@@ -50,6 +52,16 @@ analyze_with_manifest_dependency_drain :: proc(
 				&dependency_inputs,
 				remote_candidates[:],
 				roots[:],
+				target.uri,
+				allocator,
+			)
+		}
+		if !added && has_adt {
+			added = add_adt_matches(
+				&candidate_inputs,
+				&dependency_inputs,
+				remote_candidates[:],
+				manifest,
 				target.uri,
 				allocator,
 			)
@@ -387,6 +399,184 @@ add_local_export_matches :: proc(
 		}
 	}
 	return added
+}
+
+add_adt_matches :: proc(
+	candidates: ^[dynamic]Project_Candidate_Input,
+	dependencies: ^[dynamic]Source_Input,
+	remote_candidates: []Remote_Dependency_Candidate,
+	manifest: ^Workspace_Manifest,
+	target_uri: string,
+	allocator: mem.Allocator,
+) -> bool {
+	env_path, ok := manifest_project_dotenv_path(manifest, allocator)
+	if !ok {
+		return false
+	}
+	defer delete(env_path, allocator)
+	dotenv, dotenv_err := adt.parse_dotenv_file(env_path, allocator)
+	if dotenv_err != .None {
+		return false
+	}
+	defer adt.dotenv_defaults_destroy(&dotenv, allocator)
+
+	overrides := adt.Connection_Overrides{}
+	config, config_err := adt.connection_config_from_sources(&overrides, &dotenv, allocator)
+	if config_err != .None {
+		return false
+	}
+	defer adt.connection_config_destroy(&config, allocator)
+
+	client: adt.Client
+	adt.client_init(&client, config)
+	defer adt.client_destroy(&client, allocator)
+	return add_adt_matches_with_client(candidates, dependencies, remote_candidates, &client, target_uri, allocator)
+}
+
+add_adt_matches_with_client :: proc(
+	candidates: ^[dynamic]Project_Candidate_Input,
+	dependencies: ^[dynamic]Source_Input,
+	remote_candidates: []Remote_Dependency_Candidate,
+	client: ^adt.Client,
+	target_uri: string,
+	allocator: mem.Allocator,
+) -> bool {
+	added := false
+	for candidate in remote_candidates {
+		objects, err := adt.search_repository_objects(client, candidate.name, 50, allocator)
+		if err != .None {
+			objects = adt.direct_dependency_object_refs(candidate.name, candidate.kind, allocator)
+		}
+		selected := adt.select_dependency_objects(candidate.name, objects[:], candidate.kind, allocator)
+		if len(selected) == 0 {
+			adt.object_refs_destroy(&selected, allocator)
+			selected = adt.direct_dependency_object_refs(candidate.name, candidate.kind, allocator)
+		}
+		for &object_ref in selected {
+			if !add_adt_object_match(candidates, dependencies, candidate, &object_ref, client, target_uri, allocator) {
+				continue
+			}
+			added = true
+		}
+		adt.object_refs_destroy(&selected, allocator)
+		adt.object_refs_destroy(&objects, allocator)
+	}
+	return added
+}
+
+add_adt_object_match :: proc(
+	candidates: ^[dynamic]Project_Candidate_Input,
+	dependencies: ^[dynamic]Source_Input,
+	candidate: Remote_Dependency_Candidate,
+	object_ref: ^adt.Object_Ref,
+	client: ^adt.Client,
+	target_uri: string,
+	allocator: mem.Allocator,
+) -> bool {
+	fetched, err := adt.fetch_dependency_object(client, object_ref, allocator)
+	if err != .None {
+		return false
+	}
+	defer adt.dependency_fetch_result_destroy(&fetched, allocator)
+
+	added := add_adt_fetched_dependency_input(
+		candidates,
+		dependencies,
+		candidate,
+		object_ref,
+		fetched.body,
+		fetched.file_extension,
+		target_uri,
+		allocator,
+	)
+	for &shared in fetched.shared_dependencies {
+		shared_candidate := Remote_Dependency_Candidate{name = shared.object_ref.name, kind = "include"}
+		if add_adt_fetched_dependency_input(
+			candidates,
+			dependencies,
+			shared_candidate,
+			&shared.object_ref,
+			shared.body,
+			shared.file_extension,
+			target_uri,
+			allocator,
+		) {
+			added = true
+		}
+	}
+	return added
+}
+
+add_adt_fetched_dependency_input :: proc(
+	candidates: ^[dynamic]Project_Candidate_Input,
+	dependencies: ^[dynamic]Source_Input,
+	candidate: Remote_Dependency_Candidate,
+	object_ref: ^adt.Object_Ref,
+	source: string,
+	file_extension: string,
+	target_uri: string,
+	allocator: mem.Allocator,
+) -> bool {
+	uri := adt_dependency_uri(object_ref, file_extension, allocator)
+	if project_input_uri_exists(target_uri, dependencies^[:], candidates^[:], uri, allocator) {
+		delete(uri, allocator)
+		return false
+	}
+	input_source: string
+	if source_looks_xml(source) {
+		input_source = synthetic_dependency_source(object_ref.name, candidate.kind, allocator)
+	} else {
+		input_source = strings.clone(source, allocator)
+	}
+	append_dependency_input(
+		candidates,
+		dependencies,
+		Source_Input{uri = uri, source = input_source},
+		candidate,
+		object_ref.name,
+		allocator,
+	)
+	return true
+}
+
+adt_dependency_uri :: proc(
+	object_ref: ^adt.Object_Ref,
+	file_extension: string,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "abapls-adt:")
+	strings.write_string(&out, object_ref.uri)
+	ext := strings.trim_space(file_extension)
+	if ext != "" && strings.index_byte(object_ref.uri, '.') < 0 {
+		strings.write_byte(&out, '.')
+		strings.write_string(&out, ext)
+	}
+	return strings.to_string(out)
+}
+
+manifest_has_project_dotenv :: proc(manifest: ^Workspace_Manifest, allocator: mem.Allocator) -> bool {
+	path, ok := manifest_project_dotenv_path(manifest, allocator)
+	if ok {
+		delete(path, allocator)
+	}
+	return ok
+}
+
+manifest_project_dotenv_path :: proc(
+	manifest: ^Workspace_Manifest,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	path, ok := join_path2(manifest.root_path, ".env", allocator)
+	if !ok {
+		return "", false
+	}
+	info, err := os.stat(path, allocator)
+	if err == nil && info.type == .Regular {
+		return path, true
+	}
+	delete(path, allocator)
+	return "", false
 }
 
 append_dependency_input :: proc(
