@@ -8,7 +8,7 @@ import "core:thread"
 @(test)
 headers_are_case_insensitive :: proc(t: ^testing.T) {
 	headers: Headers
-	headers_init(&headers, context.allocator)
+	headers = make([dynamic]Header, 0, 8, context.allocator)
 	defer headers_destroy(&headers, context.allocator)
 
 	header_set(&headers, "Content-Type", "application/json", context.allocator)
