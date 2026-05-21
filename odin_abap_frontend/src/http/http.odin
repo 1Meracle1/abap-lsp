@@ -1,11 +1,13 @@
 package http
 
+import "base:runtime"
+import c "core:c/libc"
 import "core:mem"
-import "core:net"
 import "core:strconv"
 import "core:bytes"
 import "core:strings"
 import "core:time"
+import curl "vendor:curl"
 
 DEFAULT_MAX_RESPONSE_BYTES :: 16 * 1024 * 1024
 
@@ -77,6 +79,12 @@ URL :: struct {
 	port:      int,
 	path:      string,
 	query:     string,
+}
+
+Curl_Buffer :: struct {
+	data:      [dynamic]u8,
+	max_bytes: int,
+	too_large: bool,
 }
 
 default_client :: proc() -> Client {
@@ -161,44 +169,121 @@ client_do :: proc(client: ^Client, request: ^Request, allocator: mem.Allocator) 
 	if err != .None {
 		return {}, err
 	}
-	if !strings.equal_fold(url.scheme, "http") {
+	if !strings.equal_fold(url.scheme, "http") && !strings.equal_fold(url.scheme, "https") {
 		return {}, .Unsupported_Scheme
 	}
+	return client_do_curl(client, request, allocator)
+}
 
-	socket, net_err := net.dial_tcp_from_hostname_with_port_override(url.host, url.port)
-	if net_err != nil {
+client_do_curl :: proc(client: ^Client, request: ^Request, allocator: mem.Allocator) -> (Response, Error) {
+	if curl.global_init(c.long(curl.GLOBAL_DEFAULT)) != curl.code.E_OK {
 		return {}, .Network
 	}
-	defer net.close(socket)
-
-	if client.timeout > 0 {
-		if net.set_option(socket, .Receive_Timeout, client.timeout) != nil ||
-		   net.set_option(socket, .Send_Timeout, client.timeout) != nil {
-			return {}, .Network
-		}
-	}
-
-	head := format_request_head(request, &url, allocator)
-	defer delete(head, allocator)
-	if _, send_err := net.send_tcp(socket, transmute([]u8)head); send_err != nil {
+	handle := curl.easy_init()
+	if handle == nil {
 		return {}, .Network
 	}
-	if len(request.body) > 0 {
-		if _, send_err := net.send_tcp(socket, request.body); send_err != nil {
-			return {}, .Network
-		}
-	}
+	defer curl.easy_cleanup(handle)
 
 	limit := client.max_response_bytes
 	if limit <= 0 {
 		limit = DEFAULT_MAX_RESPONSE_BYTES
 	}
-	raw, read_err := read_all(socket, limit, allocator)
-	if read_err != .None {
-		return {}, read_err
+	body := Curl_Buffer{data = make([dynamic]u8, 0, 4096, allocator), max_bytes = limit}
+	head := Curl_Buffer{data = make([dynamic]u8, 0, 1024, allocator)}
+	defer delete(body.data)
+	defer delete(head.data)
+
+	url := cstring_buffer(request.url, allocator)
+	defer delete(url, allocator)
+	if curl.easy_setopt(handle, curl.option.URL, cstring(raw_data(url))) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.HTTP_VERSION, c.long(curl.HTTP_VERSION_1_1)) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.NOSIGNAL, c.long(1)) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.FORBID_REUSE, c.long(1)) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.WRITEFUNCTION, curl.write_callback(curl_write_callback)) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.WRITEDATA, &body) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.HEADERFUNCTION, curl.write_callback(curl_header_callback)) != curl.code.E_OK ||
+	   curl.easy_setopt(handle, curl.option.HEADERDATA, &head) != curl.code.E_OK {
+		return {}, .Network
 	}
-	defer delete(raw, allocator)
-	return parse_response(raw, request.method, allocator)
+	if client.timeout > 0 {
+		timeout_ms := c.long(client.timeout / time.Millisecond)
+		if timeout_ms <= 0 {
+			timeout_ms = 1
+		}
+		if curl.easy_setopt(handle, curl.option.TIMEOUT_MS, timeout_ms) != curl.code.E_OK {
+			return {}, .Network
+		}
+	}
+
+	method_buf: []byte
+	if request.method == .Head {
+		if curl.easy_setopt(handle, curl.option.NOBODY, c.long(1)) != curl.code.E_OK {
+			return {}, .Network
+		}
+	} else if request.method == .Post {
+		if curl.easy_setopt(handle, curl.option.POST, c.long(1)) != curl.code.E_OK {
+			return {}, .Network
+		}
+	} else if request.method != .Get || len(request.body) > 0 {
+		method_buf = cstring_buffer(method_string(request.method), allocator)
+		defer delete(method_buf, allocator)
+		if curl.easy_setopt(handle, curl.option.CUSTOMREQUEST, cstring(raw_data(method_buf))) != curl.code.E_OK {
+			return {}, .Network
+		}
+	}
+	if request.method == .Post || len(request.body) > 0 {
+		if curl.easy_setopt(handle, curl.option.POSTFIELDSIZE, c.long(len(request.body))) != curl.code.E_OK {
+			return {}, .Network
+		}
+		if len(request.body) > 0 &&
+		   curl.easy_setopt(handle, curl.option.POSTFIELDS, raw_data(request.body)) != curl.code.E_OK {
+			return {}, .Network
+		}
+	}
+
+	if !header_has(request.headers, "User-Agent") {
+		ua := cstring_buffer("abap-lsp-odin-http/0.1", allocator)
+		defer delete(ua, allocator)
+		if curl.easy_setopt(handle, curl.option.USERAGENT, cstring(raw_data(ua))) != curl.code.E_OK {
+			return {}, .Network
+		}
+	}
+	header_list: ^curl.slist
+	defer if header_list != nil {
+		curl.slist_free_all(header_list)
+	}
+	for h in request.headers {
+		if strings.equal_fold(h.name, "content-length") || strings.equal_fold(h.name, "connection") {
+			continue
+		}
+		line := strings.builder_make(allocator)
+		strings.write_string(&line, h.name)
+		strings.write_string(&line, ": ")
+		strings.write_string(&line, h.value)
+		text := strings.to_string(line)
+		ctext := cstring_buffer(text, allocator)
+		next := curl.slist_append(header_list, cstring(raw_data(ctext)))
+		delete(text, allocator)
+		delete(ctext, allocator)
+		if next == nil {
+			return {}, .Network
+		}
+		header_list = next
+	}
+	if header_list != nil &&
+	   curl.easy_setopt(handle, curl.option.HTTPHEADER, header_list) != curl.code.E_OK {
+		return {}, .Network
+	}
+
+	code := curl.easy_perform(handle)
+	if body.too_large {
+		return {}, .Response_Too_Large
+	}
+	if code != curl.code.E_OK {
+		return {}, .Network
+	}
+	return response_from_curl(head.data[:], body.data[:], request.method, allocator)
 }
 
 parse_url :: proc(raw: string) -> (URL, Error) {
@@ -226,70 +311,43 @@ parse_url :: proc(raw: string) -> (URL, Error) {
 		query = path[query_start + 1:]
 		path = path[:query_start]
 	}
-	host, port, ok := net.split_port(authority)
+	host, port, ok := split_authority(authority)
 	if !ok {
 		return {}, .Invalid_Url
 	}
 	if port == 0 {
-		port = 80
+		port = 443 if strings.equal_fold(scheme, "https") else 80
 	}
 	return URL{scheme = scheme, authority = authority, host = host, port = port, path = path, query = query}, .None
 }
 
-format_request_head :: proc(request: ^Request, url: ^URL, allocator: mem.Allocator) -> string {
-	out := strings.builder_make(allocator)
-	strings.write_string(&out, method_string(request.method))
-	strings.write_byte(&out, ' ')
-	if url.path == "" {
-		strings.write_byte(&out, '/')
-	} else {
-		strings.write_string(&out, url.path)
+split_authority :: proc(authority: string) -> (string, int, bool) {
+	if i := strings.last_index(authority, "]:"); i > 0 && authority[0] == '[' {
+		port, ok := strconv.parse_int(authority[i + 2:], 10)
+		return authority[1:i], port, ok && port <= 65535
 	}
-	if url.query != "" {
-		strings.write_byte(&out, '?')
-		strings.write_string(&out, url.query)
+	if strings.count(authority, ":") == 1 {
+		i := strings.last_index(authority, ":")
+		port, ok := strconv.parse_int(authority[i + 1:], 10)
+		return authority[:i], port, ok && port <= 65535
 	}
-	strings.write_string(&out, " HTTP/1.1\r\n")
-
-	if !header_has(request.headers, "Host") {
-		strings.write_string(&out, "Host: ")
-		strings.write_string(&out, url.authority)
-		strings.write_string(&out, "\r\n")
-	}
-	if !header_has(request.headers, "User-Agent") {
-		strings.write_string(&out, "User-Agent: abap-lsp-odin-http/0.1\r\n")
-	}
-	for h in request.headers {
-		if strings.equal_fold(h.name, "content-length") || strings.equal_fold(h.name, "connection") {
-			continue
-		}
-		strings.write_string(&out, h.name)
-		strings.write_string(&out, ": ")
-		strings.write_string(&out, h.value)
-		strings.write_string(&out, "\r\n")
-	}
-	strings.write_string(&out, "Content-Length: ")
-	strings.write_int(&out, len(request.body))
-	strings.write_string(&out, "\r\n")
-	if !header_has(request.headers, "Connection") {
-		strings.write_string(&out, "Connection: close\r\n")
-	}
-	strings.write_string(&out, "\r\n")
-	return strings.to_string(out)
+	return authority, 0, true
 }
 
-parse_response :: proc(raw: []u8, method: Method, allocator: mem.Allocator) -> (Response, Error) {
-	head_end := bytes.index(raw, transmute([]u8)string("\r\n\r\n"))
-	if head_end < 0 {
-		return {}, .Bad_Response
+parse_response_head :: proc(head: string, allocator: mem.Allocator) -> (Response, Error) {
+	text := head
+	if strings.has_suffix(text, "\r\n\r\n") {
+		text = text[:len(text) - 4]
+	} else if strings.has_suffix(text, "\r\n") {
+		text = text[:len(text) - 2]
 	}
-	head := string(raw[:head_end])
-	body_bytes := raw[head_end + 4:]
-	line_end := strings.index(head, "\r\n")
-	if line_end < 0 {
-		return {}, .Bad_Response
+	line_end := strings.index(text, "\r\n")
+	status_line := text
+	lines := ""
+	if line_end >= 0 {
+		status_line = text[:line_end]
+		lines = text[line_end + 2:]
 	}
-	status_line := head[:line_end]
 	first_space := strings.index_byte(status_line, ' ')
 	if first_space <= 0 || first_space + 4 > len(status_line) {
 		return {}, .Bad_Response
@@ -310,7 +368,6 @@ parse_response :: proc(raw: []u8, method: Method, allocator: mem.Allocator) -> (
 		response_destroy(&res, allocator)
 	}
 
-	lines := head[line_end + 2:]
 	for len(lines) > 0 {
 		next := strings.index(lines, "\r\n")
 		line := lines
@@ -330,102 +387,21 @@ parse_response :: proc(raw: []u8, method: Method, allocator: mem.Allocator) -> (
 		}
 		header_set(&res.headers, line[:colon], line[colon + 1:], allocator)
 	}
+	return res, .None
+}
 
+response_from_curl :: proc(head: []u8, body: []u8, method: Method, allocator: mem.Allocator) -> (Response, Error) {
+	res, err := parse_response_head(string(head), allocator)
+	if err != .None {
+		return {}, err
+	}
 	if method == .Head {
 		res.body = make([]u8, 0, allocator)
 		return res, .None
 	}
-
-	if te, te_ok := header_get(res.headers, "Transfer-Encoding"); te_ok {
-		te_lower := strings.to_lower(te, allocator)
-		defer delete(te_lower, allocator)
-		if strings.contains(te_lower, "chunked") {
-			body, chunk_err := decode_chunked(body_bytes, allocator)
-			if chunk_err != .None {
-				res.status_code = 0
-				return {}, chunk_err
-			}
-			res.body = body
-			res.content_length = len(body)
-			return res, .None
-		}
-		if !strings.equal_fold(strings.trim_space(te), "identity") {
-			res.status_code = 0
-			return {}, .Unsupported_Transfer_Encoding
-		}
-	}
-	if length_text, length_header_ok := header_get(res.headers, "Content-Length"); length_header_ok {
-		length, length_ok := strconv.parse_int(length_text, 10)
-		if !length_ok || length < 0 {
-			res.status_code = 0
-			return {}, .Invalid_Content_Length
-		}
-		if length > len(body_bytes) {
-			res.status_code = 0
-			return {}, .Bad_Response
-		}
-		res.body = bytes.clone(body_bytes[:length], allocator)
-		res.content_length = length
-		return res, .None
-	}
-	res.body = bytes.clone(body_bytes, allocator)
+	res.body = bytes.clone(body, allocator)
 	res.content_length = len(res.body)
 	return res, .None
-}
-
-read_all :: proc(socket: net.TCP_Socket, max_bytes: int, allocator: mem.Allocator) -> ([]u8, Error) {
-	data := make([dynamic]u8, 0, 4096, allocator)
-	defer delete(data)
-	buf: [4096]u8
-	for {
-		n, err := net.recv_tcp(socket, buf[:])
-		if err != nil {
-			return nil, .Network
-		}
-		if n == 0 {
-			break
-		}
-		if max_bytes > 0 && len(data) + n > max_bytes {
-			return nil, .Response_Too_Large
-		}
-		old_len := len(data)
-		resize(&data, old_len + n)
-		copy(data[old_len:], buf[:n])
-	}
-	return bytes.clone(data[:], allocator), .None
-}
-
-decode_chunked :: proc(input: []u8, allocator: mem.Allocator) -> ([]u8, Error) {
-	out := make([dynamic]u8, 0, len(input), allocator)
-	defer delete(out)
-	pos := 0
-	for {
-		line_end := bytes.index(input[pos:], transmute([]u8)string("\r\n"))
-		if line_end < 0 {
-			return nil, .Invalid_Chunk
-		}
-		size_line := string(input[pos:pos + line_end])
-		if semi := strings.index_byte(size_line, ';'); semi >= 0 {
-			size_line = size_line[:semi]
-		}
-		size, ok := strconv.parse_int(strings.trim_space(size_line), 16)
-		if !ok || size < 0 {
-			return nil, .Invalid_Chunk
-		}
-		pos += line_end + 2
-		if size == 0 {
-			return bytes.clone(out[:], allocator), .None
-		}
-		if pos + size + 2 > len(input) ||
-		   input[pos + size] != '\r' ||
-		   input[pos + size + 1] != '\n' {
-			return nil, .Invalid_Chunk
-		}
-		old_len := len(out)
-		resize(&out, old_len + size)
-		copy(out[old_len:], input[pos:pos + size])
-		pos += size + 2
-	}
 }
 
 method_string :: proc(method: Method) -> string {
@@ -477,4 +453,39 @@ header_index :: proc(headers: Headers, name: string) -> int {
 		}
 	}
 	return -1
+}
+
+curl_write_callback :: proc "c" (buffer: [^]byte, size, nitems: c.size_t, userdata: rawptr) -> c.size_t {
+	context = runtime.default_context()
+	sink := cast(^Curl_Buffer)userdata
+	n := int(size) * int(nitems)
+	if sink.max_bytes > 0 && len(sink.data) + n > sink.max_bytes {
+		sink.too_large = true
+		return c.size_t(curl.WRITEFUNC_ERROR)
+	}
+	old_len := len(sink.data)
+	resize(&sink.data, old_len + n)
+	copy(sink.data[old_len:], buffer[:n])
+	return size * nitems
+}
+
+curl_header_callback :: proc "c" (buffer: [^]byte, size, nitems: c.size_t, userdata: rawptr) -> c.size_t {
+	context = runtime.default_context()
+	sink := cast(^Curl_Buffer)userdata
+	n := int(size) * int(nitems)
+	line := buffer[:n]
+	if n >= 5 && string(line[:5]) == "HTTP/" {
+		resize(&sink.data, 0)
+	}
+	old_len := len(sink.data)
+	resize(&sink.data, old_len + n)
+	copy(sink.data[old_len:], line)
+	return size * nitems
+}
+
+cstring_buffer :: proc(value: string, allocator: mem.Allocator) -> []byte {
+	buf := make([]byte, len(value) + 1, allocator)
+	copy(buf, value)
+	buf[len(value)] = 0
+	return buf
 }

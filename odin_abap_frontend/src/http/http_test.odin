@@ -4,6 +4,7 @@ import "core:net"
 import "core:strings"
 import "core:testing"
 import "core:thread"
+import "core:time"
 
 @(test)
 headers_are_case_insensitive :: proc(t: ^testing.T) {
@@ -24,49 +25,13 @@ headers_are_case_insensitive :: proc(t: ^testing.T) {
 }
 
 @(test)
-request_head_writes_http_11_wire_shape :: proc(t: ^testing.T) {
-	req: Request
-	request_init(&req, .Post, "http://example.test/api?x=1", context.allocator)
-	req.body = transmute([]u8)string("abc")
-	header_set(&req.headers, "X-Test", "yes", context.allocator)
-	defer request_destroy(&req, context.allocator)
-
-	url, err := parse_url(req.url)
+parse_url_defaults_ports_by_scheme :: proc(t: ^testing.T) {
+	url, err := parse_url("http://example.test/api")
 	testing.expect_value(t, err, Error.None)
-	head := format_request_head(&req, &url, context.allocator)
-	defer delete(head, context.allocator)
-
-	testing.expect(t, strings.has_prefix(head, "POST /api?x=1 HTTP/1.1\r\n"))
-	testing.expect(t, strings.contains(head, "\r\nHost: example.test\r\n"))
-	testing.expect(t, strings.contains(head, "\r\nx-test: yes\r\n"))
-	testing.expect(t, strings.contains(head, "\r\nContent-Length: 3\r\n"))
-	testing.expect(t, strings.has_suffix(head, "\r\n\r\n"))
-}
-
-@(test)
-parse_response_reads_content_length_body :: proc(t: ^testing.T) {
-	raw := transmute([]u8)string("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Test: one\r\n\r\nhelloextra")
-	res, err := parse_response(raw, .Get, context.allocator)
+	testing.expect_value(t, url.port, 80)
+	url, err = parse_url("https://example.test/api")
 	testing.expect_value(t, err, Error.None)
-	defer response_destroy(&res, context.allocator)
-
-	testing.expect_value(t, res.status, "200 OK")
-	testing.expect_value(t, res.status_code, HTTP_STATUS_OK)
-	testing.expect_value(t, string(res.body), "hello")
-	value, ok := header_get(res.headers, "x-test")
-	testing.expect(t, ok)
-	testing.expect_value(t, value, "one")
-}
-
-@(test)
-parse_response_decodes_chunked_body :: proc(t: ^testing.T) {
-	raw := transmute([]u8)string("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n")
-	res, err := parse_response(raw, .Get, context.allocator)
-	testing.expect_value(t, err, Error.None)
-	defer response_destroy(&res, context.allocator)
-
-	testing.expect_value(t, string(res.body), "Wikipedia")
-	testing.expect_value(t, res.content_length, 9)
+	testing.expect_value(t, url.port, 443)
 }
 
 Test_Server :: struct {
@@ -131,8 +96,14 @@ client_get_talks_to_loopback_http_server :: proc(t: ^testing.T) {
 }
 
 @(test)
-https_is_explicitly_unsupported_until_tls_is_added :: proc(t: ^testing.T) {
-	res, err := get("https://example.com/", context.allocator)
-	testing.expect_value(t, err, Error.Unsupported_Scheme)
+https_scheme_reaches_transport :: proc(t: ^testing.T) {
+	client := default_client()
+	client.timeout = 2 * time.Second
+	req: Request
+	request_init(&req, .Get, "https://127.0.0.1:1/", context.allocator)
+	defer request_destroy(&req, context.allocator)
+
+	res, err := client_do(&client, &req, context.allocator)
+	testing.expect_value(t, err, Error.Network)
 	testing.expect_value(t, len(res.body), 0)
 }
