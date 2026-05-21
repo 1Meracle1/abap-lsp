@@ -20,6 +20,13 @@ Error :: enum u8 {
 	File_Read,
 	Invalid_Url,
 	Http,
+	Http_Unsupported_Scheme,
+	Http_Network,
+	Http_Response_Too_Large,
+	Http_Bad_Response,
+	Http_Invalid_Content_Length,
+	Http_Unsupported_Transfer_Encoding,
+	Http_Invalid_Chunk,
 	Bad_Status,
 	Missing_Csrf_Token,
 }
@@ -385,6 +392,18 @@ child_kind_string :: proc(kind: Child_Kind) -> string {
 	return ""
 }
 
+child_kind_parent_type :: proc(kind: Child_Kind) -> string {
+	switch kind {
+	case .Package:
+		return "DEVC/K"
+	case .Report:
+		return "PROG/P"
+	case .Function_Group:
+		return "FUGR/F"
+	}
+	return ""
+}
+
 client_init :: proc(client: ^Client, connection: Connection_Config) {
 	client^ = Client{connection = connection, http = http.default_client()}
 	client.http.timeout = 60 * time.Second
@@ -495,6 +514,45 @@ fetch_ddic :: proc(
 		return {}, err
 	}
 	return Ddic_Fetch{request_url = strings.clone(url, allocator), body = body}, .None
+}
+
+list_children :: proc(
+	client: ^Client,
+	kind: Child_Kind,
+	name: string,
+	allocator: mem.Allocator,
+) -> (Repository_Node_Structure, [dynamic]Child_Entry, Error) {
+	root, err := fetch_repository_node_structure(client, name, child_kind_parent_type(kind), nil, allocator)
+	children := make([dynamic]Child_Entry, allocator)
+	if err != .None {
+		return root, children, err
+	}
+	if len(root.object_types) == 0 {
+		for &node in root.tree_content {
+			append_child_from_node(&children, &node, "", "", allocator)
+		}
+		return root, children, .None
+	}
+	for &object_type in root.object_types {
+		if object_type.node_id == "" {
+			continue
+		}
+		branch, branch_err := fetch_repository_node_structure(
+			client,
+			name,
+			child_kind_parent_type(kind),
+			[]string{object_type.node_id},
+			allocator,
+		)
+		if branch_err != .None {
+			return root, children, branch_err
+		}
+		for &node in branch.tree_content {
+			append_child_from_node(&children, &node, object_type.category_tag, object_type.label, allocator)
+		}
+		repository_node_structure_destroy(&branch, allocator)
+	}
+	return root, children, .None
 }
 
 fetch_ddic_object :: proc(client: ^Client, kind, name: string, allocator: mem.Allocator) -> (string, Error) {
@@ -1030,6 +1088,24 @@ parse_repository_node_structure :: proc(xml: string, allocator: mem.Allocator) -
 	return structure
 }
 
+append_child_from_node :: proc(
+	children: ^[dynamic]Child_Entry,
+	node: ^Tree_Node,
+	category_tag,
+	object_type_label: string,
+	allocator: mem.Allocator,
+) {
+	append(children, Child_Entry {
+		category_tag      = strings.clone(category_tag, allocator),
+		object_type_label = strings.clone(object_type_label, allocator),
+		object_type       = strings.clone(node.object_type, allocator),
+		name              = strings.clone(node.object_name, allocator),
+		uri               = strings.clone(node.object_uri, allocator),
+		vit_uri           = strings.clone(node.object_vit_uri, allocator),
+		expandable        = node.expandable,
+	})
+}
+
 normalize_base_url :: proc(raw: string, allocator: mem.Allocator) -> string {
 	trimmed := strings.trim_right(strings.trim_space(raw), "/")
 	if ascii_contains_ignore_case(trimmed, "/sap/bc/adt") {
@@ -1114,6 +1190,19 @@ repository_node_structure_destroy :: proc(structure: ^Repository_Node_Structure,
 	structure^ = {}
 }
 
+child_entries_destroy :: proc(children: ^[dynamic]Child_Entry, allocator: mem.Allocator) {
+	for &child in children^ {
+		delete(child.category_tag, allocator)
+		delete(child.object_type_label, allocator)
+		delete(child.object_type, allocator)
+		delete(child.name, allocator)
+		delete(child.uri, allocator)
+		delete(child.vit_uri, allocator)
+	}
+	delete(children^)
+	children^ = nil
+}
+
 absolute_url :: proc(config: ^Connection_Config, path_or_url: string, allocator: mem.Allocator) -> string {
 	normalized := path_or_url
 	if !ascii_starts_with_ignore_case(path_or_url, "http://") &&
@@ -1139,6 +1228,70 @@ absolute_url :: proc(config: ^Connection_Config, path_or_url: string, allocator:
 		url = append_query_param(url, "sap-client", config.sap_client, allocator)
 	}
 	return url
+}
+
+fetch_repository_node_structure :: proc(
+	client: ^Client,
+	parent_name,
+	parent_type: string,
+	node_keys: []string,
+	allocator: mem.Allocator,
+) -> (Repository_Node_Structure, Error) {
+	url := absolute_url(&client.connection, "/repository/nodestructure", allocator)
+	url = append_query_param(url, "parent_name", parent_name, allocator)
+	url = append_query_param(url, "parent_tech_name", parent_name, allocator)
+	url = append_query_param(url, "parent_type", parent_type, allocator)
+	url = append_query_param(url, "withShortDescriptions", "true", allocator)
+	defer delete(url, allocator)
+
+	body := build_node_structure_request_body(node_keys, allocator)
+	defer delete(body, allocator)
+	xml, err := send_text(
+		client,
+		.Post,
+		url,
+		"application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.RepositoryObjectTreeContent",
+		"application/vnd.sap.as+xml; charset=UTF-8; dataname=null",
+		body,
+		allocator,
+	)
+	if err != .None {
+		return {}, err
+	}
+	defer delete(xml, allocator)
+	return parse_repository_node_structure(xml, allocator), .None
+}
+
+build_node_structure_request_body :: proc(node_keys: []string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n")
+	strings.write_string(&out, "<asx:abap version=\"1.0\" xmlns:asx=\"http://www.sap.com/abapxml\">\n<asx:values>\n<DATA>\n")
+	if len(node_keys) == 0 {
+		strings.write_string(&out, "<TV_NODEKEY>000000</TV_NODEKEY>\n")
+	} else {
+		for key in node_keys {
+			strings.write_string(&out, "<TV_NODEKEY>")
+			escape_xml_text(&out, key)
+			strings.write_string(&out, "</TV_NODEKEY>\n")
+		}
+	}
+	strings.write_string(&out, "</DATA>\n</asx:values>\n</asx:abap>")
+	return strings.to_string(out)
+}
+
+escape_xml_text :: proc(out: ^strings.Builder, value: string) {
+	for i := 0; i < len(value); i += 1 {
+		switch value[i] {
+		case '&':
+			strings.write_string(out, "&amp;")
+		case '<':
+			strings.write_string(out, "&lt;")
+		case '>':
+			strings.write_string(out, "&gt;")
+		case:
+			strings.write_string(out, value[i:i + 1])
+		}
+	}
 }
 
 send_text :: proc(
@@ -1170,7 +1323,7 @@ send_text :: proc(
 	}
 	response, http_err := http.client_do(&client.http, &request, allocator)
 	if http_err != .None {
-		return "", .Http
+		return "", http_error_to_adt(http_err)
 	}
 	defer http.response_destroy(&response, allocator)
 	if !status_success(response.status_code) {
@@ -1192,7 +1345,7 @@ ensure_session :: proc(client: ^Client, allocator: mem.Allocator) -> Error {
 
 	response, http_err := http.client_do(&client.http, &request, allocator)
 	if http_err != .None {
-		return .Http
+		return http_error_to_adt(http_err)
 	}
 	defer http.response_destroy(&response, allocator)
 	if !status_success(response.status_code) {
@@ -1207,6 +1360,30 @@ ensure_session :: proc(client: ^Client, allocator: mem.Allocator) -> Error {
 		client.cookie = strings.clone(cookie_pair(cookie), allocator)
 	}
 	return .None
+}
+
+http_error_to_adt :: proc(err: http.Error) -> Error {
+	switch err {
+	case .None:
+		return .None
+	case .Invalid_Url:
+		return .Invalid_Url
+	case .Unsupported_Scheme:
+		return .Http_Unsupported_Scheme
+	case .Network:
+		return .Http_Network
+	case .Response_Too_Large:
+		return .Http_Response_Too_Large
+	case .Bad_Response:
+		return .Http_Bad_Response
+	case .Invalid_Content_Length:
+		return .Http_Invalid_Content_Length
+	case .Unsupported_Transfer_Encoding:
+		return .Http_Unsupported_Transfer_Encoding
+	case .Invalid_Chunk:
+		return .Http_Invalid_Chunk
+	}
+	return .Http
 }
 
 set_common_headers :: proc(request: ^http.Request, client: ^Client, accept: string, allocator: mem.Allocator) {

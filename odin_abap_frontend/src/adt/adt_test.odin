@@ -2,6 +2,7 @@ package adt
 
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 normalizes_base_url_to_adt_root :: proc(t: ^testing.T) {
@@ -135,4 +136,17 @@ absolute_url_strips_duplicate_adt_root_and_adds_client :: proc(t: ^testing.T) {
 	url := absolute_url(&config, "/sap/bc/adt/programs/includes/ZINC", context.allocator)
 	defer delete(url, context.allocator)
 	testing.expect_value(t, url, "http://host/sap/bc/adt/programs/includes/ZINC?sap-client=100")
+}
+
+@(test)
+adt_request_accepts_https_scheme_and_reports_network_failures :: proc(t: ^testing.T) {
+	client: Client
+	client_init(&client, Connection_Config{
+		base_url = "https://127.0.0.1:1/sap/bc/adt",
+		username = "demo",
+		password = "secret",
+	})
+	client.http.timeout = 2 * time.Second
+	_, err := search_repository_objects(&client, "demo", 1, context.allocator)
+	testing.expect_value(t, err, Error.Http_Network)
 }

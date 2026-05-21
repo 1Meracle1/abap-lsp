@@ -32,4 +32,5 @@ if /I "%MODE%"=="release" (
   set "MODE_FLAGS=-debug"
 )
 
-"%ODIN_EXE%" build "%ROOT%cmd\abap_frontend" -out:"%OUT_DIR%\abap_frontend.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% %ODIN_EXTRA_ARGS%
+"%ODIN_EXE%" build "%ROOT%cmd\abap_frontend" -out:"%OUT_DIR%\abap_frontend.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% %ODIN_EXTRA_ARGS% || exit /b %errorlevel%
+"%ODIN_EXE%" build "%ROOT%cmd\adt_cli" -out:"%OUT_DIR%\adt_cli.exe" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% %MODE_FLAGS% %ODIN_EXTRA_ARGS%
