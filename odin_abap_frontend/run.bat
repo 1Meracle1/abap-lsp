@@ -1,11 +1,25 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
-set "ODIN_EXE=D:\dev\odin\toolchain\odin-windows-amd64-dev-2026-05\odin.exe"
-set "ODIN_FLAGS=-default-to-panic-allocator -vet -warnings-as-errors"
-set "ODIN_LINKER_FLAGS=-extra-linker-flags:/STACK:4000000,2000000"
 set "ROOT=%~dp0"
+set "MODE=debug"
 
-if not exist "%ROOT%bin" mkdir "%ROOT%bin"
+if /I "%~1"=="debug" (
+  shift
+) else if /I "%~1"=="release" (
+  set "MODE=release"
+  shift
+)
 
-"%ODIN_EXE%" run "%ROOT%cmd\abap_frontend" %ODIN_FLAGS% %ODIN_LINKER_FLAGS% -- %*
+call "%ROOT%build.bat" %MODE%
+if errorlevel 1 exit /b %errorlevel%
+
+set "APP_ARGS="
+:args
+if "%~1"=="" goto run
+set "APP_ARGS=!APP_ARGS! "%~1""
+shift
+goto args
+
+:run
+"%ROOT%bin\%MODE%\abap_frontend.exe"%APP_ARGS%

@@ -1,18 +1,16 @@
 package abap_frontend_tokenizer
 
-import "base:runtime"
 import "core:testing"
 
 @(test)
 comments_are_trivia_not_tokens :: proc(t: ^testing.T) {
-	allocator := runtime.heap_allocator()
 	source := `DATA lv. " inline
 * full
 DATA lv2.`
-	result := tokenize(source, allocator)
-	defer delete(result.tokens, allocator)
-	defer delete(result.trivia, allocator)
-	defer delete(result.errors, allocator)
+	result := tokenize(source, context.allocator)
+	defer delete(result.tokens, context.allocator)
+	defer delete(result.trivia, context.allocator)
+	defer delete(result.errors, context.allocator)
 
 	for token in result.tokens {
 		testing.expect(t, token.kind != .Comment)

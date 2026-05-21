@@ -1,6 +1,5 @@
 package abap_frontend_runtime
 
-import base_runtime "base:runtime"
 import "core:nbio"
 import "core:sync"
 import "core:testing"
@@ -24,6 +23,24 @@ sum_values :: proc(values: []int) -> int {
 add_one_ptr :: proc(data: rawptr) {
 	p := cast(^int)data
 	sync.atomic_add_explicit(p, 1, .Relaxed)
+}
+
+@(test)
+auto_worker_count_uses_hardware_limit :: proc(t: ^testing.T) {
+	pool: Pool
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = AUTO_WORKER_COUNT, task_capacity = 8}, context.allocator), Submit_Error.None)
+	defer pool_destroy(&pool)
+
+	testing.expect_value(t, pool.options.worker_count, recommended_worker_count())
+}
+
+@(test)
+explicit_worker_count_is_clamped_to_hardware_limit :: proc(t: ^testing.T) {
+	pool: Pool
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = recommended_worker_count() + 8, task_capacity = 8}, context.allocator), Submit_Error.None)
+	defer pool_destroy(&pool)
+
+	testing.expect_value(t, pool.options.worker_count, recommended_worker_count())
 }
 
 @(test)
@@ -78,9 +95,8 @@ work_deque_owner_pop_and_steal :: proc(t: ^testing.T) {
 
 @(test)
 inline_submit_waits_for_value :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	task, err := submit_value(&pool, 7, square)
@@ -92,9 +108,8 @@ inline_submit_waits_for_value :: proc(t: ^testing.T) {
 
 @(test)
 payload_is_copied_before_caller_mutates_it :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	value := 8
@@ -117,9 +132,8 @@ pair_sum :: proc(p: Pair) -> int {
 
 @(test)
 struct_payload_crosses_task_boundary :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 2, task_capacity = 32, queue_capacity = 8, deque_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 2, task_capacity = 32, queue_capacity = 8, deque_capacity = 8}, context.allocator), Submit_Error.None)
 	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
 	defer pool_destroy(&pool)
 
@@ -146,9 +160,8 @@ nested_work :: proc(v: int) -> int {
 
 @(test)
 nested_worker_submit_wait_does_not_deadlock :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 1, task_capacity = 32, queue_capacity = 8, deque_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 1, task_capacity = 32, queue_capacity = 8, deque_capacity = 8}, context.allocator), Submit_Error.None)
 	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
 	defer pool_destroy(&pool)
 
@@ -162,9 +175,8 @@ nested_worker_submit_wait_does_not_deadlock :: proc(t: ^testing.T) {
 
 @(test)
 continuation_chain_runs_in_order :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 16}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 16}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	task, err := submit_value(&pool, 1, inc)
@@ -180,9 +192,8 @@ continuation_chain_runs_in_order :: proc(t: ^testing.T) {
 
 @(test)
 then_all_runs_after_all_parent_tasks :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 16}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 16}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	tasks: [4]Task(int)
@@ -202,9 +213,8 @@ then_all_runs_after_all_parent_tasks :: proc(t: ^testing.T) {
 
 @(test)
 then_all_works_with_threaded_parents :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 4, task_capacity = 64, queue_capacity = 16, deque_capacity = 16}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 4, task_capacity = 64, queue_capacity = 16, deque_capacity = 16}, context.allocator), Submit_Error.None)
 	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
 	defer pool_destroy(&pool)
 
@@ -226,9 +236,8 @@ then_all_works_with_threaded_parents :: proc(t: ^testing.T) {
 
 @(test)
 bounded_task_slots_fail_fast :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 1}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 1}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	_, _, err := make_deferred(&pool, int)
@@ -239,9 +248,8 @@ bounded_task_slots_fail_fast :: proc(t: ^testing.T) {
 
 @(test)
 deferred_completion_wakes_wait :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	task, completer, err := make_deferred(&pool, int)
@@ -264,14 +272,13 @@ store_nbio_result :: proc(value: int, data: rawptr) {
 
 @(test)
 nbio_callback_completes_deferred_task :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	if nbio.acquire_thread_event_loop() != nil {
 		return
 	}
 	defer nbio.release_thread_event_loop()
 
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	task, completer, err := make_deferred(&pool, int)
@@ -285,14 +292,13 @@ nbio_callback_completes_deferred_task :: proc(t: ^testing.T) {
 
 @(test)
 then_on_nbio_posts_cpu_result_to_event_loop :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	if nbio.acquire_thread_event_loop() != nil {
 		return
 	}
 	defer nbio.release_thread_event_loop()
 
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 0, task_capacity = 8}, context.allocator), Submit_Error.None)
 	defer pool_destroy(&pool)
 
 	result := 0
@@ -306,9 +312,8 @@ then_on_nbio_posts_cpu_result_to_event_loop :: proc(t: ^testing.T) {
 
 @(test)
 stress_many_threaded_tasks_complete :: proc(t: ^testing.T) {
-	allocator := base_runtime.heap_allocator()
 	pool: Pool
-	testing.expect_value(t, pool_init(&pool, Options{worker_count = 4, task_capacity = 256, queue_capacity = 64, deque_capacity = 64}, allocator), Submit_Error.None)
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 4, task_capacity = 256, queue_capacity = 64, deque_capacity = 64}, context.allocator), Submit_Error.None)
 	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
 	defer pool_destroy(&pool)
 

@@ -262,6 +262,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_type_pools_decl(p, n)
 	case ^Function_Pool_Decl:
 		emit_function_pool_decl(p, n)
+	case ^Include_Stmt:
+		emit_include_stmt(p, n)
 	case ^Assign_Stmt:
 		emit_node(p, n.lhs)
 		emit(p, " = ")
@@ -740,6 +742,15 @@ emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
 }
 
 emit_types_decl :: proc(p: ^Printer, decl: ^Types_Decl) {
+	if len(decl.types) == 1 &&
+	   (decl.types[0].kind == .Include_Type || decl.types[0].kind == .Include_Structure) {
+		clause := decl.types[0]
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
+		emit_occurs(p, clause.occurs)
+		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
+		emit(p, ".")
+		return
+	}
 	emit(p, "TYPES")
 	emit(p, ": " if len(decl.types) > 1 else " ")
 	for clause, i in decl.types {
@@ -936,6 +947,21 @@ emit_function_pool_decl :: proc(p: ^Printer, decl: ^Function_Pool_Decl) {
 	if decl.message_id != "" {
 		emit(p, " MESSAGE-ID ")
 		emit(p, decl.message_id)
+	}
+	emit(p, ".")
+}
+
+emit_include_stmt :: proc(p: ^Printer, stmt: ^Include_Stmt) {
+	emit(p, "INCLUDE")
+	emit(p, ": " if len(stmt.names) > 1 else " ")
+	for name, i in stmt.names {
+		if i > 0 {
+			emit(p, ", ")
+		}
+		emit(p, name.name)
+	}
+	if stmt.if_found {
+		emit(p, " IF FOUND")
 	}
 	emit(p, ".")
 }

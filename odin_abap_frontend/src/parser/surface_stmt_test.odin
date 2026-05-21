@@ -2,12 +2,10 @@ package abap_frontend_parser
 
 import "../ast"
 
-import "base:runtime"
 import "core:testing"
 
 @(test)
 statement_batch_open_sql_and_data_access :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `SELECT * FROM mara INTO wa. WRITE wa. ENDSELECT.
 OPEN CURSOR cv FOR SELECT * FROM mara.
 FETCH NEXT CURSOR cv INTO wa.
@@ -20,7 +18,7 @@ OPEN DATASET file FOR INPUT IN TEXT MODE.
 REPORT zrep.
 READ REPORT prog INTO lt.
 READ TEXTPOOL prog INTO lt LANGUAGE sy-langu.`
-	parsed := parse(source, "data_access.abap", alloc)
+	parsed := parse(source, "data_access.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -39,8 +37,49 @@ READ TEXTPOOL prog INTO lt LANGUAGE sy-langu.`
 }
 
 @(test)
+program_include_statements_keep_concrete_nodes :: proc(t: ^testing.T) {
+	source := `INCLUDE zinc.
+INCLUDE: ztop, zf01.
+INCLUDE TYPE ty_line.
+INCLUDE STRUCTURE textpool.`
+	parsed := parse(source, "includes.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.include_stmt, 2)
+	testing.expect_value(t, counts.types_decl, 2)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Include_Stmt)
+	chained := parsed.root.stmts[1].derived_stmt.(^ast.Include_Stmt)
+	include_type := parsed.root.stmts[2].derived_stmt.(^ast.Types_Decl)
+	include_structure := parsed.root.stmts[3].derived_stmt.(^ast.Types_Decl)
+
+	testing.expect_value(t, len(first.names), 1)
+	testing.expect_value(t, first.names[0].name, "zinc")
+	testing.expect(t, !first.if_found)
+	testing.expect_value(t, source[first.names[0].range.start:first.names[0].range.end], "zinc")
+	testing.expect_value(t, len(chained.names), 2)
+	testing.expect_value(t, chained.names[0].name, "ztop")
+	testing.expect_value(t, chained.names[1].name, "zf01")
+	testing.expect_value(t, include_type.types[0].kind, ast.Decl_Clause_Kind.Include_Type)
+	testing.expect_value(t, include_structure.types[0].kind, ast.Decl_Clause_Kind.Include_Structure)
+}
+
+@(test)
+program_include_if_found_keeps_concrete_node :: proc(t: ^testing.T) {
+	source := `INCLUDE zabapgit_user_exit IF FOUND.`
+	parsed := parse(source, "include_if_found.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Include_Stmt)
+	testing.expect_value(t, stmt.names[0].name, "zabapgit_user_exit")
+	testing.expect(t, stmt.if_found)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 aggregate_select_and_compact_cleanup_call_keep_boundaries :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `LOOP AT rows INTO row.
   SELECT MAX( dokversion )
     INTO version
@@ -52,7 +91,7 @@ TRY.
 CATCH cx_root.
   cleanup( lo_set ).
 ENDTRY.`
-	parsed := parse(source, "select_cleanup_boundaries.abap", alloc)
+	parsed := parse(source, "select_cleanup_boundaries.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -63,13 +102,12 @@ ENDTRY.`
 
 @(test)
 internal_table_append_modify_and_sort_keep_nodes :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `APPEND lx_error->get_text( ) TO mt_text.
 APPEND LINES OF li_package->list_subpackages( ) TO lt_packages.
 MODIFY (c_tabname) FROM ls_content.
 MODIFY lt_table FROM ls_line TRANSPORTING value WHERE key = lv_key.
 SORT lt_table BY name DESCENDING.`
-	parsed := parse(source, "itab_surface.abap", alloc)
+	parsed := parse(source, "itab_surface.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -80,12 +118,11 @@ SORT lt_table BY name DESCENDING.`
 
 @(test)
 data_access_statements_keep_concrete_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `READ TABLE itab INTO DATA(row) WITH KEY id = lv_id TRANSPORTING NO FIELDS.
 INSERT wa INTO TABLE itab INDEX idx ASSIGNING FIELD-SYMBOL(<row>).
 UPDATE mara SET matnr = lv_new WHERE matnr = lv_old.
 DELETE ADJACENT DUPLICATES FROM itab COMPARING matnr.`
-	parsed := parse(source, "data_access_fields.abap", alloc)
+	parsed := parse(source, "data_access_fields.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
@@ -113,7 +150,6 @@ DELETE ADJACENT DUPLICATES FROM itab COMPARING matnr.`
 
 @(test)
 cursor_dataset_report_and_textpool_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `SELECT SINGLE matnr FROM mara INTO DATA(lv_matnr) WHERE matnr = lv_key.
 OPEN CURSOR WITH HOLD cv FOR SELECT matnr FROM mara WHERE matnr = lv_key.
 FETCH NEXT CURSOR cv INTO TABLE lt_mara PACKAGE SIZE lv_size.
@@ -124,7 +160,7 @@ TRANSFER text TO file LENGTH len.
 REPORT zrep.
 READ REPORT prog INTO source.
 INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
-	parsed := parse(source, "surface_fields.abap", alloc)
+	parsed := parse(source, "surface_fields.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	select_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
@@ -174,7 +210,6 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 
 @(test)
 islands_generated_source_and_line_statements_keep_nodes :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `EXEC SQL.
   SELECT * FROM mara
 ENDEXEC.
@@ -182,7 +217,7 @@ GENERATE SUBROUTINE POOL lt_source NAME lv_prog MESSAGE lv_msg LINE lv_line WORD
 GENERATE DYNPRO lv_prog lv_dynpro.
 READ LINE lv_line FIELD VALUE mara-matnr INTO lv_matnr.
 MODIFY CURRENT LINE FIELD VALUE mara-matnr INTO lv_matnr.`
-	parsed := parse(source, "islands_generated_line.abap", alloc)
+	parsed := parse(source, "islands_generated_line.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -217,22 +252,20 @@ MODIFY CURRENT LINE FIELD VALUE mara-matnr INTO lv_matnr.`
 
 @(test)
 open_sql_host_expressions_are_ast_nodes :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `SELECT matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.`
-	parsed := parse(source, "sql_host.abap", alloc)
+	parsed := parse(source, "sql_host.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, counts.host_expr, 2)
-	printed := ast.print_node(parsed.root, alloc)
+	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, "SELECT matnr FROM mara INTO @DATA(lv_matnr) WHERE matnr = @lv_key.")
 }
 
 @(test)
 open_sql_projection_source_and_set_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `SELECT a~matnr AS material, b~maktx AS text FROM mara AS a INNER JOIN makt AS b ON b~matnr = a~matnr INTO TABLE @lt_rows UNION ALL SELECT matnr FROM zmara INTO TABLE @lt_rows.`
-	parsed := parse(source, "sql_shape.abap", alloc)
+	parsed := parse(source, "sql_shape.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
@@ -247,15 +280,14 @@ open_sql_projection_source_and_set_fields :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(stmt.query.set_ops), 1)
 	testing.expect_value(t, stmt.query.set_ops[0].kind, ast.Select_Set_Kind.Union)
 	testing.expect(t, stmt.query.set_ops[0].all)
-	printed := ast.print_node(parsed.root, alloc)
+	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, "SELECT a~matnr AS material, b~maktx AS text FROM mara AS a INNER JOIN makt AS b ON b~matnr = a~matnr INTO TABLE @lt_rows UNION ALL SELECT matnr FROM zmara INTO TABLE @lt_rows.")
 }
 
 @(test)
 open_sql_ctes_and_dynamic_sources_keep_formatter_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `WITH +recent AS ( SELECT matnr FROM mara WHERE matnr = @lv_matnr ) SELECT matnr FROM (lv_source) AS s INNER JOIN @lt_keys AS k ON k~matnr = s~matnr INTO TABLE @lt_rows WHERE (lv_where).`
-	parsed := parse(source, "sql_cte_dynamic.abap", alloc)
+	parsed := parse(source, "sql_cte_dynamic.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
@@ -270,6 +302,6 @@ open_sql_ctes_and_dynamic_sources_keep_formatter_fields :: proc(t: ^testing.T) {
 	testing.expect(t, host_join)
 	testing.expect(t, stmt.query.dynamic_where)
 
-	printed := ast.print_node(parsed.root, alloc)
+	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, "WITH +recent AS ( SELECT matnr FROM mara WHERE matnr = @lv_matnr ) SELECT matnr FROM ( lv_source ) AS s INNER JOIN @lt_keys AS k ON k~matnr = s~matnr INTO TABLE @lt_rows WHERE ( lv_where ).")
 }

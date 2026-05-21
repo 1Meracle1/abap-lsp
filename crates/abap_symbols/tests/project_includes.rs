@@ -172,6 +172,83 @@ fn does_not_resolve_sibling_unit_symbols_without_include_edge() {
 }
 
 #[test]
+fn resolves_global_class_when_name_matches_unit_stem() {
+    let parent_src = "CLASS zcl_parent DEFINITION. ENDCLASS.";
+    let consumer_src = "DATA lo_parent TYPE REF TO zcl_parent.";
+    let parent_parse = parse(parent_src);
+    let consumer_parse = parse(consumer_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///workspace/zcl_parent.abap",
+            source: parent_src,
+            parse: &parent_parse,
+        },
+        ProjectInput {
+            uri: "file:///workspace/zconsumer.abap",
+            source: consumer_src,
+            parse: &consumer_parse,
+        },
+    ]);
+
+    let parent = project
+        .unit_by_uri("file:///workspace/zcl_parent.abap")
+        .expect("parent unit");
+    let consumer = project
+        .unit_by_uri("file:///workspace/zconsumer.abap")
+        .expect("consumer unit");
+    assert!(consumer.references.iter().any(|reference| {
+        reference.name.as_ref() == "zcl_parent"
+            && matches!(
+                reference.resolution,
+                Some(Resolution::Symbol(handle)) if handle.unit == parent.unit_id
+            )
+    }));
+    assert!(
+        !consumer.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("zcl_parent")
+        }),
+        "unexpected unresolved global class diagnostic: {:?}",
+        consumer.diagnostics
+    );
+}
+
+#[test]
+fn program_local_class_without_prefix_does_not_resolve_across_unrelated_units() {
+    let local_src = "CLASS zcl_helper DEFINITION. ENDCLASS.";
+    let consumer_src = "DATA lo_helper TYPE REF TO zcl_helper.";
+    let local_parse = parse(local_src);
+    let consumer_parse = parse(consumer_src);
+
+    let project = analyze_project(&[
+        ProjectInput {
+            uri: "file:///workspace/zprogram_top.abap",
+            source: local_src,
+            parse: &local_parse,
+        },
+        ProjectInput {
+            uri: "file:///workspace/zconsumer.abap",
+            source: consumer_src,
+            parse: &consumer_parse,
+        },
+    ]);
+
+    let consumer = project
+        .unit_by_uri("file:///workspace/zconsumer.abap")
+        .expect("consumer unit");
+    assert!(consumer.references.iter().any(|reference| {
+        reference.name.as_ref() == "zcl_helper" && reference.resolution.is_none()
+    }));
+    assert!(
+        consumer.diagnostics.iter().any(|diag| {
+            diag.kind == DiagnosticKind::UnresolvedReference && diag.message.contains("zcl_helper")
+        }),
+        "expected unresolved local class diagnostic, got {:?}",
+        consumer.diagnostics
+    );
+}
+
+#[test]
 fn reports_unresolved_include_targets() {
     let root_src = "INCLUDE zmissing. lv_inc = 1.";
     let root_parse = parse(root_src);

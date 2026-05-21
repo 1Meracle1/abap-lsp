@@ -294,6 +294,10 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Function_Pool_Decl:
 		return clone_shallow(n, allocator)
+	case ^Include_Stmt:
+		r := clone_shallow(n, allocator)
+		r.names = clone_include_names(n.names, allocator)
+		return r
 	case ^Assign_Stmt:
 		r := clone_shallow(n, allocator)
 		r.lhs = clone(n.lhs, allocator)
@@ -733,6 +737,14 @@ clone_stmt_list :: proc(list: [dynamic]^Stmt, allocator: mem.Allocator) -> [dyna
 
 clone_string_list :: proc(list: [dynamic]string, allocator: mem.Allocator) -> [dynamic]string {
 	res := make([dynamic]string, 0, len(list), allocator)
+	for x in list {
+		append(&res, x)
+	}
+	return res
+}
+
+clone_include_names :: proc(list: [dynamic]Include_Name, allocator: mem.Allocator) -> [dynamic]Include_Name {
+	res := make([dynamic]Include_Name, 0, len(list), allocator)
 	for x in list {
 		append(&res, x)
 	}

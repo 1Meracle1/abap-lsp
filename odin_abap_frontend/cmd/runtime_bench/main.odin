@@ -18,9 +18,8 @@ core_task :: proc(task: thread.Task) {
 
 run_runtime_noop :: proc(count: int, workers: int) {
 	fmt.printfln("starting runtime noop")
-	allocator := base_runtime.heap_allocator()
 	pool: runtime.Pool
-	err := runtime.pool_init(&pool, runtime.Options{worker_count = workers, task_capacity = 32768, queue_capacity = 4096, deque_capacity = 4096}, allocator)
+	err := runtime.pool_init(&pool, runtime.Options{worker_count = workers, task_capacity = 32768, queue_capacity = 4096, deque_capacity = 4096}, context.allocator)
 	if err != .None {
 		fmt.printfln("runtime init failed: %v", err)
 		return
@@ -29,8 +28,8 @@ run_runtime_noop :: proc(count: int, workers: int) {
 	defer runtime.pool_destroy(&pool)
 
 	start := time.tick_now()
-	tasks := make([]runtime.Task(int), count, allocator)
-	defer delete(tasks, allocator)
+	tasks := make([]runtime.Task(int), count, context.allocator)
+	defer delete(tasks, context.allocator)
 	for i in 0 ..< count {
 		task, submit_err := runtime.submit_value(&pool, i, bench_inc)
 		if submit_err != .None {
@@ -65,17 +64,16 @@ run_runtime_noop :: proc(count: int, workers: int) {
 
 run_core_thread_pool_noop :: proc(count: int, workers: int) {
 	fmt.printfln("starting core thread.Pool noop")
-	allocator := base_runtime.heap_allocator()
 	pool: thread.Pool
-	thread.pool_init(&pool, allocator, workers)
+	thread.pool_init(&pool, context.allocator, workers)
 	thread.pool_start(&pool)
 	defer thread.pool_destroy(&pool)
 
-	values := make([]int, count, allocator)
-	defer delete(values, allocator)
+	values := make([]int, count, context.allocator)
+	defer delete(values, context.allocator)
 	start := time.tick_now()
 	for i in 0 ..< count {
-		thread.pool_add_task(&pool, allocator, core_task, &values[i])
+		thread.pool_add_task(&pool, context.allocator, core_task, &values[i])
 	}
 	for thread.pool_num_outstanding(&pool) > 0 {
 		thread.yield()

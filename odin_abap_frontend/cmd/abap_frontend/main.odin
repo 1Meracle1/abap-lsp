@@ -2,10 +2,14 @@ package main
 
 import "../../src/ast"
 import "../../src/parser"
+import frontend_runtime "../../src/runtime"
+import semantic "../../src/semantic"
 import "../../src/tokenizer"
 
 import "base:runtime"
 import "core:fmt"
+import "core:mem"
+import "core:mem/virtual"
 import "core:os"
 
 Node_Count :: struct {
@@ -27,23 +31,40 @@ main :: proc() {
 		print_usage()
 		return
 	}
+	if len(args) < 2 {
+		print_usage()
+		os.exit(1)
+	}
+
+	arena: virtual.Arena
+	_ = virtual.arena_init_growing(&arena, mem.Gigabyte)
+	allocator := virtual.arena_allocator(&arena)
+
+	command := args[1]
+	if command == "analyze" {
+		if len(args) < 3 {
+			print_usage()
+			os.exit(1)
+		}
+		run_analyze(args, allocator)
+		return
+	}
 	if len(args) != 3 {
 		print_usage()
 		os.exit(1)
 	}
 
-	command := args[1]
 	path := args[2]
 	if command == "tokens" || command == "token" {
-		run_tokens(path)
+		run_tokens(path, allocator)
 		return
 	}
 	if command == "parse" {
-		run_parse(path, false)
+		run_parse(path, false, allocator)
 		return
 	}
 	if command == "tree" {
-		run_parse(path, true)
+		run_parse(path, true, allocator)
 		return
 	}
 
@@ -57,9 +78,10 @@ print_usage :: proc() {
 	fmt.println("       abap_frontend tokens <file>")
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
+	fmt.println("       abap_frontend analyze <file> [--include <file>...]")
 }
 
-read_source :: proc(path: string, allocator: runtime.Allocator) -> (string, bool) {
+read_source :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
 	data, err := os.read_entire_file(path, allocator)
 	if err != nil {
 		fmt.printf("error\tread\t%s\t%v\n", path, err)
@@ -68,8 +90,7 @@ read_source :: proc(path: string, allocator: runtime.Allocator) -> (string, bool
 	return string(data), true
 }
 
-run_tokens :: proc(path: string) {
-	allocator := runtime.heap_allocator()
+run_tokens :: proc(path: string, allocator: mem.Allocator) {
 	source, ok := read_source(path, allocator)
 	if !ok {
 		os.exit(1)
@@ -84,8 +105,7 @@ run_tokens :: proc(path: string) {
 	print_lex_errors(lexed.errors)
 }
 
-run_parse :: proc(path: string, dump_tree: bool) {
-	allocator := runtime.heap_allocator()
+run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 	source, ok := read_source(path, allocator)
 	if !ok {
 		os.exit(1)
@@ -106,6 +126,106 @@ run_parse :: proc(path: string, dump_tree: bool) {
 		if dump_tree {
 			print_node_counts(parsed.root, allocator)
 			print_tree(parsed.root)
+		}
+	}
+}
+
+run_analyze :: proc(args: []string, allocator: mem.Allocator) {
+	target_path := args[2]
+	target_source, ok := read_source(target_path, allocator)
+	if !ok {
+		os.exit(1)
+	}
+
+	candidates := make([dynamic]semantic.Source_Input, 0, 4, allocator)
+	for i := 3; i < len(args); i += 2 {
+		if args[i] != "--include" || i + 1 >= len(args) {
+			print_usage()
+			os.exit(1)
+		}
+		source, include_ok := read_source(args[i + 1], allocator)
+		if !include_ok {
+			os.exit(1)
+		}
+		append(&candidates, semantic.Source_Input{uri = args[i + 1], source = source})
+	}
+
+	pool: frontend_runtime.Pool
+	pool_err := frontend_runtime.pool_init(
+		&pool,
+		frontend_runtime.Options {
+			worker_count = frontend_runtime.AUTO_WORKER_COUNT,
+			task_capacity = 1024,
+			queue_capacity = 128,
+			deque_capacity = 128,
+		},
+		allocator,
+	)
+	if pool_err != .None {
+		fmt.printf("error\truntime\t%v\n", pool_err)
+		os.exit(1)
+	}
+	if pool.options.worker_count > 0 {
+		if start_err := frontend_runtime.pool_start(&pool); start_err != .None {
+			fmt.printf("error\truntime\t%v\n", start_err)
+			os.exit(1)
+		}
+	}
+
+	target := semantic.Source_Input {
+		uri    = target_path,
+		source = target_source,
+	}
+	project := semantic.analyze_target(
+		target,
+		candidates[:],
+		semantic.Analyze_Options{pool = &pool},
+		allocator,
+	)
+	print_analyze_counts(&project)
+	print_analyze_diagnostics(&project)
+	frontend_runtime.pool_destroy(&pool)
+}
+
+print_analyze_counts :: proc(project: ^semantic.Project_Analysis) {
+	symbols, scopes, references, structures, diagnostics, include_edges, unresolved_refs: int
+	for unit in project.units {
+		symbols += len(unit.symbols)
+		scopes += len(unit.scopes)
+		references += len(unit.references)
+		structures += len(unit.structures)
+		diagnostics += len(unit.diagnostics)
+		include_edges += len(unit.include_edges)
+		for ref in unit.references {
+			if !ref.has_resolution {
+				unresolved_refs += 1
+			}
+		}
+	}
+	fmt.printf(
+		"counts\tunits\t%d\tsymbols\t%d\tscopes\t%d\treferences\t%d\tstructures\t%d\tdiagnostics\t%d\tinclude_edges\t%d\tunresolved_refs\t%d\n",
+		len(project.units),
+		symbols,
+		scopes,
+		references,
+		structures,
+		diagnostics,
+		include_edges,
+		unresolved_refs,
+	)
+}
+
+print_analyze_diagnostics :: proc(project: ^semantic.Project_Analysis) {
+	for unit in project.units {
+		for diagnostic in unit.diagnostics {
+			fmt.printf(
+				"diagnostic\t%s\t%v\t%d\t%d\t%s\n",
+				unit.uri,
+				diagnostic.kind,
+				diagnostic.range.start,
+				diagnostic.range.end,
+				diagnostic.message,
+			)
 		}
 	}
 }
@@ -304,6 +424,8 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Type_Pools_Decl"
 	case ^ast.Function_Pool_Decl:
 		return "Function_Pool_Decl"
+	case ^ast.Include_Stmt:
+		return "Include_Stmt"
 	case ^ast.Assign_Stmt:
 		return "Assign_Stmt"
 	case ^ast.Downcast_Assign_Stmt:

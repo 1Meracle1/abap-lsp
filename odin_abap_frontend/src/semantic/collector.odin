@@ -1,0 +1,2743 @@
+package abap_frontend_semantic
+
+import "../ast"
+import "../parser"
+import "../tokenizer"
+
+import "core:mem"
+import "core:strings"
+
+Collector :: struct {
+	source:                                 string,
+	uri:                                    string,
+	unit_id:                                Unit_Id,
+	root:                                   ^ast.File,
+	allocator:                              mem.Allocator,
+	scope_symbols:                          map[Scope_Index_Key]Symbol_Id,
+	declared_scope_symbols:                 map[Scope_Index_Key]Symbol_Id,
+	root_scope:                             Scope_Id,
+	current_scope:                          Scope_Id,
+	scopes:                                 [dynamic]Scope_Data,
+	symbols:                                [dynamic]Symbol_Data,
+	structures:                             [dynamic]Structure_Data,
+	references:                             [dynamic]Reference_Data,
+	message_default_class:                  Message_Class_Use_Data,
+	has_message_default_class:              bool,
+	message_uses:                           [dynamic]Message_Use_Data,
+	message_class_entries:                  [dynamic]Message_Class_Entry_Data,
+	diagnostics:                            [dynamic]Diagnostic,
+	include_edges:                          [dynamic]Include_Edge,
+	table_work_areas:                       [dynamic]Table_Work_Area_Data,
+	selection_screen_report_type_positions: [dynamic]tokenizer.Range,
+	field_accesses:                         [dynamic]Field_Access,
+	loop_where_field_contexts:              [dynamic]Loop_Where_Field_Context,
+	loop_at_field_contexts:                 [dynamic]Loop_At_Field_Context,
+	constructor_for_bindings:               [dynamic]Constructor_For_Binding_Data,
+	class_members:                          [dynamic]Class_Member_Data,
+	class_definitions:                      [dynamic]Class_Definition_Data,
+	class_inheritance:                      [dynamic]Class_Inheritance_Data,
+	implemented_interfaces:                 [dynamic]Implemented_Interface_Data,
+	member_aliases:                         [dynamic]Member_Alias_Data,
+	form_routines:                          [dynamic]Form_Routine_Data,
+	function_modules:                       [dynamic]Function_Module_Data,
+	named_arguments:                        [dynamic]Named_Argument_Access,
+	call_sites:                             [dynamic]Call_Site_Data,
+	assignment_sites:                       [dynamic]Assignment_Site_Data,
+	concatenate_lines_of_sites:             [dynamic]Concatenate_Lines_Of_Site_Data,
+	expression_facts:                       [dynamic]Expression_Fact_Data,
+	value_flow_edges:                       [dynamic]Value_Flow_Edge_Data,
+	perform_calls:                          [dynamic]Perform_Call_Data,
+	find_sites:                             [dynamic]Find_Site_Data,
+	system_field_updates:                   [dynamic]System_Field_Update_Data,
+	routine_sites:                          [dynamic]Routine_Site_Data,
+	internal_table_orders:                  [dynamic]Internal_Table_Order_Data,
+	read_table_binary_searches:             [dynamic]Read_Table_Binary_Search_Data,
+	field_symbol_state_checks:              [dynamic]Field_Symbol_State_Check_Data,
+	value_state_checks:                     [dynamic]Value_State_Check_Data,
+	routine_control_regions:                [dynamic]Routine_Control_Region_Data,
+	sql_queries:                            [dynamic]Sql_Query_Data,
+	sql_sources:                            [dynamic]Sql_Source_Data,
+	sql_dynamic_fragments:                  [dynamic]Sql_Dynamic_Fragment_Data,
+	sql_projections:                        [dynamic]Sql_Projection_Data,
+	sql_name_refs:                          [dynamic]Sql_Name_Ref_Data,
+	sql_predicates:                         [dynamic]Sql_Predicate_Data,
+	sql_targets:                            [dynamic]Sql_Target_Data,
+	provided_names:                         [dynamic]string,
+	loop_source_stack:                      [dynamic]Field_Access,
+	unit:                                   Unit_Analysis,
+}
+
+Decl_Info :: struct {
+	kind:            ast.Decl_Clause_Kind,
+	depth:           int,
+	name:            string,
+	range:           tokenizer.Range,
+	paren_length:    ^ast.Paren_Length_Clause,
+	length_clauses:  []ast.Length_Clause,
+	type_clause:     ^ast.Data_Type_Clause,
+	value_clause:    ^ast.Value_Clause,
+	default_clause:  ^ast.Default_Clause,
+	occurs:          ^ast.Expr,
+	include_ref:     ^ast.Expr,
+	as_name:         string,
+	renaming_suffix: string,
+	read_only:       bool,
+	checkbox_type:   bool,
+}
+
+collect_unit :: proc(
+	unit_id: Unit_Id,
+	uri, source: string,
+	parsed: parser.Parsed_File,
+	allocator: mem.Allocator,
+) -> Unit_Analysis {
+	root_range := tokenizer.text_range(0, len(source))
+	if parsed.root != nil {
+		root_range = parsed.root.range
+	}
+
+	unit := unit_analysis_make(unit_id, uri, root_range, allocator)
+	c := Collector {
+		source                                 = source,
+		uri                                    = unit.uri,
+		unit_id                                = unit_id,
+		root                                   = parsed.root,
+		allocator                              = allocator,
+		scope_symbols                          = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2 + 64, allocator),
+		declared_scope_symbols                 = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
+		root_scope                             = unit.root_scope,
+		current_scope                          = unit.root_scope,
+		scopes                                 = unit.scopes,
+		symbols                                = unit.symbols,
+		structures                             = unit.structures,
+		references                             = unit.references,
+		message_default_class                  = unit.message_default_class,
+		has_message_default_class              = unit.has_message_default_class,
+		message_uses                           = unit.message_uses,
+		message_class_entries                  = unit.message_class_entries,
+		diagnostics                            = unit.diagnostics,
+		include_edges                          = unit.include_edges,
+		table_work_areas                       = unit.table_work_areas,
+		selection_screen_report_type_positions = unit.selection_screen_report_type_positions,
+		field_accesses                         = unit.field_accesses,
+		loop_where_field_contexts              = unit.loop_where_field_contexts,
+		loop_at_field_contexts                 = unit.loop_at_field_contexts,
+		constructor_for_bindings               = unit.constructor_for_bindings,
+		class_members                          = unit.class_members,
+		class_definitions                      = unit.class_definitions,
+		class_inheritance                      = unit.class_inheritance,
+		implemented_interfaces                 = unit.implemented_interfaces,
+		member_aliases                         = unit.member_aliases,
+		form_routines                          = unit.form_routines,
+		function_modules                       = unit.function_modules,
+		named_arguments                        = unit.named_arguments,
+		call_sites                             = unit.call_sites,
+		assignment_sites                       = unit.assignment_sites,
+		concatenate_lines_of_sites             = unit.concatenate_lines_of_sites,
+		expression_facts                       = unit.expression_facts,
+		value_flow_edges                       = unit.value_flow_edges,
+		perform_calls                          = unit.perform_calls,
+		find_sites                             = unit.find_sites,
+		system_field_updates                   = unit.system_field_updates,
+		routine_sites                          = unit.routine_sites,
+		internal_table_orders                  = unit.internal_table_orders,
+		read_table_binary_searches             = unit.read_table_binary_searches,
+		field_symbol_state_checks              = unit.field_symbol_state_checks,
+		value_state_checks                     = unit.value_state_checks,
+		routine_control_regions                = unit.routine_control_regions,
+		sql_queries                            = unit.sql_queries,
+		sql_sources                            = unit.sql_sources,
+		sql_dynamic_fragments                  = unit.sql_dynamic_fragments,
+		sql_projections                        = unit.sql_projections,
+		sql_name_refs                          = unit.sql_name_refs,
+		sql_predicates                         = unit.sql_predicates,
+		sql_targets                            = unit.sql_targets,
+		provided_names                         = unit.provided_names,
+		loop_source_stack                      = make([dynamic]Field_Access, 0, 4, allocator),
+		unit                                   = unit,
+	}
+	seed_collector_scope_symbols(&c)
+
+	if c.root != nil {
+		for stmt in c.root.stmts {
+			walk_stmt(&c, stmt, c.root_scope)
+		}
+	}
+	collect_provided_names(&c)
+	return finish_collector(&c)
+}
+
+finish_collector :: proc(c: ^Collector) -> Unit_Analysis {
+	c.unit.scopes = c.scopes
+	c.unit.symbols = c.symbols
+	c.unit.structures = c.structures
+	c.unit.references = c.references
+	c.unit.message_default_class = c.message_default_class
+	c.unit.has_message_default_class = c.has_message_default_class
+	c.unit.message_uses = c.message_uses
+	c.unit.message_class_entries = c.message_class_entries
+	c.unit.diagnostics = c.diagnostics
+	c.unit.include_edges = c.include_edges
+	c.unit.table_work_areas = c.table_work_areas
+	c.unit.selection_screen_report_type_positions = c.selection_screen_report_type_positions
+	c.unit.field_accesses = c.field_accesses
+	c.unit.loop_where_field_contexts = c.loop_where_field_contexts
+	c.unit.loop_at_field_contexts = c.loop_at_field_contexts
+	c.unit.constructor_for_bindings = c.constructor_for_bindings
+	c.unit.class_members = c.class_members
+	c.unit.class_definitions = c.class_definitions
+	c.unit.class_inheritance = c.class_inheritance
+	c.unit.implemented_interfaces = c.implemented_interfaces
+	c.unit.member_aliases = c.member_aliases
+	c.unit.form_routines = c.form_routines
+	c.unit.function_modules = c.function_modules
+	c.unit.named_arguments = c.named_arguments
+	c.unit.call_sites = c.call_sites
+	c.unit.assignment_sites = c.assignment_sites
+	c.unit.concatenate_lines_of_sites = c.concatenate_lines_of_sites
+	c.unit.expression_facts = c.expression_facts
+	c.unit.value_flow_edges = c.value_flow_edges
+	c.unit.perform_calls = c.perform_calls
+	c.unit.find_sites = c.find_sites
+	c.unit.system_field_updates = c.system_field_updates
+	c.unit.routine_sites = c.routine_sites
+	c.unit.internal_table_orders = c.internal_table_orders
+	c.unit.read_table_binary_searches = c.read_table_binary_searches
+	c.unit.field_symbol_state_checks = c.field_symbol_state_checks
+	c.unit.value_state_checks = c.value_state_checks
+	c.unit.routine_control_regions = c.routine_control_regions
+	c.unit.sql_queries = c.sql_queries
+	c.unit.sql_sources = c.sql_sources
+	c.unit.sql_dynamic_fragments = c.sql_dynamic_fragments
+	c.unit.sql_projections = c.sql_projections
+	c.unit.sql_name_refs = c.sql_name_refs
+	c.unit.sql_predicates = c.sql_predicates
+	c.unit.sql_targets = c.sql_targets
+	c.unit.provided_names = c.provided_names
+	return c.unit
+}
+
+push_scope :: proc(
+	c: ^Collector,
+	kind: Scope_Kind,
+	range: tokenizer.Range,
+	owner := INVALID_SYMBOL_ID,
+) -> Scope_Id {
+	id := Scope_Id(u32(len(c.scopes)))
+	scope := Scope_Data {
+		id           = id,
+		kind         = kind,
+		range        = range,
+		parent       = c.current_scope,
+		owner        = owner,
+		declarations = make([dynamic]Symbol_Id, 0, 8, c.allocator),
+		children     = make([dynamic]Scope_Id, 0, 4, c.allocator),
+	}
+	append(&c.scopes, scope)
+	if c.current_scope != INVALID_SCOPE_ID {
+		append(&c.scopes[scope_id_index(c.current_scope)].children, id)
+	}
+	c.current_scope = id
+	return id
+}
+
+pop_scope :: proc(c: ^Collector) {
+	if c.current_scope == c.root_scope {
+		return
+	}
+	parent := c.scopes[scope_id_index(c.current_scope)].parent
+	if parent != INVALID_SCOPE_ID {
+		c.current_scope = parent
+	}
+}
+
+declare_collected_symbol :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+	decl_range: tokenizer.Range,
+	structure := INVALID_STRUCTURE_ID,
+	declared_type := Field_Type_Ref_Data{},
+	has_declared_type := false,
+	type_clause_display := "",
+	value_clause_display := "",
+) -> Symbol_Id {
+	canonical := canonical_name(name, c.allocator)
+	check_duplicate_or_shadow(c, scope, canonical, kind, decl_range)
+
+	id := Symbol_Id(u32(len(c.symbols)))
+	append(
+		&c.symbols,
+		Symbol_Data {
+			id = id,
+			name = canonical,
+			kind = kind,
+			scope = scope,
+			decl_range = decl_range,
+			structure = structure,
+			declared_type = declared_type,
+			has_declared_type = has_declared_type,
+			type_clause_display = strings.clone(type_clause_display, c.allocator) if type_clause_display != "" else "",
+			value_clause_display = strings.clone(value_clause_display, c.allocator) if value_clause_display != "" else "",
+		},
+	)
+	append(&c.scopes[scope_id_index(scope)].declarations, id)
+	index_collected_symbol(c, scope, canonical, kind, id)
+	return id
+}
+
+seed_collector_scope_symbols :: proc(c: ^Collector) {
+	for symbol in c.symbols {
+		index_collected_symbol(c, symbol.scope, symbol.name, symbol.kind, symbol.id)
+	}
+}
+
+index_collected_symbol :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+	id: Symbol_Id,
+) {
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if !symbol_kind_occupies(kind, namespace) {
+			continue
+		}
+		key := Scope_Index_Key{scope = scope, namespace = namespace, name = name}
+		if _, exists := c.scope_symbols[key]; !exists {
+			c.scope_symbols[key] = id
+		}
+		if !symbol_kind_is_builtin(kind) {
+			if _, exists := c.declared_scope_symbols[key]; !exists {
+				c.declared_scope_symbols[key] = id
+			}
+		}
+	}
+}
+
+add_reference :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	namespace: Namespace,
+	kind: Reference_Kind,
+	range: tokenizer.Range,
+) {
+	id := Reference_Id(u32(len(c.references)))
+	append(
+		&c.references,
+		Reference_Data {
+			id = id,
+			name = canonical_name(name, c.allocator),
+			namespace = namespace,
+			kind = kind,
+			scope = scope,
+			range = range,
+		},
+	)
+}
+
+check_duplicate_or_shadow :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+	range: tokenizer.Range,
+) {
+	if symbol_kind_is_builtin(kind) {
+		return
+	}
+	if scope_has_symbol(c, scope, name, kind) {
+		add_diagnostic(c, .Duplicate_Declaration, range, "duplicate declaration")
+		return
+	}
+	parent := c.scopes[scope_id_index(scope)].parent
+	for parent != INVALID_SCOPE_ID {
+		if scope_has_symbol(c, parent, name, kind) {
+			add_diagnostic(c, .Shadowed_Symbol, range, "declaration shadows outer symbol")
+			return
+		}
+		parent = c.scopes[scope_id_index(parent)].parent
+	}
+}
+
+scope_has_symbol :: proc(c: ^Collector, scope: Scope_Id, name: string, kind: Symbol_Kind) -> bool {
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if symbol_kind_occupies(kind, namespace) {
+			if _, ok := c.declared_scope_symbols[Scope_Index_Key{scope = scope, namespace = namespace, name = name}]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+find_symbol_in_scope :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	canonical := canonical_name(name, c.allocator)
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if !symbol_kind_occupies(kind, namespace) {
+			continue
+		}
+		if id, ok := c.scope_symbols[Scope_Index_Key{scope = scope, namespace = namespace, name = canonical}]; ok {
+			return id, true
+		}
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+symbol_kinds_overlap :: #force_inline proc(a, b: Symbol_Kind) -> bool {
+	return(
+		(symbol_kind_occupies(a, .Value) && symbol_kind_occupies(b, .Value)) ||
+		(symbol_kind_occupies(a, .Type) && symbol_kind_occupies(b, .Type)) ||
+		(symbol_kind_occupies(a, .Routine) && symbol_kind_occupies(b, .Routine)) \
+	)
+}
+
+add_diagnostic :: proc(
+	c: ^Collector,
+	kind: Diagnostic_Kind,
+	range: tokenizer.Range,
+	message: string,
+) {
+	append(
+		&c.diagnostics,
+		Diagnostic{kind = kind, range = range, message = strings.clone(message, c.allocator)},
+	)
+}
+
+walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
+	if stmt == nil {
+		return
+	}
+	#partial switch n in stmt.derived_stmt {
+	case ^ast.Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, 1, c.allocator)
+		append(&infos, data_decl_info(n))
+		collect_decl_infos(c, scope, infos[:], .Variable)
+	case ^ast.Data_Chained_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, data_branch_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Variable)
+	case ^ast.Data_Inline_Decl:
+		declare_name_if_present(c, scope, n.name, .Variable, n.range)
+		collect_inline_data_stmt_facts(c, n, scope)
+	case ^ast.Types_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.types), c.allocator)
+		for clause in n.types {
+			append(&infos, types_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Type_Def)
+	case ^ast.Constants_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.constants), c.allocator)
+		for clause in n.constants {
+			append(&infos, constants_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Constant)
+	case ^ast.Field_Symbols_Decl:
+		for clause in n.field_symbols {
+			declare_typed_symbol(c, scope, clause.name, .Field_Symbol, n.range, clause.type_clause)
+		}
+	case ^ast.Statics_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.statics), c.allocator)
+		for clause in n.statics {
+			append(&infos, statics_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Variable)
+	case ^ast.Tables_Decl:
+		for clause in n.tables {
+			declare_tables_clause(c, scope, clause, n.range)
+		}
+	case ^ast.Ranges_Decl:
+		for clause in n.ranges {
+			declare_range_like_clause(c, scope, clause.name, clause.for_clause, n.range)
+		}
+	case ^ast.Parameters_Decl:
+		for clause in n.parameters {
+			declare_parameter_clause(c, scope, clause, n.range)
+		}
+	case ^ast.Select_Options_Decl:
+		for clause in n.options {
+			declare_select_option_clause(c, scope, clause, n.range)
+		}
+	case ^ast.Controls_Decl:
+		for clause in n.controls {
+			declare_typed_symbol(c, scope, clause.name, .Control, n.range, clause.type_clause)
+		}
+	case ^ast.Class_Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, class_data_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Variable)
+	case ^ast.Type_Pools_Decl:
+	// TYPE-POOLS loads type pools but does not introduce identifier references.
+	case ^ast.Function_Pool_Decl:
+		walk_function_pool_decl(c, n, scope)
+	case ^ast.Include_Stmt:
+		walk_include_stmt(c, n, scope)
+	case ^ast.Report_Stmt:
+		walk_report_stmt(c, n, scope)
+		collect_report_stmt_refs(c, n, scope)
+	case ^ast.Class_Decl:
+		walk_class_decl(c, n, scope)
+	case ^ast.Interface_Decl:
+		walk_interface_decl(c, n, scope)
+	case ^ast.Method_Decl:
+		walk_method_decl(c, n, scope)
+	case ^ast.Form_Decl:
+		walk_form_decl(c, n, scope)
+	case ^ast.Function_Decl:
+		walk_function_decl(c, n, scope)
+	case ^ast.Module_Decl:
+		walk_named_block(c, n.name, .Module, .Module, n.range, n.body, scope)
+	case ^ast.Event_Block_Stmt:
+		owner := declare_collected_symbol(c, scope, n.kind, .Event, n.header_range)
+		walk_body_in_scope(c, .Event_Block, n.range, n.body, owner)
+	case ^ast.Oop_Simple_Stmt:
+		walk_oop_simple_stmt(c, n, scope)
+	case ^ast.Assign_Stmt:
+		collect_assignment_stmt_facts(c, n.range, n.lhs, n.rhs, scope, false)
+	case ^ast.Downcast_Assign_Stmt:
+		collect_assignment_stmt_facts(c, n.range, n.lhs, n.rhs, scope, false)
+	case ^ast.Expr_Stmt:
+		collect_expr_refs(c, n.expr, scope)
+	case ^ast.Clear_Stmt:
+		collect_clear_stmt_facts(c, n, scope)
+	case ^ast.Refresh_Stmt:
+		collect_refresh_stmt_facts(c, n, scope)
+	case ^ast.Free_Stmt:
+		collect_free_stmt_facts(c, n, scope)
+	case ^ast.Unassign_Stmt:
+		collect_unassign_stmt_facts(c, n, scope)
+	case ^ast.Move_Stmt:
+		collect_move_stmt_facts(c, n, scope)
+	case ^ast.Add_Stmt:
+		collect_add_stmt_facts(c, n, scope)
+	case ^ast.Subtract_Stmt:
+		collect_subtract_stmt_facts(c, n, scope)
+	case ^ast.Multiply_Stmt:
+		collect_multiply_stmt_facts(c, n, scope)
+	case ^ast.Divide_Stmt:
+		collect_divide_stmt_facts(c, n, scope)
+	case ^ast.Compute_Stmt:
+		collect_compute_stmt_facts(c, n, scope)
+	case ^ast.Concatenate_Stmt:
+		collect_concatenate_stmt_facts(c, n, scope)
+	case ^ast.Split_Stmt:
+		collect_split_stmt_facts(c, n, scope)
+	case ^ast.Condense_Stmt:
+		collect_expr_refs(c, n.target, scope)
+		add_routine_site(c, scope, n.range, .Unknown_Effect)
+	case ^ast.Replace_Stmt:
+		collect_replace_stmt_facts(c, n, scope)
+	case ^ast.Translate_Stmt:
+		collect_translate_stmt_facts(c, n, scope)
+	case ^ast.Shift_Stmt:
+		collect_shift_stmt_facts(c, n, scope)
+	case ^ast.Find_Stmt:
+		collect_find_stmt_facts(c, n, scope)
+	case ^ast.Search_Stmt:
+		collect_search_stmt_facts(c, n, scope)
+	case ^ast.Perform_Stmt:
+		collect_perform_stmt_facts(c, n, scope)
+	case ^ast.Call_Stmt:
+		collect_call_stmt_facts(c, n, scope)
+	case ^ast.Submit_Stmt:
+		collect_submit_stmt_facts(c, n, scope)
+	case ^ast.Message_Stmt:
+		collect_message_stmt_facts(c, n, scope)
+	case ^ast.Write_Stmt:
+		collect_write_stmt_facts(c, n, scope)
+	case ^ast.Assert_Stmt:
+		collect_expr_refs(c, n.condition, scope)
+	case ^ast.Check_Stmt:
+		collect_expr_refs(c, n.condition, scope)
+	case ^ast.Flow_Stmt:
+		collect_flow_stmt_facts(c, n, scope)
+	case ^ast.Transaction_Stmt:
+	case ^ast.Describe_Stmt:
+		collect_describe_stmt_facts(c, n, scope)
+	case ^ast.Runtime_Stmt:
+		collect_runtime_stmt_facts(c, n, scope)
+	case ^ast.Raise_Stmt:
+		collect_raise_stmt_facts(c, n, scope)
+	case ^ast.Authority_Check_Stmt:
+		collect_authority_check_stmt_facts(c, n, scope)
+	case ^ast.Field_Groups_Stmt:
+		collect_expr_list_refs(c, n.groups[:], scope)
+	case ^ast.Insert_Dummy_Stmt:
+		collect_expr_refs(c, n.target, scope)
+	case ^ast.Field_Stmt:
+		collect_expr_list_refs(c, n.operands[:], scope)
+	case ^ast.Assign_Field_Stmt:
+		collect_assign_field_stmt_facts(c, n, scope)
+	case ^ast.Create_Object_Stmt:
+		collect_expr_list_refs(c, n.operands[:], scope)
+	case ^ast.Text_Transform_Stmt:
+		collect_expr_list_refs(c, n.operands[:], scope)
+		add_routine_site(c, scope, n.range, .Unknown_Effect)
+	case ^ast.List_Control_Stmt:
+		collect_expr_list_refs(c, n.operands[:], scope)
+	case ^ast.Line_Stmt:
+		collect_line_stmt_facts(c, n, scope)
+	case ^ast.Macro_Call_Stmt:
+		collect_expr_list_refs(c, n.args[:], scope)
+	case ^ast.If_Stmt:
+		then_scope := walk_body_in_scope(c, .If_Branch, n.range, n.body)
+		collect_expr_refs(c, n.condition, then_scope)
+		elseif_scopes := make([dynamic]Scope_Id, 0, len(n.elseif_clauses), c.allocator)
+		for clause in n.elseif_clauses {
+			branch_scope := walk_body_in_scope(c, .Elseif_Branch, clause.range, clause.body)
+			collect_expr_refs(c, clause.condition, branch_scope)
+			append(&elseif_scopes, branch_scope)
+		}
+		else_scope := INVALID_SCOPE_ID
+		if n.else_clause != nil {
+			else_scope = walk_body_in_scope(
+				c,
+				.Else_Branch,
+				n.else_clause.range,
+				n.else_clause.body,
+			)
+		}
+		add_if_region(c, scope, n.range, then_scope, elseif_scopes, else_scope)
+	case ^ast.Case_Stmt:
+		collect_expr_refs(c, n.expr, scope)
+		when_scopes := make([dynamic]Scope_Id, 0, len(n.whens), c.allocator)
+		has_others := false
+		for clause in n.whens {
+			when_scope := walk_body_in_scope(c, .When_Branch, clause.range, clause.body)
+			collect_expr_list_refs(c, clause.operands[:], when_scope)
+			append(&when_scopes, when_scope)
+			has_others = has_others || clause.is_others
+		}
+		walk_stmt_list(c, n.recovery, scope)
+		add_case_region(c, scope, n.range, when_scopes, has_others)
+	case ^ast.While_Stmt:
+		loop_scope := walk_body_in_scope(c, .While_Block, n.range, n.body)
+		collect_expr_refs(c, n.condition, loop_scope)
+		add_system_field_update(c, scope, n.range, .While, "index")
+		add_loop_region(c, scope, n.range, .While, loop_scope)
+	case ^ast.Do_Stmt:
+		loop_scope := walk_body_in_scope(c, .Do_Block, n.range, n.body)
+		collect_expr_refs(c, n.count, loop_scope)
+		add_system_field_update(c, scope, n.range, .Do, "index")
+		add_loop_region(c, scope, n.range, .Do, loop_scope)
+	case ^ast.Loop_Stmt:
+		collect_loop_stmt_facts(c, n, scope)
+	case ^ast.At_Stmt:
+		collect_at_stmt_facts(c, n, scope)
+	case ^ast.Try_Stmt:
+		body_scope := walk_body_in_scope(c, .Try_Block, n.range, n.body)
+		catch_scopes := make([dynamic]Scope_Id, 0, len(n.catches), c.allocator)
+		for clause in n.catches {
+			catch_scope := walk_catch_clause_facts(c, clause, body_scope)
+			append(&catch_scopes, catch_scope)
+		}
+		cleanup_scope := INVALID_SCOPE_ID
+		if n.cleanup != nil {
+			cleanup_scope = walk_body_in_scope(c, .Cleanup_Clause, n.cleanup.range, n.cleanup.body)
+		}
+		add_try_region(c, scope, n.range, body_scope, catch_scopes, cleanup_scope)
+	case ^ast.Read_Table_Stmt:
+		collect_read_table_stmt_facts(c, n, scope)
+	case ^ast.Select_Stmt:
+		collect_select_stmt_facts(c, n, scope)
+	case ^ast.Open_Cursor_Stmt:
+		collect_open_cursor_stmt_facts(c, n, scope)
+	case ^ast.Fetch_Stmt:
+		collect_fetch_stmt_facts(c, n, scope)
+	case ^ast.Close_Cursor_Stmt:
+		collect_expr_refs(c, n.handle, scope)
+		add_routine_site(c, scope, n.range, .Unknown_Effect)
+	case ^ast.Insert_Stmt:
+		collect_insert_stmt_facts(c, n, scope)
+	case ^ast.Append_Stmt:
+		collect_append_stmt_facts(c, n, scope)
+	case ^ast.Modify_Stmt:
+		collect_modify_stmt_facts(c, n, scope)
+	case ^ast.Sort_Stmt:
+		collect_sort_stmt_facts(c, n, scope)
+	case ^ast.Update_Stmt:
+		collect_update_stmt_facts(c, n, scope)
+	case ^ast.Delete_Stmt:
+		collect_delete_stmt_facts(c, n, scope)
+	case ^ast.Dataset_Stmt:
+		collect_dataset_stmt_facts(c, n, scope)
+	case ^ast.Textpool_Stmt:
+		collect_textpool_stmt_facts(c, n, scope)
+	case ^ast.Generate_Stmt:
+		collect_generate_stmt_facts(c, n, scope)
+	case ^ast.Exec_Sql_Stmt:
+		add_routine_site(c, scope, n.range, .Unknown_Effect)
+	}
+}
+
+declare_decl_name :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	kind: ast.Decl_Clause_Kind,
+	name: string,
+	symbol_kind: Symbol_Kind,
+	range: tokenizer.Range,
+) {
+	if kind == .Normal || kind == .Begin_Group {
+		declare_name_if_present(c, scope, name, symbol_kind, range)
+	}
+}
+
+declare_name_if_present :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+	range: tokenizer.Range,
+) -> Symbol_Id {
+	if name == "" {
+		return INVALID_SYMBOL_ID
+	}
+	return declare_collected_symbol(c, scope, name, kind, range)
+}
+
+data_decl_info :: proc(n: ^ast.Data_Decl) -> Decl_Info {
+	return Decl_Info {
+		kind = n.kind,
+		name = n.name,
+		range = n.range,
+		paren_length = n.paren_length,
+		length_clauses = n.length_clauses[:],
+		type_clause = n.type_clause,
+		value_clause = n.value_clause,
+		occurs = n.occurs,
+		include_ref = n.include_ref,
+		as_name = n.as_name,
+		renaming_suffix = n.renaming_suffix,
+		read_only = n.read_only,
+	}
+}
+
+data_branch_info :: proc(n: ast.Data_Chained_Branch, range: tokenizer.Range) -> Decl_Info {
+	return Decl_Info {
+		kind = n.kind,
+		depth = n.depth,
+		name = n.name,
+		range = range,
+		paren_length = n.paren_length,
+		length_clauses = n.length_clauses[:],
+		type_clause = n.type_clause,
+		value_clause = n.value_clause,
+		occurs = n.occurs,
+		include_ref = n.include_ref,
+		as_name = n.as_name,
+		renaming_suffix = n.renaming_suffix,
+		read_only = n.read_only,
+	}
+}
+
+types_clause_info :: proc(n: ast.Types_Clause, range: tokenizer.Range) -> Decl_Info {
+	return Decl_Info {
+		kind = n.kind,
+		depth = n.depth,
+		name = n.name,
+		range = range,
+		paren_length = n.paren_length,
+		length_clauses = n.length_clauses[:],
+		type_clause = n.type_clause,
+		occurs = n.occurs,
+		include_ref = n.include_ref,
+		as_name = n.as_name,
+		renaming_suffix = n.renaming_suffix,
+	}
+}
+
+constants_clause_info :: proc(n: ast.Constants_Clause, range: tokenizer.Range) -> Decl_Info {
+	return Decl_Info {
+		kind = n.kind,
+		depth = n.depth,
+		name = n.name,
+		range = range,
+		paren_length = n.paren_length,
+		length_clauses = n.length_clauses[:],
+		type_clause = n.type_clause,
+		value_clause = n.value_clause,
+		occurs = n.occurs,
+		include_ref = n.include_ref,
+		as_name = n.as_name,
+		renaming_suffix = n.renaming_suffix,
+	}
+}
+
+statics_clause_info :: proc(n: ast.Statics_Clause, range: tokenizer.Range) -> Decl_Info {
+	return Decl_Info {
+		kind = n.kind,
+		depth = n.depth,
+		name = n.name,
+		range = range,
+		paren_length = n.paren_length,
+		length_clauses = n.length_clauses[:],
+		type_clause = n.type_clause,
+		value_clause = n.value_clause,
+		occurs = n.occurs,
+		include_ref = n.include_ref,
+		as_name = n.as_name,
+		renaming_suffix = n.renaming_suffix,
+	}
+}
+
+class_data_clause_info :: proc(n: ast.Class_Data_Clause, range: tokenizer.Range) -> Decl_Info {
+	return Decl_Info {
+		kind = n.kind,
+		depth = n.depth,
+		name = n.name,
+		range = range,
+		paren_length = n.paren_length,
+		length_clauses = n.length_clauses[:],
+		type_clause = n.type_clause,
+		value_clause = n.value_clause,
+		occurs = n.occurs,
+		include_ref = n.include_ref,
+		as_name = n.as_name,
+		renaming_suffix = n.renaming_suffix,
+		read_only = n.read_only,
+	}
+}
+
+collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, kind: Symbol_Kind) {
+	for i in 0 ..< len(infos) {
+		info := infos[i]
+		if info.depth != 0 {
+			continue
+		}
+		switch info.kind {
+		case .Begin_Group:
+			if ascii_equal_ignore_case(info.name, "common") {
+				continue
+			}
+			structure_id := structure_from_group(c, scope, infos, i)
+			_ = declare_collected_symbol(c, scope, info.name, kind, info.range, structure_id)
+			add_reference(
+				c,
+				scope,
+				info.name,
+				.Type if kind == .Type_Def else .Value,
+				.Structured_Decl_End,
+				info.range,
+			)
+		case .Normal:
+			declare_info_symbol(c, scope, info, kind)
+		case .End_Group, .Include_Type, .Include_Structure:
+		}
+		collect_decl_info_facts(c, scope, info)
+	}
+}
+
+declare_info_symbol :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	info: Decl_Info,
+	kind: Symbol_Kind,
+) -> Symbol_Id {
+	if info.name == "" {
+		return INVALID_SYMBOL_ID
+	}
+	declared_type, has_type := type_ref_from_clause(c, info.type_clause)
+	if info.checkbox_type {
+		declared_type = builtin_type_ref("abap_bool")
+		has_type = true
+	}
+	type_display := type_clause_display(c, info.type_clause)
+	value_display := value_clause_display(c, info.value_clause)
+	structure_id := INVALID_STRUCTURE_ID
+	if has_type {
+		if info.type_clause != nil && info.type_clause.form == .Range_Of {
+			structure_id = push_range_structure(c, scope, info.name, declared_type)
+		} else if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
+			structure_id = resolved
+		}
+		add_type_reference(c, scope, declared_type, info.range)
+	}
+	return declare_collected_symbol(
+		c,
+		scope,
+		info.name,
+		kind,
+		info.range,
+		structure_id,
+		declared_type,
+		has_type,
+		type_display,
+		value_display,
+	)
+}
+
+declare_typed_symbol :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+	range: tokenizer.Range,
+	type_clause: ^ast.Data_Type_Clause,
+	value_display := "",
+) -> Symbol_Id {
+	if name == "" {
+		return INVALID_SYMBOL_ID
+	}
+	declared_type, has_type := type_ref_from_clause(c, type_clause)
+	type_display := type_clause_display(c, type_clause)
+	structure_id := INVALID_STRUCTURE_ID
+	if has_type {
+		if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
+			structure_id = resolved
+		}
+		add_type_reference(c, scope, declared_type, range)
+	}
+	return declare_collected_symbol(
+		c,
+		scope,
+		name,
+		kind,
+		range,
+		structure_id,
+		declared_type,
+		has_type,
+		type_display,
+		value_display,
+	)
+}
+
+declare_tables_clause :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	clause: ast.Tables_Clause,
+	range: tokenizer.Range,
+) {
+	if clause.name == "" {
+		return
+	}
+	name := canonical_name(clause.name, c.allocator)
+	declared_type := Field_Type_Ref_Data {
+		namespace = .Type,
+		base_name = name,
+	}
+	add_reference(c, scope, name, .Type, .Type_Ref, range)
+	_ = declare_collected_symbol(
+		c,
+		scope,
+		name,
+		.Variable,
+		range,
+		INVALID_STRUCTURE_ID,
+		declared_type,
+		true,
+		name,
+	)
+	append(&c.table_work_areas, Table_Work_Area_Data{name = name, scope = scope, range = range})
+}
+
+declare_range_like_clause :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	for_clause: ^ast.For_Clause,
+	range: tokenizer.Range,
+) {
+	if name == "" {
+		return
+	}
+	low_high, ok := for_clause_type_ref(c, for_clause)
+	if !ok {
+		low_high = builtin_type_ref("c")
+	}
+	if ok {
+		add_type_reference(c, scope, low_high, range)
+	}
+	structure_id := push_range_structure(c, scope, name, low_high)
+	display :=
+		concat2(c, "RANGE OF ", expr_display(c, for_clause.expr)) if for_clause != nil else "RANGE OF c"
+	_ = declare_collected_symbol(
+		c,
+		scope,
+		name,
+		.Variable,
+		range,
+		structure_id,
+		Field_Type_Ref_Data{},
+		false,
+		display,
+	)
+}
+
+declare_parameter_clause :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	clause: ast.Parameters_Clause,
+	range: tokenizer.Range,
+) {
+	info := Decl_Info {
+		kind           = .Normal,
+		name           = clause.name,
+		range          = range,
+		paren_length   = clause.paren_length,
+		length_clauses = clause.length_clauses[:],
+		type_clause    = clause.type_clause,
+		default_clause = clause.default_clause,
+		checkbox_type  = .As_Checkbox in clause.flags,
+	}
+	value_display := default_clause_display(c, clause.default_clause)
+	symbol_id := declare_info_symbol(c, scope, info, .Variable)
+	if symbol_id != INVALID_SYMBOL_ID && value_display != "" {
+		c.symbols[symbol_id_index(symbol_id)].value_clause_display = value_display
+	}
+	collect_decl_info_facts(c, scope, info)
+	if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
+	if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
+	if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+}
+
+declare_select_option_clause :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	clause: ast.Select_Options_Clause,
+	range: tokenizer.Range,
+) {
+	declare_range_like_clause(c, scope, clause.name, clause.for_clause, range)
+	if clause.default_clause != nil {collect_expr_refs(c, clause.default_clause.expr, scope)}
+	if clause.to_clause != nil {collect_expr_refs(c, clause.to_clause.expr, scope)}
+	if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
+	if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
+	if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+}
+
+structure_from_group :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	infos: []Decl_Info,
+	start: int,
+) -> Structure_Id {
+	fields := make([dynamic]Structure_Field_Data, 0, 4, c.allocator)
+	depth := infos[start].depth
+	i := start + 1
+	for i < len(infos) {
+		info := infos[i]
+		if info.kind == .End_Group && info.depth == depth {
+			break
+		}
+		if info.depth != depth + 1 {
+			i += 1
+			continue
+		}
+		switch info.kind {
+		case .Normal:
+			if field, ok := structure_field_from_info(c, scope, info); ok {
+				append(&fields, field)
+			}
+		case .Begin_Group:
+			nested := structure_from_group(c, scope, infos, i)
+			flags := Structure_Field_Flags{.Has_Decl_Range}
+			append(
+				&fields,
+				Structure_Field_Data {
+					name = canonical_name(info.name, c.allocator),
+					decl_range = info.range,
+					decl_unit = c.unit_id,
+					structure = nested,
+					flags = flags,
+				},
+			)
+		case .Include_Type, .Include_Structure:
+			extend_structure_from_include(c, scope, &fields, info)
+		case .End_Group:
+		}
+		i += 1
+	}
+	return push_collected_structure(c, infos[start].name, fields)
+}
+
+structure_field_from_info :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	info: Decl_Info,
+) -> (
+	Structure_Field_Data,
+	bool,
+) {
+	if info.name == "" {
+		return {}, false
+	}
+	type_ref, has_type := type_ref_from_clause(c, info.type_clause)
+	structure_id := INVALID_STRUCTURE_ID
+	if has_type {
+		if resolved, ok := resolve_field_type_ref(c, scope, type_ref); ok {
+			structure_id = resolved
+		}
+		add_type_reference(c, scope, type_ref, info.range)
+	}
+	flags := Structure_Field_Flags{.Has_Decl_Range}
+	if has_type {
+		flags += {.Has_Type_Ref}
+	}
+	return Structure_Field_Data {
+			name = canonical_name(info.name, c.allocator),
+			decl_range = info.range,
+			decl_unit = c.unit_id,
+			structure = structure_id,
+			type_ref = type_ref,
+			value_clause_display = value_clause_display(c, info.value_clause),
+			flags = flags,
+		},
+		true
+}
+
+extend_structure_from_include :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	fields: ^[dynamic]Structure_Field_Data,
+	info: Decl_Info,
+) {
+	type_ref, ok := type_ref_from_expr(
+		c,
+		info.include_ref,
+		.Type if info.kind == .Include_Type else .Value,
+	)
+	if !ok {
+		return
+	}
+	add_type_reference(c, scope, type_ref, info.range)
+	resolved := INVALID_STRUCTURE_ID
+	if found, found_ok := resolve_field_type_ref(c, scope, type_ref); found_ok {
+		resolved = found
+		for source in c.structures {
+			if source.id == found {
+				for field in source.fields {
+					next := field
+					if info.renaming_suffix != "" {
+						next.name = concat2(c, field.name, info.renaming_suffix)
+					}
+					append(fields, next)
+				}
+				break
+			}
+		}
+	}
+	if info.as_name != "" {
+		flags := Structure_Field_Flags{.Has_Type_Ref}
+		append(
+			fields,
+			Structure_Field_Data {
+				name = canonical_name(info.as_name, c.allocator),
+				decl_unit = c.unit_id,
+				structure = resolved,
+				type_ref = type_ref,
+				flags = flags,
+			},
+		)
+	}
+}
+
+push_collected_structure :: proc(
+	c: ^Collector,
+	name: string,
+	fields: [dynamic]Structure_Field_Data,
+) -> Structure_Id {
+	id := Structure_Id(u32(len(c.structures)))
+	append(
+		&c.structures,
+		Structure_Data {
+			id = id,
+			origin_unit = c.unit_id,
+			origin_structure = id,
+			name = canonical_name(name, c.allocator),
+			fields = fields,
+		},
+	)
+	return id
+}
+
+push_range_structure :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	low_high: Field_Type_Ref_Data,
+) -> Structure_Id {
+	fields := make([dynamic]Structure_Field_Data, 0, 4, c.allocator)
+	sign_type := builtin_type_ref("ddsign")
+	option_type := builtin_type_ref("ddoption")
+	append(&fields, range_field(c, scope, "sign", sign_type))
+	append(&fields, range_field(c, scope, "option", option_type))
+	append(&fields, range_field(c, scope, "low", low_high))
+	append(&fields, range_field(c, scope, "high", low_high))
+	return push_collected_structure(
+		c,
+		concat3(c, "<range:", canonical_name(name, c.allocator), ">"),
+		fields,
+	)
+}
+
+range_field :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	type_ref: Field_Type_Ref_Data,
+) -> Structure_Field_Data {
+	structure_id := INVALID_STRUCTURE_ID
+	if resolved, ok := resolve_field_type_ref(c, scope, type_ref); ok {
+		structure_id = resolved
+	}
+	return Structure_Field_Data {
+		name = strings.clone(name, c.allocator),
+		decl_unit = c.unit_id,
+		structure = structure_id,
+		type_ref = type_ref,
+		flags = {.Has_Type_Ref},
+	}
+}
+
+type_ref_from_clause :: proc(
+	c: ^Collector,
+	clause: ^ast.Data_Type_Clause,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	if clause == nil {
+		return {}, false
+	}
+	ns := Namespace.Type
+	is_ref := clause.form == .Ref_To
+	#partial switch clause.form {
+	case .Like,
+	     .Like_Line_Of,
+	     .Like_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		ns = .Value
+	case:
+		ns = .Type
+	}
+	if clause.type_ref == nil {
+		return {}, false
+	}
+	return type_ref_from_expr(c, clause.type_ref, ns, is_ref)
+}
+
+for_clause_type_ref :: proc(
+	c: ^Collector,
+	clause: ^ast.For_Clause,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	if clause == nil || clause.expr == nil {
+		return {}, false
+	}
+	return type_ref_from_expr(c, clause.expr, .Value)
+}
+
+type_ref_from_expr :: proc(
+	c: ^Collector,
+	expr: ^ast.Expr,
+	namespace: Namespace,
+	is_ref := false,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	text := expr_display(c, expr)
+	text = clean_type_ref_text(c, text)
+	text = strings.trim_space(text)
+	if text == "" {
+		return {}, false
+	}
+	base, path := split_type_path(c, text)
+	if base == "" {
+		return {}, false
+	}
+	return Field_Type_Ref_Data {
+			namespace = namespace,
+			is_ref = is_ref,
+			base_name = canonical_name(base, c.allocator),
+			field_path = path,
+		},
+		true
+}
+
+split_type_path :: proc(c: ^Collector, text: string) -> (string, [dynamic]string) {
+	path := make([dynamic]string, 0, 2, c.allocator)
+	best := len(text)
+	op_len := 0
+	for i in 0 ..< len(text) {
+		if i + 1 < len(text) && text[i:i + 2] == "=>" {
+			best = i
+			op_len = 2
+			break
+		}
+		if text[i] == '~' || text[i] == '-' {
+			best = i
+			op_len = 1
+			break
+		}
+	}
+	if best == len(text) {
+		return strings.trim_space(text), path
+	}
+	base := strings.trim_space(text[:best])
+	tail := strings.trim_space(text[best + op_len:])
+	for i in 0 ..< len(tail) {
+		if tail[i] == ' ' || tail[i] == '(' {
+			tail = strings.trim_space(tail[:i])
+			break
+		}
+	}
+	if tail != "" {
+		append(&path, canonical_name(tail, c.allocator))
+	}
+	return base, path
+}
+
+type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> string {
+	if clause == nil {
+		return ""
+	}
+	ref := expr_display(c, clause.type_ref)
+	ref = clean_type_ref_text(c, ref)
+	#partial switch clause.form {
+	case .Ref_To:
+		return concat2(c, "REF TO ", ref)
+	case .Like_Line_Of, .Type_Line_Of:
+		return concat2(c, "LINE OF ", ref)
+	case .Table, .Like_Table:
+		return concat2(c, "TABLE OF ", ref)
+	case .Standard_Table, .Like_Standard_Table:
+		return concat2(c, "STANDARD TABLE OF ", ref)
+	case .Sorted_Table, .Like_Sorted_Table:
+		return concat2(c, "SORTED TABLE OF ", ref)
+	case .Hashed_Table, .Like_Hashed_Table:
+		return concat2(c, "HASHED TABLE OF ", ref)
+	case .Range_Of:
+		return concat2(c, "RANGE OF ", ref)
+	case:
+		return ref
+	}
+}
+
+value_clause_display :: proc(c: ^Collector, clause: ^ast.Value_Clause) -> string {
+	if clause == nil {
+		return ""
+	}
+	if clause.is_initial {
+		return strings.clone("IS INITIAL", c.allocator)
+	}
+	return expr_display(c, clause.expr)
+}
+
+default_clause_display :: proc(c: ^Collector, clause: ^ast.Default_Clause) -> string {
+	if clause == nil {
+		return ""
+	}
+	return expr_display(c, clause.expr)
+}
+
+expr_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+	if expr.range.start >= 0 &&
+	   expr.range.end <= len(c.source) &&
+	   expr.range.start < expr.range.end {
+		return strings.clone(c.source[expr.range.start:expr.range.end], c.allocator)
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Type_Ref_Expr:
+		if n.text != "" {
+			return strings.clone(n.text, c.allocator)
+		}
+		return strings.clone(n.name, c.allocator)
+	case ^ast.Ident_Expr:
+		return strings.clone(n.name, c.allocator)
+	case ^ast.Literal_Expr:
+		return strings.clone(n.value, c.allocator)
+	}
+	return ""
+}
+
+add_type_reference :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+	range: tokenizer.Range,
+) {
+	if type_ref.base_name == "" {
+		return
+	}
+	add_reference(c, scope, type_ref.base_name, type_ref.namespace, .Type_Ref, range)
+	if len(type_ref.field_path) > 0 {
+		segments := make([dynamic]Field_Access_Segment, 0, len(type_ref.field_path), c.allocator)
+		for name in type_ref.field_path {
+			append(&segments, Field_Access_Segment{name = name, range = range})
+		}
+		append(
+			&c.field_accesses,
+			Field_Access {
+				scope = scope,
+				base_namespace = type_ref.namespace,
+				base_name = type_ref.base_name,
+				base_range = range,
+				field_path = segments,
+				in_type_position = true,
+			},
+		)
+	}
+}
+
+resolve_field_type_ref :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+) -> (
+	Structure_Id,
+	bool,
+) {
+	if type_ref.base_name == "" {
+		return INVALID_STRUCTURE_ID, false
+	}
+	symbol_id, ok := lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, type_ref.namespace)
+	if !ok && type_ref.namespace == .Type {
+		symbol_id, ok = lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, .Value)
+	}
+	if !ok {
+		return INVALID_STRUCTURE_ID, false
+	}
+	s := c.symbols[symbol_id_index(symbol_id)]
+	if s.structure == INVALID_STRUCTURE_ID {
+		return INVALID_STRUCTURE_ID, false
+	}
+	return resolve_structure_path(c, s.structure, type_ref.field_path[:])
+}
+
+resolve_structure_path :: proc(
+	c: ^Collector,
+	id: Structure_Id,
+	path: []string,
+) -> (
+	Structure_Id,
+	bool,
+) {
+	current := id
+	for segment in path {
+		st := find_collected_structure(c, current)
+		if st == nil {
+			return INVALID_STRUCTURE_ID, false
+		}
+		found := false
+		next := INVALID_STRUCTURE_ID
+		for field in st.fields {
+			if ascii_equal_ignore_case(field.name, segment) &&
+			   field.structure != INVALID_STRUCTURE_ID {
+				found = true
+				next = field.structure
+				break
+			}
+		}
+		if !found {
+			return INVALID_STRUCTURE_ID, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+find_collected_structure :: proc(c: ^Collector, id: Structure_Id) -> ^Structure_Data {
+	for &st in c.structures {
+		if st.id == id {
+			return &st
+		}
+	}
+	return nil
+}
+
+lookup_symbol_in_scope_chain :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	namespace: Namespace,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	current := scope
+	for current != INVALID_SCOPE_ID {
+		scope_idx := scope_id_index(current)
+		if scope_idx < 0 || scope_idx >= len(c.scopes) {
+			break
+		}
+		if id, ok := c.scope_symbols[Scope_Index_Key{scope = current, namespace = namespace, name = name}]; ok {
+			return id, true
+		}
+		current = c.scopes[scope_idx].parent
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+concat2 :: proc(c: ^Collector, a, b: string) -> string {
+	out := strings.builder_make(c.allocator)
+	strings.write_string(&out, a)
+	strings.write_string(&out, b)
+	return strings.to_string(out)
+}
+
+concat3 :: proc(c: ^Collector, a, b, d: string) -> string {
+	out := strings.builder_make(c.allocator)
+	strings.write_string(&out, a)
+	strings.write_string(&out, b)
+	strings.write_string(&out, d)
+	return strings.to_string(out)
+}
+
+walk_include_stmt :: proc(c: ^Collector, stmt: ^ast.Include_Stmt, scope: Scope_Id) {
+	for include_name in stmt.names {
+		name := canonical_name(include_name.name, c.allocator)
+		_ = declare_collected_symbol(c, scope, name, .Include, include_name.range)
+		append(
+			&c.include_edges,
+			Include_Edge{name = name, range = include_name.range, target = INVALID_UNIT_ID},
+		)
+		add_reference(c, scope, name, .Value, .Include, include_name.range)
+	}
+}
+
+walk_report_stmt :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: Scope_Id) {
+	if stmt.kind != .Report && stmt.kind != .Program {
+		return
+	}
+	name, range, ok := expr_name(stmt.name)
+	if ok {
+		_ = declare_collected_symbol(c, scope, name, .Report, range)
+	}
+}
+
+walk_named_block :: proc(
+	c: ^Collector,
+	name: string,
+	symbol_kind: Symbol_Kind,
+	scope_kind: Scope_Kind,
+	range: tokenizer.Range,
+	body: [dynamic]^ast.Stmt,
+	parent_scope: Scope_Id,
+	header_text := "",
+) {
+	owner := INVALID_SYMBOL_ID
+	if name != "" {
+		if symbol_kind == .Class && ascii_contains_ignore_case(header_text, "implementation") {
+			if existing, ok := find_symbol_in_scope(c, parent_scope, name, .Class); ok {
+				owner = existing
+			}
+		}
+		if owner == INVALID_SYMBOL_ID {
+			owner = declare_collected_symbol(c, parent_scope, name, symbol_kind, range)
+		}
+	}
+	walk_body_in_scope(c, scope_kind, range, body, owner)
+}
+
+walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
+	is_impl := header_has_keyword(c, stmt.header_text, "IMPLEMENTATION")
+	bodyless :=
+		header_has_keyword(c, stmt.header_text, "DEFERRED") ||
+		header_has_keyword(c, stmt.header_text, "LOAD")
+	owner := INVALID_SYMBOL_ID
+	if stmt.name != "" && (is_impl || bodyless) {
+		if existing, ok := find_symbol_in_scope(c, scope, stmt.name, .Class); ok {
+			owner = existing
+		}
+	}
+	if owner == INVALID_SYMBOL_ID && stmt.name != "" {
+		owner = declare_collected_symbol(c, scope, stmt.name, .Class, stmt.header_range)
+	}
+	if is_impl && stmt.name != "" {
+		add_reference(c, scope, stmt.name, .Type, .Type_Ref, stmt.header_range)
+	}
+	if !is_impl && !bodyless && owner != INVALID_SYMBOL_ID {
+		add_class_definition(c, owner, header_has_keyword(c, stmt.header_text, "ABSTRACT"))
+		if superclass := header_value_after_phrase(
+			c,
+			stmt.header_text,
+			stmt.header_range.start,
+			[]string{"INHERITING", "FROM"},
+		); superclass != "" {
+			append(
+				&c.class_inheritance,
+				Class_Inheritance_Data{class_symbol = owner, superclass_name = superclass},
+			)
+			add_reference(c, scope, superclass, .Type, .Type_Ref, stmt.header_range)
+		}
+	}
+	previous := c.current_scope
+	c.current_scope = scope
+	class_scope := push_scope(c, .Class, stmt.range, owner)
+	if !is_impl && !bodyless {
+		walk_class_body(c, stmt.body, class_scope, owner, .Private)
+	} else {
+		walk_stmt_list(c, stmt.body, class_scope)
+	}
+	c.current_scope = class_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Scope_Id) {
+	bodyless :=
+		header_has_keyword(c, stmt.header_text, "DEFERRED") ||
+		header_has_keyword(c, stmt.header_text, "LOAD")
+	owner := INVALID_SYMBOL_ID
+	if stmt.name != "" && bodyless {
+		if existing, ok := find_symbol_in_scope(c, scope, stmt.name, .Interface); ok {
+			owner = existing
+		}
+	}
+	if owner == INVALID_SYMBOL_ID && stmt.name != "" {
+		owner = declare_collected_symbol(c, scope, stmt.name, .Interface, stmt.header_range)
+	}
+	previous := c.current_scope
+	c.current_scope = scope
+	interface_scope := push_scope(c, .Interface, stmt.range, owner)
+	if !bodyless {
+		walk_class_body(c, stmt.body, interface_scope, owner, .Public)
+	} else {
+		walk_stmt_list(c, stmt.body, interface_scope)
+	}
+	c.current_scope = interface_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+walk_class_body :: proc(
+	c: ^Collector,
+	body: [dynamic]^ast.Stmt,
+	scope: Scope_Id,
+	owner: Symbol_Id,
+	default_visibility: Visibility,
+) {
+	visibility := default_visibility
+	previous := c.current_scope
+	c.current_scope = scope
+	for child in body {
+		if child == nil {
+			continue
+		}
+		if oop, ok := child.derived_stmt.(^ast.Oop_Simple_Stmt); ok {
+			if oop.kind == .Class_Section {
+				visibility = visibility_from_text(oop.text, visibility)
+			} else {
+				collect_class_oop_stmt(c, oop, scope, owner, visibility)
+			}
+			continue
+		}
+		collect_class_attribute_stmt(c, child, scope, owner, visibility)
+		walk_stmt(c, child, scope)
+	}
+	c.current_scope = previous
+}
+
+walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id) {
+	owner := declare_name_if_present(c, scope, stmt.name, .Method, stmt.header_range)
+	previous := c.current_scope
+	c.current_scope = scope
+	method_scope := push_scope(c, .Method, stmt.range, owner)
+	if class_owner, ok := enclosing_owner(c, scope, .Class); ok {
+		method_name := method_member_name(stmt.name)
+		note_method_implementation(c, class_owner, method_name, stmt.header_range)
+		declare_method_scope_params(c, class_owner, method_name, method_scope)
+		if member := class_member(c, class_owner, method_name);
+		   member != nil && !(.Is_Static in member.flags) {
+			_ = declare_collected_symbol(
+				c,
+				method_scope,
+				"me",
+				.Variable,
+				stmt.header_range,
+				INVALID_STRUCTURE_ID,
+				Field_Type_Ref_Data {
+					namespace = .Type,
+					is_ref = true,
+					base_name = c.symbols[symbol_id_index(class_owner)].name,
+				},
+				true,
+				concat2(c, "REF TO ", c.symbols[symbol_id_index(class_owner)].name),
+			)
+		}
+	}
+	collect_amdp_using_refs(c, stmt, method_scope)
+	walk_stmt_list(c, stmt.body, method_scope)
+	c.current_scope = method_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+walk_form_decl :: proc(c: ^Collector, stmt: ^ast.Form_Decl, scope: Scope_Id) {
+	owner := declare_name_if_present(c, scope, stmt.name, .Form, stmt.header_range)
+	previous := c.current_scope
+	c.current_scope = scope
+	form_scope := push_scope(c, .Form, stmt.range, owner)
+	parameters := parse_form_parameters(c, stmt.header_text, stmt.header_range, form_scope)
+	append(
+		&c.form_routines,
+		Form_Routine_Data {
+			symbol = owner,
+			signature = strings.clone(stmt.header_text, c.allocator),
+			parameters = parameters,
+		},
+	)
+	walk_stmt_list(c, stmt.body, form_scope)
+	c.current_scope = form_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+walk_function_decl :: proc(c: ^Collector, stmt: ^ast.Function_Decl, scope: Scope_Id) {
+	owner := declare_name_if_present(c, scope, stmt.name, .Module, stmt.header_range)
+	previous := c.current_scope
+	c.current_scope = scope
+	function_scope := push_scope(c, .Module, stmt.range, owner)
+	parameters, exceptions := parse_function_parameters(
+		c,
+		stmt.header_text,
+		stmt.header_range,
+		function_scope,
+	)
+	append(
+		&c.function_modules,
+		Function_Module_Data {
+			symbol = owner,
+			signature = strings.clone(stmt.header_text, c.allocator),
+			parameters = parameters,
+			exceptions = exceptions,
+		},
+	)
+	walk_stmt_list(c, stmt.body, function_scope)
+	c.current_scope = function_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+walk_body_in_scope :: proc(
+	c: ^Collector,
+	kind: Scope_Kind,
+	range: tokenizer.Range,
+	body: [dynamic]^ast.Stmt,
+	owner := INVALID_SYMBOL_ID,
+) -> Scope_Id {
+	_ = push_scope(c, kind, range, owner)
+	child_scope := c.current_scope
+	walk_stmt_list(c, body, c.current_scope)
+	pop_scope(c)
+	return child_scope
+}
+
+walk_stmt_list :: proc(c: ^Collector, body: [dynamic]^ast.Stmt, scope: Scope_Id) {
+	previous := c.current_scope
+	c.current_scope = scope
+	for child in body {
+		walk_stmt(c, child, scope)
+	}
+	c.current_scope = previous
+}
+
+walk_oop_simple_stmt :: proc(c: ^Collector, stmt: ^ast.Oop_Simple_Stmt, scope: Scope_Id) {
+	kind := Symbol_Kind.Method
+	#partial switch stmt.kind {
+	case .Methods, .Class_Methods:
+		kind = .Method
+	case .Events, .Class_Events:
+		kind = .Event
+	case:
+		return
+	}
+	for member in stmt.members {
+		declare_name_if_present(c, scope, member.name, kind, stmt.range)
+	}
+}
+
+add_class_definition :: proc(c: ^Collector, owner: Symbol_Id, is_abstract: bool) {
+	if owner == INVALID_SYMBOL_ID {
+		return
+	}
+	for &definition in c.class_definitions {
+		if definition.class_symbol == owner {
+			if is_abstract {
+				definition.is_abstract = true
+			}
+			return
+		}
+	}
+	append(
+		&c.class_definitions,
+		Class_Definition_Data{class_symbol = owner, is_abstract = is_abstract},
+	)
+}
+
+visibility_from_text :: proc(text: string, fallback: Visibility) -> Visibility {
+	if ascii_contains_ignore_case(text, "PUBLIC") {
+		return .Public
+	}
+	if ascii_contains_ignore_case(text, "PROTECTED") {
+		return .Protected
+	}
+	if ascii_contains_ignore_case(text, "PRIVATE") {
+		return .Private
+	}
+	return fallback
+}
+
+collect_class_attribute_stmt :: proc(
+	c: ^Collector,
+	stmt: ^ast.Stmt,
+	scope: Scope_Id,
+	class_symbol: Symbol_Id,
+	visibility: Visibility,
+) {
+	if class_symbol == INVALID_SYMBOL_ID {
+		return
+	}
+	#partial switch n in stmt.derived_stmt {
+	case ^ast.Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, 1, c.allocator)
+		append(&infos, data_decl_info(n))
+		collect_class_attribute_infos(c, scope, class_symbol, visibility, false, infos[:], n.range)
+	case ^ast.Data_Chained_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, data_branch_info(clause, n.range))
+		}
+		collect_class_attribute_infos(c, scope, class_symbol, visibility, false, infos[:], n.range)
+	case ^ast.Class_Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, class_data_clause_info(clause, n.range))
+		}
+		collect_class_attribute_infos(c, scope, class_symbol, visibility, true, infos[:], n.range)
+	case ^ast.Statics_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.statics), c.allocator)
+		for clause in n.statics {
+			append(&infos, statics_clause_info(clause, n.range))
+		}
+		collect_class_attribute_infos(c, scope, class_symbol, visibility, true, infos[:], n.range)
+	case ^ast.Constants_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.constants), c.allocator)
+		for clause in n.constants {
+			append(&infos, constants_clause_info(clause, n.range))
+		}
+		collect_class_attribute_infos(c, scope, class_symbol, visibility, true, infos[:], n.range)
+	}
+}
+
+collect_class_attribute_infos :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	class_symbol: Symbol_Id,
+	visibility: Visibility,
+	is_static: bool,
+	infos: []Decl_Info,
+	signature_range: tokenizer.Range,
+) {
+	for i in 0 ..< len(infos) {
+		info := infos[i]
+		if info.depth != 0 {
+			continue
+		}
+		if info.kind != .Normal && info.kind != .Begin_Group {
+			continue
+		}
+		if info.name == "" || ascii_equal_ignore_case(info.name, "common") {
+			continue
+		}
+		structure_id := INVALID_STRUCTURE_ID
+		if info.kind == .Begin_Group {
+			structure_id = structure_from_group(c, scope, infos, i)
+		} else if type_ref, ok := type_ref_from_clause(c, info.type_clause); ok {
+			if resolved, resolved_ok := resolve_field_type_ref(c, scope, type_ref); resolved_ok {
+				structure_id = resolved
+			}
+		}
+		flags := Class_Member_Flags{}
+		if is_static {
+			flags += {.Is_Static}
+		}
+		append(
+			&c.class_members,
+			Class_Member_Data {
+				class_symbol = class_symbol,
+				name = canonical_name(info.name, c.allocator),
+				kind = .Attribute,
+				visibility = visibility,
+				decl_range = info.range,
+				signature = source_text(c, signature_range),
+				parameters = make([dynamic]Class_Member_Parameter_Data, 0, 0, c.allocator),
+				structure = structure_id,
+				flags = flags,
+			},
+		)
+	}
+}
+
+collect_class_oop_stmt :: proc(
+	c: ^Collector,
+	stmt: ^ast.Oop_Simple_Stmt,
+	scope: Scope_Id,
+	class_symbol: Symbol_Id,
+	visibility: Visibility,
+) {
+	#partial switch stmt.kind {
+	case .Methods, .Class_Methods:
+		is_static := stmt.kind == .Class_Methods
+		for member in stmt.members {
+			declare_name_if_present(c, scope, member.name, .Method, stmt.range)
+			parameters := method_parameters_from_signatures(c, member.signatures[:])
+			for param in parameters {
+				if .Has_Declared_Type in param.flags {
+					add_type_reference(c, scope, param.declared_type, param.range)
+				}
+			}
+			flags := Class_Member_Flags{}
+			if is_static {
+				flags += {.Is_Static}
+			}
+			append(
+				&c.class_members,
+				Class_Member_Data {
+					class_symbol = class_symbol,
+					name = canonical_name(member.name, c.allocator),
+					kind = .Method,
+					visibility = visibility,
+					decl_range = stmt.range,
+					signature = strings.clone(stmt.text, c.allocator),
+					parameters = parameters,
+					structure = INVALID_STRUCTURE_ID,
+					flags = flags,
+				},
+			)
+			declare_signature_scope_params(c, scope, stmt.range, parameters[:])
+		}
+	case .Events, .Class_Events:
+		is_static := stmt.kind == .Class_Events
+		for member in stmt.members {
+			declare_name_if_present(c, scope, member.name, .Event, stmt.range)
+			parameters := event_parameters_from_signatures(c, member.signatures[:])
+			for param in parameters {
+				if .Has_Declared_Type in param.flags {
+					add_type_reference(c, scope, param.declared_type, param.range)
+				}
+			}
+			flags := Class_Member_Flags{}
+			if is_static {
+				flags += {.Is_Static}
+			}
+			append(
+				&c.class_members,
+				Class_Member_Data {
+					class_symbol = class_symbol,
+					name = canonical_name(member.name, c.allocator),
+					kind = .Event,
+					visibility = visibility,
+					decl_range = stmt.range,
+					signature = strings.clone(stmt.text, c.allocator),
+					parameters = parameters,
+					structure = INVALID_STRUCTURE_ID,
+					flags = flags,
+				},
+			)
+		}
+	case .Interfaces:
+		for member in stmt.members {
+			name := canonical_name(member.name, c.allocator)
+			append(
+				&c.implemented_interfaces,
+				Implemented_Interface_Data {
+					owner_symbol = class_symbol,
+					interface_name = name,
+					range = stmt.range,
+				},
+			)
+			add_reference(c, scope, name, .Type, .Type_Ref, stmt.range)
+		}
+	case .Aliases:
+		for member in stmt.members {
+			target := ""
+			for sig in member.signatures {
+				if sig.kind == .For && len(sig.values) > 0 {
+					target = expr_display(c, sig.values[0])
+					break
+				}
+			}
+			if target == "" {
+				continue
+			}
+			iface, path := split_type_path(c, target)
+			target_member := ""
+			if len(path) > 0 {
+				target_member = path[0]
+			}
+			append(
+				&c.member_aliases,
+				Member_Alias_Data {
+					owner_symbol = class_symbol,
+					alias_name = canonical_name(member.name, c.allocator),
+					target_interface_name = canonical_name(iface, c.allocator),
+					target_member_name = canonical_name(target_member, c.allocator),
+					range = stmt.range,
+				},
+			)
+		}
+	case:
+	}
+}
+
+declare_signature_scope_params :: proc(
+	c: ^Collector,
+	parent_scope: Scope_Id,
+	range: tokenizer.Range,
+	parameters: []Class_Member_Parameter_Data,
+) {
+	if len(parameters) == 0 {
+		return
+	}
+	previous := c.current_scope
+	c.current_scope = parent_scope
+	sig_scope := push_scope(c, .Signature, range)
+	for param in parameters {
+		has_type := .Has_Declared_Type in param.flags
+		_ = declare_collected_symbol(
+			c,
+			sig_scope,
+			param.name,
+			.Parameter,
+			param.range,
+			INVALID_STRUCTURE_ID,
+			param.declared_type,
+			has_type,
+			param.type_clause_display,
+		)
+	}
+	c.current_scope = sig_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+method_parameters_from_signatures :: proc(
+	c: ^Collector,
+	signatures: []ast.Oop_Signature_Clause,
+) -> [dynamic]Class_Member_Parameter_Data {
+	parameters := make([dynamic]Class_Member_Parameter_Data, 0, 2, c.allocator)
+	for sig in signatures {
+		section, ok := method_section_from_oop(sig.kind)
+		if !ok {
+			continue
+		}
+		for value in sig.values {
+			parse_class_parameter_text(
+				c,
+				&parameters,
+				expr_display(c, value),
+				value.range,
+				section,
+			)
+		}
+	}
+	return parameters
+}
+
+event_parameters_from_signatures :: proc(
+	c: ^Collector,
+	signatures: []ast.Oop_Signature_Clause,
+) -> [dynamic]Class_Member_Parameter_Data {
+	parameters := make([dynamic]Class_Member_Parameter_Data, 0, 2, c.allocator)
+	for sig in signatures {
+		if sig.kind != .Exporting {
+			continue
+		}
+		for value in sig.values {
+			parse_class_parameter_text(
+				c,
+				&parameters,
+				expr_display(c, value),
+				value.range,
+				.Exporting,
+			)
+		}
+	}
+	return parameters
+}
+
+method_section_from_oop :: proc(kind: ast.Oop_Signature_Kind) -> (Method_Parameter_Section, bool) {
+	#partial switch kind {
+	case .Importing:
+		return .Importing, true
+	case .Exporting:
+		return .Exporting, true
+	case .Changing:
+		return .Changing, true
+	case .Returning:
+		return .Returning, true
+	}
+	return .Importing, false
+}
+
+Header_Token :: struct {
+	text:  string,
+	range: tokenizer.Range,
+	kind:  tokenizer.Token_Kind,
+}
+
+header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header_Token {
+	result := tokenizer.tokenize(text, c.allocator)
+	tokens := make([dynamic]Header_Token, 0, len(result.tokens), c.allocator)
+	for tok in result.tokens {
+		if tok.kind == .Eof {
+			continue
+		}
+		append(
+			&tokens,
+			Header_Token {
+				text = tokenizer.token_lexeme(tok, text),
+				range = tokenizer.text_range(base + tok.range.start, base + tok.range.end),
+				kind = tok.kind,
+			},
+		)
+	}
+	return tokens
+}
+
+parse_class_parameter_text :: proc(
+	c: ^Collector,
+	out: ^[dynamic]Class_Member_Parameter_Data,
+	text: string,
+	range: tokenizer.Range,
+	section: Method_Parameter_Section,
+) {
+	tokens := header_tokens(c, text, range.start)
+	i := 0
+	for i < len(tokens) {
+		name, name_range, next, ok := consume_param_name(tokens[:], i)
+		if !ok {
+			i += 1
+			continue
+		}
+		param := Class_Member_Parameter_Data {
+			section = section,
+			name    = canonical_name(name, c.allocator),
+			range   = name_range,
+		}
+		i = next
+		if i < len(tokens) && (token_eq(tokens[i], "TYPE") || token_eq(tokens[i], "LIKE")) {
+			namespace := Namespace.Type if token_eq(tokens[i], "TYPE") else Namespace.Value
+			i += 1
+			type_start := i
+			for i < len(tokens) &&
+			    !token_eq(tokens[i], "OPTIONAL") &&
+			    !token_eq(tokens[i], "DEFAULT") &&
+			    !token_eq(tokens[i], "PREFERRED") {
+				i += 1
+			}
+			display := token_text_span(c, text, tokens[:], type_start, i, range.start)
+			type_ref, has_type := type_ref_from_text(c, display, namespace)
+			if has_type {
+				param.declared_type = type_ref
+				param.flags += {.Has_Declared_Type}
+			}
+			param.type_clause_display = strings.clone(display, c.allocator)
+		}
+		for i < len(tokens) &&
+		    (token_eq(tokens[i], "OPTIONAL") ||
+				    token_eq(tokens[i], "DEFAULT") ||
+				    token_eq(tokens[i], "PREFERRED")) {
+			if token_eq(tokens[i], "OPTIONAL") {
+				param.flags += {.Is_Optional}
+			}
+			i += 1
+		}
+		append(out, param)
+	}
+}
+
+consume_param_name :: proc(
+	tokens: []Header_Token,
+	start: int,
+) -> (
+	string,
+	tokenizer.Range,
+	int,
+	bool,
+) {
+	i := start
+	if i < len(tokens) && token_eq(tokens[i], "!") {
+		i += 1
+	}
+	if i < len(tokens) && (token_eq(tokens[i], "VALUE") || token_eq(tokens[i], "REFERENCE")) {
+		i += 1
+		if i < len(tokens) && tokens[i].text == "(" {
+			i += 1
+		}
+		if i >= len(tokens) {
+			return "", tokenizer.Range{}, i, false
+		}
+		name := strip_bang(tokens[i].text)
+		name_range := tokens[i].range
+		i += 1
+		if i < len(tokens) && tokens[i].text == ")" {
+			i += 1
+		}
+		return name, name_range, i, true
+	}
+	if i >= len(tokens) || !token_ident_like(tokens[i]) {
+		return "", tokenizer.Range{}, i, false
+	}
+	name := strip_bang(tokens[i].text)
+	return name, tokens[i].range, i + 1, name != ""
+}
+
+token_text_span :: proc(
+	c: ^Collector,
+	text: string,
+	tokens: []Header_Token,
+	start, end: int,
+	base: int,
+) -> string {
+	if start >= end || start >= len(tokens) {
+		return ""
+	}
+	last := end - 1
+	if last >= len(tokens) {
+		last = len(tokens) - 1
+	}
+	lo := tokens[start].range.start - base
+	hi := tokens[last].range.end - base
+	if lo < 0 || hi > len(text) || lo >= hi {
+		return ""
+	}
+	return strings.trim_space(text[lo:hi])
+}
+
+type_ref_from_text :: proc(
+	c: ^Collector,
+	display: string,
+	namespace: Namespace,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	text := strings.trim_space(clean_type_ref_text(c, display))
+	if text == "" {
+		return {}, false
+	}
+	is_ref := false
+	if starts_with_word(text, "REF TO") {
+		is_ref = true
+		text = strings.trim_space(text[6:])
+	} else if starts_with_word(text, "LINE OF") {
+		text = strings.trim_space(text[7:])
+	} else {
+		prefixes := [?]string {
+			"STANDARD TABLE OF",
+			"SORTED TABLE OF",
+			"HASHED TABLE OF",
+			"TABLE OF",
+			"RANGE OF",
+		}
+		for prefix in prefixes {
+			if starts_with_word(text, prefix) {
+				text = strings.trim_space(text[len(prefix):])
+				break
+			}
+		}
+	}
+	base, path := split_type_path(c, text)
+	if base == "" {
+		return {}, false
+	}
+	return Field_Type_Ref_Data {
+			namespace = namespace,
+			is_ref = is_ref,
+			base_name = canonical_name(base, c.allocator),
+			field_path = path,
+		},
+		true
+}
+
+clean_type_ref_text :: proc(c: ^Collector, text: string) -> string {
+	tokens := header_tokens(c, text, 0)
+	cut := len(text)
+	for i in 0 ..< len(tokens) {
+		if token_eq(tokens[i], "OCCURS") ||
+		   token_eq(tokens[i], "VALUE") ||
+		   token_eq(tokens[i], "DEFAULT") ||
+		   token_eq(tokens[i], "LENGTH") ||
+		   token_eq(tokens[i], "DECIMALS") ||
+		   token_eq(tokens[i], "READ-ONLY") {
+			cut = tokens[i].range.start
+			break
+		}
+		if token_eq(tokens[i], "WITH") &&
+		   i + 1 < len(tokens) &&
+		   token_eq(tokens[i + 1], "HEADER") {
+			cut = tokens[i].range.start
+			break
+		}
+	}
+	if cut <= 0 {
+		return ""
+	}
+	return strings.trim_space(text[:cut])
+}
+
+parse_form_parameters :: proc(
+	c: ^Collector,
+	text: string,
+	range: tokenizer.Range,
+	scope: Scope_Id,
+) -> [dynamic]Form_Parameter_Data {
+	tokens := header_tokens(c, text, range.start)
+	parameters := make([dynamic]Form_Parameter_Data, 0, 2, c.allocator)
+	i := skip_header_name(tokens[:], "FORM")
+	section := Form_Parameter_Section.Using
+	for i < len(tokens) {
+		if token_eq(tokens[i], "TABLES") ||
+		   token_eq(tokens[i], "USING") ||
+		   token_eq(tokens[i], "CHANGING") {
+			if token_eq(tokens[i], "TABLES") {section = .Tables}
+			if token_eq(tokens[i], "USING") {section = .Using}
+			if token_eq(tokens[i], "CHANGING") {section = .Changing}
+			i += 1
+			continue
+		}
+		name, name_range, next, ok := consume_param_name(tokens[:], i)
+		if !ok {
+			i += 1
+			continue
+		}
+		i = next
+		declared_type := Field_Type_Ref_Data{}
+		has_type := false
+		display := ""
+		if i < len(tokens) &&
+		   (token_eq(tokens[i], "TYPE") ||
+				   token_eq(tokens[i], "LIKE") ||
+				   token_eq(tokens[i], "STRUCTURE")) {
+			namespace :=
+				Namespace.Type if !token_eq(tokens[i], "LIKE") && !token_eq(tokens[i], "STRUCTURE") else Namespace.Value
+			i += 1
+			start := i
+			for i < len(tokens) &&
+			    !token_eq(tokens[i], "TABLES") &&
+			    !token_eq(tokens[i], "USING") &&
+			    !token_eq(tokens[i], "CHANGING") {
+				i += 1
+			}
+			display = token_text_span(c, text, tokens[:], start, i, range.start)
+			declared_type, has_type = type_ref_from_text(c, display, namespace)
+			if section == .Tables &&
+			   display != "" &&
+			   !ascii_contains_ignore_case(display, "TABLE OF") {
+				display = concat2(c, "STANDARD TABLE OF ", display)
+			}
+		}
+		structure_id := INVALID_STRUCTURE_ID
+		if has_type {
+			if resolved, resolved_ok := resolve_field_type_ref(c, scope, declared_type);
+			   resolved_ok {
+				structure_id = resolved
+			}
+			add_type_reference(c, scope, declared_type, name_range)
+		}
+		symbol_id := declare_collected_symbol(
+			c,
+			scope,
+			name,
+			.Parameter,
+			name_range,
+			structure_id,
+			declared_type,
+			has_type,
+			display,
+		)
+		append(
+			&parameters,
+			Form_Parameter_Data{symbol = symbol_id, section = section, passing = .Direct},
+		)
+	}
+	return parameters
+}
+
+parse_function_parameters :: proc(
+	c: ^Collector,
+	text: string,
+	range: tokenizer.Range,
+	scope: Scope_Id,
+) -> (
+	[dynamic]Function_Module_Parameter_Data,
+	[dynamic]Function_Module_Exception_Data,
+) {
+	tokens := header_tokens(c, text, range.start)
+	parameters := make([dynamic]Function_Module_Parameter_Data, 0, 2, c.allocator)
+	exceptions := make([dynamic]Function_Module_Exception_Data, 0, 1, c.allocator)
+	i := skip_header_name(tokens[:], "FUNCTION")
+	section := Function_Module_Parameter_Section.Importing
+	in_exceptions := false
+	for i < len(tokens) {
+		if function_section_token(tokens[i], &section, &in_exceptions) {
+			i += 1
+			continue
+		}
+		name, name_range, next, ok := consume_param_name(tokens[:], i)
+		if !ok {
+			i += 1
+			continue
+		}
+		i = next
+		if in_exceptions {
+			append(
+				&exceptions,
+				Function_Module_Exception_Data {
+					name = canonical_name(name, c.allocator),
+					range = name_range,
+				},
+			)
+			continue
+		}
+		param := Function_Module_Parameter_Data {
+			section = section,
+			name    = canonical_name(name, c.allocator),
+			range   = name_range,
+		}
+		if i < len(tokens) &&
+		   (token_eq(tokens[i], "TYPE") ||
+				   token_eq(tokens[i], "LIKE") ||
+				   token_eq(tokens[i], "STRUCTURE")) {
+			namespace :=
+				Namespace.Type if !token_eq(tokens[i], "LIKE") && !token_eq(tokens[i], "STRUCTURE") else Namespace.Value
+			i += 1
+			start := i
+			for i < len(tokens) &&
+			    !function_section_peek(tokens[i]) &&
+			    !token_eq(tokens[i], "OPTIONAL") &&
+			    !token_eq(tokens[i], "DEFAULT") {
+				i += 1
+			}
+			display := token_text_span(c, text, tokens[:], start, i, range.start)
+			param.type_clause_display = strings.clone(display, c.allocator)
+			if type_ref, has_type := type_ref_from_text(c, display, namespace); has_type {
+				param.declared_type = type_ref
+				param.flags += {.Has_Declared_Type}
+				add_type_reference(c, scope, type_ref, param.range)
+			}
+		}
+		for i < len(tokens) &&
+		    (token_eq(tokens[i], "OPTIONAL") || token_eq(tokens[i], "DEFAULT")) {
+			if token_eq(tokens[i], "OPTIONAL") {param.flags += {.Is_Optional}}
+			if token_eq(tokens[i], "DEFAULT") {param.flags += {.Has_Default_Value}}
+			i += 1
+		}
+		_ = declare_collected_symbol(
+			c,
+			scope,
+			param.name,
+			.Parameter,
+			param.range,
+			INVALID_STRUCTURE_ID,
+			param.declared_type,
+			.Has_Declared_Type in param.flags,
+			param.type_clause_display,
+		)
+		append(&parameters, param)
+	}
+	return parameters, exceptions
+}
+
+function_section_token :: proc(
+	token: Header_Token,
+	section: ^Function_Module_Parameter_Section,
+	in_exceptions: ^bool,
+) -> bool {
+	if token_eq(token, "IMPORTING") {section^ = .Importing; in_exceptions^ = false; return true}
+	if token_eq(token, "EXPORTING") {section^ = .Exporting; in_exceptions^ = false; return true}
+	if token_eq(token, "CHANGING") {section^ = .Changing; in_exceptions^ = false; return true}
+	if token_eq(token, "TABLES") {section^ = .Tables; in_exceptions^ = false; return true}
+	if token_eq(token, "EXCEPTIONS") {in_exceptions^ = true; return true}
+	return false
+}
+
+function_section_peek :: proc(token: Header_Token) -> bool {
+	return(
+		token_eq(token, "IMPORTING") ||
+		token_eq(token, "EXPORTING") ||
+		token_eq(token, "CHANGING") ||
+		token_eq(token, "TABLES") ||
+		token_eq(token, "EXCEPTIONS") \
+	)
+}
+
+skip_header_name :: proc(tokens: []Header_Token, keyword: string) -> int {
+	i := 0
+	if i < len(tokens) && token_eq(tokens[i], keyword) {
+		i += 1
+	}
+	if i < len(tokens) {
+		i += 1
+	}
+	return i
+}
+
+token_eq :: proc(token: Header_Token, expected: string) -> bool {
+	return ascii_equal_ignore_case(token.text, expected)
+}
+
+token_ident_like :: proc(token: Header_Token) -> bool {
+	return token.kind == .Ident || token.kind == .Number
+}
+
+strip_bang :: proc(text: string) -> string {
+	if len(text) > 0 && text[0] == '!' {
+		return text[1:]
+	}
+	return text
+}
+
+starts_with_word :: proc(text, prefix: string) -> bool {
+	if len(prefix) > len(text) {
+		return false
+	}
+	return ascii_equal_ignore_case(text[:len(prefix)], prefix)
+}
+
+header_has_keyword :: proc(c: ^Collector, text, keyword: string) -> bool {
+	tokens := header_tokens(c, text, 0)
+	for token in tokens {
+		if token_eq(token, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+header_value_after_phrase :: proc(
+	c: ^Collector,
+	text: string,
+	base: int,
+	phrase: []string,
+) -> string {
+	tokens := header_tokens(c, text, base)
+	if len(phrase) == 0 {
+		return ""
+	}
+	for i in 0 ..< len(tokens) {
+		if i + len(phrase) >= len(tokens) {
+			break
+		}
+		matches := true
+		for j in 0 ..< len(phrase) {
+			if !token_eq(tokens[i + j], phrase[j]) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return canonical_name(tokens[i + len(phrase)].text, c.allocator)
+		}
+	}
+	return ""
+}
+
+source_text :: proc(c: ^Collector, range: tokenizer.Range) -> string {
+	if range.start < 0 || range.end > len(c.source) || range.start >= range.end {
+		return ""
+	}
+	return strings.clone(c.source[range.start:range.end], c.allocator)
+}
+
+enclosing_owner :: proc(c: ^Collector, scope: Scope_Id, kind: Scope_Kind) -> (Symbol_Id, bool) {
+	current := scope
+	for current != INVALID_SCOPE_ID {
+		s := c.scopes[scope_id_index(current)]
+		if s.kind == kind && s.owner != INVALID_SYMBOL_ID {
+			return s.owner, true
+		}
+		current = s.parent
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+method_member_name :: proc(name: string) -> string {
+	i := len(name) - 1
+	for i >= 0 {
+		if name[i] == '~' {
+			return name[i + 1:]
+		}
+		i -= 1
+	}
+	return name
+}
+
+class_member :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> ^Class_Member_Data {
+	for &member in c.class_members {
+		if member.class_symbol == class_symbol && ascii_equal_ignore_case(member.name, name) {
+			return &member
+		}
+	}
+	return nil
+}
+
+note_method_implementation :: proc(
+	c: ^Collector,
+	class_symbol: Symbol_Id,
+	name: string,
+	range: tokenizer.Range,
+) {
+	member := class_member(c, class_symbol, name)
+	if member == nil {
+		return
+	}
+	member.implementation_range = range
+	member.implementation = Class_Member_Implementation_Data {
+		unit  = c.unit_id,
+		range = range,
+	}
+	member.flags += {.Has_Implementation_Range, .Has_Implementation}
+}
+
+declare_method_scope_params :: proc(
+	c: ^Collector,
+	class_symbol: Symbol_Id,
+	name: string,
+	method_scope: Scope_Id,
+) {
+	member := class_member(c, class_symbol, name)
+	if member == nil {
+		return
+	}
+	for param in member.parameters {
+		has_type := .Has_Declared_Type in param.flags
+		_ = declare_collected_symbol(
+			c,
+			method_scope,
+			param.name,
+			.Parameter,
+			param.range,
+			INVALID_STRUCTURE_ID,
+			param.declared_type,
+			has_type,
+			param.type_clause_display,
+		)
+	}
+}
+
+collect_amdp_using_refs :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id) {
+	if !stmt.is_amdp {
+		return
+	}
+	tokens := header_tokens(c, stmt.header_text, stmt.header_range.start)
+	using_index := -1
+	for i in 0 ..< len(tokens) {
+		if token_eq(tokens[i], "USING") {
+			using_index = i
+			break
+		}
+	}
+	if using_index < 0 {
+		return
+	}
+	for i in using_index + 1 ..< len(tokens) {
+		if token_ident_like(tokens[i]) {
+			add_reference(c, scope, tokens[i].text, .Type, .Type_Ref, tokens[i].range)
+		}
+	}
+}
+
+expr_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
+	if expr == nil {
+		return "", tokenizer.Range{}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Literal_Expr:
+		return n.value, n.range, n.value != ""
+	}
+	return "", tokenizer.Range{}, false
+}
+
+collect_provided_names :: proc(c: ^Collector) {
+	for s in c.symbols {
+		if s.scope == c.root_scope &&
+		   !symbol_kind_is_builtin(s.kind) &&
+		   (s.kind == .Class || s.kind == .Interface || s.kind == .Report || s.kind == .Type_Def) {
+			add_provided_name(c, s.name)
+		}
+	}
+	stem := uri_file_stem(c.uri)
+	if stem != "" {
+		add_provided_name(c, stem)
+	}
+}
+
+add_provided_name :: proc(c: ^Collector, name: string) {
+	canonical := canonical_name(name, c.allocator)
+	for existing in c.provided_names {
+		if existing == canonical {
+			return
+		}
+	}
+	append(&c.provided_names, canonical)
+}
+
+uri_file_stem :: proc(uri: string) -> string {
+	start := 0
+	for i in 0 ..< len(uri) {
+		if uri[i] == '/' || uri[i] == '\\' {
+			start = i + 1
+		}
+	}
+	end := len(uri)
+	for i in start ..< len(uri) {
+		if uri[i] == '.' {
+			end = i
+		}
+	}
+	if end <= start {
+		return ""
+	}
+	return uri[start:end]
+}
+
+canonical_name :: #force_inline proc(name: string, allocator: mem.Allocator) -> string {
+	return strings.to_lower(name, allocator)
+}
+
+ascii_contains_ignore_case :: proc(haystack, needle: string) -> bool {
+	if needle == "" {
+		return true
+	}
+	if len(needle) > len(haystack) {
+		return false
+	}
+	for i in 0 ..= len(haystack) - len(needle) {
+		if ascii_equal_ignore_case(haystack[i:i + len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}

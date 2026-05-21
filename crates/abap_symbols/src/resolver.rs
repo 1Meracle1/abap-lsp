@@ -655,7 +655,7 @@ fn resolve_project_cross_unit_with_filter(
                 per_unit_root_index[unit.unit_id.as_usize()]
                     .entry(namespace, Arc::clone(&symbol.name))
                     .or_insert(symbol.id);
-                if root_symbol_is_visible_across_units_by_default(symbol) {
+                if root_symbol_is_visible_across_units_by_default(unit, symbol) {
                     root_index
                         .entry(namespace, Arc::clone(&symbol.name))
                         .or_default()
@@ -1051,23 +1051,35 @@ fn build_class_scope_index(unit: &UnitAnalysis) -> ClassScopeIndex {
     index
 }
 
-fn root_symbol_is_visible_across_units_by_default(symbol: &SymbolData) -> bool {
+fn root_symbol_is_visible_across_units_by_default(
+    unit: &UnitAnalysis,
+    symbol: &SymbolData,
+) -> bool {
     match symbol.kind {
-        SymbolKind::Class | SymbolKind::Interface | SymbolKind::TypeDef => {
-            !name_looks_program_local(symbol.name.as_ref())
+        SymbolKind::Class | SymbolKind::Interface => {
+            uri_stem_matches_name(&unit.uri, &symbol.name) || symbol.name.as_ref().starts_with('/')
         }
+        SymbolKind::TypeDef => uri_stem_matches_name(&unit.uri, &symbol.name),
         SymbolKind::Module | SymbolKind::Report => true,
         _ => false,
     }
 }
 
-fn name_looks_program_local(name: &str) -> bool {
-    let lower = name.trim().to_ascii_lowercase();
-    lower.starts_with("lcl_")
-        || lower.starts_with("lif_")
-        || lower.starts_with("lty_")
-        || lower.starts_with("ty_")
-        || lower.starts_with("tty_")
+fn uri_stem_matches_name(uri: &str, name: &str) -> bool {
+    let start = uri.rfind('/').max(uri.rfind('\\')).map_or(0, |idx| idx + 1);
+    let rest = &uri[start..];
+    let end = rest.find('.').unwrap_or(rest.len());
+    let stem = &rest[..end];
+    if stem.eq_ignore_ascii_case(name) {
+        return true;
+    }
+    name.rsplit('/')
+        .find(|component| !component.is_empty())
+        .is_some_and(|component| {
+            component != name
+                && stem.len() >= component.len()
+                && stem[stem.len() - component.len()..].eq_ignore_ascii_case(component)
+        })
 }
 
 fn include_visible_units_for_units(units: &[UnitAnalysis]) -> Vec<Vec<UnitId>> {

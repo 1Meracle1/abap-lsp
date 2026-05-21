@@ -3,7 +3,6 @@ package abap_frontend_parser
 import "../ast"
 import "../tokenizer"
 
-import "base:runtime"
 import "core:strings"
 import "core:testing"
 
@@ -46,6 +45,7 @@ Node_Counts :: struct {
 	class_data:    int,
 	type_pools:    int,
 	function_pool: int,
+	include_stmt:  int,
 	assign:        int,
 	downcast:      int,
 	clear:         int,
@@ -117,17 +117,16 @@ Node_Counts :: struct {
 
 @(test)
 comments_attach_to_statement_nodes_for_printing :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `" keep this comment
 DATA lv TYPE i. " inline comment`
-	parsed := parse(source, "comments.abap", alloc)
+	parsed := parse(source, "comments.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0]
 	testing.expect_value(t, len(stmt.leading_comments), 1)
 	testing.expect_value(t, stmt.leading_comments[0], `" keep this comment`)
 	testing.expect_value(t, stmt.trailing_comment, `" inline comment`)
-	testing.expect_value(t, ast.print_node(parsed.root, alloc), source)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
 count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
@@ -212,6 +211,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.type_pools += 1
 	case ^ast.Function_Pool_Decl:
 		counts.function_pool += 1
+	case ^ast.Include_Stmt:
+		counts.include_stmt += 1
 	case ^ast.Assign_Stmt:
 		counts.assign += 1
 	case ^ast.Downcast_Assign_Stmt:
@@ -375,8 +376,7 @@ expect_no_error_contains :: proc(t: ^testing.T, parsed: Parsed_File, needle: str
 }
 
 test_parser :: proc(source: string) -> Parser {
-	alloc := runtime.heap_allocator()
-	return init_parser(source, "test.abap", alloc)
+	return init_parser(source, "test.abap", context.allocator)
 }
 
 @(test)
@@ -404,8 +404,7 @@ expect_token_match_advances :: proc(t: ^testing.T) {
 
 @(test)
 top_level_loop_makes_progress_on_unexpected_tokens :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
-	parsed := parse("@ @ .", "test.abap", alloc)
+	parsed := parse("@ @ .", "test.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.root.stmts), 3)
@@ -415,8 +414,7 @@ top_level_loop_makes_progress_on_unexpected_tokens :: proc(t: ^testing.T) {
 
 @(test)
 missing_period_invalidates_recognized_statement :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
-	parsed := parse("DATA lv", "test.abap", alloc)
+	parsed := parse("DATA lv", "test.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.root.stmts), 1)
@@ -429,9 +427,8 @@ missing_period_invalidates_recognized_statement :: proc(t: ^testing.T) {
 
 @(test)
 missing_period_does_not_swallow_following_simple_statement :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	parsed := parse(`DATA first
-DATA second.`, "test.abap", alloc)
+DATA second.`, "test.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.root.stmts), 2)
@@ -459,22 +456,21 @@ ENDIF.`)
 
 @(test)
 include_fragment_policy_suppresses_only_block_boundary_errors :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
-	strict_open := parse("IF lv_ok = abap_true.\n  lv_value = 1.", "open.abap", alloc)
+	strict_open := parse("IF lv_ok = abap_true.\n  lv_value = 1.", "open.abap", context.allocator)
 	include_open := parse_with_diagnostic_policy(
 		"IF lv_ok = abap_true.\n  lv_value = 1.",
 		"open.abap",
-		alloc,
+		context.allocator,
 		.Include_Fragment,
 	)
-	strict_close := parse("ENDIF.", "close.abap", alloc)
+	strict_close := parse("ENDIF.", "close.abap", context.allocator)
 	include_close := parse_with_diagnostic_policy(
 		"ENDIF.",
 		"close.abap",
-		alloc,
+		context.allocator,
 		.Include_Fragment,
 	)
-	malformed := parse_with_diagnostic_policy("IF .", "bad.abap", alloc, .Include_Fragment)
+	malformed := parse_with_diagnostic_policy("IF .", "bad.abap", context.allocator, .Include_Fragment)
 
 	expect_error_contains(t, strict_open, "expected ENDIF")
 	testing.expect_value(t, len(include_open.errors), 0)
@@ -485,11 +481,10 @@ include_fragment_policy_suppresses_only_block_boundary_errors :: proc(t: ^testin
 
 @(test)
 stray_boundaries_recover_to_next_statement :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	parsed := parse(
 		"ENDIF.\nDATA lv TYPE i.\nCATCH cx_root.\nDATA lv_other TYPE i.",
 		"stray.abap",
-		alloc,
+		context.allocator,
 	)
 	counts := count_nodes(parsed.root)
 
@@ -501,8 +496,7 @@ stray_boundaries_recover_to_next_statement :: proc(t: ^testing.T) {
 
 @(test)
 unknown_significant_tokens_progress_one_at_a_time :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
-	parsed := parse(") ] DATA lv_after TYPE i.", "unknown.abap", alloc)
+	parsed := parse(") ] DATA lv_after TYPE i.", "unknown.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, counts.invalid_stmt, 2)

@@ -2,8 +2,25 @@
 setlocal
 
 set "ODIN_EXE=D:\dev\odin\toolchain\odin-windows-amd64-dev-2026-05\odin.exe"
-set "ODIN_FLAGS=-default-to-panic-allocator -vet -warnings-as-errors"
+set "ODIN_FLAGS=-vet -warnings-as-errors"
+set "TEST_FLAGS="
 set "ROOT=%~dp0"
+
+if "%~1"=="" (
+    set "TEST_FLAGS=-define:ODIN_TEST_LOG_LEVEL=error"
+    goto args_done
+)
+
+:parse_args
+if "%~1"=="" goto args_done
+if /I "%~1"=="--no-leak-warnings" (
+    set "TEST_FLAGS=%TEST_FLAGS% -define:ODIN_TEST_LOG_LEVEL=error"
+) else (
+    set "TEST_FLAGS=%TEST_FLAGS% %1"
+)
+shift
+goto parse_args
+:args_done
 
 if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 
@@ -11,7 +28,9 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\runtime" -no-entry-point %ODIN_FLAGS% || exit /b
-"%ODIN_EXE%" test "%ROOT%src\tokenizer" -vet -warnings-as-errors %* || exit /b
-"%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %* || exit /b
-"%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %* || exit /b
-"%ODIN_EXE%" test "%ROOT%src\runtime" -vet -warnings-as-errors %*
+"%ODIN_EXE%" check "%ROOT%src\semantic" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\tokenizer" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\runtime" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\semantic" -vet -warnings-as-errors %TEST_FLAGS%

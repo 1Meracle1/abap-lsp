@@ -218,6 +218,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		}
 	case ^Type_Pools_Decl:
 	case ^Function_Pool_Decl:
+	case ^Include_Stmt:
 	case ^Assign_Stmt:
 		walk(next, n.lhs)
 		walk(next, n.rhs)

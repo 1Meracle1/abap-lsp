@@ -6,6 +6,14 @@ import "../tokenizer"
 import "core:mem"
 import "core:strings"
 
+program_include_stmt_starts :: proc(p: ^Parser) -> bool {
+	return(
+		at_keyword(p, "INCLUDE") &&
+		!at_keyword_index(p, p.index + 1, "TYPE") &&
+		!at_keyword_index(p, p.index + 1, "STRUCTURE") \
+	)
+}
+
 data_access_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
 		at_keyword_phrase(p, "EXEC SQL") ||
@@ -86,6 +94,38 @@ parse_data_access_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_update_stmt(p)
 	}
 	return parse_delete_stmt(p)
+}
+
+parse_include_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "INCLUDE")
+	chained := allow_token(p, .Colon)
+	stmt := ast.new(ast.Include_Stmt, start.range, p.allocator)
+	stmt.names = make([dynamic]ast.Include_Name, 0, 2, p.allocator)
+
+	for {
+		name := current_token(p)
+		if name.kind != .Ident {
+			error_current(p, "syntax error: expected include name")
+			return nil
+		}
+		bump_token(p)
+		append(&stmt.names, ast.Include_Name{tokenizer.token_lexeme(name, p.source), name.range})
+		if !chained || !allow_token(p, .Comma) {
+			break
+		}
+	}
+
+	if allow_keyword(p, "IF") {
+		_ = expect_keyword_message(p, "FOUND", "syntax error: expected FOUND after INCLUDE IF")
+		stmt.if_found = true
+	}
+
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after INCLUDE")
+	if period.kind != .Period {
+		return nil
+	}
+	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
+	return stmt
 }
 
 data_stmt_done :: proc(p: ^Parser, body_start: int) -> bool {

@@ -717,6 +717,18 @@ Function_Pool_Decl :: struct {
 	message_id:  string,
 }
 
+Include_Name :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
+// ABAP syntax: program include statement, for example `INCLUDE zinc.` or `INCLUDE: ztop, zf01.`
+Include_Stmt :: struct {
+	using node: Stmt,
+	names:      [dynamic]Include_Name,
+	if_found:   bool,
+}
+
 // ABAP syntax: legacy parenthesized length after a declaration name, for example `c(14)` or `p_pass(30)`.
 Paren_Length_Clause :: struct {
 	expr: ^Expr,
@@ -2048,6 +2060,7 @@ Any_Node :: union {
 	^Class_Data_Decl,
 	^Type_Pools_Decl,
 	^Function_Pool_Decl,
+	^Include_Stmt,
 	^Assign_Stmt,
 	^Downcast_Assign_Stmt,
 	^Expr_Stmt,
@@ -2195,6 +2208,7 @@ Any_Stmt :: union {
 	^Class_Data_Decl,
 	^Type_Pools_Decl,
 	^Function_Pool_Decl,
+	^Include_Stmt,
 	^Clear_Stmt,
 	^Refresh_Stmt,
 	^Free_Stmt,

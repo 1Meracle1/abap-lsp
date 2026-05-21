@@ -2,12 +2,10 @@ package abap_frontend_parser
 
 import "../ast"
 
-import "base:runtime"
 import "core:testing"
 
 @(test)
 statement_batch_declarations :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `DATA lv TYPE i.
 DATA(lv_inline) = 1.
 TYPES ty_i TYPE i.
@@ -20,7 +18,7 @@ PARAMETERS p_count TYPE i DEFAULT 1.
 SELECT-OPTIONS s_matnr FOR mara-matnr.
 CONTROLS tc TYPE TABLEVIEW USING SCREEN 100.
 CLASS-DATA gv TYPE i.`
-	parsed := parse(source, "decls.abap", alloc)
+	parsed := parse(source, "decls.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -40,7 +38,6 @@ CLASS-DATA gv TYPE i.`
 
 @(test)
 declaration_nodes_keep_concrete_clause_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `TYPES ty_i TYPE i.
 CONSTANTS c_i TYPE i VALUE 1.
 RANGES r_matnr FOR mara-matnr.
@@ -48,7 +45,7 @@ PARAMETERS p_count TYPE i DEFAULT 1.
 SELECT-OPTIONS s_matnr FOR mara-matnr.
 CONTROLS tc TYPE TABLEVIEW USING SCREEN 100.
 CLASS-DATA gv TYPE i VALUE 0.`
-	parsed := parse(source, "decl_fields.abap", alloc)
+	parsed := parse(source, "decl_fields.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
@@ -74,14 +71,13 @@ CLASS-DATA gv TYPE i VALUE 0.`
 
 @(test)
 declaration_additions_keep_concrete_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CONSTANTS lcv_max(14) TYPE p DECIMALS 7 VALUE '0.9999999'.
 FIELD-SYMBOLS <line> LIKE LINE OF itab.
 FIELD-SYMBOLS <lt_records> TYPE STANDARD TABLE.
 PARAMETERS p_flag AS CHECKBOX DEFAULT 'X' MODIF ID md.
 PARAMETERS p_mode RADIOBUTTON GROUP g01 USER-COMMAND upd LOWER CASE OBLIGATORY.
 SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' TO 'Z' OPTION BT SIGN I MATCHCODE OBJECT /sttp/h_loc_gln MEMORY ID gln MODIF ID grp.`
-	parsed := parse(source, "decl_additions.abap", alloc)
+	parsed := parse(source, "decl_additions.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	constants := parsed.root.stmts[0].derived_stmt.(^ast.Constants_Decl)
@@ -115,10 +111,9 @@ SELECT-OPTIONS s_matnr FOR mara-matnr NO-DISPLAY VISIBLE LENGTH 20 DEFAULT 'A' T
 
 @(test)
 pool_declarations_keep_concrete_nodes :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `TYPE-POOLS: cxtab, vimty.
 FUNCTION-POOL zfg MESSAGE-ID sv.`
-	parsed := parse(source, "pool_decls.abap", alloc)
+	parsed := parse(source, "pool_decls.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -135,11 +130,10 @@ FUNCTION-POOL zfg MESSAGE-ID sv.`
 
 @(test)
 structured_declaration_entries_keep_kinds :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `TYPES: BEGIN OF ty_outer, INCLUDE TYPE ty_inner AS inner RENAMING WITH SUFFIX _x, field TYPE STANDARD TABLE OF string WITH DEFAULT KEY, END OF ty_outer.
 DATA: BEGIN OF itab OCCURS 10, field(4) TYPE c VALUE 'A', INCLUDE STRUCTURE textpool, END OF itab.
 CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
-	parsed := parse(source, "structured_decls.abap", alloc)
+	parsed := parse(source, "structured_decls.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
@@ -169,12 +163,11 @@ CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
 
 @(test)
 table_and_range_type_references_are_retained :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `TYPES ty_range TYPE RANGE OF sy-datum.
 TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.
 FIELD-SYMBOLS <lt> LIKE SORTED TABLE OF <ls> WITH UNIQUE KEY id key.
 DATA mv_text TYPE string READ-ONLY.`
-	parsed := parse(source, "type_refs.abap", alloc)
+	parsed := parse(source, "type_refs.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	range_decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
@@ -194,6 +187,6 @@ DATA mv_text TYPE string READ-ONLY.`
 	testing.expect_value(t, field_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, len(field_ref.key.components), 2)
 	testing.expect(t, data_decl.read_only)
-	printed := ast.print_node(parsed.root, alloc)
+	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, source)
 }

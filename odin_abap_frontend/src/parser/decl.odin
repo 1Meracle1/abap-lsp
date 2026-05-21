@@ -910,6 +910,10 @@ parse_decl_name :: proc(p: ^Parser) -> (Token, int, bool) {
 		return tok, index, false
 	}
 	bump_token(p)
+	if tok.kind == .Number && current_token(p).kind == .Ident && current_token(p).range.start == tok.range.end {
+		tail := bump_token(p)
+		tok.range.end = tail.range.end
+	}
 	return tok, index, true
 }
 

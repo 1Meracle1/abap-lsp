@@ -2,12 +2,10 @@ package abap_frontend_parser
 
 import "../ast"
 
-import "base:runtime"
 import "core:testing"
 
 @(test)
 statement_batch_assignments_and_simple_statements :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `lv = 1.
 lr ?= lo_ref.
 CLEAR lv.
@@ -23,7 +21,7 @@ SUBMIT zrep.
 MESSAGE 'x' TYPE 'I'.
 WRITE lv.
 lo->run( ).`
-	parsed := parse(source, "simple.abap", alloc)
+	parsed := parse(source, "simple.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -45,9 +43,8 @@ lo->run( ).`
 
 @(test)
 missing_rhs_recovery_preserves_following_statement :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
-	assignment := parse("lv_bad = .\nlv_after = 1.", "missing_rhs.abap", alloc)
-	inline := parse("DATA(lv_bad) = .\nDATA lv_after TYPE i.", "inline_rhs.abap", alloc)
+	assignment := parse("lv_bad = .\nlv_after = 1.", "missing_rhs.abap", context.allocator)
+	inline := parse("DATA(lv_bad) = .\nDATA lv_after TYPE i.", "inline_rhs.abap", context.allocator)
 	assignment_counts := count_nodes(assignment.root)
 	inline_counts := count_nodes(inline.root)
 
@@ -62,11 +59,10 @@ missing_rhs_recovery_preserves_following_statement :: proc(t: ^testing.T) {
 
 @(test)
 method_call_missing_period_leaves_next_statement_token :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	parsed := parse(
 		"lo_prog->add_statement( lo_item )\nDATA lv_after TYPE i.",
 		"method_period.abap",
-		alloc,
+		context.allocator,
 	)
 	counts := count_nodes(parsed.root)
 
@@ -78,7 +74,6 @@ method_call_missing_period_leaves_next_statement_token :: proc(t: ^testing.T) {
 
 @(test)
 simple_resource_and_arithmetic_statements_keep_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLEAR: lv_a WITH 'X', lv_b.
 REFRESH TABLE lt_tab.
 FREE MEMORY ID lv_id.
@@ -89,7 +84,7 @@ SUBTRACT 1 FROM lv_sum.
 MULTIPLY lv_sum BY factor.
 DIVIDE lv_sum BY factor GIVING lv_div.
 COMPUTE EXACT lv_sum = a + b.`
-	parsed := parse(source, "simple_fields.abap", alloc)
+	parsed := parse(source, "simple_fields.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	clear := parsed.root.stmts[0].derived_stmt.(^ast.Clear_Stmt)
@@ -124,7 +119,6 @@ COMPUTE EXACT lv_sum = a + b.`
 
 @(test)
 simple_text_and_flow_statements_keep_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CONCATENATE a b INTO c SEPARATED BY sep RESPECTING BLANKS.
 SPLIT text AT sep INTO left right.
 CONDENSE text NO-GAPS.
@@ -138,7 +132,7 @@ CALL FUNCTION 'Z_FM'.
 SUBMIT zrep WITH p = v AND RETURN.
 MESSAGE '001' TYPE 'I' WITH a b INTO msg.
 WRITE /10(5) text.`
-	parsed := parse(source, "simple_text_flow.abap", alloc)
+	parsed := parse(source, "simple_text_flow.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	concat := parsed.root.stmts[0].derived_stmt.(^ast.Concatenate_Stmt)
@@ -190,7 +184,6 @@ WRITE /10(5) text.`
 
 @(test)
 simple_runtime_flow_and_macro_statements_keep_nodes :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `ASSERT lo_ref IS BOUND.
 CHECK lv_ok = abap_true.
 RETURN.
@@ -226,7 +219,7 @@ DEFINE set_field.
   &1 = &2.
 END-OF-DEFINITION.
 set_field lv_a lv_b.`
-	parsed := parse(source, "simple_more.abap", alloc)
+	parsed := parse(source, "simple_more.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -251,7 +244,6 @@ set_field lv_a lv_b.`
 
 @(test)
 runtime_get_set_variants_keep_detailed_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `GET PARAMETER ID 'ABC' FIELD lv_value.
 SET PARAMETER ID 'ABC' FIELD lv_value.
 GET CURSOR FIELD lv_field LINE lv_line OFFSET lv_off VALUE lv_value.
@@ -260,7 +252,7 @@ SET SCREEN 100.
 SET USER-COMMAND lv_ok.
 SET UPDATE TASK LOCAL.
 GET REFERENCE OF ls_data INTO lr_data.`
-	parsed := parse(source, "runtime_details.abap", alloc)
+	parsed := parse(source, "runtime_details.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -296,7 +288,6 @@ GET REFERENCE OF ls_data INTO lr_data.`
 
 @(test)
 oop_simple_member_statements_do_not_become_method_calls :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
     INTERFACES if_demo.
@@ -306,7 +297,7 @@ oop_simple_member_statements_do_not_become_method_calls :: proc(t: ^testing.T) {
     METHODS run IMPORTING iv_value TYPE i.
     CLASS-METHODS create RETURNING VALUE(ro_obj) TYPE REF TO lcl.
 ENDCLASS.`
-	parsed := parse(source, "oop_simple.abap", alloc)
+	parsed := parse(source, "oop_simple.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -335,7 +326,6 @@ ENDCLASS.`
 
 @(test)
 multiline_simple_blocks_consume_parameter_assignments :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CALL FUNCTION 'Z_FM'
   EXPORTING
     id = 'NA'
@@ -357,7 +347,7 @@ CLASS lcl DEFINITION.
         RETURNING VALUE(ro_obj) TYPE REF TO lcl,
       run IMPORTING iv_value TYPE i.
 ENDCLASS.`
-	parsed := parse(source, "simple_multiline.abap", alloc)
+	parsed := parse(source, "simple_multiline.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -369,9 +359,8 @@ ENDCLASS.`
 
 @(test)
 authority_check_object_keeps_id_fields :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' FIELD lv_tcode.`
-	parsed := parse(source, "authority_check.abap", alloc)
+	parsed := parse(source, "authority_check.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Authority_Check_Stmt)
@@ -379,6 +368,6 @@ authority_check_object_keeps_id_fields :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(stmt.ids), 1)
 	testing.expect(t, stmt.ids[0].id != nil)
 	testing.expect(t, stmt.ids[0].field != nil)
-	printed := ast.print_node(parsed.root, alloc)
+	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, "AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' FIELD lv_tcode.")
 }

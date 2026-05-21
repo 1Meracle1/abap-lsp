@@ -3,10 +3,12 @@ package abap_frontend_runtime
 import "base:intrinsics"
 import "core:mem"
 import "core:nbio"
+import sysinfo "core:sys/info"
 import "core:sync"
 import "core:thread"
 
 INLINE_BYTES_MAX :: 256
+AUTO_WORKER_COUNT :: -1
 DEFAULT_TASK_CAPACITY :: 1024
 DEFAULT_QUEUE_CAPACITY :: 1024
 DEFAULT_DEQUE_CAPACITY :: 1024
@@ -69,8 +71,9 @@ Complete_Error :: enum u8 {
 	Result_Too_Large,
 }
 
-// Options fixes all runtime storage sizes up front. Queue, deque, and task
-// capacities must be powers of two after defaults are applied.
+// Options fixes all runtime storage sizes up front. `worker_count = 0` runs
+// inline; `worker_count = AUTO_WORKER_COUNT` uses available hardware parallelism.
+// Queue, deque, and task capacities must be powers of two after defaults.
 Options :: struct {
 	worker_count:   int,
 	task_capacity:  int,
@@ -206,6 +209,26 @@ current_pool :: proc() -> ^Pool {
 		return nil
 	}
 	return current_worker.pool
+}
+
+// available_parallelism returns the logical processor count reported by the OS,
+// clamped to at least one.
+available_parallelism :: proc() -> int {
+	_, logical, ok := sysinfo.cpu_core_count()
+	if !ok || logical < 1 {
+		return 1
+	}
+	return logical
+}
+
+// recommended_worker_count leaves the caller thread available and falls back to
+// the inline executor when no spare logical core is available.
+recommended_worker_count :: proc() -> int {
+	count := available_parallelism()
+	if count <= 1 {
+		return 0
+	}
+	return count - 1
 }
 
 // pool_start launches worker threads. It is a no-op for inline pools where
@@ -693,6 +716,12 @@ try_wait :: proc(task: Task($T)) -> (T, bool, Wait_Error)
 
 normalize_options :: proc(options: Options) -> Options {
 	result := options
+	limit := recommended_worker_count()
+	if result.worker_count < 0 {
+		result.worker_count = limit
+	} else if result.worker_count > limit {
+		result.worker_count = limit
+	}
 	if result.task_capacity == 0 {
 		result.task_capacity = DEFAULT_TASK_CAPACITY
 	}

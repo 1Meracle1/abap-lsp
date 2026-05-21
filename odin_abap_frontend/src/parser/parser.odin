@@ -176,6 +176,9 @@ parse_stmt_result :: proc(p: ^Parser) -> ^ast.Stmt {
 	if structural_stmt_starts(p) {
 		return parse_structural_stmt(p)
 	}
+	if program_include_stmt_starts(p) {
+		return parse_include_stmt(p)
+	}
 	if at_keyword(p, "INSERT") && at_keyword_index(p, p.index + 1, "DUMMY") {
 		return parse_simple_stmt(p)
 	}
@@ -692,9 +695,183 @@ at_keyword_phrase :: proc(p: ^Parser, keyword: string) -> bool {
 	return keyword_phrase_at(p, p.index, keyword)
 }
 
-keyword_phrase_at :: proc(p: ^Parser, index: int, keyword: string) -> bool {
+keyword_phrase_at :: proc{keyword_phrase_at_static, keyword_phrase_at_dynamic}
+
+keyword_phrase_at_static :: #force_inline proc(p: ^Parser, index: int, $keyword: string) -> bool {
 	if index >= len(p.tokens) {
 		return false
+	}
+	when keyword == "FIELD-SYMBOLS" {
+		return hyphen2_at(p, index, "FIELD", "SYMBOLS")
+	}
+	when keyword == "SELECT-OPTIONS" {
+		return hyphen2_at(p, index, "SELECT", "OPTIONS")
+	}
+	when keyword == "CLASS-DATA" {
+		return hyphen2_at(p, index, "CLASS", "DATA")
+	}
+	when keyword == "TYPE-POOLS" {
+		return hyphen2_at(p, index, "TYPE", "POOLS")
+	}
+	when keyword == "FUNCTION-POOL" {
+		return hyphen2_at(p, index, "FUNCTION", "POOL")
+	}
+	when keyword == "AUTHORITY-CHECK" {
+		return hyphen2_at(p, index, "AUTHORITY", "CHECK")
+	}
+	when keyword == "FIELD-GROUPS" {
+		return hyphen2_at(p, index, "FIELD", "GROUPS")
+	}
+	when keyword == "LOG-POINT" {
+		return hyphen2_at(p, index, "LOG", "POINT")
+	}
+	when keyword == "CLASS-METHODS" {
+		return hyphen2_at(p, index, "CLASS", "METHODS")
+	}
+	when keyword == "CLASS-EVENTS" {
+		return hyphen2_at(p, index, "CLASS", "EVENTS")
+	}
+	when keyword == "NEW-LINE" {
+		return hyphen2_at(p, index, "NEW", "LINE")
+	}
+	when keyword == "NEW-PAGE" {
+		return hyphen2_at(p, index, "NEW", "PAGE")
+	}
+	when keyword == "MESSAGE-ID" {
+		return hyphen2_at(p, index, "MESSAGE", "ID")
+	}
+	when keyword == "READ-ONLY" {
+		return hyphen2_at(p, index, "READ", "ONLY")
+	}
+	when keyword == "BIT-AND" {
+		return hyphen2_at(p, index, "BIT", "AND")
+	}
+	when keyword == "BIT-OR" {
+		return hyphen2_at(p, index, "BIT", "OR")
+	}
+	when keyword == "BIT-XOR" {
+		return hyphen2_at(p, index, "BIT", "XOR")
+	}
+	when keyword == "NON-UNIQUE" {
+		return hyphen2_at(p, index, "NON", "UNIQUE")
+	}
+	when keyword == "NO-DISPLAY" {
+		return hyphen2_at(p, index, "NO", "DISPLAY")
+	}
+	when keyword == "NO-EXTENSION" {
+		return hyphen2_at(p, index, "NO", "EXTENSION")
+	}
+	when keyword == "USER-COMMAND" {
+		return hyphen2_at(p, index, "USER", "COMMAND")
+	}
+	when keyword == "LINE-SIZE" {
+		return hyphen2_at(p, index, "LINE", "SIZE")
+	}
+	when keyword == "LINE-COUNT" {
+		return hyphen2_at(p, index, "LINE", "COUNT")
+	}
+	when keyword == "HELP-REQUEST" {
+		return hyphen2_at(p, index, "HELP", "REQUEST")
+	}
+	when keyword == "VALUE-REQUEST" {
+		return hyphen2_at(p, index, "VALUE", "REQUEST")
+	}
+	when keyword == "OPEN CURSOR" {
+		return space2_at(p, index, "OPEN", "CURSOR")
+	}
+	when keyword == "CLOSE CURSOR" {
+		return space2_at(p, index, "CLOSE", "CURSOR")
+	}
+	when keyword == "READ TABLE" {
+		return space2_at(p, index, "READ", "TABLE")
+	}
+	when keyword == "EXEC SQL" {
+		return space2_at(p, index, "EXEC", "SQL")
+	}
+	when keyword == "AS CHECKBOX" {
+		return space2_at(p, index, "AS", "CHECKBOX")
+	}
+	when keyword == "LOWER CASE" {
+		return space2_at(p, index, "LOWER", "CASE")
+	}
+	when keyword == "VALUE CHECK" {
+		return space2_at(p, index, "VALUE", "CHECK")
+	}
+	when keyword == "RADIOBUTTON GROUP" {
+		return space2_at(p, index, "RADIOBUTTON", "GROUP")
+	}
+	when keyword == "MODIF ID" {
+		return space2_at(p, index, "MODIF", "ID")
+	}
+	when keyword == "MEMORY ID" {
+		return space2_at(p, index, "MEMORY", "ID")
+	}
+	when keyword == "MATCHCODE OBJECT" {
+		return space2_at(p, index, "MATCHCODE", "OBJECT")
+	}
+	when keyword == "VISIBLE LENGTH" {
+		return space2_at(p, index, "VISIBLE", "LENGTH")
+	}
+	when keyword == "NO INTERVALS" {
+		return space2_at(p, index, "NO", "INTERVALS")
+	}
+	when keyword == "NO DATABASE SELECTION" {
+		return space3_at(p, index, "NO", "DATABASE", "SELECTION")
+	}
+	when keyword == "AT SELECTION-SCREEN" {
+		return(
+			at_keyword_index(p, index, "AT") &&
+			at_keyword_index(p, index + 1, "SELECTION") &&
+			index + 2 < len(p.tokens) &&
+			p.tokens[index + 2].kind == .Minus &&
+			at_keyword_index(p, index + 3, "SCREEN") \
+		)
+	}
+	when keyword == "LOAD-OF-PROGRAM" {
+		return hyphen3_at(p, index, "LOAD", "OF", "PROGRAM")
+	}
+	when keyword == "START-OF-SELECTION" {
+		return hyphen3_at(p, index, "START", "OF", "SELECTION")
+	}
+	when keyword == "END-OF-SELECTION" {
+		return hyphen3_at(p, index, "END", "OF", "SELECTION")
+	}
+	when keyword == "TOP-OF-PAGE" {
+		return hyphen3_at(p, index, "TOP", "OF", "PAGE")
+	}
+	when keyword == "END-OF-PAGE" {
+		return hyphen3_at(p, index, "END", "OF", "PAGE")
+	}
+	when keyword == "END-OF-DEFINITION" {
+		return hyphen3_at(p, index, "END", "OF", "DEFINITION")
+	}
+	when keyword == "ENHANCEMENT-SECTION" {
+		return hyphen2_at(p, index, "ENHANCEMENT", "SECTION")
+	}
+	when keyword == "END-ENHANCEMENT-SECTION" {
+		return hyphen3_at(p, index, "END", "ENHANCEMENT", "SECTION")
+	}
+	when keyword == "TEST-SEAM" {
+		return hyphen2_at(p, index, "TEST", "SEAM")
+	}
+	when keyword == "END-TEST-SEAM" {
+		return hyphen3_at(p, index, "END", "TEST", "SEAM")
+	}
+	when keyword == "TEST-INJECTION" {
+		return hyphen2_at(p, index, "TEST", "INJECTION")
+	}
+	when keyword == "END-TEST-INJECTION" {
+		return hyphen3_at(p, index, "END", "TEST", "INJECTION")
+	}
+	return token_is_keyword(p, p.tokens[index], keyword)
+}
+
+keyword_phrase_at_dynamic :: proc(p: ^Parser, index: int, keyword: string) -> bool {
+	if index >= len(p.tokens) {
+		return false
+	}
+	if keyword_phrase_is_simple(keyword) {
+		return token_is_keyword(p, p.tokens[index], keyword)
 	}
 	if keyword == "FIELD-SYMBOLS" {
 		return hyphen2_at(p, index, "FIELD", "SYMBOLS")
@@ -861,6 +1038,15 @@ keyword_phrase_at :: proc(p: ^Parser, index: int, keyword: string) -> bool {
 	return token_is_keyword(p, p.tokens[index], keyword)
 }
 
+keyword_phrase_is_simple :: #force_inline proc(keyword: string) -> bool {
+	for i in 0 ..< len(keyword) {
+		if keyword[i] == '-' || keyword[i] == ' ' {
+			return false
+		}
+	}
+	return true
+}
+
 space2_at :: proc(p: ^Parser, index: int, a, b: string) -> bool {
 	return at_keyword_index(p, index, a) && at_keyword_index(p, index + 1, b)
 }
@@ -907,6 +1093,9 @@ expect_keyword_phrase :: proc(p: ^Parser, keyword: string) -> Token {
 }
 
 keyword_phrase_token_count :: proc(keyword: string) -> int {
+	if keyword_phrase_is_simple(keyword) {
+		return 1
+	}
 	if keyword == "FIELD-SYMBOLS" ||
 	   keyword == "SELECT-OPTIONS" ||
 	   keyword == "CLASS-DATA" ||
@@ -1170,9 +1359,7 @@ known_stmt_lead_at :: proc(p: ^Parser, index: int) -> bool {
 		keyword_phrase_at(p, index, "CLASS-DATA") ||
 		keyword_phrase_at(p, index, "TYPE-POOLS") ||
 		keyword_phrase_at(p, index, "FUNCTION-POOL") ||
-		(keyword_phrase_at(p, index, "INCLUDE") &&
-				(keyword_phrase_at(p, index + 1, "TYPE") ||
-				 keyword_phrase_at(p, index + 1, "STRUCTURE"))) ||
+		keyword_phrase_at(p, index, "INCLUDE") ||
 		keyword_phrase_at(p, index, "IF") ||
 		keyword_phrase_at(p, index, "ELSEIF") ||
 		keyword_phrase_at(p, index, "ELSE") ||

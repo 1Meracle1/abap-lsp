@@ -2,30 +2,27 @@ package abap_frontend_parser
 
 import "../ast"
 
-import "base:runtime"
 import "core:testing"
 
 @(test)
 print_node_uses_formatting_options :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `IF a = 1. lv = 1. ENDIF.`
-	parsed := parse(source, "format_options.abap", alloc)
+	parsed := parse(source, "format_options.abap", context.allocator)
 	options := ast.Print_Options{newline = "\r\n", indent = "  "}
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	testing.expect_value(t, ast.print_node(parsed.root, alloc, options), "IF a = 1.\r\n  lv = 1.\r\nENDIF.")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator, options), "IF a = 1.\r\n  lv = 1.\r\nENDIF.")
 }
 
 @(test)
 statement_batch_control_blocks :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `IF a = 1. WRITE 'a'. ELSEIF a = 2. WRITE 'b'. ELSE. WRITE 'c'. ENDIF.
 CASE a. WHEN 1 OR 2. WRITE 'n'. WHEN OTHERS. WRITE 'o'. ENDCASE.
 WHILE a > 0. a = a - 1. ENDWHILE.
 DO 3 TIMES. WRITE a. ENDDO.
 LOOP AT itab INTO wa. AT FIRST. WRITE wa. ENDAT. ENDLOOP.
 TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo). WRITE 'y'. CLEANUP. WRITE 'z'. ENDTRY.`
-	parsed := parse(source, "control.abap", alloc)
+	parsed := parse(source, "control.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -49,7 +46,6 @@ TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo). WRITE 'y'. CLEANUP. WRITE 'z'. ENDT
 
 @(test)
 statement_batch_structural_blocks :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLASS lcl DEFINITION. ENDCLASS.
 INTERFACE lif. ENDINTERFACE.
 CLASS lcl IMPLEMENTATION. METHOD run. DATA lv TYPE i. ENDMETHOD. ENDCLASS.
@@ -60,7 +56,7 @@ ENHANCEMENT enh. WRITE 'e'. ENDENHANCEMENT.
 TEST-SEAM seam. WRITE 's'. END-TEST-SEAM.
 TEST-INJECTION seam. WRITE 'i'. END-TEST-INJECTION.
 START-OF-SELECTION. WRITE 'start'.`
-	parsed := parse(source, "structural.abap", alloc)
+	parsed := parse(source, "structural.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -78,14 +74,13 @@ START-OF-SELECTION. WRITE 'start'.`
 
 @(test)
 multiline_class_headers_keep_their_create_addition :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLASS zcx_error DEFINITION
   INHERITING FROM cx_static_check
   FINAL
   CREATE PUBLIC.
   PUBLIC SECTION.
 ENDCLASS.`
-	parsed := parse(source, "class_header.abap", alloc)
+	parsed := parse(source, "class_header.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -95,14 +90,13 @@ ENDCLASS.`
 
 @(test)
 empty_control_flow_headers_report_specific_errors :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `IF . ENDIF.
 IF ok = abap_true. ELSEIF . ENDIF.
 WHILE . ENDWHILE.
 CASE . ENDCASE.
 CASE lv. WHEN . ENDCASE.
 TRY. CATCH . ENDTRY.`
-	parsed := parse(source, "empty_headers.abap", alloc)
+	parsed := parse(source, "empty_headers.abap", context.allocator)
 
 	expect_error_contains(t, parsed, "expected condition after IF")
 	expect_error_contains(t, parsed, "expected condition after ELSEIF")
@@ -114,11 +108,10 @@ TRY. CATCH . ENDTRY.`
 
 @(test)
 loop_at_requires_source_targets_and_clause_expressions :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `LOOP AT . ENDLOOP.
 LOOP AT itab INTO . ENDLOOP.
 LOOP AT itab WHERE . ENDLOOP.`
-	parsed := parse(source, "loop_negative.abap", alloc)
+	parsed := parse(source, "loop_negative.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	expect_error_contains(t, parsed, "expected loop source after LOOP AT")
@@ -130,11 +123,10 @@ LOOP AT itab WHERE . ENDLOOP.`
 
 @(test)
 unmatched_delimiters_do_not_hide_following_statement_boundaries :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `lv_value = foo ).
 lv_other = foo )
 DATA lv_after TYPE i.`
-	parsed := parse(source, "delimiters.abap", alloc)
+	parsed := parse(source, "delimiters.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	expect_error_contains(t, parsed, "unmatched closing ')'")
@@ -144,11 +136,10 @@ DATA lv_after TYPE i.`
 
 @(test)
 if_and_while_header_unmatched_delimiters_fail_the_statement :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	parsed := parse(
 		"IF lv_flag ). ENDIF.\nWHILE lv_flag ]. ENDWHILE.",
 		"header_delimiters.abap",
-		alloc,
+		context.allocator,
 	)
 	counts := count_nodes(parsed.root)
 
@@ -163,11 +154,10 @@ if_and_while_header_unmatched_delimiters_fail_the_statement :: proc(t: ^testing.
 
 @(test)
 case_bad_when_header_does_not_scan_case_body :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	parsed := parse(
 		"CASE lv_kind. WHEN = 1. DATA lv_inside TYPE i. ENDCASE. DATA lv_after TYPE i.",
 		"bad_when.abap",
-		alloc,
+		context.allocator,
 	)
 	counts := count_nodes(parsed.root)
 	case_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
@@ -182,7 +172,6 @@ case_bad_when_header_does_not_scan_case_body :: proc(t: ^testing.T) {
 
 @(test)
 case_when_missing_period_uses_local_invalid_statement :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CASE lv_kind.
   WHEN 'A'
     lv_a = 1.
@@ -190,7 +179,7 @@ case_when_missing_period_uses_local_invalid_statement :: proc(t: ^testing.T) {
     lv_b = 2.
 ENDCASE.
 DATA lv_after TYPE i.`
-	parsed := parse(source, "when_period.abap", alloc)
+	parsed := parse(source, "when_period.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 	case_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
 
@@ -206,14 +195,13 @@ DATA lv_after TYPE i.`
 
 @(test)
 case_when_accepts_selector_operands :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CASE cs_itf-tdline.
   WHEN c_section_token-cause.
     WRITE 'cause'.
   WHEN zif_abapgit_definitions=>c_action-go_home.
     WRITE 'home'.
 ENDCASE.`
-	parsed := parse(source, "when_selectors.abap", alloc)
+	parsed := parse(source, "when_selectors.abap", context.allocator)
 	case_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Case_Stmt)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -222,14 +210,13 @@ ENDCASE.`
 
 @(test)
 target_condition_operators_do_not_break_blocks :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `IF lv_langu NOT IN lt_language_filter.
 ENDIF.
 WHILE lv_byte BIT-AND lc_msb <> lc_zero.
 ENDWHILE.
 IF ls_tstc-cinfo O lc_hex_rep AND ls_tstc-cinfo Z lc_hex_obj.
 ENDIF.`
-	parsed := parse(source, "target_conditions.abap", alloc)
+	parsed := parse(source, "target_conditions.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -239,13 +226,12 @@ ENDIF.`
 
 @(test)
 missing_inner_control_end_does_not_consume_structural_boundary :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLASS lcl IMPLEMENTATION.
   METHOD run.
     IF flag = abap_true.
   ENDMETHOD.
 ENDCLASS.`
-	parsed := parse(source, "missing_inner_end.abap", alloc)
+	parsed := parse(source, "missing_inner_end.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	expect_error_contains(t, parsed, "expected ENDIF")
@@ -258,14 +244,13 @@ ENDCLASS.`
 
 @(test)
 print_node_retains_structural_and_loop_headers :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLASS lcl DEFINITION FINAL CREATE PUBLIC.
   PUBLIC SECTION.
 ENDCLASS.
 LOOP AT itab ASSIGNING <row> WHERE flag = abap_true.
 ENDLOOP.`
-	parsed := parse(source, "header_print.abap", alloc)
-	text := ast.print_node(parsed.root, alloc)
+	parsed := parse(source, "header_print.abap", context.allocator)
+	text := ast.print_node(parsed.root, context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(
@@ -277,13 +262,12 @@ ENDLOOP.`
 
 @(test)
 amdp_method_body_is_retained_as_sqlscript_island :: proc(t: ^testing.T) {
-	alloc := runtime.heap_allocator()
 	source := `CLASS lcl IMPLEMENTATION.
   METHOD select_rows BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara.
     lt_rows = SELECT matnr FROM mara;
   ENDMETHOD.
 ENDCLASS.`
-	parsed := parse(source, "amdp_method.abap", alloc)
+	parsed := parse(source, "amdp_method.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
