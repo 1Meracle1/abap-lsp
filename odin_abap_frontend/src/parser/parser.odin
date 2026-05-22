@@ -1267,6 +1267,15 @@ type_ref_path_token :: #force_inline proc(tok: Token) -> bool {
 	return tok.kind == .Ident || tok.kind == .Number || tok.kind == .Star
 }
 
+type_ref_key_clause_starts :: proc(p: ^Parser, index: int) -> bool {
+	return at_keyword_index(p, index, "WITH") &&
+	       (at_keyword_index(p, index + 1, "DEFAULT") ||
+	        at_keyword_index(p, index + 1, "EMPTY") ||
+	        at_keyword_index(p, index + 1, "UNIQUE") ||
+	        keyword_phrase_at(p, index + 1, "NON-UNIQUE") ||
+	        at_keyword_index(p, index + 1, "KEY"))
+}
+
 at_any_keyword :: proc(p: ^Parser, keywords: []string) -> bool {
 	for kw in keywords {
 		if at_keyword_phrase(p, kw) && !keyword_is_compact_call(p, kw) {

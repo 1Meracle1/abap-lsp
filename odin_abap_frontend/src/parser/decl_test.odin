@@ -242,3 +242,74 @@ TYPES ty_field TYPE zstruc-field.`
 	testing.expect_value(t, field_ref.base_name, "zstruc")
 	testing.expect_value(t, field_ref.path[0].name, "field")
 }
+
+@(test)
+type_ref_ranges_stop_before_declaration_additions :: proc(t: ^testing.T) {
+	source := `DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.
+DATA lv_value TYPE i VALUE 1.
+DATA lv_len TYPE c LENGTH 3.
+DATA lv_dec TYPE p DECIMALS 2.
+DATA mv_text TYPE string READ-ONLY.
+PARAMETERS p_count TYPE i DEFAULT 1.`
+	parsed := parse(source, "type_ref_addition_bounds.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	occurs_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
+	value_decl := parsed.root.stmts[1].derived_stmt.(^ast.Data_Decl)
+	length_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
+	decimal_decl := parsed.root.stmts[3].derived_stmt.(^ast.Data_Decl)
+	read_only_decl := parsed.root.stmts[4].derived_stmt.(^ast.Data_Decl)
+	default_decl := parsed.root.stmts[5].derived_stmt.(^ast.Parameters_Decl)
+
+	occurs_ref := occurs_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	value_ref := value_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	length_ref := length_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	decimal_ref := decimal_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	read_only_ref := read_only_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	default_ref := default_decl.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, occurs_ref.name, "beket")
+	testing.expect_value(t, occurs_ref.base_name, "beket")
+	testing.expect_value(t, source[occurs_ref.range.start:occurs_ref.range.end], "beket")
+	testing.expect(t, occurs_decl.occurs != nil)
+	testing.expect(t, .With_Header_Line in occurs_decl.flags)
+	testing.expect_value(t, source[value_ref.range.start:value_ref.range.end], "i")
+	testing.expect(t, value_decl.value_clause != nil)
+	testing.expect_value(t, source[length_ref.range.start:length_ref.range.end], "c")
+	testing.expect_value(t, len(length_decl.length_clauses), 1)
+	testing.expect_value(t, source[decimal_ref.range.start:decimal_ref.range.end], "p")
+	testing.expect_value(t, decimal_decl.length_clauses[0].kind, ast.Length_Clause_Kind.Decimals)
+	testing.expect_value(t, source[read_only_ref.range.start:read_only_ref.range.end], "string")
+	testing.expect(t, read_only_decl.read_only)
+	testing.expect_value(t, source[default_ref.range.start:default_ref.range.end], "i")
+	testing.expect(t, default_decl.parameters[0].default_clause != nil)
+}
+
+@(test)
+table_key_clauses_stay_inside_type_refs_but_header_line_does_not :: proc(t: ^testing.T) {
+	source := `TYPES ty_def TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.
+DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.`
+	parsed := parse(source, "type_ref_keys_vs_header.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	default_decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	unique_decl := parsed.root.stmts[1].derived_stmt.(^ast.Types_Decl)
+	header_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
+
+	default_ref := default_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	unique_ref := unique_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	header_ref := header_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, default_ref.name, "string")
+	testing.expect_value(t, source[default_ref.range.start:default_ref.range.end], "string WITH DEFAULT KEY")
+	testing.expect_value(t, default_ref.key.kind, ast.Type_Ref_Key_Kind.Default)
+	testing.expect_value(t, unique_ref.name, "string")
+	testing.expect_value(t, source[unique_ref.range.start:unique_ref.range.end], "string WITH UNIQUE KEY table_line")
+	testing.expect_value(t, unique_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
+	testing.expect_value(t, unique_ref.key.components[0], "table_line")
+	testing.expect_value(t, header_ref.name, "i")
+	testing.expect_value(t, source[header_ref.range.start:header_ref.range.end], "i")
+	testing.expect(t, .With_Header_Line in header_decl.flags)
+	testing.expect_value(t, ast.print_node(header_decl, context.allocator), "DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.")
+}

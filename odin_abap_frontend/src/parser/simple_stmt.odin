@@ -1147,6 +1147,9 @@ parse_oop_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tok := current_token(p)
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top && at_keyword(p, "WITH") {
+			if !type_ref_key_clause_starts(p, p.index) {
+				break
+			}
 			if name_end < 0 && p.index > start {
 				name_end = previous_token(p).range.end
 			}
@@ -1193,6 +1196,7 @@ oop_type_ref_done :: proc(p: ^Parser, start: int, in_key: bool) -> bool {
 	}
 	if simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) ||
 	   at_length_keyword(p) ||
+	   (at_keyword(p, "WITH") && !type_ref_key_clause_starts(p, p.index)) ||
 	   at_keyword_phrase(p, "READ-ONLY") ||
 	   at_keyword(p, "OPTIONAL") ||
 	   at_keyword(p, "PREFERRED") ||

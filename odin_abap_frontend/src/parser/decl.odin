@@ -475,6 +475,9 @@ parse_data_decl_clause :: proc(p: ^Parser) -> (ast.Data_Chained_Branch, bool) {
 		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
 			continue
 		}
+		if parse_with_header_line_addition(p, &clause.flags) {
+			continue
+		}
 		if at_length_keyword(p) {
 			length_clause, length_ok := parse_required_length_clause(p)
 			if !length_ok {
@@ -609,6 +612,9 @@ parse_types_clause :: proc(p: ^Parser) -> (ast.Types_Clause, bool) {
 		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
 			continue
 		}
+		if parse_with_header_line_addition(p, &clause.flags) {
+			continue
+		}
 		if at_length_keyword(p) {
 			length_clause, length_ok := parse_required_length_clause(p)
 			if !length_ok {
@@ -651,6 +657,9 @@ parse_constants_clause :: proc(p: ^Parser) -> (ast.Constants_Clause, bool) {
 	}
 	for !decl_clause_end(p, name_index) {
 		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
+			continue
+		}
+		if parse_with_header_line_addition(p, &clause.flags) {
 			continue
 		}
 		if at_length_keyword(p) {
@@ -723,6 +732,9 @@ parse_statics_clause :: proc(p: ^Parser) -> (ast.Statics_Clause, bool) {
 	}
 	for !decl_clause_end(p, name_index) {
 		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
+			continue
+		}
+		if parse_with_header_line_addition(p, &clause.flags) {
 			continue
 		}
 		if at_length_keyword(p) {
@@ -916,6 +928,9 @@ parse_class_data_clause :: proc(p: ^Parser) -> (ast.Class_Data_Clause, bool) {
 		if parse_group_or_include_addition(p, &clause.occurs, &clause.as_name, &clause.renaming_suffix) {
 			continue
 		}
+		if parse_with_header_line_addition(p, &clause.flags) {
+			continue
+		}
 		if at_length_keyword(p) {
 			length_clause, length_ok := parse_required_length_clause(p)
 			if !length_ok {
@@ -1067,6 +1082,9 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 				break
 			}
 			if at_keyword(p, "WITH") {
+				if !type_ref_key_clause_starts(p, p.index) {
+					break
+				}
 				if name_end < 0 {
 					name_end = previous_token(p).range.end
 				}
@@ -1169,6 +1187,19 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 		bump_token(p)
 	}
 	return clause
+}
+
+parse_with_header_line_addition :: proc(p: ^Parser, flags: ^ast.Decl_Clause_Flags) -> bool {
+	if !at_keyword(p, "WITH") ||
+	   !at_keyword_index(p, p.index + 1, "HEADER") ||
+	   !at_keyword_index(p, p.index + 2, "LINE") {
+		return false
+	}
+	bump_token(p)
+	bump_token(p)
+	bump_token(p)
+	flags^ += {.With_Header_Line}
+	return true
 }
 
 type_ref_selector_field :: proc(p: ^Parser) -> bool {

@@ -469,6 +469,7 @@ Decl_Clause_Kind :: enum {
 
 Decl_Clause_Flag :: enum {
 	Common_Part_Delimiter,
+	With_Header_Line,
 }
 Decl_Clause_Flags :: bit_set[Decl_Clause_Flag]
 

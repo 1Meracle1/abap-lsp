@@ -714,6 +714,7 @@ emit_data_decl :: proc(p: ^Printer, decl: ^Data_Decl) {
 	emit_include_additions(p, decl.as_name, decl.renaming_suffix)
 	emit_length_clauses(p, decl.length_clauses)
 	emit_type_clause(p, decl.type_clause)
+	emit_header_line(p, decl.flags)
 	emit_value_clause(p, decl.value_clause)
 	if decl.read_only {
 		emit(p, " READ-ONLY")
@@ -733,6 +734,7 @@ emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
 		emit_include_additions(p, branch.as_name, branch.renaming_suffix)
 		emit_length_clauses(p, branch.length_clauses)
 		emit_type_clause(p, branch.type_clause)
+		emit_header_line(p, branch.flags)
 		emit_value_clause(p, branch.value_clause)
 		if branch.read_only {
 			emit(p, " READ-ONLY")
@@ -763,6 +765,7 @@ emit_types_decl :: proc(p: ^Printer, decl: ^Types_Decl) {
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
+		emit_header_line(p, clause.flags)
 	}
 	emit(p, ".")
 }
@@ -780,6 +783,7 @@ emit_constants_decl :: proc(p: ^Printer, decl: ^Constants_Decl) {
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
+		emit_header_line(p, clause.flags)
 		emit_value_clause(p, clause.value_clause)
 	}
 	emit(p, ".")
@@ -811,6 +815,7 @@ emit_statics_decl :: proc(p: ^Printer, decl: ^Statics_Decl) {
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
+		emit_header_line(p, clause.flags)
 		emit_value_clause(p, clause.value_clause)
 	}
 	emit(p, ".")
@@ -921,6 +926,7 @@ emit_class_data_decl :: proc(p: ^Printer, decl: ^Class_Data_Decl) {
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit_length_clauses(p, clause.length_clauses)
 		emit_type_clause(p, clause.type_clause)
+		emit_header_line(p, clause.flags)
 		emit_value_clause(p, clause.value_clause)
 		if clause.read_only {
 			emit(p, " READ-ONLY")
@@ -1022,6 +1028,12 @@ emit_occurs :: proc(p: ^Printer, occurs: ^Expr) {
 	if occurs != nil {
 		emit(p, " OCCURS ")
 		emit_node(p, occurs)
+	}
+}
+
+emit_header_line :: proc(p: ^Printer, flags: Decl_Clause_Flags) {
+	if .With_Header_Line in flags {
+		emit(p, " WITH HEADER LINE")
 	}
 }
 

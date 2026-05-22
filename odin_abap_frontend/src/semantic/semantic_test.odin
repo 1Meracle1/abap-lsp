@@ -636,6 +636,38 @@ legacy_occurs_header_line_keeps_declared_type_clean :: proc(t: ^testing.T) {
 }
 
 @(test)
+type_clause_displays_use_parser_bounded_type_refs :: proc(t: ^testing.T) {
+	source := `DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.
+DATA lv_value TYPE i VALUE 1.
+DATA lv_len TYPE c LENGTH 3.
+DATA lv_dec TYPE p DECIMALS 2.
+DATA mv_text TYPE string READ-ONLY.
+PARAMETERS p_count TYPE i DEFAULT 1.
+TYPES ty_def TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.`
+	unit := collect_test_unit(t, "file:///type_ref_display_bounds.abap", source)
+
+	int_eket := find_symbol(&unit, "int_eket", .Variable)
+	lv_value := find_symbol(&unit, "lv_value", .Variable)
+	lv_len := find_symbol(&unit, "lv_len", .Variable)
+	lv_dec := find_symbol(&unit, "lv_dec", .Variable)
+	mv_text := find_symbol(&unit, "mv_text", .Variable)
+	p_count := find_symbol(&unit, "p_count", .Variable)
+	ty_def := find_symbol(&unit, "ty_def", .Type_Def)
+	ty_unique := find_symbol(&unit, "ty_unique", .Type_Def)
+	testing.expect(t, int_eket != nil && lv_value != nil && lv_len != nil && lv_dec != nil)
+	testing.expect(t, mv_text != nil && p_count != nil && ty_def != nil && ty_unique != nil)
+	testing.expect_value(t, int_eket.type_clause_display, "beket")
+	testing.expect_value(t, lv_value.type_clause_display, "i")
+	testing.expect_value(t, lv_len.type_clause_display, "c")
+	testing.expect_value(t, lv_dec.type_clause_display, "p")
+	testing.expect_value(t, mv_text.type_clause_display, "string")
+	testing.expect_value(t, p_count.type_clause_display, "i")
+	testing.expect_value(t, ty_def.type_clause_display, "STANDARD TABLE OF string WITH DEFAULT KEY")
+	testing.expect_value(t, ty_unique.type_clause_display, "SORTED TABLE OF string WITH UNIQUE KEY table_line")
+}
+
+@(test)
 declaration_type_refs_use_ast_base_paths_and_ranges :: proc(t: ^testing.T) {
 	source := `
 INTERFACE lif_demo.

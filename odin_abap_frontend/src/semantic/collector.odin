@@ -1272,12 +1272,11 @@ type_ref_from_expr :: proc(
 		return type_ref, true
 	}
 	text := expr_display(c, expr)
-	text = clean_type_ref_text(c, text)
 	text = strings.trim_space(text)
 	if text == "" {
 		return {}, false
 	}
-	// Fallback for legacy non-selector expression nodes; selector paths must come from AST.
+	// Legacy non-selector fallback only; declaration-addition boundaries belong to parser AST.
 	return Field_Type_Ref_Data {
 			namespace = namespace,
 			is_ref = is_ref,
@@ -1369,8 +1368,7 @@ type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> str
 	if clause == nil {
 		return ""
 	}
-	ref := expr_display(c, clause.type_ref)
-	ref = clean_type_ref_text(c, ref)
+	ref := type_ref_display(c, clause.type_ref)
 	#partial switch clause.form {
 	case .Ref_To:
 		return concat2(c, "REF TO ", ref)
@@ -1389,6 +1387,24 @@ type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> str
 	case:
 		return ref
 	}
+}
+
+type_ref_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
+	if expr == nil {
+		return ""
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Type_Ref_Expr:
+		if n.text != "" {
+			return strings.clone(n.text, c.allocator)
+		}
+		return strings.clone(n.name, c.allocator)
+	case ^ast.Ident_Expr:
+		return strings.clone(n.name, c.allocator)
+	case ^ast.Selector_Expr:
+		return ast.print_node(n, c.allocator)
+	}
+	return expr_display(c, expr)
 }
 
 value_clause_display :: proc(c: ^Collector, clause: ^ast.Value_Clause) -> string {
@@ -2166,32 +2182,6 @@ header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header
 		)
 	}
 	return tokens
-}
-
-clean_type_ref_text :: proc(c: ^Collector, text: string) -> string {
-	tokens := header_tokens(c, text, 0)
-	cut := len(text)
-	for i in 0 ..< len(tokens) {
-		if token_eq(tokens[i], "OCCURS") ||
-		   token_eq(tokens[i], "VALUE") ||
-		   token_eq(tokens[i], "DEFAULT") ||
-		   token_eq(tokens[i], "LENGTH") ||
-		   token_eq(tokens[i], "DECIMALS") ||
-		   token_eq(tokens[i], "READ-ONLY") {
-			cut = tokens[i].range.start
-			break
-		}
-		if token_eq(tokens[i], "WITH") &&
-		   i + 1 < len(tokens) &&
-		   token_eq(tokens[i + 1], "HEADER") {
-			cut = tokens[i].range.start
-			break
-		}
-	}
-	if cut <= 0 {
-		return ""
-	}
-	return strings.trim_space(text[:cut])
 }
 
 token_text_span :: proc(

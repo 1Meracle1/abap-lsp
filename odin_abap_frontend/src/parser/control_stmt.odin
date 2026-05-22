@@ -1042,6 +1042,9 @@ parse_header_type_ref_expr :: proc(
 		tok := p.tokens[i]
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top && at_keyword_index(p, i, "WITH") {
+			if !type_ref_key_clause_starts(p, i) {
+				break
+			}
 			if name_end < 0 && i > start {
 				name_end = p.tokens[i - 1].range.end
 			}
@@ -1089,6 +1092,9 @@ header_type_ref_done :: proc(
 		if at_keyword_index(p, index, keyword) {
 			return true
 		}
+	}
+	if at_keyword_index(p, index, "WITH") && !type_ref_key_clause_starts(p, index) {
+		return true
 	}
 	if at_keyword_index(p, index, "OPTIONAL") || (!in_key && at_keyword_index(p, index, "DEFAULT")) {
 		return true
