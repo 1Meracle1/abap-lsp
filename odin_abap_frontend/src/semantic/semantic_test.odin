@@ -1527,6 +1527,28 @@ ENDTRY.
 }
 
 @(test)
+raise_exception_targets_use_value_or_type_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///raise_exception_targets.abap",
+		`
+CLASS cx_demo DEFINITION.
+ENDCLASS.
+
+FORM run.
+  DATA lx TYPE REF TO cx_demo.
+  RAISE EXCEPTION lx.
+  RAISE EXCEPTION TYPE cx_demo.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_reference(&unit, "lx", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "cx_demo", .Type, .Type_Ref))
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+}
+
+@(test)
 collects_method_function_and_perform_argument_facts :: proc(t: ^testing.T) {
 	// CALL METHOD/FUNCTION values are still raw Call_Stmt value ranges; this covers that fallback.
 	unit := collect_test_unit(

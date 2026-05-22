@@ -885,7 +885,12 @@ parse_raise_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.kind = .Exception
 		allow_keyword(p, "EXCEPTION")
 	}
-	stmt.target = parse_raw_operand_to_period(p, []string{"EXPORTING", "TYPE", "MESSAGE", "RESUMABLE"})
+	if stmt.kind == .Exception && allow_keyword(p, "TYPE") {
+		stmt.target_type = true
+		stmt.target = parse_raw_operand_to_period(p, []string{"EXPORTING", "MESSAGE", "RESUMABLE"})
+	} else {
+		stmt.target = parse_raw_operand_to_period(p, []string{"EXPORTING", "TYPE", "MESSAGE", "RESUMABLE"})
+	}
 	stmt.operands = parse_generic_operands_to_period(p, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt

@@ -1941,6 +1941,9 @@ emit_raise_stmt :: proc(p: ^Printer, stmt: ^Raise_Stmt) {
 	emit(p, "EVENT" if stmt.kind == .Event else "EXCEPTION")
 	if stmt.target != nil {
 		emit_space(p)
+		if stmt.target_type {
+			emit(p, "TYPE ")
+		}
 		emit_node(p, stmt.target)
 	}
 	if len(stmt.operands) > 0 {

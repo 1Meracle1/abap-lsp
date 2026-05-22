@@ -1421,6 +1421,7 @@ Raise_Kind :: enum {
 Raise_Stmt :: struct {
 	using node: Stmt,
 	kind:       Raise_Kind,
+	target_type: bool,
 	target:     ^Expr,
 	operands:   [dynamic]^Expr,
 }

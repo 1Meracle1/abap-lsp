@@ -1371,7 +1371,7 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 }
 
 collect_raise_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Raise_Stmt, scope: Scope_Id) {
-	if stmt.kind == .Exception {
+	if stmt.target_type {
 		collect_type_expr_ref(c, stmt.target, scope, .Type)
 	} else {
 		collect_expr_refs(c, stmt.target, scope)
