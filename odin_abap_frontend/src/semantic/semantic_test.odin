@@ -761,6 +761,41 @@ ENDCLASS.
 }
 
 @(test)
+collects_oop_section_visibility_from_ast :: proc(t: ^testing.T) {
+	source := `CLASS lcl_vis DEFINITION.
+  PUBLIC SECTION.
+    METHODS pub.
+  PROTECTED SECTION.
+    METHODS prot.
+  PRIVATE SECTION.
+    METHODS priv.
+ENDCLASS.
+INTERFACE lif_vis.
+  PUBLIC SECTION.
+    METHODS if_pub.
+ENDINTERFACE.`
+	unit := collect_test_unit(t, "file:///oop_visibility.abap", source)
+
+	class := find_symbol(&unit, "lcl_vis", .Class)
+	iface := find_symbol(&unit, "lif_vis", .Interface)
+	testing.expect(t, class != nil)
+	testing.expect(t, iface != nil)
+
+	pub := class_member_named(&unit, class.id, "pub", .Method)
+	prot := class_member_named(&unit, class.id, "prot", .Method)
+	priv := class_member_named(&unit, class.id, "priv", .Method)
+	if_pub := class_member_named(&unit, iface.id, "if_pub", .Method)
+	testing.expect(t, pub != nil)
+	testing.expect(t, prot != nil)
+	testing.expect(t, priv != nil)
+	testing.expect(t, if_pub != nil)
+	testing.expect_value(t, pub.visibility, Visibility.Public)
+	testing.expect_value(t, prot.visibility, Visibility.Protected)
+	testing.expect_value(t, priv.visibility, Visibility.Private)
+	testing.expect_value(t, if_pub.visibility, Visibility.Public)
+}
+
+@(test)
 collects_class_header_facts_from_ast :: proc(t: ^testing.T) {
 	source := `CLASS zcl_abs DEFINITION ABSTRACT.
 ENDCLASS.

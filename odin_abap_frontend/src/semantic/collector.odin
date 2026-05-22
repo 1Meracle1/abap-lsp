@@ -1625,7 +1625,15 @@ walk_class_body :: proc(
 		}
 		if oop, ok := child.derived_stmt.(^ast.Oop_Simple_Stmt); ok {
 			if oop.kind == .Class_Section {
-				visibility = visibility_from_text(oop.text, visibility)
+				switch oop.visibility {
+				case .Public:
+					visibility = .Public
+				case .Protected:
+					visibility = .Protected
+				case .Private:
+					visibility = .Private
+				case .Unspecified:
+				}
 			} else {
 				collect_class_oop_stmt(c, oop, scope, owner, visibility)
 			}
@@ -1772,19 +1780,6 @@ add_class_definition :: proc(c: ^Collector, owner: Symbol_Id, is_abstract: bool)
 		&c.class_definitions,
 		Class_Definition_Data{class_symbol = owner, is_abstract = is_abstract},
 	)
-}
-
-visibility_from_text :: proc(text: string, fallback: Visibility) -> Visibility {
-	if ascii_contains_ignore_case(text, "PUBLIC") {
-		return .Public
-	}
-	if ascii_contains_ignore_case(text, "PROTECTED") {
-		return .Protected
-	}
-	if ascii_contains_ignore_case(text, "PRIVATE") {
-		return .Private
-	}
-	return fallback
 }
 
 collect_class_attribute_stmt :: proc(

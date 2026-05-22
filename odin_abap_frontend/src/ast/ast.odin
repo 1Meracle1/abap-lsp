@@ -1448,6 +1448,13 @@ Oop_Simple_Kind :: enum {
 	Interface_Load,
 }
 
+Oop_Visibility :: enum {
+	Unspecified,
+	Public,
+	Protected,
+	Private,
+}
+
 Oop_Signature_Kind :: enum {
 	Importing,
 	Exporting,
@@ -1481,6 +1488,7 @@ Oop_Member_Clause :: struct {
 Oop_Simple_Stmt :: struct {
 	using node: Stmt,
 	kind:       Oop_Simple_Kind,
+	visibility: Oop_Visibility,
 	text:       string,
 	members:    [dynamic]Oop_Member_Clause,
 }

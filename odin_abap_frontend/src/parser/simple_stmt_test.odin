@@ -348,6 +348,36 @@ ENDCLASS.`
 }
 
 @(test)
+oop_section_visibility_is_ast_field :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS pub.
+  PROTECTED SECTION.
+    METHODS prot.
+  PRIVATE SECTION.
+    METHODS priv.
+ENDCLASS.
+INTERFACE lif.
+  PUBLIC SECTION.
+    METHODS if_pub.
+ENDINTERFACE.`
+	parsed := parse(source, "oop_visibility.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	class_decl := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	public := class_decl.body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
+	protected := class_decl.body[2].derived_stmt.(^ast.Oop_Simple_Stmt)
+	private := class_decl.body[4].derived_stmt.(^ast.Oop_Simple_Stmt)
+	iface := parsed.root.stmts[1].derived_stmt.(^ast.Interface_Decl)
+	if_public := iface.body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
+
+	testing.expect_value(t, public.visibility, ast.Oop_Visibility.Public)
+	testing.expect_value(t, protected.visibility, ast.Oop_Visibility.Protected)
+	testing.expect_value(t, private.visibility, ast.Oop_Visibility.Private)
+	testing.expect_value(t, if_public.visibility, ast.Oop_Visibility.Public)
+}
+
+@(test)
 multiline_simple_blocks_consume_parameter_assignments :: proc(t: ^testing.T) {
 	source := `CALL FUNCTION 'Z_FM'
   EXPORTING

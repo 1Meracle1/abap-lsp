@@ -1896,7 +1896,12 @@ emit_macro_def_stmt :: proc(p: ^Printer, stmt: ^Macro_Def_Stmt) {
 
 emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
 	if len(stmt.members) == 0 {
-		emit(p, stmt.text)
+		if stmt.text != "" {
+			emit(p, stmt.text)
+		} else if stmt.kind == .Class_Section && stmt.visibility != .Unspecified {
+			emit(p, oop_visibility_text(stmt.visibility))
+			emit(p, " SECTION.")
+		}
 		return
 	}
 	emit(p, oop_simple_kind_text(stmt.kind))
@@ -2766,6 +2771,16 @@ oop_signature_kind_text :: proc(kind: Oop_Signature_Kind) -> string {
 	case .Raising: return "RAISING"
 	case .Exceptions: return "EXCEPTIONS"
 	case .For: return "FOR"
+	}
+	return "?"
+}
+
+oop_visibility_text :: proc(visibility: Oop_Visibility) -> string {
+	switch visibility {
+	case .Public: return "PUBLIC"
+	case .Protected: return "PROTECTED"
+	case .Private: return "PRIVATE"
+	case .Unspecified:
 	}
 	return "?"
 }

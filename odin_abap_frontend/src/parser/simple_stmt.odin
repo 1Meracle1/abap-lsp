@@ -926,8 +926,15 @@ oop_simple_stmt_starts :: proc(p: ^Parser) -> bool {
 parse_oop_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := current_token(p)
 	stmt := ast.new(ast.Oop_Simple_Stmt, start.range, p.allocator)
-	if at_keyword(p, "PUBLIC") || at_keyword(p, "PROTECTED") || at_keyword(p, "PRIVATE") {
+	if at_keyword(p, "PUBLIC") {
 		stmt.kind = .Class_Section
+		stmt.visibility = .Public
+	} else if at_keyword(p, "PROTECTED") {
+		stmt.kind = .Class_Section
+		stmt.visibility = .Protected
+	} else if at_keyword(p, "PRIVATE") {
+		stmt.kind = .Class_Section
+		stmt.visibility = .Private
 	} else if at_keyword_phrase(p, "CLASS-METHODS") {
 		stmt.kind = .Class_Methods
 	} else if at_keyword(p, "METHODS") {
