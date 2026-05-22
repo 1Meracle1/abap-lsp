@@ -37,6 +37,33 @@ READ TEXTPOOL prog INTO lt LANGUAGE sy-langu.`
 }
 
 @(test)
+insert_statements_keep_parser_table_facts :: proc(t: ^testing.T) {
+	source := `INSERT zinsert_tab FROM TABLE lt_rows ACCEPTING DUPLICATE KEYS.
+INSERT INTO zinto_tab VALUES ls_row.
+INSERT ls_row INTO TABLE lt_rows INDEX lv_idx.`
+	parsed := parse(source, "insert_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	bare_db := parsed.root.stmts[0].derived_stmt.(^ast.Insert_Stmt)
+	into_db := parsed.root.stmts[1].derived_stmt.(^ast.Insert_Stmt)
+	internal := parsed.root.stmts[2].derived_stmt.(^ast.Insert_Stmt)
+
+	testing.expect_value(t, bare_db.form, ast.Insert_Form.Db_Table)
+	testing.expect(t, bare_db.has_db_table_name)
+	testing.expect_value(t, bare_db.db_table_name, "zinsert_tab")
+	testing.expect_value(t, source[bare_db.db_table_name_range.start:bare_db.db_table_name_range.end], "zinsert_tab")
+	testing.expect(t, bare_db.from_table)
+	testing.expect(t, bare_db.accepting_duplicate_keys)
+	testing.expect_value(t, into_db.form, ast.Insert_Form.Db_Table)
+	testing.expect(t, into_db.has_db_table_name)
+	testing.expect_value(t, into_db.db_table_name, "zinto_tab")
+	testing.expect_value(t, internal.form, ast.Insert_Form.Internal_Table)
+	testing.expect(t, !internal.has_db_table_name)
+	testing.expect(t, internal.target != nil)
+	testing.expect(t, internal.index != nil)
+}
+
+@(test)
 report_and_program_message_id_keep_parser_facts :: proc(t: ^testing.T) {
 	source := `REPORT zmain MESSAGE-ID zmsg.
 PROGRAM zprog MESSAGE-ID zcls.

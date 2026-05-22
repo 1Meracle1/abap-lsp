@@ -1823,8 +1823,10 @@ parse_concatenate_entry :: proc(
 ) -> (
 	ast.Concatenate_Entry_Clause,
 	bool,
+	bool,
 ) {
 	entry := ast.Concatenate_Entry_Clause{}
+	byte_mode := false
 	entry.sources = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	if allow_keyword(p, "LINES") {
 		if !allow_keyword(
@@ -1832,12 +1834,12 @@ parse_concatenate_entry :: proc(
 			"OF",
 		) {
 			error_current(p, "syntax error: expected keyword")
-			return entry, false
+			return entry, false, false
 		}
 		entry.lines_of = true
 		source := required_simple_expr(p, body_start, []string{"INTO"})
 		if source == nil {
-			return entry, false
+			return entry, false, false
 		}
 		append(&entry.sources, source)
 	} else {
@@ -1845,7 +1847,7 @@ parse_concatenate_entry :: proc(
 	}
 	if !allow_keyword(p, "INTO") {
 		error_current(p, "syntax error: expected keyword")
-		return entry, false
+		return entry, false, false
 	}
 	entry.target = required_simple_expr(p, body_start, []string{"SEPARATED", "RESPECTING", "IN"})
 	for !simple_stmt_done(p, body_start) && current_token(p).kind != .Comma {
@@ -1861,9 +1863,17 @@ parse_concatenate_entry :: proc(
 			entry.respecting_blanks = allow_keyword(p, "BLANKS")
 			continue
 		}
+		if allow_keyword(p, "IN") {
+			if allow_keyword(p, "BYTE") {
+				byte_mode = allow_keyword(p, "MODE")
+			} else if allow_keyword(p, "CHARACTER") {
+				allow_keyword(p, "MODE")
+			}
+			continue
+		}
 		bump_token(p)
 	}
-	return entry, entry.target != nil && len(entry.sources) > 0
+	return entry, entry.target != nil && len(entry.sources) > 0, byte_mode
 }
 
 parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
@@ -1876,9 +1886,10 @@ parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if allow_token(p, .Comma) {
 			continue
 		}
-		entry, ok := parse_concatenate_entry(p, body_start)
+		entry, ok, byte_mode := parse_concatenate_entry(p, body_start)
 		if ok {
 			append(&stmt.entries, entry)
+			stmt.byte_mode = stmt.byte_mode || byte_mode
 		} else {
 			break
 		}

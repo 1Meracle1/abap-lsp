@@ -2058,6 +2058,39 @@ ENDFORM.
 }
 
 @(test)
+collects_insert_parser_facts_without_keyword_refs :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///insert_facts.abap",
+		`
+FORM run.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA ls_row TYPE string.
+  DATA lv_idx TYPE i.
+
+  INSERT ls_row INTO TABLE lt_rows INDEX lv_idx.
+  INSERT zinsert_tab FROM TABLE lt_rows ACCEPTING DUPLICATE KEYS.
+  INSERT INTO zinto_tab VALUES ls_row.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, system_update_present(&unit, .Insert_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Insert_Db_Table, "subrc"))
+	testing.expect(t, sql_source_present(&unit, "zinsert_tab", .External))
+	testing.expect(t, sql_source_present(&unit, "zinto_tab", .External))
+	testing.expect(t, !has_reference(&unit, "zinsert_tab", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "zinto_tab", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lt_rows", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "ls_row", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_idx", .Value, .Identifier))
+	keywords := [?]string{"insert", "into", "table", "from", "values", "accepting", "duplicate", "keys"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
 collects_surface_source_maintenance_and_string_operation_facts :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -2090,7 +2123,7 @@ FORM run.
   READ DATASET lv_file INTO lv_text ACTUAL LENGTH lv_len.
   GET DATASET lv_file POSITION lv_pos ATTRIBUTES lv_attr.
   CONCATENATE LINES OF lt_source INTO lv_text IN BYTE MODE.
-  FIND 'A' IN lv_text MATCH OFFSET lv_off MATCH LENGTH lv_match_len RESULTS lv_result.
+  FIND ALL OCCURRENCES OF 'A' IN lv_text MATCH OFFSET lv_off MATCH LENGTH lv_match_len RESULTS lv_result.
 ENDFORM.
 `,
 	)
@@ -2103,6 +2136,7 @@ ENDFORM.
 	testing.expect(t, unit.concatenate_lines_of_sites[0].byte_mode)
 	testing.expect(t, len(unit.find_sites) == 1)
 	testing.expect(t, len(unit.find_sites[0].write_targets) == 3)
+	testing.expect(t, unit.find_sites[0].write_targets[2].definitely_assigned)
 	testing.expect(t, len(unit.assignment_sites) >= 12)
 	testing.expect(t, has_reference(&unit, "lt_source", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lt_report", .Value, .Identifier))

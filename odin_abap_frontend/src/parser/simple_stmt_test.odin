@@ -183,6 +183,24 @@ WRITE /10(5) text.`
 }
 
 @(test)
+string_statement_parser_facts_keep_modes :: proc(t: ^testing.T) {
+	source := `CONCATENATE LINES OF lt_source INTO lv_text IN BYTE MODE.
+FIND ALL OCCURRENCES OF 'A' IN lv_text RESULTS lv_result.`
+	parsed := parse(source, "string_stmt_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	concat := parsed.root.stmts[0].derived_stmt.(^ast.Concatenate_Stmt)
+	find := parsed.root.stmts[1].derived_stmt.(^ast.Find_Stmt)
+
+	testing.expect(t, concat.byte_mode)
+	testing.expect_value(t, len(concat.entries), 1)
+	testing.expect(t, concat.entries[0].lines_of)
+	testing.expect_value(t, find.occurrence, ast.Find_Occurrence.All)
+	testing.expect(t, find.results != nil)
+	testing.expect_value(t, ast.print_node(concat, context.allocator), "CONCATENATE LINES OF lt_source INTO lv_text IN BYTE MODE.")
+}
+
+@(test)
 message_heads_keep_compact_class_fact :: proc(t: ^testing.T) {
 	source := `MESSAGE e001(zmsg) WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
 MESSAGE ID zmsg TYPE lv_type NUMBER lv_no.

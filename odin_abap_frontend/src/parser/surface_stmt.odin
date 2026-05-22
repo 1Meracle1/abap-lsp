@@ -855,9 +855,22 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	body_start := p.index
 	stmt := ast.new(ast.Insert_Stmt, start.range, p.allocator)
 	stmt.assignments = make([dynamic]ast.Sql_Assignment_Clause, 0, 2, p.allocator)
+	initial_table_name := ""
+	initial_table_range := tokenizer.Range{}
+	if current_token(p).kind == .Ident {
+		initial_table_name = tokenizer.token_lexeme(current_token(p), p.source)
+		initial_table_range = current_token(p).range
+	}
 	if allow_keyword(p, "INTO") {
 		stmt.form = .Db_Table
 		stmt.target = data_expr(p, body_start, []string{"VALUES", "FROM", "SET", "ACCEPTING"})
+		if stmt.target != nil {
+			if id, ok := stmt.target.derived_expr.(^ast.Ident_Expr); ok && id.name != "" {
+				stmt.has_db_table_name = true
+				stmt.db_table_name = id.name
+				stmt.db_table_name_range = id.range
+			}
+		}
 		parse_insert_tail(p, body_start, stmt)
 		stmt.range = data_stmt_range(p, start)
 		return stmt
@@ -874,6 +887,11 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		)
 	}
 	parse_insert_tail(p, body_start, stmt)
+	if stmt.form == .Db_Table && stmt.target == nil && initial_table_name != "" {
+		stmt.has_db_table_name = true
+		stmt.db_table_name = initial_table_name
+		stmt.db_table_name_range = initial_table_range
+	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
 }

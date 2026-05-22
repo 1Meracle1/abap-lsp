@@ -989,7 +989,6 @@ collect_concatenate_stmt_facts :: proc(
 	scope: Scope_Id,
 ) {
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
-	byte_mode := stmt_text_has_phrase(c, stmt.range, []string{"IN", "BYTE", "MODE"})
 	for e in stmt.entries {
 		collect_expr_list_refs(c, e.sources[:], scope)
 		collect_expr_refs(c, e.separator, scope)
@@ -1002,7 +1001,7 @@ collect_concatenate_stmt_facts :: proc(
 					range = stmt.range,
 					source_range = e.sources[0].range,
 					source = type_fact_from_expr(c, e.sources[0], scope),
-					byte_mode = byte_mode,
+					byte_mode = stmt.byte_mode,
 				},
 			)
 		}
@@ -1077,11 +1076,7 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 			&write_targets,
 			Find_Write_Target_Data {
 				range = stmt.results.range,
-				definitely_assigned = stmt_text_has_phrase(
-					c,
-					stmt.range,
-					[]string{"ALL", "OCCURRENCES"},
-				),
+				definitely_assigned = stmt.occurrence == .All,
 			},
 		)
 	}
@@ -1981,12 +1976,12 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 		add_system_field_update(c, scope, stmt.range, .Insert_Db_Table, "subrc")
 		_, is_sql := collect_db_table_sql_source(c, stmt.range, stmt.target, scope, nil, false)
 		if !is_sql {
-			if name, name_range, ok := insert_db_table_name(c, stmt.range); ok {
+			if stmt.has_db_table_name {
 				_, is_sql = collect_db_table_sql_source_name(
 					c,
 					stmt.range,
-					name,
-					name_range,
+					stmt.db_table_name,
+					stmt.db_table_name_range,
 					scope,
 					nil,
 					false,
@@ -2159,33 +2154,4 @@ collect_generate_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Generate_Stmt, sco
 	collect_write_target_expr(c, scope, stmt.range, stmt.word)
 	collect_write_target_expr(c, scope, stmt.range, stmt.offset)
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
-}
-
-stmt_text_has_phrase :: proc(c: ^Collector, range: tokenizer.Range, phrase: []string) -> bool {
-	text := source_text(c, range)
-	tokens := header_tokens(c, text, range.start)
-	return sql_find_phrase(tokens[:], phrase) >= 0
-}
-
-insert_db_table_name :: proc(
-	c: ^Collector,
-	range: tokenizer.Range,
-) -> (
-	string,
-	tokenizer.Range,
-	bool,
-) {
-	text := source_text(c, range)
-	tokens := header_tokens(c, text, range.start)
-	if len(tokens) == 0 || !token_eq(tokens[0], "INSERT") {
-		return "", tokenizer.Range{}, false
-	}
-	i := 1
-	if i < len(tokens) && token_eq(tokens[i], "INTO") {
-		i += 1
-	}
-	if i < len(tokens) && token_ident_like(tokens[i]) {
-		return tokens[i].text, tokens[i].range, true
-	}
-	return "", tokenizer.Range{}, false
 }

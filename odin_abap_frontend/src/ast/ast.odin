@@ -1047,6 +1047,7 @@ Concatenate_Entry_Clause :: struct {
 Concatenate_Stmt :: struct {
 	using node: Stmt,
 	entries:    [dynamic]Concatenate_Entry_Clause,
+	byte_mode:  bool,
 }
 
 // ABAP syntax: one SPLIT entry, for example `source AT sep INTO a b`.
@@ -1997,6 +1998,9 @@ Insert_Stmt :: struct {
 	assigning:               ^Expr,
 	reference_into:          ^Expr,
 	assignments:             [dynamic]Sql_Assignment_Clause,
+	db_table_name:           string,
+	db_table_name_range:     tokenizer.Range,
+	has_db_table_name:       bool,
 	from_table:              bool,
 	accepting_duplicate_keys: bool,
 }

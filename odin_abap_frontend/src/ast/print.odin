@@ -1428,6 +1428,9 @@ emit_concatenate_stmt :: proc(p: ^Printer, stmt: ^Concatenate_Stmt) {
 			emit(p, " RESPECTING BLANKS")
 		}
 	}
+	if stmt.byte_mode {
+		emit(p, " IN BYTE MODE")
+	}
 	emit(p, ".")
 }
 
