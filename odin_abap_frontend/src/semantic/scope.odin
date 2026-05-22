@@ -31,6 +31,7 @@ Scope_Kind :: enum {
 	At_Block,
 	Try_Block,
 	Select_Block,
+	Constructor_For,
 }
 
 Scope_Data :: struct {

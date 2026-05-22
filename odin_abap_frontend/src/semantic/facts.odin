@@ -204,15 +204,16 @@ collect_constructor_for_clause_refs :: proc(
 	expr: ^ast.Constructor_For_Clause_Expr,
 	scope: Scope_Id,
 ) {
-	collect_expr_refs(c, expr.init, scope)
-	collect_expr_refs(c, expr.then_expr, scope)
-	collect_expr_refs(c, expr.condition, scope)
 	collect_expr_refs(c, expr.source, scope)
 	source_access, has_source := value_access_from_expr(c, expr.source, scope)
+	previous := c.current_scope
+	c.current_scope = scope
+	for_scope := push_scope(c, .Constructor_For, expr.range)
+	collect_expr_refs(c, expr.init, for_scope)
 	if expr.variable != "" {
-		declare_name_if_present(c, scope, expr.variable, .Variable, expr.range)
+		declare_name_if_present(c, for_scope, expr.variable, .Variable, expr.range)
 		data := Constructor_For_Binding_Data {
-			scope = scope,
+			scope = for_scope,
 			range = expr.range,
 			name  = canonical_name(expr.variable, c.allocator),
 		}
@@ -222,8 +223,13 @@ collect_constructor_for_clause_refs :: proc(
 		}
 		append(&c.constructor_for_bindings, data)
 	}
-	collect_expr_refs(c, expr.where_clause, scope)
-	collect_expr_list_refs(c, expr.body[:], scope)
+	collect_expr_refs(c, expr.then_expr, for_scope)
+	collect_expr_refs(c, expr.condition, for_scope)
+	collect_expr_refs(c, expr.where_clause, for_scope)
+	collect_expr_list_refs(c, expr.body[:], for_scope)
+	c.current_scope = for_scope
+	pop_scope(c)
+	c.current_scope = previous
 }
 
 collect_selector_expr_refs :: proc(
@@ -935,17 +941,6 @@ collect_split_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Split_Stmt, scope: Sc
 		collect_expr_refs(c, e.separator, scope)
 		for target in e.targets {
 			collect_expr_refs(c, target, scope)
-			if target != nil {
-				if inline_name_expr, ok := target.derived_expr.(^ast.Data_Inline_Name_Expr); ok {
-					declare_name_if_present(
-						c,
-						scope,
-						inline_name_expr.name,
-						.Variable,
-						inline_name_expr.range,
-					)
-				}
-			}
 		}
 	}
 }
@@ -1261,17 +1256,6 @@ collect_message_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Message_Stmt, scope
 		}
 	}
 	collect_expr_refs(c, stmt.into, scope)
-	if stmt.into != nil {
-		if inline_name_expr, ok := stmt.into.derived_expr.(^ast.Data_Inline_Name_Expr); ok {
-			declare_name_if_present(
-				c,
-				scope,
-				inline_name_expr.name,
-				.Variable,
-				inline_name_expr.range,
-			)
-		}
-	}
 	collect_expr_refs(c, stmt.display_like, scope)
 	collect_expr_refs(c, stmt.raising, scope)
 	add_system_field_update(c, scope, stmt.range, .Message, "msgid")
@@ -1417,17 +1401,6 @@ collect_assign_field_stmt_facts :: proc(
 ) {
 	add_system_field_update(c, scope, stmt.range, .Assign, "subrc")
 	collect_expr_list_refs(c, stmt.operands[:], scope)
-	for value in stmt.operands {
-		if inline_name_expr, ok := value.derived_expr.(^ast.Field_Symbol_Inline_Name_Expr); ok {
-			declare_name_if_present(
-				c,
-				scope,
-				inline_name_expr.name,
-				.Field_Symbol,
-				inline_name_expr.range,
-			)
-		}
-	}
 }
 
 collect_line_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Line_Stmt, scope: Scope_Id) {
@@ -1837,15 +1810,6 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 			}
 		}
 		if e.into != nil {
-			if inline_name_expr, ok := e.into.derived_expr.(^ast.Data_Inline_Name_Expr); ok {
-				declare_name_if_present(
-					c,
-					scope,
-					inline_name_expr.name,
-					.Variable,
-					inline_name_expr.range,
-				)
-			}
 			lhs_access, has_lhs := value_access_from_expr(c, e.into, scope)
 			add_assignment_site(
 				c,
@@ -1858,18 +1822,6 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 				type_fact_from_expr(c, e.into, scope),
 				unknown_type_fact(),
 			)
-		}
-		if e.assigning != nil {
-			if inline_name_expr, ok := e.assigning.derived_expr.(^ast.Field_Symbol_Inline_Name_Expr);
-			   ok {
-				declare_name_if_present(
-					c,
-					scope,
-					inline_name_expr.name,
-					.Field_Symbol,
-					inline_name_expr.range,
-				)
-			}
 		}
 		if e.binary_search && e.table != nil {
 			key_fields := make([dynamic]string, 0, len(e.key_values), c.allocator)

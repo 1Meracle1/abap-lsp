@@ -379,6 +379,20 @@ ENDCLASS.`
 }
 
 @(test)
+oop_qualified_method_member_keeps_component_name :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS if_demo~run REDEFINITION.
+ENDCLASS.`
+	parsed := parse(source, "oop_qualified_method.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	methods := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
+	testing.expect_value(t, len(methods.members), 1)
+	testing.expect_value(t, methods.members[0].name, "if_demo~run")
+}
+
+@(test)
 oop_signature_parameters_are_concrete_ast_clauses :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

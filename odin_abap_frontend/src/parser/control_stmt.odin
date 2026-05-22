@@ -631,14 +631,14 @@ parse_structural_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_index := p.index
 	start := expect_keyword(p, "METHOD")
-	name := first_name_token_until_period(p)
+	name := first_qualified_name_until_period(p)
 	consume_raw_until_top_level_period(p)
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
 		return nil
 	}
 	stmt := ast.new(ast.Method_Decl, start.range, p.allocator)
-	stmt.name = tokenizer.token_lexeme(name, p.source) if name.kind != .Eof else ""
+	stmt.name = name
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.header_text = strings.clone(p.source[start.range.start:period.range.start], p.allocator)
 	if method_header_is_amdp(p, start_index, p.previous_index) {

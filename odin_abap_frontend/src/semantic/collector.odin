@@ -15,6 +15,7 @@ Collector :: struct {
 	allocator:                              mem.Allocator,
 	scope_symbols:                          map[Scope_Index_Key]Symbol_Id,
 	declared_scope_symbols:                 map[Scope_Index_Key]Symbol_Id,
+	forward_type_symbols:                   map[Symbol_Id]bool,
 	root_scope:                             Scope_Id,
 	current_scope:                          Scope_Id,
 	scopes:                                 [dynamic]Scope_Data,
@@ -98,6 +99,7 @@ collect_unit :: proc(
 	}
 
 	unit := unit_analysis_make(unit_id, uri, root_range, allocator)
+	unit.source = source
 	c := Collector {
 		source                                 = source,
 		uri                                    = unit.uri,
@@ -106,6 +108,7 @@ collect_unit :: proc(
 		allocator                              = allocator,
 		scope_symbols                          = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2 + 64, allocator),
 		declared_scope_symbols                 = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
+		forward_type_symbols                   = make(map[Symbol_Id]bool, 16, allocator),
 		root_scope                             = unit.root_scope,
 		current_scope                          = unit.root_scope,
 		scopes                                 = unit.scopes,
@@ -398,6 +401,29 @@ find_symbol_in_scope :: proc(
 	return INVALID_SYMBOL_ID, false
 }
 
+find_same_kind_symbol_in_scope :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	id, ok := find_symbol_in_scope(c, scope, name, kind)
+	if !ok || c.symbols[symbol_id_index(id)].kind != kind {
+		return INVALID_SYMBOL_ID, false
+	}
+	return id, true
+}
+
+symbol_is_forward_type :: proc(c: ^Collector, id: Symbol_Id) -> bool {
+	if is_forward, ok := c.forward_type_symbols[id]; ok {
+		return is_forward
+	}
+	return false
+}
+
 add_diagnostic :: proc(
 	c: ^Collector,
 	kind: Diagnostic_Kind,
@@ -498,8 +524,7 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 	case ^ast.Module_Decl:
 		walk_named_block(c, n.name, .Module, .Module, n.range, n.body, scope)
 	case ^ast.Event_Block_Stmt:
-		owner := declare_collected_symbol(c, scope, n.kind, .Event, n.header_range)
-		walk_body_in_scope(c, .Event_Block, n.range, n.body, owner)
+		walk_body_in_scope(c, .Event_Block, n.range, n.body)
 	case ^ast.Oop_Simple_Stmt:
 		walk_oop_simple_stmt(c, n, scope)
 	case ^ast.Assign_Stmt:
@@ -1573,7 +1598,7 @@ walk_include_stmt :: proc(c: ^Collector, stmt: ^ast.Include_Stmt, scope: Scope_I
 		_ = declare_collected_symbol(c, scope, name, .Include, include_name.range)
 		append(
 			&c.include_edges,
-			Include_Edge{name = name, range = include_name.range, target = INVALID_UNIT_ID},
+			Include_Edge{name = name, range = include_name.range, target = INVALID_UNIT_ID, if_found = stmt.if_found},
 		)
 		add_reference(c, scope, name, .Value, .Include, include_name.range)
 	}
@@ -1607,18 +1632,32 @@ walk_named_block :: proc(
 
 walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 	owner := INVALID_SYMBOL_ID
+	owner_is_forward := false
+	declared_owner := false
 	if stmt.name != "" && (.Implementation in stmt.flags || .Bodyless in stmt.flags) {
-		if existing, ok := find_symbol_in_scope(c, scope, stmt.name, .Class); ok {
+		if existing, ok := find_same_kind_symbol_in_scope(c, scope, stmt.name, .Class); ok {
 			owner = existing
+			owner_is_forward = symbol_is_forward_type(c, owner)
+		}
+	} else if stmt.name != "" {
+		if existing, ok := find_same_kind_symbol_in_scope(c, scope, stmt.name, .Class);
+		   ok && symbol_is_forward_type(c, existing) {
+			owner = existing
+			owner_is_forward = true
 		}
 	}
 	if owner == INVALID_SYMBOL_ID && stmt.name != "" {
 		owner = declare_collected_symbol(c, scope, stmt.name, .Class, stmt.header_range)
+		declared_owner = true
+	}
+	if .Bodyless in stmt.flags && owner != INVALID_SYMBOL_ID && (declared_owner || owner_is_forward) {
+		c.forward_type_symbols[owner] = true
 	}
 	if .Implementation in stmt.flags && stmt.name != "" {
 		add_reference(c, scope, stmt.name, .Type, .Type_Ref, stmt.header_range)
 	}
 	if !(.Implementation in stmt.flags) && !(.Bodyless in stmt.flags) && owner != INVALID_SYMBOL_ID {
+		c.forward_type_symbols[owner] = false
 		add_class_definition(c, owner, .Abstract in stmt.flags)
 		if stmt.superclass_name != "" {
 			superclass := canonical_name(stmt.superclass_name, c.allocator)
@@ -1644,13 +1683,29 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 
 walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Scope_Id) {
 	owner := INVALID_SYMBOL_ID
+	owner_is_forward := false
+	declared_owner := false
 	if stmt.name != "" && stmt.is_bodyless {
-		if existing, ok := find_symbol_in_scope(c, scope, stmt.name, .Interface); ok {
+		if existing, ok := find_same_kind_symbol_in_scope(c, scope, stmt.name, .Interface); ok {
 			owner = existing
+			owner_is_forward = symbol_is_forward_type(c, owner)
+		}
+	} else if stmt.name != "" {
+		if existing, ok := find_same_kind_symbol_in_scope(c, scope, stmt.name, .Interface);
+		   ok && symbol_is_forward_type(c, existing) {
+			owner = existing
+			owner_is_forward = true
 		}
 	}
 	if owner == INVALID_SYMBOL_ID && stmt.name != "" {
 		owner = declare_collected_symbol(c, scope, stmt.name, .Interface, stmt.header_range)
+		declared_owner = true
+	}
+	if stmt.is_bodyless && owner != INVALID_SYMBOL_ID && (declared_owner || owner_is_forward) {
+		c.forward_type_symbols[owner] = true
+	}
+	if !stmt.is_bodyless && owner != INVALID_SYMBOL_ID {
+		c.forward_type_symbols[owner] = false
 	}
 	previous := c.current_scope
 	c.current_scope = scope
@@ -1811,7 +1866,11 @@ walk_oop_simple_stmt :: proc(c: ^Collector, stmt: ^ast.Oop_Simple_Stmt, scope: S
 		return
 	}
 	for member in stmt.members {
-		declare_name_if_present(c, scope, member.name, kind, stmt.range)
+		name := member.name
+		if kind == .Method {
+			name = method_member_name(member.name)
+		}
+		declare_name_if_present(c, scope, name, kind, stmt.range)
 	}
 }
 
@@ -1935,7 +1994,8 @@ collect_class_oop_stmt :: proc(
 	case .Methods, .Class_Methods:
 		is_static := stmt.kind == .Class_Methods
 		for member in stmt.members {
-			declare_name_if_present(c, scope, member.name, .Method, stmt.range)
+			name := method_member_name(member.name)
+			declare_name_if_present(c, scope, name, .Method, stmt.range)
 			parameters := method_parameters_from_signatures(c, member.signatures[:])
 			for param in parameters {
 				if .Has_Declared_Type in param.flags {
@@ -1950,7 +2010,7 @@ collect_class_oop_stmt :: proc(
 				&c.class_members,
 				Class_Member_Data {
 					class_symbol = class_symbol,
-					name = canonical_name(member.name, c.allocator),
+					name = canonical_name(name, c.allocator),
 					kind = .Method,
 					visibility = visibility,
 					decl_range = stmt.range,

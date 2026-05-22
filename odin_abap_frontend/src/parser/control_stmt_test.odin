@@ -391,3 +391,16 @@ ENDCLASS.`
 	testing.expect(t, method.amdp_body != "")
 	testing.expect_value(t, len(method.body), 0)
 }
+
+@(test)
+method_block_keeps_interface_qualified_name :: proc(t: ^testing.T) {
+	source := `CLASS lcl IMPLEMENTATION.
+  METHOD if_demo~run.
+  ENDMETHOD.
+ENDCLASS.`
+	parsed := parse(source, "qualified_method_block.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	method := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[0].derived_stmt.(^ast.Method_Decl)
+	testing.expect_value(t, method.name, "if_demo~run")
+}

@@ -1005,6 +1005,84 @@ CLASS zcl_deferred DEFINITION DEFERRED.`
 }
 
 @(test)
+deferred_class_and_interface_definitions_reuse_forward_symbol :: proc(t: ^testing.T) {
+	source := `CLASS zcl_forward DEFINITION DEFERRED.
+INTERFACE zif_forward DEFERRED.
+
+CLASS zcl_forward DEFINITION.
+ENDCLASS.
+INTERFACE zif_forward.
+ENDINTERFACE.`
+	unit := collect_test_unit(t, "file:///forward_types.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+
+	class_count := 0
+	interface_count := 0
+	for symbol in unit.symbols {
+		if symbol.kind == .Class && symbol.name == "zcl_forward" {
+			class_count += 1
+		}
+		if symbol.kind == .Interface && symbol.name == "zif_forward" {
+			interface_count += 1
+		}
+	}
+	testing.expect_value(t, class_count, 1)
+	testing.expect_value(t, interface_count, 1)
+}
+
+@(test)
+qualified_method_redefinitions_do_not_duplicate_interface_name :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS lif_demo~create REDEFINITION.
+    METHODS lif_demo~delete REDEFINITION.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///qualified_redefinitions.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect(t, has_symbol(&unit, .Method, "create"))
+	testing.expect(t, has_symbol(&unit, .Method, "delete"))
+}
+
+@(test)
+program_event_blocks_do_not_duplicate_event_symbols :: proc(t: ^testing.T) {
+	source := `AT SELECTION-SCREEN ON EXIT-COMMAND.
+  DATA lv_exit TYPE i.
+
+AT SELECTION-SCREEN.
+  DATA lv_screen TYPE i.`
+	unit := collect_test_unit(t, "file:///selection_screen_events.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+}
+
+@(test)
+inline_statement_targets_are_declared_once :: proc(t: ^testing.T) {
+	source := `DATA lt_values TYPE STANDARD TABLE OF i.
+DATA lv_text TYPE string.
+READ TABLE lt_values INDEX 1 ASSIGNING FIELD-SYMBOL(<row>).
+MESSAGE i001 INTO DATA(lv_message).
+ASSIGN lv_text TO FIELD-SYMBOL(<text>).`
+	unit := collect_test_unit(t, "file:///inline_statement_targets.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect(t, has_symbol(&unit, .Field_Symbol, "<row>"))
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_message"))
+	testing.expect(t, has_symbol(&unit, .Field_Symbol, "<text>"))
+}
+
+@(test)
+constructor_for_iterators_are_expression_scoped :: proc(t: ^testing.T) {
+	source := `DATA(lv_first) = REDUCE i( INIT x = 0 FOR i = 0 UNTIL i > 1 NEXT x = x + i ).
+DATA(lv_second) = REDUCE i( INIT x = 0 FOR i = 0 UNTIL i > 1 NEXT x = x + i ).`
+	unit := collect_test_unit(t, "file:///constructor_for_scope.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect_value(t, len(unit.constructor_for_bindings), 2)
+}
+
+@(test)
 collects_multiple_method_parameters_from_oop_ast :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
@@ -2913,6 +2991,20 @@ analyze_target_reports_unresolved_include :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(project.units), 1)
 	testing.expect(t, project_has_diagnostic(&project, .Unresolved_Include))
 	testing.expect(t, has_diagnostic(&project.units[0], .Unresolved_Include))
+}
+
+@(test)
+analyze_target_allows_missing_if_found_include :: proc(t: ^testing.T) {
+	target := Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = "INCLUDE zmissing IF FOUND.",
+	}
+
+	project := analyze_project_test(t, 0, target, nil)
+
+	testing.expect_value(t, len(project.units), 1)
+	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Include))
+	testing.expect(t, !has_diagnostic(&project.units[0], .Unresolved_Include))
 }
 
 @(test)

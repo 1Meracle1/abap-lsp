@@ -403,7 +403,7 @@ rebuild_semantic_index_task :: proc(payload: Project_Task_Payload) -> runtime.No
 add_unresolved_include_diagnostics :: proc(units: []Unit_Analysis, allocator: mem.Allocator) {
 	for &unit in units {
 		for edge in unit.include_edges {
-			if !edge.has_target {
+			if !edge.has_target && !edge.if_found {
 				append(
 					&unit.diagnostics,
 					Diagnostic {

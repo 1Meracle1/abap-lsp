@@ -382,6 +382,7 @@ Include_Edge :: struct {
 	range:      tokenizer.Range,
 	target:     Unit_Id,
 	has_target: bool,
+	if_found:   bool,
 }
 
 Table_Work_Area_Data :: struct {
@@ -967,6 +968,7 @@ Routine_Control_Region_Data :: struct {
 Unit_Analysis :: struct {
 	unit_id:                                Unit_Id,
 	uri:                                    string,
+	source:                                 string,
 	root_scope:                             Scope_Id,
 	scopes:                                 [dynamic]Scope_Data,
 	symbols:                                [dynamic]Symbol_Data,

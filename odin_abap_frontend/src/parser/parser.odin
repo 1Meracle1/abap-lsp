@@ -399,6 +399,43 @@ first_name_token_until_period :: proc(p: ^Parser) -> Token {
 	return Token{kind = .Eof}
 }
 
+qualified_ident_name_at :: proc(p: ^Parser, index: int) -> (string, int, bool) {
+	if index < 0 || index >= len(p.tokens) {
+		return "", index, false
+	}
+	name := p.tokens[index]
+	if name.kind != .Ident {
+		return "", index, false
+	}
+	if index + 2 < len(p.tokens) &&
+	   p.tokens[index + 1].kind == .Tilde &&
+	   p.tokens[index + 2].kind == .Ident {
+		out := strings.builder_make(p.allocator)
+		strings.write_string(&out, tokenizer.token_lexeme(name, p.source))
+		strings.write_byte(&out, '~')
+		strings.write_string(&out, tokenizer.token_lexeme(p.tokens[index + 2], p.source))
+		return strings.to_string(out), index + 3, true
+	}
+	return tokenizer.token_lexeme(name, p.source), index + 1, true
+}
+
+first_qualified_name_until_period :: proc(p: ^Parser) -> string {
+	for i in p.index ..< len(p.tokens) {
+		tok := p.tokens[i]
+		if tok.kind == .Period || tok.kind == .Eof {
+			break
+		}
+		if tok.kind == .Ident {
+			name, _, _ := qualified_ident_name_at(p, i)
+			return name
+		}
+		if tok.kind == .String || tok.kind == .Number {
+			return tokenizer.token_lexeme(tok, p.source)
+		}
+	}
+	return ""
+}
+
 next_token_kind :: proc(p: ^Parser, offset: int) -> tokenizer.Token_Kind {
 	index := p.index + offset
 	if index >= 0 && index < len(p.tokens) {

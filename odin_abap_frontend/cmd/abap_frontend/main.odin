@@ -12,6 +12,7 @@ import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
 import "core:os"
+import "core:strings"
 
 Node_Count :: struct {
 	name:  string,
@@ -179,7 +180,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		os.exit(1)
 	}
 	print_analyze_counts(&result.project)
-	print_analyze_diagnostics(&result.project)
+	print_analyze_diagnostics(&result.project, allocator)
 	frontend_runtime.pool_destroy(&pool)
 }
 
@@ -211,18 +212,110 @@ print_analyze_counts :: proc(project: ^semantic.Project_Analysis) {
 	)
 }
 
-print_analyze_diagnostics :: proc(project: ^semantic.Project_Analysis) {
-	for unit in project.units {
-		for diagnostic in unit.diagnostics {
-			fmt.printf(
-				"diagnostic\t%s\t%v\t%d\t%d\t%s\n",
-				unit.uri,
-				diagnostic.kind,
-				diagnostic.range.start,
-				diagnostic.range.end,
-				diagnostic.message,
-			)
+Source_Position :: struct {
+	line:   int,
+	column: int,
+}
+
+build_line_starts :: proc(source: string, allocator: mem.Allocator) -> [dynamic]int {
+	starts := make([dynamic]int, 0, 128, allocator)
+	append(&starts, 0)
+	for i in 0 ..< len(source) {
+		if source[i] == '\n' {
+			append(&starts, i + 1)
 		}
+	}
+	return starts
+}
+
+source_position :: proc(source: string, starts: []int, offset: int) -> Source_Position {
+	pos := offset
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(source) {
+		pos = len(source)
+	}
+	line_index := 0
+	lo, hi := 0, len(starts) - 1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if starts[mid] <= pos {
+			line_index = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return Source_Position {
+		line = line_index + 1,
+		column = pos - starts[line_index] + 1,
+	}
+}
+
+source_line_text :: proc(source: string, starts: []int, line: int) -> string {
+	index := line - 1
+	if index < 0 || index >= len(starts) {
+		return ""
+	}
+	start := starts[index]
+	end := len(source)
+	if index + 1 < len(starts) {
+		end = starts[index + 1] - 1
+	}
+	if end > start && source[end - 1] == '\r' {
+		end -= 1
+	}
+	return source[start:end]
+}
+
+display_uri :: proc(uri: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	for i in 0 ..< len(uri) {
+		ch := uri[i]
+		if ch == '\\' {
+			ch = '/'
+		}
+		strings.write_byte(&out, ch)
+	}
+	return strings.to_string(out)
+}
+
+print_caret_line :: proc(start_column, width: int) {
+	fmt.print("    ")
+	spaces := start_column - 1
+	for _ in 0 ..< spaces {
+		fmt.print(" ")
+	}
+	w := width
+	if w < 1 {
+		w = 1
+	}
+	for _ in 0 ..< w {
+		fmt.print("^")
+	}
+	fmt.println()
+}
+
+print_analyze_diagnostics :: proc(project: ^semantic.Project_Analysis, allocator: mem.Allocator) {
+	for unit in project.units {
+		line_starts := build_line_starts(unit.source, allocator)
+		uri := display_uri(unit.uri, allocator)
+		for diagnostic in unit.diagnostics {
+			start := source_position(unit.source, line_starts[:], diagnostic.range.start)
+			end := source_position(unit.source, line_starts[:], diagnostic.range.end)
+			line_text := source_line_text(unit.source, line_starts[:], start.line)
+			width := end.column - start.column
+			if end.line != start.line {
+				width = len(line_text) - start.column + 2
+			}
+			fmt.printf("%s(%d:%d) %v: %s\n", uri, start.line, start.column, diagnostic.kind, diagnostic.message)
+			fmt.printf("    %s\n", line_text)
+			print_caret_line(start.column, width)
+			fmt.println()
+		}
+		delete(uri, allocator)
+		delete(line_starts)
 	}
 }
 

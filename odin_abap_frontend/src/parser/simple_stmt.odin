@@ -1177,9 +1177,10 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			bump_token(p)
 			continue
 		}
-		bump_token(p)
+		member_name, next_index, _ := qualified_ident_name_at(p, p.index)
+		p.index = next_index
 		member := ast.Oop_Member_Clause {
-			name       = tokenizer.token_lexeme(name, p.source),
+			name       = member_name,
 			signatures = make([dynamic]ast.Oop_Signature_Clause, 0, 2, p.allocator),
 		}
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
