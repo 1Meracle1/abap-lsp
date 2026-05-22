@@ -795,7 +795,7 @@ parse_form_header_parameters :: proc(
 	start_index, period_index: int,
 ) -> [dynamic]ast.Form_Parameter_Clause {
 	params := make([dynamic]ast.Form_Parameter_Clause, 0, 2, p.allocator)
-	i := header_body_start(p, start_index, period_index, "FORM")
+	i := header_body_start(start_index, period_index, "FORM")
 	section := ast.Form_Parameter_Section.Using
 	stop_keywords := []string{"TABLES", "USING", "CHANGING"}
 	for i < period_index {
@@ -832,7 +832,7 @@ parse_function_header_parameters :: proc(
 ) {
 	params := make([dynamic]ast.Function_Parameter_Clause, 0, 2, p.allocator)
 	exceptions := make([dynamic]ast.Function_Exception_Clause, 0, 1, p.allocator)
-	i := header_body_start(p, start_index, period_index, "FUNCTION")
+	i := header_body_start(start_index, period_index, "FUNCTION")
 	section := ast.Function_Parameter_Section.Importing
 	in_exceptions := false
 	stop_keywords := []string{"IMPORTING", "EXPORTING", "CHANGING", "TABLES", "EXCEPTIONS"}
@@ -881,7 +881,7 @@ parse_function_header_parameters :: proc(
 	return params, exceptions
 }
 
-header_body_start :: proc(p: ^Parser, start_index, period_index: int, keyword: string) -> int {
+header_body_start :: proc(start_index, period_index: int, keyword: string) -> int {
 	i := start_index + keyword_phrase_token_count(keyword)
 	if i < period_index {
 		i += 1

@@ -2320,7 +2320,7 @@ direct_call_stmt_starts :: proc(p: ^Parser) -> bool {
 	   keyword_is_compact_call(p, "UPDATE") {
 		return true
 	}
-	_, _, stray := stray_block_boundary(p)
+	_, stray := stray_block_boundary(p)
 	if stray || !expr_lead_token(current_token(p)) {
 		return false
 	}

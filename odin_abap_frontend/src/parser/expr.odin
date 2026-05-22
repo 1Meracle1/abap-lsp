@@ -56,12 +56,12 @@ parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	for at_keyword(p, "OR") {
-		op := bump_token(p)
+		bump_token(p)
 		right := parse_and_expr(p)
 		if right == nil {
 			return nil
 		}
-		left = build_binary_expr(p, left, .Or, right, op)
+		left = build_binary_expr(p, left, .Or, right)
 	}
 	return left
 }
@@ -73,12 +73,12 @@ parse_and_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	for at_keyword(p, "AND") {
-		op := bump_token(p)
+		bump_token(p)
 		right := parse_not_expr(p)
 		if right == nil {
 			return nil
 		}
-		left = build_binary_expr(p, left, .And, right, op)
+		left = build_binary_expr(p, left, .And, right)
 	}
 	return left
 }
@@ -117,41 +117,41 @@ parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	if p.open_sql_expr && at_keyword(p, "NOT") && at_keyword_index(p, p.index + 1, "LIKE") {
-		op_tok := bump_token(p)
+		bump_token(p)
 		bump_token(p)
 		right := parse_concat_expr(p)
 		if right == nil {
 			return nil
 		}
-		return build_binary_expr(p, left, .Not_Like, right, op_tok)
+		return build_binary_expr(p, left, .Not_Like, right)
 	}
 
 	if at_keyword(p, "NOT") && at_keyword_index(p, p.index + 1, "IN") {
-		op_tok := bump_token(p)
+		bump_token(p)
 		bump_token(p)
 		right := parse_parenthesized_raw_expr(p) if current_token(p).kind == .LParen else parse_concat_expr(p)
 		if right == nil {
 			return nil
 		}
-		return build_binary_expr(p, left, .Not_In, right, op_tok)
+		return build_binary_expr(p, left, .Not_In, right)
 	}
 
 	if p.open_sql_expr && at_keyword(p, "LIKE") {
-		op_tok := bump_token(p)
+		bump_token(p)
 		right := parse_concat_expr(p)
 		if right == nil {
 			return nil
 		}
-		return build_binary_expr(p, left, .Like, right, op_tok)
+		return build_binary_expr(p, left, .Like, right)
 	}
 
 	if op, ok := comparison_op(p, current_token(p)); ok {
-		op_tok := bump_token(p)
+		bump_token(p)
 		right := parse_parenthesized_raw_expr(p) if (op == .In || op == .Not_In) && current_token(p).kind == .LParen else parse_concat_expr(p)
 		if right == nil {
 			return nil
 		}
-		return build_binary_expr(p, left, op, right, op_tok)
+		return build_binary_expr(p, left, op, right)
 	}
 
 	return left
@@ -164,7 +164,7 @@ parse_concat_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 
 	for current_token(p).kind == .Ampersand {
-		op := bump_token(p)
+		bump_token(p)
 		if current_token(p).kind == .Ampersand {
 			bump_token(p)
 		}
@@ -172,15 +172,14 @@ parse_concat_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		if right == nil {
 			return nil
 		}
-		left = build_binary_expr(p, left, .Concatenate, right, op)
+		left = build_binary_expr(p, left, .Concatenate, right)
 	}
 	for current_token(p).kind == .String && tokens_touch(previous_token(p), current_token(p)) {
-		op := current_token(p)
 		right := parse_additive_expr(p)
 		if right == nil {
 			return nil
 		}
-		left = build_binary_expr(p, left, .Concatenate, right, op)
+		left = build_binary_expr(p, left, .Concatenate, right)
 	}
 	return left
 }
@@ -214,12 +213,12 @@ parse_additive_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			break
 		}
 
-		op_tok := bump_token(p)
+		bump_token(p)
 		right := parse_multiplicative_expr(p)
 		if right == nil {
 			return nil
 		}
-		left = build_binary_expr(p, left, op, right, op_tok)
+		left = build_binary_expr(p, left, op, right)
 	}
 	return left
 }
@@ -251,12 +250,20 @@ parse_multiplicative_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			break
 		}
 
-		op_tok := expect_keyword_phrase(p, "BIT-AND") if op == .Bit_And else expect_keyword_phrase(p, "BIT-OR") if op == .Bit_Or else expect_keyword_phrase(p, "BIT-XOR") if op == .Bit_Xor else bump_token(p)
+		if op == .Bit_And {
+			expect_keyword_phrase(p, "BIT-AND")
+		} else if op == .Bit_Or {
+			expect_keyword_phrase(p, "BIT-OR")
+		} else if op == .Bit_Xor {
+			expect_keyword_phrase(p, "BIT-XOR")
+		} else {
+			bump_token(p)
+		}
 		right := parse_unary_expr(p)
 		if right == nil {
 			return nil
 		}
-		left = build_binary_expr(p, left, op, right, op_tok)
+		left = build_binary_expr(p, left, op, right)
 	}
 	return left
 }
@@ -1530,7 +1537,7 @@ template_format_spec_starts :: proc(p: ^Parser) -> bool {
 	if current_token(p).kind != .Ident {
 		return false
 	}
-	next := next_significant_index(p, p.index + 1)
+	next := next_significant_index(p.index + 1)
 	return(
 		next < len(p.tokens) &&
 		p.tokens[next].kind == .Eq &&
@@ -1543,9 +1550,7 @@ build_binary_expr :: proc(
 	left: ^ast.Expr,
 	op: ast.Binary_Op,
 	right: ^ast.Expr,
-	op_token: Token,
 ) -> ^ast.Expr {
-	_ = op_token
 	expr := ast.new(
 		ast.Binary_Expr,
 		tokenizer.text_range(left.range.start, right.range.end),

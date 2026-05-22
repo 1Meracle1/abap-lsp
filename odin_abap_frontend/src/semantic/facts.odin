@@ -70,7 +70,6 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 				Named_Argument_Target{},
 				section,
 				has_section,
-				0,
 			)
 		}
 	case ^ast.Call_Named_Arg_Expr:
@@ -387,14 +386,12 @@ collect_call_arg_list_refs :: proc(
 					target,
 					current_section,
 					has_section,
-					ordinal,
 				)
 				append_call_argument(
 					c,
 					&items,
 					section_arg,
 					scope,
-					target,
 					current_section,
 					has_section,
 					ordinal,
@@ -403,8 +400,8 @@ collect_call_arg_list_refs :: proc(
 			}
 			continue
 		}
-		collect_call_arg_expr_refs(c, arg, scope, target, current_section, has_section, ordinal)
-		append_call_argument(c, &items, arg, scope, target, current_section, has_section, ordinal)
+		collect_call_arg_expr_refs(c, arg, scope, target, current_section, has_section)
+		append_call_argument(c, &items, arg, scope, current_section, has_section, ordinal)
 		ordinal += 1
 	}
 	append(
@@ -420,9 +417,7 @@ collect_call_arg_expr_refs :: proc(
 	target: Named_Argument_Target,
 	section: Named_Argument_Section,
 	has_section: bool,
-	ordinal: int,
 ) {
-	_ = ordinal
 	if named, ok := arg.derived_expr.(^ast.Call_Named_Arg_Expr); ok {
 		append(
 			&c.named_arguments,
@@ -450,7 +445,6 @@ append_call_argument :: proc(
 	items: ^[dynamic]Call_Argument_Data,
 	arg: ^ast.Expr,
 	scope: Scope_Id,
-	target: Named_Argument_Target,
 	section: Named_Argument_Section,
 	has_section: bool,
 	ordinal: int,
@@ -463,7 +457,6 @@ append_call_argument :: proc(
 	} else if pos, pos_ok := arg.derived_expr.(^ast.Call_Positional_Arg_Expr); pos_ok {
 		value = pos.value
 	}
-	_ = target
 	append(
 		items,
 		Call_Argument_Data {

@@ -107,7 +107,7 @@ infer_unit_semantic_facts :: proc(
 		if access.in_type_position {
 			continue
 		}
-		if fact, ok := resolve_field_access_tail(project, lookup, unit_index, access, false); ok {
+		if fact, ok := resolve_field_access_tail(project, lookup, unit_index, access); ok {
 			range := field_access_range(access)
 			push_expression_fact(&out.expression_facts, access.scope, range, .Selector, fact)
 		}
@@ -354,7 +354,7 @@ type_fact_for_access :: proc(
 	unit_index: int,
 	access: Field_Access,
 ) -> (Type_Fact_Data, bool) {
-	return resolve_field_access_tail(project, lookup, unit_index, access, false)
+	return resolve_field_access_tail(project, lookup, unit_index, access)
 }
 
 type_fact_for_range_indexed :: proc(

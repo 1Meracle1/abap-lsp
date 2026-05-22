@@ -1583,7 +1583,7 @@ known_stmt_lead_at :: proc(p: ^Parser, index: int) -> bool {
 }
 
 parse_stray_block_boundary_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
-	boundary, opener, ok := stray_block_boundary(p)
+	boundary, ok := stray_block_boundary(p)
 	if !ok {
 		return nil
 	}
@@ -1597,53 +1597,48 @@ parse_stray_block_boundary_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	error(
 		p,
 		tokenizer.text_range(start.range.start, previous_token(p).range.end),
-		stray_block_boundary_message(boundary, opener),
+		stray_block_boundary_message(boundary),
 	)
 	return build_invalid_statement(p, mark)
 }
 
-stray_block_boundary :: proc(p: ^Parser) -> (string, string, bool) {
-	for entry in STRAY_BLOCK_BOUNDARIES {
-		if at_keyword_phrase(p, entry.boundary) {
-			return entry.boundary, entry.opener, true
+stray_block_boundary :: proc(p: ^Parser) -> (string, bool) {
+	for boundary in STRAY_BLOCK_BOUNDARIES {
+		if at_keyword_phrase(p, boundary) {
+			return boundary, true
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
-Stray_Block_Boundary :: struct {
-	boundary: string,
-	opener:   string,
+STRAY_BLOCK_BOUNDARIES :: []string {
+	"ELSEIF",
+	"ELSE",
+	"ENDIF",
+	"WHEN",
+	"ENDCASE",
+	"ENDWHILE",
+	"ENDDO",
+	"ENDLOOP",
+	"CATCH",
+	"CLEANUP",
+	"ENDTRY",
+	"ENDCATCH",
+	"ENDCLASS",
+	"ENDINTERFACE",
+	"ENDMETHOD",
+	"ENDEXEC",
+	"ENDFORM",
+	"ENDFUNCTION",
+	"ENDMODULE",
+	"ENDENHANCEMENT",
+	"ENDSELECT",
+	"END-ENHANCEMENT-SECTION",
+	"END-TEST-SEAM",
+	"END-TEST-INJECTION",
 }
 
-STRAY_BLOCK_BOUNDARIES :: []Stray_Block_Boundary {
-	{"ELSEIF", "IF"},
-	{"ELSE", "IF"},
-	{"ENDIF", "IF"},
-	{"WHEN", "CASE"},
-	{"ENDCASE", "CASE"},
-	{"ENDWHILE", "WHILE"},
-	{"ENDDO", "DO"},
-	{"ENDLOOP", "LOOP"},
-	{"CATCH", "TRY"},
-	{"CLEANUP", "TRY"},
-	{"ENDTRY", "TRY"},
-	{"ENDCATCH", "CATCH SYSTEM-EXCEPTIONS"},
-	{"ENDCLASS", "CLASS"},
-	{"ENDINTERFACE", "INTERFACE"},
-	{"ENDMETHOD", "METHOD"},
-	{"ENDEXEC", "EXEC SQL"},
-	{"ENDFORM", "FORM"},
-	{"ENDFUNCTION", "FUNCTION"},
-	{"ENDMODULE", "MODULE"},
-	{"ENDENHANCEMENT", "ENHANCEMENT"},
-	{"ENDSELECT", "SELECT"},
-	{"END-ENHANCEMENT-SECTION", "ENHANCEMENT-SECTION"},
-	{"END-TEST-SEAM", "TEST-SEAM"},
-	{"END-TEST-INJECTION", "TEST-INJECTION"},
-}
-
-stray_block_boundary_message :: proc(boundary, opener: string) -> string {
+stray_block_boundary_message :: proc(boundary: string) -> string {
 	if boundary == "ENDIF" {
 		return "syntax error: unexpected ENDIF without matching IF"
 	}
@@ -1759,7 +1754,7 @@ MISSING_FRAGMENT_BOUNDARIES :: []string {
 	"ENDWHILE",
 }
 
-next_significant_index :: proc(p: ^Parser, index: int) -> int {
+next_significant_index :: proc(index: int) -> int {
 	return index
 }
 

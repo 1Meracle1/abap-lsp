@@ -416,7 +416,7 @@ validate_field_accesses :: proc(
 		if len(access.field_path) == 0 || access.in_type_position {
 			continue
 		}
-		if _, ok := resolve_field_access_tail(project, lookup, unit_index, access, false); !ok {
+		if _, ok := resolve_field_access_tail(project, lookup, unit_index, access); !ok {
 			field := access.field_path[len(access.field_path) - 1]
 			append_diag(
 				out,
@@ -630,9 +630,7 @@ resolve_field_access_tail :: proc(
 	lookup: ^Validation_Lookup,
 	unit_index: int,
 	access: Field_Access,
-	require_method: bool,
 ) -> (Type_Fact_Data, bool) {
-	_ = require_method
 	if access.base_namespace == .Type {
 		class_handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, access.base_name)
 		if !ok {
