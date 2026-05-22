@@ -762,7 +762,7 @@ normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string
 	for end > 0 && (uri[end - 1] == '/' || uri[end - 1] == '\\') {
 		end -= 1
 	}
-	out := strings.builder_make(allocator)
+	out := make([]byte, end, allocator)
 	for i in 0 ..< end {
 		ch := uri[i]
 		if ch == '\\' {
@@ -771,7 +771,7 @@ normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string
 		if 'A' <= ch && ch <= 'Z' {
 			ch += 'a' - 'A'
 		}
-		strings.write_byte(&out, ch)
+		out[i] = ch
 	}
-	return strings.to_string(out)
+	return string(out)
 }

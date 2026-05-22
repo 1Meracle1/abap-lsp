@@ -275,6 +275,12 @@ add_dependency_store_matches :: proc(
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
+	uri_key_arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	defer mem.dynamic_arena_destroy(&uri_key_arena)
+	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
+	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+
 	added := false
 	for candidate in remote_candidates {
 		record, ok, err := dep_store.find_artifact_for_candidate(
@@ -288,10 +294,12 @@ add_dependency_store_matches :: proc(
 			continue
 		}
 		seen_artifacts^[record.artifact_id] = true
-		input := source_input_from_dependency_record(&record, candidate, allocator)
-		if project_input_uri_exists(target_uri, dependencies^[:], candidates^[:], input.uri, allocator) {
+		uri := dependency_record_uri(&record, allocator)
+		if !project_input_uri_key_add_if_missing(&uri_keys, uri, uri_key_allocator) {
+			delete(uri, allocator)
 			continue
 		}
+		input := source_input_from_dependency_record(&record, candidate, uri, allocator)
 		append_dependency_input(candidates, dependencies, input, candidate, record.object_name, allocator)
 		added = true
 	}
@@ -307,6 +315,12 @@ add_dependency_store_any_profile_matches :: proc(
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
+	uri_key_arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	defer mem.dynamic_arena_destroy(&uri_key_arena)
+	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
+	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+
 	added := false
 	reader, reader_err := dep_store.reader(store, allocator)
 	if reader_err != .None {
@@ -324,10 +338,12 @@ add_dependency_store_any_profile_matches :: proc(
 			continue
 		}
 		seen_artifacts^[record.artifact_id] = true
-		input := source_input_from_dependency_record(&record, candidate, allocator)
-		if project_input_uri_exists(target_uri, dependencies^[:], candidates^[:], input.uri, allocator) {
+		uri := dependency_record_uri(&record, allocator)
+		if !project_input_uri_key_add_if_missing(&uri_keys, uri, uri_key_allocator) {
+			delete(uri, allocator)
 			continue
 		}
+		input := source_input_from_dependency_record(&record, candidate, uri, allocator)
 		append_dependency_input(candidates, dependencies, input, candidate, record.object_name, allocator)
 		added = true
 	}
@@ -337,6 +353,7 @@ add_dependency_store_any_profile_matches :: proc(
 source_input_from_dependency_record :: proc(
 	record: ^dep_store.Stored_Artifact_Record,
 	candidate: Remote_Dependency_Candidate,
+	uri: string,
 	allocator: mem.Allocator,
 ) -> Source_Input {
 	source := record.source_text
@@ -344,7 +361,7 @@ source_input_from_dependency_record :: proc(
 		source = synthetic_dependency_source(record.object_name, candidate.kind, allocator)
 	}
 	return Source_Input {
-		uri = dependency_record_uri(record, allocator),
+		uri = uri,
 		source = strings.clone(source, allocator),
 	}
 }
@@ -367,6 +384,12 @@ add_local_export_matches :: proc(
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
+	uri_key_arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	defer mem.dynamic_arena_destroy(&uri_key_arena)
+	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
+	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+
 	added := false
 	for candidate in remote_candidates {
 		file_names := local_export_candidate_file_names(candidate, allocator)
@@ -378,7 +401,7 @@ add_local_export_matches :: proc(
 			collect_local_export_candidate_paths(root, file_names[:], &paths, allocator)
 		}
 		for path in paths {
-			if project_input_uri_exists(target_uri, dependencies^[:], candidates^[:], path, allocator) {
+			if project_input_uri_key_exists(&uri_keys, path, uri_key_allocator) {
 				continue
 			}
 			source, ok := read_text_file(path, allocator)
@@ -388,6 +411,9 @@ add_local_export_matches :: proc(
 			if source_looks_xml(source) {
 				source = synthetic_dependency_source(candidate.name, candidate.kind, allocator)
 			} else if !local_export_abap_source_matches(candidate, source) {
+				continue
+			}
+			if !project_input_uri_key_add_if_missing(&uri_keys, path, uri_key_allocator) {
 				continue
 			}
 			append_dependency_input(
@@ -444,6 +470,12 @@ add_adt_matches_with_client :: proc(
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
+	uri_key_arena: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	defer mem.dynamic_arena_destroy(&uri_key_arena)
+	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
+	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+
 	added := false
 	for candidate in remote_candidates {
 		objects, err := adt.search_repository_objects(client, candidate.name, 50, allocator)
@@ -456,7 +488,7 @@ add_adt_matches_with_client :: proc(
 			selected = adt.direct_dependency_object_refs(candidate.name, candidate.kind, allocator)
 		}
 		for &object_ref in selected {
-			if !add_adt_object_match(candidates, dependencies, candidate, &object_ref, client, target_uri, allocator) {
+			if !add_adt_object_match(candidates, dependencies, candidate, &object_ref, client, &uri_keys, uri_key_allocator, allocator) {
 				continue
 			}
 			added = true
@@ -473,7 +505,8 @@ add_adt_object_match :: proc(
 	candidate: Remote_Dependency_Candidate,
 	object_ref: ^adt.Object_Ref,
 	client: ^adt.Client,
-	target_uri: string,
+	uri_keys: ^map[string]bool,
+	uri_key_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) -> bool {
 	fetched, err := adt.fetch_dependency_object(client, object_ref, allocator)
@@ -489,7 +522,8 @@ add_adt_object_match :: proc(
 		object_ref,
 		fetched.body,
 		fetched.file_extension,
-		target_uri,
+		uri_keys,
+		uri_key_allocator,
 		allocator,
 	)
 	for &shared in fetched.shared_dependencies {
@@ -501,7 +535,8 @@ add_adt_object_match :: proc(
 			&shared.object_ref,
 			shared.body,
 			shared.file_extension,
-			target_uri,
+			uri_keys,
+			uri_key_allocator,
 			allocator,
 		) {
 			added = true
@@ -517,11 +552,12 @@ add_adt_fetched_dependency_input :: proc(
 	object_ref: ^adt.Object_Ref,
 	source: string,
 	file_extension: string,
-	target_uri: string,
+	uri_keys: ^map[string]bool,
+	uri_key_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) -> bool {
 	uri := adt_dependency_uri(object_ref, file_extension, allocator)
-	if project_input_uri_exists(target_uri, dependencies^[:], candidates^[:], uri, allocator) {
+	if !project_input_uri_key_add_if_missing(uri_keys, uri, uri_key_allocator) {
 		delete(uri, allocator)
 		return false
 	}
@@ -603,28 +639,44 @@ append_dependency_input :: proc(
 	}
 }
 
-project_input_uri_exists :: proc(
+project_input_uri_keys :: proc(
 	target_uri: string,
 	dependencies: []Source_Input,
 	candidates: []Project_Candidate_Input,
+	extra: int,
+	allocator: mem.Allocator,
+) -> map[string]bool {
+	keys := make(map[string]bool, 1 + len(dependencies) + len(candidates) + extra, allocator)
+	_ = project_input_uri_key_add_if_missing(&keys, target_uri, allocator)
+	for input in dependencies {
+		_ = project_input_uri_key_add_if_missing(&keys, input.uri, allocator)
+	}
+	for candidate in candidates {
+		_ = project_input_uri_key_add_if_missing(&keys, candidate.input.uri, allocator)
+	}
+	return keys
+}
+
+project_input_uri_key_exists :: proc(
+	keys: ^map[string]bool,
 	uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
 	key := normalized_uri_path_key(uri, allocator)
-	if normalized_uri_path_key(target_uri, allocator) == key {
-		return true
+	return key in keys^
+}
+
+project_input_uri_key_add_if_missing :: proc(
+	keys: ^map[string]bool,
+	uri: string,
+	allocator: mem.Allocator,
+) -> bool {
+	key := normalized_uri_path_key(uri, allocator)
+	if key in keys^ {
+		return false
 	}
-	for input in dependencies {
-		if normalized_uri_path_key(input.uri, allocator) == key {
-			return true
-		}
-	}
-	for candidate in candidates {
-		if normalized_uri_path_key(candidate.input.uri, allocator) == key {
-			return true
-		}
-	}
-	return false
+	keys^[key] = true
+	return true
 }
 
 collect_local_export_candidate_paths :: proc(

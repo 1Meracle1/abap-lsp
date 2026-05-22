@@ -1804,6 +1804,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	dependencies := make([dynamic]Source_Input, context.allocator)
 	object_ref := adt.build_class_object_ref("ZCL_ADT_FETCH", "ZPKG", context.allocator)
 	defer adt.object_ref_destroy(&object_ref, context.allocator)
+	uri_keys := project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
 
 	added := add_adt_fetched_dependency_input(
 		&candidates,
@@ -1812,7 +1813,8 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 		&object_ref,
 		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
 		"abap",
-		target.uri,
+		&uri_keys,
+		context.allocator,
 		context.allocator,
 	)
 	testing.expect(t, added)
