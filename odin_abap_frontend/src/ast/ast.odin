@@ -2112,12 +2112,15 @@ Report_Kind :: enum {
 
 // ABAP syntax: `REPORT`, `PROGRAM`, `READ REPORT`, `INSERT REPORT`, or `DELETE REPORT`.
 Report_Stmt :: struct {
-	using node: Stmt,
-	kind:       Report_Kind,
-	name:       ^Expr,
-	source:     ^Expr,
-	line_size:  ^Expr,
-	line_count: ^Expr,
+	using node:      Stmt,
+	kind:            Report_Kind,
+	name:            ^Expr,
+	source:          ^Expr,
+	line_size:       ^Expr,
+	line_count:      ^Expr,
+	has_message_id:  bool,
+	message_id:      string,
+	message_id_range: tokenizer.Range,
 }
 
 Textpool_Kind :: enum {

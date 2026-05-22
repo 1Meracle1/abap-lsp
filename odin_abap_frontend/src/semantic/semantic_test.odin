@@ -1656,20 +1656,18 @@ ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO FIELD-SYMBOL(<fs_raw>).
 
 @(test)
 collects_message_default_and_message_use_facts :: proc(t: ^testing.T) {
-	unit := collect_test_unit(
-		t,
-		"file:///message_facts.abap",
-		`
+	source := `
 REPORT zmain MESSAGE-ID zmsg.
 DATA lv_text TYPE string.
 DATA lv_like TYPE c.
 DATA cx_msg TYPE string.
 MESSAGE i001 WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
-`,
-	)
+`
+	unit := collect_test_unit(t, "file:///message_facts.abap", source)
 
 	testing.expect(t, unit.has_message_default_class)
 	testing.expect_value(t, unit.message_default_class.name, "zmsg")
+	testing.expect_value(t, source[unit.message_default_class.range.start:unit.message_default_class.range.end], "zmsg")
 	testing.expect(t, has_reference(&unit, "zmsg", .Value, .Message_Class))
 	testing.expect_value(t, len(unit.message_uses), 1)
 	testing.expect_value(t, unit.message_uses[0].class_name, "zmsg")
@@ -1679,6 +1677,29 @@ MESSAGE i001 WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
 	testing.expect(t, has_reference(&unit, "cx_msg", .Value, .Identifier))
 	testing.expect(t, !has_reference(&unit, "i001", .Value, .Identifier))
 	testing.expect(t, !has_reference(&unit, "i001", .Value, .Message_Class))
+	keywords := [?]string{"report", "message", "id", "message-id"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
+program_message_id_sets_default_message_class :: proc(t: ^testing.T) {
+	source := `PROGRAM zmain MESSAGE-ID zmsg.
+MESSAGE e001.`
+	unit := collect_test_unit(t, "file:///program_message_default.abap", source)
+
+	testing.expect(t, unit.has_message_default_class)
+	testing.expect_value(t, unit.message_default_class.name, "zmsg")
+	testing.expect_value(t, source[unit.message_default_class.range.start:unit.message_default_class.range.end], "zmsg")
+	testing.expect_value(t, len(unit.message_uses), 1)
+	testing.expect_value(t, unit.message_uses[0].class_name, "zmsg")
+	testing.expect(t, has_reference(&unit, "zmsg", .Value, .Message_Class))
+	testing.expect(t, !has_reference(&unit, "e001", .Value, .Identifier))
+	keywords := [?]string{"program", "message", "id", "message-id"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
 }
 
 @(test)
@@ -2062,6 +2083,7 @@ FORM run.
 
   READ REPORT lv_prog INTO lt_report.
   INSERT REPORT lv_prog FROM lt_source.
+  DELETE REPORT lv_prog.
   INSERT TEXTPOOL lv_prog FROM lt_pool LANGUAGE 'E'.
   GENERATE SUBROUTINE POOL lt_source NAME lv_prog MESSAGE lv_msg LINE lv_line WORD lv_word OFFSET lv_offset.
   OPEN DATASET lv_file FOR INPUT IN TEXT MODE ENCODING DEFAULT MESSAGE lv_msg.
@@ -2075,6 +2097,7 @@ ENDFORM.
 
 	testing.expect(t, system_update_present(&unit, .Read_Report, "subrc"))
 	testing.expect(t, system_update_present(&unit, .Insert_Report, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Delete_Report, "subrc"))
 	testing.expect(t, system_update_present(&unit, .Insert_Textpool, "subrc"))
 	testing.expect(t, len(unit.concatenate_lines_of_sites) == 1)
 	testing.expect(t, unit.concatenate_lines_of_sites[0].byte_mode)

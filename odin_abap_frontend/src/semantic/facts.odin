@@ -1840,23 +1840,9 @@ walk_function_pool_decl :: proc(c: ^Collector, stmt: ^ast.Function_Pool_Decl, sc
 }
 
 collect_report_stmt_refs :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: Scope_Id) {
-	text := source_text(c, stmt.range)
-	tokens := header_tokens(c, text, stmt.range.start)
-	for i in 0 ..< len(tokens) {
-		if token_eq(tokens[i], "MESSAGE-ID") ||
-		   (token_eq(tokens[i], "MESSAGE") &&
-				   i + 2 < len(tokens) &&
-				   tokens[i + 1].text == "-" &&
-				   token_eq(tokens[i + 2], "ID")) {
-			name_idx := i + 1
-			if token_eq(tokens[i], "MESSAGE") {
-				name_idx = i + 3
-			}
-			if name_idx < len(tokens) && token_ident_like(tokens[name_idx]) {
-				set_message_default_class(c, tokens[name_idx].text, tokens[name_idx].range, scope)
-			}
-			return
-		}
+	if stmt.has_message_id {
+		set_message_default_class(c, stmt.message_id, stmt.message_id_range, scope)
+		return
 	}
 	#partial switch stmt.kind {
 	case .Read_Report:

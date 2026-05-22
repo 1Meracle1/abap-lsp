@@ -2528,6 +2528,10 @@ emit_report_stmt :: proc(p: ^Printer, stmt: ^Report_Stmt) {
 		emit(p, "DELETE REPORT ")
 	}
 	emit_node(p, stmt.name)
+	if stmt.has_message_id {
+		emit(p, " MESSAGE-ID ")
+		emit(p, stmt.message_id)
+	}
 	if stmt.source != nil {
 		emit(p, " INTO ")
 		emit_node(p, stmt.source)

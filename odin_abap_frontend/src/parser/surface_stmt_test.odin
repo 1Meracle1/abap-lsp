@@ -37,6 +37,35 @@ READ TEXTPOOL prog INTO lt LANGUAGE sy-langu.`
 }
 
 @(test)
+report_and_program_message_id_keep_parser_facts :: proc(t: ^testing.T) {
+	source := `REPORT zmain MESSAGE-ID zmsg.
+PROGRAM zprog MESSAGE-ID zcls.
+READ REPORT prog INTO source.
+INSERT REPORT prog FROM source.
+DELETE REPORT prog.`
+	parsed := parse(source, "report_message_id.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	report := parsed.root.stmts[0].derived_stmt.(^ast.Report_Stmt)
+	program := parsed.root.stmts[1].derived_stmt.(^ast.Report_Stmt)
+	read_report := parsed.root.stmts[2].derived_stmt.(^ast.Report_Stmt)
+	insert_report := parsed.root.stmts[3].derived_stmt.(^ast.Report_Stmt)
+	delete_report := parsed.root.stmts[4].derived_stmt.(^ast.Report_Stmt)
+
+	testing.expect(t, report.has_message_id)
+	testing.expect_value(t, report.message_id, "zmsg")
+	testing.expect_value(t, source[report.message_id_range.start:report.message_id_range.end], "zmsg")
+	testing.expect(t, program.has_message_id)
+	testing.expect_value(t, program.message_id, "zcls")
+	testing.expect_value(t, source[program.message_id_range.start:program.message_id_range.end], "zcls")
+	testing.expect(t, !read_report.has_message_id)
+	testing.expect(t, !insert_report.has_message_id)
+	testing.expect(t, !delete_report.has_message_id)
+	testing.expect_value(t, ast.print_node(report, context.allocator), "REPORT zmain MESSAGE-ID zmsg.")
+	testing.expect_value(t, ast.print_node(program, context.allocator), "PROGRAM zprog MESSAGE-ID zcls.")
+}
+
+@(test)
 program_include_statements_keep_concrete_nodes :: proc(t: ^testing.T) {
 	source := `INCLUDE zinc.
 INCLUDE: ztop, zf01.

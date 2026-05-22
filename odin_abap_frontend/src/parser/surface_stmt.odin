@@ -1436,10 +1436,10 @@ parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Report_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "REPORT") {
 		stmt.kind = .Report
-		stmt.name = data_expr(p, body_start, []string{"LINE-SIZE", "LINE", "LINE-COUNT"})
+		stmt.name = data_expr(p, body_start, []string{"MESSAGE-ID", "LINE-SIZE", "LINE", "LINE-COUNT"})
 	} else if allow_keyword(p, "PROGRAM") {
 		stmt.kind = .Program
-		stmt.name = data_expr(p, body_start, []string{"LINE-SIZE", "LINE", "LINE-COUNT"})
+		stmt.name = data_expr(p, body_start, []string{"MESSAGE-ID", "LINE-SIZE", "LINE", "LINE-COUNT"})
 	} else if allow_keyword(p, "READ") {
 		stmt.kind = .Read_Report
 		allow_keyword(p, "REPORT")
@@ -1455,6 +1455,16 @@ parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.name = data_expr(p, body_start, []string{})
 	}
 	for !data_stmt_done(p, body_start) {
+		if (stmt.kind == .Report || stmt.kind == .Program) && allow_keyword_phrase(p, "MESSAGE-ID") {
+			tok := current_token(p)
+			if tok.kind == .Ident || tok.kind == .Number || tok.kind == .String {
+				bump_token(p)
+				stmt.has_message_id = true
+				stmt.message_id = tokenizer.token_lexeme(tok, p.source)
+				stmt.message_id_range = tok.range
+			}
+			continue
+		}
 		if allow_keyword(p, "INTO") || allow_keyword(p, "FROM") {
 			stmt.source = data_expr(p, body_start, []string{"LINE-SIZE", "LINE", "LINE-COUNT"})
 			continue
