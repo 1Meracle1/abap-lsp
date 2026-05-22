@@ -1541,29 +1541,17 @@ walk_named_block :: proc(
 	range: tokenizer.Range,
 	body: [dynamic]^ast.Stmt,
 	parent_scope: Scope_Id,
-	header_text := "",
 ) {
 	owner := INVALID_SYMBOL_ID
 	if name != "" {
-		if symbol_kind == .Class && ascii_contains_ignore_case(header_text, "implementation") {
-			if existing, ok := find_symbol_in_scope(c, parent_scope, name, .Class); ok {
-				owner = existing
-			}
-		}
-		if owner == INVALID_SYMBOL_ID {
-			owner = declare_collected_symbol(c, parent_scope, name, symbol_kind, range)
-		}
+		owner = declare_collected_symbol(c, parent_scope, name, symbol_kind, range)
 	}
 	walk_body_in_scope(c, scope_kind, range, body, owner)
 }
 
 walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
-	is_impl := header_has_keyword(c, stmt.header_text, "IMPLEMENTATION")
-	bodyless :=
-		header_has_keyword(c, stmt.header_text, "DEFERRED") ||
-		header_has_keyword(c, stmt.header_text, "LOAD")
 	owner := INVALID_SYMBOL_ID
-	if stmt.name != "" && (is_impl || bodyless) {
+	if stmt.name != "" && (.Implementation in stmt.flags || .Bodyless in stmt.flags) {
 		if existing, ok := find_symbol_in_scope(c, scope, stmt.name, .Class); ok {
 			owner = existing
 		}
@@ -1571,28 +1559,24 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 	if owner == INVALID_SYMBOL_ID && stmt.name != "" {
 		owner = declare_collected_symbol(c, scope, stmt.name, .Class, stmt.header_range)
 	}
-	if is_impl && stmt.name != "" {
+	if .Implementation in stmt.flags && stmt.name != "" {
 		add_reference(c, scope, stmt.name, .Type, .Type_Ref, stmt.header_range)
 	}
-	if !is_impl && !bodyless && owner != INVALID_SYMBOL_ID {
-		add_class_definition(c, owner, header_has_keyword(c, stmt.header_text, "ABSTRACT"))
-		if superclass := header_value_after_phrase(
-			c,
-			stmt.header_text,
-			stmt.header_range.start,
-			[]string{"INHERITING", "FROM"},
-		); superclass != "" {
+	if !(.Implementation in stmt.flags) && !(.Bodyless in stmt.flags) && owner != INVALID_SYMBOL_ID {
+		add_class_definition(c, owner, .Abstract in stmt.flags)
+		if stmt.superclass_name != "" {
+			superclass := canonical_name(stmt.superclass_name, c.allocator)
 			append(
 				&c.class_inheritance,
 				Class_Inheritance_Data{class_symbol = owner, superclass_name = superclass},
 			)
-			add_reference(c, scope, superclass, .Type, .Type_Ref, stmt.header_range)
+			add_reference(c, scope, superclass, .Type, .Type_Ref, stmt.superclass_range)
 		}
 	}
 	previous := c.current_scope
 	c.current_scope = scope
 	class_scope := push_scope(c, .Class, stmt.range, owner)
-	if !is_impl && !bodyless {
+	if !(.Implementation in stmt.flags) && !(.Bodyless in stmt.flags) {
 		walk_class_body(c, stmt.body, class_scope, owner, .Private)
 	} else {
 		walk_stmt_list(c, stmt.body, class_scope)
@@ -1603,11 +1587,8 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 }
 
 walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Scope_Id) {
-	bodyless :=
-		header_has_keyword(c, stmt.header_text, "DEFERRED") ||
-		header_has_keyword(c, stmt.header_text, "LOAD")
 	owner := INVALID_SYMBOL_ID
-	if stmt.name != "" && bodyless {
+	if stmt.name != "" && stmt.is_bodyless {
 		if existing, ok := find_symbol_in_scope(c, scope, stmt.name, .Interface); ok {
 			owner = existing
 		}
@@ -1618,7 +1599,7 @@ walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Sco
 	previous := c.current_scope
 	c.current_scope = scope
 	interface_scope := push_scope(c, .Interface, stmt.range, owner)
-	if !bodyless {
+	if !stmt.is_bodyless {
 		walk_class_body(c, stmt.body, interface_scope, owner, .Public)
 	} else {
 		walk_stmt_list(c, stmt.body, interface_scope)
@@ -2517,44 +2498,6 @@ starts_with_word :: proc(text, prefix: string) -> bool {
 		return false
 	}
 	return ascii_equal_ignore_case(text[:len(prefix)], prefix)
-}
-
-header_has_keyword :: proc(c: ^Collector, text, keyword: string) -> bool {
-	tokens := header_tokens(c, text, 0)
-	for token in tokens {
-		if token_eq(token, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
-header_value_after_phrase :: proc(
-	c: ^Collector,
-	text: string,
-	base: int,
-	phrase: []string,
-) -> string {
-	tokens := header_tokens(c, text, base)
-	if len(phrase) == 0 {
-		return ""
-	}
-	for i in 0 ..< len(tokens) {
-		if i + len(phrase) >= len(tokens) {
-			break
-		}
-		matches := true
-		for j in 0 ..< len(phrase) {
-			if !token_eq(tokens[i + j], phrase[j]) {
-				matches = false
-				break
-			}
-		}
-		if matches {
-			return canonical_name(tokens[i + len(phrase)].text, c.allocator)
-		}
-	}
-	return ""
 }
 
 source_text :: proc(c: ^Collector, range: tokenizer.Range) -> string {

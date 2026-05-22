@@ -3,6 +3,7 @@ package abap_frontend_parser
 import "../ast"
 import "../tokenizer"
 
+import "base:intrinsics"
 import "core:mem"
 import "core:strings"
 
@@ -700,7 +701,24 @@ parse_named_block_stmt :: proc(
 	stmt.name = tokenizer.token_lexeme(name, p.source) if name.kind != .Eof else ""
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.header_text = strings.clone(p.source[start.range.start:period.range.start], p.allocator)
-	if named_block_header_is_bodyless(p, start_keyword, start_index, p.previous_index) {
+	period_index := p.previous_index
+	bodyless := named_block_header_is_bodyless(p, start_keyword, start_index, period_index)
+	when intrinsics.type_has_field(T, "is_bodyless") {
+		stmt.is_bodyless = bodyless
+	}
+	when intrinsics.type_has_field(T, "flags") {
+		if bodyless {
+			stmt.flags += {.Bodyless}
+		}
+		if named_block_header_has_keyword(p, start_index, period_index, "IMPLEMENTATION") {
+			stmt.flags += {.Implementation}
+		}
+		if named_block_header_has_keyword(p, start_index, period_index, "ABSTRACT") {
+			stmt.flags += {.Abstract}
+		}
+		stmt.superclass_name, stmt.superclass_range = named_block_header_superclass(p, start_index, period_index)
+	}
+	if bodyless {
 		stmt.body = make([dynamic]^ast.Stmt, 0, 0, p.allocator)
 		stmt.range = stmt.header_range
 		return stmt
@@ -726,12 +744,43 @@ named_block_header_is_bodyless :: proc(
 	if start_keyword != "CLASS" && start_keyword != "INTERFACE" {
 		return false
 	}
+	return(
+		named_block_header_has_keyword(p, start_index, period_index, "DEFERRED") ||
+		named_block_header_has_keyword(p, start_index, period_index, "LOAD") \
+	)
+}
+
+named_block_header_has_keyword :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+	keyword: string,
+) -> bool {
 	for i in start_index ..< period_index {
-		if token_is_keyword(p, p.tokens[i], "DEFERRED") || token_is_keyword(p, p.tokens[i], "LOAD") {
+		if token_is_keyword(p, p.tokens[i], keyword) {
 			return true
 		}
 	}
 	return false
+}
+
+named_block_header_superclass :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> (string, tokenizer.Range) {
+	for i in start_index ..< period_index {
+		if i + 2 >= period_index {
+			break
+		}
+		if token_is_keyword(p, p.tokens[i], "INHERITING") &&
+		   token_is_keyword(p, p.tokens[i + 1], "FROM") {
+			tok := p.tokens[i + 2]
+			if tok.kind == .Ident || tok.kind == .Number {
+				return tokenizer.token_lexeme(tok, p.source), tok.range
+			}
+			return "", tokenizer.text_range(tok.range.start, tok.range.start)
+		}
+	}
+	return "", tokenizer.text_range(0, 0)
 }
 
 parse_event_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

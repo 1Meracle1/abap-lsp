@@ -89,6 +89,40 @@ ENDCLASS.`
 }
 
 @(test)
+class_header_facts_are_ast_fields :: proc(t: ^testing.T) {
+	source := `CLASS lcl_abs DEFINITION ABSTRACT.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_super.
+ENDCLASS.
+CLASS lcl_impl IMPLEMENTATION.
+ENDCLASS.
+CLASS lcl_deferred DEFINITION DEFERRED.`
+	parsed := parse(source, "class_header_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 4)
+
+	abs := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	child := parsed.root.stmts[1].derived_stmt.(^ast.Class_Decl)
+	impl := parsed.root.stmts[2].derived_stmt.(^ast.Class_Decl)
+	deferred := parsed.root.stmts[3].derived_stmt.(^ast.Class_Decl)
+
+	testing.expect(t, .Abstract in abs.flags)
+	testing.expect(t, !(.Implementation in abs.flags))
+	testing.expect(t, !(.Bodyless in abs.flags))
+	testing.expect_value(t, child.superclass_name, "lcl_super")
+	testing.expect_value(
+		t,
+		source[child.superclass_range.start:child.superclass_range.end],
+		"lcl_super",
+	)
+	testing.expect(t, .Implementation in impl.flags)
+	testing.expect(t, !(.Bodyless in impl.flags))
+	testing.expect(t, .Bodyless in deferred.flags)
+	testing.expect_value(t, len(deferred.body), 0)
+}
+
+@(test)
 empty_control_flow_headers_report_specific_errors :: proc(t: ^testing.T) {
 	source := `IF . ENDIF.
 IF ok = abap_true. ELSEIF . ENDIF.

@@ -761,6 +761,60 @@ ENDCLASS.
 }
 
 @(test)
+collects_class_header_facts_from_ast :: proc(t: ^testing.T) {
+	source := `CLASS zcl_abs DEFINITION ABSTRACT.
+ENDCLASS.
+CLASS zcl_super DEFINITION.
+ENDCLASS.
+CLASS zcl_child DEFINITION INHERITING FROM zcl_super.
+ENDCLASS.
+CLASS zcl_impl DEFINITION.
+ENDCLASS.
+CLASS zcl_impl IMPLEMENTATION.
+ENDCLASS.
+CLASS zcl_deferred DEFINITION DEFERRED.`
+	unit := collect_test_unit(t, "file:///class_header_facts.abap", source)
+
+	abs := find_symbol(&unit, "zcl_abs", .Class)
+	child := find_symbol(&unit, "zcl_child", .Class)
+	impl := find_symbol(&unit, "zcl_impl", .Class)
+	deferred := find_symbol(&unit, "zcl_deferred", .Class)
+	testing.expect(t, abs != nil)
+	testing.expect(t, child != nil)
+	testing.expect(t, impl != nil)
+	testing.expect(t, deferred != nil)
+
+	abs_is_abstract := false
+	deferred_has_definition := false
+	for definition in unit.class_definitions {
+		if definition.class_symbol == abs.id {
+			abs_is_abstract = definition.is_abstract
+		}
+		if definition.class_symbol == deferred.id {
+			deferred_has_definition = true
+		}
+	}
+	testing.expect(t, abs_is_abstract)
+	testing.expect(t, !deferred_has_definition)
+
+	child_inherits_super := false
+	for inheritance in unit.class_inheritance {
+		if inheritance.class_symbol == child.id && inheritance.superclass_name == "zcl_super" {
+			child_inherits_super = true
+		}
+	}
+	testing.expect(t, child_inherits_super)
+
+	impl_symbol_count := 0
+	for symbol in unit.symbols {
+		if symbol.kind == .Class && symbol.name == "zcl_impl" {
+			impl_symbol_count += 1
+		}
+	}
+	testing.expect_value(t, impl_symbol_count, 1)
+}
+
+@(test)
 collects_multiple_method_parameters_from_oop_ast :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

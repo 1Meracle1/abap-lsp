@@ -1577,12 +1577,23 @@ Try_Stmt :: struct {
 	cleanup:    ^Cleanup_Clause,
 }
 
+Class_Decl_Flag :: enum {
+	Implementation,
+	Bodyless,
+	Abstract,
+}
+
+Class_Decl_Flags :: bit_set[Class_Decl_Flag]
+
 Class_Decl :: struct {
-	using node:   Stmt,
-	name:         string,
-	body:         [dynamic]^Stmt,
-	header_range: tokenizer.Range,
-	header_text:  string,
+	using node:        Stmt,
+	name:              string,
+	body:              [dynamic]^Stmt,
+	header_range:      tokenizer.Range,
+	header_text:       string,
+	flags:             Class_Decl_Flags,
+	superclass_name:   string,
+	superclass_range:  tokenizer.Range,
 }
 
 Interface_Decl :: struct {
@@ -1591,6 +1602,7 @@ Interface_Decl :: struct {
 	body:         [dynamic]^Stmt,
 	header_range: tokenizer.Range,
 	header_text:  string,
+	is_bodyless:  bool,
 }
 
 Method_Decl :: struct {
