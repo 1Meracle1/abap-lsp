@@ -311,6 +311,7 @@ parse_generic_simple_operands :: proc(
 		if allow_token(p, .Colon) || allow_token(p, .Comma) {
 			continue
 		}
+		value_start := p.index
 		first := current_token(p)
 		last := first
 		paren := 0
@@ -347,8 +348,7 @@ parse_generic_simple_operands :: proc(
 			}
 		}
 		if first.kind != .Eof && last.kind != .Eof && first.range.start < last.range.end {
-			value := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
-			value.text = source_range_text(p, value.range)
+			value := type_ref_expr_from_tokens(p, value_start, p.index, -1, false, false)
 			append(&values, value)
 		} else {
 			bump_token(p)
@@ -365,6 +365,7 @@ raw_period_done :: proc(p: ^Parser) -> bool {
 parse_raw_operand_to_period :: proc(
 	p: ^Parser,
 	stop_keywords: []string,
+	fill_parts := false,
 ) -> ^ast.Expr {
 	if raw_period_done(p) ||
 	   current_token(p).kind == .Comma ||
@@ -372,6 +373,7 @@ parse_raw_operand_to_period :: proc(
 	   simple_current_keyword_in(p, stop_keywords) {
 		return nil
 	}
+	start := p.index
 	first := current_token(p)
 	last := first
 	paren := 0
@@ -410,9 +412,7 @@ parse_raw_operand_to_period :: proc(
 	if first.kind == .Eof || last.kind == .Eof || first.range.start >= last.range.end {
 		return nil
 	}
-	value := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
-	value.text = source_range_text(p, value.range)
-	return value
+	return type_ref_expr_from_tokens(p, start, p.index, -1, false, fill_parts)
 }
 
 parse_generic_operands_to_period :: proc(
@@ -1180,15 +1180,10 @@ parse_oop_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if p.index <= start {
 		return nil
 	}
-	first := p.tokens[start]
-	last := p.tokens[p.index - 1]
-	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
-	expr.text = source_range_text(p, expr.range)
 	if name_end < 0 {
-		name_end = last.range.end
+		name_end = p.tokens[p.index - 1].range.end
 	}
-	expr.name = strings.clone(p.source[first.range.start:name_end], p.allocator)
-	return expr
+	return type_ref_expr_from_tokens(p, start, p.index, name_end)
 }
 
 oop_type_ref_done :: proc(p: ^Parser, start: int, in_key: bool) -> bool {
@@ -1253,8 +1248,7 @@ append_oop_signature_value :: proc(
 	if first.range.start >= last.range.end {
 		return
 	}
-	value := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
-	value.text = source_range_text(p, value.range)
+	value := type_ref_expr_from_tokens(p, start, end, -1, false)
 	append(&clause.values, value)
 }
 
@@ -1291,7 +1285,7 @@ parse_oop_signature_values :: proc(p: ^Parser) -> [dynamic]^ast.Expr {
 	values := make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	for !oop_signature_values_done(p) {
 		start := p.index
-		value := parse_raw_operand_to_period(p, OOP_SIGNATURE_STOP_KEYWORDS)
+		value := parse_raw_operand_to_period(p, OOP_SIGNATURE_STOP_KEYWORDS, true)
 		if value != nil {
 			append(&values, value)
 		}

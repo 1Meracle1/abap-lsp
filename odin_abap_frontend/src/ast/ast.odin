@@ -168,11 +168,19 @@ Type_Ref_Key_Clause :: struct {
 	components: [dynamic]string,
 }
 
+Type_Ref_Path_Segment :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
 // ABAP syntax: declaration type reference such as `ty_line WITH DEFAULT KEY`.
 Type_Ref_Expr :: struct {
 	using node: Expr,
 	text:       string,
 	name:       string,
+	base_name:  string,
+	base_range: tokenizer.Range,
+	path:       [dynamic]Type_Ref_Path_Segment,
 	key:        ^Type_Ref_Key_Clause,
 	keys:       [dynamic]^Type_Ref_Key_Clause,
 }

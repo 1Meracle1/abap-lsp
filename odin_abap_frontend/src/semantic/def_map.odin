@@ -254,10 +254,12 @@ Sql_Target_Data :: struct {
 }
 
 Field_Type_Ref_Data :: struct {
-	namespace:  Namespace,
-	is_ref:     bool,
-	base_name:  string,
-	field_path: [dynamic]string,
+	namespace:    Namespace,
+	is_ref:       bool,
+	base_name:    string,
+	base_range:   tokenizer.Range,
+	field_path:   [dynamic]string,
+	field_ranges: [dynamic]tokenizer.Range,
 }
 
 Type_Fact_Data :: struct {

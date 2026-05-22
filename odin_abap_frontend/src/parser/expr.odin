@@ -153,7 +153,7 @@ parse_concat_expr :: proc(p: ^Parser) -> ^ast.Expr {
 }
 
 parse_parenthesized_raw_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	open := current_token(p)
+	start := p.index
 	close_i := matching_group_index(p, p.index, .LParen, .RParen)
 	if close_i < 0 {
 		return parse_paren_expr(p)
@@ -161,13 +161,7 @@ parse_parenthesized_raw_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	for p.index <= close_i {
 		bump_token(p)
 	}
-	expr := ast.new(
-		ast.Type_Ref_Expr,
-		tokenizer.text_range(open.range.start, p.tokens[close_i].range.end),
-		p.allocator,
-	)
-	expr.text = source_range_text(p, expr.range)
-	return expr
+	return type_ref_expr_from_tokens(p, start, p.index, -1, false, false)
 }
 
 parse_additive_expr :: proc(p: ^Parser) -> ^ast.Expr {

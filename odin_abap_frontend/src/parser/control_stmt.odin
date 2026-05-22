@@ -1069,14 +1069,10 @@ parse_header_type_ref_expr :: proc(
 	if i <= start {
 		return nil, i
 	}
-	first := p.tokens[start]
-	last := p.tokens[i - 1]
-	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
-	expr.text = source_range_text(p, expr.range)
 	if name_end < 0 {
-		name_end = last.range.end
+		name_end = p.tokens[i - 1].range.end
 	}
-	expr.name = strings.clone(p.source[first.range.start:name_end], p.allocator)
+	expr := type_ref_expr_from_tokens(p, start, i, name_end)
 	return expr, i
 }
 

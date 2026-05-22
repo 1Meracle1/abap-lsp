@@ -1268,61 +1268,101 @@ type_ref_from_expr :: proc(
 	if expr == nil {
 		return {}, false
 	}
-	text := ""
-	if type_expr, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok && type_expr.name != "" {
-		text = strings.clone(type_expr.name, c.allocator)
-	} else {
-		text = expr_display(c, expr)
+	if type_ref, ok := type_ref_from_ast_expr(c, expr, namespace, is_ref); ok {
+		return type_ref, true
 	}
+	text := expr_display(c, expr)
 	text = clean_type_ref_text(c, text)
 	text = strings.trim_space(text)
 	if text == "" {
 		return {}, false
 	}
-	base, path := split_type_path(c, text)
+	// Fallback for legacy non-selector expression nodes; selector paths must come from AST.
+	return Field_Type_Ref_Data {
+			namespace = namespace,
+			is_ref = is_ref,
+			base_name = canonical_name(text, c.allocator),
+			base_range = expr.range,
+		},
+		true
+}
+
+type_ref_from_ast_expr :: proc(
+	c: ^Collector,
+	expr: ^ast.Expr,
+	namespace: Namespace,
+	is_ref: bool,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	if expr == nil {
+		return {}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Type_Ref_Expr:
+		return type_ref_from_type_ref_expr(c, n, namespace, is_ref)
+	case ^ast.Ident_Expr:
+		return Field_Type_Ref_Data {
+				namespace = namespace,
+				is_ref = is_ref,
+				base_name = canonical_name(n.name, c.allocator),
+				base_range = n.range,
+			},
+			n.name != ""
+	case ^ast.Selector_Expr:
+		type_ref, ok := type_ref_from_ast_expr(c, n.base, namespace, is_ref)
+		if !ok {
+			return {}, false
+		}
+		name, range, name_ok := expr_name(n.field)
+		if !name_ok {
+			return {}, false
+		}
+		if len(type_ref.field_path) == 0 {
+			type_ref.field_path = make([dynamic]string, 0, 2, c.allocator)
+			type_ref.field_ranges = make([dynamic]tokenizer.Range, 0, 2, c.allocator)
+		}
+		append(&type_ref.field_path, canonical_name(name, c.allocator))
+		append(&type_ref.field_ranges, range)
+		return type_ref, true
+	}
+	return {}, false
+}
+
+type_ref_from_type_ref_expr :: proc(
+	c: ^Collector,
+	expr: ^ast.Type_Ref_Expr,
+	namespace: Namespace,
+	is_ref: bool,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	base := expr.base_name
+	base_range := expr.base_range
+	if base == "" && expr.name != "" {
+		base = expr.name
+		base_range = expr.range
+	}
 	if base == "" {
 		return {}, false
+	}
+	field_path := make([dynamic]string, 0, len(expr.path), c.allocator)
+	field_ranges := make([dynamic]tokenizer.Range, 0, len(expr.path), c.allocator)
+	for segment in expr.path {
+		append(&field_path, canonical_name(segment.name, c.allocator))
+		append(&field_ranges, segment.range)
 	}
 	return Field_Type_Ref_Data {
 			namespace = namespace,
 			is_ref = is_ref,
 			base_name = canonical_name(base, c.allocator),
-			field_path = path,
+			base_range = base_range,
+			field_path = field_path,
+			field_ranges = field_ranges,
 		},
 		true
-}
-
-split_type_path :: proc(c: ^Collector, text: string) -> (string, [dynamic]string) {
-	path := make([dynamic]string, 0, 2, c.allocator)
-	best := len(text)
-	op_len := 0
-	for i in 0 ..< len(text) {
-		if i + 1 < len(text) && text[i:i + 2] == "=>" {
-			best = i
-			op_len = 2
-			break
-		}
-		if text[i] == '~' || text[i] == '-' {
-			best = i
-			op_len = 1
-			break
-		}
-	}
-	if best == len(text) {
-		return strings.trim_space(text), path
-	}
-	base := strings.trim_space(text[:best])
-	tail := strings.trim_space(text[best + op_len:])
-	for i in 0 ..< len(tail) {
-		if tail[i] == ' ' || tail[i] == '(' {
-			tail = strings.trim_space(tail[:i])
-			break
-		}
-	}
-	if tail != "" {
-		append(&path, canonical_name(tail, c.allocator))
-	}
-	return base, path
 }
 
 type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> string {
@@ -1400,11 +1440,19 @@ add_type_reference :: proc(
 	if type_ref.base_name == "" {
 		return
 	}
-	add_reference(c, scope, type_ref.base_name, type_ref.namespace, .Type_Ref, range)
+	base_range := type_ref.base_range
+	if base_range.start >= base_range.end {
+		base_range = range
+	}
+	add_reference(c, scope, type_ref.base_name, type_ref.namespace, .Type_Ref, base_range)
 	if len(type_ref.field_path) > 0 {
 		segments := make([dynamic]Field_Access_Segment, 0, len(type_ref.field_path), c.allocator)
-		for name in type_ref.field_path {
-			append(&segments, Field_Access_Segment{name = name, range = range})
+		for name, i in type_ref.field_path {
+			segment_range := range
+			if i < len(type_ref.field_ranges) && type_ref.field_ranges[i].start < type_ref.field_ranges[i].end {
+				segment_range = type_ref.field_ranges[i]
+			}
+			append(&segments, Field_Access_Segment{name = name, range = segment_range})
 		}
 		append(
 			&c.field_accesses,
@@ -1412,7 +1460,7 @@ add_type_reference :: proc(
 				scope = scope,
 				base_namespace = type_ref.namespace,
 				base_name = type_ref.base_name,
-				base_range = range,
+				base_range = base_range,
 				field_path = segments,
 				in_type_position = true,
 			},
@@ -1963,28 +2011,27 @@ collect_class_oop_stmt :: proc(
 		}
 	case .Aliases:
 		for member in stmt.members {
-			target := ""
+			target_ref := Field_Type_Ref_Data{}
 			for sig in member.signatures {
 				if sig.kind == .For && len(sig.values) > 0 {
-					target = expr_display(c, sig.values[0])
+					target_ref, _ = type_ref_from_expr(c, sig.values[0], .Type)
 					break
 				}
 			}
-			if target == "" {
+			if target_ref.base_name == "" {
 				continue
 			}
-			iface, path := split_type_path(c, target)
 			target_member := ""
-			if len(path) > 0 {
-				target_member = path[0]
+			if len(target_ref.field_path) > 0 {
+				target_member = target_ref.field_path[0]
 			}
 			append(
 				&c.member_aliases,
 				Member_Alias_Data {
 					owner_symbol = class_symbol,
 					alias_name = canonical_name(member.name, c.allocator),
-					target_interface_name = canonical_name(iface, c.allocator),
-					target_member_name = canonical_name(target_member, c.allocator),
+					target_interface_name = target_ref.base_name,
+					target_member_name = target_member,
 					range = stmt.range,
 				},
 			)

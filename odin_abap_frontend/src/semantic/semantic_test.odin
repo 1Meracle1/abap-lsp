@@ -636,6 +636,50 @@ legacy_occurs_header_line_keeps_declared_type_clean :: proc(t: ^testing.T) {
 }
 
 @(test)
+declaration_type_refs_use_ast_base_paths_and_ranges :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_demo.
+  TYPES ty_line TYPE i.
+ENDINTERFACE.
+DATA lv_date LIKE sy-datum.
+DATA lr_item TYPE REF TO lif_demo=>ty_line.
+`
+	unit := collect_test_unit(t, "file:///type_ref_ast_paths.abap", source)
+
+	lv_date := find_symbol(&unit, "lv_date", .Variable)
+	lr_item := find_symbol(&unit, "lr_item", .Variable)
+	testing.expect(t, lv_date != nil)
+	testing.expect(t, lr_item != nil)
+	testing.expect_value(t, lv_date.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, lv_date.declared_type.base_name, "sy")
+	testing.expect_value(t, lv_date.declared_type.field_path[0], "datum")
+	testing.expect_value(t, lr_item.declared_type.namespace, Namespace.Type)
+	testing.expect(t, lr_item.declared_type.is_ref)
+	testing.expect_value(t, lr_item.declared_type.base_name, "lif_demo")
+	testing.expect_value(t, lr_item.declared_type.field_path[0], "ty_line")
+
+	found_sy_path := false
+	found_class_path := false
+	for access in unit.field_accesses {
+		if !access.in_type_position || len(access.field_path) == 0 {
+			continue
+		}
+		if access.base_name == "sy" && access.field_path[0].name == "datum" {
+			found_sy_path = true
+			testing.expect_value(t, source[access.base_range.start:access.base_range.end], "sy")
+			testing.expect_value(t, source[access.field_path[0].range.start:access.field_path[0].range.end], "datum")
+		}
+		if access.base_name == "lif_demo" && access.field_path[0].name == "ty_line" {
+			found_class_path = true
+			testing.expect_value(t, source[access.base_range.start:access.base_range.end], "lif_demo")
+			testing.expect_value(t, source[access.field_path[0].range.start:access.field_path[0].range.end], "ty_line")
+		}
+	}
+	testing.expect(t, found_sy_path)
+	testing.expect(t, found_class_path)
+}
+
+@(test)
 common_part_delimiters_do_not_emit_bogus_symbols :: proc(t: ^testing.T) {
 	source := `
 DATA: BEGIN OF COMMON PART fm06lcbe.
@@ -797,6 +841,29 @@ ENDCLASS.
 }
 
 @(test)
+oop_signature_type_refs_use_ast_paths :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_date DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_date LIKE sy-datum.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///oop_type_ref_paths.abap", source)
+
+	class := find_symbol(&unit, "lcl_date", .Class)
+	testing.expect(t, class != nil)
+	method := class_member_named(&unit, class.id, "run", .Method)
+	testing.expect(t, method != nil)
+	testing.expect_value(t, len(method.parameters), 1)
+	param := method.parameters[0]
+	testing.expect(t, .Has_Declared_Type in param.flags)
+	testing.expect_value(t, param.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, param.declared_type.base_name, "sy")
+	testing.expect_value(t, param.declared_type.field_path[0], "datum")
+	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
+}
+
+@(test)
 collects_oop_section_visibility_from_ast :: proc(t: ^testing.T) {
 	source := `CLASS lcl_vis DEFINITION.
   PUBLIC SECTION.
@@ -935,6 +1002,8 @@ ENDFUNCTION.
 	testing.expect_value(t, iv_text.name, "iv_text")
 	testing.expect_value(t, form.parameters[2].passing, Form_Parameter_Passing_Kind.Reference)
 	testing.expect_value(t, iv_ref.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, iv_ref.declared_type.base_name, "sy")
+	testing.expect_value(t, iv_ref.declared_type.field_path[0], "uname")
 	testing.expect_value(t, form.parameters[3].section, Form_Parameter_Section.Changing)
 
 	testing.expect_value(t, len(unit.function_modules), 1)
@@ -946,6 +1015,8 @@ ENDFUNCTION.
 	testing.expect(t, .Has_Default_Value in fm.parameters[1].flags)
 	testing.expect_value(t, fm.parameters[2].section, Function_Module_Parameter_Section.Exporting)
 	testing.expect_value(t, fm.parameters[2].declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, fm.parameters[2].declared_type.base_name, "sy")
+	testing.expect_value(t, fm.parameters[2].declared_type.field_path[0], "uname")
 	testing.expect_value(t, fm.parameters[3].section, Function_Module_Parameter_Section.Changing)
 	testing.expect_value(t, fm.parameters[3].declared_type.base_name, "object")
 	testing.expect_value(t, fm.parameters[4].section, Function_Module_Parameter_Section.Tables)

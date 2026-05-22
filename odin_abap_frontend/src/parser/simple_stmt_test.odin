@@ -314,6 +314,9 @@ ENDCLASS.`
 	testing.expect_value(t, interfaces.members[0].name, "if_demo")
 	testing.expect_value(t, aliases.members[0].name, "set")
 	testing.expect_value(t, aliases.members[0].signatures[0].kind, ast.Oop_Signature_Kind.For)
+	alias_target := aliases.members[0].signatures[0].values[0].derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, alias_target.base_name, "if_demo")
+	testing.expect_value(t, alias_target.path[0].name, "set")
 	testing.expect_value(t, events.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Exporting)
 	testing.expect_value(t, events.members[0].signatures[0].parameters[0].name, "value")
 	testing.expect_value(t, len(methods.members), 1)
@@ -331,7 +334,7 @@ ENDCLASS.`
 oop_signature_parameters_are_concrete_ast_clauses :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
-    METHODS run IMPORTING iv_count TYPE i iv_text TYPE string
+    METHODS run IMPORTING iv_count TYPE i iv_date LIKE sy-datum iv_text TYPE string
       RETURNING VALUE(rv_ok) TYPE abap_bool.
 ENDCLASS.`
 	parsed := parse(source, "oop_parameters.abap", context.allocator)
@@ -340,10 +343,14 @@ ENDCLASS.`
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
 	importing := methods.members[0].signatures[0]
 	returning := methods.members[0].signatures[1]
-	testing.expect_value(t, len(importing.parameters), 2)
+	testing.expect_value(t, len(importing.parameters), 3)
 	testing.expect_value(t, importing.parameters[0].name, "iv_count")
-	testing.expect_value(t, importing.parameters[1].name, "iv_text")
-	testing.expect(t, importing.parameters[1].type_clause != nil)
+	testing.expect_value(t, importing.parameters[1].name, "iv_date")
+	date_ref := importing.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, date_ref.base_name, "sy")
+	testing.expect_value(t, date_ref.path[0].name, "datum")
+	testing.expect_value(t, importing.parameters[2].name, "iv_text")
+	testing.expect(t, importing.parameters[2].type_clause != nil)
 	testing.expect_value(t, returning.parameters[0].name, "rv_ok")
 }
 

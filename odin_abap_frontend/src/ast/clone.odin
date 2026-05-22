@@ -91,6 +91,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return clone_shallow(n, allocator)
 	case ^Type_Ref_Expr:
 		r := clone_shallow(n, allocator)
+		r.path = clone_type_ref_path(n.path, allocator)
 		r.key = clone_type_ref_key_clause(n.key, allocator)
 		r.keys = clone_type_ref_key_clauses(n.keys, allocator)
 		return r
@@ -740,6 +741,14 @@ clone_stmt_list :: proc(list: [dynamic]^Stmt, allocator: mem.Allocator) -> [dyna
 
 clone_string_list :: proc(list: [dynamic]string, allocator: mem.Allocator) -> [dynamic]string {
 	res := make([dynamic]string, 0, len(list), allocator)
+	for x in list {
+		append(&res, x)
+	}
+	return res
+}
+
+clone_type_ref_path :: proc(list: [dynamic]Type_Ref_Path_Segment, allocator: mem.Allocator) -> [dynamic]Type_Ref_Path_Segment {
+	res := make([dynamic]Type_Ref_Path_Segment, 0, len(list), allocator)
 	for x in list {
 		append(&res, x)
 	}

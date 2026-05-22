@@ -4,7 +4,6 @@ import "../ast"
 import "../tokenizer"
 
 import "core:mem"
-import "core:strings"
 
 decl_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
@@ -1111,14 +1110,10 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		error_current(p, "syntax error: expected type name")
 		return nil
 	}
-	first := p.tokens[start]
-	last := p.tokens[p.index - 1]
-	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
-	expr.text = strings.clone(p.source[first.range.start:last.range.end], p.allocator)
 	if name_end < 0 {
-		name_end = last.range.end
+		name_end = p.tokens[p.index - 1].range.end
 	}
-	expr.name = strings.clone(p.source[first.range.start:name_end], p.allocator)
+	expr := type_ref_expr_from_tokens(p, start, p.index, name_end)
 	expr.key = key_clause
 	expr.keys = key_clauses
 	return expr
@@ -1602,6 +1597,7 @@ type_ref_stop_keyword :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "MODIF") ||
 		at_keyword(p, "NO") ||
 		at_keyword(p, "OBLIGATORY") ||
+		at_keyword(p, "OCCURS") ||
 		at_keyword(p, "RADIOBUTTON") ||
 		at_keyword(p, "USER") ||
 		at_keyword(p, "USING") ||

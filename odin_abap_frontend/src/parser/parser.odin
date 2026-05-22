@@ -1170,6 +1170,103 @@ token_is_keyword :: proc(p: ^Parser, token: Token, keyword: string) -> bool {
 	)
 }
 
+type_ref_expr_from_tokens :: proc(
+	p: ^Parser,
+	start, end: int,
+	name_end := -1,
+	set_name := true,
+	fill_parts := true,
+) -> ^ast.Type_Ref_Expr {
+	if end <= start {
+		return nil
+	}
+	first := p.tokens[start]
+	last := p.tokens[end - 1]
+	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
+	expr.text = strings.clone(p.source[expr.range.start:expr.range.end], p.allocator)
+	path_end := last.range.end
+	if name_end >= 0 {
+		path_end = name_end
+	}
+	if set_name {
+		expr.name = strings.clone(p.source[first.range.start:path_end], p.allocator)
+	}
+	if fill_parts {
+		type_ref_fill_base_path(p, expr, start, end, path_end)
+	}
+	return expr
+}
+
+type_ref_fill_base_path :: proc(
+	p: ^Parser,
+	expr: ^ast.Type_Ref_Expr,
+	start, end: int,
+	path_end: int,
+) {
+	paren, bracket, brace := 0, 0, 0
+	base_end := path_end
+	found_selector := false
+	path_ready := false
+	for i := start; i < end && p.tokens[i].range.start < path_end; i += 1 {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && type_ref_selector_token(tok.kind) {
+			if !found_selector {
+				base_end = tok.range.start
+				if i > start {
+					base_end = p.tokens[i - 1].range.end
+				}
+				found_selector = true
+			}
+			next := i + 1
+			if next < end &&
+			   p.tokens[next].range.start < path_end &&
+			   type_ref_path_token(p.tokens[next]) {
+				if !path_ready {
+					expr.path = make([dynamic]ast.Type_Ref_Path_Segment, 0, 2, p.allocator)
+					path_ready = true
+				}
+				field := p.tokens[next]
+				append(
+					&expr.path,
+					ast.Type_Ref_Path_Segment {
+						name = tokenizer.token_lexeme(field, p.source),
+						range = field.range,
+					},
+				)
+				i = next
+				continue
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+	}
+	if first := p.tokens[start]; first.range.start < base_end {
+		expr.base_range = tokenizer.text_range(first.range.start, base_end)
+		expr.base_name = strings.clone(p.source[expr.base_range.start:expr.base_range.end], p.allocator)
+	}
+}
+
+type_ref_selector_token :: #force_inline proc(kind: tokenizer.Token_Kind) -> bool {
+	return kind == .Minus || kind == .FatArrow || kind == .Tilde
+}
+
+type_ref_path_token :: #force_inline proc(tok: Token) -> bool {
+	return tok.kind == .Ident || tok.kind == .Number || tok.kind == .Star
+}
+
 at_any_keyword :: proc(p: ^Parser, keywords: []string) -> bool {
 	for kw in keywords {
 		if at_keyword_phrase(p, kw) && !keyword_is_compact_call(p, kw) {
