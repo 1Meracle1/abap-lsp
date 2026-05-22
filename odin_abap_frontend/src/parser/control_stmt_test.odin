@@ -73,6 +73,47 @@ START-OF-SELECTION. WRITE 'start'.`
 }
 
 @(test)
+form_and_function_header_parameters_are_ast_fields :: proc(t: ^testing.T) {
+	source := `FORM run TABLES !ct_rows STRUCTURE mara USING VALUE(iv_text) TYPE string REFERENCE(iv_ref) LIKE sy-uname CHANGING cv_count TYPE i.
+ENDFORM.
+FUNCTION z_demo
+  IMPORTING VALUE(iv_value) TYPE i OPTIONAL iv_text TYPE string DEFAULT 'x'
+  EXPORTING ev_text LIKE sy-uname
+  CHANGING REFERENCE(cv_any) TYPE REF TO object
+  TABLES et_return STRUCTURE bapiret2
+  EXCEPTIONS failed = 1 not_found.
+ENDFUNCTION.`
+	parsed := parse(source, "routine_parameters.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
+	testing.expect_value(t, len(form.form_parameters), 4)
+	testing.expect_value(t, form.form_parameters[0].section, ast.Form_Parameter_Section.Tables)
+	testing.expect_value(t, form.form_parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect_value(t, form.form_parameters[0].type_clause.form, ast.Data_Type_Form.Structure)
+	testing.expect_value(t, source[form.form_parameters[0].range.start:form.form_parameters[0].range.end], "ct_rows")
+	testing.expect_value(t, form.form_parameters[1].name, "iv_text")
+	testing.expect_value(t, form.form_parameters[1].passing, ast.Parameter_Passing_Kind.Value)
+	testing.expect_value(t, form.form_parameters[2].name, "iv_ref")
+	testing.expect_value(t, form.form_parameters[2].passing, ast.Parameter_Passing_Kind.Reference)
+	testing.expect_value(t, form.form_parameters[3].section, ast.Form_Parameter_Section.Changing)
+
+	function := parsed.root.stmts[1].derived_stmt.(^ast.Function_Decl)
+	testing.expect_value(t, len(function.function_parameters), 5)
+	testing.expect_value(t, function.function_parameters[0].name, "iv_value")
+	testing.expect(t, .Is_Optional in function.function_parameters[0].flags)
+	testing.expect_value(t, function.function_parameters[1].name, "iv_text")
+	testing.expect(t, .Has_Default_Value in function.function_parameters[1].flags)
+	testing.expect_value(t, function.function_parameters[2].section, ast.Function_Parameter_Section.Exporting)
+	testing.expect_value(t, function.function_parameters[3].passing, ast.Parameter_Passing_Kind.Reference)
+	testing.expect_value(t, function.function_parameters[3].type_clause.form, ast.Data_Type_Form.Ref_To)
+	testing.expect_value(t, function.function_parameters[4].type_clause.form, ast.Data_Type_Form.Structure)
+	testing.expect_value(t, len(function.exceptions), 2)
+	testing.expect_value(t, function.exceptions[0].name, "failed")
+	testing.expect_value(t, function.exceptions[1].name, "not_found")
+}
+
+@(test)
 multiline_class_headers_keep_their_create_addition :: proc(t: ^testing.T) {
 	source := `CLASS zcx_error DEFINITION
   INHERITING FROM cx_static_check

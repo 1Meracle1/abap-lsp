@@ -1035,6 +1035,8 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 		emit(p, "TYPE")
 	case .Like:
 		emit(p, "LIKE")
+	case .Structure:
+		emit(p, "STRUCTURE")
 	case .Ref_To:
 		emit(p, "TYPE REF TO")
 	case .Like_Line_Of:

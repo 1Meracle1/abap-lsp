@@ -908,35 +908,55 @@ ENDCLASS.`
 @(test)
 collects_form_and_function_signatures :: proc(t: ^testing.T) {
 	source := `
-FORM run USING VALUE(iv_text) TYPE string CHANGING cv_count TYPE i.
+FORM run TABLES !ct_rows STRUCTURE mara USING VALUE(iv_text) TYPE string REFERENCE(iv_ref) LIKE sy-uname CHANGING cv_count TYPE i.
 ENDFORM.
 
 FUNCTION z_demo
-  IMPORTING iv_value TYPE i
-  EXPORTING ev_text TYPE string
+  IMPORTING VALUE(iv_value) TYPE i OPTIONAL iv_text TYPE string DEFAULT 'x'
+  EXPORTING ev_text LIKE sy-uname
+  CHANGING REFERENCE(cv_any) TYPE REF TO object
   TABLES et_return STRUCTURE bapiret2
-  EXCEPTIONS failed not_found.
+  EXCEPTIONS failed = 1 not_found.
 ENDFUNCTION.
 `
 	unit := collect_test_unit(t, "file:///signatures.abap", source)
 
 	testing.expect_value(t, len(unit.form_routines), 1)
 	form := unit.form_routines[0]
-	testing.expect_value(t, len(form.parameters), 2)
-	testing.expect_value(t, form.parameters[0].section, Form_Parameter_Section.Using)
-	testing.expect_value(t, form.parameters[1].section, Form_Parameter_Section.Changing)
+	testing.expect_value(t, len(form.parameters), 4)
+	ct_rows := unit.symbols[symbol_id_index(form.parameters[0].symbol)]
+	iv_text := unit.symbols[symbol_id_index(form.parameters[1].symbol)]
+	iv_ref := unit.symbols[symbol_id_index(form.parameters[2].symbol)]
+	testing.expect_value(t, ct_rows.name, "ct_rows")
+	testing.expect_value(t, ct_rows.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, form.parameters[0].section, Form_Parameter_Section.Tables)
+	testing.expect_value(t, form.parameters[1].section, Form_Parameter_Section.Using)
+	testing.expect_value(t, form.parameters[1].passing, Form_Parameter_Passing_Kind.Value)
+	testing.expect_value(t, iv_text.name, "iv_text")
+	testing.expect_value(t, form.parameters[2].passing, Form_Parameter_Passing_Kind.Reference)
+	testing.expect_value(t, iv_ref.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, form.parameters[3].section, Form_Parameter_Section.Changing)
 
 	testing.expect_value(t, len(unit.function_modules), 1)
 	fm := unit.function_modules[0]
-	testing.expect_value(t, len(fm.parameters), 3)
+	testing.expect_value(t, len(fm.parameters), 5)
 	testing.expect_value(t, fm.parameters[0].name, "iv_value")
-	testing.expect_value(t, fm.parameters[1].section, Function_Module_Parameter_Section.Exporting)
-	testing.expect_value(t, fm.parameters[2].section, Function_Module_Parameter_Section.Tables)
+	testing.expect(t, .Is_Optional in fm.parameters[0].flags)
+	testing.expect_value(t, fm.parameters[1].name, "iv_text")
+	testing.expect(t, .Has_Default_Value in fm.parameters[1].flags)
+	testing.expect_value(t, fm.parameters[2].section, Function_Module_Parameter_Section.Exporting)
 	testing.expect_value(t, fm.parameters[2].declared_type.namespace, Namespace.Value)
-	testing.expect_value(t, fm.parameters[2].declared_type.base_name, "bapiret2")
+	testing.expect_value(t, fm.parameters[3].section, Function_Module_Parameter_Section.Changing)
+	testing.expect_value(t, fm.parameters[3].declared_type.base_name, "object")
+	testing.expect_value(t, fm.parameters[4].section, Function_Module_Parameter_Section.Tables)
+	testing.expect_value(t, fm.parameters[4].declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, fm.parameters[4].declared_type.base_name, "bapiret2")
 	testing.expect_value(t, len(fm.exceptions), 2)
 	testing.expect_value(t, fm.exceptions[0].name, "failed")
 	testing.expect_value(t, fm.exceptions[1].name, "not_found")
+	testing.expect(t, has_reference(&unit, "string", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "bapiret2", .Value, .Type_Ref))
 }
 
 @(test)

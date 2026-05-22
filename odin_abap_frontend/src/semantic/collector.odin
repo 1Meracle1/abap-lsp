@@ -1227,6 +1227,7 @@ type_ref_from_clause :: proc(
 	is_ref := clause.form == .Ref_To
 	#partial switch clause.form {
 	case .Like,
+	     .Structure,
 	     .Like_Line_Of,
 	     .Like_Table,
 	     .Like_Standard_Table,
@@ -1267,7 +1268,12 @@ type_ref_from_expr :: proc(
 	if expr == nil {
 		return {}, false
 	}
-	text := expr_display(c, expr)
+	text := ""
+	if type_expr, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok && type_expr.name != "" {
+		text = strings.clone(type_expr.name, c.allocator)
+	} else {
+		text = expr_display(c, expr)
+	}
 	text = clean_type_ref_text(c, text)
 	text = strings.trim_space(text)
 	if text == "" {
@@ -1692,7 +1698,7 @@ walk_form_decl :: proc(c: ^Collector, stmt: ^ast.Form_Decl, scope: Scope_Id) {
 	previous := c.current_scope
 	c.current_scope = scope
 	form_scope := push_scope(c, .Form, stmt.range, owner)
-	parameters := parse_form_parameters(c, stmt.header_text, stmt.header_range, form_scope)
+	parameters := form_parameters_from_ast(c, stmt.form_parameters[:], form_scope)
 	append(
 		&c.form_routines,
 		Form_Routine_Data {
@@ -1712,12 +1718,7 @@ walk_function_decl :: proc(c: ^Collector, stmt: ^ast.Function_Decl, scope: Scope
 	previous := c.current_scope
 	c.current_scope = scope
 	function_scope := push_scope(c, .Module, stmt.range, owner)
-	parameters, exceptions := parse_function_parameters(
-		c,
-		stmt.header_text,
-		stmt.header_range,
-		function_scope,
-	)
+	parameters, exceptions := function_parameters_from_ast(c, stmt, function_scope)
 	append(
 		&c.function_modules,
 		Function_Module_Data {
@@ -2083,7 +2084,7 @@ class_member_parameter_from_oop :: proc(
 		range   = clause.range,
 	}
 	if clause.type_clause != nil {
-		if type_ref, has_type := type_ref_from_oop_clause(c, clause.type_clause); has_type {
+		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
 			param.declared_type = type_ref
 			param.flags += {.Has_Declared_Type}
 		}
@@ -2093,39 +2094,6 @@ class_member_parameter_from_oop :: proc(
 		param.flags += {.Is_Optional}
 	}
 	return param
-}
-
-type_ref_from_oop_clause :: proc(
-	c: ^Collector,
-	clause: ^ast.Data_Type_Clause,
-) -> (
-	Field_Type_Ref_Data,
-	bool,
-) {
-	if clause == nil || clause.type_ref == nil {
-		return {}, false
-	}
-	ns := Namespace.Value if clause.form == .Like ||
-	                         clause.form == .Like_Line_Of ||
-	                         clause.form == .Like_Table ||
-	                         clause.form == .Like_Standard_Table ||
-	                         clause.form == .Like_Sorted_Table ||
-	                         clause.form == .Like_Hashed_Table else Namespace.Type
-	text := expr_display(c, clause.type_ref)
-	if type_expr, ok := clause.type_ref.derived_expr.(^ast.Type_Ref_Expr); ok && type_expr.name != "" {
-		text = strings.trim_space(type_expr.name)
-	}
-	base, path := split_type_path(c, text)
-	if base == "" {
-		return {}, false
-	}
-	return Field_Type_Ref_Data {
-			namespace = ns,
-			is_ref = clause.form == .Ref_To,
-			base_name = canonical_name(base, c.allocator),
-			field_path = path,
-		},
-		true
 }
 
 Header_Token :: struct {
@@ -2151,110 +2119,6 @@ header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header
 		)
 	}
 	return tokens
-}
-
-consume_param_name :: proc(
-	tokens: []Header_Token,
-	start: int,
-) -> (
-	string,
-	tokenizer.Range,
-	int,
-	bool,
-) {
-	i := start
-	if i < len(tokens) && token_eq(tokens[i], "!") {
-		i += 1
-	}
-	if i < len(tokens) && (token_eq(tokens[i], "VALUE") || token_eq(tokens[i], "REFERENCE")) {
-		i += 1
-		if i < len(tokens) && tokens[i].text == "(" {
-			i += 1
-		}
-		if i >= len(tokens) {
-			return "", tokenizer.Range{}, i, false
-		}
-		name := strip_bang(tokens[i].text)
-		name_range := tokens[i].range
-		i += 1
-		if i < len(tokens) && tokens[i].text == ")" {
-			i += 1
-		}
-		return name, name_range, i, true
-	}
-	if i >= len(tokens) || !token_ident_like(tokens[i]) {
-		return "", tokenizer.Range{}, i, false
-	}
-	name := strip_bang(tokens[i].text)
-	return name, tokens[i].range, i + 1, name != ""
-}
-
-token_text_span :: proc(
-	c: ^Collector,
-	text: string,
-	tokens: []Header_Token,
-	start, end: int,
-	base: int,
-) -> string {
-	if start >= end || start >= len(tokens) {
-		return ""
-	}
-	last := end - 1
-	if last >= len(tokens) {
-		last = len(tokens) - 1
-	}
-	lo := tokens[start].range.start - base
-	hi := tokens[last].range.end - base
-	if lo < 0 || hi > len(text) || lo >= hi {
-		return ""
-	}
-	return strings.trim_space(text[lo:hi])
-}
-
-type_ref_from_text :: proc(
-	c: ^Collector,
-	display: string,
-	namespace: Namespace,
-) -> (
-	Field_Type_Ref_Data,
-	bool,
-) {
-	text := strings.trim_space(clean_type_ref_text(c, display))
-	if text == "" {
-		return {}, false
-	}
-	is_ref := false
-	if starts_with_word(text, "REF TO") {
-		is_ref = true
-		text = strings.trim_space(text[6:])
-	} else if starts_with_word(text, "LINE OF") {
-		text = strings.trim_space(text[7:])
-	} else {
-		prefixes := [?]string {
-			"STANDARD TABLE OF",
-			"SORTED TABLE OF",
-			"HASHED TABLE OF",
-			"TABLE OF",
-			"RANGE OF",
-		}
-		for prefix in prefixes {
-			if starts_with_word(text, prefix) {
-				text = strings.trim_space(text[len(prefix):])
-				break
-			}
-		}
-	}
-	base, path := split_type_path(c, text)
-	if base == "" {
-		return {}, false
-	}
-	return Field_Type_Ref_Data {
-			namespace = namespace,
-			is_ref = is_ref,
-			base_name = canonical_name(base, c.allocator),
-			field_path = path,
-		},
-		true
 }
 
 clean_type_ref_text :: proc(c: ^Collector, text: string) -> string {
@@ -2283,56 +2147,38 @@ clean_type_ref_text :: proc(c: ^Collector, text: string) -> string {
 	return strings.trim_space(text[:cut])
 }
 
-parse_form_parameters :: proc(
+token_text_span :: proc(
 	c: ^Collector,
 	text: string,
-	range: tokenizer.Range,
+	tokens: []Header_Token,
+	start, end: int,
+	base: int,
+) -> string {
+	if start >= end || start >= len(tokens) {
+		return ""
+	}
+	last := min(end - 1, len(tokens) - 1)
+	lo := tokens[start].range.start - base
+	hi := tokens[last].range.end - base
+	if lo < 0 || hi > len(text) || lo >= hi {
+		return ""
+	}
+	return strings.trim_space(text[lo:hi])
+}
+
+form_parameters_from_ast :: proc(
+	c: ^Collector,
+	clauses: []ast.Form_Parameter_Clause,
 	scope: Scope_Id,
 ) -> [dynamic]Form_Parameter_Data {
-	tokens := header_tokens(c, text, range.start)
 	parameters := make([dynamic]Form_Parameter_Data, 0, 2, c.allocator)
-	i := skip_header_name(tokens[:], "FORM")
-	section := Form_Parameter_Section.Using
-	for i < len(tokens) {
-		if token_eq(tokens[i], "TABLES") ||
-		   token_eq(tokens[i], "USING") ||
-		   token_eq(tokens[i], "CHANGING") {
-			if token_eq(tokens[i], "TABLES") {section = .Tables}
-			if token_eq(tokens[i], "USING") {section = .Using}
-			if token_eq(tokens[i], "CHANGING") {section = .Changing}
-			i += 1
-			continue
-		}
-		name, name_range, next, ok := consume_param_name(tokens[:], i)
-		if !ok {
-			i += 1
-			continue
-		}
-		i = next
-		declared_type := Field_Type_Ref_Data{}
-		has_type := false
-		display := ""
-		if i < len(tokens) &&
-		   (token_eq(tokens[i], "TYPE") ||
-				   token_eq(tokens[i], "LIKE") ||
-				   token_eq(tokens[i], "STRUCTURE")) {
-			namespace :=
-				Namespace.Type if !token_eq(tokens[i], "LIKE") && !token_eq(tokens[i], "STRUCTURE") else Namespace.Value
-			i += 1
-			start := i
-			for i < len(tokens) &&
-			    !token_eq(tokens[i], "TABLES") &&
-			    !token_eq(tokens[i], "USING") &&
-			    !token_eq(tokens[i], "CHANGING") {
-				i += 1
-			}
-			display = token_text_span(c, text, tokens[:], start, i, range.start)
-			declared_type, has_type = type_ref_from_text(c, display, namespace)
-			if section == .Tables &&
-			   display != "" &&
-			   !ascii_contains_ignore_case(display, "TABLE OF") {
-				display = concat2(c, "STANDARD TABLE OF ", display)
-			}
+	for clause in clauses {
+		declared_type, has_type := type_ref_from_clause(c, clause.type_clause)
+		display := type_clause_display(c, clause.type_clause)
+		if clause.section == .Tables &&
+		   display != "" &&
+		   !ascii_contains_ignore_case(display, "TABLE OF") {
+			display = concat2(c, "STANDARD TABLE OF ", display)
 		}
 		structure_id := INVALID_STRUCTURE_ID
 		if has_type {
@@ -2340,14 +2186,14 @@ parse_form_parameters :: proc(
 			   resolved_ok {
 				structure_id = resolved
 			}
-			add_type_reference(c, scope, declared_type, name_range)
+			add_type_reference(c, scope, declared_type, clause.range)
 		}
 		symbol_id := declare_collected_symbol(
 			c,
 			scope,
-			name,
+			clause.name,
 			.Parameter,
-			name_range,
+			clause.range,
 			structure_id,
 			declared_type,
 			has_type,
@@ -2355,80 +2201,43 @@ parse_form_parameters :: proc(
 		)
 		append(
 			&parameters,
-			Form_Parameter_Data{symbol = symbol_id, section = section, passing = .Direct},
+			Form_Parameter_Data {
+				symbol = symbol_id,
+				section = form_parameter_section_from_ast(clause.section),
+				passing = form_parameter_passing_from_ast(clause.passing),
+			},
 		)
 	}
 	return parameters
 }
 
-parse_function_parameters :: proc(
+function_parameters_from_ast :: proc(
 	c: ^Collector,
-	text: string,
-	range: tokenizer.Range,
+	stmt: ^ast.Function_Decl,
 	scope: Scope_Id,
 ) -> (
 	[dynamic]Function_Module_Parameter_Data,
 	[dynamic]Function_Module_Exception_Data,
 ) {
-	tokens := header_tokens(c, text, range.start)
 	parameters := make([dynamic]Function_Module_Parameter_Data, 0, 2, c.allocator)
 	exceptions := make([dynamic]Function_Module_Exception_Data, 0, 1, c.allocator)
-	i := skip_header_name(tokens[:], "FUNCTION")
-	section := Function_Module_Parameter_Section.Importing
-	in_exceptions := false
-	for i < len(tokens) {
-		if function_section_token(tokens[i], &section, &in_exceptions) {
-			i += 1
-			continue
-		}
-		name, name_range, next, ok := consume_param_name(tokens[:], i)
-		if !ok {
-			i += 1
-			continue
-		}
-		i = next
-		if in_exceptions {
-			append(
-				&exceptions,
-				Function_Module_Exception_Data {
-					name = canonical_name(name, c.allocator),
-					range = name_range,
-				},
-			)
-			continue
-		}
+	for clause in stmt.function_parameters {
 		param := Function_Module_Parameter_Data {
-			section = section,
-			name    = canonical_name(name, c.allocator),
-			range   = name_range,
+			section = function_parameter_section_from_ast(clause.section),
+			name    = canonical_name(clause.name, c.allocator),
+			range   = clause.range,
 		}
-		if i < len(tokens) &&
-		   (token_eq(tokens[i], "TYPE") ||
-				   token_eq(tokens[i], "LIKE") ||
-				   token_eq(tokens[i], "STRUCTURE")) {
-			namespace :=
-				Namespace.Type if !token_eq(tokens[i], "LIKE") && !token_eq(tokens[i], "STRUCTURE") else Namespace.Value
-			i += 1
-			start := i
-			for i < len(tokens) &&
-			    !function_section_peek(tokens[i]) &&
-			    !token_eq(tokens[i], "OPTIONAL") &&
-			    !token_eq(tokens[i], "DEFAULT") {
-				i += 1
-			}
-			display := token_text_span(c, text, tokens[:], start, i, range.start)
-			param.type_clause_display = strings.clone(display, c.allocator)
-			if type_ref, has_type := type_ref_from_text(c, display, namespace); has_type {
-				param.declared_type = type_ref
-				param.flags += {.Has_Declared_Type}
-				add_type_reference(c, scope, type_ref, param.range)
-			}
+		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
+			param.declared_type = type_ref
+			param.flags += {.Has_Declared_Type}
+			param.type_clause_display = type_clause_display(c, clause.type_clause)
+			add_type_reference(c, scope, type_ref, param.range)
 		}
-		for i < len(tokens) &&
-		    (token_eq(tokens[i], "OPTIONAL") || token_eq(tokens[i], "DEFAULT")) {
-			if token_eq(tokens[i], "OPTIONAL") {param.flags += {.Is_Optional}}
-			if token_eq(tokens[i], "DEFAULT") {param.flags += {.Has_Default_Value}}
-			i += 1
+		if .Is_Optional in clause.flags {
+			param.flags += {.Is_Optional}
+		}
+		if .Has_Default_Value in clause.flags {
+			param.flags += {.Has_Default_Value}
 		}
 		_ = declare_collected_symbol(
 			c,
@@ -2443,41 +2252,56 @@ parse_function_parameters :: proc(
 		)
 		append(&parameters, param)
 	}
+	for exception in stmt.exceptions {
+		append(
+			&exceptions,
+			Function_Module_Exception_Data {
+				name = canonical_name(exception.name, c.allocator),
+				range = exception.range,
+			},
+		)
+	}
 	return parameters, exceptions
 }
 
-function_section_token :: proc(
-	token: Header_Token,
-	section: ^Function_Module_Parameter_Section,
-	in_exceptions: ^bool,
-) -> bool {
-	if token_eq(token, "IMPORTING") {section^ = .Importing; in_exceptions^ = false; return true}
-	if token_eq(token, "EXPORTING") {section^ = .Exporting; in_exceptions^ = false; return true}
-	if token_eq(token, "CHANGING") {section^ = .Changing; in_exceptions^ = false; return true}
-	if token_eq(token, "TABLES") {section^ = .Tables; in_exceptions^ = false; return true}
-	if token_eq(token, "EXCEPTIONS") {in_exceptions^ = true; return true}
-	return false
+form_parameter_section_from_ast :: proc(section: ast.Form_Parameter_Section) -> Form_Parameter_Section {
+	switch section {
+	case .Tables:
+		return .Tables
+	case .Using:
+		return .Using
+	case .Changing:
+		return .Changing
+	}
+	return .Using
 }
 
-function_section_peek :: proc(token: Header_Token) -> bool {
-	return(
-		token_eq(token, "IMPORTING") ||
-		token_eq(token, "EXPORTING") ||
-		token_eq(token, "CHANGING") ||
-		token_eq(token, "TABLES") ||
-		token_eq(token, "EXCEPTIONS") \
-	)
+form_parameter_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Form_Parameter_Passing_Kind {
+	switch passing {
+	case .Direct:
+		return .Direct
+	case .Value:
+		return .Value
+	case .Reference:
+		return .Reference
+	}
+	return .Direct
 }
 
-skip_header_name :: proc(tokens: []Header_Token, keyword: string) -> int {
-	i := 0
-	if i < len(tokens) && token_eq(tokens[i], keyword) {
-		i += 1
+function_parameter_section_from_ast :: proc(
+	section: ast.Function_Parameter_Section,
+) -> Function_Module_Parameter_Section {
+	switch section {
+	case .Importing:
+		return .Importing
+	case .Exporting:
+		return .Exporting
+	case .Changing:
+		return .Changing
+	case .Tables:
+		return .Tables
 	}
-	if i < len(tokens) {
-		i += 1
-	}
-	return i
+	return .Importing
 }
 
 token_eq :: proc(token: Header_Token, expected: string) -> bool {
@@ -2486,20 +2310,6 @@ token_eq :: proc(token: Header_Token, expected: string) -> bool {
 
 token_ident_like :: proc(token: Header_Token) -> bool {
 	return token.kind == .Ident || token.kind == .Number
-}
-
-strip_bang :: proc(text: string) -> string {
-	if len(text) > 0 && text[0] == '!' {
-		return text[1:]
-	}
-	return text
-}
-
-starts_with_word :: proc(text, prefix: string) -> bool {
-	if len(prefix) > len(text) {
-		return false
-	}
-	return ascii_equal_ignore_case(text[:len(prefix)], prefix)
 }
 
 source_text :: proc(c: ^Collector, range: tokenizer.Range) -> string {

@@ -718,6 +718,12 @@ parse_named_block_stmt :: proc(
 		}
 		stmt.superclass_name, stmt.superclass_range = named_block_header_superclass(p, start_index, period_index)
 	}
+	when intrinsics.type_has_field(T, "form_parameters") {
+		stmt.form_parameters = parse_form_header_parameters(p, start_index, period_index)
+	}
+	when intrinsics.type_has_field(T, "function_parameters") {
+		stmt.function_parameters, stmt.exceptions = parse_function_header_parameters(p, start_index, period_index)
+	}
 	if bodyless {
 		stmt.body = make([dynamic]^ast.Stmt, 0, 0, p.allocator)
 		stmt.range = stmt.header_range
@@ -781,6 +787,361 @@ named_block_header_superclass :: proc(
 		}
 	}
 	return "", tokenizer.text_range(0, 0)
+}
+
+parse_form_header_parameters :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> [dynamic]ast.Form_Parameter_Clause {
+	params := make([dynamic]ast.Form_Parameter_Clause, 0, 2, p.allocator)
+	i := header_body_start(p, start_index, period_index, "FORM")
+	section := ast.Form_Parameter_Section.Using
+	stop_keywords := []string{"TABLES", "USING", "CHANGING"}
+	for i < period_index {
+		if form_header_section(p, i, &section) {
+			i += 1
+			continue
+		}
+		name, name_range, passing, next, ok := parse_header_param_name(p, i, period_index)
+		if !ok {
+			i += 1
+			continue
+		}
+		param := ast.Form_Parameter_Clause {
+			section = section,
+			name    = name,
+			range   = name_range,
+			passing = passing,
+		}
+		i = next
+		if header_type_clause_starts(p, i, period_index) {
+			param.type_clause, i = parse_header_type_clause(p, i, period_index, stop_keywords)
+		}
+		append(&params, param)
+	}
+	return params
+}
+
+parse_function_header_parameters :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> (
+	[dynamic]ast.Function_Parameter_Clause,
+	[dynamic]ast.Function_Exception_Clause,
+) {
+	params := make([dynamic]ast.Function_Parameter_Clause, 0, 2, p.allocator)
+	exceptions := make([dynamic]ast.Function_Exception_Clause, 0, 1, p.allocator)
+	i := header_body_start(p, start_index, period_index, "FUNCTION")
+	section := ast.Function_Parameter_Section.Importing
+	in_exceptions := false
+	stop_keywords := []string{"IMPORTING", "EXPORTING", "CHANGING", "TABLES", "EXCEPTIONS"}
+	for i < period_index {
+		if function_header_section(p, i, &section, &in_exceptions) {
+			i += 1
+			continue
+		}
+		name, name_range, passing, next, ok := parse_header_param_name(p, i, period_index)
+		if !ok {
+			i += 1
+			continue
+		}
+		i = next
+		if in_exceptions {
+			append(&exceptions, ast.Function_Exception_Clause{name, name_range})
+			if i + 1 < period_index && p.tokens[i].kind == .Eq {
+				i += 2
+			}
+			continue
+		}
+		param := ast.Function_Parameter_Clause {
+			section = section,
+			name    = name,
+			range   = name_range,
+			passing = passing,
+		}
+		if header_type_clause_starts(p, i, period_index) {
+			param.type_clause, i = parse_header_type_clause(p, i, period_index, stop_keywords)
+		}
+		for i < period_index {
+			if at_keyword_index(p, i, "OPTIONAL") {
+				param.flags += {.Is_Optional}
+				i += 1
+				continue
+			}
+			if at_keyword_index(p, i, "DEFAULT") {
+				param.flags += {.Has_Default_Value}
+				i = skip_header_addition_value(p, i + 1, period_index, stop_keywords)
+				continue
+			}
+			break
+		}
+		append(&params, param)
+	}
+	return params, exceptions
+}
+
+header_body_start :: proc(p: ^Parser, start_index, period_index: int, keyword: string) -> int {
+	i := start_index + keyword_phrase_token_count(keyword)
+	if i < period_index {
+		i += 1
+	}
+	return i
+}
+
+form_header_section :: proc(
+	p: ^Parser,
+	index: int,
+	section: ^ast.Form_Parameter_Section,
+) -> bool {
+	if at_keyword_index(p, index, "TABLES") {section^ = .Tables; return true}
+	if at_keyword_index(p, index, "USING") {section^ = .Using; return true}
+	if at_keyword_index(p, index, "CHANGING") {section^ = .Changing; return true}
+	return false
+}
+
+function_header_section :: proc(
+	p: ^Parser,
+	index: int,
+	section: ^ast.Function_Parameter_Section,
+	in_exceptions: ^bool,
+) -> bool {
+	if at_keyword_index(p, index, "IMPORTING") {section^ = .Importing; in_exceptions^ = false; return true}
+	if at_keyword_index(p, index, "EXPORTING") {section^ = .Exporting; in_exceptions^ = false; return true}
+	if at_keyword_index(p, index, "CHANGING") {section^ = .Changing; in_exceptions^ = false; return true}
+	if at_keyword_index(p, index, "TABLES") {section^ = .Tables; in_exceptions^ = false; return true}
+	if at_keyword_index(p, index, "EXCEPTIONS") {in_exceptions^ = true; return true}
+	return false
+}
+
+parse_header_param_name :: proc(
+	p: ^Parser,
+	index, period_index: int,
+) -> (
+	string,
+	tokenizer.Range,
+	ast.Parameter_Passing_Kind,
+	int,
+	bool,
+) {
+	i := index
+	if i < period_index && tokenizer.token_lexeme(p.tokens[i], p.source) == "!" {
+		i += 1
+	}
+	passing := ast.Parameter_Passing_Kind.Direct
+	if at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE") {
+		passing = .Value if at_keyword_index(p, i, "VALUE") else .Reference
+		i += 1
+		if i < period_index && p.tokens[i].kind == .LParen {
+			i += 1
+		}
+		if i >= period_index || !header_name_token_like(p.tokens[i]) {
+			return "", tokenizer.Range{}, passing, i, false
+		}
+		tok := p.tokens[i]
+		i += 1
+		if i < period_index && p.tokens[i].kind == .RParen {
+			i += 1
+		}
+		return strip_header_bang(tokenizer.token_lexeme(tok, p.source)), tok.range, passing, i, true
+	}
+	if i >= period_index || !header_name_token_like(p.tokens[i]) {
+		return "", tokenizer.Range{}, passing, i, false
+	}
+	tok := p.tokens[i]
+	name := strip_header_bang(tokenizer.token_lexeme(tok, p.source))
+	return name, tok.range, passing, i + 1, name != ""
+}
+
+header_name_token_like :: proc(token: tokenizer.Token) -> bool {
+	return token.kind == .Ident || token.kind == .Number
+}
+
+strip_header_bang :: proc(text: string) -> string {
+	if len(text) > 0 && text[0] == '!' {
+		return text[1:]
+	}
+	return text
+}
+
+header_type_clause_starts :: proc(p: ^Parser, index, period_index: int) -> bool {
+	return index < period_index &&
+	       (at_keyword_index(p, index, "TYPE") ||
+	        at_keyword_index(p, index, "LIKE") ||
+	        at_keyword_index(p, index, "STRUCTURE"))
+}
+
+parse_header_type_clause :: proc(
+	p: ^Parser,
+	index, period_index: int,
+	stop_keywords: []string,
+) -> (^ast.Data_Type_Clause, int) {
+	i := index
+	keyword := p.tokens[i]
+	i += 1
+	clause, _ := mem.new(ast.Data_Type_Clause, p.allocator)
+	is_like := token_is_keyword(p, keyword, "LIKE")
+	is_structure := token_is_keyword(p, keyword, "STRUCTURE")
+	clause.form = .Structure if is_structure else (.Like if is_like else .Type)
+	if !is_structure {
+		if header_allow_keyword(p, &i, period_index, "LINE") {
+			header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Like_Line_Of if is_like else .Type_Line_Of
+		} else if !is_like && header_allow_keyword(p, &i, period_index, "REF") {
+			header_allow_keyword(p, &i, period_index, "TO")
+			clause.form = .Ref_To
+		} else if !is_like && header_allow_keyword(p, &i, period_index, "RANGE") {
+			header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Range_Of
+		} else if header_allow_keyword(p, &i, period_index, "STANDARD") {
+			header_allow_keyword(p, &i, period_index, "TABLE")
+			header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Like_Standard_Table if is_like else .Standard_Table
+		} else if header_allow_keyword(p, &i, period_index, "SORTED") {
+			header_allow_keyword(p, &i, period_index, "TABLE")
+			header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
+		} else if header_allow_keyword(p, &i, period_index, "HASHED") {
+			header_allow_keyword(p, &i, period_index, "TABLE")
+			header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
+		} else if header_allow_keyword(p, &i, period_index, "TABLE") {
+			header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Like_Table if is_like else .Table
+		}
+	}
+	clause.type_ref, i = parse_header_type_ref_expr(p, i, period_index, stop_keywords)
+	return clause, i
+}
+
+header_allow_keyword :: proc(
+	p: ^Parser,
+	index: ^int,
+	period_index: int,
+	keyword: string,
+) -> bool {
+	if index^ < period_index && at_keyword_index(p, index^, keyword) {
+		index^ += 1
+		return true
+	}
+	return false
+}
+
+parse_header_type_ref_expr :: proc(
+	p: ^Parser,
+	start, period_index: int,
+	stop_keywords: []string,
+) -> (^ast.Expr, int) {
+	i := start
+	if header_type_ref_done(p, i, start, period_index, stop_keywords, false) {
+		return nil, i
+	}
+	paren, bracket, brace := 0, 0, 0
+	name_end := -1
+	in_key := false
+	for !header_type_ref_done(p, i, start, period_index, stop_keywords, in_key) {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && at_keyword_index(p, i, "WITH") {
+			if name_end < 0 && i > start {
+				name_end = p.tokens[i - 1].range.end
+			}
+			in_key = true
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren == 0 {break}
+			paren -= 1
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket == 0 {break}
+			bracket -= 1
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace == 0 {break}
+			brace -= 1
+		}
+		i += 1
+	}
+	if i <= start {
+		return nil, i
+	}
+	first := p.tokens[start]
+	last := p.tokens[i - 1]
+	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
+	expr.text = source_range_text(p, expr.range)
+	if name_end < 0 {
+		name_end = last.range.end
+	}
+	expr.name = strings.clone(p.source[first.range.start:name_end], p.allocator)
+	return expr, i
+}
+
+header_type_ref_done :: proc(
+	p: ^Parser,
+	index, start, period_index: int,
+	stop_keywords: []string,
+	in_key: bool,
+) -> bool {
+	if index >= period_index {
+		return true
+	}
+	for keyword in stop_keywords {
+		if at_keyword_index(p, index, keyword) {
+			return true
+		}
+	}
+	if at_keyword_index(p, index, "OPTIONAL") || (!in_key && at_keyword_index(p, index, "DEFAULT")) {
+		return true
+	}
+	return index > start && header_parameter_starts(p, index, period_index)
+}
+
+header_parameter_starts :: proc(p: ^Parser, index, period_index: int) -> bool {
+	_, _, _, next, ok := parse_header_param_name(p, index, period_index)
+	return ok && header_type_clause_starts(p, next, period_index)
+}
+
+skip_header_addition_value :: proc(
+	p: ^Parser,
+	index, period_index: int,
+	stop_keywords: []string,
+) -> int {
+	i := index
+	paren, bracket, brace := 0, 0, 0
+	for i < period_index {
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			for keyword in stop_keywords {
+				if at_keyword_index(p, i, keyword) {
+					return i
+				}
+			}
+			if at_keyword_index(p, i, "OPTIONAL") || header_parameter_starts(p, i, period_index) {
+				return i
+			}
+		}
+		tok := p.tokens[i]
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+		i += 1
+	}
+	return i
 }
 
 parse_event_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

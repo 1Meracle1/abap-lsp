@@ -485,6 +485,7 @@ Data_Chained_Branch :: struct {
 Data_Type_Form :: enum {
 	Type,
 	Like,
+	Structure,
 	Ref_To,
 	Like_Line_Of,
 	Type_Line_Of,
@@ -1634,20 +1635,70 @@ Method_Decl :: struct {
 	amdp_body:    string,
 }
 
+Parameter_Passing_Kind :: enum {
+	Direct,
+	Value,
+	Reference,
+}
+
+Form_Parameter_Section :: enum {
+	Tables,
+	Using,
+	Changing,
+}
+
+Form_Parameter_Clause :: struct {
+	section:     Form_Parameter_Section,
+	name:        string,
+	range:       tokenizer.Range,
+	passing:     Parameter_Passing_Kind,
+	type_clause: ^Data_Type_Clause,
+}
+
 Form_Decl :: struct {
-	using node:   Stmt,
-	name:         string,
-	body:         [dynamic]^Stmt,
-	header_range: tokenizer.Range,
-	header_text:  string,
+	using node:      Stmt,
+	name:            string,
+	body:            [dynamic]^Stmt,
+	header_range:    tokenizer.Range,
+	header_text:     string,
+	form_parameters: [dynamic]Form_Parameter_Clause,
+}
+
+Function_Parameter_Section :: enum {
+	Importing,
+	Exporting,
+	Changing,
+	Tables,
+}
+
+Function_Parameter_Flag :: enum {
+	Is_Optional,
+	Has_Default_Value,
+}
+Function_Parameter_Flags :: bit_set[Function_Parameter_Flag]
+
+Function_Parameter_Clause :: struct {
+	section:     Function_Parameter_Section,
+	name:        string,
+	range:       tokenizer.Range,
+	passing:     Parameter_Passing_Kind,
+	type_clause: ^Data_Type_Clause,
+	flags:       Function_Parameter_Flags,
+}
+
+Function_Exception_Clause :: struct {
+	name:  string,
+	range: tokenizer.Range,
 }
 
 Function_Decl :: struct {
-	using node:   Stmt,
-	name:         string,
-	body:         [dynamic]^Stmt,
-	header_range: tokenizer.Range,
-	header_text:  string,
+	using node:          Stmt,
+	name:                string,
+	body:                [dynamic]^Stmt,
+	header_range:        tokenizer.Range,
+	header_text:         string,
+	function_parameters: [dynamic]Function_Parameter_Clause,
+	exceptions:          [dynamic]Function_Exception_Clause,
 }
 
 Module_Decl :: struct {

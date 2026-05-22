@@ -565,10 +565,13 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Form_Decl:
 		r := clone_shallow(n, allocator)
 		r.body = clone_stmt_list(n.body, allocator)
+		r.form_parameters = clone_form_parameters(n.form_parameters, allocator)
 		return r
 	case ^Function_Decl:
 		r := clone_shallow(n, allocator)
 		r.body = clone_stmt_list(n.body, allocator)
+		r.function_parameters = clone_function_parameters(n.function_parameters, allocator)
+		r.exceptions = clone_function_exceptions(n.exceptions, allocator)
 		return r
 	case ^Module_Decl:
 		r := clone_shallow(n, allocator)
@@ -800,6 +803,49 @@ clone_oop_parameters :: proc(list: [dynamic]Oop_Parameter_Clause, allocator: mem
 	res := make([dynamic]Oop_Parameter_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Oop_Parameter_Clause{clause.name, clause.range, clone_type_clause(clause.type_clause, allocator), clause.optional})
+	}
+	return res
+}
+
+clone_form_parameters :: proc(list: [dynamic]Form_Parameter_Clause, allocator: mem.Allocator) -> [dynamic]Form_Parameter_Clause {
+	res := make([dynamic]Form_Parameter_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(
+			&res,
+			Form_Parameter_Clause {
+				section = clause.section,
+				name = clause.name,
+				range = clause.range,
+				passing = clause.passing,
+				type_clause = clone_type_clause(clause.type_clause, allocator),
+			},
+		)
+	}
+	return res
+}
+
+clone_function_parameters :: proc(list: [dynamic]Function_Parameter_Clause, allocator: mem.Allocator) -> [dynamic]Function_Parameter_Clause {
+	res := make([dynamic]Function_Parameter_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(
+			&res,
+			Function_Parameter_Clause {
+				section = clause.section,
+				name = clause.name,
+				range = clause.range,
+				passing = clause.passing,
+				type_clause = clone_type_clause(clause.type_clause, allocator),
+				flags = clause.flags,
+			},
+		)
+	}
+	return res
+}
+
+clone_function_exceptions :: proc(list: [dynamic]Function_Exception_Clause, allocator: mem.Allocator) -> [dynamic]Function_Exception_Clause {
+	res := make([dynamic]Function_Exception_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, clause)
 	}
 	return res
 }

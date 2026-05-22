@@ -445,8 +445,14 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Method_Decl:
 		walk_stmt_list(next, n.body)
 	case ^Form_Decl:
+		for param in n.form_parameters {
+			walk_data_type_clause(next, param.type_clause)
+		}
 		walk_stmt_list(next, n.body)
 	case ^Function_Decl:
+		for param in n.function_parameters {
+			walk_data_type_clause(next, param.type_clause)
+		}
 		walk_stmt_list(next, n.body)
 	case ^Module_Decl:
 		walk_stmt_list(next, n.body)
