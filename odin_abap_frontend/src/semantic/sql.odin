@@ -84,6 +84,7 @@ collect_db_table_sql_source :: proc(
 	target: ^ast.Expr,
 	scope: Scope_Id,
 	where_cond: ^ast.Expr,
+	where_clause: tokenizer.Range,
 	dynamic_where: bool,
 ) -> (
 	int,
@@ -105,7 +106,7 @@ collect_db_table_sql_source :: proc(
 		scope        = scope,
 		range        = range,
 		from_clause  = target.range,
-		where_clause = expr_range(where_cond),
+		where_clause = where_clause if range_valid(where_clause) else expr_range(where_cond),
 		flags        = flags,
 	}
 	if sql_expr_is_dynamic_operand(target) {
@@ -137,6 +138,7 @@ collect_db_table_sql_source :: proc(
 		name_range,
 		scope,
 		where_cond,
+		where_clause,
 		dynamic_where,
 	)
 }
@@ -148,6 +150,7 @@ collect_db_table_sql_source_name :: proc(
 	name_range: tokenizer.Range,
 	scope: Scope_Id,
 	where_cond: ^ast.Expr,
+	where_clause: tokenizer.Range,
 	dynamic_where: bool,
 ) -> (
 	int,
@@ -195,7 +198,7 @@ collect_db_table_sql_source_name :: proc(
 			scope = scope,
 			range = range,
 			from_clause = name_range,
-			where_clause = expr_range(where_cond),
+			where_clause = where_clause if range_valid(where_clause) else expr_range(where_cond),
 			flags = flags,
 		},
 	)
@@ -677,7 +680,7 @@ collect_sql_name_refs_from_expr :: proc(
 		name := canonical_name(n.name, c.allocator)
 		if open_sql_predicate && sql_local_value_exists(c, scope, name) {
 			add_reference(c, scope, name, .Value, .Identifier, n.range)
-		} else if !sql_token_is_keyword_text(name) {
+		} else {
 			push_sql_name_ref(c, query_id, scope, n.range, name, "", .Column, .Unresolved)
 		}
 	case ^ast.Literal_Expr:
@@ -740,6 +743,15 @@ collect_sql_name_refs_from_expr :: proc(
 		collect_sql_name_refs_from_expr(c, query_id, n.subject, scope, open_sql_predicate)
 		collect_sql_name_refs_from_expr(c, query_id, n.low, scope, open_sql_predicate)
 		collect_sql_name_refs_from_expr(c, query_id, n.high, scope, open_sql_predicate)
+	case ^ast.Sql_Case_When_Expr:
+		collect_sql_name_refs_from_expr(c, query_id, n.condition, scope, open_sql_predicate)
+		collect_sql_name_refs_from_expr(c, query_id, n.result, scope, open_sql_predicate)
+	case ^ast.Sql_Case_Expr:
+		collect_sql_name_refs_from_expr(c, query_id, n.operand, scope, open_sql_predicate)
+		for when_expr in n.whens {
+			collect_sql_name_refs_from_expr(c, query_id, when_expr, scope, open_sql_predicate)
+		}
+		collect_sql_name_refs_from_expr(c, query_id, n.else_expr, scope, open_sql_predicate)
 	case ^ast.Is_Predicate_Expr:
 		collect_sql_name_refs_from_expr(c, query_id, n.subject, scope, open_sql_predicate)
 	case ^ast.Instance_Of_Predicate_Expr:
@@ -785,6 +797,18 @@ collect_sql_host_refs_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: S
 		collect_sql_host_refs_from_expr(c, n.subject, scope)
 		collect_sql_host_refs_from_expr(c, n.low, scope)
 		collect_sql_host_refs_from_expr(c, n.high, scope)
+	case ^ast.Is_Predicate_Expr:
+		collect_sql_host_refs_from_expr(c, n.subject, scope)
+	case ^ast.Instance_Of_Predicate_Expr:
+		collect_sql_host_refs_from_expr(c, n.subject, scope)
+		collect_sql_host_refs_from_expr(c, n.type_ref, scope)
+	case ^ast.Sql_Case_When_Expr:
+		collect_sql_host_refs_from_expr(c, n.condition, scope)
+		collect_sql_host_refs_from_expr(c, n.result, scope)
+	case ^ast.Sql_Case_Expr:
+		collect_sql_host_refs_from_expr(c, n.operand, scope)
+		for when_expr in n.whens {collect_sql_host_refs_from_expr(c, when_expr, scope)}
+		collect_sql_host_refs_from_expr(c, n.else_expr, scope)
 	}
 }
 
@@ -1107,24 +1131,6 @@ sql_local_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: string) -> 
 	return ok
 }
 
-sql_token_is_keyword_text :: proc(text: string) -> bool {
-	keywords := [?]string {
-		"case",
-		"when",
-		"then",
-		"else",
-		"end",
-		"like",
-		"null",
-	}
-	for keyword in keywords {
-		if ascii_equal_ignore_case(text, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
 record_internal_table_order :: proc(
 	c: ^Collector,
 	scope: Scope_Id,
@@ -1170,17 +1176,6 @@ record_read_table_binary_search :: proc(
 			key_fields = keys,
 		},
 	)
-}
-
-binary_search_range :: proc(c: ^Collector, range: tokenizer.Range) -> tokenizer.Range {
-	text := source_text(c, range)
-	tokens := header_tokens(c, text, range.start)
-	for i in 0 ..< len(tokens) - 1 {
-		if token_eq(tokens[i], "BINARY") && token_eq(tokens[i + 1], "SEARCH") {
-			return tokenizer.text_range(tokens[i].range.start, tokens[i + 1].range.end)
-		}
-	}
-	return range
 }
 
 table_order_name_from_access :: proc(c: ^Collector, access: Field_Access) -> string {

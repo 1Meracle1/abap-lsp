@@ -158,6 +158,17 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.low = clone(n.low, allocator)
 		r.high = clone(n.high, allocator)
 		return r
+	case ^Sql_Case_When_Expr:
+		r := clone_shallow(n, allocator)
+		r.condition = clone(n.condition, allocator)
+		r.result = clone(n.result, allocator)
+		return r
+	case ^Sql_Case_Expr:
+		r := clone_shallow(n, allocator)
+		r.operand = clone(n.operand, allocator)
+		r.whens = clone_expr_list(n.whens, allocator)
+		r.else_expr = clone(n.else_expr, allocator)
+		return r
 	case ^Let_Expr:
 		r := clone_shallow(n, allocator)
 		r.bindings = clone_expr_list(n.bindings, allocator)
@@ -1163,6 +1174,7 @@ clone_read_table_entries :: proc(list: [dynamic]Read_Table_Entry_Clause, allocat
 			using_key              = clone(clause.using_key, allocator),
 			transporting_no_fields = clause.transporting_no_fields,
 			binary_search          = clause.binary_search,
+			binary_search_clause   = clause.binary_search_clause,
 			comparing              = clone_expr_list(clause.comparing, allocator),
 		})
 	}
@@ -1180,7 +1192,12 @@ clone_read_table_key_values :: proc(list: [dynamic]Read_Table_Key_Value_Clause, 
 clone_sql_assignments :: proc(list: [dynamic]Sql_Assignment_Clause, allocator: mem.Allocator) -> [dynamic]Sql_Assignment_Clause {
 	res := make([dynamic]Sql_Assignment_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Sql_Assignment_Clause{name = clone(clause.name, allocator), value = clone(clause.value, allocator)})
+		append(&res, Sql_Assignment_Clause{
+			name = clone(clause.name, allocator),
+			value = clone(clause.value, allocator),
+			column_name = clause.column_name,
+			column_range = clause.column_range,
+		})
 	}
 	return res
 }

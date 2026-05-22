@@ -41,6 +41,8 @@ Parser :: struct {
 	index:          int,
 	previous_index: int,
 	expr_stop_keywords: []string,
+	expr_extra_stop_keywords: []string,
+	open_sql_expr: bool,
 	errors:         [dynamic]Parse_Error,
 	allocator:      mem.Allocator,
 	root:           ^ast.File,

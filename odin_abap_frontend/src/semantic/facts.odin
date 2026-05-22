@@ -89,6 +89,13 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 		collect_expr_refs(c, n.subject, scope)
 		collect_expr_refs(c, n.low, scope)
 		collect_expr_refs(c, n.high, scope)
+	case ^ast.Sql_Case_When_Expr:
+		collect_expr_refs(c, n.condition, scope)
+		collect_expr_refs(c, n.result, scope)
+	case ^ast.Sql_Case_Expr:
+		collect_expr_refs(c, n.operand, scope)
+		collect_expr_list_refs(c, n.whens[:], scope)
+		collect_expr_refs(c, n.else_expr, scope)
 	case ^ast.Binary_Expr:
 		collect_expr_refs(c, n.left, scope)
 		collect_expr_refs(c, n.right, scope)
@@ -1963,7 +1970,7 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 			record_read_table_binary_search(
 				c,
 				scope,
-				binary_search_range(c, stmt.range),
+				e.binary_search_clause,
 				name,
 				key_fields[:],
 			)
@@ -1972,18 +1979,21 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 }
 
 collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: Scope_Id) {
+	query_id := -1
+	is_sql := false
 	if stmt.form == .Db_Table {
 		add_system_field_update(c, scope, stmt.range, .Insert_Db_Table, "subrc")
-		_, is_sql := collect_db_table_sql_source(c, stmt.range, stmt.target, scope, nil, false)
+		query_id, is_sql = collect_db_table_sql_source(c, stmt.range, stmt.target, scope, nil, tokenizer.Range{}, false)
 		if !is_sql {
 			if stmt.has_db_table_name {
-				_, is_sql = collect_db_table_sql_source_name(
+				query_id, is_sql = collect_db_table_sql_source_name(
 					c,
 					stmt.range,
 					stmt.db_table_name,
 					stmt.db_table_name_range,
 					scope,
 					nil,
+					tokenizer.Range{},
 					false,
 				)
 			}
@@ -2000,7 +2010,13 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 	collect_expr_refs(c, stmt.assigning, scope)
 	collect_expr_refs(c, stmt.reference_into, scope)
 	for a in stmt.assignments {
-		collect_expr_refs(c, a.name, scope)
+		if is_sql && a.column_name != "" {
+			push_sql_name_ref(c, query_id, scope, a.column_range, a.column_name, "", .Column, .Unresolved)
+		} else if is_sql {
+			collect_sql_name_refs_from_expr(c, query_id, a.name, scope, false)
+		} else {
+			collect_expr_refs(c, a.name, scope)
+		}
 		collect_expr_refs(c, a.value, scope)
 	}
 }
@@ -2014,7 +2030,18 @@ collect_append_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Append_Stmt, scope: 
 }
 
 collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
-	_, is_sql := collect_db_table_sql_source(c, stmt.range, stmt.target, scope, nil, false)
+	is_sql := false
+	if !stmt.table_keyword {
+		_, is_sql = collect_db_table_sql_source(
+			c,
+			stmt.range,
+			stmt.target,
+			scope,
+			stmt.where_cond,
+			stmt.where_clause,
+			stmt.dynamic_where,
+		)
+	}
 	add_system_field_update(
 		c,
 		scope,
@@ -2024,10 +2051,10 @@ collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: 
 	)
 	if !is_sql {
 		collect_expr_refs(c, stmt.target, scope)
+		collect_expr_refs(c, stmt.where_cond, scope)
 	}
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.index, scope)
-	collect_expr_refs(c, stmt.where_cond, scope)
 	collect_expr_list_refs(c, stmt.transporting[:], scope)
 }
 
@@ -2056,21 +2083,25 @@ collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scop
 
 collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: Scope_Id) {
 	add_system_field_update(c, scope, stmt.range, .Update_Db_Table, "subrc")
-	_, is_sql := collect_db_table_sql_source(
+	query_id, is_sql := collect_db_table_sql_source(
 		c,
 		stmt.range,
 		stmt.target,
 		scope,
 		stmt.where_cond,
+		stmt.where_clause,
 		stmt.dynamic_where,
 	)
 	if !is_sql {
 		collect_expr_refs(c, stmt.target, scope)
+		collect_expr_refs(c, stmt.where_cond, scope)
 	}
 	collect_expr_refs(c, stmt.source, scope)
 	for a in stmt.assignments {
-		if is_sql {
-			collect_sql_name_refs_from_expr(c, len(c.sql_queries) - 1, a.name, scope, false)
+		if is_sql && a.column_name != "" {
+			push_sql_name_ref(c, query_id, scope, a.column_range, a.column_name, "", .Column, .Unresolved)
+		} else if is_sql {
+			collect_sql_name_refs_from_expr(c, query_id, a.name, scope, false)
 		} else {
 			collect_expr_refs(c, a.name, scope)
 		}
@@ -2079,14 +2110,18 @@ collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: 
 }
 
 collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
-	_, is_sql := collect_db_table_sql_source(
-		c,
-		stmt.range,
-		stmt.target,
-		scope,
-		stmt.where_cond,
-		false,
-	)
+	is_sql := false
+	if stmt.form != .Adjacent_Duplicates {
+		_, is_sql = collect_db_table_sql_source(
+			c,
+			stmt.range,
+			stmt.target,
+			scope,
+			stmt.where_cond,
+			stmt.where_clause,
+			stmt.dynamic_where,
+		)
+	}
 	add_system_field_update(
 		c,
 		scope,

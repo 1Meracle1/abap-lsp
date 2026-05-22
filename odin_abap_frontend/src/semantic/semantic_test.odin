@@ -1811,6 +1811,8 @@ SELECT carrid, carrname
 	testing.expect(t, .Has_From_Clause in query.flags)
 	testing.expect(t, .Has_Into_Clause in query.flags)
 	testing.expect(t, .Has_Where_Clause in query.flags)
+	testing.expect(t, system_update_present(&unit, .Select, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Select, "dbcnt"))
 	testing.expect(t, sql_source_present(&unit, "scarr", .External))
 	testing.expect(t, sql_projection_present(&unit, "carrid", .Column))
 	testing.expect(t, sql_projection_present(&unit, "carrname", .Column))
@@ -1835,10 +1837,11 @@ collects_dynamic_open_sql_fragments :: proc(t: ^testing.T) {
 DATA lv_fields TYPE string.
 DATA lv_table TYPE string.
 DATA lv_where TYPE string.
+DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 
 SELECT (lv_fields)
   FROM (lv_table)
-  INTO TABLE @DATA(lt_rows)
+  INTO TABLE @lt_rows
   WHERE (lv_where).
 `,
 	)
@@ -1853,6 +1856,7 @@ SELECT (lv_fields)
 	for name in dynamic_names {
 		testing.expect(t, has_reference(&unit, name, .Value, .Identifier))
 	}
+	testing.expect(t, has_reference(&unit, "lt_rows", .Value, .Identifier))
 }
 
 @(test)
@@ -1967,10 +1971,7 @@ SELECT carrid FROM zmissing INTO TABLE @DATA(lt_missing).
 
 @(test)
 collects_sort_order_and_read_table_binary_search_facts :: proc(t: ^testing.T) {
-	unit := collect_test_unit(
-		t,
-		"file:///read_table_binary_search.abap",
-		`
+	source := `
 FORM run.
   TYPES: BEGIN OF ty_row,
            carrid TYPE string,
@@ -1982,11 +1983,21 @@ FORM run.
   SORT lt_rows BY carrid connid.
   READ TABLE lt_rows INTO ls_row WITH KEY carrid = 'AA' connid = '001' BINARY SEARCH.
 ENDFORM.
-`,
-	)
+`
+	unit := collect_test_unit(t, "file:///read_table_binary_search.abap", source)
 	keys := [?]string{"carrid", "connid"}
 	testing.expect(t, internal_table_order_present(&unit, "lt_rows", keys[:]))
 	testing.expect(t, binary_search_present(&unit, "lt_rows", keys[:]))
+	testing.expect(t, system_update_present(&unit, .Read_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Read_Table, "tabix"))
+	found := false
+	for read in unit.read_table_binary_searches {
+		if read.table_name == "lt_rows" && string_list_matches(read.key_fields, keys[:]) {
+			testing.expect_value(t, source[read.range.start:read.range.end], "BINARY SEARCH")
+			found = true
+		}
+	}
+	testing.expect(t, found)
 }
 
 @(test)
@@ -2011,10 +2022,40 @@ ENDFORM.
 }
 
 @(test)
+collects_classic_and_modern_select_ordering_facts :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  DATA lt_old TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lt_new TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lv_matnr TYPE string.
+
+  SELECT matnr INTO TABLE @lt_old FROM mara WHERE matnr = @lv_matnr ORDER BY matnr.
+  SELECT matnr FROM mara INTO TABLE @lt_new WHERE matnr = @lv_matnr ORDER BY matnr.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///select_classic_modern_order.abap", source)
+
+	testing.expect_value(t, len(unit.sql_queries), 2)
+	for query in unit.sql_queries {
+		testing.expect(t, .Has_From_Clause in query.flags)
+		testing.expect(t, .Has_Into_Clause in query.flags)
+		testing.expect(t, .Has_Where_Clause in query.flags)
+		testing.expect(t, .Has_Order_By_Clause in query.flags)
+		testing.expect_value(t, source[query.from_clause.start:query.from_clause.end], "mara")
+		testing.expect_value(t, source[query.where_clause.start:query.where_clause.end], "WHERE matnr = @lv_matnr")
+		testing.expect_value(t, source[query.order_by_clause.start:query.order_by_clause.end], "ORDER BY matnr")
+	}
+	keys := [?]string{"matnr"}
+	testing.expect(t, internal_table_order_present(&unit, "lt_old", keys[:]))
+	testing.expect(t, internal_table_order_present(&unit, "lt_new", keys[:]))
+}
+
+@(test)
 collects_parser_modeled_select_clause_flags_ranges_and_cursor_select :: proc(t: ^testing.T) {
 	source := `
 FORM run.
   DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lt_desc TYPE STANDARD TABLE OF string WITH EMPTY KEY.
   DATA lv_matnr TYPE string.
   DATA lv_size TYPE i.
   DATA cv TYPE cursor.
@@ -2022,7 +2063,7 @@ FORM run.
   SELECT a~* FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY a~matnr, a~ersda UP TO 10 ROWS PACKAGE SIZE lv_size OFFSET 2 BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED.
   SELECT * FROM zlock INTO @DATA(ls_lock) FOR UPDATE.
   SELECT * FROM zprimary INTO TABLE @lt_rows ORDER BY PRIMARY KEY.
-  SELECT * FROM zdesc INTO TABLE @lt_rows ORDER BY carrid DESCENDING.
+  SELECT * FROM zdesc INTO TABLE @lt_desc ORDER BY carrid DESCENDING.
   OPEN CURSOR cv FOR SELECT matnr FROM mara WHERE matnr = @lv_matnr ORDER BY matnr.
 ENDFORM.
 `
@@ -2055,6 +2096,8 @@ ENDFORM.
 	testing.expect(t, .Is_For_Update in unit.sql_queries[1].flags)
 	testing.expect(t, .Order_By_Primary_Key in unit.sql_queries[2].flags)
 	testing.expect_value(t, len(unit.sql_queries[3].order_by_fields), 0)
+	desc_keys := [?]string{"carrid"}
+	testing.expect(t, !internal_table_order_present(&unit, "lt_desc", desc_keys[:]))
 	testing.expect(t, .Has_Order_By_Clause in unit.sql_queries[4].flags)
 	testing.expect(t, has_reference(&unit, "cv", .Value, .Identifier))
 
@@ -2075,12 +2118,48 @@ FORM run.
   DATA lv_matnr TYPE string.
 
   SELECT a~matnr FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY a~matnr UP TO 1 ROWS.
+  SELECT a~matnr FROM mara AS a INNER JOIN makt AS b ON b~matnr = a~matnr INTO TABLE @lt_rows.
   SELECT * FROM zlock INTO @DATA(ls_lock) FOR UPDATE.
 ENDFORM.
 `,
 	)
 
-	keywords := [?]string{"from", "into", "where", "group", "by", "having", "order", "up", "to", "rows", "for", "update"}
+	keywords := [?]string{"as", "from", "inner", "join", "on", "into", "table", "where", "group", "by", "having", "order", "up", "to", "rows", "for", "update"}
+	for reference in unit.sql_name_refs {
+		for keyword in keywords {
+			testing.expect(t, reference.name != keyword)
+		}
+	}
+}
+
+@(test)
+collects_sql_null_like_and_case_refs_without_keyword_refs :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///sql_null_like_case.abap",
+		`
+FORM run.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lv_pattern TYPE string.
+  DATA lv_old_pattern TYPE string.
+
+  SELECT CASE WHEN carrid LIKE @lv_pattern THEN LOWER( connid ) ELSE carrid END AS value
+    FROM sflight
+    INTO TABLE @lt_rows
+    WHERE carrid IS NOT NULL
+      AND connid NOT LIKE lv_old_pattern.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, sql_name_ref_present(&unit, "sflight", .Source))
+	testing.expect(t, sql_name_ref_present(&unit, "carrid", .Column))
+	testing.expect(t, sql_name_ref_present(&unit, "connid", .Column))
+	testing.expect(t, sql_name_ref_present(&unit, "lower", .Function))
+	testing.expect(t, has_reference(&unit, "lv_pattern", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_old_pattern", .Value, .Identifier))
+	testing.expect(t, !sql_name_ref_present(&unit, "lv_old_pattern", .Column))
+	keywords := [?]string{"case", "when", "then", "else", "end", "like", "null"}
 	for reference in unit.sql_name_refs {
 		for keyword in keywords {
 			testing.expect(t, reference.name != keyword)
@@ -2155,6 +2234,61 @@ ENDFORM.
 	keywords := [?]string{"insert", "into", "table", "from", "values", "accepting", "duplicate", "keys"}
 	for keyword in keywords {
 		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
+collects_dml_parser_facts_without_keyword_refs :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///dml_parser_facts.abap",
+		`
+FORM run.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA ls_row TYPE string.
+  DATA lv_id TYPE string.
+  DATA lv_status TYPE string.
+  DATA lv_where TYPE string.
+
+  UPDATE zupdate_tab SET status = lv_status WHERE (lv_where).
+  DELETE FROM zdelete_tab WHERE id = lv_id.
+  DELETE lt_rows WHERE id = lv_id.
+  MODIFY zmodify_tab FROM ls_row WHERE id = lv_id.
+  MODIFY TABLE lt_rows FROM ls_row WHERE id = lv_id.
+  INSERT zinsert_tab FROM ls_row ACCEPTING DUPLICATE KEYS.
+  INSERT ls_row INTO TABLE lt_rows.
+ENDFORM.
+`,
+	)
+
+	db_names := [?]string{"zupdate_tab", "zdelete_tab", "zmodify_tab", "zinsert_tab"}
+	for name in db_names {
+		testing.expect(t, sql_source_present(&unit, name, .External))
+		testing.expect(t, sql_name_ref_present(&unit, name, .Source))
+		testing.expect(t, !has_reference(&unit, name, .Value, .Identifier))
+	}
+	testing.expect(t, sql_name_ref_present(&unit, "status", .Column))
+	testing.expect(t, sql_name_ref_present(&unit, "id", .Column))
+	testing.expect(t, sql_predicate_present(&unit, .Dynamic_Where))
+	testing.expect(t, system_update_present(&unit, .Update_Db_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Delete_Db_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Delete_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Modify_Db_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Modify_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Insert_Db_Table, "subrc"))
+	testing.expect(t, system_update_present(&unit, .Insert_Table, "subrc"))
+	testing.expect(t, has_reference(&unit, "lt_rows", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "ls_row", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_id", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_status", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_where", .Value, .Identifier))
+
+	keywords := [?]string{"update", "set", "where", "delete", "from", "modify", "table", "insert", "into", "accepting", "duplicate", "keys"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+		for reference in unit.sql_name_refs {
+			testing.expect(t, reference.name != keyword)
+		}
 	}
 }
 

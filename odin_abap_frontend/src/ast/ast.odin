@@ -65,6 +65,8 @@ Binary_Op :: enum {
 	Or,
 	Is,
 	Between,
+	Like,
+	Not_Like,
 }
 
 Unary_Op :: enum {
@@ -305,6 +307,7 @@ Is_Predicate_Kind :: enum {
 	Assigned,
 	Requested,
 	Supplied,
+	Null,
 }
 
 Constructor_For_Kind :: enum {
@@ -343,6 +346,21 @@ Between_Expr :: struct {
 	subject:    ^Expr,
 	low:        ^Expr,
 	high:       ^Expr,
+}
+
+// ABAP SQL syntax: one `WHEN condition THEN result` arm inside a SQL `CASE` expression.
+Sql_Case_When_Expr :: struct {
+	using node: Expr,
+	condition:  ^Expr,
+	result:     ^Expr,
+}
+
+// ABAP SQL syntax: `CASE [operand] WHEN condition THEN result [ELSE result] END`.
+Sql_Case_Expr :: struct {
+	using node: Expr,
+	operand:    ^Expr,
+	whens:      [dynamic]^Expr,
+	else_expr:  ^Expr,
 }
 
 // ABAP syntax: `LET name = value ... IN expr`.
@@ -1985,6 +2003,7 @@ Read_Table_Entry_Clause :: struct {
 	using_key:              ^Expr,
 	transporting_no_fields: bool,
 	binary_search:          bool,
+	binary_search_clause:   tokenizer.Range,
 	comparing:              [dynamic]^Expr,
 }
 
@@ -2003,8 +2022,10 @@ Insert_Form :: enum {
 
 // ABAP syntax: SQL-style `name = value` assignment used by INSERT/UPDATE `SET`.
 Sql_Assignment_Clause :: struct {
-	name:  ^Expr,
-	value: ^Expr,
+	name:         ^Expr,
+	value:        ^Expr,
+	column_name:  string,
+	column_range: tokenizer.Range,
 }
 
 // ABAP syntax: `INSERT ...` for internal tables or database tables.
@@ -2019,9 +2040,18 @@ Insert_Stmt :: struct {
 	assignments:             [dynamic]Sql_Assignment_Clause,
 	db_table_name:           string,
 	db_table_name_range:     tokenizer.Range,
+	db_source_range:         tokenizer.Range,
 	has_db_table_name:       bool,
+	dynamic_source:          bool,
+	into_db_table:           bool,
 	from_table:              bool,
+	values_clause:           bool,
+	from_clause:             tokenizer.Range,
+	set_clause:              tokenizer.Range,
 	accepting_duplicate_keys: bool,
+	accepting_clause:        tokenizer.Range,
+	client_clause:           tokenizer.Range,
+	connection_clause:       tokenizer.Range,
 }
 
 // ABAP syntax: `APPEND wa TO itab` or `APPEND LINES OF src TO dst`.
@@ -2042,8 +2072,15 @@ Modify_Stmt :: struct {
 	source:      ^Expr,
 	index:       ^Expr,
 	where_cond:  ^Expr,
+	where_clause: tokenizer.Range,
 	transporting: [dynamic]^Expr,
 	from_table:  bool,
+	table_keyword: bool,
+	dynamic_source: bool,
+	dynamic_where: bool,
+	db_source_range: tokenizer.Range,
+	client_clause: tokenizer.Range,
+	connection_clause: tokenizer.Range,
 }
 
 // ABAP syntax: `SORT itab [BY fields ...]`.
@@ -2064,7 +2101,13 @@ Update_Stmt :: struct {
 	from_table:  bool,
 	assignments: [dynamic]Sql_Assignment_Clause,
 	where_cond:  ^Expr,
+	set_clause: tokenizer.Range,
+	where_clause: tokenizer.Range,
 	dynamic_where: bool,
+	dynamic_source: bool,
+	db_source_range: tokenizer.Range,
+	client_clause: tokenizer.Range,
+	connection_clause: tokenizer.Range,
 }
 
 Delete_Form :: enum {
@@ -2081,9 +2124,16 @@ Delete_Stmt :: struct {
 	source:     ^Expr,
 	index:      ^Expr,
 	where_cond: ^Expr,
+	where_clause: tokenizer.Range,
 	using_key:  ^Expr,
 	comparing:  [dynamic]^Expr,
 	from_table: bool,
+	explicit_from: bool,
+	dynamic_source: bool,
+	dynamic_where: bool,
+	db_source_range: tokenizer.Range,
+	client_clause: tokenizer.Range,
+	connection_clause: tokenizer.Range,
 }
 
 Dataset_Kind :: enum {
@@ -2219,6 +2269,8 @@ Any_Node :: union {
 	^Is_Predicate_Expr,
 	^Instance_Of_Predicate_Expr,
 	^Between_Expr,
+	^Sql_Case_When_Expr,
+	^Sql_Case_Expr,
 	^Let_Expr,
 	^Constructor_Let_Binding_Expr,
 	^Constructor_When_Clause_Expr,
@@ -2360,6 +2412,8 @@ Any_Expr :: union {
 	^Is_Predicate_Expr,
 	^Instance_Of_Predicate_Expr,
 	^Between_Expr,
+	^Sql_Case_When_Expr,
+	^Sql_Case_Expr,
 	^Let_Expr,
 	^Constructor_Let_Binding_Expr,
 	^Constructor_When_Clause_Expr,

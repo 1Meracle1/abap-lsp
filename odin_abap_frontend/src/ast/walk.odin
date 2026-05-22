@@ -86,6 +86,13 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.subject)
 		walk(next, n.low)
 		walk(next, n.high)
+	case ^Sql_Case_When_Expr:
+		walk(next, n.condition)
+		walk(next, n.result)
+	case ^Sql_Case_Expr:
+		walk(next, n.operand)
+		walk_expr_list(next, n.whens)
+		walk(next, n.else_expr)
 	case ^Let_Expr:
 		walk_expr_list(next, n.bindings)
 		walk_expr_list(next, n.body)

@@ -41,6 +41,11 @@ expr_stop_keyword :: proc(p: ^Parser) -> bool {
 			return true
 		}
 	}
+	for keyword in p.expr_extra_stop_keywords {
+		if at_keyword_phrase(p, keyword) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -111,6 +116,16 @@ parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		return parse_between_expr(p, left)
 	}
 
+	if p.open_sql_expr && at_keyword(p, "NOT") && at_keyword_index(p, p.index + 1, "LIKE") {
+		op_tok := bump_token(p)
+		bump_token(p)
+		right := parse_concat_expr(p)
+		if right == nil {
+			return nil
+		}
+		return build_binary_expr(p, left, .Not_Like, right, op_tok)
+	}
+
 	if at_keyword(p, "NOT") && at_keyword_index(p, p.index + 1, "IN") {
 		op_tok := bump_token(p)
 		bump_token(p)
@@ -119,6 +134,15 @@ parse_comparison_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			return nil
 		}
 		return build_binary_expr(p, left, .Not_In, right, op_tok)
+	}
+
+	if p.open_sql_expr && at_keyword(p, "LIKE") {
+		op_tok := bump_token(p)
+		right := parse_concat_expr(p)
+		if right == nil {
+			return nil
+		}
+		return build_binary_expr(p, left, .Like, right, op_tok)
 	}
 
 	if op, ok := comparison_op(p, current_token(p)); ok {
@@ -321,11 +345,23 @@ parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if expr_stop_keyword(p) {
 		return nil
 	}
+	if p.open_sql_expr && sql_case_keyword(p) {
+		return nil
+	}
 	tok := current_token(p)
 	#partial switch tok.kind {
 	case .Ident:
 		if at_keyword(p, "LET") {
 			return parse_let_expr(p, .Single)
+		}
+		if p.open_sql_expr && at_keyword(p, "CASE") {
+			return parse_sql_case_expr(p)
+		}
+		if p.open_sql_expr && at_keyword(p, "NULL") {
+			null_tok := bump_token(p)
+			expr := ast.new(ast.Literal_Expr, null_tok.range, p.allocator)
+			expr.value = "NULL"
+			return expr
 		}
 		if at_keyword(p, "DATA") && next_token_kind(p, 1) == .LParen {
 			return parse_data_inline_name_expr(p)
@@ -1213,6 +1249,61 @@ parse_between_expr :: proc(p: ^Parser, subject: ^ast.Expr) -> ^ast.Expr {
 	return expr
 }
 
+parse_sql_case_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	start := expect_keyword(p, "CASE")
+	expr := ast.new(ast.Sql_Case_Expr, start.range, p.allocator)
+	expr.whens = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+	if !at_keyword(p, "WHEN") {
+		expr.operand = parse_sql_case_part_expr(p, []string{"WHEN"}, false)
+	}
+	for at_keyword(p, "WHEN") {
+		when_start := bump_token(p)
+		condition := parse_sql_case_part_expr(p, []string{"THEN"}, expr.operand == nil)
+		if condition == nil {
+			error_current(p, "syntax error: expected expression")
+			break
+		}
+		if !allow_keyword(p, "THEN") {
+			error_current(p, "syntax error: expected keyword")
+			break
+		}
+		result := parse_sql_case_part_expr(p, []string{"WHEN", "ELSE", "END"}, false)
+		if result == nil {
+			error_current(p, "syntax error: expected expression")
+			break
+		}
+		when_expr := ast.new(
+			ast.Sql_Case_When_Expr,
+			tokenizer.text_range(when_start.range.start, result.range.end),
+			p.allocator,
+		)
+		when_expr.condition = condition
+		when_expr.result = result
+		append(&expr.whens, when_expr)
+	}
+	if allow_keyword(p, "ELSE") {
+		expr.else_expr = parse_sql_case_part_expr(p, []string{"END"}, false)
+		if expr.else_expr == nil {
+			error_current(p, "syntax error: expected expression")
+		}
+	}
+	if !allow_keyword(p, "END") {
+		error_current(p, "syntax error: expected keyword")
+	}
+	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
+	return expr
+}
+
+parse_sql_case_part_expr :: proc(p: ^Parser, stop_keywords: []string, logical: bool) -> ^ast.Expr {
+	old_stops := p.expr_extra_stop_keywords
+	p.expr_extra_stop_keywords = stop_keywords
+	defer p.expr_extra_stop_keywords = old_stops
+	if logical {
+		return parse_logical_expr(p)
+	}
+	return parse_expr(p)
+}
+
 is_predicate_kind :: proc(p: ^Parser, tok: Token) -> (ast.Is_Predicate_Kind, bool) {
 	if token_is_keyword(p, tok, "INITIAL") {
 		return .Initial, true
@@ -1229,7 +1320,19 @@ is_predicate_kind :: proc(p: ^Parser, tok: Token) -> (ast.Is_Predicate_Kind, boo
 	if token_is_keyword(p, tok, "SUPPLIED") {
 		return .Supplied, true
 	}
+	if p.open_sql_expr && token_is_keyword(p, tok, "NULL") {
+		return .Null, true
+	}
 	return .Initial, false
+}
+
+sql_case_keyword :: proc(p: ^Parser) -> bool {
+	return(
+		at_keyword(p, "WHEN") ||
+		at_keyword(p, "THEN") ||
+		at_keyword(p, "ELSE") ||
+		at_keyword(p, "END") \
+	)
 }
 
 append_if_expr :: proc(list: ^[dynamic]^ast.Expr, expr: ^ast.Expr) {

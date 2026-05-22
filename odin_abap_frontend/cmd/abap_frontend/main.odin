@@ -356,6 +356,10 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Instance_Of_Predicate_Expr"
 	case ^ast.Between_Expr:
 		return "Between_Expr"
+	case ^ast.Sql_Case_When_Expr:
+		return "Sql_Case_When_Expr"
+	case ^ast.Sql_Case_Expr:
+		return "Sql_Case_Expr"
 	case ^ast.Let_Expr:
 		return "Let_Expr"
 	case ^ast.Constructor_Let_Binding_Expr:

@@ -171,6 +171,26 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_node(p, n.low)
 		emit(p, " AND ")
 		emit_node(p, n.high)
+	case ^Sql_Case_When_Expr:
+		emit(p, "WHEN ")
+		emit_node(p, n.condition)
+		emit(p, " THEN ")
+		emit_node(p, n.result)
+	case ^Sql_Case_Expr:
+		emit(p, "CASE")
+		if n.operand != nil {
+			emit_space(p)
+			emit_node(p, n.operand)
+		}
+		for item in n.whens {
+			emit_space(p)
+			emit_node(p, item)
+		}
+		if n.else_expr != nil {
+			emit(p, " ELSE ")
+			emit_node(p, n.else_expr)
+		}
+		emit(p, " END")
 	case ^Let_Expr:
 		emit(p, "LET ")
 		emit_expr_list(p, n.bindings, " ")
@@ -2357,6 +2377,27 @@ emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 
 emit_insert_stmt :: proc(p: ^Printer, stmt: ^Insert_Stmt) {
 	emit(p, "INSERT ")
+	if stmt.form == .Db_Table {
+		if stmt.into_db_table {
+			emit(p, "INTO ")
+		}
+		emit_node(p, stmt.target)
+		if len(stmt.assignments) > 0 {
+			emit(p, " SET ")
+			emit_sql_assignments(p, stmt.assignments)
+		} else if stmt.source != nil {
+			emit(p, " VALUES " if stmt.values_clause else " FROM ")
+			if stmt.from_table {
+				emit(p, "TABLE ")
+			}
+			emit_node(p, stmt.source)
+		}
+		if stmt.accepting_duplicate_keys {
+			emit(p, " ACCEPTING DUPLICATE KEYS")
+		}
+		emit(p, ".")
+		return
+	}
 	if stmt.form == .Lines_Of {
 		emit(p, "LINES OF ")
 	}
@@ -2410,6 +2451,9 @@ emit_append_stmt :: proc(p: ^Printer, stmt: ^Append_Stmt) {
 
 emit_modify_stmt :: proc(p: ^Printer, stmt: ^Modify_Stmt) {
 	emit(p, "MODIFY ")
+	if stmt.table_keyword {
+		emit(p, "TABLE ")
+	}
 	emit_node(p, stmt.target)
 	if stmt.source != nil {
 		emit(p, " FROM ")
@@ -2665,6 +2709,8 @@ binary_op_text :: proc(op: Binary_Op) -> string {
 	case .Or: return "OR"
 	case .Is: return "IS"
 	case .Between: return "BETWEEN"
+	case .Like: return "LIKE"
+	case .Not_Like: return "NOT LIKE"
 	}
 	return "?"
 }
@@ -2685,6 +2731,7 @@ is_predicate_kind_text :: proc(kind: Is_Predicate_Kind) -> string {
 	case .Assigned: return "ASSIGNED"
 	case .Requested: return "REQUESTED"
 	case .Supplied: return "SUPPLIED"
+	case .Null: return "NULL"
 	}
 	return "?"
 }
