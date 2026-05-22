@@ -499,7 +499,7 @@ collect_sql_source :: proc(
 			resolution = .Internal_Table
 		}
 	} else if hierarchy_name, hierarchy_range, hierarchy_ok := sql_call_name(expr);
-	   hierarchy_ok && ascii_equal_ignore_case(hierarchy_name, "HIERARCHY") {
+	   hierarchy_ok && strings.equal_fold(hierarchy_name, "HIERARCHY") {
 		name = alias_name if alias_name != "" else "hierarchy"
 		name_range = hierarchy_range
 		resolution = .Hierarchy
@@ -898,19 +898,19 @@ sql_qualified_column :: proc(expr: ^ast.Expr) -> (string, string, tokenizer.Rang
 }
 
 sql_call_ref_kind :: proc(name: string) -> Sql_Name_Ref_Kind {
-	if ascii_equal_ignore_case(name, "avg") ||
-	   ascii_equal_ignore_case(name, "count") ||
-	   ascii_equal_ignore_case(name, "max") ||
-	   ascii_equal_ignore_case(name, "min") ||
-	   ascii_equal_ignore_case(name, "sum") ||
-	   ascii_equal_ignore_case(name, "median") ||
-	   ascii_equal_ignore_case(name, "stddev") ||
-	   ascii_equal_ignore_case(name, "var") ||
-	   ascii_equal_ignore_case(name, "corr") ||
-	   ascii_equal_ignore_case(name, "corr_spearman") ||
-	   ascii_equal_ignore_case(name, "grouping") ||
-	   ascii_equal_ignore_case(name, "string_agg") ||
-	   ascii_equal_ignore_case(name, "allow_precision_loss") {
+	if strings.equal_fold(name, "avg") ||
+	   strings.equal_fold(name, "count") ||
+	   strings.equal_fold(name, "max") ||
+	   strings.equal_fold(name, "min") ||
+	   strings.equal_fold(name, "sum") ||
+	   strings.equal_fold(name, "median") ||
+	   strings.equal_fold(name, "stddev") ||
+	   strings.equal_fold(name, "var") ||
+	   strings.equal_fold(name, "corr") ||
+	   strings.equal_fold(name, "corr_spearman") ||
+	   strings.equal_fold(name, "grouping") ||
+	   strings.equal_fold(name, "string_agg") ||
+	   strings.equal_fold(name, "allow_precision_loss") {
 		return .Aggregate
 	}
 	return .Function
@@ -1119,7 +1119,7 @@ range_valid :: #force_inline proc(range: tokenizer.Range) -> bool {
 
 sql_name_in_list :: proc(name: string, names: []string) -> bool {
 	for n in names {
-		if ascii_equal_ignore_case(name, n) {
+		if strings.equal_fold(name, n) {
 			return true
 		}
 	}

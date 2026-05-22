@@ -3,6 +3,7 @@ package abap_frontend_semantic
 import "../tokenizer"
 
 import "core:mem"
+import "core:strings"
 
 Semantic_Queries :: struct {
 	unit: ^Unit_Analysis,
@@ -84,7 +85,7 @@ decl_class_member :: proc(
 	name: string,
 ) -> ^Class_Member_Data {
 	for &member in q.unit.class_members {
-		if member.class_symbol == class_symbol && ascii_equal_ignore_case(member.name, name) {
+		if member.class_symbol == class_symbol && strings.equal_fold(member.name, name) {
 			return &member
 		}
 	}
@@ -228,7 +229,7 @@ ref_type_named :: proc(
 ) -> [dynamic]^Reference_Data {
 	out := make([dynamic]^Reference_Data, 0, 2, allocator)
 	for &reference in q.unit.references {
-		if reference.kind == .Type_Ref && ascii_equal_ignore_case(reference.name, name) {
+		if reference.kind == .Type_Ref && strings.equal_fold(reference.name, name) {
 			append(&out, &reference)
 		}
 	}
@@ -268,7 +269,7 @@ sql_source_name_refs_named :: proc(
 ) -> [dynamic]^Sql_Name_Ref_Data {
 	out := make([dynamic]^Sql_Name_Ref_Data, 0, 2, allocator)
 	for &reference in q.unit.sql_name_refs {
-		if reference.kind == .Source && ascii_equal_ignore_case(reference.name, name) {
+		if reference.kind == .Source && strings.equal_fold(reference.name, name) {
 			append(&out, &reference)
 		}
 	}
@@ -277,7 +278,7 @@ sql_source_name_refs_named :: proc(
 
 sql_has_source_named :: proc(q: Sql_Queries, name: string) -> bool {
 	for source in q.unit.sql_sources {
-		if ascii_equal_ignore_case(source.name, name) {
+		if strings.equal_fold(source.name, name) {
 			return true
 		}
 	}

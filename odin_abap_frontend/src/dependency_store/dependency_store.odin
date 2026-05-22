@@ -1198,18 +1198,18 @@ candidate_artifact_exists :: proc(
 candidate_artifact_kinds :: proc(kind: string, out: ^[dynamic]string, allocator: mem.Allocator) {
 	trimmed := strings.trim_space(kind)
 	switch {
-	case ascii_equal_ignore_case(trimmed, "include"):
+	case strings.equal_fold(trimmed, "include"):
 		append(out, "include")
-	case ascii_equal_ignore_case(trimmed, "message-class"):
+	case strings.equal_fold(trimmed, "message-class"):
 		append(out, "message-class")
-	case ascii_equal_ignore_case(trimmed, "report"):
+	case strings.equal_fold(trimmed, "report"):
 		append(out, "report")
-	case ascii_equal_ignore_case(trimmed, "function"):
+	case strings.equal_fold(trimmed, "function"):
 		append(out, "function-module")
-	case ascii_equal_ignore_case(trimmed, "static"):
+	case strings.equal_fold(trimmed, "static"):
 		append(out, "global-class")
 		append(out, "global-interface")
-	case ascii_equal_ignore_case(trimmed, "type") || ascii_equal_ignore_case(trimmed, "symbol"):
+	case strings.equal_fold(trimmed, "type") || strings.equal_fold(trimmed, "symbol"):
 		kinds := [?]string {
 			"global-class",
 			"global-interface",
@@ -1232,24 +1232,24 @@ candidate_artifact_kinds :: proc(kind: string, out: ^[dynamic]string, allocator:
 candidate_symbol_kinds :: proc(kind: string, out: ^[dynamic]string) {
 	trimmed := strings.trim_space(kind)
 	switch {
-	case ascii_equal_ignore_case(trimmed, "include"):
+	case strings.equal_fold(trimmed, "include"):
 		append(out, "include")
-	case ascii_equal_ignore_case(trimmed, "message-class"):
+	case strings.equal_fold(trimmed, "message-class"):
 		append(out, "typedef")
-	case ascii_equal_ignore_case(trimmed, "report"):
+	case strings.equal_fold(trimmed, "report"):
 		append(out, "report")
-	case ascii_equal_ignore_case(trimmed, "function"):
+	case strings.equal_fold(trimmed, "function"):
 		append(out, "function-module")
 		append(out, "module")
-	case ascii_equal_ignore_case(trimmed, "static"):
+	case strings.equal_fold(trimmed, "static"):
 		append(out, "class")
 		append(out, "interface")
-	case ascii_equal_ignore_case(trimmed, "type"):
+	case strings.equal_fold(trimmed, "type"):
 		append(out, "class")
 		append(out, "interface")
 		append(out, "typedef")
 		append(out, "report")
-	case ascii_equal_ignore_case(trimmed, "symbol"):
+	case strings.equal_fold(trimmed, "symbol"):
 		kinds := [?]string {
 			"class",
 			"interface",
@@ -1334,12 +1334,7 @@ append_placeholders :: proc(out: ^strings.Builder, count: int) {
 }
 
 normalize_name :: proc(value: string, allocator: mem.Allocator) -> string {
-	trimmed := strings.trim_space(value)
-	out := make([]byte, len(trimmed), allocator)
-	for ch, i in transmute([]byte)trimmed {
-		out[i] = ascii_lower(ch)
-	}
-	return string(out)
+	return strings.to_lower(strings.trim_space(value), allocator)
 }
 
 percent_encode_sqlite_uri_path :: proc(out: ^strings.Builder, path: string) {
@@ -1373,25 +1368,6 @@ ascii_uri_byte :: proc(value: byte) -> bool {
 		value == '.' ||
 		value == '~' \
 	)
-}
-
-ascii_lower :: proc(value: byte) -> byte {
-	if 'A' <= value && value <= 'Z' {
-		return value + ('a' - 'A')
-	}
-	return value
-}
-
-ascii_equal_ignore_case :: proc(a, b: string) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for ch, i in transmute([]byte)a {
-		if ascii_lower(ch) != ascii_lower(b[i]) {
-			return false
-		}
-	}
-	return true
 }
 
 insert_unique_string :: proc(values: ^[dynamic]string, value: string) {

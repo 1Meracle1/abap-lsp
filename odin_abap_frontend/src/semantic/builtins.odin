@@ -3,6 +3,7 @@ package abap_frontend_semantic
 import "../tokenizer"
 
 import "core:mem"
+import "core:strings"
 
 Builtin_Type_Kind :: enum {
 	Type,
@@ -243,7 +244,7 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 
 builtin_routine_spec :: proc(name: string) -> ^Builtin_Routine_Spec {
 	for &routine in BUILTIN_ROUTINES {
-		if ascii_equal_ignore_case(routine.name, name) {
+		if strings.equal_fold(routine.name, name) {
 			return &routine
 		}
 	}

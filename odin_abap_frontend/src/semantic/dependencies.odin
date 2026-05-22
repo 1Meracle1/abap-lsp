@@ -752,14 +752,14 @@ source_declares_class_or_interface :: proc(source, name: string) -> bool {
 		}
 		keyword, after_keyword, keyword_ok := split_first_word(trimmed)
 		decl_name, rest2, name_ok := split_first_word(after_keyword)
-		if !keyword_ok || !name_ok || !ascii_equal_ignore_case(trim_decl_token(decl_name), name) {
+		if !keyword_ok || !name_ok || !strings.equal_fold(trim_decl_token(decl_name), name) {
 			continue
 		}
-		if ascii_equal_ignore_case(keyword, "INTERFACE") {
+		if strings.equal_fold(keyword, "INTERFACE") {
 			return true
 		}
 		next, _, next_ok := split_first_word(rest2)
-		if ascii_equal_ignore_case(keyword, "CLASS") && next_ok && ascii_equal_ignore_case(next, "DEFINITION") {
+		if strings.equal_fold(keyword, "CLASS") && next_ok && strings.equal_fold(next, "DEFINITION") {
 			return true
 		}
 	}
@@ -878,8 +878,7 @@ is_remote_lookup_name :: proc(name: string) -> bool {
 	if name[0] == '/' {
 		return true
 	}
-	first := ascii_lower_byte(name[0])
-	return first == 'z' || first == 'y'
+	return strings.equal_fold(name[:1], "z") || strings.equal_fold(name[:1], "y")
 }
 
 is_standard_remote_type_like_name :: proc(name: string) -> bool {
@@ -938,7 +937,7 @@ is_likely_builtin_type_name :: proc(name: string) -> bool {
 		"xsequence", "previous", "to",
 	}
 	for value in builtins {
-		if ascii_equal_ignore_case(name, value) {
+		if strings.equal_fold(name, value) {
 			return true
 		}
 	}
@@ -988,7 +987,7 @@ ascii_name_bytes :: proc(name: string) -> bool {
 }
 
 ascii_has_prefix_ignore_case :: proc(text, prefix: string) -> bool {
-	return len(text) >= len(prefix) && ascii_equal_ignore_case(text[:len(prefix)], prefix)
+	return len(text) >= len(prefix) && strings.equal_fold(text[:len(prefix)], prefix)
 }
 
 encode_local_export_component :: proc(value: string, allocator: mem.Allocator) -> string {
@@ -1023,13 +1022,6 @@ hex_digit :: proc(value: byte) -> byte {
 		return '0' + value
 	}
 	return 'A' + value - 10
-}
-
-ascii_lower_byte :: proc(value: byte) -> byte {
-	if 'A' <= value && value <= 'Z' {
-		return value + ('a' - 'A')
-	}
-	return value
 }
 
 ascii_alpha :: proc(value: byte) -> bool {

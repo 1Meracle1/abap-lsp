@@ -1159,7 +1159,7 @@ scope :: proc(unit: ^Unit_Analysis, id: Scope_Id) -> ^Scope_Data {
 
 find_symbol :: proc(unit: ^Unit_Analysis, name: string, kind: Symbol_Kind) -> ^Symbol_Data {
 	for &s in unit.symbols {
-		if s.kind == kind && ascii_equal_ignore_case(s.name, name) {
+		if s.kind == kind && strings.equal_fold(s.name, name) {
 			return &s
 		}
 	}
@@ -1172,7 +1172,7 @@ rebuild_semantic_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) {
 
 find_structure :: proc(unit: ^Unit_Analysis, name: string) -> ^Structure_Data {
 	for &s in unit.structures {
-		if ascii_equal_ignore_case(s.name, name) {
+		if strings.equal_fold(s.name, name) {
 			return &s
 		}
 	}
@@ -1189,7 +1189,7 @@ structure_field :: proc(
 		return nil
 	}
 	for &field in s.fields {
-		if ascii_equal_ignore_case(field.name, field_name) {
+		if strings.equal_fold(field.name, field_name) {
 			return &field
 		}
 	}
@@ -1225,25 +1225,6 @@ structure_field_info :: proc(
 		info.shape = .Structured
 	}
 	return info, true
-}
-
-ascii_equal_ignore_case :: proc(a, b: string) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i in 0 ..< len(a) {
-		if ascii_upper(a[i]) != ascii_upper(b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-ascii_upper :: proc(b: byte) -> byte {
-	if 'a' <= b && b <= 'z' {
-		return b - ('a' - 'A')
-	}
-	return b
 }
 
 builtin_type_ref :: #force_inline proc(name: string) -> Field_Type_Ref_Data {

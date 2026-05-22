@@ -609,7 +609,7 @@ raw_operand_skip_keyword :: proc(text: string) -> bool {
 		"FIELDS", "LINES", "LINE", "TABLE", "OBJECT", "EXCEPTION", "EVENT",
 	}
 	for keyword in keywords {
-		if ascii_equal_ignore_case(text, keyword) {
+		if strings.equal_fold(text, keyword) {
 			return true
 		}
 	}

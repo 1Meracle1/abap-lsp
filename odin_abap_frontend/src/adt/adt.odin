@@ -300,17 +300,17 @@ parse_dotenv_contents :: proc(
 source_kind_parse :: proc(raw: string) -> (Source_Kind, bool) {
 	value := strings.trim_space(raw)
 	switch {
-	case ascii_equal_ignore_case(value, "report") || ascii_equal_ignore_case(value, "prog") || ascii_equal_ignore_case(value, "program"):
+	case strings.equal_fold(value, "report") || strings.equal_fold(value, "prog") || strings.equal_fold(value, "program"):
 		return .Report, true
-	case ascii_equal_ignore_case(value, "include"):
+	case strings.equal_fold(value, "include"):
 		return .Include, true
-	case ascii_equal_ignore_case(value, "class"):
+	case strings.equal_fold(value, "class"):
 		return .Class, true
-	case ascii_equal_ignore_case(value, "function-group") || ascii_equal_ignore_case(value, "functiongroup") || ascii_equal_ignore_case(value, "fugr"):
+	case strings.equal_fold(value, "function-group") || strings.equal_fold(value, "functiongroup") || strings.equal_fold(value, "fugr"):
 		return .Function_Group, true
-	case ascii_equal_ignore_case(value, "function-module") || ascii_equal_ignore_case(value, "functionmodule") || ascii_equal_ignore_case(value, "fmodule") || ascii_equal_ignore_case(value, "fm"):
+	case strings.equal_fold(value, "function-module") || strings.equal_fold(value, "functionmodule") || strings.equal_fold(value, "fmodule") || strings.equal_fold(value, "fm"):
 		return .Function_Module, true
-	case ascii_equal_ignore_case(value, "interface") || ascii_equal_ignore_case(value, "intf"):
+	case strings.equal_fold(value, "interface") || strings.equal_fold(value, "intf"):
 		return .Interface, true
 	}
 	return {}, false
@@ -337,15 +337,15 @@ source_kind_string :: proc(kind: Source_Kind) -> string {
 ddic_kind_parse :: proc(raw: string) -> (Ddic_Kind, bool) {
 	value := strings.trim_space(raw)
 	switch {
-	case ascii_equal_ignore_case(value, "data-element") || ascii_equal_ignore_case(value, "dataelement") || ascii_equal_ignore_case(value, "dtel"):
+	case strings.equal_fold(value, "data-element") || strings.equal_fold(value, "dataelement") || strings.equal_fold(value, "dtel"):
 		return .Data_Element, true
-	case ascii_equal_ignore_case(value, "table-type") || ascii_equal_ignore_case(value, "tabletype") || ascii_equal_ignore_case(value, "ttyp"):
+	case strings.equal_fold(value, "table-type") || strings.equal_fold(value, "tabletype") || strings.equal_fold(value, "ttyp"):
 		return .Table_Type, true
-	case ascii_equal_ignore_case(value, "structure") || ascii_equal_ignore_case(value, "struct"):
+	case strings.equal_fold(value, "structure") || strings.equal_fold(value, "struct"):
 		return .Structure, true
-	case ascii_equal_ignore_case(value, "view"):
+	case strings.equal_fold(value, "view"):
 		return .View, true
-	case ascii_equal_ignore_case(value, "table") || ascii_equal_ignore_case(value, "database-table") || ascii_equal_ignore_case(value, "db-table"):
+	case strings.equal_fold(value, "table") || strings.equal_fold(value, "database-table") || strings.equal_fold(value, "db-table"):
 		return .Table, true
 	}
 	return {}, false
@@ -370,11 +370,11 @@ ddic_kind_string :: proc(kind: Ddic_Kind) -> string {
 child_kind_parse :: proc(raw: string) -> (Child_Kind, bool) {
 	value := strings.trim_space(raw)
 	switch {
-	case ascii_equal_ignore_case(value, "package") || ascii_equal_ignore_case(value, "devclass"):
+	case strings.equal_fold(value, "package") || strings.equal_fold(value, "devclass"):
 		return .Package, true
-	case ascii_equal_ignore_case(value, "report") || ascii_equal_ignore_case(value, "prog") || ascii_equal_ignore_case(value, "program"):
+	case strings.equal_fold(value, "report") || strings.equal_fold(value, "prog") || strings.equal_fold(value, "program"):
 		return .Report, true
-	case ascii_equal_ignore_case(value, "function-group") || ascii_equal_ignore_case(value, "functiongroup") || ascii_equal_ignore_case(value, "fugr"):
+	case strings.equal_fold(value, "function-group") || strings.equal_fold(value, "functiongroup") || strings.equal_fold(value, "fugr"):
 		return .Function_Group, true
 	}
 	return {}, false
@@ -558,13 +558,13 @@ list_children :: proc(
 fetch_ddic_object :: proc(client: ^Client, kind, name: string, allocator: mem.Allocator) -> (string, Error) {
 	ddic_kind := Ddic_Kind.Structure
 	switch {
-	case ascii_equal_ignore_case(strings.trim_space(kind), "ddic-data-element"):
+	case strings.equal_fold(strings.trim_space(kind), "ddic-data-element"):
 		ddic_kind = .Data_Element
-	case ascii_equal_ignore_case(strings.trim_space(kind), "ddic-table-type"):
+	case strings.equal_fold(strings.trim_space(kind), "ddic-table-type"):
 		ddic_kind = .Table_Type
-	case ascii_equal_ignore_case(strings.trim_space(kind), "ddic-table"):
+	case strings.equal_fold(strings.trim_space(kind), "ddic-table"):
 		ddic_kind = .Table
-	case ascii_equal_ignore_case(strings.trim_space(kind), "ddic-view"):
+	case strings.equal_fold(strings.trim_space(kind), "ddic-view"):
 		ddic_kind = .View
 	}
 	fetched, err := fetch_ddic(client, ddic_kind, name, allocator)
@@ -695,15 +695,15 @@ direct_dependency_object_refs :: proc(name, kind_hint: string, allocator: mem.Al
 	out := make([dynamic]Object_Ref, allocator)
 	hint := strings.trim_space(kind_hint)
 	switch {
-	case ascii_equal_ignore_case(hint, "message-class"):
+	case strings.equal_fold(hint, "message-class"):
 		append(&out, build_message_class_object_ref(name, allocator))
-	case ascii_equal_ignore_case(hint, "include"):
+	case strings.equal_fold(hint, "include"):
 		append(&out, build_include_object_ref(name, "", allocator))
-	case ascii_equal_ignore_case(hint, "report"):
+	case strings.equal_fold(hint, "report"):
 		append(&out, build_report_object_ref(name, "", allocator))
-	case ascii_equal_ignore_case(hint, "static"):
+	case strings.equal_fold(hint, "static"):
 		append_direct_class_interface_refs(&out, name, true, allocator)
-	case ascii_equal_ignore_case(hint, "type"):
+	case strings.equal_fold(hint, "type"):
 		append_direct_class_interface_refs(&out, name, false, allocator)
 	}
 	return out
@@ -714,17 +714,17 @@ is_supported_dependency_object :: proc(object_ref: ^Object_Ref, kind_hint: strin
 	uri := object_ref.uri
 	object_type := object_ref.object_type
 	switch {
-	case ascii_equal_ignore_case(hint, "message-class"):
+	case strings.equal_fold(hint, "message-class"):
 		return is_message_class_dependency_object(object_ref)
-	case ascii_equal_ignore_case(hint, "include"):
-		return ascii_contains_ignore_case(uri, "/programs/includes/") || ascii_equal_ignore_case(object_type, "PROG/I")
-	case ascii_equal_ignore_case(hint, "report"):
-		return ascii_contains_ignore_case(uri, "/programs/programs/") || ascii_equal_ignore_case(object_type, "PROG/P")
-	case ascii_equal_ignore_case(hint, "function"):
-		return ascii_contains_ignore_case(uri, "/functions/groups/") || ascii_equal_ignore_case(object_type, "FUGR/F") || ascii_equal_ignore_case(object_type, "FUGR/FF")
-	case ascii_equal_ignore_case(hint, "static"):
+	case strings.equal_fold(hint, "include"):
+		return ascii_contains_ignore_case(uri, "/programs/includes/") || strings.equal_fold(object_type, "PROG/I")
+	case strings.equal_fold(hint, "report"):
+		return ascii_contains_ignore_case(uri, "/programs/programs/") || strings.equal_fold(object_type, "PROG/P")
+	case strings.equal_fold(hint, "function"):
+		return ascii_contains_ignore_case(uri, "/functions/groups/") || strings.equal_fold(object_type, "FUGR/F") || strings.equal_fold(object_type, "FUGR/FF")
+	case strings.equal_fold(hint, "static"):
 		return ascii_contains_ignore_case(uri, "/oo/classes/") || ascii_contains_ignore_case(uri, "/oo/interfaces/") || ascii_starts_with_ignore_case(object_type, "CLAS/") || ascii_starts_with_ignore_case(object_type, "INTF/")
-	case ascii_equal_ignore_case(hint, "type"):
+	case strings.equal_fold(hint, "type"):
 		return is_fetchable_ddic_dependency_object(object_ref) || ascii_contains_ignore_case(uri, "/oo/classes/") || ascii_contains_ignore_case(uri, "/oo/interfaces/") || ascii_starts_with_ignore_case(object_type, "CLAS/") || ascii_starts_with_ignore_case(object_type, "INTF/")
 	}
 	return ascii_contains_ignore_case(uri, "/programs/includes/") ||
@@ -734,30 +734,30 @@ is_supported_dependency_object :: proc(object_ref: ^Object_Ref, kind_hint: strin
 	       ascii_contains_ignore_case(uri, "/functions/groups/") ||
 	       is_message_class_dependency_object(object_ref) ||
 	       is_fetchable_ddic_dependency_object(object_ref) ||
-	       ascii_equal_ignore_case(object_type, "PROG/I") ||
-	       ascii_equal_ignore_case(object_type, "PROG/P") ||
+	       strings.equal_fold(object_type, "PROG/I") ||
+	       strings.equal_fold(object_type, "PROG/P") ||
 	       ascii_starts_with_ignore_case(object_type, "CLAS/") ||
 	       ascii_starts_with_ignore_case(object_type, "INTF/")
 }
 
 is_ddic_dependency_object :: proc(object_ref: ^Object_Ref) -> bool {
 	object_type := object_ref.object_type
-	return ascii_equal_ignore_case(object_type, "DTEL/DE") ||
+	return strings.equal_fold(object_type, "DTEL/DE") ||
 	       is_ddic_domain_object(object_ref) ||
-	       ascii_equal_ignore_case(object_type, "TABL/DS") ||
-	       ascii_equal_ignore_case(object_type, "TABL/DT") ||
-	       ascii_equal_ignore_case(object_type, "TABL/DA") ||
-	       ascii_equal_ignore_case(object_type, "TTYP/DA") ||
-	       ascii_equal_ignore_case(object_type, "VIEW/DV")
+	       strings.equal_fold(object_type, "TABL/DS") ||
+	       strings.equal_fold(object_type, "TABL/DT") ||
+	       strings.equal_fold(object_type, "TABL/DA") ||
+	       strings.equal_fold(object_type, "TTYP/DA") ||
+	       strings.equal_fold(object_type, "VIEW/DV")
 }
 
 is_message_class_dependency_object :: proc(object_ref: ^Object_Ref) -> bool {
-	return ascii_equal_ignore_case(object_ref.object_type, "MSAG/N") ||
+	return strings.equal_fold(object_ref.object_type, "MSAG/N") ||
 	       ascii_contains_ignore_case(object_ref.uri, "/sap/bc/adt/messageclass/")
 }
 
 is_function_module_object :: proc(object_ref: ^Object_Ref) -> bool {
-	return ascii_equal_ignore_case(object_ref.object_type, "FUGR/FF") ||
+	return strings.equal_fold(object_ref.object_type, "FUGR/FF") ||
 	       (ascii_contains_ignore_case(object_ref.uri, "/functions/groups/") &&
 	        ascii_contains_ignore_case(object_ref.uri, "/fmodules/"))
 }
@@ -780,15 +780,15 @@ infer_ddic_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
 	switch {
 	case ascii_starts_with_ignore_case(object_ref.object_type, "DOMA/"):
 		return "ddic-domain"
-	case ascii_equal_ignore_case(object_ref.object_type, "DTEL/DE"):
+	case strings.equal_fold(object_ref.object_type, "DTEL/DE"):
 		return "ddic-data-element"
-	case ascii_equal_ignore_case(object_ref.object_type, "TABL/DS"):
+	case strings.equal_fold(object_ref.object_type, "TABL/DS"):
 		return "ddic-structure"
-	case ascii_equal_ignore_case(object_ref.object_type, "TABL/DT"):
+	case strings.equal_fold(object_ref.object_type, "TABL/DT"):
 		return "ddic-table"
-	case ascii_equal_ignore_case(object_ref.object_type, "TABL/DA") || ascii_equal_ignore_case(object_ref.object_type, "TTYP/DA"):
+	case strings.equal_fold(object_ref.object_type, "TABL/DA") || strings.equal_fold(object_ref.object_type, "TTYP/DA"):
 		return "ddic-table-type"
-	case ascii_equal_ignore_case(object_ref.object_type, "VIEW/DV"):
+	case strings.equal_fold(object_ref.object_type, "VIEW/DV"):
 		return "ddic-view"
 	}
 	return "ddic-structure"
@@ -796,7 +796,7 @@ infer_ddic_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
 
 infer_repository_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
 	switch {
-	case ascii_contains_ignore_case(object_ref.uri, "/programs/includes/") || ascii_equal_ignore_case(object_ref.object_type, "PROG/I"):
+	case ascii_contains_ignore_case(object_ref.uri, "/programs/includes/") || strings.equal_fold(object_ref.object_type, "PROG/I"):
 		return "include"
 	case ascii_contains_ignore_case(object_ref.uri, "/oo/classes/") || ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/"):
 		return "global-class"
@@ -1673,28 +1673,28 @@ pick_preferred_dependency_object :: proc(
 ) -> (Object_Ref, bool) {
 	hint := strings.trim_space(kind_hint)
 	for &object_ref in objects {
-		if ascii_equal_ignore_case(hint, "report") && ascii_equal_ignore_case(object_ref.object_type, "PROG/P") {
+		if strings.equal_fold(hint, "report") && strings.equal_fold(object_ref.object_type, "PROG/P") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if ascii_equal_ignore_case(hint, "function") && ascii_equal_ignore_case(object_ref.object_type, "FUGR/FF") {
+		if strings.equal_fold(hint, "function") && strings.equal_fold(object_ref.object_type, "FUGR/FF") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if ascii_equal_ignore_case(hint, "static") && ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/") {
+		if strings.equal_fold(hint, "static") && ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if ascii_equal_ignore_case(hint, "type") && is_ddic_dependency_object(&object_ref) && !is_ddic_domain_object(&object_ref) {
+		if strings.equal_fold(hint, "type") && is_ddic_dependency_object(&object_ref) && !is_ddic_domain_object(&object_ref) {
 			return clone_object_ref(&object_ref, allocator), true
 		}
 	}
 	for &object_ref in objects {
-		if ascii_equal_ignore_case(hint, "function") && ascii_equal_ignore_case(object_ref.object_type, "FUGR/F") {
+		if strings.equal_fold(hint, "function") && strings.equal_fold(object_ref.object_type, "FUGR/F") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if (ascii_equal_ignore_case(hint, "static") || ascii_equal_ignore_case(hint, "type")) &&
+		if (strings.equal_fold(hint, "static") || strings.equal_fold(hint, "type")) &&
 		   ascii_starts_with_ignore_case(object_ref.object_type, "INTF/") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if ascii_equal_ignore_case(hint, "type") && is_ddic_domain_object(&object_ref) {
+		if strings.equal_fold(hint, "type") && is_ddic_domain_object(&object_ref) {
 			return clone_object_ref(&object_ref, allocator), true
 		}
 	}
@@ -1762,7 +1762,7 @@ active_include_name_from_line :: proc(line: string, allocator: mem.Allocator) ->
 	trimmed = strings.trim_right(trimmed, ".")
 	first := next_word(&trimmed)
 	second := next_word(&trimmed)
-	if ascii_equal_ignore_case(first, "include") && second != "" && strings.trim_space(trimmed) == "" {
+	if strings.equal_fold(first, "include") && second != "" && strings.trim_space(trimmed) == "" {
 		return trim_upper(second, allocator), true
 	}
 	return "", false
@@ -1983,12 +1983,7 @@ insert_unique_string :: proc(values: ^[dynamic]string, value: string, allocator:
 }
 
 trim_upper :: proc(value: string, allocator: mem.Allocator) -> string {
-	trimmed := strings.trim_space(value)
-	out := make([]byte, len(trimmed), allocator)
-	for ch, i in transmute([]byte)trimmed {
-		out[i] = ascii_upper(ch)
-	}
-	return string(out)
+	return strings.to_upper(strings.trim_space(value), allocator)
 }
 
 last_index_byte :: proc(value: string, needle: byte) -> int {
@@ -2002,24 +1997,12 @@ last_index_byte :: proc(value: string, needle: byte) -> int {
 	return -1
 }
 
-ascii_equal_ignore_case :: proc(a, b: string) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for ch, i in transmute([]byte)a {
-		if ascii_lower(ch) != ascii_lower(b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
 ascii_starts_with_ignore_case :: proc(value, prefix: string) -> bool {
-	return len(value) >= len(prefix) && ascii_equal_ignore_case(value[:len(prefix)], prefix)
+	return len(value) >= len(prefix) && strings.equal_fold(value[:len(prefix)], prefix)
 }
 
 ascii_ends_with_ignore_case :: proc(value, suffix: string) -> bool {
-	return len(value) >= len(suffix) && ascii_equal_ignore_case(value[len(value) - len(suffix):], suffix)
+	return len(value) >= len(suffix) && strings.equal_fold(value[len(value) - len(suffix):], suffix)
 }
 
 ascii_contains_ignore_case :: proc(value, needle: string) -> bool {
@@ -2034,7 +2017,7 @@ ascii_index_ignore_case :: proc(value, needle: string) -> int {
 		return -1
 	}
 	for i in 0 ..= len(value) - len(needle) {
-		if ascii_equal_ignore_case(value[i:i + len(needle)], needle) {
+		if strings.equal_fold(value[i:i + len(needle)], needle) {
 			return i
 		}
 	}
@@ -2046,20 +2029,6 @@ ascii_uri_byte :: proc(value: byte) -> bool {
 	       ('A' <= value && value <= 'Z') ||
 	       ('a' <= value && value <= 'z') ||
 	       value == '-' || value == '_' || value == '.' || value == '~'
-}
-
-ascii_lower :: proc(value: byte) -> byte {
-	if 'A' <= value && value <= 'Z' {
-		return value + ('a' - 'A')
-	}
-	return value
-}
-
-ascii_upper :: proc(value: byte) -> byte {
-	if 'a' <= value && value <= 'z' {
-		return value - ('a' - 'A')
-	}
-	return value
 }
 
 hex_upper :: proc(value: byte) -> byte {

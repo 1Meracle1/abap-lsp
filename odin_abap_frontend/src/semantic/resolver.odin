@@ -349,11 +349,11 @@ innermost_loop_allows_internal_table_line_selector :: proc(
 is_builtin_type_name :: proc(name: string) -> bool {
 	lower := strings.trim_space(name)
 	for builtin in BUILTIN_SCALAR_TYPES {
-		if ascii_equal_ignore_case(lower, builtin) {
+		if strings.equal_fold(lower, builtin) {
 			return true
 		}
 	}
-	if len(lower) <= 4 || !ascii_equal_ignore_case(lower[:4], "char") {
+	if len(lower) <= 4 || !strings.equal_fold(lower[:4], "char") {
 		return false
 	}
 	for i in 4 ..< len(lower) {
@@ -849,7 +849,7 @@ root_symbol_visible_by_default :: proc(unit: ^Unit_Analysis, s: Symbol_Data) -> 
 
 root_name_matches_unit_stem :: proc(uri, name: string) -> bool {
 	stem := uri_file_stem(uri)
-	if ascii_equal_ignore_case(stem, name) {
+	if strings.equal_fold(stem, name) {
 		return true
 	}
 	component_start := 0
@@ -860,7 +860,7 @@ root_name_matches_unit_stem :: proc(uri, name: string) -> bool {
 	}
 	component := name[component_start:]
 	return component_start > 0 && component != "" && len(stem) >= len(component) &&
-	       ascii_equal_ignore_case(stem[len(stem) - len(component):], component)
+	       strings.equal_fold(stem[len(stem) - len(component):], component)
 }
 
 name_is_namespaced :: proc(name: string) -> bool {

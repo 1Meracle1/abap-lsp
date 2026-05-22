@@ -1649,11 +1649,11 @@ select_projection_is_aggregate :: proc(expr: ^ast.Expr) -> bool {
 
 select_aggregate_name :: proc(name: string) -> bool {
 	return(
-		ascii_equal_ignore_case(name, "COUNT") ||
-		ascii_equal_ignore_case(name, "MAX") ||
-		ascii_equal_ignore_case(name, "MIN") ||
-		ascii_equal_ignore_case(name, "SUM") ||
-		ascii_equal_ignore_case(name, "AVG") \
+		strings.equal_fold(name, "COUNT") ||
+		strings.equal_fold(name, "MAX") ||
+		strings.equal_fold(name, "MIN") ||
+		strings.equal_fold(name, "SUM") ||
+		strings.equal_fold(name, "AVG") \
 	)
 }
 

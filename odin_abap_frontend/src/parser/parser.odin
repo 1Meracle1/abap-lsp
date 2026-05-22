@@ -1169,7 +1169,7 @@ keyword_phrase_token_count :: proc(keyword: string) -> int {
 token_is_keyword :: proc(p: ^Parser, token: Token, keyword: string) -> bool {
 	return(
 		token.kind == .Ident &&
-		ascii_equal_ignore_case(tokenizer.token_lexeme(token, p.source), keyword) \
+		strings.equal_fold(tokenizer.token_lexeme(token, p.source), keyword) \
 	)
 }
 
@@ -1764,23 +1764,4 @@ error :: proc(p: ^Parser, range: Range, message: string) {
 
 error_current :: proc(p: ^Parser, message: string) {
 	error(p, current_token(p).range, message)
-}
-
-ascii_equal_ignore_case :: proc(a, b: string) -> bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i in 0 ..< len(a) {
-		if ascii_upper(a[i]) != ascii_upper(b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-ascii_upper :: proc(b: byte) -> byte {
-	if 'a' <= b && b <= 'z' {
-		return b - ('a' - 'A')
-	}
-	return b
 }

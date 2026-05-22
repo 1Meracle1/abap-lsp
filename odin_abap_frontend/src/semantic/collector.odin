@@ -1505,7 +1505,7 @@ resolve_structure_path :: proc(
 		found := false
 		next := INVALID_STRUCTURE_ID
 		for field in st.fields {
-			if ascii_equal_ignore_case(field.name, segment) &&
+			if strings.equal_fold(field.name, segment) &&
 			   field.structure != INVALID_STRUCTURE_ID {
 				found = true
 				next = field.structure
@@ -2302,7 +2302,7 @@ function_parameter_section_from_ast :: proc(
 }
 
 token_eq :: proc(token: Header_Token, expected: string) -> bool {
-	return ascii_equal_ignore_case(token.text, expected)
+	return strings.equal_fold(token.text, expected)
 }
 
 token_ident_like :: proc(token: Header_Token) -> bool {
@@ -2341,7 +2341,7 @@ method_member_name :: proc(name: string) -> string {
 
 class_member :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> ^Class_Member_Data {
 	for &member in c.class_members {
-		if member.class_symbol == class_symbol && ascii_equal_ignore_case(member.name, name) {
+		if member.class_symbol == class_symbol && strings.equal_fold(member.name, name) {
 			return &member
 		}
 	}
@@ -2484,7 +2484,7 @@ ascii_contains_ignore_case :: proc(haystack, needle: string) -> bool {
 		return false
 	}
 	for i in 0 ..= len(haystack) - len(needle) {
-		if ascii_equal_ignore_case(haystack[i:i + len(needle)], needle) {
+		if strings.equal_fold(haystack[i:i + len(needle)], needle) {
 			return true
 		}
 	}
