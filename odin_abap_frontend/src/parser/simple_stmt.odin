@@ -1189,6 +1189,10 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			signatures = make([dynamic]ast.Oop_Signature_Clause, 0, 2, p.allocator),
 		}
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
+			if allow_keyword(p, "REDEFINITION") {
+				member.flags += {.Redefinition}
+				continue
+			}
 			if kind, ok := oop_signature_kind(p); ok {
 				bump_token(p)
 				append(&member.signatures, parse_oop_signature_clause(p, kind))

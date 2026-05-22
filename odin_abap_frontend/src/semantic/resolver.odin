@@ -418,9 +418,181 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 		}
 	}
 
+	if seed_inherited_method_scope_parameters(units, &root_lookup, class_entries, visible, predecessors, allocator) {
+		for unit_index in 0 ..< len(units) {
+			units[unit_index].scope_index = build_scope_index(&units[unit_index], allocator)
+			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
+		}
+	}
+
 	for unit_index in 0 ..< len(units) {
 		import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator)
 	}
+}
+
+seed_inherited_method_scope_parameters :: proc(
+	units: []Unit_Analysis,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [] [dynamic]Unit_Id,
+	predecessors: [] [dynamic]Unit_Id,
+	allocator: mem.Allocator,
+) -> bool {
+	changed := false
+	for unit_index in 0 ..< len(units) {
+		unit := &units[unit_index]
+		symbol_count := len(unit.symbols)
+		for symbol_index in 0 ..< symbol_count {
+			method_symbol := unit.symbols[symbol_index]
+			if method_symbol.kind != .Method {
+				continue
+			}
+			method_scope, scope_ok := method_scope_for_owner(unit, method_symbol.id)
+			if !scope_ok {
+				continue
+			}
+			member := method_signature_member_for_scope(
+				units,
+				unit_index,
+				method_symbol.scope,
+				method_symbol.name,
+				roots,
+				class_entries,
+				visible[unit_index],
+				predecessors[unit_index],
+			)
+			if member == nil {
+				continue
+			}
+			for param in member.parameters {
+				if method_scope_has_value_symbol(unit, method_scope, param.name) {
+					continue
+				}
+				_ = declare_symbol(
+					unit,
+					method_scope,
+					param.name,
+					.Parameter,
+					method_symbol.decl_range,
+					INVALID_STRUCTURE_ID,
+					param.declared_type,
+					.Has_Declared_Type in param.flags,
+					param.type_clause_display,
+				)
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+method_signature_member_for_scope :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	method_name: string,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [dynamic]Unit_Id,
+	predecessors: [dynamic]Unit_Id,
+) -> ^Class_Member_Data {
+	member_handle, ok := resolve_visible_class_definition_member(
+		units,
+		unit_index,
+		scope_id,
+		.Routine,
+		method_name,
+		roots,
+		class_entries,
+		visible,
+		predecessors,
+	)
+	if !ok {
+		return nil
+	}
+	member_unit_index := unit_id_index(member_handle.unit)
+	if member_unit_index < 0 || member_unit_index >= len(units) {
+		return nil
+	}
+	member_unit := &units[member_unit_index]
+	member_symbol := symbol(member_unit, member_handle.symbol)
+	if member_symbol == nil {
+		return nil
+	}
+	class_symbol, class_ok := enclosing_class_owner_unit(member_unit, member_symbol.scope)
+	if !class_ok {
+		return nil
+	}
+	member := unit_class_member(member_unit, class_symbol, method_name)
+	if member == nil || len(member.parameters) > 0 || !(.Is_Redefinition in member.flags) {
+		return member
+	}
+	if inherited, inherited_ok := inherited_project_class_member(
+		units,
+		Symbol_Handle{unit = member_handle.unit, symbol = class_symbol},
+		method_name,
+		roots,
+		class_entries,
+		visible,
+	); inherited_ok {
+		return inherited
+	}
+	return member
+}
+
+inherited_project_class_member :: proc(
+	units: []Unit_Analysis,
+	class_handle: Symbol_Handle,
+	name: string,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [dynamic]Unit_Id,
+) -> (^Class_Member_Data, bool) {
+	current := class_handle
+	for _ in 0 ..< len(units) + 8 {
+		next, ok := direct_superclass_handle(units, current, roots, visible)
+		if !ok {
+			return nil, false
+		}
+		if _, member_ok := class_member_symbol_by_handle(
+			units,
+			next,
+			.Routine,
+			name,
+			class_entries,
+			true,
+		); member_ok {
+			next_index := unit_id_index(next.unit)
+			if next_index >= 0 && next_index < len(units) {
+				if member := unit_class_member(&units[next_index], next.symbol, name); member != nil {
+					return member, true
+				}
+			}
+		}
+		current = next
+	}
+	return nil, false
+}
+
+method_scope_for_owner :: proc(unit: ^Unit_Analysis, owner: Symbol_Id) -> (Scope_Id, bool) {
+	for s in unit.scopes {
+		if s.kind == .Method && s.owner == owner {
+			return s.id, true
+		}
+	}
+	return INVALID_SCOPE_ID, false
+}
+
+method_scope_has_value_symbol :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, name: string) -> bool {
+	if s := scope(unit, scope_id); s != nil {
+		for symbol_id in s.declarations {
+			if item := symbol(unit, symbol_id); item != nil && item.name == name &&
+			   symbol_kind_occupies(item.kind, .Value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 build_project_root_index :: proc(

@@ -390,6 +390,7 @@ ENDCLASS.`
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
 	testing.expect_value(t, len(methods.members), 1)
 	testing.expect_value(t, methods.members[0].name, "if_demo~run")
+	testing.expect(t, .Redefinition in methods.members[0].flags)
 }
 
 @(test)

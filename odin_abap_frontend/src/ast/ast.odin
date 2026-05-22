@@ -1578,8 +1578,14 @@ Oop_Signature_Clause :: struct {
 	parameters: [dynamic]Oop_Parameter_Clause,
 }
 
+Oop_Member_Flag :: enum {
+	Redefinition,
+}
+Oop_Member_Flags :: bit_set[Oop_Member_Flag]
+
 Oop_Member_Clause :: struct {
 	name:       string,
+	flags:      Oop_Member_Flags,
 	signatures: [dynamic]Oop_Signature_Clause,
 }
 

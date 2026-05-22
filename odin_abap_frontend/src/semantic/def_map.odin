@@ -562,6 +562,7 @@ Class_Member_Implementation_Data :: struct {
 
 Class_Member_Flag :: enum {
 	Is_Static,
+	Is_Redefinition,
 	Has_Implementation_Range,
 	Has_Implementation,
 }

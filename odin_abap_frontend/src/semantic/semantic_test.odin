@@ -1226,6 +1226,54 @@ ENDFORM.
 }
 
 @(test)
+resolves_redefined_method_inherited_parameters :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///redefined_method_params.abap",
+		`
+CLASS lcl_root DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_source_position
+      EXPORTING
+        program_name TYPE string
+        include_name TYPE string
+        source_line  TYPE i.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_root.
+  PUBLIC SECTION.
+    METHODS get_source_position REDEFINITION.
+ENDCLASS.
+
+CLASS lcl_root IMPLEMENTATION.
+  METHOD get_source_position.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD get_source_position.
+    include_name = program_name.
+    source_line = source_line.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	names := [?]string{"program_name", "include_name", "source_line"}
+	for name in names {
+		found := false
+		for reference in unit.references {
+			if reference.name == name && reference.kind == .Identifier {
+				found = true
+				testing.expect(t, reference.has_resolution)
+			}
+		}
+		testing.expect(t, found)
+	}
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 resolves_class_type_ref_to :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

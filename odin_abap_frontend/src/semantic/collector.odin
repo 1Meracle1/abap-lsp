@@ -2006,6 +2006,9 @@ collect_class_oop_stmt :: proc(
 			if is_static {
 				flags += {.Is_Static}
 			}
+			if .Redefinition in member.flags {
+				flags += {.Is_Redefinition}
+			}
 			append(
 				&c.class_members,
 				Class_Member_Data {
