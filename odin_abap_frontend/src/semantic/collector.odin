@@ -398,14 +398,6 @@ find_symbol_in_scope :: proc(
 	return INVALID_SYMBOL_ID, false
 }
 
-symbol_kinds_overlap :: #force_inline proc(a, b: Symbol_Kind) -> bool {
-	return(
-		(symbol_kind_occupies(a, .Value) && symbol_kind_occupies(b, .Value)) ||
-		(symbol_kind_occupies(a, .Type) && symbol_kind_occupies(b, .Type)) ||
-		(symbol_kind_occupies(a, .Routine) && symbol_kind_occupies(b, .Routine)) \
-	)
-}
-
 add_diagnostic :: proc(
 	c: ^Collector,
 	kind: Diagnostic_Kind,
@@ -685,19 +677,6 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		collect_generate_stmt_facts(c, n, scope)
 	case ^ast.Exec_Sql_Stmt:
 		add_routine_site(c, scope, n.range, .Unknown_Effect)
-	}
-}
-
-declare_decl_name :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	kind: ast.Decl_Clause_Kind,
-	name: string,
-	symbol_kind: Symbol_Kind,
-	range: tokenizer.Range,
-) {
-	if kind == .Normal || kind == .Begin_Group {
-		declare_name_if_present(c, scope, name, symbol_kind, range)
 	}
 }
 
