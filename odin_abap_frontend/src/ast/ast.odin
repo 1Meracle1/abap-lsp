@@ -173,6 +173,29 @@ Type_Ref_Path_Segment :: struct {
 	range: tokenizer.Range,
 }
 
+Raw_Operand_Inline_Decl_Kind :: enum {
+	Data,
+	Field_Symbol,
+}
+
+Raw_Operand_Inline_Decl :: struct {
+	kind:  Raw_Operand_Inline_Decl_Kind,
+	name:  string,
+	range: tokenizer.Range,
+}
+
+Raw_Operand_Path_Segment :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
+Raw_Operand_Ref :: struct {
+	name:      string,
+	range:     tokenizer.Range,
+	type_base: bool,
+	path:      [dynamic]Raw_Operand_Path_Segment,
+}
+
 // ABAP syntax: declaration type reference such as `ty_line WITH DEFAULT KEY`.
 Type_Ref_Expr :: struct {
 	using node: Expr,
@@ -183,6 +206,9 @@ Type_Ref_Expr :: struct {
 	path:       [dynamic]Type_Ref_Path_Segment,
 	key:        ^Type_Ref_Key_Clause,
 	keys:       [dynamic]^Type_Ref_Key_Clause,
+	raw_operand: bool,
+	raw_decls: [dynamic]Raw_Operand_Inline_Decl,
+	raw_refs:  [dynamic]Raw_Operand_Ref,
 }
 
 // ABAP syntax: Open SQL host expression such as `@lv_value`.
@@ -227,9 +253,20 @@ Call_Arg_List_Expr :: struct {
 	args:       [dynamic]^Expr,
 }
 
+Call_Arg_Section_Kind :: enum {
+	Unknown,
+	Exporting,
+	Importing,
+	Changing,
+	Tables,
+	Receiving,
+	Exceptions,
+}
+
 // ABAP syntax: call parameter section such as `EXPORTING ...`, `IMPORTING ...`, or `CHANGING ...`.
 Call_Arg_Section_Expr :: struct {
 	using node: Expr,
+	kind:       Call_Arg_Section_Kind,
 	name:       string,
 	args:       [dynamic]^Expr,
 }
@@ -1146,12 +1183,30 @@ Call_Kind :: enum {
 	Subscreen,
 }
 
+Call_Stmt_Arg_Section :: struct {
+	kind:  Call_Arg_Section_Kind,
+	range: tokenizer.Range,
+}
+
+Call_Stmt_Named_Arg :: struct {
+	section:     Call_Arg_Section_Kind,
+	has_section: bool,
+	name:        string,
+	name_range:  tokenizer.Range,
+	value_range: tokenizer.Range,
+	raw_decls:   [dynamic]Raw_Operand_Inline_Decl,
+	raw_refs:    [dynamic]Raw_Operand_Ref,
+}
+
 // ABAP syntax: `CALL METHOD target`, `CALL FUNCTION fm`, and related CALL variants; direct call statements use `call`.
 Call_Stmt :: struct {
-	using node: Stmt,
-	kind:       Call_Kind,
-	call:       ^Expr,
-	target:     ^Expr,
+	using node:    Stmt,
+	kind:          Call_Kind,
+	call:          ^Expr,
+	target:        ^Expr,
+	arg_sections:  [dynamic]Call_Stmt_Arg_Section,
+	named_args:    [dynamic]Call_Stmt_Named_Arg,
+	transaction_operands: [dynamic]^Expr,
 }
 
 Submit_Option_Kind :: enum {

@@ -94,6 +94,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.path = clone_type_ref_path(n.path, allocator)
 		r.key = clone_type_ref_key_clause(n.key, allocator)
 		r.keys = clone_type_ref_key_clauses(n.keys, allocator)
+		r.raw_decls = clone_raw_operand_decls(n.raw_decls, allocator)
+		r.raw_refs = clone_raw_operand_refs(n.raw_refs, allocator)
 		return r
 	case ^Host_Expr:
 		r := clone_shallow(n, allocator)
@@ -411,6 +413,9 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.call = clone(n.call, allocator)
 		r.target = clone(n.target, allocator)
+		r.arg_sections = clone_call_stmt_arg_sections(n.arg_sections, allocator)
+		r.named_args = clone_call_stmt_named_args(n.named_args, allocator)
+		r.transaction_operands = clone_expr_list(n.transaction_operands, allocator)
 		return r
 	case ^Submit_Stmt:
 		r := clone_shallow(n, allocator)
@@ -755,10 +760,55 @@ clone_type_ref_path :: proc(list: [dynamic]Type_Ref_Path_Segment, allocator: mem
 	return res
 }
 
+clone_raw_operand_decls :: proc(list: [dynamic]Raw_Operand_Inline_Decl, allocator: mem.Allocator) -> [dynamic]Raw_Operand_Inline_Decl {
+	res := make([dynamic]Raw_Operand_Inline_Decl, 0, len(list), allocator)
+	for x in list {
+		append(&res, x)
+	}
+	return res
+}
+
+clone_raw_operand_path :: proc(list: [dynamic]Raw_Operand_Path_Segment, allocator: mem.Allocator) -> [dynamic]Raw_Operand_Path_Segment {
+	res := make([dynamic]Raw_Operand_Path_Segment, 0, len(list), allocator)
+	for x in list {
+		append(&res, x)
+	}
+	return res
+}
+
+clone_raw_operand_refs :: proc(list: [dynamic]Raw_Operand_Ref, allocator: mem.Allocator) -> [dynamic]Raw_Operand_Ref {
+	res := make([dynamic]Raw_Operand_Ref, 0, len(list), allocator)
+	for x in list {
+		ref := x
+		ref.path = clone_raw_operand_path(x.path, allocator)
+		append(&res, ref)
+	}
+	return res
+}
+
 clone_include_names :: proc(list: [dynamic]Include_Name, allocator: mem.Allocator) -> [dynamic]Include_Name {
 	res := make([dynamic]Include_Name, 0, len(list), allocator)
 	for x in list {
 		append(&res, x)
+	}
+	return res
+}
+
+clone_call_stmt_arg_sections :: proc(list: [dynamic]Call_Stmt_Arg_Section, allocator: mem.Allocator) -> [dynamic]Call_Stmt_Arg_Section {
+	res := make([dynamic]Call_Stmt_Arg_Section, 0, len(list), allocator)
+	for x in list {
+		append(&res, x)
+	}
+	return res
+}
+
+clone_call_stmt_named_args :: proc(list: [dynamic]Call_Stmt_Named_Arg, allocator: mem.Allocator) -> [dynamic]Call_Stmt_Named_Arg {
+	res := make([dynamic]Call_Stmt_Named_Arg, 0, len(list), allocator)
+	for x in list {
+		arg := x
+		arg.raw_decls = clone_raw_operand_decls(x.raw_decls, allocator)
+		arg.raw_refs = clone_raw_operand_refs(x.raw_refs, allocator)
+		append(&res, arg)
 	}
 	return res
 }

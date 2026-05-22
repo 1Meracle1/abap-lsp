@@ -561,6 +561,7 @@ parse_call_expr :: proc(p: ^Parser, callee: ^ast.Expr) -> ^ast.Expr {
 parse_call_arg_section_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	name := bump_token(p)
 	section := ast.new(ast.Call_Arg_Section_Expr, name.range, p.allocator)
+	section.kind = call_argument_section_kind(p, name)
 	section.name = tokenizer.token_lexeme(name, p.source)
 	section.args = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	for current_token(p).kind != .RParen &&
@@ -1663,13 +1664,17 @@ constructor_kind :: proc(p: ^Parser, tok: Token) -> ast.Constructor_Kind {
 }
 
 call_argument_section_starts :: proc(p: ^Parser) -> bool {
-	return(
-		at_keyword(p, "EXPORTING") ||
-		at_keyword(p, "IMPORTING") ||
-		at_keyword(p, "CHANGING") ||
-		at_keyword(p, "RECEIVING") ||
-		at_keyword(p, "EXCEPTIONS") \
-	)
+	return call_argument_section_kind(p, current_token(p)) != .Unknown
+}
+
+call_argument_section_kind :: proc(p: ^Parser, tok: Token) -> ast.Call_Arg_Section_Kind {
+	if token_is_keyword(p, tok, "EXPORTING") {return .Exporting}
+	if token_is_keyword(p, tok, "IMPORTING") {return .Importing}
+	if token_is_keyword(p, tok, "CHANGING") {return .Changing}
+	if token_is_keyword(p, tok, "TABLES") {return .Tables}
+	if token_is_keyword(p, tok, "RECEIVING") {return .Receiving}
+	if token_is_keyword(p, tok, "EXCEPTIONS") {return .Exceptions}
+	return .Unknown
 }
 
 template_format_name :: proc(p: ^Parser, tok: Token) -> bool {

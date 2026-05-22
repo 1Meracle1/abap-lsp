@@ -2184,25 +2184,6 @@ header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header
 	return tokens
 }
 
-token_text_span :: proc(
-	c: ^Collector,
-	text: string,
-	tokens: []Header_Token,
-	start, end: int,
-	base: int,
-) -> string {
-	if start >= end || start >= len(tokens) {
-		return ""
-	}
-	last := min(end - 1, len(tokens) - 1)
-	lo := tokens[start].range.start - base
-	hi := tokens[last].range.end - base
-	if lo < 0 || hi > len(text) || lo >= hi {
-		return ""
-	}
-	return strings.trim_space(text[lo:hi])
-}
-
 form_parameters_from_ast :: proc(
 	c: ^Collector,
 	clauses: []ast.Form_Parameter_Clause,

@@ -314,6 +314,26 @@ has_named_argument :: proc(
 	return false
 }
 
+has_method_named_argument :: proc(
+	unit: ^Unit_Analysis,
+	name: string,
+	section: Named_Argument_Section,
+	base_name: string,
+	method_name: string,
+) -> bool {
+	for arg in unit.named_arguments {
+		if arg.name == name &&
+		   arg.has_section &&
+		   arg.section == section &&
+		   arg.target.kind == .Method &&
+		   arg.target.base_name == base_name &&
+		   arg.target.method_name == method_name {
+			return true
+		}
+	}
+	return false
+}
+
 field_names_match :: proc(structure: ^Structure_Data, names: []string) -> bool {
 	if structure == nil || len(structure.fields) != len(names) {
 		return false
@@ -1377,6 +1397,7 @@ ENDTRY.
 
 @(test)
 collects_method_function_and_perform_argument_facts :: proc(t: ^testing.T) {
+	// CALL METHOD/FUNCTION values are still raw Call_Stmt value ranges; this covers that fallback.
 	unit := collect_test_unit(
 		t,
 		"file:///call_facts.abap",
@@ -1393,8 +1414,25 @@ ENDCLASS.
 CLASS lcl_demo IMPLEMENTATION.
   METHOD exec.
     DATA lv_value TYPE i.
-    CALL METHOD run EXPORTING iv_value = lv_value IMPORTING ev_value = DATA(lv_out).
-    CALL FUNCTION 'Z_DEMO' EXPORTING iv_value = lv_value.
+    DATA lo_obj TYPE REF TO lcl_demo.
+    DATA lt_rows TYPE TABLE OF i.
+    DATA: BEGIN OF ls_row,
+            field TYPE i,
+          END OF ls_row.
+    CALL METHOD run
+      EXPORTING iv_value = lv_value
+      IMPORTING ev_value = DATA(lv_out)
+      CHANGING cv_value = lv_value
+      RECEIVING rv_value = DATA(lv_recv)
+      EXCEPTIONS failed = 1.
+    run( EXPORTING iv_direct = ls_row-field IMPORTING ev_direct = DATA(lv_direct) ).
+    lo_obj = NEW lcl_demo( ).
+    CALL FUNCTION 'Z_DEMO'
+      EXPORTING iv_value = lv_value is_row = ls_row-field
+      IMPORTING ev_func = DATA(lv_func)
+      CHANGING cv_func = FIELD-SYMBOL(<fs_func>)
+      TABLES ct_rows = lt_rows
+      EXCEPTIONS failed = 1.
     PERFORM process_data USING 'demo' CHANGING lv_value.
   ENDMETHOD.
 ENDCLASS.
@@ -1403,8 +1441,39 @@ ENDCLASS.
 
 	testing.expect(t, has_named_argument(&unit, "iv_value", .Exporting, .Implicit_Method))
 	testing.expect(t, has_named_argument(&unit, "ev_value", .Importing, .Implicit_Method))
+	testing.expect(t, has_named_argument(&unit, "cv_value", .Changing, .Implicit_Method))
+	testing.expect(t, has_named_argument(&unit, "rv_value", .Receiving, .Implicit_Method))
+	testing.expect(t, has_named_argument(&unit, "failed", .Exceptions, .Implicit_Method))
+	testing.expect(t, has_named_argument(&unit, "iv_direct", .Exporting, .Implicit_Method))
+	testing.expect(t, has_named_argument(&unit, "ev_direct", .Importing, .Implicit_Method))
 	testing.expect(t, has_named_argument(&unit, "iv_value", .Exporting, .Function))
+	testing.expect(t, has_named_argument(&unit, "ev_func", .Importing, .Function))
+	testing.expect(t, has_named_argument(&unit, "cv_func", .Changing, .Function))
+	testing.expect(t, has_named_argument(&unit, "ct_rows", .Tables, .Function))
+	testing.expect(t, has_named_argument(&unit, "failed", .Exceptions, .Function))
 	testing.expect(t, has_symbol(&unit, .Variable, "lv_out"))
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_recv"))
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_direct"))
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_func"))
+	testing.expect(t, has_symbol(&unit, .Field_Symbol, "<fs_func>"))
+	testing.expect(t, !has_reference(&unit, "exporting", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "importing", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "changing", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "tables", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "exceptions", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "iv_value", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "failed", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "1", .Value, .Identifier))
+	ls_row_field_accesses := 0
+	for access in unit.field_accesses {
+		if !access.in_type_position &&
+		   access.base_name == "ls_row" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "field" {
+			ls_row_field_accesses += 1
+		}
+	}
+	testing.expect_value(t, ls_row_field_accesses, 2)
 	testing.expect(t, len(unit.call_sites) >= 2)
 	testing.expect_value(t, len(unit.perform_calls), 1)
 	testing.expect_value(t, len(unit.perform_calls[0].arguments), 2)
@@ -1413,6 +1482,123 @@ ENDCLASS.
 		unit.perform_calls[0].arguments[1].section,
 		Perform_Parameter_Section.Changing,
 	)
+}
+
+@(test)
+raw_call_method_target_facts_drive_refs_and_metadata :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///raw_call_method_target.abap",
+		`
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_value TYPE i.
+ENDCLASS.
+
+FORM run.
+  DATA lo_client TYPE REF TO lcl_demo.
+  DATA lv_value TYPE i.
+  CALL METHOD lo_client->run EXPORTING iv_value = lv_value.
+  CALL METHOD lo_client->('RUN') EXPORTING iv_dyn = (lv_value).
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_method_named_argument(&unit, "iv_value", .Exporting, "lo_client", "run"))
+	testing.expect(t, has_named_argument(&unit, "iv_dyn", .Exporting, .Implicit_Method))
+	testing.expect_value(t, reference_count(&unit, "lo_client", .Value, .Identifier), 2)
+	testing.expect_value(t, reference_count(&unit, "lv_value", .Value, .Identifier), 1)
+	testing.expect(t, !has_reference(&unit, "exporting", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "iv_value", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "iv_dyn", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "run", .Value, .Identifier))
+
+	selector_accesses := 0
+	for access in unit.field_accesses {
+		if access.base_name == "lo_client" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "run" {
+			selector_accesses += 1
+		}
+	}
+	testing.expect_value(t, selector_accesses, 1)
+}
+
+@(test)
+call_transaction_collects_parser_operand_facts_without_keyword_refs :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///call_transaction_facts.abap",
+		`
+DATA tcode TYPE string.
+DATA bdc_tab TYPE string.
+DATA mode TYPE c.
+DATA upd TYPE c.
+DATA opt TYPE string.
+DATA msg_tab TYPE string.
+CALL TRANSACTION tcode WITH AUTHORITY-CHECK USING bdc_tab MODE mode UPDATE upd MESSAGES INTO msg_tab.
+CALL TRANSACTION tcode WITHOUT AUTHORITY-CHECK USING bdc_tab OPTIONS FROM opt MESSAGES INTO msg_tab.
+`,
+	)
+
+	testing.expect_value(t, reference_count(&unit, "tcode", .Value, .Identifier), 2)
+	testing.expect_value(t, reference_count(&unit, "bdc_tab", .Value, .Identifier), 2)
+	testing.expect_value(t, reference_count(&unit, "mode", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "upd", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "opt", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "msg_tab", .Value, .Identifier), 2)
+	keywords := [?]string {
+		"call",
+		"transaction",
+		"with",
+		"without",
+		"authority",
+		"check",
+		"using",
+		"options",
+		"from",
+		"messages",
+		"into",
+	}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
+collects_raw_operand_ast_facts_without_keyword_references :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///raw_operand_facts.abap",
+		`
+DATA ls_row TYPE i.
+DATA lv_name TYPE string.
+RAISE EVENT changed EXPORTING value = ls_row-field other = DATA(lv_raw).
+ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO FIELD-SYMBOL(<fs_raw>).
+`,
+	)
+
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_raw"))
+	testing.expect(t, has_symbol(&unit, .Field_Symbol, "<fs_raw>"))
+	testing.expect(t, has_reference(&unit, "changed", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_name", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "ls_row", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "exporting", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "value", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "other", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "component", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "structure", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "to", .Value, .Identifier))
+	ls_row_field_accesses := 0
+	for access in unit.field_accesses {
+		if !access.in_type_position &&
+		   access.base_name == "ls_row" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "field" {
+			ls_row_field_accesses += 1
+		}
+	}
+	testing.expect_value(t, ls_row_field_accesses, 1)
 }
 
 @(test)

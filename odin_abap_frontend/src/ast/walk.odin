@@ -325,6 +325,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Call_Stmt:
 		walk(next, n.call)
 		walk(next, n.target)
+		walk_expr_list(next, n.transaction_operands)
 	case ^Submit_Stmt:
 		walk(next, n.target)
 		for clause in n.options {

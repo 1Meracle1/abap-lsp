@@ -418,6 +418,166 @@ ENDCLASS.`
 }
 
 @(test)
+raw_call_statements_carry_argument_facts :: proc(t: ^testing.T) {
+	source := `CALL FUNCTION 'Z_FM'
+  EXPORTING iv_in = lv_in
+  IMPORTING ev_out = DATA(lv_out)
+  CHANGING cv_any = FIELD-SYMBOL(<fs_any>)
+  TABLES ct_rows = lt_rows
+  EXCEPTIONS failed = 1.
+CALL METHOD lo->run
+  EXPORTING iv_dyn = (lv_dynamic)
+  RECEIVING rv_result = DATA(lv_result).`
+	parsed := parse(source, "raw_call_sections.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	function := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	method := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
+	expected_function := [?]ast.Call_Arg_Section_Kind {
+		.Exporting,
+		.Importing,
+		.Changing,
+		.Tables,
+		.Exceptions,
+	}
+
+	testing.expect_value(t, len(function.arg_sections), len(expected_function))
+	testing.expect_value(t, len(function.named_args), len(expected_function))
+	for i in 0 ..< len(expected_function) {
+		testing.expect_value(t, function.arg_sections[i].kind, expected_function[i])
+		testing.expect_value(t, function.named_args[i].section, expected_function[i])
+		testing.expect(t, function.named_args[i].has_section)
+	}
+	testing.expect_value(t, len(method.arg_sections), 2)
+	testing.expect_value(t, len(method.named_args), 2)
+	testing.expect_value(t, method.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exporting)
+	testing.expect_value(t, method.arg_sections[1].kind, ast.Call_Arg_Section_Kind.Receiving)
+	testing.expect_value(t, method.named_args[0].section, ast.Call_Arg_Section_Kind.Exporting)
+	testing.expect_value(t, method.named_args[1].section, ast.Call_Arg_Section_Kind.Receiving)
+	testing.expect_value(t, source[function.named_args[1].value_range.start:function.named_args[1].value_range.end], "DATA(lv_out)")
+	testing.expect_value(t, len(function.named_args[0].raw_refs), 1)
+	testing.expect_value(t, function.named_args[0].raw_refs[0].name, "lv_in")
+	testing.expect_value(t, len(function.named_args[1].raw_decls), 1)
+	testing.expect_value(t, function.named_args[1].raw_decls[0].name, "lv_out")
+	testing.expect_value(t, len(function.named_args[2].raw_decls), 1)
+	testing.expect_value(t, function.named_args[2].raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
+	testing.expect_value(t, function.named_args[2].raw_decls[0].name, "<fs_any>")
+	testing.expect_value(t, len(function.named_args[3].raw_refs), 1)
+	testing.expect_value(t, function.named_args[3].raw_refs[0].name, "lt_rows")
+	testing.expect_value(t, len(function.named_args[4].raw_refs), 0)
+	testing.expect_value(t, len(method.named_args[0].raw_refs), 0)
+	testing.expect_value(t, len(method.named_args[1].raw_decls), 1)
+	testing.expect_value(t, method.named_args[1].raw_decls[0].name, "lv_result")
+}
+
+@(test)
+raw_call_method_targets_carry_parser_reference_facts :: proc(t: ^testing.T) {
+	source := `CALL METHOD lo_client->run EXPORTING iv_value = lv_value.
+CALL METHOD lcl_demo=>class_run.
+CALL METHOD lo_client->('RUN') EXPORTING iv_value = lv_value.`
+	parsed := parse(source, "raw_call_method_targets.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	instance := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	static := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
+	dynamic_call := parsed.root.stmts[2].derived_stmt.(^ast.Call_Stmt)
+	instance_target := instance.target.derived_expr.(^ast.Type_Ref_Expr)
+	static_target := static.target.derived_expr.(^ast.Type_Ref_Expr)
+	dynamic_target := dynamic_call.target.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, instance_target.raw_operand)
+	testing.expect_value(t, instance_target.raw_refs[0].name, "lo_client")
+	testing.expect_value(t, instance_target.raw_refs[0].path[0].name, "run")
+	testing.expect(t, static_target.raw_refs[0].type_base)
+	testing.expect_value(t, static_target.raw_refs[0].name, "lcl_demo")
+	testing.expect_value(t, static_target.raw_refs[0].path[0].name, "class_run")
+	testing.expect_value(t, len(dynamic_target.raw_refs), 1)
+	testing.expect_value(t, dynamic_target.raw_refs[0].name, "lo_client")
+	testing.expect_value(t, len(dynamic_target.raw_refs[0].path), 0)
+}
+
+@(test)
+call_transaction_carries_parser_operand_facts :: proc(t: ^testing.T) {
+	source := `CALL TRANSACTION tcode WITH AUTHORITY-CHECK USING bdc_tab MODE mode UPDATE upd MESSAGES INTO msg_tab.
+CALL TRANSACTION tcode WITHOUT AUTHORITY-CHECK USING bdc_tab OPTIONS FROM opt MESSAGES INTO msg_tab.`
+	parsed := parse(source, "call_transaction_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	second := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
+	first_target := first.target.derived_expr.(^ast.Type_Ref_Expr)
+	second_target := second.target.derived_expr.(^ast.Type_Ref_Expr)
+	expected_first := [?]string{"bdc_tab", "mode", "upd", "msg_tab"}
+	expected_second := [?]string{"bdc_tab", "opt", "msg_tab"}
+
+	testing.expect_value(t, first.kind, ast.Call_Kind.Transaction)
+	testing.expect_value(t, second.kind, ast.Call_Kind.Transaction)
+	testing.expect_value(t, first_target.raw_refs[0].name, "tcode")
+	testing.expect_value(t, second_target.raw_refs[0].name, "tcode")
+	testing.expect_value(t, len(first.transaction_operands), len(expected_first))
+	testing.expect_value(t, len(second.transaction_operands), len(expected_second))
+	for value, i in expected_first {
+		operand := first.transaction_operands[i].derived_expr.(^ast.Type_Ref_Expr)
+		testing.expect_value(t, operand.raw_refs[0].name, value)
+	}
+	for value, i in expected_second {
+		operand := second.transaction_operands[i].derived_expr.(^ast.Type_Ref_Expr)
+		testing.expect_value(t, operand.raw_refs[0].name, value)
+	}
+}
+
+@(test)
+direct_call_statement_keeps_parser_modeled_arguments :: proc(t: ^testing.T) {
+	source := `run( EXPORTING iv_value = lv_value ).`
+	parsed := parse(source, "direct_call_args.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	call := stmt.call.derived_expr.(^ast.Call_Expr)
+	args := call.args.derived_expr.(^ast.Call_Arg_List_Expr)
+	section := args.args[0].derived_expr.(^ast.Call_Arg_Section_Expr)
+
+	testing.expect_value(t, stmt.kind, ast.Call_Kind.Direct)
+	testing.expect_value(t, len(stmt.named_args), 0)
+	testing.expect_value(t, section.kind, ast.Call_Arg_Section_Kind.Exporting)
+}
+
+@(test)
+raw_simple_operands_carry_parser_reference_facts :: proc(t: ^testing.T) {
+	source := `RAISE EVENT changed EXPORTING value = ls_row-field other = DATA(lv_raw).
+ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO FIELD-SYMBOL(<fs_raw>).
+DATA lv_typed TYPE sy-datum.`
+	parsed := parse(source, "raw_operand_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	raise := parsed.root.stmts[0].derived_stmt.(^ast.Raise_Stmt)
+	raise_target := raise.target.derived_expr.(^ast.Type_Ref_Expr)
+	raise_args := raise.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+	assign := parsed.root.stmts[1].derived_stmt.(^ast.Assign_Field_Stmt)
+	assign_args := assign.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+	decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
+	type_ref := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, raise_target.raw_operand)
+	testing.expect_value(t, len(raise_target.raw_refs), 1)
+	testing.expect_value(t, raise_target.raw_refs[0].name, "changed")
+	testing.expect_value(t, len(raise_args.raw_decls), 1)
+	testing.expect_value(t, raise_args.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Data)
+	testing.expect_value(t, raise_args.raw_decls[0].name, "lv_raw")
+	testing.expect_value(t, len(raise_args.raw_refs), 1)
+	testing.expect_value(t, raise_args.raw_refs[0].name, "ls_row")
+	testing.expect_value(t, raise_args.raw_refs[0].path[0].name, "field")
+	testing.expect_value(t, len(assign_args.raw_decls), 1)
+	testing.expect_value(t, assign_args.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
+	testing.expect_value(t, assign_args.raw_decls[0].name, "<fs_raw>")
+	testing.expect_value(t, len(assign_args.raw_refs), 2)
+	testing.expect_value(t, assign_args.raw_refs[0].name, "lv_name")
+	testing.expect_value(t, assign_args.raw_refs[1].name, "ls_row")
+	testing.expect(t, !type_ref.raw_operand)
+	testing.expect_value(t, len(type_ref.raw_refs), 0)
+}
+
+@(test)
 authority_check_object_keeps_id_fields :: proc(t: ^testing.T) {
 	source := `AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' FIELD lv_tcode.`
 	parsed := parse(source, "authority_check.abap", context.allocator)

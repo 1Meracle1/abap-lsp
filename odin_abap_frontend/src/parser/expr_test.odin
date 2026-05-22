@@ -44,6 +44,34 @@ table_expression_keeps_table_and_selector_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+call_argument_sections_carry_parser_kinds :: proc(t: ^testing.T) {
+	parsed := parse(
+		`rv = foo( EXPORTING iv_in = lv_in IMPORTING ev_out = lv_out CHANGING cv_any = lv_any TABLES ct_rows = lt_rows RECEIVING rv_result = lv_result EXCEPTIONS failed = 1 ).`,
+		"call_sections.abap",
+		context.allocator,
+	)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt)
+	call := assign.rhs.derived_expr.(^ast.Call_Expr)
+	args := call.args.derived_expr.(^ast.Call_Arg_List_Expr)
+	expected := [?]ast.Call_Arg_Section_Kind {
+		.Exporting,
+		.Importing,
+		.Changing,
+		.Tables,
+		.Receiving,
+		.Exceptions,
+	}
+	testing.expect_value(t, len(args.args), len(expected))
+	for i in 0 ..< len(expected) {
+		section := args.args[i].derived_expr.(^ast.Call_Arg_Section_Expr)
+		testing.expect_value(t, section.kind, expected[i])
+		testing.expect_value(t, len(section.args), 1)
+	}
+}
+
+@(test)
 missing_expression_failure_stays_local :: proc(t: ^testing.T) {
 	p := test_parser(".")
 

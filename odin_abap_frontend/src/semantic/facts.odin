@@ -41,7 +41,10 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 			add_expression_fact(c, scope, n.range, .Reference, type_fact_from_expr(c, expr, scope))
 		}
 	case ^ast.Type_Ref_Expr:
-		collect_token_expr_refs(c, expr_display(c, expr), expr.range.start, scope, true)
+		if n.raw_operand {
+			collect_raw_operand_refs(c, n, scope)
+		}
+		return
 	case ^ast.Host_Expr:
 		collect_expr_refs(c, n.value, scope)
 	case ^ast.Table_Expr:
@@ -58,7 +61,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Call_Arg_List_Expr:
 		collect_call_arg_list_refs(c, n, scope, Named_Argument_Target{}, expr.range)
 	case ^ast.Call_Arg_Section_Expr:
-		section, has_section := named_argument_section_from_name(n.name)
+		section, has_section := named_argument_section_from_ast(n.kind)
 		for arg in n.args {
 			collect_call_arg_expr_refs(
 				c,
@@ -368,7 +371,7 @@ collect_call_arg_list_refs :: proc(
 	has_section := false
 	for arg in args.args {
 		if section_expr, ok := arg.derived_expr.(^ast.Call_Arg_Section_Expr); ok {
-			current_section, has_section = named_argument_section_from_name(section_expr.name)
+			current_section, has_section = named_argument_section_from_ast(section_expr.kind)
 			for section_arg in section_expr.args {
 				collect_call_arg_expr_refs(
 					c,
@@ -467,58 +470,82 @@ append_call_argument :: proc(
 	)
 }
 
-named_argument_section_from_name :: proc(name: string) -> (Named_Argument_Section, bool) {
-	if ascii_equal_ignore_case(name, "EXPORTING") {return .Exporting, true}
-	if ascii_equal_ignore_case(name, "IMPORTING") {return .Importing, true}
-	if ascii_equal_ignore_case(name, "CHANGING") {return .Changing, true}
-	if ascii_equal_ignore_case(name, "TABLES") {return .Tables, true}
-	if ascii_equal_ignore_case(name, "RECEIVING") {return .Receiving, true}
-	if ascii_equal_ignore_case(name, "EXCEPTIONS") {return .Exceptions, true}
+named_argument_section_from_ast :: proc(kind: ast.Call_Arg_Section_Kind) -> (
+	Named_Argument_Section,
+	bool,
+) {
+	#partial switch kind {
+	case .Exporting:
+		return .Exporting, true
+	case .Importing:
+		return .Importing, true
+	case .Changing:
+		return .Changing, true
+	case .Tables:
+		return .Tables, true
+	case .Receiving:
+		return .Receiving, true
+	case .Exceptions:
+		return .Exceptions, true
+	}
 	return .Exporting, false
 }
 
-collect_token_expr_refs :: proc(
+collect_raw_operand_refs :: proc(
 	c: ^Collector,
-	text: string,
-	base: int,
+	expr: ^ast.Type_Ref_Expr,
 	scope: Scope_Id,
-	allow_leading: bool,
 ) {
-	tokens := header_tokens(c, text, base)
-	i := 0
-	for i < len(tokens) {
-		tok := tokens[i]
-		if !token_ident_like(tok) || token_expr_skip_keyword(tok.text) {
-			i += 1
+	collect_raw_operand_fact_refs(c, expr.raw_decls[:], expr.raw_refs[:], scope)
+}
+
+collect_raw_operand_fact_refs :: proc(
+	c: ^Collector,
+	decls: []ast.Raw_Operand_Inline_Decl,
+	refs: []ast.Raw_Operand_Ref,
+	scope: Scope_Id,
+) {
+	for decl in decls {
+		kind := Symbol_Kind.Variable
+		if decl.kind == .Field_Symbol {
+			kind = .Field_Symbol
+		}
+		declare_name_if_present(c, scope, decl.name, kind, decl.range)
+	}
+	for ref in refs {
+		if ref.name == "" {
 			continue
 		}
-		if i + 1 < len(tokens) && tokens[i + 1].text == "=" {
-			i += 2
-			continue
+		namespace := Namespace.Value
+		kind := Reference_Kind.Identifier
+		if ref.type_base {
+			namespace = .Type
+			kind = .Static_Target
 		}
-		if access, next, ok := token_selector_access(c, tokens[:], i, scope); ok {
-			kind := Reference_Kind.Identifier
-			if access.base_namespace == .Type {
-				kind = .Static_Target
+		name := canonical_name(ref.name, c.allocator)
+		add_reference(c, scope, name, namespace, kind, ref.range)
+		if len(ref.path) > 0 {
+			segments := make([dynamic]Field_Access_Segment, 0, len(ref.path), c.allocator)
+			for segment in ref.path {
+				append(
+					&segments,
+					Field_Access_Segment {
+						name = canonical_name(segment.name, c.allocator),
+						range = segment.range,
+					},
+				)
 			}
-			add_reference(
-				c,
-				scope,
-				access.base_name,
-				access.base_namespace,
-				kind,
-				access.base_range,
+			append(
+				&c.field_accesses,
+				Field_Access {
+					scope = scope,
+					base_namespace = namespace,
+					base_name = name,
+					base_range = ref.range,
+					field_path = segments,
+				},
 			)
-			if len(access.field_path) > 0 {
-				append(&c.field_accesses, access)
-			}
-			i = next
-			continue
 		}
-		if allow_leading || i > 0 {
-			add_reference(c, scope, tok.text, .Value, .Identifier, tok.range)
-		}
-		i += 1
 	}
 }
 
@@ -1178,14 +1205,15 @@ collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scop
 			kind          = .Function,
 			function_name = target_name,
 		}
-		collect_call_stmt_token_args(c, stmt, scope, target)
+		collect_raw_call_stmt_args(c, stmt, scope, target)
 	case .Method:
 		target := call_stmt_method_target(c, stmt, scope)
 		collect_expr_refs(c, stmt.target, scope)
-		collect_call_stmt_token_args(c, stmt, scope, target)
+		collect_raw_call_stmt_args(c, stmt, scope, target)
 	case .Transaction:
 		add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
-		collect_token_expr_refs(c, source_text(c, stmt.range), stmt.range.start, scope, true)
+		collect_expr_refs(c, stmt.target, scope)
+		collect_expr_list_refs(c, stmt.transaction_operands[:], scope)
 	case:
 		collect_expr_refs(c, stmt.target, scope)
 	}
@@ -1222,6 +1250,24 @@ call_stmt_method_target :: proc(
 			interface_qualified = access.base_namespace == .Type,
 		}
 	}
+	if raw, ok := stmt.target.derived_expr.(^ast.Type_Ref_Expr); ok {
+		for ref in raw.raw_refs {
+			if len(ref.path) == 0 {
+				continue
+			}
+			namespace := Namespace.Value
+			if ref.type_base {
+				namespace = .Type
+			}
+			return Named_Argument_Target {
+				kind = .Method,
+				base_namespace = namespace,
+				base_name = canonical_name(ref.name, c.allocator),
+				method_name = canonical_name(ref.path[len(ref.path) - 1].name, c.allocator),
+				interface_qualified = namespace == .Type,
+			}
+		}
+	}
 	if name, _, ok := expr_name(stmt.target); ok {
 		return Named_Argument_Target {
 			kind = .Implicit_Method,
@@ -1231,58 +1277,37 @@ call_stmt_method_target :: proc(
 	return Named_Argument_Target{kind = .Implicit_Method}
 }
 
-collect_call_stmt_token_args :: proc(
+// Raw CALL fallback: CALL FUNCTION/CALL METHOD values keep only parser-populated
+// value facts; semantic does not tokenize their source text.
+collect_raw_call_stmt_args :: proc(
 	c: ^Collector,
 	stmt: ^ast.Call_Stmt,
 	scope: Scope_Id,
 	target: Named_Argument_Target,
 ) {
-	text := source_text(c, stmt.range)
-	tokens := header_tokens(c, text, stmt.range.start)
 	args := make([dynamic]Call_Argument_Data, 0, 4, c.allocator)
-	section := Named_Argument_Section.Exporting
-	has_section := false
 	ordinal := 0
-	for i := 0; i < len(tokens); i += 1 {
-		if s, ok := named_argument_section_from_name(tokens[i].text); ok {
-			section = s
-			has_section = true
-			continue
-		}
-		if !token_ident_like(tokens[i]) || i + 1 >= len(tokens) || tokens[i + 1].text != "=" {
-			continue
-		}
-		name := canonical_name(tokens[i].text, c.allocator)
-		start := i + 2
-		end := call_token_arg_end(tokens[:], start)
+	for arg in stmt.named_args {
+		section, valid_section := named_argument_section_from_ast(arg.section)
+		has_section := arg.has_section && valid_section
+		name := canonical_name(arg.name, c.allocator)
 		append(
 			&c.named_arguments,
 			Named_Argument_Access {
 				scope = scope,
 				name = name,
-				range = tokens[i].range,
+				range = arg.name_range,
 				section = section,
 				has_section = has_section,
 				target = target,
 			},
 		)
-		if start < end {
-			if !declare_inline_from_tokens(c, tokens[start:end], scope) {
-				collect_token_expr_refs(
-					c,
-					token_text_span(c, text, tokens[:], start, end, stmt.range.start),
-					tokens[start].range.start,
-					scope,
-					true,
-				)
-			}
+		if arg.value_range.start < arg.value_range.end {
+			collect_raw_operand_fact_refs(c, arg.raw_decls[:], arg.raw_refs[:], scope)
 			append(
 				&args,
 				Call_Argument_Data {
-					range = tokenizer.text_range(
-						tokens[start].range.start,
-						tokens[end - 1].range.end,
-					),
+					range = arg.value_range,
 					name = name,
 					section = section,
 					has_section = has_section,
@@ -1291,68 +1316,11 @@ collect_call_stmt_token_args :: proc(
 			)
 			ordinal += 1
 		}
-		i = end - 1
 	}
 	append(
 		&c.call_sites,
 		Call_Site_Data{scope = scope, range = stmt.range, target = target, arguments = args},
 	)
-}
-
-call_token_arg_end :: proc(tokens: []Header_Token, start: int) -> int {
-	i := start
-	paren, bracket, brace := 0, 0, 0
-	for i < len(tokens) {
-		t := tokens[i]
-		if paren == 0 && bracket == 0 && brace == 0 {
-			if t.text == "." {
-				break
-			}
-			if _, ok := named_argument_section_from_name(t.text); ok {
-				break
-			}
-			if i > start &&
-			   token_ident_like(t) &&
-			   i + 1 < len(tokens) &&
-			   tokens[i + 1].text == "=" {
-				break
-			}
-		}
-		if t.text == "(" {paren += 1}
-		if t.text == ")" {paren -= 1}
-		if t.text == "[" {bracket += 1}
-		if t.text == "]" {bracket -= 1}
-		if t.text == "{" {brace += 1}
-		if t.text == "}" {brace -= 1}
-		i += 1
-	}
-	return i
-}
-
-declare_inline_from_tokens :: proc(
-	c: ^Collector,
-	tokens: []Header_Token,
-	scope: Scope_Id,
-) -> bool {
-	if len(tokens) >= 4 &&
-	   token_eq(tokens[0], "DATA") &&
-	   tokens[1].text == "(" &&
-	   token_ident_like(tokens[2]) &&
-	   tokens[3].text == ")" {
-		declare_name_if_present(c, scope, tokens[2].text, .Variable, tokens[2].range)
-		return true
-	}
-	if len(tokens) >= 6 &&
-	   token_eq(tokens[0], "FIELD") &&
-	   tokens[1].text == "-" &&
-	   token_eq(tokens[2], "SYMBOL") &&
-	   tokens[3].text == "(" &&
-	   token_ident_like(tokens[4]) &&
-	   tokens[5].text == ")" {
-		declare_name_if_present(c, scope, tokens[4].text, .Field_Symbol, tokens[4].range)
-		return true
-	}
-	return false
 }
 
 collect_submit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Submit_Stmt, scope: Scope_Id) {
