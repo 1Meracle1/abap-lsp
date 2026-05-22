@@ -1609,7 +1609,9 @@ collects_message_default_and_message_use_facts :: proc(t: ^testing.T) {
 		`
 REPORT zmain MESSAGE-ID zmsg.
 DATA lv_text TYPE string.
-MESSAGE i001 WITH lv_text.
+DATA lv_like TYPE c.
+DATA cx_msg TYPE string.
+MESSAGE i001 WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
 `,
 	)
 
@@ -1620,6 +1622,80 @@ MESSAGE i001 WITH lv_text.
 	testing.expect_value(t, unit.message_uses[0].class_name, "zmsg")
 	testing.expect_value(t, len(unit.message_uses[0].with_arg_ranges), 1)
 	testing.expect(t, has_reference(&unit, "lv_text", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_like", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "cx_msg", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "i001", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "i001", .Value, .Message_Class))
+}
+
+@(test)
+message_uses_function_pool_default_message_class :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///message_function_pool.abap",
+		`
+FUNCTION-POOL zfg MESSAGE-ID zfgmsg.
+MESSAGE e001.
+`,
+	)
+
+	testing.expect(t, unit.has_message_default_class)
+	testing.expect_value(t, unit.message_default_class.name, "zfgmsg")
+	testing.expect_value(t, len(unit.message_uses), 1)
+	testing.expect_value(t, unit.message_uses[0].class_name, "zfgmsg")
+	testing.expect(t, !has_reference(&unit, "e001", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "e001", .Value, .Message_Class))
+}
+
+@(test)
+message_compact_class_uses_parser_fact_range :: proc(t: ^testing.T) {
+	source := `DATA lv_text TYPE string.
+DATA lv_like TYPE c.
+DATA cx_msg TYPE string.
+MESSAGE e001(zmsg) WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.`
+	unit := collect_test_unit(t, "file:///message_compact.abap", source)
+	use := unit.message_uses[0]
+
+	testing.expect_value(t, len(unit.message_uses), 1)
+	testing.expect_value(t, use.class_name, "zmsg")
+	testing.expect(t, .Has_Class_Range in use.flags)
+	testing.expect_value(t, source[use.class_range.start:use.class_range.end], "zmsg")
+	testing.expect(t, has_reference(&unit, "zmsg", .Value, .Message_Class))
+	testing.expect(t, has_reference(&unit, "lv_text", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_like", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "cx_msg", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "e001", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "e001", .Value, .Message_Class))
+	testing.expect(t, !has_reference(&unit, "zmsg", .Value, .Identifier))
+	keywords := [?]string{"with", "display", "like", "raising"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
+message_id_type_number_does_not_collect_bogus_refs :: proc(t: ^testing.T) {
+	source := `DATA lv_type TYPE c.
+DATA lv_no TYPE n.
+DATA lv_text TYPE string.
+MESSAGE ID zmsg TYPE lv_type NUMBER lv_no WITH lv_text.
+MESSAGE ID zlit TYPE 'E' NUMBER '001'.`
+	unit := collect_test_unit(t, "file:///message_id_form.abap", source)
+
+	testing.expect_value(t, len(unit.message_uses), 2)
+	testing.expect_value(t, unit.message_uses[0].class_name, "zmsg")
+	testing.expect_value(t, unit.message_uses[1].class_name, "zlit")
+	testing.expect(t, has_reference(&unit, "zmsg", .Value, .Message_Class))
+	testing.expect(t, has_reference(&unit, "zlit", .Value, .Message_Class))
+	testing.expect(t, has_reference(&unit, "lv_type", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_no", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_text", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "zmsg", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "zlit", .Value, .Identifier))
+	names := [?]string{"id", "type", "number", "with", "e", "001"}
+	for name in names {
+		testing.expect(t, !has_reference(&unit, name, .Value, .Identifier))
+	}
 }
 
 @(test)

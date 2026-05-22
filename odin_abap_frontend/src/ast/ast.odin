@@ -1267,6 +1267,9 @@ Message_Head_Clause :: struct {
 	id:       ^Expr,
 	msg_type: ^Expr,
 	number:   ^Expr,
+	compact_class_name:  string,
+	compact_class_range: tokenizer.Range,
+	has_compact_class:   bool,
 }
 
 // ABAP syntax: `MESSAGE ... [WITH ...] [INTO target] [DISPLAY LIKE type] [RAISING cx].`

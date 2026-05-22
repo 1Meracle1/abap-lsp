@@ -2678,6 +2678,7 @@ parse_message_head :: proc(p: ^Parser, body_start: int) -> ^ast.Message_Head_Cla
 		p,
 		[]string{"TYPE", "WITH", "INTO", "DISPLAY", "RAISING"},
 	)
+	message_head_compact_class(p, head, body_start, p.index)
 	if allow_keyword(p, "TYPE") {
 		head.msg_type = required_simple_expr(
 			p,
@@ -2686,6 +2687,20 @@ parse_message_head :: proc(p: ^Parser, body_start: int) -> ^ast.Message_Head_Cla
 		)
 	}
 	return head
+}
+
+message_head_compact_class :: proc(p: ^Parser, head: ^ast.Message_Head_Clause, start, end: int) {
+	for i := start; i + 2 < end; i += 1 {
+		name := p.tokens[i + 1]
+		if p.tokens[i].kind == .LParen &&
+		   name.kind == .Ident &&
+		   p.tokens[i + 2].kind == .RParen {
+			head.compact_class_name = tokenizer.token_lexeme(name, p.source)
+			head.compact_class_range = name.range
+			head.has_compact_class = true
+			return
+		}
+	}
 }
 
 parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

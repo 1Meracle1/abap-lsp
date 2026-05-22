@@ -1176,6 +1176,9 @@ clone_message_head :: proc(clause: ^Message_Head_Clause, allocator: mem.Allocato
 	res.id = clone(clause.id, allocator)
 	res.msg_type = clone(clause.msg_type, allocator)
 	res.number = clone(clause.number, allocator)
+	res.compact_class_name = clause.compact_class_name
+	res.compact_class_range = clause.compact_class_range
+	res.has_compact_class = clause.has_compact_class
 	return res
 }
 

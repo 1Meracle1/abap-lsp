@@ -183,6 +183,36 @@ WRITE /10(5) text.`
 }
 
 @(test)
+message_heads_keep_compact_class_fact :: proc(t: ^testing.T) {
+	source := `MESSAGE e001(zmsg) WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
+MESSAGE ID zmsg TYPE lv_type NUMBER lv_no.
+MESSAGE e001.`
+	parsed := parse(source, "message_heads.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	compact := parsed.root.stmts[0].derived_stmt.(^ast.Message_Stmt)
+	id_form := parsed.root.stmts[1].derived_stmt.(^ast.Message_Stmt)
+	default_form := parsed.root.stmts[2].derived_stmt.(^ast.Message_Stmt)
+
+	testing.expect(t, compact.head.has_compact_class)
+	testing.expect_value(t, compact.head.compact_class_name, "zmsg")
+	testing.expect_value(
+		t,
+		source[compact.head.compact_class_range.start:compact.head.compact_class_range.end],
+		"zmsg",
+	)
+	testing.expect(t, compact.head.code != nil)
+	testing.expect(t, compact.display_like != nil)
+	testing.expect(t, compact.raising != nil)
+	testing.expect(t, id_form.head.id != nil)
+	testing.expect(t, id_form.head.msg_type != nil)
+	testing.expect(t, id_form.head.number != nil)
+	testing.expect(t, !id_form.head.has_compact_class)
+	testing.expect(t, default_form.head.code != nil)
+	testing.expect(t, !default_form.head.has_compact_class)
+}
+
+@(test)
 simple_runtime_flow_and_macro_statements_keep_nodes :: proc(t: ^testing.T) {
 	source := `ASSERT lo_ref IS BOUND.
 CHECK lv_ok = abap_true.

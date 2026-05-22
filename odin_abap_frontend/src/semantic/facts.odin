@@ -1358,6 +1358,7 @@ collect_message_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Message_Stmt, scope
 		}
 	}
 	collect_expr_refs(c, stmt.display_like, scope)
+	collect_expr_refs(c, stmt.raising, scope)
 	add_system_field_update(c, scope, stmt.range, .Message, "msgid")
 	add_system_field_update(c, scope, stmt.range, .Message, "msgno")
 	add_system_field_update(c, scope, stmt.range, .Message, "msgty")
@@ -1390,48 +1391,18 @@ collect_message_head :: proc(
 		return
 	}
 	if head.code != nil {
-		code := expr_display(c, head.code)
-		if class, ok := message_class_from_compact(c, code, head.code.range.start); ok {
-			use.class_name = class.name
-			use.class_range = class.range
+		if head.has_compact_class {
+			class_name := canonical_name(head.compact_class_name, c.allocator)
+			use.class_name = class_name
+			use.class_range = head.compact_class_range
 			use.flags += {.Has_Class_Range}
-			add_reference(c, scope, class.name, .Value, .Message_Class, class.range)
+			add_reference(c, scope, class_name, .Value, .Message_Class, head.compact_class_range)
 		} else if c.has_message_default_class {
 			use.class_name = c.message_default_class.name
 			use.class_range = c.message_default_class.range
 		}
 	}
 	collect_expr_refs(c, head.msg_type, scope)
-}
-
-Message_Class_Parse :: struct {
-	name:  string,
-	range: tokenizer.Range,
-}
-
-message_class_from_compact :: proc(
-	c: ^Collector,
-	text: string,
-	base: int,
-) -> (
-	Message_Class_Parse,
-	bool,
-) {
-	open := -1
-	close := -1
-	for i in 0 ..< len(text) {
-		if text[i] == '(' {open = i}
-		if text[i] == ')' {close = i; break}
-	}
-	if open < 0 || close <= open + 1 {
-		return {}, false
-	}
-	name := text[open + 1:close]
-	return Message_Class_Parse {
-			name = canonical_name(name, c.allocator),
-			range = tokenizer.text_range(base + open + 1, base + close),
-		},
-		true
 }
 
 strip_quotes :: proc(text: string) -> string {
