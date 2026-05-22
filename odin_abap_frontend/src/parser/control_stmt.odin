@@ -449,11 +449,12 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "AT")
 	stmt := ast.new(ast.At_Stmt, start.range, p.allocator)
-	if at_keyword(p, "FIRST") || at_keyword(p, "LAST") {
-		kw := bump_token(p)
-		stmt.kind = tokenizer.token_lexeme(kw, p.source)
+	if allow_keyword(p, "FIRST") {
+		stmt.kind = .First
+	} else if allow_keyword(p, "LAST") {
+		stmt.kind = .Last
 	} else if allow_keyword(p, "NEW") {
-		stmt.kind = "NEW"
+		stmt.kind = .New
 		stmt.expr = parse_expr(p)
 		if stmt.expr == nil {
 			return nil
@@ -463,7 +464,7 @@ parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			error_current(p, "syntax error: expected group processing header")
 			return nil
 		}
-		stmt.kind = "END OF"
+		stmt.kind = .End_Of
 		stmt.expr = parse_expr(p)
 		if stmt.expr == nil {
 			return nil

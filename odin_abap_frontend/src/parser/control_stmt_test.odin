@@ -45,6 +45,38 @@ TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo). WRITE 'y'. CLEANUP. WRITE 'z'. ENDT
 }
 
 @(test)
+at_group_stmt_kinds_are_parser_modeled :: proc(t: ^testing.T) {
+	source := `LOOP AT itab INTO wa.
+  AT FIRST.
+  ENDAT.
+  AT LAST.
+  ENDAT.
+  AT NEW field.
+  ENDAT.
+  AT END OF field.
+  ENDAT.
+ENDLOOP.`
+	parsed := parse(source, "at_groups.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect_value(t, len(loop.body), 4)
+
+	first := loop.body[0].derived_stmt.(^ast.At_Stmt)
+	last := loop.body[1].derived_stmt.(^ast.At_Stmt)
+	new_ := loop.body[2].derived_stmt.(^ast.At_Stmt)
+	end_of := loop.body[3].derived_stmt.(^ast.At_Stmt)
+	testing.expect_value(t, first.kind, ast.At_Stmt_Kind.First)
+	testing.expect_value(t, last.kind, ast.At_Stmt_Kind.Last)
+	testing.expect_value(t, new_.kind, ast.At_Stmt_Kind.New)
+	testing.expect_value(t, end_of.kind, ast.At_Stmt_Kind.End_Of)
+	testing.expect(t, first.expr == nil)
+	testing.expect(t, last.expr == nil)
+	testing.expect(t, new_.expr != nil)
+	testing.expect(t, end_of.expr != nil)
+}
+
+@(test)
 statement_batch_structural_blocks :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION. ENDCLASS.
 INTERFACE lif. ENDINTERFACE.

@@ -442,7 +442,16 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_block(p, n.body, "ENDLOOP")
 	case ^At_Stmt:
 		emit(p, "AT ")
-		emit(p, n.kind)
+		switch n.kind {
+		case .First:
+			emit(p, "FIRST")
+		case .Last:
+			emit(p, "LAST")
+		case .New:
+			emit(p, "NEW")
+		case .End_Of:
+			emit(p, "END OF")
+		}
 		if n.expr != nil {
 			emit_space(p)
 			emit_node(p, n.expr)

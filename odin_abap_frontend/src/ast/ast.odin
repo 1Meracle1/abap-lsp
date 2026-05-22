@@ -1634,10 +1634,17 @@ Loop_Stmt :: struct {
 	header_text:  string,
 }
 
+At_Stmt_Kind :: enum {
+	First,
+	Last,
+	New,
+	End_Of,
+}
+
 // ABAP syntax: group-processing block `AT FIRST. ... ENDAT.` or `AT NEW field. ... ENDAT.`
 At_Stmt :: struct {
 	using node: Stmt,
-	kind:       string,
+	kind:       At_Stmt_Kind,
 	expr:       ^Expr,
 	body:       [dynamic]^Stmt,
 }

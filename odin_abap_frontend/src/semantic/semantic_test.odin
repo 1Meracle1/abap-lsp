@@ -1377,6 +1377,59 @@ ENDFORM.
 }
 
 @(test)
+collects_at_group_kinds_fields_and_loop_contexts :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///at_groups.abap",
+		`
+FORM run.
+  DATA itab TYPE TABLE OF i.
+  LOOP AT itab.
+    AT FIRST.
+    ENDAT.
+    AT LAST.
+    ENDAT.
+    AT NEW src_plant.
+    ENDAT.
+    AT END OF src_plant.
+    ENDAT.
+  ENDLOOP.
+ENDFORM.
+`,
+	)
+
+	first, last, new_, end_of := 0, 0, 0, 0
+	for region in unit.routine_control_regions {
+		if region.kind != .At {
+			continue
+		}
+		switch region.at.kind {
+		case .First:
+			first += 1
+		case .Last:
+			last += 1
+		case .New:
+			new_ += 1
+		case .End_Of:
+			end_of += 1
+		}
+	}
+
+	testing.expect_value(t, first, 1)
+	testing.expect_value(t, last, 1)
+	testing.expect_value(t, new_, 1)
+	testing.expect_value(t, end_of, 1)
+	testing.expect_value(t, reference_count(&unit, "itab", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "src_plant", .Value, .Identifier), 2)
+	testing.expect_value(t, len(unit.loop_at_field_contexts), 2)
+	testing.expect(t, system_update_present(&unit, .Loop_At, "subrc"))
+	keywords := [?]string{"first", "last", "new", "end", "of", "endat"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
 catch_into_data_declares_inline_and_type_ref :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

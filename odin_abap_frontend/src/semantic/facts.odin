@@ -1592,9 +1592,16 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 	pop_scope(c)
 	c.current_scope = previous
 	kind := At_Group_Kind.First
-	if ascii_equal_ignore_case(stmt.kind, "NEW") {kind = .New}
-	if ascii_equal_ignore_case(stmt.kind, "END OF") {kind = .End_Of}
-	if ascii_equal_ignore_case(stmt.kind, "LAST") {kind = .Last}
+	switch stmt.kind {
+	case .First:
+		kind = .First
+	case .Last:
+		kind = .Last
+	case .New:
+		kind = .New
+	case .End_Of:
+		kind = .End_Of
+	}
 	add_at_region(c, scope, stmt.range, kind, at_scope)
 }
 
