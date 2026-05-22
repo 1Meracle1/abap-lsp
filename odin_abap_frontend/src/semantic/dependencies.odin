@@ -89,19 +89,17 @@ analyze_standalone_with_dependency_drain :: proc(
 	}
 
 	seen_artifacts := make(map[i64]bool, 16, allocator)
-	for {
-		remote_candidates := collect_project_remote_dependency_candidates(&project, allocator)
-		if !add_dependency_store_any_profile_matches(
-			&candidate_inputs,
-			&dependency_inputs,
-			remote_candidates[:],
-			&store,
-			&seen_artifacts,
-			target.uri,
-			allocator,
-		) {
-			break
-		}
+	// Any-profile standalone cache lookup has no product/package boundary; keep it direct.
+	remote_candidates := collect_project_remote_dependency_candidates(&project, allocator)
+	if add_dependency_store_any_profile_matches(
+		&candidate_inputs,
+		&dependency_inputs,
+		remote_candidates[:],
+		&store,
+		&seen_artifacts,
+		target.uri,
+		allocator,
+	) {
 		project = analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
 	}
 	return project
@@ -310,9 +308,14 @@ add_dependency_store_any_profile_matches :: proc(
 	allocator: mem.Allocator,
 ) -> bool {
 	added := false
+	reader, reader_err := dep_store.reader(store, allocator)
+	if reader_err != .None {
+		return false
+	}
+	defer dep_store.reader_destroy(&reader)
 	for candidate in remote_candidates {
-		record, ok, err := dep_store.find_artifact_for_candidate_any_profile(
-			store,
+		record, ok, err := dep_store.reader_find_artifact_for_candidate_any_profile(
+			&reader,
 			candidate.name,
 			candidate.kind,
 			allocator,

@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS dependency_symbol_index (
 CREATE INDEX IF NOT EXISTS idx_dependency_artifacts_lookup
     ON dependency_artifacts(product_version, object_name, object_kind, package_version);
 
+CREATE INDEX IF NOT EXISTS idx_dependency_artifacts_any_profile_lookup
+    ON dependency_artifacts(object_name, object_kind);
+
 CREATE INDEX IF NOT EXISTS idx_dependency_symbol_lookup
     ON dependency_symbol_index(symbol_name, symbol_kind, priority DESC, artifact_id);
 
@@ -149,6 +152,9 @@ dependency_store_from_override_path :: proc(
 	path, ok := resolve_dependency_store_path(override_path, allocator)
 	if !ok {
 		return {}, .Missing_Store_Path
+	}
+	if db, open_err := open_connection(path, allocator); open_err == .None {
+		sqlite3.close(db)
 	}
 	return Dependency_Store{path = path}, .None
 }
