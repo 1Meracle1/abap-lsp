@@ -5,26 +5,6 @@ import "../tokenizer"
 
 import "core:strings"
 
-Sql_Query_Scan :: struct {
-	projection_clause:      tokenizer.Range,
-	from_clause:            tokenizer.Range,
-	into_clause:            tokenizer.Range,
-	where_clause:           tokenizer.Range,
-	group_by_clause:        tokenizer.Range,
-	having_clause:          tokenizer.Range,
-	order_by_clause:        tokenizer.Range,
-	order_by_primary_key:   bool,
-	order_by_fields:        [dynamic]string,
-	for_all_entries_clause: tokenizer.Range,
-	for_update_clause:      tokenizer.Range,
-	up_to_clause:           tokenizer.Range,
-	package_size_clause:    tokenizer.Range,
-	offset_clause:          tokenizer.Range,
-	abap_options_clause:    tokenizer.Range,
-	set_operator_clause:    tokenizer.Range,
-	has_dynamic_where:      bool,
-}
-
 collect_select_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Select_Stmt, scope: Scope_Id) {
 	add_system_field_update(c, scope, stmt.range, .Select, "subrc")
 	add_system_field_update(c, scope, stmt.range, .Select, "dbcnt")
@@ -232,37 +212,35 @@ collect_select_query_facts :: proc(
 ) {
 	query_id := len(c.sql_queries)
 	query_range := select_query_range(query, fallback)
-	scan_range := fallback if range_valid(fallback) else query_range
-	scan := sql_scan_query(c, scan_range)
-	collect_sql_projection_scan_facts(c, query_id, scan.projection_clause, scope)
 	collect_select_query_parts(c, query_id, query, scope, cte_names)
+	order_by_fields := select_order_by_fields(c, query)
 
 	flags := Sql_Query_Flags{}
-	if range_valid(scan.projection_clause) ||
+	if range_valid(query.projection_clause) ||
 	   len(query.projection_clauses) > 0 {flags += {.Has_Projection_Clause}}
-	if range_valid(scan.from_clause) || query.source_clause != nil {flags += {.Has_From_Clause}}
-	if range_valid(scan.into_clause) || query.result != nil {flags += {.Has_Into_Clause}}
-	if range_valid(scan.where_clause) || query.where_cond != nil {flags += {.Has_Where_Clause}}
-	if range_valid(scan.group_by_clause) {flags += {.Has_Group_By_Clause}}
-	if range_valid(scan.having_clause) {flags += {.Has_Having_Clause}}
-	if range_valid(scan.order_by_clause) {flags += {.Has_Order_By_Clause}}
-	if scan.order_by_primary_key {flags += {.Order_By_Primary_Key}}
-	if range_valid(scan.for_all_entries_clause) ||
+	if range_valid(query.from_clause) || query.source_clause != nil {flags += {.Has_From_Clause}}
+	if range_valid(query.into_clause) || query.result != nil {flags += {.Has_Into_Clause}}
+	if range_valid(query.where_clause) || query.where_cond != nil {flags += {.Has_Where_Clause}}
+	if range_valid(query.group_by_clause) {flags += {.Has_Group_By_Clause}}
+	if range_valid(query.having_clause) {flags += {.Has_Having_Clause}}
+	if range_valid(query.order_by_clause) {flags += {.Has_Order_By_Clause}}
+	if query.order_by_primary_key {flags += {.Order_By_Primary_Key}}
+	if range_valid(query.for_all_entries_clause) ||
 	   query.for_all_entries != nil {flags += {.Has_For_All_Entries}}
-	if range_valid(scan.for_update_clause) {flags += {.Has_For_Update, .Is_For_Update}}
-	if range_valid(scan.up_to_clause) || query.up_to_rows != nil {flags += {.Has_Up_To_Clause}}
-	if range_valid(scan.package_size_clause) ||
+	if range_valid(query.for_update_clause) {flags += {.Has_For_Update, .Is_For_Update}}
+	if range_valid(query.up_to_clause) || query.up_to_rows != nil {flags += {.Has_Up_To_Clause}}
+	if range_valid(query.package_size_clause) ||
 	   query.package_size != nil {flags += {.Has_Package_Size_Clause, .Has_Package_Size}}
-	if range_valid(scan.offset_clause) {flags += {.Has_Offset_Clause}}
-	if range_valid(scan.abap_options_clause) {flags += {.Has_Abap_Options_Clause}}
-	if range_valid(scan.set_operator_clause) ||
+	if range_valid(query.offset_clause) {flags += {.Has_Offset_Clause}}
+	if range_valid(query.abap_options_clause) {flags += {.Has_Abap_Options_Clause}}
+	if range_valid(query.set_operator_clause) ||
 	   len(query.set_ops) > 0 {flags += {.Has_Set_Operator_Clause, .Has_Set_Operators}}
 	if query.single {flags += {.Is_Single}}
 	if query.is_distinct {flags += {.Is_Distinct}}
 	if has_endselect {flags += {.Has_Endselect}}
-	if query.dynamic_where || scan.has_dynamic_where {flags += {.Has_Dynamic_Where}}
+	if query.dynamic_where {flags += {.Has_Dynamic_Where}}
 
-	if len(scan.order_by_fields) > 0 {
+	if len(order_by_fields) > 0 {
 		for target in c.sql_targets {
 			if target.query_id == query_id &&
 			   .Is_Table in target.flags &&
@@ -272,7 +250,7 @@ collect_select_query_facts :: proc(
 					scope,
 					query_range,
 					target.target_name,
-					scan.order_by_fields[:],
+					order_by_fields[:],
 				)
 			}
 		}
@@ -284,64 +262,24 @@ collect_select_query_facts :: proc(
 			id = query_id,
 			scope = scope,
 			range = query_range,
-			projection_clause = scan.projection_clause if range_valid(scan.projection_clause) else select_projection_range(query),
-			from_clause = scan.from_clause if range_valid(scan.from_clause) else expr_range(query.source),
-			into_clause = scan.into_clause if range_valid(scan.into_clause) else select_result_range(query.result),
-			where_clause = scan.where_clause if range_valid(scan.where_clause) else expr_range(query.where_cond),
-			group_by_clause = scan.group_by_clause,
-			having_clause = scan.having_clause,
-			order_by_clause = scan.order_by_clause,
-			order_by_fields = scan.order_by_fields,
-			for_all_entries_clause = scan.for_all_entries_clause if range_valid(scan.for_all_entries_clause) else expr_range(query.for_all_entries),
-			for_update_clause = scan.for_update_clause,
-			up_to_clause = scan.up_to_clause if range_valid(scan.up_to_clause) else expr_range(query.up_to_rows),
-			package_size_clause = scan.package_size_clause if range_valid(scan.package_size_clause) else expr_range(query.package_size),
-			offset_clause = scan.offset_clause,
-			abap_options_clause = scan.abap_options_clause,
-			set_operator_clause = scan.set_operator_clause,
+			projection_clause = query.projection_clause if range_valid(query.projection_clause) else select_projection_range(query),
+			from_clause = query.from_clause if range_valid(query.from_clause) else expr_range(query.source),
+			into_clause = query.into_clause if range_valid(query.into_clause) else select_result_range(query.result),
+			where_clause = query.where_clause if range_valid(query.where_clause) else expr_range(query.where_cond),
+			group_by_clause = query.group_by_clause,
+			having_clause = query.having_clause,
+			order_by_clause = query.order_by_clause,
+			order_by_fields = order_by_fields,
+			for_all_entries_clause = query.for_all_entries_clause if range_valid(query.for_all_entries_clause) else expr_range(query.for_all_entries),
+			for_update_clause = query.for_update_clause,
+			up_to_clause = query.up_to_clause if range_valid(query.up_to_clause) else expr_range(query.up_to_rows),
+			package_size_clause = query.package_size_clause if range_valid(query.package_size_clause) else expr_range(query.package_size),
+			offset_clause = query.offset_clause,
+			abap_options_clause = query.abap_options_clause,
+			set_operator_clause = query.set_operator_clause,
 			flags = flags,
 		},
 	)
-}
-
-collect_sql_projection_scan_facts :: proc(
-	c: ^Collector,
-	query_id: int,
-	range: tokenizer.Range,
-	scope: Scope_Id,
-) {
-	if !range_valid(range) {
-		return
-	}
-	text := source_text(c, range)
-	tokens := header_tokens(c, text, range.start)
-	for i in 0 ..< len(tokens) - 2 {
-		if tokens[i].kind == .Ident &&
-		   tokens[i + 1].kind == .Tilde &&
-		   tokens[i + 2].kind == .Star {
-			qualifier := canonical_name(tokens[i].text, c.allocator)
-			push_sql_name_ref(
-				c,
-				query_id,
-				scope,
-				tokenizer.text_range(tokens[i].range.start, tokens[i + 2].range.end),
-				"*",
-				qualifier,
-				.Qualified_Star,
-				.Unresolved,
-			)
-			append(
-				&c.sql_projections,
-				Sql_Projection_Data {
-					query_id = query_id,
-					range = tokenizer.text_range(tokens[i].range.start, tokens[i + 2].range.end),
-					kind = .Qualified_Star,
-					source_alias = qualifier,
-					name = "*",
-				},
-			)
-		}
-	}
 }
 
 collect_select_query_parts :: proc(
@@ -453,21 +391,6 @@ collect_sql_projection :: proc(
 				.Unresolved,
 			)
 		}
-	} else if star_qualifier, star_range, star_ok := sql_qualified_star_text(c, projection.value);
-	   star_ok {
-		source_alias = canonical_name(star_qualifier, c.allocator)
-		name = "*"
-		kind = .Qualified_Star
-		push_sql_name_ref(
-			c,
-			query_id,
-			scope,
-			star_range,
-			"*",
-			source_alias,
-			.Qualified_Star,
-			.Unresolved,
-		)
 	} else if simple, simple_range, simple_ok := sql_simple_name(projection.value); simple_ok {
 		kind = .Column
 		name = canonical_name(simple, c.allocator)
@@ -896,269 +819,6 @@ push_sql_name_ref :: proc(
 	)
 }
 
-sql_scan_query :: proc(c: ^Collector, range: tokenizer.Range) -> Sql_Query_Scan {
-	scan := Sql_Query_Scan {
-		order_by_fields = make([dynamic]string, 0, 2, c.allocator),
-	}
-	text := source_text(c, range)
-	tokens := header_tokens(c, text, range.start)
-	if len(tokens) == 0 {
-		return scan
-	}
-	projection_start := sql_projection_start(tokens[:])
-	fields_idx := sql_find_keyword(tokens[:], "FIELDS")
-	if fields_idx >= 0 {
-		projection_start = fields_idx + 1
-	}
-	if projection_start >= 0 {
-		projection_end := sql_next_clause_index(tokens[:], projection_start)
-		if projection_start < projection_end {
-			scan.projection_clause = tokenizer.text_range(
-				tokens[projection_start].range.start,
-				tokens[projection_end - 1].range.end,
-			)
-		}
-	}
-	if idx := sql_find_keyword(tokens[:], "FROM"); idx >= 0 {
-		scan.from_clause = sql_clause_range(tokens[:], idx + 1)
-	}
-	into_idx := sql_find_keyword(tokens[:], "INTO")
-	if into_idx >= 0 {
-		scan.into_clause = sql_clause_range(tokens[:], into_idx)
-	} else {
-		appending_idx := sql_find_keyword(tokens[:], "APPENDING")
-		if appending_idx >= 0 {
-			scan.into_clause = sql_clause_range(tokens[:], appending_idx)
-		}
-	}
-	if idx := sql_find_keyword(tokens[:], "WHERE"); idx >= 0 {
-		scan.where_clause = sql_clause_range(tokens[:], idx)
-		predicate := sql_clause_tokens(tokens[:], idx + 1)
-		scan.has_dynamic_where = sql_tokens_are_dynamic_operand(predicate)
-	}
-	if idx := sql_find_phrase(tokens[:], []string{"GROUP", "BY"}); idx >= 0 {
-		scan.group_by_clause = sql_clause_range(tokens[:], idx)
-	}
-	if idx := sql_find_keyword(tokens[:], "HAVING"); idx >= 0 {
-		scan.having_clause = sql_clause_range(tokens[:], idx)
-	}
-	if idx := sql_find_phrase(tokens[:], []string{"ORDER", "BY"}); idx >= 0 {
-		scan.order_by_clause = sql_clause_range(tokens[:], idx)
-		scan.order_by_primary_key, scan.order_by_fields = sql_order_by_info(c, tokens[:], idx)
-	}
-	if idx := sql_find_phrase(tokens[:], []string{"FOR", "ALL", "ENTRIES"}); idx >= 0 {
-		scan.for_all_entries_clause = sql_clause_range(tokens[:], idx)
-	}
-	if idx := sql_find_phrase(tokens[:], []string{"FOR", "UPDATE"}); idx >= 0 {
-		end := idx + 2
-		scan.for_update_clause = tokenizer.text_range(
-			tokens[idx].range.start,
-			tokens[end - 1].range.end,
-		)
-	}
-	if idx := sql_find_phrase(tokens[:], []string{"UP", "TO"}); idx >= 0 {
-		scan.up_to_clause = sql_clause_range(tokens[:], idx)
-	}
-	if idx := sql_find_phrase(tokens[:], []string{"PACKAGE", "SIZE"}); idx >= 0 {
-		scan.package_size_clause = sql_clause_range(tokens[:], idx)
-	}
-	if idx := sql_find_keyword(tokens[:], "OFFSET"); idx >= 0 {
-		scan.offset_clause = sql_clause_range(tokens[:], idx)
-	}
-	abap_option_keywords := [?]string{"BYPASSING", "CONNECTION", "CLIENT"}
-	for keyword in abap_option_keywords {
-		if idx := sql_find_keyword(tokens[:], keyword); idx >= 0 {
-			scan.abap_options_clause = merge_range(
-				scan.abap_options_clause,
-				sql_clause_range(tokens[:], idx),
-			)
-		}
-	}
-	set_keywords := [?]string{"UNION", "INTERSECT", "EXCEPT"}
-	for keyword in set_keywords {
-		if idx := sql_find_keyword(tokens[:], keyword); idx >= 0 {
-			scan.set_operator_clause = merge_range(
-				scan.set_operator_clause,
-				sql_clause_range(tokens[:], idx),
-			)
-		}
-	}
-	return scan
-}
-
-sql_projection_start :: proc(tokens: []Header_Token) -> int {
-	i := sql_find_keyword(tokens, "SELECT")
-	if i < 0 {
-		return -1
-	}
-	i += 1
-	for i < len(tokens) {
-		if token_eq(tokens[i], "SINGLE") || token_eq(tokens[i], "DISTINCT") {
-			i += 1
-			continue
-		}
-		if i + 1 < len(tokens) && token_eq(tokens[i], "FOR") && token_eq(tokens[i + 1], "UPDATE") {
-			i += 2
-			continue
-		}
-		break
-	}
-	return i
-}
-
-sql_clause_range :: proc(tokens: []Header_Token, start: int) -> tokenizer.Range {
-	if start < 0 || start >= len(tokens) {
-		return tokenizer.Range{}
-	}
-	end := sql_next_clause_index(tokens, start + 1)
-	if end <= start {
-		end = start + 1
-	}
-	return tokenizer.text_range(tokens[start].range.start, tokens[end - 1].range.end)
-}
-
-sql_clause_tokens :: proc(tokens: []Header_Token, start: int) -> []Header_Token {
-	if start < 0 || start >= len(tokens) {
-		return nil
-	}
-	end := sql_next_clause_index(tokens, start)
-	if end <= start {
-		return nil
-	}
-	return tokens[start:end]
-}
-
-sql_next_clause_index :: proc(tokens: []Header_Token, start: int) -> int {
-	for i in start ..< len(tokens) {
-		if tokens[i].kind == .Period || tokens[i].kind == .RParen {
-			return i
-		}
-		if sql_clause_start_at(tokens, i) {
-			return i
-		}
-	}
-	return len(tokens)
-}
-
-sql_clause_start_at :: proc(tokens: []Header_Token, i: int) -> bool {
-	if token_eq(tokens[i], "FROM") ||
-	   token_eq(tokens[i], "FIELDS") ||
-	   token_eq(tokens[i], "INTO") ||
-	   token_eq(tokens[i], "APPENDING") ||
-	   token_eq(tokens[i], "WHERE") ||
-	   token_eq(tokens[i], "HAVING") ||
-	   token_eq(tokens[i], "OFFSET") ||
-	   token_eq(tokens[i], "BYPASSING") ||
-	   token_eq(tokens[i], "CONNECTION") ||
-	   token_eq(tokens[i], "CLIENT") ||
-	   token_eq(tokens[i], "UNION") ||
-	   token_eq(tokens[i], "INTERSECT") ||
-	   token_eq(tokens[i], "EXCEPT") {
-		return true
-	}
-	if i + 1 < len(tokens) {
-		return(
-			(token_eq(tokens[i], "GROUP") && token_eq(tokens[i + 1], "BY")) ||
-			(token_eq(tokens[i], "ORDER") && token_eq(tokens[i + 1], "BY")) ||
-			(token_eq(tokens[i], "UP") && token_eq(tokens[i + 1], "TO")) ||
-			(token_eq(tokens[i], "PACKAGE") && token_eq(tokens[i + 1], "SIZE")) ||
-			(token_eq(tokens[i], "FOR") &&
-					(token_eq(tokens[i + 1], "ALL") || token_eq(tokens[i + 1], "UPDATE"))) \
-		)
-	}
-	return false
-}
-
-sql_find_keyword :: proc(tokens: []Header_Token, keyword: string) -> int {
-	for token, i in tokens {
-		if token_eq(token, keyword) {
-			return i
-		}
-	}
-	return -1
-}
-
-sql_find_phrase :: proc(tokens: []Header_Token, phrase: []string) -> int {
-	if len(phrase) == 0 || len(phrase) > len(tokens) {
-		return -1
-	}
-	for i in 0 ..= len(tokens) - len(phrase) {
-		ok := true
-		for j in 0 ..< len(phrase) {
-			if !token_eq(tokens[i + j], phrase[j]) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return i
-		}
-	}
-	return -1
-}
-
-sql_order_by_info :: proc(
-	c: ^Collector,
-	tokens: []Header_Token,
-	order_idx: int,
-) -> (
-	bool,
-	[dynamic]string,
-) {
-	fields := make([dynamic]string, 0, 2, c.allocator)
-	i := order_idx + 2
-	if i + 1 < len(tokens) && token_eq(tokens[i], "PRIMARY") && token_eq(tokens[i + 1], "KEY") {
-		return true, fields
-	}
-	end := sql_next_clause_index(tokens, i)
-	for i < end {
-		if tokens[i].kind == .Comma ||
-		   token_eq(tokens[i], "ASCENDING") ||
-		   token_eq(tokens[i], "NULLS") ||
-		   token_eq(tokens[i], "FIRST") ||
-		   token_eq(tokens[i], "LAST") {
-			i += 1
-			continue
-		}
-		if token_eq(tokens[i], "DESCENDING") {
-			return false, make([dynamic]string, 0, 0, c.allocator)
-		}
-		if tokens[i].kind == .Ident {
-			if i + 2 < end && tokens[i + 1].kind == .Tilde && tokens[i + 2].kind == .Ident {
-				append(&fields, canonical_name(tokens[i + 2].text, c.allocator))
-				i += 3
-			} else {
-				append(&fields, canonical_name(tokens[i].text, c.allocator))
-				i += 1
-			}
-			continue
-		}
-		i += 1
-	}
-	return false, fields
-}
-
-sql_tokens_are_dynamic_operand :: proc(tokens: []Header_Token) -> bool {
-	if len(tokens) < 3 || tokens[0].kind != .LParen || tokens[len(tokens) - 1].kind != .RParen {
-		return false
-	}
-	depth := 0
-	for token, i in tokens {
-		if token.kind == .LParen {
-			depth += 1
-		} else if token.kind == .RParen {
-			depth -= 1
-			if depth == 0 && i + 1 != len(tokens) {
-				return false
-			}
-		}
-		if depth < 0 {
-			return false
-		}
-	}
-	return depth == 0
-}
-
 sql_expr_is_dynamic_operand :: proc(expr: ^ast.Expr) -> bool {
 	if expr == nil {
 		return false
@@ -1211,28 +871,6 @@ sql_qualified_column :: proc(expr: ^ast.Expr) -> (string, string, tokenizer.Rang
 		return "", "", tokenizer.Range{}, false
 	}
 	return qualifier, column, expr.range, true
-}
-
-sql_qualified_star_text :: proc(
-	c: ^Collector,
-	expr: ^ast.Expr,
-) -> (
-	string,
-	tokenizer.Range,
-	bool,
-) {
-	if expr == nil {
-		return "", tokenizer.Range{}, false
-	}
-	text := source_text(c, expr.range)
-	tokens := header_tokens(c, text, expr.range.start)
-	if len(tokens) == 3 &&
-	   tokens[0].kind == .Ident &&
-	   tokens[1].kind == .Tilde &&
-	   tokens[2].kind == .Star {
-		return tokens[0].text, expr.range, true
-	}
-	return "", tokenizer.Range{}, false
 }
 
 sql_call_ref_kind :: proc(name: string) -> Sql_Name_Ref_Kind {
@@ -1351,6 +989,14 @@ inline_select_target_type :: proc(c: ^Collector, query_id: int) -> (Field_Type_R
 	return out, count == 1 && out.base_name != ""
 }
 
+select_order_by_fields :: proc(c: ^Collector, query: ^ast.Select_Query_Clause) -> [dynamic]string {
+	fields := make([dynamic]string, 0, len(query.order_by_fields), c.allocator)
+	for field in query.order_by_fields {
+		append(&fields, canonical_name(field, c.allocator))
+	}
+	return fields
+}
+
 select_join_kind_text :: proc(kind: ast.Select_Join_Kind) -> string {
 	#partial switch kind {
 	case .Inner:
@@ -1384,6 +1030,20 @@ select_query_range :: proc(
 	out = merge_range(out, expr_range(query.for_all_entries))
 	out = merge_range(out, expr_range(query.package_size))
 	out = merge_range(out, expr_range(query.up_to_rows))
+	out = merge_range(out, query.projection_clause)
+	out = merge_range(out, query.from_clause)
+	out = merge_range(out, query.into_clause)
+	out = merge_range(out, query.where_clause)
+	out = merge_range(out, query.group_by_clause)
+	out = merge_range(out, query.having_clause)
+	out = merge_range(out, query.order_by_clause)
+	out = merge_range(out, query.for_all_entries_clause)
+	out = merge_range(out, query.for_update_clause)
+	out = merge_range(out, query.up_to_clause)
+	out = merge_range(out, query.package_size_clause)
+	out = merge_range(out, query.offset_clause)
+	out = merge_range(out, query.abap_options_clause)
+	out = merge_range(out, query.set_operator_clause)
 	for i in 0 ..< len(query.set_ops) {
 		out = merge_range(out, select_query_range(&query.set_ops[i].query, fallback))
 	}
@@ -1396,7 +1056,11 @@ select_query_range :: proc(
 select_projection_range :: proc(query: ^ast.Select_Query_Clause) -> tokenizer.Range {
 	out := tokenizer.Range{}
 	for projection in query.projection_clauses {
-		out = merge_range(out, expr_range(projection.value))
+		if range_valid(projection.range) {
+			out = merge_range(out, projection.range)
+		} else {
+			out = merge_range(out, expr_range(projection.value))
+		}
 	}
 	return out
 }
@@ -1445,81 +1109,13 @@ sql_local_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: string) -> 
 
 sql_token_is_keyword_text :: proc(text: string) -> bool {
 	keywords := [?]string {
-		"select",
-		"single",
-		"distinct",
 		"case",
 		"when",
 		"then",
 		"else",
 		"end",
-		"from",
-		"into",
-		"appending",
-		"where",
-		"with",
-		"group",
-		"by",
-		"having",
-		"order",
-		"for",
-		"update",
-		"all",
-		"entries",
-		"in",
-		"up",
-		"to",
-		"rows",
-		"package",
-		"size",
-		"offset",
-		"bypassing",
-		"buffer",
-		"connection",
-		"client",
-		"specified",
-		"privileged",
-		"access",
-		"union",
-		"intersect",
-		"except",
-		"as",
-		"join",
-		"inner",
-		"left",
-		"right",
-		"cross",
-		"on",
-		"and",
-		"or",
-		"not",
-		"eq",
-		"ne",
-		"lt",
-		"le",
-		"gt",
-		"ge",
-		"co",
-		"cn",
-		"ca",
-		"na",
-		"cs",
-		"ns",
-		"cp",
-		"np",
 		"like",
-		"between",
-		"is",
 		"null",
-		"nulls",
-		"first",
-		"last",
-		"table",
-		"corresponding",
-		"fields",
-		"of",
-		"primary",
-		"key",
 	}
 	for keyword in keywords {
 		if ascii_equal_ignore_case(text, keyword) {

@@ -1828,6 +1828,7 @@ Test_Injection_Stmt :: struct {
 Select_Projection_Clause :: struct {
 	value: ^Expr,
 	alias: string,
+	range: tokenizer.Range,
 }
 
 Select_Join_Kind :: enum {
@@ -1848,6 +1849,7 @@ Select_Join_Clause :: struct {
 
 // ABAP syntax: Open SQL `FROM` source with optional alias and joins.
 Select_Source_Clause :: struct {
+	range:   tokenizer.Range,
 	source:  ^Expr,
 	alias:   string,
 	dynamic_source: bool,
@@ -1862,6 +1864,7 @@ Select_Result_Kind :: enum {
 
 // ABAP syntax: SELECT result target, for example `INTO TABLE lt_rows` or `APPENDING CORRESPONDING FIELDS OF TABLE lt_rows`.
 Select_Result_Clause :: struct {
+	range:                tokenizer.Range,
 	kind:                 Select_Result_Kind,
 	target:               ^Expr,
 	table:                bool,
@@ -1883,6 +1886,22 @@ Select_Query_Clause :: struct {
 	package_size:    ^Expr,
 	up_to_rows:      ^Expr,
 	set_ops:         [dynamic]Select_Set_Clause,
+	projection_clause:      tokenizer.Range,
+	from_clause:            tokenizer.Range,
+	into_clause:            tokenizer.Range,
+	where_clause:           tokenizer.Range,
+	group_by_clause:        tokenizer.Range,
+	having_clause:          tokenizer.Range,
+	order_by_clause:        tokenizer.Range,
+	order_by_primary_key:   bool,
+	order_by_fields:        [dynamic]string,
+	for_all_entries_clause: tokenizer.Range,
+	for_update_clause:      tokenizer.Range,
+	up_to_clause:           tokenizer.Range,
+	package_size_clause:    tokenizer.Range,
+	offset_clause:          tokenizer.Range,
+	abap_options_clause:    tokenizer.Range,
+	set_operator_clause:    tokenizer.Range,
 }
 
 Select_Set_Kind :: enum {

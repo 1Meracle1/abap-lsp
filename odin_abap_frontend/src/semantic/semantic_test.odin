@@ -1856,16 +1856,6 @@ SELECT (lv_fields)
 }
 
 @(test)
-sql_scan_query_tolerates_ranges_without_select_keyword :: proc(t: ^testing.T) {
-	source := "carrid FROM scarr"
-	c := Collector{source = source, allocator = context.allocator}
-	scan := sql_scan_query(&c, tokenizer.text_range(0, len(source)))
-
-	testing.expect(t, !range_valid(scan.projection_clause))
-	testing.expect(t, range_valid(scan.from_clause))
-}
-
-@(test)
 collects_common_table_expression_sql_facts :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -2018,6 +2008,84 @@ ENDFORM.
 	keys := [?]string{"carrid", "connid"}
 	testing.expect(t, .Has_Order_By_Clause in unit.sql_queries[0].flags)
 	testing.expect(t, internal_table_order_present(&unit, "lt_rows", keys[:]))
+}
+
+@(test)
+collects_parser_modeled_select_clause_flags_ranges_and_cursor_select :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lv_matnr TYPE string.
+  DATA lv_size TYPE i.
+  DATA cv TYPE cursor.
+
+  SELECT a~* FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY a~matnr, a~ersda UP TO 10 ROWS PACKAGE SIZE lv_size OFFSET 2 BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED.
+  SELECT * FROM zlock INTO @DATA(ls_lock) FOR UPDATE.
+  SELECT * FROM zprimary INTO TABLE @lt_rows ORDER BY PRIMARY KEY.
+  SELECT * FROM zdesc INTO TABLE @lt_rows ORDER BY carrid DESCENDING.
+  OPEN CURSOR cv FOR SELECT matnr FROM mara WHERE matnr = @lv_matnr ORDER BY matnr.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///select_clause_facts.abap", source)
+
+	testing.expect_value(t, len(unit.sql_queries), 5)
+	query := unit.sql_queries[0]
+	testing.expect(t, .Has_Group_By_Clause in query.flags)
+	testing.expect(t, .Has_Having_Clause in query.flags)
+	testing.expect(t, .Has_Order_By_Clause in query.flags)
+	testing.expect(t, .Has_Up_To_Clause in query.flags)
+	testing.expect(t, .Has_Package_Size_Clause in query.flags)
+	testing.expect(t, .Has_Offset_Clause in query.flags)
+	testing.expect(t, .Has_Abap_Options_Clause in query.flags)
+	testing.expect_value(t, source[query.group_by_clause.start:query.group_by_clause.end], "GROUP BY a~matnr")
+	testing.expect_value(t, source[query.having_clause.start:query.having_clause.end], "HAVING COUNT( * ) > 0")
+	testing.expect_value(t, source[query.order_by_clause.start:query.order_by_clause.end], "ORDER BY a~matnr, a~ersda")
+	testing.expect_value(t, source[query.up_to_clause.start:query.up_to_clause.end], "UP TO 10 ROWS")
+	testing.expect_value(t, source[query.package_size_clause.start:query.package_size_clause.end], "PACKAGE SIZE lv_size")
+	testing.expect_value(t, source[query.offset_clause.start:query.offset_clause.end], "OFFSET 2")
+	testing.expect_value(t, source[query.abap_options_clause.start:query.abap_options_clause.end], "BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED")
+	testing.expect_value(t, len(query.order_by_fields), 2)
+	testing.expect_value(t, query.order_by_fields[0], "matnr")
+	testing.expect_value(t, query.order_by_fields[1], "ersda")
+	testing.expect(t, sql_qualified_ref_present(&unit, "a", "*", .Qualified_Star))
+	keys := [?]string{"matnr", "ersda"}
+	testing.expect(t, internal_table_order_present(&unit, "lt_rows", keys[:]))
+
+	testing.expect(t, .Has_For_Update in unit.sql_queries[1].flags)
+	testing.expect(t, .Is_For_Update in unit.sql_queries[1].flags)
+	testing.expect(t, .Order_By_Primary_Key in unit.sql_queries[2].flags)
+	testing.expect_value(t, len(unit.sql_queries[3].order_by_fields), 0)
+	testing.expect(t, .Has_Order_By_Clause in unit.sql_queries[4].flags)
+	testing.expect(t, has_reference(&unit, "cv", .Value, .Identifier))
+
+	keywords := [?]string{"group", "by", "having", "order", "up", "package", "offset", "bypassing", "connection", "client", "for", "update"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
+open_sql_clause_keywords_are_not_sql_name_refs :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///sql_clause_keyword_refs.abap",
+		`
+FORM run.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lv_matnr TYPE string.
+
+  SELECT a~matnr FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY a~matnr UP TO 1 ROWS.
+  SELECT * FROM zlock INTO @DATA(ls_lock) FOR UPDATE.
+ENDFORM.
+`,
+	)
+
+	keywords := [?]string{"from", "into", "where", "group", "by", "having", "order", "up", "to", "rows", "for", "update"}
+	for reference in unit.sql_name_refs {
+		for keyword in keywords {
+			testing.expect(t, reference.name != keyword)
+		}
+	}
 }
 
 @(test)

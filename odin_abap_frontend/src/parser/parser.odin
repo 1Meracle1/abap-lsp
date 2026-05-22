@@ -40,6 +40,7 @@ Parser :: struct {
 	lex_errors:     []tokenizer.Lex_Error,
 	index:          int,
 	previous_index: int,
+	expr_stop_keywords: []string,
 	errors:         [dynamic]Parse_Error,
 	allocator:      mem.Allocator,
 	root:           ^ast.File,

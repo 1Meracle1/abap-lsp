@@ -361,3 +361,62 @@ open_sql_ctes_and_dynamic_sources_keep_formatter_fields :: proc(t: ^testing.T) {
 	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, "WITH +recent AS ( SELECT matnr FROM mara WHERE matnr = @lv_matnr ) SELECT matnr FROM ( lv_source ) AS s INNER JOIN @lt_keys AS k ON k~matnr = s~matnr INTO TABLE @lt_rows WHERE ( lv_where ).")
 }
+
+@(test)
+open_sql_clause_ranges_and_order_facts_are_parser_modeled :: proc(t: ^testing.T) {
+	source := `SELECT a~* FROM mara AS a INTO TABLE @lt_rows WHERE a~matnr = @lv_matnr GROUP BY a~matnr HAVING COUNT( * ) > 0 ORDER BY a~matnr, a~ersda UP TO 10 ROWS PACKAGE SIZE lv_size OFFSET 2 BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED.`
+	parsed := parse(source, "sql_clause_facts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	query := stmt.query
+	testing.expect_value(t, len(query.projection_clauses), 1)
+	testing.expect_value(t, source[query.projection_clause.start:query.projection_clause.end], "a~*")
+	testing.expect_value(t, source[query.from_clause.start:query.from_clause.end], "mara AS a")
+	testing.expect_value(t, source[query.into_clause.start:query.into_clause.end], "INTO TABLE @lt_rows")
+	testing.expect_value(t, source[query.where_clause.start:query.where_clause.end], "WHERE a~matnr = @lv_matnr")
+	testing.expect_value(t, source[query.group_by_clause.start:query.group_by_clause.end], "GROUP BY a~matnr")
+	testing.expect_value(t, source[query.having_clause.start:query.having_clause.end], "HAVING COUNT( * ) > 0")
+	testing.expect_value(t, source[query.order_by_clause.start:query.order_by_clause.end], "ORDER BY a~matnr, a~ersda")
+	testing.expect_value(t, len(query.order_by_fields), 2)
+	testing.expect_value(t, query.order_by_fields[0], "matnr")
+	testing.expect_value(t, query.order_by_fields[1], "ersda")
+	testing.expect_value(t, source[query.up_to_clause.start:query.up_to_clause.end], "UP TO 10 ROWS")
+	testing.expect_value(t, source[query.package_size_clause.start:query.package_size_clause.end], "PACKAGE SIZE lv_size")
+	testing.expect_value(t, source[query.offset_clause.start:query.offset_clause.end], "OFFSET 2")
+	testing.expect_value(t, source[query.abap_options_clause.start:query.abap_options_clause.end], "BYPASSING BUFFER CONNECTION con CLIENT SPECIFIED")
+}
+
+@(test)
+open_sql_invalid_clause_placement_is_diagnosed_without_modeling_where :: proc(t: ^testing.T) {
+	source := `SELECT * WHERE carrid = @lv_carrid FROM mara INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_invalid_order.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, stmt.query.source_clause != nil)
+	testing.expect(t, stmt.query.where_cond == nil)
+	testing.expect_value(t, stmt.query.where_clause.end, 0)
+}
+
+@(test)
+open_sql_empty_where_condition_does_not_model_clause_keyword :: proc(t: ^testing.T) {
+	source := `SELECT * FROM mara WHERE GROUP BY matnr INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_empty_where.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, stmt.query.where_cond == nil)
+	testing.expect_value(t, source[stmt.query.group_by_clause.start:stmt.query.group_by_clause.end], "GROUP BY matnr")
+}
+
+@(test)
+open_sql_duplicate_from_clause_is_diagnosed_without_overwriting_source :: proc(t: ^testing.T) {
+	source := `SELECT * FROM mara FROM makt INTO TABLE @lt_rows.`
+	parsed := parse(source, "sql_duplicate_from.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, source[stmt.query.from_clause.start:stmt.query.from_clause.end], "mara")
+	testing.expect_value(t, len(stmt.query.source_clause.joins), 0)
+}

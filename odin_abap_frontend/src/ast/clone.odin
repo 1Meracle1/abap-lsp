@@ -1051,6 +1051,7 @@ clone_select_result :: proc(clause: ^Select_Result_Clause, allocator: mem.Alloca
 		return nil
 	}
 	res, _ := mem.new(Select_Result_Clause, allocator)
+	res.range = clause.range
 	res.kind = clause.kind
 	res.target = clone(clause.target, allocator)
 	res.table = clause.table
@@ -1073,6 +1074,22 @@ clone_select_query :: proc(clause: Select_Query_Clause, allocator: mem.Allocator
 		package_size    = clone(clause.package_size, allocator),
 		up_to_rows      = clone(clause.up_to_rows, allocator),
 		set_ops         = clone_select_set_ops(clause.set_ops, allocator),
+		projection_clause      = clause.projection_clause,
+		from_clause            = clause.from_clause,
+		into_clause            = clause.into_clause,
+		where_clause           = clause.where_clause,
+		group_by_clause        = clause.group_by_clause,
+		having_clause          = clause.having_clause,
+		order_by_clause        = clause.order_by_clause,
+		order_by_primary_key   = clause.order_by_primary_key,
+		order_by_fields        = clone_string_list(clause.order_by_fields, allocator),
+		for_all_entries_clause = clause.for_all_entries_clause,
+		for_update_clause      = clause.for_update_clause,
+		up_to_clause           = clause.up_to_clause,
+		package_size_clause    = clause.package_size_clause,
+		offset_clause          = clause.offset_clause,
+		abap_options_clause    = clause.abap_options_clause,
+		set_operator_clause    = clause.set_operator_clause,
 	}
 }
 
@@ -1097,7 +1114,7 @@ clone_select_ctes :: proc(list: [dynamic]Select_Cte_Clause, allocator: mem.Alloc
 clone_select_projections :: proc(list: [dynamic]Select_Projection_Clause, allocator: mem.Allocator) -> [dynamic]Select_Projection_Clause {
 	res := make([dynamic]Select_Projection_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clause.alias})
+		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clause.alias, range = clause.range})
 	}
 	return res
 }
@@ -1107,6 +1124,7 @@ clone_select_source :: proc(clause: ^Select_Source_Clause, allocator: mem.Alloca
 		return nil
 	}
 	res, _ := mem.new(Select_Source_Clause, allocator)
+	res.range = clause.range
 	res.source = clone(clause.source, allocator)
 	res.alias = clause.alias
 	res.dynamic_source = clause.dynamic_source

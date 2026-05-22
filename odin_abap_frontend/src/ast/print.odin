@@ -2183,6 +2183,19 @@ emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
 		emit(p, " WHERE ")
 		emit_node(p, query.where_cond)
 	}
+	if query.order_by_primary_key || len(query.order_by_fields) > 0 {
+		emit(p, " ORDER BY ")
+		if query.order_by_primary_key {
+			emit(p, "PRIMARY KEY")
+		} else {
+			for field, i in query.order_by_fields {
+				if i > 0 {
+					emit(p, ", ")
+				}
+				emit(p, field)
+			}
+		}
+	}
 	if query.package_size != nil {
 		emit(p, " PACKAGE SIZE ")
 		emit_node(p, query.package_size)
@@ -2191,6 +2204,9 @@ emit_select_query :: proc(p: ^Printer, query: Select_Query_Clause) {
 		emit(p, " UP TO ")
 		emit_node(p, query.up_to_rows)
 		emit(p, " ROWS")
+	}
+	if query.for_update_clause.end > query.for_update_clause.start {
+		emit(p, " FOR UPDATE")
 	}
 	for set_op in query.set_ops {
 		emit_space(p)

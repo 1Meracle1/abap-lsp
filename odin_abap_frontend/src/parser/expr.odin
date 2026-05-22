@@ -35,6 +35,15 @@ parse_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_or_expr(p)
 }
 
+expr_stop_keyword :: proc(p: ^Parser) -> bool {
+	for keyword in p.expr_stop_keywords {
+		if at_keyword_phrase(p, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	left := parse_and_expr(p)
 	if left == nil {
@@ -309,6 +318,9 @@ parse_postfix_expr :: proc(p: ^Parser) -> ^ast.Expr {
 }
 
 parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	if expr_stop_keyword(p) {
+		return nil
+	}
 	tok := current_token(p)
 	#partial switch tok.kind {
 	case .Ident:
@@ -418,6 +430,7 @@ parse_selector_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Expr {
 	field_tok := current_token(p)
 	if field_tok.kind != .Ident &&
 	   field_tok.kind != .Number &&
+	   !(op_tok.kind == .Tilde && field_tok.kind == .Star) &&
 	   !(op_tok.kind == .Arrow && field_tok.kind == .Star) {
 		error_current(p, "syntax error: expected selector field")
 		return nil
@@ -425,7 +438,7 @@ parse_selector_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Expr {
 	bump_token(p)
 
 	field: ^ast.Expr
-	if field_tok.kind == .Number {
+	if field_tok.kind == .Number || field_tok.kind == .Star {
 		lit := ast.new(ast.Literal_Expr, field_tok.range, p.allocator)
 		lit.value = tokenizer.token_lexeme(field_tok, p.source)
 		field = lit
