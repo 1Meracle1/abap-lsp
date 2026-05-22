@@ -162,6 +162,30 @@ CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
 }
 
 @(test)
+data_common_part_delimiters_mark_ast_fact :: proc(t: ^testing.T) {
+	source := `DATA: BEGIN OF COMMON PART fm06lcbe.
+DATA: END OF COMMON PART.
+DATA: BEGIN OF common, field TYPE i, END OF common.`
+	parsed := parse(source, "common_part_decls.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	begin := parsed.root.stmts[0].derived_stmt.(^ast.Data_Chained_Decl)
+	end := parsed.root.stmts[1].derived_stmt.(^ast.Data_Chained_Decl)
+	normal := parsed.root.stmts[2].derived_stmt.(^ast.Data_Chained_Decl)
+
+	testing.expect_value(t, begin.decls[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect(t, .Common_Part_Delimiter in begin.decls[0].flags)
+	testing.expect_value(t, begin.decls[0].name, "fm06lcbe")
+	testing.expect_value(t, end.decls[0].kind, ast.Decl_Clause_Kind.End_Group)
+	testing.expect(t, .Common_Part_Delimiter in end.decls[0].flags)
+	testing.expect_value(t, end.decls[0].name, "")
+	testing.expect_value(t, normal.decls[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect(t, !(.Common_Part_Delimiter in normal.decls[0].flags))
+	testing.expect_value(t, normal.decls[0].name, "common")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 table_and_range_type_references_are_retained :: proc(t: ^testing.T) {
 	source := `TYPES ty_range TYPE RANGE OF sy-datum.
 TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.

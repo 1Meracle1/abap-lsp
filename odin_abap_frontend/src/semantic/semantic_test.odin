@@ -636,6 +636,42 @@ legacy_occurs_header_line_keeps_declared_type_clean :: proc(t: ^testing.T) {
 }
 
 @(test)
+common_part_delimiters_do_not_emit_bogus_symbols :: proc(t: ^testing.T) {
+	source := `
+DATA: BEGIN OF COMMON PART fm06lcbe.
+DATA: BEGIN OF bet OCCURS 50.
+        INCLUDE STRUCTURE ekbe.
+DATA: END OF bet.
+DATA: END OF COMMON PART.
+`
+	unit := collect_test_unit(t, "file:///common_part.abap", source)
+
+	testing.expect(t, has_symbol(&unit, .Variable, "bet"))
+	bogus := [?]string{"begin", "common", "end"}
+	for name in bogus {
+		testing.expect(t, !has_symbol(&unit, .Variable, name))
+		testing.expect(t, !has_reference(&unit, name, .Value, .Identifier))
+	}
+}
+
+@(test)
+declarations_named_common_still_collect :: proc(t: ^testing.T) {
+	source := `
+DATA common TYPE i.
+CLASS lcl_holder DEFINITION.
+  PUBLIC SECTION.
+    DATA common TYPE i.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///common_name.abap", source)
+
+	testing.expect(t, has_symbol(&unit, .Variable, "common"))
+	class := find_symbol(&unit, "lcl_holder", .Class)
+	testing.expect(t, class != nil)
+	testing.expect(t, class_member_named(&unit, class.id, "common", .Attribute) != nil)
+}
+
+@(test)
 constant_structure_collects_numeric_prefixed_component_names :: proc(t: ^testing.T) {
 	source := `
 CONSTANTS: BEGIN OF gc_bapi_proc_mode,

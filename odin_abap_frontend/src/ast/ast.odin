@@ -425,6 +425,7 @@ Field_Symbol_Inline_Name_Expr :: struct {
 Data_Decl :: struct {
 	using node:  Decl,
 	kind:        Decl_Clause_Kind,
+	flags:       Decl_Clause_Flags,
 	name:        string,
 	paren_length: ^Paren_Length_Clause,
 	length_clauses: [dynamic]Length_Clause,
@@ -458,9 +459,15 @@ Decl_Clause_Kind :: enum {
 	Include_Structure,
 }
 
+Decl_Clause_Flag :: enum {
+	Common_Part_Delimiter,
+}
+Decl_Clause_Flags :: bit_set[Decl_Clause_Flag]
+
 // ABAP syntax: one entry inside a chained DATA statement, for example `a TYPE i` in `DATA: a TYPE i, b.`
 Data_Chained_Branch :: struct {
 	kind:            Decl_Clause_Kind,
+	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
 	paren_length:    ^Paren_Length_Clause,
@@ -507,6 +514,7 @@ Types_Decl :: struct {
 // ABAP syntax: one TYPES entry, for example `ty_i TYPE i` in `TYPES: ty_i TYPE i.`
 Types_Clause :: struct {
 	kind:            Decl_Clause_Kind,
+	flags:           Decl_Clause_Flags,
 	depth:           int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
@@ -527,6 +535,7 @@ Constants_Decl :: struct {
 // ABAP syntax: one CONSTANTS entry, for example `c TYPE i VALUE 1`.
 Constants_Clause :: struct {
 	kind:           Decl_Clause_Kind,
+	flags:          Decl_Clause_Flags,
 	depth:          int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
@@ -560,6 +569,7 @@ Statics_Decl :: struct {
 // ABAP syntax: one STATICS entry, for example `counter TYPE i VALUE 0`.
 Statics_Clause :: struct {
 	kind:           Decl_Clause_Kind,
+	flags:          Decl_Clause_Flags,
 	depth:          int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,
@@ -691,6 +701,7 @@ Class_Data_Decl :: struct {
 // ABAP syntax: one CLASS-DATA entry, for example `gv TYPE i VALUE 0`.
 Class_Data_Clause :: struct {
 	kind:           Decl_Clause_Kind,
+	flags:          Decl_Clause_Flags,
 	depth:          int,
 	name:           string,
 	paren_length:   ^Paren_Length_Clause,

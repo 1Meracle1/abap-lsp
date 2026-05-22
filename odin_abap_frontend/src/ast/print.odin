@@ -708,7 +708,7 @@ emit_constructor_mapping_assignment :: proc(
 
 emit_data_decl :: proc(p: ^Printer, decl: ^Data_Decl) {
 	emit(p, "DATA ")
-	emit_decl_prefix(p, decl.kind, decl.name, decl.include_ref)
+	emit_decl_prefix(p, decl.kind, decl.name, decl.include_ref, .Common_Part_Delimiter in decl.flags)
 	emit_paren_length(p, decl.paren_length)
 	emit_occurs(p, decl.occurs)
 	emit_include_additions(p, decl.as_name, decl.renaming_suffix)
@@ -727,7 +727,7 @@ emit_data_chained_decl :: proc(p: ^Printer, decl: ^Data_Chained_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, branch.kind, branch.name, branch.include_ref)
+		emit_decl_prefix(p, branch.kind, branch.name, branch.include_ref, .Common_Part_Delimiter in branch.flags)
 		emit_paren_length(p, branch.paren_length)
 		emit_occurs(p, branch.occurs)
 		emit_include_additions(p, branch.as_name, branch.renaming_suffix)
@@ -745,7 +745,7 @@ emit_types_decl :: proc(p: ^Printer, decl: ^Types_Decl) {
 	if len(decl.types) == 1 &&
 	   (decl.types[0].kind == .Include_Type || decl.types[0].kind == .Include_Structure) {
 		clause := decl.types[0]
-		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
 		emit_occurs(p, clause.occurs)
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
 		emit(p, ".")
@@ -757,7 +757,7 @@ emit_types_decl :: proc(p: ^Printer, decl: ^Types_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
 		emit_paren_length(p, clause.paren_length)
 		emit_occurs(p, clause.occurs)
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
@@ -774,7 +774,7 @@ emit_constants_decl :: proc(p: ^Printer, decl: ^Constants_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
 		emit_paren_length(p, clause.paren_length)
 		emit_occurs(p, clause.occurs)
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
@@ -805,7 +805,7 @@ emit_statics_decl :: proc(p: ^Printer, decl: ^Statics_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
 		emit_paren_length(p, clause.paren_length)
 		emit_occurs(p, clause.occurs)
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
@@ -915,7 +915,7 @@ emit_class_data_decl :: proc(p: ^Printer, decl: ^Class_Data_Decl) {
 		if i > 0 {
 			emit(p, ", ")
 		}
-		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref)
+		emit_decl_prefix(p, clause.kind, clause.name, clause.include_ref, .Common_Part_Delimiter in clause.flags)
 		emit_paren_length(p, clause.paren_length)
 		emit_occurs(p, clause.occurs)
 		emit_include_additions(p, clause.as_name, clause.renaming_suffix)
@@ -966,12 +966,34 @@ emit_include_stmt :: proc(p: ^Printer, stmt: ^Include_Stmt) {
 	emit(p, ".")
 }
 
-emit_decl_prefix :: proc(p: ^Printer, kind: Decl_Clause_Kind, name: string, include_ref: ^Expr) {
+emit_decl_prefix :: proc(
+	p: ^Printer,
+	kind: Decl_Clause_Kind,
+	name: string,
+	include_ref: ^Expr,
+	is_common_part_delimiter := false,
+) {
 	switch kind {
 	case .Begin_Group:
+		if is_common_part_delimiter {
+			emit(p, "BEGIN OF COMMON PART")
+			if name != "" {
+				emit(p, " ")
+				emit(p, name)
+			}
+			return
+		}
 		emit(p, "BEGIN OF ")
 		emit(p, name)
 	case .End_Group:
+		if is_common_part_delimiter {
+			emit(p, "END OF COMMON PART")
+			if name != "" {
+				emit(p, " ")
+				emit(p, name)
+			}
+			return
+		}
 		emit(p, "END OF ")
 		emit(p, name)
 	case .Include_Type:

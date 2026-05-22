@@ -1109,6 +1109,7 @@ clone_data_chained_branches :: proc(
 			&res,
 			Data_Chained_Branch {
 				kind            = branch.kind,
+				flags           = branch.flags,
 				depth           = branch.depth,
 				name            = branch.name,
 				paren_length    = clone_paren_length_clause(branch.paren_length, allocator),
@@ -1219,6 +1220,7 @@ clone_types_clauses :: proc(list: [dynamic]Types_Clause, allocator: mem.Allocato
 	for clause in list {
 		append(&res, Types_Clause {
 			kind           = clause.kind,
+			flags          = clause.flags,
 			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
@@ -1238,6 +1240,7 @@ clone_constants_clauses :: proc(list: [dynamic]Constants_Clause, allocator: mem.
 	for clause in list {
 		append(&res, Constants_Clause {
 			kind           = clause.kind,
+			flags          = clause.flags,
 			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
@@ -1266,6 +1269,7 @@ clone_statics_clauses :: proc(list: [dynamic]Statics_Clause, allocator: mem.Allo
 	for clause in list {
 		append(&res, Statics_Clause {
 			kind           = clause.kind,
+			flags          = clause.flags,
 			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),
@@ -1353,6 +1357,7 @@ clone_class_data_clauses :: proc(list: [dynamic]Class_Data_Clause, allocator: me
 	for clause in list {
 		append(&res, Class_Data_Clause {
 			kind           = clause.kind,
+			flags          = clause.flags,
 			depth          = clause.depth,
 			name           = clause.name,
 			paren_length   = clone_paren_length_clause(clause.paren_length, allocator),

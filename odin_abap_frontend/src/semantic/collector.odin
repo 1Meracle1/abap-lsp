@@ -69,6 +69,7 @@ Collector :: struct {
 
 Decl_Info :: struct {
 	kind:            ast.Decl_Clause_Kind,
+	flags:           ast.Decl_Clause_Flags,
 	depth:           int,
 	name:            string,
 	range:           tokenizer.Range,
@@ -716,6 +717,7 @@ declare_name_if_present :: proc(
 data_decl_info :: proc(n: ^ast.Data_Decl) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
+		flags = n.flags,
 		name = n.name,
 		range = n.range,
 		paren_length = n.paren_length,
@@ -733,6 +735,7 @@ data_decl_info :: proc(n: ^ast.Data_Decl) -> Decl_Info {
 data_branch_info :: proc(n: ast.Data_Chained_Branch, range: tokenizer.Range) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
+		flags = n.flags,
 		depth = n.depth,
 		name = n.name,
 		range = range,
@@ -751,6 +754,7 @@ data_branch_info :: proc(n: ast.Data_Chained_Branch, range: tokenizer.Range) -> 
 types_clause_info :: proc(n: ast.Types_Clause, range: tokenizer.Range) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
+		flags = n.flags,
 		depth = n.depth,
 		name = n.name,
 		range = range,
@@ -767,6 +771,7 @@ types_clause_info :: proc(n: ast.Types_Clause, range: tokenizer.Range) -> Decl_I
 constants_clause_info :: proc(n: ast.Constants_Clause, range: tokenizer.Range) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
+		flags = n.flags,
 		depth = n.depth,
 		name = n.name,
 		range = range,
@@ -784,6 +789,7 @@ constants_clause_info :: proc(n: ast.Constants_Clause, range: tokenizer.Range) -
 statics_clause_info :: proc(n: ast.Statics_Clause, range: tokenizer.Range) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
+		flags = n.flags,
 		depth = n.depth,
 		name = n.name,
 		range = range,
@@ -801,6 +807,7 @@ statics_clause_info :: proc(n: ast.Statics_Clause, range: tokenizer.Range) -> De
 class_data_clause_info :: proc(n: ast.Class_Data_Clause, range: tokenizer.Range) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
+		flags = n.flags,
 		depth = n.depth,
 		name = n.name,
 		range = range,
@@ -824,7 +831,7 @@ collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, k
 		}
 		switch info.kind {
 		case .Begin_Group:
-			if ascii_equal_ignore_case(info.name, "common") {
+			if .Common_Part_Delimiter in info.flags {
 				continue
 			}
 			structure_id := structure_from_group(c, scope, infos, i)
@@ -1841,7 +1848,7 @@ collect_class_attribute_infos :: proc(
 		if info.kind != .Normal && info.kind != .Begin_Group {
 			continue
 		}
-		if info.name == "" || ascii_equal_ignore_case(info.name, "common") {
+		if info.name == "" || .Common_Part_Delimiter in info.flags {
 			continue
 		}
 		structure_id := INVALID_STRUCTURE_ID
