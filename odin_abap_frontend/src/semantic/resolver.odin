@@ -377,11 +377,14 @@ Project_Root_Lookup :: struct {
 	names:   map[string]bool,
 }
 
-Class_Scope_Entry :: struct {
+Project_Class_Member_Key :: struct {
 	class_symbol: Symbol_Id,
-	symbol:       Symbol_Id,
 	namespace:    Namespace,
 	name:         string,
+}
+
+Project_Class_Member_Entry :: struct {
+	symbol: Symbol_Id,
 }
 
 resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Allocator) {
@@ -405,7 +408,7 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 				unit_index,
 				ref^,
 				&root_lookup,
-				class_entries[:],
+				class_entries,
 				visible[unit_index],
 				predecessors[unit_index],
 			); ok {
@@ -481,8 +484,12 @@ build_project_root_lookup :: proc(
 build_project_class_scope_index :: proc(
 	units: []Unit_Analysis,
 	allocator: mem.Allocator,
-) -> [dynamic]Class_Scope_Entry {
-	out := make([dynamic]Class_Scope_Entry, 0, 32, allocator)
+) -> map[Project_Class_Member_Key]Project_Class_Member_Entry {
+	symbol_hint := 0
+	for unit in units {
+		symbol_hint += len(unit.symbols)
+	}
+	out := make(map[Project_Class_Member_Key]Project_Class_Member_Entry, symbol_hint, allocator)
 	for &unit in units {
 		for symbol in unit.symbols {
 			scope_data := scope(&unit, symbol.scope)
@@ -494,15 +501,17 @@ build_project_class_scope_index :: proc(
 			namespaces := [?]Namespace{.Value, .Type, .Routine}
 			for namespace in namespaces {
 				if symbol_kind_occupies(symbol.kind, namespace) {
-					append(
-						&out,
-						Class_Scope_Entry {
-							class_symbol = scope_data.owner,
-							symbol = symbol.id,
-							namespace = namespace,
-							name = symbol.name,
-						},
-					)
+					key := Project_Class_Member_Key {
+						class_symbol = scope_data.owner,
+						namespace = namespace,
+						name = symbol.name,
+					}
+					if key in out {
+						continue
+					}
+					out[key] = Project_Class_Member_Entry {
+						symbol = symbol.id,
+					}
 				}
 			}
 		}
@@ -515,7 +524,7 @@ resolve_project_reference :: proc(
 	unit_index: int,
 	ref: Reference_Data,
 	roots: ^Project_Root_Lookup,
-	class_entries: []Class_Scope_Entry,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	predecessors: [dynamic]Unit_Id,
 ) -> (
@@ -609,7 +618,7 @@ resolve_inherited_project_symbol :: proc(
 	namespace: Namespace,
 	name: string,
 	roots: ^Project_Root_Lookup,
-	class_entries: []Class_Scope_Entry,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 ) -> (Symbol_Handle, bool) {
 	current, ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
@@ -678,7 +687,7 @@ resolve_visible_class_definition_member :: proc(
 	namespace: Namespace,
 	name: string,
 	roots: ^Project_Root_Lookup,
-	class_entries: []Class_Scope_Entry,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	predecessors: [dynamic]Unit_Id,
 ) -> (Symbol_Handle, bool) {
@@ -740,7 +749,7 @@ class_member_symbol_in_unit_by_class_name :: proc(
 	namespace: Namespace,
 	name: string,
 	roots: ^Project_Root_Lookup,
-	class_entries: []Class_Scope_Entry,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	inherited: bool,
 ) -> (Symbol_Handle, bool) {
 	class_handle, ok := root_symbol_in_unit(roots, unit_id, .Type, class_name)
@@ -762,23 +771,23 @@ class_member_symbol_by_handle :: proc(
 	class_handle: Symbol_Handle,
 	namespace: Namespace,
 	name: string,
-	class_entries: []Class_Scope_Entry,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	inherited: bool,
 ) -> (Symbol_Handle, bool) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(units) {
 		return {}, false
 	}
-	for entry in class_entries {
-		if entry.class_symbol != class_handle.symbol ||
-		   entry.namespace != namespace ||
-		   entry.name != name {
-			continue
-		}
+	key := Project_Class_Member_Key {
+		class_symbol = class_handle.symbol,
+		namespace = namespace,
+		name = name,
+	}
+	if entry, ok := class_entries[key]; ok {
 		if inherited {
 			member := unit_class_member(&units[unit_index], class_handle.symbol, name)
 			if member != nil && member.visibility == .Private {
-				continue
+				return {}, false
 			}
 		}
 		return Symbol_Handle{unit = class_handle.unit, symbol = entry.symbol}, true

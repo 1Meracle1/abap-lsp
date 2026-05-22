@@ -99,12 +99,17 @@ analyze_target_with_candidate_inputs :: proc(
 	append(&state.units, parse_collect_input(Unit_Id(0), target, allocator))
 	append(&unit_dirs, uri_parent_dir_key(target.uri, allocator))
 	append(&unit_candidate_indices, -1)
+	dependency_unit_indices := make([dynamic]int, 0, len(dependencies), allocator)
 	for dependency in dependencies {
-		id := Unit_Id(u32(len(state.units)))
+		unit_index := len(state.units)
 		append(&state.inputs, dependency)
-		append(&state.units, parse_collect_input(id, dependency, allocator))
+		append(&state.units, Unit_Analysis{})
 		append(&unit_dirs, uri_parent_dir_key(dependency.uri, allocator))
 		append(&unit_candidate_indices, -1)
+		append(&dependency_unit_indices, unit_index)
+	}
+	if len(dependency_unit_indices) > 0 {
+		run_project_tasks(options.pool, dependency_unit_indices[:], &state, parse_collect_task, allocator)
 	}
 
 	candidate_dirs := make([]string, len(candidates), allocator)
