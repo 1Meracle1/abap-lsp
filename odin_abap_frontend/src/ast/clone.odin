@@ -784,7 +784,22 @@ clone_line_fields :: proc(list: [dynamic]Line_Field_Value_Clause, allocator: mem
 clone_oop_signatures :: proc(list: [dynamic]Oop_Signature_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Signature_Clause {
 	res := make([dynamic]Oop_Signature_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Oop_Signature_Clause{kind = clause.kind, values = clone_expr_list(clause.values, allocator)})
+		append(
+			&res,
+			Oop_Signature_Clause {
+				kind = clause.kind,
+				values = clone_expr_list(clause.values, allocator),
+				parameters = clone_oop_parameters(clause.parameters, allocator),
+			},
+		)
+	}
+	return res
+}
+
+clone_oop_parameters :: proc(list: [dynamic]Oop_Parameter_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Parameter_Clause {
+	res := make([dynamic]Oop_Parameter_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Oop_Parameter_Clause{clause.name, clause.range, clone_type_clause(clause.type_clause, allocator), clause.optional})
 	}
 	return res
 }

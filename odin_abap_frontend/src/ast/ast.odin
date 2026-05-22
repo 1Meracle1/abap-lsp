@@ -1452,15 +1452,24 @@ Oop_Signature_Kind :: enum {
 	Importing,
 	Exporting,
 	Changing,
+	Receiving,
 	Returning,
 	Raising,
 	Exceptions,
 	For,
 }
 
+Oop_Parameter_Clause :: struct {
+	name:        string,
+	range:       tokenizer.Range,
+	type_clause: ^Data_Type_Clause,
+	optional:    bool,
+}
+
 Oop_Signature_Clause :: struct {
-	kind:   Oop_Signature_Kind,
-	values: [dynamic]^Expr,
+	kind:       Oop_Signature_Kind,
+	values:     [dynamic]^Expr,
+	parameters: [dynamic]Oop_Parameter_Clause,
 }
 
 Oop_Member_Clause :: struct {

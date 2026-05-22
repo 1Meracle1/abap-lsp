@@ -2761,6 +2761,7 @@ oop_signature_kind_text :: proc(kind: Oop_Signature_Kind) -> string {
 	case .Importing: return "IMPORTING"
 	case .Exporting: return "EXPORTING"
 	case .Changing: return "CHANGING"
+	case .Receiving: return "RECEIVING"
 	case .Returning: return "RETURNING"
 	case .Raising: return "RAISING"
 	case .Exceptions: return "EXCEPTIONS"

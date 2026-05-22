@@ -1257,6 +1257,9 @@ type_ref_from_expr :: proc(
 	Field_Type_Ref_Data,
 	bool,
 ) {
+	if expr == nil {
+		return {}, false
+	}
 	text := expr_display(c, expr)
 	text = clean_type_ref_text(c, text)
 	text = strings.trim_space(text)
@@ -2047,14 +2050,8 @@ method_parameters_from_signatures :: proc(
 		if !ok {
 			continue
 		}
-		for value in sig.values {
-			parse_class_parameter_text(
-				c,
-				&parameters,
-				expr_display(c, value),
-				value.range,
-				section,
-			)
+		for param in sig.parameters {
+			append(&parameters, class_member_parameter_from_oop(c, param, section))
 		}
 	}
 	return parameters
@@ -2069,14 +2066,8 @@ event_parameters_from_signatures :: proc(
 		if sig.kind != .Exporting {
 			continue
 		}
-		for value in sig.values {
-			parse_class_parameter_text(
-				c,
-				&parameters,
-				expr_display(c, value),
-				value.range,
-				.Exporting,
-			)
+		for param in sig.parameters {
+			append(&parameters, class_member_parameter_from_oop(c, param, .Exporting))
 		}
 	}
 	return parameters
@@ -2090,10 +2081,68 @@ method_section_from_oop :: proc(kind: ast.Oop_Signature_Kind) -> (Method_Paramet
 		return .Exporting, true
 	case .Changing:
 		return .Changing, true
+	case .Receiving:
+		return .Receiving, true
 	case .Returning:
 		return .Returning, true
 	}
 	return .Importing, false
+}
+
+class_member_parameter_from_oop :: proc(
+	c: ^Collector,
+	clause: ast.Oop_Parameter_Clause,
+	section: Method_Parameter_Section,
+) -> Class_Member_Parameter_Data {
+	param := Class_Member_Parameter_Data {
+		section = section,
+		name    = canonical_name(clause.name, c.allocator),
+		range   = clause.range,
+	}
+	if clause.type_clause != nil {
+		if type_ref, has_type := type_ref_from_oop_clause(c, clause.type_clause); has_type {
+			param.declared_type = type_ref
+			param.flags += {.Has_Declared_Type}
+		}
+		param.type_clause_display = type_clause_display(c, clause.type_clause)
+	}
+	if clause.optional {
+		param.flags += {.Is_Optional}
+	}
+	return param
+}
+
+type_ref_from_oop_clause :: proc(
+	c: ^Collector,
+	clause: ^ast.Data_Type_Clause,
+) -> (
+	Field_Type_Ref_Data,
+	bool,
+) {
+	if clause == nil || clause.type_ref == nil {
+		return {}, false
+	}
+	ns := Namespace.Value if clause.form == .Like ||
+	                         clause.form == .Like_Line_Of ||
+	                         clause.form == .Like_Table ||
+	                         clause.form == .Like_Standard_Table ||
+	                         clause.form == .Like_Sorted_Table ||
+	                         clause.form == .Like_Hashed_Table else Namespace.Type
+	text := expr_display(c, clause.type_ref)
+	if type_expr, ok := clause.type_ref.derived_expr.(^ast.Type_Ref_Expr); ok && type_expr.name != "" {
+		text = strings.trim_space(type_expr.name)
+	}
+	base, path := split_type_path(c, text)
+	if base == "" {
+		return {}, false
+	}
+	return Field_Type_Ref_Data {
+			namespace = ns,
+			is_ref = clause.form == .Ref_To,
+			base_name = canonical_name(base, c.allocator),
+			field_path = path,
+		},
+		true
 }
 
 Header_Token :: struct {
@@ -2119,58 +2168,6 @@ header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header
 		)
 	}
 	return tokens
-}
-
-parse_class_parameter_text :: proc(
-	c: ^Collector,
-	out: ^[dynamic]Class_Member_Parameter_Data,
-	text: string,
-	range: tokenizer.Range,
-	section: Method_Parameter_Section,
-) {
-	tokens := header_tokens(c, text, range.start)
-	i := 0
-	for i < len(tokens) {
-		name, name_range, next, ok := consume_param_name(tokens[:], i)
-		if !ok {
-			i += 1
-			continue
-		}
-		param := Class_Member_Parameter_Data {
-			section = section,
-			name    = canonical_name(name, c.allocator),
-			range   = name_range,
-		}
-		i = next
-		if i < len(tokens) && (token_eq(tokens[i], "TYPE") || token_eq(tokens[i], "LIKE")) {
-			namespace := Namespace.Type if token_eq(tokens[i], "TYPE") else Namespace.Value
-			i += 1
-			type_start := i
-			for i < len(tokens) &&
-			    !token_eq(tokens[i], "OPTIONAL") &&
-			    !token_eq(tokens[i], "DEFAULT") &&
-			    !token_eq(tokens[i], "PREFERRED") {
-				i += 1
-			}
-			display := token_text_span(c, text, tokens[:], type_start, i, range.start)
-			type_ref, has_type := type_ref_from_text(c, display, namespace)
-			if has_type {
-				param.declared_type = type_ref
-				param.flags += {.Has_Declared_Type}
-			}
-			param.type_clause_display = strings.clone(display, c.allocator)
-		}
-		for i < len(tokens) &&
-		    (token_eq(tokens[i], "OPTIONAL") ||
-				    token_eq(tokens[i], "DEFAULT") ||
-				    token_eq(tokens[i], "PREFERRED")) {
-			if token_eq(tokens[i], "OPTIONAL") {
-				param.flags += {.Is_Optional}
-			}
-			i += 1
-		}
-		append(out, param)
-	}
 }
 
 consume_param_name :: proc(

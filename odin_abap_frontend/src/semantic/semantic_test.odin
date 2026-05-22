@@ -761,6 +761,26 @@ ENDCLASS.
 }
 
 @(test)
+collects_multiple_method_parameters_from_oop_ast :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_count TYPE i iv_text TYPE string
+      RETURNING VALUE(rv_ok) TYPE abap_bool.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///oop_params.abap", source)
+
+	class := find_symbol(&unit, "lcl", .Class)
+	testing.expect(t, class != nil)
+	method := class_member_named(&unit, class.id, "run", .Method)
+	testing.expect(t, method != nil)
+	testing.expect_value(t, len(method.parameters), 3)
+	testing.expect_value(t, method.parameters[0].name, "iv_count")
+	testing.expect_value(t, method.parameters[1].name, "iv_text")
+	testing.expect_value(t, method.parameters[2].section, Method_Parameter_Section.Returning)
+	testing.expect_value(t, method.parameters[2].name, "rv_ok")
+}
+
+@(test)
 collects_form_and_function_signatures :: proc(t: ^testing.T) {
 	source := `
 FORM run USING VALUE(iv_text) TYPE string CHANGING cv_count TYPE i.

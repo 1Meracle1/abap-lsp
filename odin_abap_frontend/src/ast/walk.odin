@@ -402,6 +402,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		for member in n.members {
 			for clause in member.signatures {
 				walk_expr_list(next, clause.values)
+				for param in clause.parameters {
+					walk_data_type_clause(next, param.type_clause)
+				}
 			}
 		}
 	case ^If_Stmt:

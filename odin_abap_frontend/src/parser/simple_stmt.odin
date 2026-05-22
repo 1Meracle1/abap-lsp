@@ -996,8 +996,7 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
 			if kind, ok := oop_signature_kind(p); ok {
 				bump_token(p)
-				values := parse_oop_signature_values(p)
-				append(&member.signatures, ast.Oop_Signature_Clause{kind = kind, values = values})
+				append(&member.signatures, parse_oop_signature_clause(p, kind))
 				continue
 			}
 			bump_token(p)
@@ -1006,12 +1005,284 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 	}
 }
 
+parse_oop_signature_clause :: proc(p: ^Parser, kind: ast.Oop_Signature_Kind) -> ast.Oop_Signature_Clause {
+	clause := ast.Oop_Signature_Clause {
+		kind       = kind,
+		values     = make([dynamic]^ast.Expr, 0, 2, p.allocator),
+		parameters = make([dynamic]ast.Oop_Parameter_Clause, 0, 2, p.allocator),
+	}
+	if oop_signature_has_parameters(kind) {
+		parse_oop_signature_parameters(p, &clause)
+	} else {
+		clause.values = parse_oop_signature_values(p)
+	}
+	return clause
+}
+
+oop_signature_has_parameters :: proc(kind: ast.Oop_Signature_Kind) -> bool {
+	return kind == .Importing ||
+	       kind == .Exporting ||
+	       kind == .Changing ||
+	       kind == .Receiving ||
+	       kind == .Returning
+}
+
+parse_oop_signature_parameters :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Clause) {
+	for !oop_signature_values_done(p) {
+		start := p.index
+		if parse_oop_signature_parameter(p, clause) {
+			continue
+		}
+		ensure_forward_progress(p, start)
+	}
+}
+
+parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Clause) -> bool {
+	start := p.index
+	name, name_range, ok := parse_oop_parameter_name(p)
+	if !ok {
+		return false
+	}
+	type_clause: ^ast.Data_Type_Clause
+	if at_keyword(p, "TYPE") || at_keyword(p, "LIKE") {
+		type_clause = parse_oop_parameter_type_clause(p)
+	}
+	optional := false
+	for !oop_signature_values_done(p) {
+		if allow_keyword(p, "OPTIONAL") {
+			optional = true
+			continue
+		}
+		if allow_keyword(p, "DEFAULT") {
+			skip_oop_parameter_addition_value(p)
+			continue
+		}
+		if allow_keyword(p, "PREFERRED") {
+			allow_keyword(p, "PARAMETER")
+			if current_token(p).kind == .Ident {
+				bump_token(p)
+			}
+			continue
+		}
+		break
+	}
+	append(&clause.parameters, ast.Oop_Parameter_Clause{name, name_range, type_clause, optional})
+	append_oop_signature_value(p, clause, start, p.index)
+	return true
+}
+
+parse_oop_parameter_name :: proc(p: ^Parser) -> (string, tokenizer.Range, bool) {
+	if tokenizer.token_lexeme(current_token(p), p.source) == "!" {
+		bump_token(p)
+	}
+	if at_keyword(p, "VALUE") || at_keyword(p, "REFERENCE") {
+		bump_token(p)
+		allow_token(p, .LParen)
+		tok := current_token(p)
+		if tok.kind != .Ident {
+			return "", tok.range, false
+		}
+		bump_token(p)
+		allow_token(p, .RParen)
+		return tokenizer.token_lexeme(tok, p.source), tok.range, true
+	}
+	tok := current_token(p)
+	if tok.kind != .Ident {
+		return "", tok.range, false
+	}
+	bump_token(p)
+	return tokenizer.token_lexeme(tok, p.source), tok.range, true
+}
+
+parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
+	keyword := bump_token(p)
+	clause, _ := mem.new(ast.Data_Type_Clause, p.allocator)
+	is_like := token_is_keyword(p, keyword, "LIKE")
+	clause.form = .Like if is_like else .Type
+	if allow_keyword(p, "LINE") {
+		allow_keyword(p, "OF")
+		clause.form = .Like_Line_Of if is_like else .Type_Line_Of
+	} else if !is_like && allow_keyword(p, "REF") {
+		allow_keyword(p, "TO")
+		clause.form = .Ref_To
+	} else if !is_like && allow_keyword(p, "RANGE") {
+		allow_keyword(p, "OF")
+		clause.form = .Range_Of
+	} else if allow_keyword(p, "STANDARD") {
+		allow_keyword(p, "TABLE")
+		allow_keyword(p, "OF")
+		clause.form = .Like_Standard_Table if is_like else .Standard_Table
+	} else if allow_keyword(p, "SORTED") {
+		allow_keyword(p, "TABLE")
+		allow_keyword(p, "OF")
+		clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
+	} else if allow_keyword(p, "HASHED") {
+		allow_keyword(p, "TABLE")
+		allow_keyword(p, "OF")
+		clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
+	} else if allow_keyword(p, "TABLE") {
+		allow_keyword(p, "OF")
+		clause.form = .Like_Table if is_like else .Table
+	}
+	clause.type_ref = parse_oop_type_ref_expr(p)
+	return clause
+}
+
+parse_oop_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	start := p.index
+	if oop_type_ref_done(p, start, false) {
+		return nil
+	}
+	paren, bracket, brace := 0, 0, 0
+	name_end := -1
+	in_key := false
+	for !oop_type_ref_done(p, start, in_key) {
+		tok := current_token(p)
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && at_keyword(p, "WITH") {
+			if name_end < 0 && p.index > start {
+				name_end = previous_token(p).range.end
+			}
+			in_key = true
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren == 0 {
+				break
+			}
+			paren -= 1
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket == 0 {
+				break
+			}
+			bracket -= 1
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace == 0 {
+				break
+			}
+			brace -= 1
+		}
+		bump_token(p)
+	}
+	if p.index <= start {
+		return nil
+	}
+	first := p.tokens[start]
+	last := p.tokens[p.index - 1]
+	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
+	expr.text = source_range_text(p, expr.range)
+	if name_end < 0 {
+		name_end = last.range.end
+	}
+	expr.name = strings.clone(p.source[first.range.start:name_end], p.allocator)
+	return expr
+}
+
+oop_type_ref_done :: proc(p: ^Parser, start: int, in_key: bool) -> bool {
+	tok := current_token(p)
+	if tok.kind == .Period || tok.kind == .Comma || tok.kind == .Eof {
+		return true
+	}
+	if simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) ||
+	   at_length_keyword(p) ||
+	   at_keyword_phrase(p, "READ-ONLY") ||
+	   at_keyword(p, "OPTIONAL") ||
+	   at_keyword(p, "PREFERRED") ||
+	   (!in_key && at_keyword(p, "DEFAULT")) {
+		return true
+	}
+	return p.index > start && oop_parameter_starts(p, p.index)
+}
+
+skip_oop_parameter_addition_value :: proc(p: ^Parser) {
+	paren, bracket, brace := 0, 0, 0
+	for !oop_signature_values_done(p) {
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && (at_keyword(p, "OPTIONAL") ||
+		           at_keyword(p, "PREFERRED") ||
+		           oop_parameter_starts(p, p.index)) {
+			return
+		}
+		tok := bump_token(p)
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {
+				paren -= 1
+			}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {
+				bracket -= 1
+			}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {
+				brace -= 1
+			}
+		}
+	}
+}
+
+append_oop_signature_value :: proc(
+	p: ^Parser,
+	clause: ^ast.Oop_Signature_Clause,
+	start, end: int,
+) {
+	if start >= end {
+		return
+	}
+	first := p.tokens[start]
+	last := p.tokens[end - 1]
+	if first.range.start >= last.range.end {
+		return
+	}
+	value := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
+	value.text = source_range_text(p, value.range)
+	append(&clause.values, value)
+}
+
+oop_parameter_starts :: proc(p: ^Parser, index: int) -> bool {
+	i := index
+	if i < len(p.tokens) && tokenizer.token_lexeme(p.tokens[i], p.source) == "!" {
+		i += 1
+	}
+	if at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE") {
+		if i + 4 >= len(p.tokens) ||
+		   p.tokens[i + 1].kind != .LParen ||
+		   p.tokens[i + 2].kind != .Ident ||
+		   p.tokens[i + 3].kind != .RParen {
+			return false
+		}
+		i += 4
+	} else if i < len(p.tokens) && p.tokens[i].kind == .Ident {
+		i += 1
+	} else {
+		return false
+	}
+	return at_keyword_index(p, i, "TYPE") || at_keyword_index(p, i, "LIKE")
+}
+
+oop_signature_values_done :: proc(p: ^Parser) -> bool {
+	return current_token(p).kind == .Period ||
+	       current_token(p).kind == .Eof ||
+	       current_token(p).kind == .Comma ||
+	       current_token(p).kind == .Colon ||
+	       simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS)
+}
+
 parse_oop_signature_values :: proc(p: ^Parser) -> [dynamic]^ast.Expr {
 	values := make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	for current_token(p).kind != .Period &&
-	    current_token(p).kind != .Eof &&
-	    current_token(p).kind != .Comma &&
-	    !simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) {
+	for !oop_signature_values_done(p) {
 		start := p.index
 		value := parse_raw_operand_to_period(p, OOP_SIGNATURE_STOP_KEYWORDS)
 		if value != nil {
@@ -1032,6 +1303,9 @@ oop_signature_kind :: proc(p: ^Parser) -> (ast.Oop_Signature_Kind, bool) {
 	if at_keyword(p, "CHANGING") {
 		return .Changing, true
 	}
+	if at_keyword(p, "RECEIVING") {
+		return .Receiving, true
+	}
 	if at_keyword(p, "RETURNING") {
 		return .Returning, true
 	}
@@ -1047,7 +1321,7 @@ oop_signature_kind :: proc(p: ^Parser) -> (ast.Oop_Signature_Kind, bool) {
 	return .Importing, false
 }
 
-OOP_SIGNATURE_STOP_KEYWORDS :: []string{"IMPORTING", "EXPORTING", "CHANGING", "RETURNING", "RAISING", "EXCEPTIONS", "FOR"}
+OOP_SIGNATURE_STOP_KEYWORDS :: []string{"IMPORTING", "EXPORTING", "CHANGING", "RECEIVING", "RETURNING", "RAISING", "EXCEPTIONS", "FOR"}
 
 parse_clear_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "CLEAR")

@@ -315,13 +315,36 @@ ENDCLASS.`
 	testing.expect_value(t, aliases.members[0].name, "set")
 	testing.expect_value(t, aliases.members[0].signatures[0].kind, ast.Oop_Signature_Kind.For)
 	testing.expect_value(t, events.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Exporting)
+	testing.expect_value(t, events.members[0].signatures[0].parameters[0].name, "value")
 	testing.expect_value(t, len(methods.members), 1)
 	testing.expect_value(t, methods.members[0].name, "run")
 	testing.expect_value(t, len(methods.members[0].signatures), 1)
 	testing.expect_value(t, methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Importing)
+	testing.expect_value(t, methods.members[0].signatures[0].parameters[0].name, "iv_value")
 	testing.expect_value(t, len(class_methods.members), 1)
 	testing.expect_value(t, class_methods.members[0].name, "create")
 	testing.expect_value(t, class_methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Returning)
+	testing.expect_value(t, class_methods.members[0].signatures[0].parameters[0].name, "ro_obj")
+}
+
+@(test)
+oop_signature_parameters_are_concrete_ast_clauses :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_count TYPE i iv_text TYPE string
+      RETURNING VALUE(rv_ok) TYPE abap_bool.
+ENDCLASS.`
+	parsed := parse(source, "oop_parameters.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	methods := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
+	importing := methods.members[0].signatures[0]
+	returning := methods.members[0].signatures[1]
+	testing.expect_value(t, len(importing.parameters), 2)
+	testing.expect_value(t, importing.parameters[0].name, "iv_count")
+	testing.expect_value(t, importing.parameters[1].name, "iv_text")
+	testing.expect(t, importing.parameters[1].type_clause != nil)
+	testing.expect_value(t, returning.parameters[0].name, "rv_ok")
 }
 
 @(test)
