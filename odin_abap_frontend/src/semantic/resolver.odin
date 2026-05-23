@@ -348,6 +348,9 @@ innermost_loop_allows_internal_table_line_selector :: proc(
 
 is_builtin_type_name :: proc(name: string) -> bool {
 	lower := strings.trim_space(name)
+	if strings.equal_fold(lower, "any table") {
+		return true
+	}
 	for builtin in BUILTIN_SCALAR_TYPES {
 		if strings.equal_fold(lower, builtin) {
 			return true

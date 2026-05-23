@@ -81,6 +81,20 @@ ls_event-appl_event = abap_true.
 }
 
 @(test)
+any_table_generic_type_is_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///any_table.abap",
+		`
+FORM run USING it_table TYPE ANY TABLE.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	unit := unit_analysis_make(
 		Unit_Id(0),
