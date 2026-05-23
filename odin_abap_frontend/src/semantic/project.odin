@@ -6,9 +6,15 @@ import "../parser"
 import "core:mem"
 import "core:strings"
 
+Source_Mode :: enum {
+	Full,
+	Dependency_Interface,
+}
+
 Source_Input :: struct {
 	uri:    string,
 	source: string,
+	mode:   Source_Mode,
 }
 
 Analyze_Options :: struct {
@@ -228,7 +234,7 @@ parse_collect_input :: proc(
 ) -> Unit_Analysis {
 	parsed: parser.Parsed_File
 	parsed = parser.parse(input.source, input.uri, allocator)
-	return collect_unit(unit_id, input.uri, input.source, parsed, allocator)
+	return collect_unit(unit_id, input.uri, input.source, parsed, allocator, input.mode)
 }
 
 resolve_reachable_include_edges :: proc(

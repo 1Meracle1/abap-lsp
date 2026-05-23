@@ -339,6 +339,9 @@ validate_missing_method_implementations :: proc(
 	allocator: mem.Allocator,
 ) {
 	unit := &project.units[unit_index]
+	if unit.source_mode == .Dependency_Interface {
+		return
+	}
 	for definition in unit.class_definitions {
 		class_symbol := symbol(unit, definition.class_symbol)
 		if class_symbol == nil || class_symbol.kind != .Class || definition.is_abstract {

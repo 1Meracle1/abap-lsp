@@ -46,6 +46,170 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 }
 
 @(test)
+dependency_interface_mode_keeps_declarations_and_drops_bodies :: proc(t: ^testing.T) {
+	source := `REPORT zdep.
+DATA gv_dep TYPE zglobal_type.
+FORM helper USING iv_value TYPE zparam_type.
+  DATA lv_body TYPE zbody_type.
+  CALL FUNCTION 'Z_BODY'.
+ENDFORM.
+CLASS lcl_dep DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    DATA pub TYPE zpub_type.
+    METHODS run IMPORTING iv_arg TYPE zmethod_type.
+  PROTECTED SECTION.
+    DATA prot TYPE zprot_type.
+  PRIVATE SECTION.
+    DATA priv TYPE zpriv_type.
+ENDCLASS.
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lv_impl TYPE zimpl_type.
+  ENDMETHOD.
+ENDCLASS.`
+
+	parsed := parser.parse(source, "mem://dep.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	unit := collect_unit(Unit_Id(0), "mem://dep.abap", source, parsed, context.allocator, .Dependency_Interface)
+	class := find_symbol(&unit, "lcl_dep", .Class)
+
+	testing.expect(t, find_symbol(&unit, "zdep", .Report) != nil)
+	testing.expect(t, find_symbol(&unit, "gv_dep", .Variable) != nil)
+	testing.expect(t, find_symbol(&unit, "helper", .Form) != nil)
+	testing.expect(t, class != nil)
+	if class != nil {
+		testing.expect(t, class_member_named(&unit, class.id, "pub", .Attribute) != nil)
+		testing.expect(t, class_member_named(&unit, class.id, "prot", .Attribute) != nil)
+		testing.expect(t, class_member_named(&unit, class.id, "run", .Method) != nil)
+		testing.expect(t, class_member_named(&unit, class.id, "priv", .Attribute) == nil)
+	}
+	testing.expect(t, has_reference(&unit, "zglobal_type", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zparam_type", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zcl_parent", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zpub_type", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zmethod_type", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zprot_type", .Type, .Type_Ref))
+	testing.expect(t, !has_reference(&unit, "zbody_type", .Type, .Type_Ref))
+	testing.expect(t, !has_reference(&unit, "zpriv_type", .Type, .Type_Ref))
+	testing.expect(t, !has_reference(&unit, "zimpl_type", .Type, .Type_Ref))
+	for call_site in unit.call_sites {
+		testing.expect(t, call_site.target.function_name != "z_body")
+	}
+}
+
+@(test)
+dependency_interface_mode_collects_ast_declarations_only :: proc(t: ^testing.T) {
+	source := `REPORT zdep.
+INCLUDE zimpl.
+INCLUDE TYPE ztyped_include.
+IF abap_true = abap_true.
+  DATA lv_hidden TYPE zhidden_type.
+ENDIF.
+CLASS zcl_forward DEFINITION DEFERRED.
+INTERFACE zif_dep.
+  TYPES ty_value TYPE zif_type.
+  METHODS run IMPORTING iv_arg TYPE zif_arg.
+ENDINTERFACE.
+CLASS zcl_dep DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS public REDEFINITION.
+  PROTECTED SECTION.
+    EVENTS changed EXPORTING VALUE(ev_value) TYPE zchanged_type.
+  PRIVATE SECTION.
+    METHODS secret.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD public.
+    DATA lv_impl TYPE zimpl_type.
+  ENDMETHOD.
+ENDCLASS.
+FUNCTION z_dep IMPORTING iv_value TYPE zfunc_type.
+  DATA lv_body TYPE zfunc_body.
+ENDFUNCTION.`
+
+	parsed := parser.parse(source, "mem://dep.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	unit := collect_unit(Unit_Id(0), "mem://dep.abap", source, parsed, context.allocator, .Dependency_Interface)
+	iface := find_symbol(&unit, "zif_dep", .Interface)
+	class := find_symbol(&unit, "zcl_dep", .Class)
+
+	testing.expect(t, find_symbol(&unit, "zdep", .Report) != nil)
+	testing.expect(t, find_symbol(&unit, "zcl_forward", .Class) != nil)
+	testing.expect(t, iface != nil)
+	testing.expect(t, class != nil)
+	testing.expect(t, find_symbol(&unit, "z_dep", .Module) != nil)
+	if iface != nil {
+		testing.expect(t, class_member_named(&unit, iface.id, "run", .Method) != nil)
+	}
+	if class != nil {
+		testing.expect(t, class_member_named(&unit, class.id, "public", .Method) != nil)
+		testing.expect(t, class_member_named(&unit, class.id, "changed", .Event) != nil)
+		testing.expect(t, class_member_named(&unit, class.id, "secret", .Method) == nil)
+	}
+	testing.expect_value(t, len(unit.include_edges), 0)
+	testing.expect(t, has_reference(&unit, "ztyped_include", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zif_type", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zif_arg", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zcl_parent", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zchanged_type", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "zfunc_type", .Type, .Type_Ref))
+	testing.expect(t, !has_reference(&unit, "zhidden_type", .Type, .Type_Ref))
+	testing.expect(t, !has_reference(&unit, "zimpl_type", .Type, .Type_Ref))
+	testing.expect(t, !has_reference(&unit, "zfunc_body", .Type, .Type_Ref))
+}
+
+@(test)
+remote_dependency_candidates_ignore_plain_identifiers :: proc(t: ^testing.T) {
+	target := Source_Input {
+		uri = "file:///remote_candidates.abap",
+		source = `REPORT zmain.
+DATA lv_ref TYPE REF TO zcl_remote_type.
+DATA ls_local TYPE ls_local_type.
+unknown_value = 1.
+CALL FUNCTION 'Z_REMOTE_FM'.
+a=>b( ).
+lv_ref->get_url( ).
+`,
+	}
+
+	project := analyze_project_test(t, 0, target, nil)
+	candidates := collect_project_remote_dependency_candidates(&project, context.allocator)
+
+	has_type := false
+	has_function := false
+	has_symbol := false
+	has_routine := false
+	has_local_type := false
+	has_static_a := false
+	for candidate in candidates {
+		if candidate.name == "zcl_remote_type" && candidate.kind == "type" {
+			has_type = true
+		}
+		if candidate.name == "z_remote_fm" && candidate.kind == "function" {
+			has_function = true
+		}
+		if candidate.name == "unknown_value" {
+			has_symbol = true
+		}
+		if candidate.name == "get_url" {
+			has_routine = true
+		}
+		if candidate.name == "ls_local_type" {
+			has_local_type = true
+		}
+		if candidate.name == "a" {
+			has_static_a = true
+		}
+	}
+	testing.expect(t, has_type)
+	testing.expect(t, has_function)
+	testing.expect(t, !has_symbol)
+	testing.expect(t, !has_routine)
+	testing.expect(t, !has_local_type)
+	testing.expect(t, !has_static_a)
+}
+
+@(test)
 resolves_concat_lines_of_builtin :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -354,7 +518,7 @@ analyze_units_project_test :: proc(t: ^testing.T, sources: []Source_Input) -> Pr
 	for source, i in sources {
 		parsed := parser.parse(source.source, source.uri, context.allocator)
 		testing.expect_value(t, len(parsed.errors), 0)
-		unit := collect_unit(Unit_Id(u32(i)), source.uri, source.source, parsed, context.allocator)
+		unit := collect_unit(Unit_Id(u32(i)), source.uri, source.source, parsed, context.allocator, source.mode)
 		resolve_unit_locally(&unit, context.allocator)
 		append(&units, unit)
 	}
@@ -3146,6 +3310,8 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, len(candidates), 1)
+	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
+	testing.expect_value(t, candidates[0].input.mode, Source_Mode.Dependency_Interface)
 	testing.expect(t, after.submitted >= before.submitted + u64(len(remote)))
 }
 
@@ -3228,6 +3394,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 		&dependencies,
 		Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = "type"},
 		&object_ref,
+		"global-class",
 		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
 		"abap",
 		&uri_keys,
@@ -3236,6 +3403,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
+	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
 
 	pool: frontend_runtime.Pool
 	testing.expect_value(
@@ -3280,6 +3448,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		&dependencies,
 		Remote_Dependency_Candidate{name = "tr_objects", kind = "type"},
 		&object_ref,
+		"ddic-table-type",
 		"<ttyp/>",
 		"xml",
 		&uri_keys,
@@ -3288,6 +3457,8 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
+	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
+	testing.expect(t, strings.contains(dependencies[0].source, "TYPE STANDARD TABLE OF string WITH DEFAULT KEY"))
 
 	pool: frontend_runtime.Pool
 	testing.expect_value(
@@ -3306,6 +3477,110 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+dependency_xml_detection_prefers_metadata :: proc(t: ^testing.T) {
+	testing.expect(t, dependency_source_is_xml("ddic-table-type", "xml", "not xml"))
+	testing.expect(t, dependency_source_is_xml("ddic-table-type", "abap", "<ttyp/>"))
+	testing.expect(t, !dependency_source_is_xml("global-class", "abap", "<fs> = value."))
+}
+
+@(test)
+ddic_xml_structure_dependency_resolves_fields :: proc(t: ^testing.T) {
+	xml := `
+<table>
+  <DD03P_TABLE>
+    <item>
+      <DD03P-FIELDNAME>ID</DD03P-FIELDNAME>
+      <DD03P-DATATYPE>CHAR</DD03P-DATATYPE>
+    </item>
+    <item>
+      <DD03P-FIELDNAME>COUNT</DD03P-FIELDNAME>
+      <DD03P-DATATYPE>INT4</DD03P-DATATYPE>
+    </item>
+  </DD03P_TABLE>
+</table>
+`
+	source := ddic_xml_dependency_source("ZDDIC_ROW", "ddic-table", xml, context.allocator)
+	defer delete(source, context.allocator)
+	testing.expect(t, strings.contains(source, "TYPES: BEGIN OF zddic_row"))
+	testing.expect(t, strings.contains(source, "id TYPE c"))
+	testing.expect(t, strings.contains(source, "count TYPE i"))
+
+	target := Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+REPORT zmain.
+DATA ls_row TYPE zddic_row.
+ls_row-id = 'A'.
+ls_row-count = 1.
+`,
+	}
+	dependencies := [?]Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zddic_row.abap",
+			source = source,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+ddic_xml_table_type_dependency_uses_row_type :: proc(t: ^testing.T) {
+	row_xml := `
+<structure>
+  <field name="ID" dataType="CHAR"/>
+  <field name="TEXT" builtInType="STRING"/>
+</structure>
+`
+	table_xml := `
+<tableType>
+  <DD40V-ROWTYPE>ZDDIC_ROW</DD40V-ROWTYPE>
+</tableType>
+`
+	row_source := ddic_xml_dependency_source("ZDDIC_ROW", "ddic-structure", row_xml, context.allocator)
+	defer delete(row_source, context.allocator)
+	table_source := ddic_xml_dependency_source("ZDDIC_ROWS", "ddic-table-type", table_xml, context.allocator)
+	defer delete(table_source, context.allocator)
+	testing.expect(t, strings.contains(row_source, "id TYPE c"))
+	testing.expect(t, strings.contains(row_source, "text TYPE string"))
+	testing.expect(t, strings.contains(table_source, "TYPE STANDARD TABLE OF zddic_row WITH DEFAULT KEY"))
+
+	target := Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+REPORT zmain.
+DATA lt_rows TYPE zddic_rows.
+`,
+	}
+	dependencies := [?]Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table-type/zddic_rows.abap",
+			source = table_source,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-structure/zddic_row.abap",
+			source = row_source,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := project_unit_by_uri(&project, target.uri)
+	table_unit := project_unit_by_uri(&project, dependencies[0].uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, table_unit != nil)
+	testing.expect(t, reference_resolves_to_uri(&project, root, "zddic_rows", .Type, .Type_Ref, dependencies[0].uri))
+	testing.expect(t, reference_resolves_to_uri(&project, table_unit, "zddic_row", .Type, .Type_Ref, dependencies[1].uri))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 
@@ -3356,6 +3631,8 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, len(candidates), 1)
+	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
+	testing.expect_value(t, candidates[0].input.mode, Source_Mode.Dependency_Interface)
 	testing.expect(t, strings.contains(dependencies[0].uri, "/oo/classes/ZCL_TASK_RESULT"))
 	testing.expect(t, strings.contains(candidates[0].input.uri, "/programs/includes/ZINC_TASK_RESULT"))
 }

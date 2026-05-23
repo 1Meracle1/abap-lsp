@@ -970,6 +970,7 @@ Unit_Analysis :: struct {
 	unit_id:                                Unit_Id,
 	uri:                                    string,
 	source:                                 string,
+	source_mode:                            Source_Mode,
 	root_scope:                             Scope_Id,
 	scopes:                                 [dynamic]Scope_Data,
 	symbols:                                [dynamic]Symbol_Data,

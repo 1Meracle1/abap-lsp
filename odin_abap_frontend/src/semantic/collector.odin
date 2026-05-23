@@ -9,6 +9,7 @@ import "core:strings"
 
 Collector :: struct {
 	source:                                 string,
+	mode:                                   Source_Mode,
 	uri:                                    string,
 	unit_id:                                Unit_Id,
 	root:                                   ^ast.File,
@@ -92,6 +93,7 @@ collect_unit :: proc(
 	uri, source: string,
 	parsed: parser.Parsed_File,
 	allocator: mem.Allocator,
+	mode := Source_Mode.Full,
 ) -> Unit_Analysis {
 	root_range := tokenizer.text_range(0, len(source))
 	if parsed.root != nil {
@@ -100,8 +102,10 @@ collect_unit :: proc(
 
 	unit := unit_analysis_make(unit_id, uri, root_range, allocator)
 	unit.source = source
+	unit.source_mode = mode
 	c := Collector {
 		source                                 = source,
+		mode                                   = mode,
 		uri                                    = unit.uri,
 		unit_id                                = unit_id,
 		root                                   = parsed.root,
@@ -164,7 +168,11 @@ collect_unit :: proc(
 
 	if c.root != nil {
 		for stmt in c.root.stmts {
-			walk_stmt(&c, stmt, c.root_scope)
+			if c.mode == .Dependency_Interface {
+				walk_dependency_interface_stmt(&c, stmt, c.root_scope)
+			} else {
+				walk_stmt(&c, stmt, c.root_scope)
+			}
 		}
 	}
 	collect_provided_names(&c)
@@ -434,6 +442,35 @@ add_diagnostic :: proc(
 		&c.diagnostics,
 		Diagnostic{kind = kind, range = range, message = strings.clone(message, c.allocator)},
 	)
+}
+
+walk_dependency_interface_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
+	if stmt == nil {
+		return
+	}
+	#partial switch _ in stmt.derived_stmt {
+	case ^ast.Report_Stmt,
+	     ^ast.Function_Pool_Decl,
+	     ^ast.Data_Decl,
+	     ^ast.Data_Chained_Decl,
+	     ^ast.Types_Decl,
+	     ^ast.Constants_Decl,
+	     ^ast.Field_Symbols_Decl,
+	     ^ast.Statics_Decl,
+	     ^ast.Tables_Decl,
+	     ^ast.Ranges_Decl,
+	     ^ast.Parameters_Decl,
+	     ^ast.Select_Options_Decl,
+	     ^ast.Controls_Decl,
+	     ^ast.Class_Data_Decl,
+	     ^ast.Type_Pools_Decl,
+	     ^ast.Form_Decl,
+	     ^ast.Function_Decl,
+	     ^ast.Class_Decl,
+	     ^ast.Interface_Decl:
+		walk_stmt(c, stmt, scope)
+	case:
+	}
 }
 
 walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
@@ -850,7 +887,12 @@ collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, k
 			)
 		case .Normal:
 			declare_info_symbol(c, scope, info, kind)
-		case .End_Group, .Include_Type, .Include_Structure:
+		case .Include_Type, .Include_Structure:
+			if type_ref, ok := type_ref_from_expr(c, info.include_ref, .Type if info.kind == .Include_Type else .Value);
+			   ok {
+				add_type_reference(c, scope, type_ref, info.range)
+			}
+		case .End_Group:
 		}
 		collect_decl_info_facts(c, scope, info)
 	}
@@ -1641,6 +1683,9 @@ walk_named_block :: proc(
 }
 
 walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
+	if c.mode == .Dependency_Interface && .Implementation in stmt.flags {
+		return
+	}
 	owner := INVALID_SYMBOL_ID
 	owner_is_forward := false
 	declared_owner := false
@@ -1756,8 +1801,14 @@ walk_class_body :: proc(
 				case .Unspecified:
 				}
 			} else {
+				if c.mode == .Dependency_Interface && visibility == .Private {
+					continue
+				}
 				collect_class_oop_stmt(c, oop, scope, owner, visibility)
 			}
+			continue
+		}
+		if c.mode == .Dependency_Interface && visibility == .Private {
 			continue
 		}
 		collect_class_attribute_stmt(c, child, scope, owner, visibility)
@@ -1795,8 +1846,10 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 			)
 		}
 	}
-	collect_amdp_using_refs(c, stmt, method_scope)
-	walk_stmt_list(c, stmt.body, method_scope)
+	if c.mode != .Dependency_Interface {
+		collect_amdp_using_refs(c, stmt, method_scope)
+		walk_stmt_list(c, stmt.body, method_scope)
+	}
 	c.current_scope = method_scope
 	pop_scope(c)
 	c.current_scope = previous
@@ -1816,7 +1869,9 @@ walk_form_decl :: proc(c: ^Collector, stmt: ^ast.Form_Decl, scope: Scope_Id) {
 			parameters = parameters,
 		},
 	)
-	walk_stmt_list(c, stmt.body, form_scope)
+	if c.mode != .Dependency_Interface {
+		walk_stmt_list(c, stmt.body, form_scope)
+	}
 	c.current_scope = form_scope
 	pop_scope(c)
 	c.current_scope = previous
@@ -1837,7 +1892,9 @@ walk_function_decl :: proc(c: ^Collector, stmt: ^ast.Function_Decl, scope: Scope
 			exceptions = exceptions,
 		},
 	)
-	walk_stmt_list(c, stmt.body, function_scope)
+	if c.mode != .Dependency_Interface {
+		walk_stmt_list(c, stmt.body, function_scope)
+	}
 	c.current_scope = function_scope
 	pop_scope(c)
 	c.current_scope = previous
