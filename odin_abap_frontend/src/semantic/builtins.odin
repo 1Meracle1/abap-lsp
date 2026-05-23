@@ -44,7 +44,7 @@ Builtin_Routine_Spec :: struct {
 BUILTIN_SCALAR_TYPES :: []string {
 	"i", "int1", "int2", "int4", "int8",
 	"f", "p", "decfloat16", "decfloat34",
-	"string", "c", "n", "d", "t", "x", "xstring",
+	"string", "c", "n", "d", "t", "x", "xstring", "xsequence",
 	"data", "any", "clike", "csequence",
 	"object",
 }
