@@ -1364,6 +1364,27 @@ DATA lo_c1 TYPE REF TO c1.
 }
 
 @(test)
+resolves_table_of_ref_to_interface_type :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///table_ref_to_interface.abap",
+		`
+INTERFACE lif_demo.
+  TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo WITH KEY table_line.
+ENDINTERFACE.
+`,
+	)
+
+	ty_tab := find_symbol(&unit, "ty_tab", .Type_Def)
+	testing.expect(t, ty_tab != nil)
+	testing.expect(t, ty_tab.has_declared_type)
+	testing.expect(t, ty_tab.declared_type.is_ref)
+	testing.expect_value(t, ty_tab.declared_type.base_name, "lif_demo")
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Object_Type_Reference))
+}
+
+@(test)
 resolves_class_qualified_local_type_refs :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

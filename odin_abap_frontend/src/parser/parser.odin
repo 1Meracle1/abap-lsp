@@ -1223,6 +1223,7 @@ type_ref_expr_from_tokens :: proc(
 	first := p.tokens[start]
 	last := p.tokens[end - 1]
 	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
+	expr.is_ref = type_ref_starts_with_ref_to(p, start, end)
 	expr.text = strings.clone(p.source[expr.range.start:expr.range.end], p.allocator)
 	path_end := last.range.end
 	if name_end >= 0 {
@@ -1247,13 +1248,17 @@ type_ref_fill_base_path :: proc(
 	base_end := path_end
 	found_selector := false
 	path_ready := false
-	for i := start; i < end && p.tokens[i].range.start < path_end; i += 1 {
+	path_start := start
+	if expr.is_ref {
+		path_start = start + 2
+	}
+	for i := path_start; i < end && p.tokens[i].range.start < path_end; i += 1 {
 		tok := p.tokens[i]
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top && type_ref_selector_token(tok.kind) {
 			if !found_selector {
 				base_end = tok.range.start
-				if i > start {
+				if i > path_start {
 					base_end = p.tokens[i - 1].range.end
 				}
 				found_selector = true
@@ -1293,10 +1298,17 @@ type_ref_fill_base_path :: proc(
 			if brace > 0 {brace -= 1}
 		}
 	}
-	if first := p.tokens[start]; first.range.start < base_end {
+	if path_start < end && p.tokens[path_start].range.start < base_end {
+		first := p.tokens[path_start]
 		expr.base_range = tokenizer.text_range(first.range.start, base_end)
 		expr.base_name = strings.clone(p.source[expr.base_range.start:expr.base_range.end], p.allocator)
 	}
+}
+
+type_ref_starts_with_ref_to :: proc(p: ^Parser, start, end: int) -> bool {
+	return start + 2 < end &&
+	       at_keyword_index(p, start, "REF") &&
+	       at_keyword_index(p, start + 1, "TO")
 }
 
 type_ref_selector_token :: #force_inline proc(kind: tokenizer.Token_Kind) -> bool {

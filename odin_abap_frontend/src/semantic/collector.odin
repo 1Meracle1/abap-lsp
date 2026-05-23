@@ -1228,7 +1228,7 @@ type_ref_from_clause :: proc(
 		return {}, false
 	}
 	ns := Namespace.Type
-	is_ref := clause.form == .Ref_To
+	is_ref := clause.form == .Ref_To || type_ref_expr_is_ref(clause.type_ref)
 	#partial switch clause.form {
 	case .Like,
 	     .Structure,
@@ -1245,6 +1245,16 @@ type_ref_from_clause :: proc(
 		return {}, false
 	}
 	return type_ref_from_expr(c, clause.type_ref, ns, is_ref)
+}
+
+type_ref_expr_is_ref :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	if n, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok {
+		return n.is_ref
+	}
+	return false
 }
 
 for_clause_type_ref :: proc(

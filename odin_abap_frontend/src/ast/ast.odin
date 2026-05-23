@@ -198,11 +198,12 @@ Raw_Operand_Ref :: struct {
 	path:      [dynamic]Raw_Operand_Path_Segment,
 }
 
-// ABAP syntax: declaration type reference such as `ty_line WITH DEFAULT KEY`.
+// ABAP syntax: declaration type reference such as `ty_line`, `REF TO object`, or `ty_line WITH DEFAULT KEY`.
 Type_Ref_Expr :: struct {
 	using node: Expr,
 	text:       string,
 	name:       string,
+	is_ref:     bool,
 	base_name:  string,
 	base_range: tokenizer.Range,
 	path:       [dynamic]Type_Ref_Path_Segment,

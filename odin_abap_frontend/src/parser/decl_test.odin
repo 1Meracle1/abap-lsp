@@ -219,13 +219,15 @@ DATA mv_text TYPE string READ-ONLY.`
 type_reference_base_and_path_are_ast_fields :: proc(t: ^testing.T) {
 	source := `DATA lv_date LIKE sy-datum.
 DATA lr_item TYPE REF TO lif_demo=>ty_item.
-TYPES ty_field TYPE zstruc-field.`
+TYPES ty_field TYPE zstruc-field.
+TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line.`
 	parsed := parse(source, "type_ref_paths.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	date_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
 	item_decl := parsed.root.stmts[1].derived_stmt.(^ast.Data_Decl)
 	field_decl := parsed.root.stmts[2].derived_stmt.(^ast.Types_Decl)
+	table_decl := parsed.root.stmts[3].derived_stmt.(^ast.Types_Decl)
 
 	date_ref := date_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, date_ref.base_name, "sy")
@@ -241,6 +243,12 @@ TYPES ty_field TYPE zstruc-field.`
 	field_ref := field_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, field_ref.base_name, "zstruc")
 	testing.expect_value(t, field_ref.path[0].name, "field")
+
+	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, table_ref.name, "REF TO lif_demo=>ty_item")
+	testing.expect(t, table_ref.is_ref)
+	testing.expect_value(t, table_ref.base_name, "lif_demo")
+	testing.expect_value(t, table_ref.path[0].name, "ty_item")
 }
 
 @(test)
