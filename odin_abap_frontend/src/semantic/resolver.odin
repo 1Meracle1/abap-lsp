@@ -1307,38 +1307,46 @@ import_project_structures_for_unit :: proc(
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) {
-	for symbol_index in 0 ..< len(units[unit_index].symbols) {
-		if units[unit_index].symbols[symbol_index].structure != INVALID_STRUCTURE_ID ||
-		   !units[unit_index].symbols[symbol_index].has_declared_type {
-			continue
-		}
-		type_ref := units[unit_index].symbols[symbol_index].declared_type
-		if structure_id, ok := import_structure_for_type_ref(
-			units,
-			unit_index,
-			type_ref,
-			roots,
-			visible,
-			allocator,
-		); ok {
-			units[unit_index].symbols[symbol_index].structure = structure_id
-		}
-	}
-	for structure_index := 0; structure_index < len(units[unit_index].structures); structure_index += 1 {
-		for field_index in 0 ..< len(units[unit_index].structures[structure_index].fields) {
-			field := &units[unit_index].structures[structure_index].fields[field_index]
-			if field.structure != INVALID_STRUCTURE_ID || !(.Has_Type_Ref in field.flags) {
+	changed := true
+	for changed {
+		changed = false
+		for symbol_index in 0 ..< len(units[unit_index].symbols) {
+			s := &units[unit_index].symbols[symbol_index]
+			if s.structure != INVALID_STRUCTURE_ID || !s.has_declared_type {
 				continue
 			}
 			if structure_id, ok := import_structure_for_type_ref(
 				units,
 				unit_index,
-				field.type_ref,
+				s.scope,
+				s.declared_type,
 				roots,
 				visible,
 				allocator,
 			); ok {
-				field.structure = structure_id
+				s.structure = structure_id
+				changed = true
+			}
+		}
+		for structure_index := 0; structure_index < len(units[unit_index].structures); structure_index += 1 {
+			owner_scope := structure_owner_scope(&units[unit_index], Structure_Id(u32(structure_index)))
+			for field_index in 0 ..< len(units[unit_index].structures[structure_index].fields) {
+				field := units[unit_index].structures[structure_index].fields[field_index]
+				if field.structure != INVALID_STRUCTURE_ID || !(.Has_Type_Ref in field.flags) {
+					continue
+				}
+				if structure_id, ok := import_structure_for_type_ref(
+					units,
+					unit_index,
+					owner_scope,
+					field.type_ref,
+					roots,
+					visible,
+					allocator,
+				); ok {
+					units[unit_index].structures[structure_index].fields[field_index].structure = structure_id
+					changed = true
+				}
 			}
 		}
 	}
@@ -1347,6 +1355,7 @@ import_project_structures_for_unit :: proc(
 import_structure_for_type_ref :: proc(
 	units: []Unit_Analysis,
 	unit_index: int,
+	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
@@ -1355,15 +1364,35 @@ import_structure_for_type_ref :: proc(
 	if type_ref.base_name == "" || is_builtin_type_name(type_ref.base_name) {
 		return INVALID_STRUCTURE_ID, false
 	}
+	if structure_id, ok := local_structure_for_type_ref(&units[unit_index], scope_id, type_ref); ok {
+		return structure_id, true
+	}
 	handle, ok := resolve_type_ref_handle_project(units, unit_index, type_ref, roots, visible)
 	if !ok {
 		return INVALID_STRUCTURE_ID, false
 	}
+	path := type_ref.field_path[:]
 	source_unit_index := unit_id_index(handle.unit)
 	if source_unit_index < 0 || source_unit_index >= len(units) {
 		return INVALID_STRUCTURE_ID, false
 	}
 	source_symbol := symbol(&units[source_unit_index], handle.symbol)
+	if source_symbol != nil && (source_symbol.kind == .Class || source_symbol.kind == .Interface) {
+		if len(path) == 0 {
+			return INVALID_STRUCTURE_ID, false
+		}
+		nested, nested_ok := class_type_symbol_handle(units, handle, path[0])
+		if !nested_ok {
+			return INVALID_STRUCTURE_ID, false
+		}
+		handle = nested
+		path = path[1:]
+		source_unit_index = unit_id_index(handle.unit)
+		if source_unit_index < 0 || source_unit_index >= len(units) {
+			return INVALID_STRUCTURE_ID, false
+		}
+		source_symbol = symbol(&units[source_unit_index], handle.symbol)
+	}
 	if source_symbol == nil || source_symbol.structure == INVALID_STRUCTURE_ID {
 		return INVALID_STRUCTURE_ID, false
 	}
@@ -1374,7 +1403,7 @@ import_structure_for_type_ref :: proc(
 		allocator,
 	)
 	current := imported
-	for field_name in type_ref.field_path {
+	for field_name in path {
 		field := structure_field(&units[unit_index], current, field_name)
 		if field == nil || field.structure == INVALID_STRUCTURE_ID {
 			return current, true
@@ -1382,6 +1411,96 @@ import_structure_for_type_ref :: proc(
 		current = field.structure
 	}
 	return current, true
+}
+
+local_structure_for_type_ref :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+) -> (Structure_Id, bool) {
+	namespaces := [?]Namespace{.Type, .Value, .Routine}
+	for namespace in namespaces {
+		if !(namespace == type_ref.namespace ||
+		     (type_ref.namespace == .Type && namespace == .Value)) {
+			continue
+		}
+		symbol_id, ok := lookup_scope_chain(unit, &unit.scope_index, scope_id, namespace, type_ref.base_name)
+		if !ok {
+			continue
+		}
+		s := symbol(unit, symbol_id)
+		path := type_ref.field_path[:]
+		if s != nil && (s.kind == .Class || s.kind == .Interface) {
+			if len(path) == 0 {
+				return INVALID_STRUCTURE_ID, false
+			}
+			nested, nested_ok := class_type_symbol_handle_in_unit(unit, symbol_id, path[0])
+			if !nested_ok {
+				return INVALID_STRUCTURE_ID, false
+			}
+			symbol_id = nested
+			s = symbol(unit, symbol_id)
+			path = path[1:]
+		}
+		if s == nil || s.structure == INVALID_STRUCTURE_ID {
+			continue
+		}
+		return resolve_unit_structure_path(unit, s.structure, path)
+	}
+	return INVALID_STRUCTURE_ID, false
+}
+
+resolve_unit_structure_path :: proc(
+	unit: ^Unit_Analysis,
+	start: Structure_Id,
+	path: []string,
+) -> (Structure_Id, bool) {
+	current := start
+	for field_name in path {
+		field := structure_field(unit, current, field_name)
+		if field == nil || field.structure == INVALID_STRUCTURE_ID {
+			return INVALID_STRUCTURE_ID, false
+		}
+		current = field.structure
+	}
+	return current, true
+}
+
+class_type_symbol_handle :: proc(
+	units: []Unit_Analysis,
+	class_handle: Symbol_Handle,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	unit_index := unit_id_index(class_handle.unit)
+	if unit_index < 0 || unit_index >= len(units) {
+		return {}, false
+	}
+	if symbol_id, ok := class_type_symbol_handle_in_unit(&units[unit_index], class_handle.symbol, name);
+	   ok {
+		return Symbol_Handle{unit = class_handle.unit, symbol = symbol_id}, true
+	}
+	return {}, false
+}
+
+class_type_symbol_handle_in_unit :: proc(
+	unit: ^Unit_Analysis,
+	class_symbol: Symbol_Id,
+	name: string,
+) -> (Symbol_Id, bool) {
+	key := Class_Scope_Index_Key{class_symbol = class_symbol, namespace = .Type, name = name}
+	if symbol_id, ok := unit.scope_index.class_symbols[key]; ok {
+		return symbol_id, true
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+structure_owner_scope :: proc(unit: ^Unit_Analysis, id: Structure_Id) -> Scope_Id {
+	for s in unit.symbols {
+		if s.structure == id {
+			return s.scope
+		}
+	}
+	return unit.root_scope
 }
 
 resolve_type_ref_handle_project :: proc(

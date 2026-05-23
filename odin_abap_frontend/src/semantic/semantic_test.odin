@@ -242,6 +242,29 @@ analyze_project_test :: proc(
 	return project
 }
 
+analyze_project_dependencies_test :: proc(
+	t: ^testing.T,
+	target: Source_Input,
+	dependencies: []Source_Input,
+) -> Project_Analysis {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	candidates := make([dynamic]Project_Candidate_Input, 0, 0, context.allocator)
+	project := analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies,
+		Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+	return project
+}
+
 analyze_path_test :: proc(t: ^testing.T, target_path: string) -> Manifest_Analysis_Result {
 	return analyze_path_test_with_options(t, target_path, {})
 }
@@ -3440,6 +3463,49 @@ ENDFORM.
 	testing.expect(t, form != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, form, "gs_row", .Value, .Identifier, candidates[0].uri))
 	testing.expect(t, !has_diagnostic(form, .Unknown_Field))
+}
+
+@(test)
+analyze_target_propagates_cached_structure_through_class_type_table_component :: proc(t: ^testing.T) {
+	target := Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = `
+INTERFACE lif_tabl.
+  TYPES ty_dd03p_tt TYPE STANDARD TABLE OF dd03p WITH DEFAULT KEY.
+  TYPES: BEGIN OF ty_internal,
+           dd03p TYPE ty_dd03p_tt,
+         END OF ty_internal.
+ENDINTERFACE.
+
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS fill CHANGING cs_data TYPE lif_tabl=>ty_internal.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD fill.
+    DATA ls_dd03p LIKE LINE OF cs_data-dd03p.
+    ls_dd03p-keyflag = abap_true.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+	dependencies := [?]Source_Input {
+		{
+			uri = "abapls-cache:/ddic-structure/dd03p.abap",
+			source = `
+TYPES: BEGIN OF dd03p,
+         keyflag TYPE abap_bool,
+       END OF dd03p.
+`,
+		},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
 }
 
 @(test)
