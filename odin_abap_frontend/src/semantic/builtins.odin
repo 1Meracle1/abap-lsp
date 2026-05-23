@@ -162,6 +162,11 @@ ARG_DATA_PARAMS :: []Builtin_Routine_Param_Spec {
 	{"val", "data"},
 }
 
+CONCAT_LINES_OF_PARAMS :: []Builtin_Routine_Param_Spec {
+	{"table", "data"},
+	{"sep", "string"},
+}
+
 BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	{"line_exists", []Builtin_Routine_Param_Spec{{"table_line", "data"}}, []string{"table_line"}, "abap_bool", false},
 	{"charlen", []Builtin_Routine_Param_Spec{{"arg", "string"}, {"text", "string"}}, []string{"arg"}, "i", false},
@@ -178,6 +183,7 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	{"from_mixed", MIXED_CASE_STRING_PARAMS, []string{"val", "sep", "case", "min"}, "string", true},
 	{"xstrlen", ARG_XSTRING_PARAMS, []string{"arg"}, "i", false},
 	{"lines", ARG_DATA_PARAMS, []string{"arg"}, "i", false},
+	{"concat_lines_of", CONCAT_LINES_OF_PARAMS, []string{"table", "sep"}, "string", true},
 }
 
 install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: mem.Allocator) {

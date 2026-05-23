@@ -45,6 +45,25 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 }
 
 @(test)
+resolves_concat_lines_of_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///concat_lines_of.abap",
+		`
+FORM run.
+  DATA lt_lines TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  DATA lv_text TYPE string.
+  lv_text = concat_lines_of( table = lt_lines sep = space ).
+  lv_text = concat_lines_of( lt_lines ).
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "concat_lines_of", .Routine, .Routine_Call))
+}
+
+@(test)
 structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	unit := unit_analysis_make(
 		Unit_Id(0),
