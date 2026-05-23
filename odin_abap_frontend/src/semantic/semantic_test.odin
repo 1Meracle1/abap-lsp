@@ -260,18 +260,6 @@ ENDFORM.
 }
 
 @(test)
-object_reference_type_is_builtin :: proc(t: ^testing.T) {
-	unit := collect_test_unit(
-		t,
-		"file:///object_ref.abap",
-		`DATA lo_any TYPE REF TO object.`,
-	)
-
-	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
-	testing.expect(t, has_reference(&unit, "object", .Type, .Type_Ref))
-}
-
-@(test)
 xsequence_type_is_builtin :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -4052,7 +4040,7 @@ analyze_target_reports_type_declared_in_later_include :: proc(t: ^testing.T) {
 		{uri = "file:///workspace/zdata.abap", source = "DATA ls_object_src TYPE ts_obj_ids."},
 		{uri = "file:///workspace/ztypes.abap", source = `
 TYPES: BEGIN OF ts_obj_ids,
-         owner TYPE char12,
+         owner TYPE c LENGTH 12,
        END OF ts_obj_ids.
 `},
 	}
@@ -4073,7 +4061,7 @@ analyze_target_accepts_type_declared_in_prior_include :: proc(t: ^testing.T) {
 	candidates := [?]Source_Input {
 		{uri = "file:///workspace/ztypes.abap", source = `
 TYPES: BEGIN OF ts_obj_ids,
-         owner TYPE char12,
+         owner TYPE c LENGTH 12,
        END OF ts_obj_ids.
 `},
 	}

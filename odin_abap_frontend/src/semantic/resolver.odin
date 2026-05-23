@@ -347,24 +347,16 @@ innermost_loop_allows_internal_table_line_selector :: proc(
 }
 
 is_builtin_type_name :: proc(name: string) -> bool {
-	lower := strings.trim_space(name)
-	if strings.equal_fold(lower, "any table") {
+	// Semantic references and type refs are canonicalized before this hot path.
+	switch name {
+	case "i", "int1", "int2", "int4", "int8",
+	     "f", "p", "decfloat16", "decfloat34",
+	     "string", "c", "n", "d", "t", "x", "xstring", "xsequence",
+	     "data", "any", "any table", "clike", "csequence",
+	     "object":
 		return true
 	}
-	for builtin in BUILTIN_SCALAR_TYPES {
-		if strings.equal_fold(lower, builtin) {
-			return true
-		}
-	}
-	if len(lower) <= 4 || !strings.equal_fold(lower[:4], "char") {
-		return false
-	}
-	for i in 4 ..< len(lower) {
-		if lower[i] < '0' || lower[i] > '9' {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
 Root_Symbol_Entry :: struct {
