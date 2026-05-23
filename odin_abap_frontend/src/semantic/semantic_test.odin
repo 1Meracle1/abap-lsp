@@ -365,7 +365,7 @@ analyze_units_project_test :: proc(t: ^testing.T, sources: []Source_Input) -> Pr
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	finish_project_analysis(&project, &pool, context.allocator)
+	finish_project_analysis(&project, &pool, {}, context.allocator)
 	frontend_runtime.pool_destroy(&pool)
 	return project
 }
@@ -2996,6 +2996,160 @@ standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 }
 
 @(test)
+standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("standalone-dependency-store-threaded")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifacts := make([dynamic]dep_store.Stored_Artifact_Input, 0, 16, context.allocator)
+	target_source := strings.builder_make(context.allocator)
+	strings.write_string(&target_source, "REPORT zmain.")
+	for i in 0 ..< 16 {
+		name := strings.builder_make(context.allocator)
+		strings.write_string(&name, "ZCL_THREADED_DRAIN_")
+		strings.write_i64(&name, i64(i))
+		object_name := strings.to_string(name)
+
+		source := strings.builder_make(context.allocator)
+		strings.write_string(&source, "CLASS ")
+		strings.write_string(&source, object_name)
+		strings.write_string(&source, " DEFINITION. ENDCLASS. CLASS ")
+		strings.write_string(&source, object_name)
+		strings.write_string(&source, " IMPLEMENTATION. ENDCLASS.")
+
+		uri := strings.builder_make(context.allocator)
+		strings.write_string(&uri, "/sap/bc/adt/oo/classes/")
+		strings.write_string(&uri, object_name)
+
+		append(
+			&artifacts,
+			dep_store.Stored_Artifact_Input {
+				package_name   = "ZPKG",
+				object_kind    = "global-class",
+				object_name    = object_name,
+				object_uri     = strings.to_string(uri),
+				object_type    = "CLAS/OC",
+				description    = "Threaded drain class",
+				file_extension = "abap",
+				source_text    = strings.to_string(source),
+				fetched_at     = "2026-05-21T00:00:00Z",
+			},
+		)
+		strings.write_string(&target_source, " DATA lo")
+		strings.write_i64(&target_source, i64(i))
+		strings.write_string(&target_source, " TYPE REF TO ")
+		strings.write_string(&target_source, object_name)
+		strings.write_string(&target_source, ".")
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 2, task_capacity = 8}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	if pool.options.worker_count > 0 {
+		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
+	}
+	project := analyze_standalone_with_dependency_drain(
+		Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)},
+		make([dynamic]Project_Candidate_Input, context.allocator),
+		Analyze_Options{pool = &pool, dependency_store_path = store_path},
+		context.allocator,
+	)
+	if pool.options.worker_count > 0 {
+		frontend_runtime.pool_join(&pool)
+	}
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 17)
+	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-task-lookup")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifacts := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "ZPKG",
+			object_kind    = "global-class",
+			object_name    = "ZCL_STORE_TASK",
+			object_uri     = "/sap/bc/adt/oo/classes/ZCL_STORE_TASK",
+			object_type    = "CLAS/OC",
+			description    = "Store task class",
+			file_extension = "abap",
+			source_text    = "CLASS zcl_store_task DEFINITION. ENDCLASS. CLASS zcl_store_task IMPLEMENTATION. ENDCLASS.",
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+		{
+			package_name   = "ZPKG",
+			object_kind    = "include",
+			object_name    = "ZINC_STORE_TASK",
+			object_uri     = "/sap/bc/adt/programs/includes/ZINC_STORE_TASK",
+			object_type    = "PROG/I",
+			description    = "Store task include",
+			file_extension = "abap",
+			source_text    = "DATA gv_store_task TYPE string.",
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 2, task_capacity = 4}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	if pool.options.worker_count > 0 {
+		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
+	}
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]Source_Input, context.allocator)
+	remote := [?]Remote_Dependency_Candidate {
+		{name = "ZCL_STORE_TASK", kind = "type"},
+		{name = "ZINC_STORE_TASK", kind = "include"},
+	}
+	seen := make(map[i64]bool, context.allocator)
+	before := frontend_runtime.pool_stats(&pool)
+	added := add_dependency_store_any_profile_matches(
+		&candidates,
+		&dependencies,
+		remote[:],
+		&store,
+		&seen,
+		&pool,
+		"file:///ZMAIN.abap",
+		context.allocator,
+	)
+	after := frontend_runtime.pool_stats(&pool)
+	if pool.options.worker_count > 0 {
+		frontend_runtime.pool_join(&pool)
+	}
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect(t, added)
+	testing.expect_value(t, len(dependencies), 1)
+	testing.expect_value(t, len(candidates), 1)
+	testing.expect(t, after.submitted >= before.submitted + u64(len(remote)))
+}
+
+@(test)
 manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) {
 	export_root := external_export_workspace_path("external-export-root")
 	export_file := manifest_test_file(
@@ -3153,6 +3307,57 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T) {
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]Source_Input, context.allocator)
+	uri_keys := project_input_uri_keys("mem://ZMAIN.abap", dependencies[:], candidates[:], 2, context.allocator)
+
+	result := new(Adt_Fetch_Task_Result, context.allocator)
+	result.fetched = make([dynamic]Adt_Fetched_Object, 0, 1, context.allocator)
+	shared := make([dynamic]adt.Dependency_Artifact, 0, 1, context.allocator)
+	append(
+		&shared,
+		adt.Dependency_Artifact {
+			object_ref     = adt.build_include_object_ref("ZINC_TASK_RESULT", "ZPKG", context.allocator),
+			body           = strings.clone("DATA gv_shared TYPE string.", context.allocator),
+			file_extension = strings.clone("abap", context.allocator),
+			manifest_kind  = strings.clone("include", context.allocator),
+		},
+	)
+	append(
+		&result.fetched,
+		Adt_Fetched_Object {
+			object_ref = adt.build_class_object_ref("ZCL_TASK_RESULT", "ZPKG", context.allocator),
+			fetched = adt.Dependency_Fetch_Result {
+				body                = strings.clone("CLASS zcl_task_result DEFINITION. ENDCLASS. CLASS zcl_task_result IMPLEMENTATION. ENDCLASS.", context.allocator),
+				file_extension      = strings.clone("abap", context.allocator),
+				manifest_kind       = strings.clone("global-class", context.allocator),
+				shared_dependencies = shared,
+			},
+		},
+	)
+	defer adt_fetch_task_result_destroy(result, context.allocator)
+
+	added := add_adt_fetch_task_result(
+		&candidates,
+		&dependencies,
+		Remote_Dependency_Candidate{name = "zcl_task_result", kind = "type"},
+		result,
+		nil,
+		nil,
+		&uri_keys,
+		context.allocator,
+		context.allocator,
+	)
+
+	testing.expect(t, added)
+	testing.expect_value(t, len(dependencies), 1)
+	testing.expect_value(t, len(candidates), 1)
+	testing.expect(t, strings.contains(dependencies[0].uri, "/oo/classes/ZCL_TASK_RESULT"))
+	testing.expect(t, strings.contains(candidates[0].input.uri, "/programs/includes/ZINC_TASK_RESULT"))
 }
 
 @(test)

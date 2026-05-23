@@ -33,9 +33,10 @@ Project_Candidate_Input :: struct {
 }
 
 Project_Work_State :: struct {
-	units:     [dynamic]Unit_Analysis,
-	inputs:    [dynamic]Source_Input,
-	allocator: mem.Allocator,
+	units:           [dynamic]Unit_Analysis,
+	inputs:          [dynamic]Source_Input,
+	unit_allocators: []mem.Allocator,
+	allocator:       mem.Allocator,
 }
 
 Project_Task_Payload :: struct {
@@ -44,17 +45,19 @@ Project_Task_Payload :: struct {
 }
 
 Project_Infer_State :: struct {
-	project:   ^Project_Analysis,
-	lookup:    ^Validation_Lookup,
-	inferred:  []Inferred_Unit_Facts,
-	allocator: mem.Allocator,
+	project:         ^Project_Analysis,
+	lookup:          ^Validation_Lookup,
+	inferred:        []Inferred_Unit_Facts,
+	unit_allocators: []mem.Allocator,
+	allocator:       mem.Allocator,
 }
 
 Project_Validate_State :: struct {
-	project:     ^Project_Analysis,
-	lookup:      ^Validation_Lookup,
-	diagnostics: [][dynamic]Diagnostic,
-	allocator:   mem.Allocator,
+	project:         ^Project_Analysis,
+	lookup:          ^Validation_Lookup,
+	diagnostics:     [][dynamic]Diagnostic,
+	unit_allocators: []mem.Allocator,
+	allocator:       mem.Allocator,
 }
 
 Project_Infer_Payload :: struct {
@@ -87,17 +90,29 @@ analyze_target_with_candidate_inputs :: proc(
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
+	return analyze_target_with_candidate_inputs_allocators(target, candidates, dependencies, options, {}, allocator)
+}
+
+analyze_target_with_candidate_inputs_allocators :: proc(
+	target: Source_Input,
+	candidates: []Project_Candidate_Input,
+	dependencies: []Source_Input,
+	options: Analyze_Options,
+	unit_allocators: []mem.Allocator,
+	allocator: mem.Allocator,
+) -> Project_Analysis {
 	assert(options.pool != nil)
 	state := Project_Work_State {
-		units = make([dynamic]Unit_Analysis, 0, 1 + len(dependencies), allocator),
-		inputs = make([dynamic]Source_Input, 0, 1 + len(dependencies), allocator),
-		allocator = allocator,
+		units           = make([dynamic]Unit_Analysis, 0, 1 + len(dependencies), allocator),
+		inputs          = make([dynamic]Source_Input, 0, 1 + len(dependencies), allocator),
+		unit_allocators = unit_allocators,
+		allocator       = allocator,
 	}
 	unit_dirs := make([dynamic]string, 0, 1 + len(dependencies), allocator)
 	unit_candidate_indices := make([dynamic]int, 0, 1 + len(dependencies), allocator)
 
 	append(&state.inputs, target)
-	append(&state.units, parse_collect_input(Unit_Id(0), target, allocator))
+	append(&state.units, parse_collect_input(Unit_Id(0), target, unit_allocator(unit_allocators, 0, allocator)))
 	append(&unit_dirs, uri_parent_dir_key(target.uri, allocator))
 	append(&unit_candidate_indices, -1)
 	dependency_unit_indices := make([dynamic]int, 0, len(dependencies), allocator)
@@ -160,8 +175,15 @@ analyze_target_with_candidate_inputs :: proc(
 		resolve_unit_with_index(&state.units[i], &state.units[i].scope_index)
 	}
 	project := project_analysis_from_units(state.units, allocator)
-	finish_project_analysis(&project, options.pool, allocator)
+	finish_project_analysis(&project, options.pool, unit_allocators, allocator)
 	return project
+}
+
+unit_allocator :: proc(unit_allocators: []mem.Allocator, unit_index: int, fallback: mem.Allocator) -> mem.Allocator {
+	if 0 <= unit_index && unit_index < len(unit_allocators) && unit_allocators[unit_index].procedure != nil {
+		return unit_allocators[unit_index]
+	}
+	return fallback
 }
 
 project_analysis_from_units :: proc(
@@ -177,15 +199,16 @@ project_analysis_from_units :: proc(
 finish_project_analysis :: proc(
 	project: ^Project_Analysis,
 	pool: ^runtime.Pool,
+	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
 	resolve_project_cross_unit(project.units[:], allocator)
 	link_class_member_implementations(project.units[:], allocator)
 	reclassify_project_open_sql_predicate_host_variables(project.units[:], allocator)
 	lookup := build_validation_lookup(project, allocator)
-	infer_project_semantic_facts(project, &lookup, pool, allocator)
-	validate_project_units(project, &lookup, pool, allocator)
-	rebuild_project_semantic_indexes(project, pool, allocator)
+	infer_project_semantic_facts(project, &lookup, pool, unit_allocators, allocator)
+	validate_project_units(project, &lookup, pool, unit_allocators, allocator)
+	rebuild_project_semantic_indexes(project, pool, unit_allocators, allocator)
 	collect_project_diagnostics(project)
 }
 
@@ -394,19 +417,25 @@ parse_collect_task :: proc(payload: Project_Task_Payload) -> runtime.No_Result {
 	payload.state.units[payload.unit_index] = parse_collect_input(
 		Unit_Id(u32(payload.unit_index)),
 		input,
-		payload.state.allocator,
+		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
 	return runtime.No_Result{}
 }
 
 build_scope_index_task :: proc(payload: Project_Task_Payload) -> runtime.No_Result {
 	unit := &payload.state.units[payload.unit_index]
-	unit.scope_index = build_scope_index(unit, payload.state.allocator)
+	unit.scope_index = build_scope_index(
+		unit,
+		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
+	)
 	return runtime.No_Result{}
 }
 
 rebuild_semantic_index_task :: proc(payload: Project_Task_Payload) -> runtime.No_Result {
-	rebuild_semantic_index(&payload.state.units[payload.unit_index], payload.state.allocator)
+	rebuild_semantic_index(
+		&payload.state.units[payload.unit_index],
+		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
+	)
 	return runtime.No_Result{}
 }
 
@@ -510,15 +539,17 @@ infer_project_semantic_facts :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
 	pool: ^runtime.Pool,
+	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
 	for _ in 0 ..< 4 {
 		inferred := make([]Inferred_Unit_Facts, len(project.units), allocator)
 		state := Project_Infer_State {
-			project = project,
-			lookup = lookup,
-			inferred = inferred,
-			allocator = allocator,
+			project         = project,
+			lookup          = lookup,
+			inferred        = inferred,
+			unit_allocators = unit_allocators,
+			allocator       = allocator,
 		}
 		run_infer_tasks(pool, &state, allocator)
 		if !apply_inferred_project_facts(project, inferred) {
@@ -531,14 +562,16 @@ validate_project_units :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
 	pool: ^runtime.Pool,
+	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
 	diagnostics := make([][dynamic]Diagnostic, len(project.units), allocator)
 	state := Project_Validate_State {
-		project = project,
-		lookup = lookup,
-		diagnostics = diagnostics,
-		allocator = allocator,
+		project         = project,
+		lookup          = lookup,
+		diagnostics     = diagnostics,
+		unit_allocators = unit_allocators,
+		allocator       = allocator,
 	}
 	run_validate_tasks(pool, &state, allocator)
 	for i in 0 ..< len(project.units) {
@@ -549,12 +582,14 @@ validate_project_units :: proc(
 rebuild_project_semantic_indexes :: proc(
 	project: ^Project_Analysis,
 	pool: ^runtime.Pool,
+	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
 	state := Project_Work_State {
-		units = project.units,
-		inputs = make([dynamic]Source_Input, 0, 0, allocator),
-		allocator = allocator,
+		units           = project.units,
+		inputs          = make([dynamic]Source_Input, 0, 0, allocator),
+		unit_allocators = unit_allocators,
+		allocator       = allocator,
 	}
 	run_all_unit_tasks(pool, &state, rebuild_semantic_index_task, allocator)
 	project.units = state.units
@@ -617,7 +652,7 @@ infer_task :: proc(payload: Project_Infer_Payload) -> runtime.No_Result {
 		payload.state.project,
 		payload.state.lookup,
 		payload.unit_index,
-		payload.state.allocator,
+		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
 	return runtime.No_Result{}
 }
@@ -627,7 +662,7 @@ validate_task :: proc(payload: Project_Validate_Payload) -> runtime.No_Result {
 		payload.state.project,
 		payload.state.lookup,
 		payload.unit_index,
-		payload.state.allocator,
+		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
 	return runtime.No_Result{}
 }

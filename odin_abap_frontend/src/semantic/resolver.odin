@@ -79,7 +79,7 @@ analyze_unit :: proc(
 	pool: runtime.Pool
 	assert(runtime.pool_init(&pool, runtime.Options{worker_count = 0, task_capacity = 64}, allocator) == .None)
 	defer runtime.pool_destroy(&pool)
-	finish_project_analysis(&project, &pool, allocator)
+	finish_project_analysis(&project, &pool, {}, allocator)
 	return project.units[0]
 }
 

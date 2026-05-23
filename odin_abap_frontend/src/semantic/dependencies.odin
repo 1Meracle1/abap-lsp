@@ -2,10 +2,12 @@ package abap_frontend_semantic
 
 import dep_store "../dependency_store"
 import "../adt"
+import frontend_runtime "../runtime"
 
 import base_runtime "base:runtime"
 import "core:fmt"
 import "core:mem"
+import "core:mem/virtual"
 import "core:os"
 import "core:strings"
 import "core:time"
@@ -47,6 +49,7 @@ analyze_with_manifest_dependency_drain :: proc(
 				&store,
 				&manifest.dependency_store,
 				&seen_artifacts,
+				options.pool,
 				target.uri,
 				allocator,
 			)
@@ -75,6 +78,7 @@ analyze_with_manifest_dependency_drain :: proc(
 				cache_store,
 				cache_profile,
 				manifest,
+				options.pool,
 				target.uri,
 				allocator,
 			)
@@ -151,10 +155,24 @@ analyze_standalone_with_dependency_drain :: proc(
 	}
 
 	seen_artifacts := make(map[i64]bool, 16, allocator)
-	project_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&project_arena, base_runtime.heap_allocator(), base_runtime.heap_allocator(), alignment = 64)
-	project_allocator := mem.dynamic_arena_allocator(&project_arena)
-	project := analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, project_allocator)
+	project_arena: virtual.Arena
+	unit_arenas: []virtual.Arena
+	unit_allocators: []mem.Allocator
+	project_allocator := scratch_analysis_init(
+		&project_arena,
+		&unit_arenas,
+		&unit_allocators,
+		1 + len(dependency_inputs) + len(candidate_inputs),
+		allocator,
+	)
+	project := analyze_target_with_candidate_inputs_allocators(
+		target,
+		candidate_inputs[:],
+		dependency_inputs[:],
+		options,
+		unit_allocators,
+		project_allocator,
+	)
 	iteration := 0
 	for {
 		iteration += 1
@@ -163,7 +181,7 @@ analyze_standalone_with_dependency_drain :: proc(
 			trace_eprintf("adt_fetch\tdrain\titeration\t%d\tcandidates\t%d\n", iteration, len(remote_candidates))
 		}
 		added := false
-		// Any-profile standalone cache lookup has no product/package boundary; keep it direct.
+		// Any-profile standalone cache lookup has no product/package boundary.
 		if err == .None {
 			added = add_dependency_store_any_profile_matches(
 				&candidate_inputs,
@@ -171,6 +189,7 @@ analyze_standalone_with_dependency_drain :: proc(
 				remote_candidates[:],
 				&store,
 				&seen_artifacts,
+				options.pool,
 				target.uri,
 				allocator,
 			)
@@ -183,6 +202,7 @@ analyze_standalone_with_dependency_drain :: proc(
 				cache_store,
 				cache_profile,
 				&standalone_client,
+				options.pool,
 				target.uri,
 				allocator,
 			)
@@ -190,15 +210,60 @@ analyze_standalone_with_dependency_drain :: proc(
 		if !added {
 			break
 		}
-		mem.dynamic_arena_reset(&project_arena)
-		project = analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, project_allocator)
+		scratch_analysis_destroy(&project_arena, unit_arenas, unit_allocators, allocator)
+		project_allocator = scratch_analysis_init(
+			&project_arena,
+			&unit_arenas,
+			&unit_allocators,
+			1 + len(dependency_inputs) + len(candidate_inputs),
+			allocator,
+		)
+		project = analyze_target_with_candidate_inputs_allocators(
+			target,
+			candidate_inputs[:],
+			dependency_inputs[:],
+			options,
+			unit_allocators,
+			project_allocator,
+		)
 	}
 	if has_standalone_adt {
 		adt.client_destroy(&standalone_client, allocator)
 		adt.connection_config_destroy(&standalone_config, allocator)
 	}
-	mem.dynamic_arena_destroy(&project_arena)
+	scratch_analysis_destroy(&project_arena, unit_arenas, unit_allocators, allocator)
 	return analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
+}
+
+scratch_analysis_init :: proc(
+	project_arena: ^virtual.Arena,
+	unit_arenas: ^[]virtual.Arena,
+	unit_allocators: ^[]mem.Allocator,
+	unit_count: int,
+	allocator: mem.Allocator,
+) -> mem.Allocator {
+	assert(virtual.arena_init_growing(project_arena) == .None)
+	unit_arenas^ = make([]virtual.Arena, unit_count, allocator)
+	unit_allocators^ = make([]mem.Allocator, unit_count, allocator)
+	for i in 0 ..< unit_count {
+		assert(virtual.arena_init_growing(&unit_arenas^[i]) == .None)
+		unit_allocators^[i] = virtual.arena_allocator(&unit_arenas^[i])
+	}
+	return virtual.arena_allocator(project_arena)
+}
+
+scratch_analysis_destroy :: proc(
+	project_arena: ^virtual.Arena,
+	unit_arenas: []virtual.Arena,
+	unit_allocators: []mem.Allocator,
+	allocator: mem.Allocator,
+) {
+	for i in 0 ..< len(unit_arenas) {
+		virtual.arena_destroy(&unit_arenas[i])
+	}
+	delete(unit_allocators, allocator)
+	delete(unit_arenas, allocator)
+	virtual.arena_destroy(project_arena)
 }
 
 manifest_dependency_store :: proc(
@@ -368,41 +433,23 @@ add_dependency_store_matches :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	seen_artifacts: ^map[i64]bool,
+	pool: ^frontend_runtime.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
-	uri_key_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
-	defer mem.dynamic_arena_destroy(&uri_key_arena)
-	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
-	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
-
-	added := false
-	for candidate in remote_candidates {
-		record, ok, err := dep_store.find_artifact_for_candidate(
-			store,
-			profile,
-			candidate.name,
-			candidate.kind,
-			allocator,
-		)
-		if err != .None || !ok || record.artifact_id in seen_artifacts^ {
-			continue
-		}
-		seen_artifacts^[record.artifact_id] = true
-		uri := dependency_record_uri(&record, allocator)
-		if !project_input_uri_key_add_if_missing(&uri_keys, uri, uri_key_allocator) {
-			delete(uri, allocator)
-			continue
-		}
-		input := source_input_from_dependency_record(&record, candidate, uri, allocator)
-		append_dependency_input(candidates, dependencies, input, candidate, record.object_name, allocator)
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tstore\tadd\t%s\t%s\t%s\t%s\n", candidate.kind, candidate.name, record.object_kind, record.object_name)
-		}
-		added = true
-	}
-	return added
+	return add_dependency_store_matches_impl(
+		candidates,
+		dependencies,
+		remote_candidates,
+		store,
+		profile,
+		false,
+		seen_artifacts,
+		pool,
+		target_uri,
+		"store",
+		allocator,
+	)
 }
 
 add_dependency_store_any_profile_matches :: proc(
@@ -411,9 +458,52 @@ add_dependency_store_any_profile_matches :: proc(
 	remote_candidates: []Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	seen_artifacts: ^map[i64]bool,
+	pool: ^frontend_runtime.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
+	return add_dependency_store_matches_impl(
+		candidates,
+		dependencies,
+		remote_candidates,
+		store,
+		nil,
+		true,
+		seen_artifacts,
+		pool,
+		target_uri,
+		"store_any",
+		allocator,
+	)
+}
+
+Dependency_Store_Task_Result :: struct {
+	record: dep_store.Stored_Artifact_Record,
+	ok:     bool,
+	err:    dep_store.Store_Error,
+}
+
+Dependency_Store_Task_Payload :: struct {
+	store:       dep_store.Dependency_Store,
+	profile:     ^dep_store.Dependency_Profile,
+	candidate:   Remote_Dependency_Candidate,
+	any_profile: bool,
+}
+
+add_dependency_store_matches_impl :: proc(
+	candidates: ^[dynamic]Project_Candidate_Input,
+	dependencies: ^[dynamic]Source_Input,
+	remote_candidates: []Remote_Dependency_Candidate,
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	any_profile: bool,
+	seen_artifacts: ^map[i64]bool,
+	pool: ^frontend_runtime.Pool,
+	target_uri: string,
+	trace_source: string,
+	allocator: mem.Allocator,
+) -> bool {
+	assert(pool != nil)
 	uri_key_arena: mem.Dynamic_Arena
 	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
@@ -421,35 +511,122 @@ add_dependency_store_any_profile_matches :: proc(
 	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
 
 	added := false
-	reader, reader_err := dep_store.reader(store, allocator)
-	if reader_err != .None {
-		return false
-	}
-	defer dep_store.reader_destroy(&reader)
-	for candidate in remote_candidates {
-		record, ok, err := dep_store.reader_find_artifact_for_candidate_any_profile(
-			&reader,
-			candidate.name,
-			candidate.kind,
-			allocator,
-		)
-		if err != .None || !ok || record.artifact_id in seen_artifacts^ {
-			continue
+	batch_size := pool.options.task_capacity
+	for start := 0; start < len(remote_candidates); {
+		end := start + batch_size
+		if end > len(remote_candidates) {
+			end = len(remote_candidates)
 		}
-		seen_artifacts^[record.artifact_id] = true
-		uri := dependency_record_uri(&record, allocator)
-		if !project_input_uri_key_add_if_missing(&uri_keys, uri, uri_key_allocator) {
-			delete(uri, allocator)
-			continue
+		tasks := make([dynamic]frontend_runtime.Task(^Dependency_Store_Task_Result), 0, end - start, allocator)
+		for candidate in remote_candidates[start:end] {
+			payload := Dependency_Store_Task_Payload {
+				store = store^,
+				profile = profile,
+				candidate = candidate,
+				any_profile = any_profile,
+			}
+			task, err := frontend_runtime.submit_value(pool, payload, dependency_store_find_task)
+			assert(err == .None)
+			append(&tasks, task)
 		}
-		input := source_input_from_dependency_record(&record, candidate, uri, allocator)
-		append_dependency_input(candidates, dependencies, input, candidate, record.object_name, allocator)
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tstore_any\tadd\t%s\t%s\t%s\t%s\n", candidate.kind, candidate.name, record.object_kind, record.object_name)
+		for task, i in tasks {
+			result, _ := frontend_runtime.wait(task)
+			if add_dependency_store_task_result(
+				candidates,
+				dependencies,
+				remote_candidates[start + i],
+				result,
+				seen_artifacts,
+				&uri_keys,
+				uri_key_allocator,
+				trace_source,
+				allocator,
+			) {
+				added = true
+			}
+			dependency_store_task_result_destroy(result, base_runtime.heap_allocator())
 		}
-		added = true
+		delete(tasks)
+		start = end
 	}
 	return added
+}
+
+dependency_store_find_task :: proc(payload: Dependency_Store_Task_Payload) -> ^Dependency_Store_Task_Result {
+	allocator := base_runtime.heap_allocator()
+	result := new(Dependency_Store_Task_Result, allocator)
+	store := payload.store
+	reader, reader_err := dep_store.reader(&store, allocator)
+	if reader_err != .None {
+		result.err = reader_err
+		return result
+	}
+	defer dep_store.reader_destroy(&reader)
+	if payload.any_profile {
+		result.record, result.ok, result.err = dep_store.reader_find_artifact_for_candidate_any_profile(
+			&reader,
+			payload.candidate.name,
+			payload.candidate.kind,
+			allocator,
+		)
+	} else if payload.profile != nil {
+		result.record, result.ok, result.err = dep_store.reader_find_artifact_for_candidate(
+			&reader,
+			payload.profile,
+			payload.candidate.name,
+			payload.candidate.kind,
+			allocator,
+		)
+	}
+	return result
+}
+
+add_dependency_store_task_result :: proc(
+	candidates: ^[dynamic]Project_Candidate_Input,
+	dependencies: ^[dynamic]Source_Input,
+	candidate: Remote_Dependency_Candidate,
+	result: ^Dependency_Store_Task_Result,
+	seen_artifacts: ^map[i64]bool,
+	uri_keys: ^map[string]bool,
+	uri_key_allocator: mem.Allocator,
+	trace_source: string,
+	allocator: mem.Allocator,
+) -> bool {
+	if result == nil || result.err != .None || !result.ok || result.record.artifact_id in seen_artifacts^ {
+		return false
+	}
+	seen_artifacts^[result.record.artifact_id] = true
+	uri := dependency_record_uri(&result.record, allocator)
+	if !project_input_uri_key_add_if_missing(uri_keys, uri, uri_key_allocator) {
+		delete(uri, allocator)
+		return false
+	}
+	input := source_input_from_dependency_record(&result.record, candidate, uri, allocator)
+	append_dependency_input(candidates, dependencies, input, candidate, result.record.object_name, allocator)
+	when adt.DEPENDENCY_FETCH_TRACE {
+		trace_eprintf("adt_fetch\t%s\tadd\t%s\t%s\t%s\t%s\n", trace_source, candidate.kind, candidate.name, result.record.object_kind, result.record.object_name)
+	}
+	return true
+}
+
+dependency_store_task_result_destroy :: proc(result: ^Dependency_Store_Task_Result, allocator: mem.Allocator) {
+	if result == nil {
+		return
+	}
+	dependency_record_destroy(&result.record, allocator)
+	free(result, allocator)
+}
+
+dependency_record_destroy :: proc(record: ^dep_store.Stored_Artifact_Record, allocator: mem.Allocator) {
+	delete(record.package_name, allocator)
+	delete(record.package_version, allocator)
+	delete(record.object_kind, allocator)
+	delete(record.object_name, allocator)
+	delete(record.object_uri, allocator)
+	delete(record.object_type, allocator)
+	delete(record.description, allocator)
+	delete(record.file_extension, allocator)
+	delete(record.source_text, allocator)
 }
 
 source_input_from_dependency_record :: proc(
@@ -466,7 +643,7 @@ source_input_from_dependency_record :: proc(
 	}
 	return Source_Input {
 		uri    = uri,
-		source = record.source_text,
+		source = strings.clone(record.source_text, allocator),
 	}
 }
 
@@ -541,6 +718,7 @@ add_adt_matches :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	manifest: ^Workspace_Manifest,
+	pool: ^frontend_runtime.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
@@ -565,7 +743,21 @@ add_adt_matches :: proc(
 	client: adt.Client
 	adt.client_init(&client, config)
 	defer adt.client_destroy(&client, allocator)
-	return add_adt_matches_with_client(candidates, dependencies, remote_candidates, store, profile, &client, target_uri, allocator)
+	return add_adt_matches_with_client(candidates, dependencies, remote_candidates, store, profile, &client, pool, target_uri, allocator)
+}
+
+Adt_Fetched_Object :: struct {
+	object_ref: adt.Object_Ref,
+	fetched:    adt.Dependency_Fetch_Result,
+}
+
+Adt_Fetch_Task_Result :: struct {
+	fetched: [dynamic]Adt_Fetched_Object,
+}
+
+Adt_Fetch_Task_Payload :: struct {
+	candidate: Remote_Dependency_Candidate,
+	config:    ^adt.Connection_Config,
 }
 
 add_adt_matches_with_client :: proc(
@@ -575,6 +767,7 @@ add_adt_matches_with_client :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	client: ^adt.Client,
+	pool: ^frontend_runtime.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
@@ -585,113 +778,173 @@ add_adt_matches_with_client :: proc(
 	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
 
 	added := false
-	for candidate in remote_candidates {
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tsearch\t%s\t%s\n", candidate.kind, candidate.name)
+	batch_size := pool.options.task_capacity
+	for start := 0; start < len(remote_candidates); {
+		end := start + batch_size
+		if end > len(remote_candidates) {
+			end = len(remote_candidates)
 		}
-		objects, err := adt.search_repository_objects(client, candidate.name, 50, allocator)
-		if err != .None {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\tadt\tsearch_err\t%s\t%s\t%v\n", candidate.kind, candidate.name, err)
+		tasks := make([dynamic]frontend_runtime.Task(^Adt_Fetch_Task_Result), 0, end - start, allocator)
+		for candidate in remote_candidates[start:end] {
+			payload := Adt_Fetch_Task_Payload{candidate = candidate, config = &client.connection}
+			task, err := frontend_runtime.submit_value(pool, payload, adt_fetch_task)
+			assert(err == .None)
+			append(&tasks, task)
+		}
+		for task, i in tasks {
+			result, _ := frontend_runtime.wait(task)
+			if add_adt_fetch_task_result(
+				candidates,
+				dependencies,
+				remote_candidates[start + i],
+				result,
+				store,
+				profile,
+				&uri_keys,
+				uri_key_allocator,
+				allocator,
+			) {
+				added = true
 			}
-			objects = adt.direct_dependency_object_refs(candidate.name, candidate.kind, allocator)
-		} else {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\tadt\tsearch_ok\t%s\t%s\t%d\n", candidate.kind, candidate.name, len(objects))
-			}
+			adt_fetch_task_result_destroy(result, base_runtime.heap_allocator())
 		}
-		selected := adt.select_dependency_objects(candidate.name, objects[:], candidate.kind, allocator)
-		if len(selected) == 0 {
-			adt.object_refs_destroy(&selected, allocator)
-			selected = adt.direct_dependency_object_refs(candidate.name, candidate.kind, allocator)
-		}
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tselected\t%s\t%s\t%d\n", candidate.kind, candidate.name, len(selected))
-		}
-		for &object_ref in selected {
-			if !add_adt_object_match(candidates, dependencies, candidate, &object_ref, store, profile, client, &uri_keys, uri_key_allocator, allocator) {
-				continue
-			}
-			added = true
-		}
-		adt.object_refs_destroy(&selected, allocator)
-		adt.object_refs_destroy(&objects, allocator)
+		delete(tasks)
+		start = end
 	}
 	return added
 }
 
-add_adt_object_match :: proc(
+adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Result {
+	allocator := base_runtime.heap_allocator()
+	result := new(Adt_Fetch_Task_Result, allocator)
+	result.fetched = make([dynamic]Adt_Fetched_Object, allocator)
+	client: adt.Client
+	adt.client_init(&client, payload.config^)
+	defer adt.client_destroy(&client, allocator)
+
+	when adt.DEPENDENCY_FETCH_TRACE {
+		trace_eprintf("adt_fetch\tadt\tsearch\t%s\t%s\n", payload.candidate.kind, payload.candidate.name)
+	}
+	objects, err := adt.search_repository_objects(&client, payload.candidate.name, 50, allocator)
+	if err != .None {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf("adt_fetch\tadt\tsearch_err\t%s\t%s\t%v\n", payload.candidate.kind, payload.candidate.name, err)
+		}
+		adt.object_refs_destroy(&objects, allocator)
+		objects = adt.direct_dependency_object_refs(payload.candidate.name, payload.candidate.kind, allocator)
+	} else {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf("adt_fetch\tadt\tsearch_ok\t%s\t%s\t%d\n", payload.candidate.kind, payload.candidate.name, len(objects))
+		}
+	}
+	defer adt.object_refs_destroy(&objects, allocator)
+
+	selected := adt.select_dependency_objects(payload.candidate.name, objects[:], payload.candidate.kind, allocator)
+	if len(selected) == 0 {
+		adt.object_refs_destroy(&selected, allocator)
+		selected = adt.direct_dependency_object_refs(payload.candidate.name, payload.candidate.kind, allocator)
+	}
+	defer adt.object_refs_destroy(&selected, allocator)
+	when adt.DEPENDENCY_FETCH_TRACE {
+		trace_eprintf("adt_fetch\tadt\tselected\t%s\t%s\t%d\n", payload.candidate.kind, payload.candidate.name, len(selected))
+	}
+
+	for &object_ref in selected {
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf("adt_fetch\tadt\tfetch\t%s\t%s\t%s\t%s\n", payload.candidate.kind, payload.candidate.name, object_ref.object_type, object_ref.name)
+		}
+		fetched, fetch_err := adt.fetch_dependency_object(&client, &object_ref, allocator)
+		if fetch_err != .None {
+			when adt.DEPENDENCY_FETCH_TRACE {
+				trace_eprintf("adt_fetch\tadt\tfetch_err\t%s\t%s\t%s\t%s\t%v\n", payload.candidate.kind, payload.candidate.name, object_ref.object_type, object_ref.name, fetch_err)
+			}
+			continue
+		}
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf("adt_fetch\tadt\tfetch_ok\t%s\t%s\t%s\t%s\t%s\t%d\n", payload.candidate.kind, payload.candidate.name, object_ref.object_type, object_ref.name, fetched.manifest_kind, len(fetched.shared_dependencies))
+			adt.trace_dependency_fetch(&object_ref, fetched.manifest_kind, fetched.file_extension)
+		}
+		append(&result.fetched, Adt_Fetched_Object{object_ref = adt.clone_object_ref(&object_ref, allocator), fetched = fetched})
+	}
+	return result
+}
+
+add_adt_fetch_task_result :: proc(
 	candidates: ^[dynamic]Project_Candidate_Input,
 	dependencies: ^[dynamic]Source_Input,
 	candidate: Remote_Dependency_Candidate,
-	object_ref: ^adt.Object_Ref,
+	result: ^Adt_Fetch_Task_Result,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
-	client: ^adt.Client,
 	uri_keys: ^map[string]bool,
 	uri_key_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) -> bool {
-	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf("adt_fetch\tadt\tfetch\t%s\t%s\t%s\t%s\n", candidate.kind, candidate.name, object_ref.object_type, object_ref.name)
-	}
-	fetched, err := adt.fetch_dependency_object(client, object_ref, allocator)
-	if err != .None {
-		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tfetch_err\t%s\t%s\t%s\t%s\t%v\n", candidate.kind, candidate.name, object_ref.object_type, object_ref.name, err)
-		}
+	if result == nil {
 		return false
 	}
-	defer adt.dependency_fetch_result_destroy(&fetched, allocator)
-	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf("adt_fetch\tadt\tfetch_ok\t%s\t%s\t%s\t%s\t%s\t%d\n", candidate.kind, candidate.name, object_ref.object_type, object_ref.name, fetched.manifest_kind, len(fetched.shared_dependencies))
-		adt.trace_dependency_fetch(object_ref, fetched.manifest_kind, fetched.file_extension)
-	}
-	store_adt_dependency_fetch(store, profile, object_ref, &fetched, allocator)
-
-	added := add_adt_fetched_dependency_input(
-		candidates,
-		dependencies,
-		candidate,
-		object_ref,
-		fetched.body,
-		fetched.file_extension,
-		uri_keys,
-		uri_key_allocator,
-		allocator,
-	)
-	when adt.DEPENDENCY_FETCH_TRACE {
-		status := "skipped"
-		if added {
-			status = "added"
-		}
-		trace_eprintf("adt_fetch\tadt\tinput\t%s\t%s\t%s\t%s\n", status, candidate.kind, object_ref.object_type, object_ref.name)
-	}
-	for &shared in fetched.shared_dependencies {
-		shared_candidate := Remote_Dependency_Candidate{name = shared.object_ref.name, kind = "include"}
-		if add_adt_fetched_dependency_input(
+	added := false
+	for &entry in result.fetched {
+		store_adt_dependency_fetch(store, profile, &entry.object_ref, &entry.fetched, allocator)
+		input_added := add_adt_fetched_dependency_input(
 			candidates,
 			dependencies,
-			shared_candidate,
-			&shared.object_ref,
-			shared.body,
-			shared.file_extension,
+			candidate,
+			&entry.object_ref,
+			entry.fetched.body,
+			entry.fetched.file_extension,
 			uri_keys,
 			uri_key_allocator,
 			allocator,
-		) {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\tadt\tshared_input\tadded\t%s\t%s\n", shared.object_ref.object_type, shared.object_ref.name)
-				adt.trace_dependency_fetch(&shared.object_ref, shared.manifest_kind, shared.file_extension)
+		)
+		when adt.DEPENDENCY_FETCH_TRACE {
+			status := "skipped"
+			if input_added {
+				status = "added"
 			}
+			trace_eprintf("adt_fetch\tadt\tinput\t%s\t%s\t%s\t%s\n", status, candidate.kind, entry.object_ref.object_type, entry.object_ref.name)
+		}
+		if input_added {
 			added = true
-		} else {
-			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\tadt\tshared_input\tskipped\t%s\t%s\n", shared.object_ref.object_type, shared.object_ref.name)
+		}
+		for &shared in entry.fetched.shared_dependencies {
+			shared_candidate := Remote_Dependency_Candidate{name = shared.object_ref.name, kind = "include"}
+			if add_adt_fetched_dependency_input(
+				candidates,
+				dependencies,
+				shared_candidate,
+				&shared.object_ref,
+				shared.body,
+				shared.file_extension,
+				uri_keys,
+				uri_key_allocator,
+				allocator,
+			) {
+				when adt.DEPENDENCY_FETCH_TRACE {
+					trace_eprintf("adt_fetch\tadt\tshared_input\tadded\t%s\t%s\n", shared.object_ref.object_type, shared.object_ref.name)
+					adt.trace_dependency_fetch(&shared.object_ref, shared.manifest_kind, shared.file_extension)
+				}
+				added = true
+			} else {
+				when adt.DEPENDENCY_FETCH_TRACE {
+					trace_eprintf("adt_fetch\tadt\tshared_input\tskipped\t%s\t%s\n", shared.object_ref.object_type, shared.object_ref.name)
+				}
 			}
 		}
 	}
 	return added
+}
+
+adt_fetch_task_result_destroy :: proc(result: ^Adt_Fetch_Task_Result, allocator: mem.Allocator) {
+	if result == nil {
+		return
+	}
+	for &entry in result.fetched {
+		adt.object_ref_destroy(&entry.object_ref, allocator)
+		adt.dependency_fetch_result_destroy(&entry.fetched, allocator)
+	}
+	delete(result.fetched)
+	free(result, allocator)
 }
 
 store_adt_dependency_fetch :: proc(
