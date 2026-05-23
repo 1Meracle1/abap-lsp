@@ -46,6 +46,7 @@ BUILTIN_SCALAR_TYPES :: []string {
 	"f", "p", "decfloat16", "decfloat34",
 	"string", "c", "n", "d", "t", "x", "xstring",
 	"data", "any", "clike", "csequence",
+	"object",
 }
 
 SYST_FIELDS :: []Builtin_Field_Spec {

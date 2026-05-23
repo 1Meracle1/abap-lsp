@@ -95,6 +95,18 @@ ENDFORM.
 }
 
 @(test)
+object_reference_type_is_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///object_ref.abap",
+		`DATA lo_any TYPE REF TO object.`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "object", .Type, .Type_Ref))
+}
+
+@(test)
 standard_source_string_type_is_builtin :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
