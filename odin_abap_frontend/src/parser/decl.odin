@@ -177,13 +177,23 @@ parse_types_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	allow_token(p, .Colon)
 	stmt := ast.new(ast.Types_Decl, start.range, p.allocator)
 	stmt.types = make([dynamic]ast.Types_Clause, 0, 2, p.allocator)
+	open_groups := 0
 	for !decl_clause_boundary(p) {
 		clause, ok := parse_types_clause(p)
 		if !ok {
 			return nil
 		}
+		if clause.kind == .End_Group && open_groups > 0 {
+			open_groups -= 1
+		}
 		append(&stmt.types, clause)
+		if clause.kind == .Begin_Group {
+			open_groups += 1
+		}
 		if !allow_token(p, .Comma) {
+			if open_groups > 0 && at_keyword(p, "END") && at_keyword_index(p, p.index + 1, "OF") {
+				continue
+			}
 			break
 		}
 	}
@@ -1028,15 +1038,9 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		clause.form = .Like_Table if is_like else .Table
 	}
 
-	if decl_clause_boundary(p) || type_ref_stop_keyword(p) {
-		if clause.form == .Table ||
-		   clause.form == .Like_Table ||
-		   clause.form == .Standard_Table ||
-		   clause.form == .Sorted_Table ||
-		   clause.form == .Hashed_Table ||
-		   clause.form == .Like_Standard_Table ||
-		   clause.form == .Like_Sorted_Table ||
-		   clause.form == .Like_Hashed_Table {
+	if decl_clause_boundary(p) ||
+	   (type_ref_stop_keyword(p) && type_clause_form_allows_missing_ref(clause.form)) {
+		if type_clause_form_allows_missing_ref(clause.form) {
 			return clause
 		}
 		error_current(p, "syntax error: expected type name")
@@ -1045,14 +1049,7 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 
 	type_ref := parse_type_ref_expr(p)
 	if type_ref == nil {
-		if clause.form == .Table ||
-		   clause.form == .Like_Table ||
-		   clause.form == .Standard_Table ||
-		   clause.form == .Sorted_Table ||
-		   clause.form == .Hashed_Table ||
-		   clause.form == .Like_Standard_Table ||
-		   clause.form == .Like_Sorted_Table ||
-		   clause.form == .Like_Hashed_Table {
+		if type_clause_form_allows_missing_ref(clause.form) {
 			return clause
 		}
 		return nil
@@ -1061,9 +1058,24 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 	return clause
 }
 
+type_clause_form_allows_missing_ref :: proc(form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Table,
+	     .Like_Table,
+	     .Standard_Table,
+	     .Sorted_Table,
+	     .Hashed_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return true
+	}
+	return false
+}
+
 parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	start := p.index
-	if decl_clause_boundary(p) || type_ref_stop_keyword(p) {
+	if decl_clause_boundary(p) {
 		error_current(p, "syntax error: expected type name")
 		return nil
 	}
@@ -1096,6 +1108,10 @@ parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
 				continue
 			}
 			if p.index > start && type_ref_stop_keyword(p) && !type_ref_selector_field(p) {
+				break
+			}
+			if p.index > start && at_keyword(p, "END") &&
+			   at_keyword_index(p, p.index + 1, "OF") {
 				break
 			}
 		}
@@ -1647,6 +1663,9 @@ decl_clause_end :: proc(p: ^Parser, clause_start: int) -> bool {
 	tok := current_token(p)
 	return(
 		decl_clause_boundary(p) ||
+		(p.index > clause_start &&
+				at_keyword(p, "END") &&
+				at_keyword_index(p, p.index + 1, "OF")) ||
 		(p.index > clause_start &&
 				.Has_Newline_Before in tok.flags &&
 				statement_lead_starts(p, p.index)) \

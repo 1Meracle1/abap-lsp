@@ -162,6 +162,25 @@ CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
 }
 
 @(test)
+types_structured_declaration_allows_end_without_component_comma :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF dd03p,
+  decimals TYPE decimals,
+  fieldname TYPE fieldname, " Field Name
+  valexi TYPE valexi " Existence of fixed values
+END OF dd03p.`
+	parsed := parse(source, "dd03p.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	types := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	testing.expect_value(t, len(types.types), 5)
+	testing.expect_value(t, types.types[0].kind, ast.Decl_Clause_Kind.Begin_Group)
+	testing.expect_value(t, types.types[1].depth, 1)
+	testing.expect_value(t, types.types[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr).name, "decimals")
+	testing.expect_value(t, types.types[3].name, "valexi")
+	testing.expect_value(t, types.types[4].kind, ast.Decl_Clause_Kind.End_Group)
+}
+
+@(test)
 data_common_part_delimiters_mark_ast_fact :: proc(t: ^testing.T) {
 	source := `DATA: BEGIN OF COMMON PART fm06lcbe.
 DATA: END OF COMMON PART.
