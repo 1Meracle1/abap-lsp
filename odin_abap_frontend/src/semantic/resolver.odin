@@ -375,9 +375,10 @@ Root_Symbol_Entry :: struct {
 }
 
 Project_Root_Lookup :: struct {
-	by_unit: map[Root_Symbol_Key]Symbol_Handle,
-	global:  map[Root_Name_Key]Symbol_Handle,
-	names:   map[string]bool,
+	by_unit:        map[Root_Symbol_Key]Symbol_Handle,
+	global:         map[Root_Name_Key]Symbol_Handle,
+	names:          map[string]bool,
+	provided_names: map[string]bool,
 }
 
 Project_Class_Member_Key :: struct {
@@ -735,10 +736,20 @@ build_project_root_lookup :: proc(
 	roots: []Root_Symbol_Entry,
 	allocator: mem.Allocator,
 ) -> Project_Root_Lookup {
+	provided_name_count := 0
+	for i in 0 ..< len(units) {
+		provided_name_count += len(units[i].provided_names)
+	}
 	lookup := Project_Root_Lookup {
-		by_unit = make(map[Root_Symbol_Key]Symbol_Handle, len(roots), allocator),
-		global = make(map[Root_Name_Key]Symbol_Handle, len(roots), allocator),
-		names = make(map[string]bool, len(roots), allocator),
+		by_unit        = make(map[Root_Symbol_Key]Symbol_Handle, len(roots), allocator),
+		global         = make(map[Root_Name_Key]Symbol_Handle, len(roots), allocator),
+		names          = make(map[string]bool, len(roots), allocator),
+		provided_names = make(map[string]bool, provided_name_count, allocator),
+	}
+	for i in 0 ..< len(units) {
+		for name in units[i].provided_names {
+			lookup.provided_names[name] = true
+		}
 	}
 	for entry in roots {
 		handle := Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
@@ -852,7 +863,7 @@ resolve_project_reference :: proc(
 			return Resolution{kind = .Symbol, symbol = handle}, true
 		}
 	}
-	if ref.kind == .Message_Class && provided_name_exists(units, ref.name) {
+	if ref.kind == .Message_Class && ref.name in roots.provided_names {
 		return Resolution{kind = .External}, true
 	}
 	if (ref.namespace == .Type || ref.namespace == .Routine) && ref.name in roots.names {
@@ -1143,17 +1154,6 @@ root_name_matches_unit_stem :: proc(uri, name: string) -> bool {
 
 name_is_namespaced :: proc(name: string) -> bool {
 	return len(name) > 0 && name[0] == '/'
-}
-
-provided_name_exists :: proc(units: []Unit_Analysis, name: string) -> bool {
-	for unit in units {
-		for provided in unit.provided_names {
-			if provided == name {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 include_visible_units_for_units :: proc(

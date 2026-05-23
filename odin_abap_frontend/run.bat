@@ -4,6 +4,7 @@ setlocal enabledelayedexpansion
 set "ROOT=%~dp0"
 set "MODE=debug"
 set "APP=abap_frontend"
+set "BUILD_ARGS="
 
 :parse_prefix
 if /I "%~1"=="debug" (
@@ -26,9 +27,13 @@ if /I "%~1"=="debug" (
   set "APP=adt_cli"
   shift
   goto parse_prefix
+) else if /I "%~1"=="trace-adt-fetch" (
+  set "BUILD_ARGS=!BUILD_ARGS! trace-adt-fetch"
+  shift
+  goto parse_prefix
 )
 
-call "%ROOT%build.bat" %MODE%
+call "%ROOT%build.bat" %MODE% !BUILD_ARGS!
 if errorlevel 1 exit /b %errorlevel%
 
 set "APP_ARGS="

@@ -8,6 +8,7 @@ import frontend_runtime "../runtime"
 
 import "core:os"
 import filepath "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -263,6 +264,35 @@ analyze_project_dependencies_test :: proc(
 	)
 	frontend_runtime.pool_destroy(&pool)
 	return project
+}
+
+@(test)
+analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
+	target := Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
+	dependencies := make([dynamic]Source_Input, 0, 5, context.allocator)
+	append(&dependencies, Source_Input{uri = "mem://dep1.abap", source = "REPORT zdep1."})
+	append(&dependencies, Source_Input{uri = "mem://dep2.abap", source = "REPORT zdep2."})
+	append(&dependencies, Source_Input{uri = "mem://dep3.abap", source = "REPORT zdep3."})
+	append(&dependencies, Source_Input{uri = "mem://dep4.abap", source = "REPORT zdep4."})
+	append(&dependencies, Source_Input{uri = "mem://dep5.abap", source = "REPORT zdep5."})
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 2}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	project := analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies[:],
+		Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 6)
 }
 
 analyze_path_test :: proc(t: ^testing.T, target_path: string) -> Manifest_Analysis_Result {
@@ -2914,6 +2944,58 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 }
 
 @(test)
+standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("standalone-dependency-store-iterative")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	inputs := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "ZPKG",
+			object_kind    = "global-class",
+			object_name    = "ZCL_STANDALONE_OUTER",
+			object_uri     = "/sap/bc/adt/oo/classes/ZCL_STANDALONE_OUTER",
+			object_type    = "CLAS/OC",
+			description    = "Standalone outer class",
+			file_extension = "abap",
+			source_text    = "CLASS zcl_standalone_outer DEFINITION. PUBLIC SECTION. DATA value TYPE zstandalone_type. ENDCLASS. CLASS zcl_standalone_outer IMPLEMENTATION. ENDCLASS.",
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+		{
+			package_name   = "ZPKG",
+			object_kind    = "ddic-data-element",
+			object_name    = "ZSTANDALONE_TYPE",
+			object_uri     = "/sap/bc/adt/ddic/dataelements/ZSTANDALONE_TYPE",
+			object_type    = "DTEL/DE",
+			description    = "Standalone dependent type",
+			file_extension = "abap",
+			source_text    = "TYPES zstandalone_type TYPE string.",
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, inputs[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	root_file := manifest_test_file(
+		t,
+		root,
+		"ZMAIN.abap",
+		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_outer.",
+	)
+	result := analyze_path_test_with_options(t, root_file, Analyze_Options{dependency_store_path = store_path})
+
+	testing.expect(t, result.ok)
+	testing.expect(t, !result.used_manifest)
+	testing.expect_value(t, len(result.project.units), 3)
+	testing.expect(t, !project_has_diagnostic(&result.project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&result.project, .Unresolved_Reference))
+}
+
+@(test)
 manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) {
 	export_root := external_export_workspace_path("external-export-root")
 	export_file := manifest_test_file(
@@ -3019,6 +3101,114 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
+	target := Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lt_e071 TYPE tr_objects.",
+	}
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]Source_Input, context.allocator)
+	object_ref := adt.Object_Ref {
+		uri = strings.clone("/sap/bc/adt/vit/wb/object_type/ttypda/object_name/TR_OBJECTS", context.allocator),
+		object_type = strings.clone("TTYP/DA", context.allocator),
+		name = strings.clone("TR_OBJECTS", context.allocator),
+		package_name = strings.clone("SCTS_PRJ", context.allocator),
+		description = strings.clone("Table Type", context.allocator),
+	}
+	defer adt.object_ref_destroy(&object_ref, context.allocator)
+	uri_keys := project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+
+	added := add_adt_fetched_dependency_input(
+		&candidates,
+		&dependencies,
+		Remote_Dependency_Candidate{name = "tr_objects", kind = "type"},
+		&object_ref,
+		"<ttyp/>",
+		"xml",
+		&uri_keys,
+		context.allocator,
+		context.allocator,
+	)
+	testing.expect(t, added)
+	testing.expect_value(t, len(dependencies), 1)
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	project := analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies[:],
+		Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 2)
+	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("adt-fetch-cache-write")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	object_ref := adt.Object_Ref {
+		uri          = "/sap/bc/adt/vit/wb/object_type/ttypda/object_name/TR_OBJECTS",
+		object_type  = "TTYP/DA",
+		name         = "TR_OBJECTS",
+		package_name = "SCTS_PRJ",
+		description  = "Table Type",
+	}
+	shared_dependencies := make([dynamic]adt.Dependency_Artifact, 0, 1, context.allocator)
+	append(
+		&shared_dependencies,
+		adt.Dependency_Artifact {
+			object_ref = adt.Object_Ref {
+				uri          = "/sap/bc/adt/programs/includes/ZINC_FETCHED",
+				object_type  = "PROG/I",
+				name         = "ZINC_FETCHED",
+				package_name = "ZPKG",
+				description  = "Include",
+			},
+			body           = "DATA gv_fetched TYPE string.",
+			file_extension = "abap",
+			manifest_kind  = "include",
+		},
+	)
+	fetched := adt.Dependency_Fetch_Result {
+		body                = "<ttyp/>",
+		file_extension      = "xml",
+		manifest_kind       = "ddic-table-type",
+		shared_dependencies = shared_dependencies,
+	}
+
+	store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
+
+	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "tr_objects", "type", context.allocator)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.object_kind, "ddic-table-type")
+	testing.expect_value(t, record.file_extension, "abap")
+	testing.expect(t, strings.contains(record.source_text, "TYPES tr_objects"))
+
+	shared, shared_ok, shared_err := dep_store.find_artifact_for_candidate(&store, &profile, "zinc_fetched", "include", context.allocator)
+	testing.expect_value(t, shared_err, dep_store.Store_Error.None)
+	testing.expect(t, shared_ok)
+	testing.expect_value(t, shared.object_kind, "include")
+	testing.expect(t, strings.contains(shared.source_text, "gv_fetched"))
 }
 
 @(test)
@@ -3217,6 +3407,32 @@ project_global_class_resolves_when_name_matches_unit_stem :: proc(t: ^testing.T)
 	testing.expect(t, consumer != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, consumer, "zcl_parent", .Type, .Type_Ref, sources[0].uri))
 	testing.expect(t, !has_diagnostic(consumer, .Unresolved_Reference))
+}
+
+@(test)
+project_message_class_resolves_from_dependency_provided_name :: proc(t: ^testing.T) {
+	target := Source_Input {
+		uri    = "file:///workspace/zmain.abap",
+		source = "REPORT zmain MESSAGE-ID zmsg.",
+	}
+	dependencies := [?]Source_Input {
+		{uri = "abapls-cache:/message-class/zmsg.abap", source = ""},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := project_unit_by_uri(&project, target.uri)
+	resolved := false
+	if root != nil {
+		for ref in root.references {
+			if ref.kind == .Message_Class && ref.name == "zmsg" {
+				resolved = ref.has_resolution && ref.resolution.kind == .External
+			}
+		}
+		testing.expect(t, !has_diagnostic(root, .Unresolved_Reference))
+	}
+
+	testing.expect(t, root != nil)
+	testing.expect(t, resolved)
 }
 
 @(test)

@@ -89,8 +89,36 @@ dependency_object_selection_prefers_exact_supported_refs :: proc(t: ^testing.T) 
 
 	selected := select_dependency_objects("zmsg", objects[:], "report", context.allocator)
 	defer object_refs_destroy(&selected, context.allocator)
-	testing.expect_value(t, len(selected), 2)
-	testing.expect(t, is_supported_dependency_object(&selected[0], ""))
+	testing.expect_value(t, len(selected), 1)
+	testing.expect_value(t, selected[0].object_type, "PROG/P")
+}
+
+@(test)
+type_dependency_selection_ignores_same_named_function_group :: proc(t: ^testing.T) {
+	objects := [?]Object_Ref {
+		{
+			uri = strings.clone("/sap/bc/adt/functions/groups/TR_OBJECTS", context.allocator),
+			object_type = strings.clone("FUGR/F", context.allocator),
+			name = strings.clone("TR_OBJECTS", context.allocator),
+			package_name = strings.clone("SCTS_OBJ", context.allocator),
+			description = strings.clone("Function Group", context.allocator),
+		},
+		{
+			uri = strings.clone("/sap/bc/adt/vit/wb/object_type/ttypda/object_name/TR_OBJECTS", context.allocator),
+			object_type = strings.clone("TTYP/DA", context.allocator),
+			name = strings.clone("TR_OBJECTS", context.allocator),
+			package_name = strings.clone("SCTS_PRJ", context.allocator),
+			description = strings.clone("Table Type", context.allocator),
+		},
+	}
+	defer for &entry in objects {
+		object_ref_destroy(&entry, context.allocator)
+	}
+
+	selected := select_dependency_objects("tr_objects", objects[:], "type", context.allocator)
+	defer object_refs_destroy(&selected, context.allocator)
+	testing.expect_value(t, len(selected), 1)
+	testing.expect_value(t, selected[0].object_type, "TTYP/DA")
 }
 
 @(test)

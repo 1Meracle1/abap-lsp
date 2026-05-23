@@ -14,6 +14,7 @@ Source_Input :: struct {
 Analyze_Options :: struct {
 	pool:                  ^runtime.Pool,
 	dependency_store_path: string,
+	enable_standalone_adt: bool,
 }
 
 Project_Analysis :: struct {
@@ -367,15 +368,24 @@ run_project_tasks :: proc(
 	work: proc(Project_Task_Payload) -> runtime.No_Result,
 	allocator: mem.Allocator,
 ) {
-	tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, len(unit_indices), allocator)
-	for unit_index in unit_indices {
-		payload := Project_Task_Payload{state = state, unit_index = unit_index}
-		task, err := runtime.submit_value(pool, payload, work)
-		assert(err == .None)
-		append(&tasks, task)
-	}
-	for task in tasks {
-		_, _ = runtime.wait(task)
+	batch_size := pool.options.task_capacity
+	for start := 0; start < len(unit_indices); {
+		end := start + batch_size
+		if end > len(unit_indices) {
+			end = len(unit_indices)
+		}
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
+		for unit_index in unit_indices[start:end] {
+			payload := Project_Task_Payload{state = state, unit_index = unit_index}
+			task, err := runtime.submit_value(pool, payload, work)
+			assert(err == .None)
+			append(&tasks, task)
+		}
+		for task in tasks {
+			_, _ = runtime.wait(task)
+		}
+		delete(tasks)
+		start = end
 	}
 }
 
@@ -555,15 +565,24 @@ run_infer_tasks :: proc(
 	state: ^Project_Infer_State,
 	allocator: mem.Allocator,
 ) {
-	tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, len(state.project.units), allocator)
-	for _, unit_index in state.project.units {
-		payload := Project_Infer_Payload{state = state, unit_index = unit_index}
-		task, err := runtime.submit_value(pool, payload, infer_task)
-		assert(err == .None)
-		append(&tasks, task)
-	}
-	for task in tasks {
-		_, _ = runtime.wait(task)
+	batch_size := pool.options.task_capacity
+	for start := 0; start < len(state.project.units); {
+		end := start + batch_size
+		if end > len(state.project.units) {
+			end = len(state.project.units)
+		}
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
+		for unit_index in start ..< end {
+			payload := Project_Infer_Payload{state = state, unit_index = unit_index}
+			task, err := runtime.submit_value(pool, payload, infer_task)
+			assert(err == .None)
+			append(&tasks, task)
+		}
+		for task in tasks {
+			_, _ = runtime.wait(task)
+		}
+		delete(tasks)
+		start = end
 	}
 }
 
@@ -572,15 +591,24 @@ run_validate_tasks :: proc(
 	state: ^Project_Validate_State,
 	allocator: mem.Allocator,
 ) {
-	tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, len(state.project.units), allocator)
-	for _, unit_index in state.project.units {
-		payload := Project_Validate_Payload{state = state, unit_index = unit_index}
-		task, err := runtime.submit_value(pool, payload, validate_task)
-		assert(err == .None)
-		append(&tasks, task)
-	}
-	for task in tasks {
-		_, _ = runtime.wait(task)
+	batch_size := pool.options.task_capacity
+	for start := 0; start < len(state.project.units); {
+		end := start + batch_size
+		if end > len(state.project.units) {
+			end = len(state.project.units)
+		}
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
+		for unit_index in start ..< end {
+			payload := Project_Validate_Payload{state = state, unit_index = unit_index}
+			task, err := runtime.submit_value(pool, payload, validate_task)
+			assert(err == .None)
+			append(&tasks, task)
+		}
+		for task in tasks {
+			_, _ = runtime.wait(task)
+		}
+		delete(tasks)
+		start = end
 	}
 }
 

@@ -171,7 +171,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	result := semantic.analyze_path(
 		target_path,
 		include_paths[:],
-		semantic.Analyze_Options{pool = &pool},
+		semantic.Analyze_Options{pool = &pool, enable_standalone_adt = true},
 		allocator,
 	)
 	if !result.ok {
