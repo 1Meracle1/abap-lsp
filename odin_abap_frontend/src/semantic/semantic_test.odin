@@ -1153,20 +1153,29 @@ DATA(lv_second) = REDUCE i( INIT x = 0 FOR i = 0 UNTIL i > 1 NEXT x = x + i ).`
 collects_multiple_method_parameters_from_oop_ast :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
-    METHODS run IMPORTING iv_count TYPE i iv_text TYPE string
+    METHODS run IMPORTING it_source TYPE STANDARD TABLE iv_state TYPE i OPTIONAL iv_text TYPE string
       RETURNING VALUE(rv_ok) TYPE abap_bool.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA lv_state TYPE i.
+    lv_state = iv_state.
+  ENDMETHOD.
 ENDCLASS.`
 	unit := collect_test_unit(t, "file:///oop_params.abap", source)
 
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 	class := find_symbol(&unit, "lcl", .Class)
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
-	testing.expect_value(t, len(method.parameters), 3)
-	testing.expect_value(t, method.parameters[0].name, "iv_count")
-	testing.expect_value(t, method.parameters[1].name, "iv_text")
-	testing.expect_value(t, method.parameters[2].section, Method_Parameter_Section.Returning)
-	testing.expect_value(t, method.parameters[2].name, "rv_ok")
+	testing.expect_value(t, len(method.parameters), 4)
+	testing.expect_value(t, method.parameters[0].name, "it_source")
+	testing.expect_value(t, method.parameters[1].name, "iv_state")
+	testing.expect(t, .Is_Optional in method.parameters[1].flags)
+	testing.expect_value(t, method.parameters[2].name, "iv_text")
+	testing.expect_value(t, method.parameters[3].section, Method_Parameter_Section.Returning)
+	testing.expect_value(t, method.parameters[3].name, "rv_ok")
 }
 
 @(test)

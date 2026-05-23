@@ -1298,6 +1298,7 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 	clause, _ := mem.new(ast.Data_Type_Clause, p.allocator)
 	is_like := token_is_keyword(p, keyword, "LIKE")
 	clause.form = .Like if is_like else .Type
+	table_has_of := true
 	if allow_keyword(p, "LINE") {
 		allow_keyword(p, "OF")
 		clause.form = .Like_Line_Of if is_like else .Type_Line_Of
@@ -1309,19 +1310,22 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		clause.form = .Range_Of
 	} else if allow_keyword(p, "STANDARD") {
 		allow_keyword(p, "TABLE")
-		allow_keyword(p, "OF")
+		table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Standard_Table if is_like else .Standard_Table
 	} else if allow_keyword(p, "SORTED") {
 		allow_keyword(p, "TABLE")
-		allow_keyword(p, "OF")
+		table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
 	} else if allow_keyword(p, "HASHED") {
 		allow_keyword(p, "TABLE")
-		allow_keyword(p, "OF")
+		table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
 	} else if allow_keyword(p, "TABLE") {
-		allow_keyword(p, "OF")
+		table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Table if is_like else .Table
+	}
+	if !table_has_of {
+		return clause
 	}
 	clause.type_ref = parse_oop_type_ref_expr(p)
 	return clause
