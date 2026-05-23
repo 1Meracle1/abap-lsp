@@ -445,14 +445,32 @@ seed_inherited_method_scope_parameters :: proc(
 	changed := false
 	for unit_index in 0 ..< len(units) {
 		unit := &units[unit_index]
+		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), allocator)
+		for _ in 0 ..< len(unit.symbols) {
+			append(&method_scope_by_owner, INVALID_SCOPE_ID)
+		}
+		for &s in unit.scopes {
+			if s.kind != .Method || s.owner == INVALID_SYMBOL_ID {
+				continue
+			}
+			owner_index := symbol_id_index(s.owner)
+			if owner_index < len(method_scope_by_owner) &&
+			   method_scope_by_owner[owner_index] == INVALID_SCOPE_ID {
+				method_scope_by_owner[owner_index] = s.id
+			}
+		}
 		symbol_count := len(unit.symbols)
 		for symbol_index in 0 ..< symbol_count {
-			method_symbol := unit.symbols[symbol_index]
+			method_symbol := &unit.symbols[symbol_index]
 			if method_symbol.kind != .Method {
 				continue
 			}
-			method_scope, scope_ok := method_scope_for_owner(unit, method_symbol.id)
-			if !scope_ok {
+			owner_index := symbol_id_index(method_symbol.id)
+			if owner_index >= len(method_scope_by_owner) {
+				continue
+			}
+			method_scope := method_scope_by_owner[owner_index]
+			if method_scope == INVALID_SCOPE_ID {
 				continue
 			}
 			member := method_signature_member_for_scope(
@@ -486,6 +504,7 @@ seed_inherited_method_scope_parameters :: proc(
 				changed = true
 			}
 		}
+		delete(method_scope_by_owner)
 	}
 	return changed
 }
@@ -679,15 +698,6 @@ inherited_project_class_member :: proc(
 		current = next
 	}
 	return nil, false
-}
-
-method_scope_for_owner :: proc(unit: ^Unit_Analysis, owner: Symbol_Id) -> (Scope_Id, bool) {
-	for s in unit.scopes {
-		if s.kind == .Method && s.owner == owner {
-			return s.id, true
-		}
-	}
-	return INVALID_SCOPE_ID, false
 }
 
 method_scope_has_value_symbol :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, name: string) -> bool {
@@ -1307,6 +1317,10 @@ import_project_structures_for_unit :: proc(
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) {
+	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), allocator)
+	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), allocator)
+	defer delete(owner_scopes)
+	defer delete(owner_scope_set)
 	changed := true
 	for changed {
 		changed = false
@@ -1328,8 +1342,28 @@ import_project_structures_for_unit :: proc(
 				changed = true
 			}
 		}
+		resize(&owner_scopes, 0)
+		resize(&owner_scope_set, 0)
+		for _ in 0 ..< len(units[unit_index].structures) {
+			append(&owner_scopes, units[unit_index].root_scope)
+			append(&owner_scope_set, false)
+		}
+		for &s in units[unit_index].symbols {
+			if s.structure == INVALID_STRUCTURE_ID {
+				continue
+			}
+			index := structure_id_index(s.structure)
+			if index < len(owner_scopes) && !owner_scope_set[index] {
+				owner_scopes[index] = s.scope
+				owner_scope_set[index] = true
+			}
+		}
 		for structure_index := 0; structure_index < len(units[unit_index].structures); structure_index += 1 {
-			owner_scope := structure_owner_scope(&units[unit_index], Structure_Id(u32(structure_index)))
+			if structure_index >= len(owner_scopes) {
+				append(&owner_scopes, units[unit_index].root_scope)
+				append(&owner_scope_set, false)
+			}
+			owner_scope := owner_scopes[structure_index]
 			for field_index in 0 ..< len(units[unit_index].structures[structure_index].fields) {
 				field := units[unit_index].structures[structure_index].fields[field_index]
 				if field.structure != INVALID_STRUCTURE_ID || !(.Has_Type_Ref in field.flags) {
@@ -1492,15 +1526,6 @@ class_type_symbol_handle_in_unit :: proc(
 		return symbol_id, true
 	}
 	return INVALID_SYMBOL_ID, false
-}
-
-structure_owner_scope :: proc(unit: ^Unit_Analysis, id: Structure_Id) -> Scope_Id {
-	for s in unit.symbols {
-		if s.structure == id {
-			return s.scope
-		}
-	}
-	return unit.root_scope
 }
 
 resolve_type_ref_handle_project :: proc(

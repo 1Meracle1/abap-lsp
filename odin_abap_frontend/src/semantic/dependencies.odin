@@ -300,49 +300,51 @@ collect_project_remote_dependency_candidates :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Remote_Dependency_Candidate {
 	out := make([dynamic]Remote_Dependency_Candidate, 0, 8, allocator)
-	for unit in project.units {
-		for edge in unit.include_edges {
+	index := make(map[string]int, 64, allocator)
+	defer delete(index)
+	for &unit in project.units {
+		for &edge in unit.include_edges {
 			if !edge.has_target && is_remote_lookup_candidate(edge.name, "include") {
-				insert_remote_candidate(&out, edge.name, "include", allocator)
+				insert_remote_candidate(&out, &index, edge.name, "include", allocator)
 			}
 		}
-		for ref in unit.references {
+		for &ref in unit.references {
 			if ref.has_resolution && ref.resolution.kind != .External {
 				continue
 			}
-			if candidate, ok := remote_dependency_candidate_for_reference(ref); ok {
-				insert_remote_candidate(&out, candidate.name, candidate.kind, allocator)
+			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
+				insert_remote_candidate(&out, &index, candidate.name, candidate.kind, allocator)
 			}
 		}
-		for symbol in unit.symbols {
+		for &symbol in unit.symbols {
 			if symbol.decl_range.start == symbol.decl_range.end && symbol.has_declared_type &&
 			   symbol.declared_type.namespace == .Type &&
 			   is_remote_lookup_candidate_after_local_resolution(symbol.declared_type.base_name, "type") {
-				insert_remote_candidate(&out, symbol.declared_type.base_name, "type", allocator)
+				insert_remote_candidate(&out, &index, symbol.declared_type.base_name, "type", allocator)
 			}
 		}
 		if unit.has_message_default_class {
-			insert_message_class_candidate(&out, unit.message_default_class.name, allocator)
+			insert_message_class_candidate(&out, &index, unit.message_default_class.name, allocator)
 		}
-		for message in unit.message_uses {
+		for &message in unit.message_uses {
 			if message.class_name != "" {
-				insert_message_class_candidate(&out, message.class_name, allocator)
+				insert_message_class_candidate(&out, &index, message.class_name, allocator)
 			}
 		}
-		for sql_source in unit.sql_sources {
+		for &sql_source in unit.sql_sources {
 			if sql_source.resolution == .External && is_remote_lookup_candidate(sql_source.name, "type") {
-				insert_remote_candidate(&out, sql_source.name, "type", allocator)
+				insert_remote_candidate(&out, &index, sql_source.name, "type", allocator)
 			}
 		}
-		for call_site in unit.call_sites {
+		for &call_site in unit.call_sites {
 			#partial switch call_site.target.kind {
 			case .Function:
 				if is_remote_lookup_candidate_after_local_resolution(call_site.target.function_name, "function") {
-					insert_remote_candidate(&out, call_site.target.function_name, "function", allocator)
+					insert_remote_candidate(&out, &index, call_site.target.function_name, "function", allocator)
 				}
 			case .Report:
 				if is_remote_lookup_candidate_after_local_resolution(call_site.target.report_name, "report") {
-					insert_remote_candidate(&out, call_site.target.report_name, "report", allocator)
+					insert_remote_candidate(&out, &index, call_site.target.report_name, "report", allocator)
 				}
 			}
 		}
@@ -350,7 +352,7 @@ collect_project_remote_dependency_candidates :: proc(
 	return out
 }
 
-remote_dependency_candidate_for_reference :: proc(ref: Reference_Data) -> (
+remote_dependency_candidate_for_reference :: proc(ref: ^Reference_Data) -> (
 	Remote_Dependency_Candidate,
 	bool,
 ) {
@@ -389,16 +391,18 @@ remote_dependency_candidate_for_reference :: proc(ref: Reference_Data) -> (
 
 insert_message_class_candidate :: proc(
 	out: ^[dynamic]Remote_Dependency_Candidate,
+	index: ^map[string]int,
 	name: string,
 	allocator: mem.Allocator,
 ) {
 	if is_remote_lookup_candidate(name, "message-class") {
-		insert_remote_candidate(out, name, "message-class", allocator)
+		insert_remote_candidate(out, index, name, "message-class", allocator)
 	}
 }
 
 insert_remote_candidate :: proc(
 	out: ^[dynamic]Remote_Dependency_Candidate,
+	index: ^map[string]int,
 	name, kind: string,
 	allocator: mem.Allocator,
 ) {
@@ -407,14 +411,13 @@ insert_remote_candidate :: proc(
 		return
 	}
 	normalized_kind := canonical_name(strings.trim_space(kind), allocator)
-	for existing, i in out^ {
-		if existing.name == normalized_name {
-			if remote_candidate_kind_priority(normalized_kind) > remote_candidate_kind_priority(existing.kind) {
-				out^[i].kind = normalized_kind
-			}
-			return
+	if existing_index, ok := index^[normalized_name]; ok {
+		if remote_candidate_kind_priority(normalized_kind) > remote_candidate_kind_priority(out^[existing_index].kind) {
+			out^[existing_index].kind = normalized_kind
 		}
+		return
 	}
+	index^[normalized_name] = len(out^)
 	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = normalized_kind})
 }
 
