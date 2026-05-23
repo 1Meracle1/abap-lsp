@@ -64,6 +64,23 @@ ENDFORM.
 }
 
 @(test)
+standard_control_event_table_type_is_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///cntl_events.abap",
+		`
+DATA lt_events TYPE cntl_simple_events.
+DATA ls_event LIKE LINE OF lt_events.
+ls_event-eventid = 1.
+ls_event-appl_event = abap_true.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	unit := unit_analysis_make(
 		Unit_Id(0),

@@ -102,10 +102,16 @@ MATCH_RESULT_FIELDS :: []Builtin_Field_Spec {
 	{"line", "i", ""},
 }
 
+CNTL_SIMPLE_EVENT_FIELDS :: []Builtin_Field_Spec {
+	{"eventid", "i", ""},
+	{"appl_event", "abap_bool", ""},
+}
+
 BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 	{"syst", SYST_FIELDS},
 	{"screen", SCREEN_FIELDS},
 	{"match_result", MATCH_RESULT_FIELDS},
+	{"cntl_simple_event", CNTL_SIMPLE_EVENT_FIELDS},
 }
 
 BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
@@ -134,6 +140,8 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{"abap_undefined", .Constant, ""},
 	{"space", .Constant, ""},
 	{"text", .Variable, ""},
+	{"cntl_simple_event", .Type, "cntl_simple_event"},
+	{"cntl_simple_events", .Type, "cntl_simple_event"},
 }
 
 ARG_STRING_PARAMS :: []Builtin_Routine_Param_Spec {
