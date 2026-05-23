@@ -81,6 +81,36 @@ Candidate_Cache_Status :: enum {
 	Negative,
 }
 
+Candidate_Kind :: enum {
+	Include,
+	Message_Class,
+	Report,
+	Function,
+	Static,
+	Type,
+	Symbol,
+}
+
+candidate_kind_text :: proc(kind: Candidate_Kind) -> string {
+	switch kind {
+	case .Include:
+		return "include"
+	case .Message_Class:
+		return "message-class"
+	case .Report:
+		return "report"
+	case .Function:
+		return "function"
+	case .Static:
+		return "static"
+	case .Type:
+		return "type"
+	case .Symbol:
+		return "symbol"
+	}
+	return ""
+}
+
 Package_Version :: struct {
 	package_name: string,
 	version:      string,
@@ -226,7 +256,7 @@ find_cached_candidate :: proc(
 	profile: ^Dependency_Profile,
 	connection_key: string,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Candidate_Cache_Status, Store_Error) {
 	r, err := reader(store, allocator)
@@ -241,7 +271,7 @@ lookup_symbol :: proc(
 	store: ^Dependency_Store,
 	profile: ^Dependency_Profile,
 	symbol_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Symbol_Lookup_Result, bool, Store_Error) {
 	r, err := reader(store, allocator)
@@ -284,7 +314,7 @@ find_artifact_for_candidate :: proc(
 	store: ^Dependency_Store,
 	profile: ^Dependency_Profile,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Stored_Artifact_Record, bool, Store_Error) {
 	r, err := reader(store, allocator)
@@ -298,7 +328,7 @@ find_artifact_for_candidate :: proc(
 find_artifact_for_candidate_any_profile :: proc(
 	store: ^Dependency_Store,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Stored_Artifact_Record, bool, Store_Error) {
 	r, err := reader(store, allocator)
@@ -328,7 +358,7 @@ record_negative_lookup :: proc(
 	profile: ^Dependency_Profile,
 	connection_key: string,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	recorded_at: string,
 	allocator: mem.Allocator,
 ) -> Store_Error {
@@ -367,13 +397,12 @@ DO UPDATE SET recorded_at = excluded.recorded_at
 	profile_key_text := profile_key(profile, allocator)
 	product := normalized_product_version(profile, allocator)
 	connection := normalize_name(connection_key, allocator)
-	kind := normalize_name(candidate_kind, allocator)
 	name := normalize_name(candidate_name, allocator)
 
 	bind_text(stmt, 1, profile_key_text)
 	bind_text(stmt, 2, product)
 	bind_text(stmt, 3, connection)
-	bind_text(stmt, 4, kind)
+	bind_text(stmt, 4, candidate_kind_text(candidate_kind))
 	bind_text(stmt, 5, name)
 	bind_text(stmt, 6, strings.trim_space(recorded_at))
 	if step_done(stmt) != .None {
@@ -447,15 +476,14 @@ reader_find_cached_candidate :: proc(
 	profile: ^Dependency_Profile,
 	connection_key: string,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Candidate_Cache_Status, Store_Error) {
 	name := normalize_name(candidate_name, allocator)
-	kind := normalize_name(candidate_kind, allocator)
-	if name == "" || kind == "" {
+	if name == "" {
 		return .Missing, .None
 	}
-	exists, err := candidate_artifact_exists(r.connection, profile, name, kind, allocator)
+	exists, err := candidate_artifact_exists(r.connection, profile, name, candidate_kind, allocator)
 	if err != .None {
 		return .Missing, err
 	}
@@ -483,7 +511,7 @@ LIMIT 1
 	defer sqlite3.finalize(stmt)
 	bind_text(stmt, 1, profile_key(profile, allocator))
 	bind_text(stmt, 2, normalize_name(connection_key, allocator))
-	bind_text(stmt, 3, kind)
+	bind_text(stmt, 3, candidate_kind_text(candidate_kind))
 	bind_text(stmt, 4, name)
 	code := sqlite3.step(stmt)
 	if code == sqlite3.ROW {
@@ -499,12 +527,12 @@ reader_lookup_symbol :: proc(
 	r: ^Dependency_Store_Reader,
 	profile: ^Dependency_Profile,
 	symbol_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Symbol_Lookup_Result, bool, Store_Error) {
 	allowed_kinds := make([dynamic]string, 0, 8, allocator)
 	allowed_symbol_kinds := make([dynamic]string, 0, 8, allocator)
-	candidate_artifact_kinds(candidate_kind, &allowed_kinds, allocator)
+	candidate_artifact_kinds(candidate_kind, &allowed_kinds)
 	candidate_symbol_kinds(candidate_kind, &allowed_symbol_kinds)
 	name := normalize_name(symbol_name, allocator)
 	if len(allowed_kinds) == 0 || len(allowed_symbol_kinds) == 0 || name == "" {
@@ -647,11 +675,14 @@ reader_find_artifact_for_candidate :: proc(
 	r: ^Dependency_Store_Reader,
 	profile: ^Dependency_Profile,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Stored_Artifact_Record, bool, Store_Error) {
 	allowed_kinds := make([dynamic]string, 0, 8, allocator)
-	candidate_artifact_kinds(candidate_kind, &allowed_kinds, allocator)
+	allowed_object_types := make([dynamic]string, 0, 8, allocator)
+	allowed_object_type_prefixes := make([dynamic]string, 0, 2, allocator)
+	candidate_artifact_kinds(candidate_kind, &allowed_kinds)
+	candidate_artifact_object_types(candidate_kind, &allowed_object_types, &allowed_object_type_prefixes)
 	name := normalize_name(candidate_name, allocator)
 	if len(allowed_kinds) == 0 || name == "" {
 		return {}, false, .None
@@ -682,7 +713,9 @@ WHERE product_version = ?
 	append_placeholders(&sql, len(package_versions))
 	strings.write_string(&sql, ") AND object_kind IN (")
 	append_placeholders(&sql, len(allowed_kinds))
-	strings.write_string(&sql, ") ORDER BY CASE object_kind")
+	strings.write_byte(&sql, ')')
+	append_object_type_filter(&sql, allowed_object_types[:], allowed_object_type_prefixes[:])
+	strings.write_string(&sql, " ORDER BY CASE object_kind")
 	for _ in allowed_kinds {
 		strings.write_string(&sql, " WHEN ? THEN ?")
 	}
@@ -698,6 +731,8 @@ WHERE product_version = ?
 	index := 3
 	index = bind_text_list(stmt, index, package_versions[:])
 	index = bind_text_list(stmt, index, allowed_kinds[:])
+	index = bind_text_list(stmt, index, allowed_object_types[:])
+	index = bind_text_list(stmt, index, allowed_object_type_prefixes[:])
 	for kind, rank in allowed_kinds {
 		bind_text(stmt, index, kind)
 		bind_i64(stmt, index + 1, i64(rank))
@@ -710,11 +745,14 @@ WHERE product_version = ?
 reader_find_artifact_for_candidate_any_profile :: proc(
 	r: ^Dependency_Store_Reader,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (Stored_Artifact_Record, bool, Store_Error) {
 	allowed_kinds := make([dynamic]string, 0, 8, allocator)
-	candidate_artifact_kinds(candidate_kind, &allowed_kinds, allocator)
+	allowed_object_types := make([dynamic]string, 0, 8, allocator)
+	allowed_object_type_prefixes := make([dynamic]string, 0, 2, allocator)
+	candidate_artifact_kinds(candidate_kind, &allowed_kinds)
+	candidate_artifact_object_types(candidate_kind, &allowed_object_types, &allowed_object_type_prefixes)
 	name := normalize_name(candidate_name, allocator)
 	if len(allowed_kinds) == 0 || name == "" {
 		return {}, false, .None
@@ -741,7 +779,9 @@ WHERE object_name = ?
   AND object_kind IN (`,
 	)
 	append_placeholders(&sql, len(allowed_kinds))
-	strings.write_string(&sql, ") ORDER BY CASE object_kind")
+	strings.write_byte(&sql, ')')
+	append_object_type_filter(&sql, allowed_object_types[:], allowed_object_type_prefixes[:])
+	strings.write_string(&sql, " ORDER BY CASE object_kind")
 	for _ in allowed_kinds {
 		strings.write_string(&sql, " WHEN ? THEN ?")
 	}
@@ -757,6 +797,8 @@ WHERE object_name = ?
 	defer sqlite3.finalize(stmt)
 	bind_text(stmt, 1, name)
 	index := bind_text_list(stmt, 2, allowed_kinds[:])
+	index = bind_text_list(stmt, index, allowed_object_types[:])
+	index = bind_text_list(stmt, index, allowed_object_type_prefixes[:])
 	for kind, rank in allowed_kinds {
 		bind_text(stmt, index, kind)
 		bind_i64(stmt, index + 1, i64(rank))
@@ -1156,12 +1198,16 @@ candidate_artifact_exists :: proc(
 	db: ^sqlite3.Connection,
 	profile: ^Dependency_Profile,
 	candidate_name: string,
-	candidate_kind: string,
+	candidate_kind: Candidate_Kind,
 	allocator: mem.Allocator,
 ) -> (bool, Store_Error) {
 	allowed_kinds := make([dynamic]string, 0, 8, allocator)
-	candidate_artifact_kinds(candidate_kind, &allowed_kinds, allocator)
-	if len(allowed_kinds) == 0 {
+	allowed_object_types := make([dynamic]string, 0, 8, allocator)
+	allowed_object_type_prefixes := make([dynamic]string, 0, 2, allocator)
+	candidate_artifact_kinds(candidate_kind, &allowed_kinds)
+	candidate_artifact_object_types(candidate_kind, &allowed_object_types, &allowed_object_type_prefixes)
+	name := normalize_name(candidate_name, allocator)
+	if len(allowed_kinds) == 0 || name == "" {
 		return false, .None
 	}
 	package_versions := package_version_set(profile, allocator)
@@ -1174,7 +1220,9 @@ candidate_artifact_exists :: proc(
 	append_placeholders(&sql, len(package_versions))
 	strings.write_string(&sql, ") AND object_kind IN (")
 	append_placeholders(&sql, len(allowed_kinds))
-	strings.write_string(&sql, ") LIMIT 1")
+	strings.write_byte(&sql, ')')
+	append_object_type_filter(&sql, allowed_object_types[:], allowed_object_type_prefixes[:])
+	strings.write_string(&sql, " LIMIT 1")
 
 	stmt, err := prepare(db, strings.to_string(sql), allocator)
 	if err != .None {
@@ -1182,9 +1230,11 @@ candidate_artifact_exists :: proc(
 	}
 	defer sqlite3.finalize(stmt)
 	bind_text(stmt, 1, normalized_product_version(profile, allocator))
-	bind_text(stmt, 2, candidate_name)
+	bind_text(stmt, 2, name)
 	index := bind_text_list(stmt, 3, package_versions[:])
-	bind_text_list(stmt, index, allowed_kinds[:])
+	index = bind_text_list(stmt, index, allowed_kinds[:])
+	index = bind_text_list(stmt, index, allowed_object_types[:])
+	bind_text_list(stmt, index, allowed_object_type_prefixes[:])
 	code := sqlite3.step(stmt)
 	if code == sqlite3.ROW {
 		return true, .None
@@ -1195,25 +1245,23 @@ candidate_artifact_exists :: proc(
 	return false, .Sqlite
 }
 
-candidate_artifact_kinds :: proc(kind: string, out: ^[dynamic]string, allocator: mem.Allocator) {
-	trimmed := strings.trim_space(kind)
-	switch {
-	case strings.equal_fold(trimmed, "include"):
+candidate_artifact_kinds :: proc(kind: Candidate_Kind, out: ^[dynamic]string) {
+	switch kind {
+	case .Include:
 		append(out, "include")
-	case strings.equal_fold(trimmed, "message-class"):
+	case .Message_Class:
 		append(out, "message-class")
-	case strings.equal_fold(trimmed, "report"):
+	case .Report:
 		append(out, "report")
-	case strings.equal_fold(trimmed, "function"):
+	case .Function:
 		append(out, "function-module")
-	case strings.equal_fold(trimmed, "static"):
+	case .Static:
 		append(out, "global-class")
 		append(out, "global-interface")
-	case strings.equal_fold(trimmed, "type") || strings.equal_fold(trimmed, "symbol"):
+	case .Type:
 		kinds := [?]string {
 			"global-class",
 			"global-interface",
-			"report",
 			"ddic-data-element",
 			"ddic-domain",
 			"ddic-structure",
@@ -1224,32 +1272,117 @@ candidate_artifact_kinds :: proc(kind: string, out: ^[dynamic]string, allocator:
 		for v in kinds {
 			append(out, v)
 		}
-	case trimmed != "":
-		append(out, normalize_name(trimmed, allocator))
+	case .Symbol:
+		kinds := [?]string {
+			"global-class",
+			"global-interface",
+			"report",
+			"include",
+			"message-class",
+			"function-module",
+			"ddic-data-element",
+			"ddic-domain",
+			"ddic-structure",
+			"ddic-table",
+			"ddic-table-type",
+			"ddic-view",
+		}
+		for v in kinds {
+			append(out, v)
+		}
 	}
 }
 
-candidate_symbol_kinds :: proc(kind: string, out: ^[dynamic]string) {
-	trimmed := strings.trim_space(kind)
-	switch {
-	case strings.equal_fold(trimmed, "include"):
+candidate_artifact_object_types :: proc(
+	kind: Candidate_Kind,
+	out: ^[dynamic]string,
+	prefixes: ^[dynamic]string,
+) {
+	switch kind {
+	case .Include:
+		append(out, "prog/i")
+	case .Message_Class:
+		append(out, "msag/n")
+	case .Report:
+		append(out, "prog/p")
+	case .Function:
+		append(out, "fugr/f")
+		append(out, "fugr/ff")
+	case .Static:
+		append(prefixes, "clas/%")
+		append(prefixes, "intf/%")
+	case .Type:
+		append(prefixes, "clas/%")
+		append(prefixes, "intf/%")
+		append(prefixes, "doma/%")
+		append(out, "dtel/de")
+		append(out, "tabl/ds")
+		append(out, "tabl/dt")
+		append(out, "tabl/da")
+		append(out, "ttyp/da")
+		append(out, "view/dv")
+	case .Symbol:
+		append(prefixes, "clas/%")
+		append(prefixes, "intf/%")
+		append(prefixes, "doma/%")
+		kinds := [?]string {
+			"prog/i",
+			"prog/p",
+			"msag/n",
+			"fugr/f",
+			"fugr/ff",
+			"dtel/de",
+			"tabl/ds",
+			"tabl/dt",
+			"tabl/da",
+			"ttyp/da",
+			"view/dv",
+		}
+		for v in kinds {
+			append(out, v)
+		}
+	}
+}
+
+append_object_type_filter :: proc(sql: ^strings.Builder, object_types, prefixes: []string) {
+	if len(object_types) == 0 && len(prefixes) == 0 {
+		return
+	}
+	strings.write_string(sql, " AND (")
+	if len(object_types) > 0 {
+		strings.write_string(sql, "lower(object_type) IN (")
+		append_placeholders(sql, len(object_types))
+		strings.write_byte(sql, ')')
+	}
+	for _, i in prefixes {
+		if len(object_types) > 0 || i > 0 {
+			strings.write_string(sql, " OR ")
+		}
+		strings.write_string(sql, "lower(object_type) LIKE ?")
+	}
+	strings.write_byte(sql, ')')
+}
+
+candidate_symbol_kinds :: proc(kind: Candidate_Kind, out: ^[dynamic]string) {
+	switch kind {
+	case .Include:
 		append(out, "include")
-	case strings.equal_fold(trimmed, "message-class"):
+	case .Message_Class:
 		append(out, "typedef")
-	case strings.equal_fold(trimmed, "report"):
+	case .Report:
 		append(out, "report")
-	case strings.equal_fold(trimmed, "function"):
+	case .Function:
 		append(out, "function-module")
 		append(out, "module")
-	case strings.equal_fold(trimmed, "static"):
+	case .Static:
 		append(out, "class")
 		append(out, "interface")
-	case strings.equal_fold(trimmed, "type"):
+	case .Type:
 		append(out, "class")
 		append(out, "interface")
 		append(out, "typedef")
 		append(out, "report")
-	case strings.equal_fold(trimmed, "symbol"):
+	case .Symbol:
 		kinds := [?]string {
 			"class",
 			"interface",

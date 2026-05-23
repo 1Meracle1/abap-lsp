@@ -1,14 +1,17 @@
 package abap_frontend_semantic
 
-import dep_store "../dependency_store"
 import "../adt"
+import dep_store "../dependency_store"
 import frontend_runtime "../runtime"
 
 import base_runtime "base:runtime"
+import xml_doc "core:encoding/xml"
 import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
+import net_url "core:net"
 import "core:os"
+import filepath "core:path/filepath"
 import "core:strings"
 import "core:time"
 
@@ -16,7 +19,7 @@ trace_eprintf :: fmt.eprintf
 
 Remote_Dependency_Candidate :: struct {
 	name: string,
-	kind: string,
+	kind: dep_store.Candidate_Kind,
 }
 
 analyze_with_manifest_dependency_drain :: proc(
@@ -29,7 +32,13 @@ analyze_with_manifest_dependency_drain :: proc(
 ) -> Project_Analysis {
 	candidate_inputs := candidates
 	dependency_inputs := dependencies
-	project := analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
+	project := analyze_target_with_candidate_inputs(
+		target,
+		candidate_inputs[:],
+		dependency_inputs[:],
+		options,
+		allocator,
+	)
 	store, has_store := manifest_dependency_store(manifest, options, allocator)
 	roots := manifest_local_export_roots(manifest, allocator)
 	has_adt := manifest_has_project_dotenv(manifest, allocator)
@@ -45,7 +54,11 @@ analyze_with_manifest_dependency_drain :: proc(
 		remote_candidates := collect_project_remote_dependency_candidates(&project, allocator)
 		added := false
 		if has_store {
-			store_candidates := unseen_remote_candidates(remote_candidates[:], &seen_store_candidates, allocator)
+			store_candidates := unseen_remote_candidates(
+				remote_candidates[:],
+				&seen_store_candidates,
+				allocator,
+			)
 			added = add_dependency_store_matches(
 				&candidate_inputs,
 				&dependency_inputs,
@@ -60,7 +73,11 @@ analyze_with_manifest_dependency_drain :: proc(
 			delete(store_candidates)
 		}
 		if !added && len(roots) > 0 {
-			local_candidates := unseen_remote_candidates(remote_candidates[:], &seen_local_candidates, allocator)
+			local_candidates := unseen_remote_candidates(
+				remote_candidates[:],
+				&seen_local_candidates,
+				allocator,
+			)
 			added = add_local_export_matches(
 				&candidate_inputs,
 				&dependency_inputs,
@@ -78,7 +95,11 @@ analyze_with_manifest_dependency_drain :: proc(
 				cache_store = &store
 				cache_profile = &manifest.dependency_store
 			}
-			adt_candidates := unseen_remote_candidates(remote_candidates[:], &seen_adt_candidates, allocator)
+			adt_candidates := unseen_remote_candidates(
+				remote_candidates[:],
+				&seen_adt_candidates,
+				allocator,
+			)
 			added = add_adt_matches(
 				&candidate_inputs,
 				&dependency_inputs,
@@ -95,7 +116,13 @@ analyze_with_manifest_dependency_drain :: proc(
 		if !added {
 			break
 		}
-		project = analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
+		project = analyze_target_with_candidate_inputs(
+			target,
+			candidate_inputs[:],
+			dependency_inputs[:],
+			options,
+			allocator,
+		)
 	}
 	return project
 }
@@ -108,7 +135,10 @@ analyze_standalone_with_dependency_drain :: proc(
 ) -> Project_Analysis {
 	candidate_inputs := candidates
 	dependency_inputs := make([dynamic]Source_Input, 0, 4, allocator)
-	store, err := dep_store.dependency_store_from_override_path(options.dependency_store_path, allocator)
+	store, err := dep_store.dependency_store_from_override_path(
+		options.dependency_store_path,
+		allocator,
+	)
 	when adt.DEPENDENCY_FETCH_TRACE {
 		status := "disabled"
 		if options.enable_standalone_adt {
@@ -122,7 +152,13 @@ analyze_standalone_with_dependency_drain :: proc(
 		}
 	}
 	if err != .None && !options.enable_standalone_adt {
-		return analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
+		return analyze_target_with_candidate_inputs(
+			target,
+			candidate_inputs[:],
+			dependency_inputs[:],
+			options,
+			allocator,
+		)
 	}
 	cache_store: ^dep_store.Dependency_Store
 	cache_profile: ^dep_store.Dependency_Profile
@@ -142,7 +178,11 @@ analyze_standalone_with_dependency_drain :: proc(
 				trace_eprintf("adt_fetch\tstandalone\tdotenv\tok\t%d\n", len(dotenv.values))
 			}
 			overrides := adt.Connection_Overrides{}
-			config, config_err := adt.connection_config_from_sources(&overrides, &dotenv, allocator)
+			config, config_err := adt.connection_config_from_sources(
+				&overrides,
+				&dotenv,
+				allocator,
+			)
 			adt.dotenv_defaults_destroy(&dotenv, allocator)
 			if config_err == .None {
 				standalone_config = config
@@ -187,14 +227,25 @@ analyze_standalone_with_dependency_drain :: proc(
 	iteration := 0
 	for {
 		iteration += 1
-		remote_candidates := collect_project_remote_dependency_candidates(&project, project_allocator)
+		remote_candidates := collect_project_remote_dependency_candidates(
+			&project,
+			project_allocator,
+		)
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tdrain\titeration\t%d\tcandidates\t%d\n", iteration, len(remote_candidates))
+			trace_eprintf(
+				"adt_fetch\tdrain\titeration\t%d\tcandidates\t%d\n",
+				iteration,
+				len(remote_candidates),
+			)
 		}
 		added := false
 		// Any-profile standalone cache lookup has no product/package boundary.
 		if err == .None {
-			store_candidates := unseen_remote_candidates(remote_candidates[:], &seen_store_candidates, allocator)
+			store_candidates := unseen_remote_candidates(
+				remote_candidates[:],
+				&seen_store_candidates,
+				allocator,
+			)
 			added = add_dependency_store_any_profile_matches(
 				&candidate_inputs,
 				&dependency_inputs,
@@ -208,7 +259,11 @@ analyze_standalone_with_dependency_drain :: proc(
 			delete(store_candidates)
 		}
 		if !added && has_standalone_adt {
-			adt_candidates := unseen_remote_candidates(remote_candidates[:], &seen_adt_candidates, allocator)
+			adt_candidates := unseen_remote_candidates(
+				remote_candidates[:],
+				&seen_adt_candidates,
+				allocator,
+			)
 			added = add_adt_matches_with_client(
 				&candidate_inputs,
 				&dependency_inputs,
@@ -247,7 +302,13 @@ analyze_standalone_with_dependency_drain :: proc(
 		adt.connection_config_destroy(&standalone_config, allocator)
 	}
 	scratch_analysis_destroy(&project_arena, unit_arenas, unit_allocators, allocator)
-	return analyze_target_with_candidate_inputs(target, candidate_inputs[:], dependency_inputs[:], options, allocator)
+	return analyze_target_with_candidate_inputs(
+		target,
+		candidate_inputs[:],
+		dependency_inputs[:],
+		options,
+		allocator,
+	)
 }
 
 scratch_analysis_init :: proc(
@@ -285,11 +346,17 @@ manifest_dependency_store :: proc(
 	manifest: ^Workspace_Manifest,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
-) -> (dep_store.Dependency_Store, bool) {
+) -> (
+	dep_store.Dependency_Store,
+	bool,
+) {
 	if !manifest.has_dependency_store {
 		return {}, false
 	}
-	store, err := dep_store.dependency_store_from_override_path(options.dependency_store_path, allocator)
+	store, err := dep_store.dependency_store_from_override_path(
+		options.dependency_store_path,
+		allocator,
+	)
 	return store, err == .None
 }
 
@@ -298,7 +365,7 @@ manifest_local_export_roots :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]string {
 	roots := make([dynamic]string, 0, len(manifest.local_export_roots), allocator)
-	if strings.to_lower(strings.trim_space(manifest.dependency_source), allocator) == "adt-first" {
+	if strings.equal_fold(manifest.dependency_source, "adt-first") {
 		return roots
 	}
 	for root in manifest.local_export_roots {
@@ -319,8 +386,8 @@ collect_project_remote_dependency_candidates :: proc(
 	defer delete(index)
 	for &unit in project.units {
 		for &edge in unit.include_edges {
-			if !edge.has_target && is_remote_lookup_candidate(edge.name, "include") {
-				insert_remote_candidate(&out, &index, edge.name, "include", allocator)
+			if !edge.has_target {
+				insert_remote_candidate(&out, &index, edge.name, .Include, allocator)
 			}
 		}
 		for &ref in unit.references {
@@ -332,110 +399,124 @@ collect_project_remote_dependency_candidates :: proc(
 			}
 		}
 		for &symbol in unit.symbols {
-			if symbol.decl_range.start == symbol.decl_range.end && symbol.has_declared_type &&
-			   symbol.declared_type.namespace == .Type &&
-			   is_remote_lookup_candidate_after_local_resolution(symbol.declared_type.base_name, "type") {
-				insert_remote_candidate(&out, &index, symbol.declared_type.base_name, "type", allocator)
+			if symbol.decl_range.start == symbol.decl_range.end &&
+			   symbol.has_declared_type &&
+			   symbol.declared_type.namespace == .Type {
+				insert_remote_candidate(
+					&out,
+					&index,
+					symbol.declared_type.base_name,
+					.Type,
+					allocator,
+				)
 			}
 		}
 		if unit.has_message_default_class {
-			insert_message_class_candidate(&out, &index, unit.message_default_class.name, allocator)
+			insert_remote_candidate(
+				&out,
+				&index,
+				unit.message_default_class.name,
+				.Message_Class,
+				allocator,
+			)
 		}
 		for &message in unit.message_uses {
 			if message.class_name != "" {
-				insert_message_class_candidate(&out, &index, message.class_name, allocator)
+				insert_remote_candidate(
+					&out,
+					&index,
+					message.class_name,
+					.Message_Class,
+					allocator,
+				)
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source.resolution == .External && is_remote_lookup_candidate(sql_source.name, "type") {
-				insert_remote_candidate(&out, &index, sql_source.name, "type", allocator)
+			if sql_source.resolution == .External {
+				insert_remote_candidate(&out, &index, sql_source.name, .Type, allocator)
 			}
 		}
 		for &call_site in unit.call_sites {
 			#partial switch call_site.target.kind {
 			case .Function:
-				if is_remote_lookup_candidate_after_local_resolution(call_site.target.function_name, "function") {
-					insert_remote_candidate(&out, &index, call_site.target.function_name, "function", allocator)
-				}
+				insert_remote_candidate(
+					&out,
+					&index,
+					call_site.target.function_name,
+					.Function,
+					allocator,
+				)
 			case .Report:
-				if is_remote_lookup_candidate_after_local_resolution(call_site.target.report_name, "report") {
-					insert_remote_candidate(&out, &index, call_site.target.report_name, "report", allocator)
-				}
+				insert_remote_candidate(
+					&out,
+					&index,
+					call_site.target.report_name,
+					.Report,
+					allocator,
+				)
 			}
 		}
 	}
 	return out
 }
 
-remote_dependency_candidate_for_reference :: proc(ref: ^Reference_Data) -> (
+remote_dependency_candidate_for_reference :: proc(
+	ref: ^Reference_Data,
+) -> (
 	Remote_Dependency_Candidate,
 	bool,
 ) {
-	kind := ""
-	after_local := false
+	kind := dep_store.Candidate_Kind.Type
 	switch ref.kind {
 	case .Include, .Structured_Decl_End:
 		return {}, false
 	case .Static_Target:
-		kind = "static"
-		after_local = true
+		if !ref.has_resolution || ref.resolution.kind != .External {
+			return {}, false
+		}
+		kind = .Static
 	case .Type_Ref:
-		kind = "type"
-		after_local = true
+		if ref.namespace != .Type {
+			return {}, false
+		}
+		kind = .Type
 	case .Message_Class:
-		kind = "message-class"
+		kind = .Message_Class
 	case .Routine_Call:
 		return {}, false
 	case .Identifier:
 		return {}, false
 	}
-	if after_local {
-		if !is_remote_lookup_candidate_after_local_resolution(ref.name, kind) {
-			return {}, false
-		}
-	} else if !is_remote_lookup_candidate(ref.name, kind) {
-		return {}, false
-	}
 	return Remote_Dependency_Candidate{name = ref.name, kind = kind}, true
-}
-
-insert_message_class_candidate :: proc(
-	out: ^[dynamic]Remote_Dependency_Candidate,
-	index: ^map[string]int,
-	name: string,
-	allocator: mem.Allocator,
-) {
-	if is_remote_lookup_candidate(name, "message-class") {
-		insert_remote_candidate(out, index, name, "message-class", allocator)
-	}
 }
 
 insert_remote_candidate :: proc(
 	out: ^[dynamic]Remote_Dependency_Candidate,
 	index: ^map[string]int,
-	name, kind: string,
+	name: string,
+	kind: dep_store.Candidate_Kind,
 	allocator: mem.Allocator,
 ) {
-	normalized_name := canonical_name(strings.trim_space(name), allocator)
+	normalized_name := canonical_name(name, allocator)
 	if normalized_name == "" {
 		return
 	}
-	normalized_kind := canonical_name(strings.trim_space(kind), allocator)
 	if existing_index, ok := index^[normalized_name]; ok {
-		if remote_candidate_kind_priority(normalized_kind) > remote_candidate_kind_priority(out^[existing_index].kind) {
-			out^[existing_index].kind = normalized_kind
+		if remote_candidate_kind_priority(kind) >
+		   remote_candidate_kind_priority(out^[existing_index].kind) {
+			out^[existing_index].kind = kind
 		}
 		return
 	}
 	index^[normalized_name] = len(out^)
-	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = normalized_kind})
+	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = kind})
 }
 
-remote_candidate_kind_priority :: proc(kind: string) -> int {
-	if kind == "message-class" {return 5}
-	if kind == "include" || kind == "function" {return 4}
-	if kind == "static" {return 3}
-	if kind == "type" {return 2}
+remote_candidate_kind_priority :: proc(kind: dep_store.Candidate_Kind) -> int {
+	if kind == .Message_Class {return 5}
+	if kind == .Include || kind == .Function {return 4}
+	if kind == .Static {return 3}
+	if kind == .Type {return 2}
 	return 1
 }
 
@@ -457,9 +538,12 @@ unseen_remote_candidates :: proc(
 	return out
 }
 
-remote_candidate_key :: proc(candidate: Remote_Dependency_Candidate, allocator: mem.Allocator) -> string {
+remote_candidate_key :: proc(
+	candidate: Remote_Dependency_Candidate,
+	allocator: mem.Allocator,
+) -> string {
 	out := strings.builder_make(allocator)
-	strings.write_string(&out, candidate.kind)
+	strings.write_string(&out, dep_store.candidate_kind_text(candidate.kind))
 	strings.write_byte(&out, '\t')
 	strings.write_string(&out, candidate.name)
 	return strings.to_string(out)
@@ -547,7 +631,13 @@ add_dependency_store_matches_impl :: proc(
 	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
 	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
-	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+	uri_keys := project_input_uri_keys(
+		target_uri,
+		dependencies^[:],
+		candidates^[:],
+		len(remote_candidates),
+		uri_key_allocator,
+	)
 
 	added := false
 	batch_size := pool.options.task_capacity
@@ -556,12 +646,17 @@ add_dependency_store_matches_impl :: proc(
 		if end > len(remote_candidates) {
 			end = len(remote_candidates)
 		}
-		tasks := make([dynamic]frontend_runtime.Task(^Dependency_Store_Task_Result), 0, end - start, allocator)
+		tasks := make(
+			[dynamic]frontend_runtime.Task(^Dependency_Store_Task_Result),
+			0,
+			end - start,
+			allocator,
+		)
 		for candidate in remote_candidates[start:end] {
 			payload := Dependency_Store_Task_Payload {
-				store = store^,
-				profile = profile,
-				candidate = candidate,
+				store       = store^,
+				profile     = profile,
+				candidate   = candidate,
 				any_profile = any_profile,
 			}
 			task, err := frontend_runtime.submit_value(pool, payload, dependency_store_find_task)
@@ -591,7 +686,9 @@ add_dependency_store_matches_impl :: proc(
 	return added
 }
 
-dependency_store_find_task :: proc(payload: Dependency_Store_Task_Payload) -> ^Dependency_Store_Task_Result {
+dependency_store_find_task :: proc(
+	payload: Dependency_Store_Task_Payload,
+) -> ^Dependency_Store_Task_Result {
 	allocator := base_runtime.heap_allocator()
 	result := new(Dependency_Store_Task_Result, allocator)
 	store := payload.store
@@ -602,12 +699,13 @@ dependency_store_find_task :: proc(payload: Dependency_Store_Task_Payload) -> ^D
 	}
 	defer dep_store.reader_destroy(&reader)
 	if payload.any_profile {
-		result.record, result.ok, result.err = dep_store.reader_find_artifact_for_candidate_any_profile(
-			&reader,
-			payload.candidate.name,
-			payload.candidate.kind,
-			allocator,
-		)
+		result.record, result.ok, result.err =
+			dep_store.reader_find_artifact_for_candidate_any_profile(
+				&reader,
+				payload.candidate.name,
+				payload.candidate.kind,
+				allocator,
+			)
 	} else if payload.profile != nil {
 		result.record, result.ok, result.err = dep_store.reader_find_artifact_for_candidate(
 			&reader,
@@ -631,7 +729,10 @@ add_dependency_store_task_result :: proc(
 	trace_source: string,
 	allocator: mem.Allocator,
 ) -> bool {
-	if result == nil || result.err != .None || !result.ok || result.record.artifact_id in seen_artifacts^ {
+	if result == nil ||
+	   result.err != .None ||
+	   !result.ok ||
+	   result.record.artifact_id in seen_artifacts^ {
 		return false
 	}
 	seen_artifacts^[result.record.artifact_id] = true
@@ -641,14 +742,31 @@ add_dependency_store_task_result :: proc(
 		return false
 	}
 	input := source_input_from_dependency_record(&result.record, candidate, uri, allocator)
-	append_dependency_input(candidates, dependencies, input, candidate, result.record.object_name, allocator)
+	append_dependency_input(
+		candidates,
+		dependencies,
+		input,
+		candidate,
+		result.record.object_name,
+		allocator,
+	)
 	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf("adt_fetch\t%s\tadd\t%s\t%s\t%s\t%s\n", trace_source, candidate.kind, candidate.name, result.record.object_kind, result.record.object_name)
+		trace_eprintf(
+			"adt_fetch\t%s\tadd\t%s\t%s\t%s\t%s\n",
+			trace_source,
+			dep_store.candidate_kind_text(candidate.kind),
+			candidate.name,
+			result.record.object_kind,
+			result.record.object_name,
+		)
 	}
 	return true
 }
 
-dependency_store_task_result_destroy :: proc(result: ^Dependency_Store_Task_Result, allocator: mem.Allocator) {
+dependency_store_task_result_destroy :: proc(
+	result: ^Dependency_Store_Task_Result,
+	allocator: mem.Allocator,
+) {
 	if result == nil {
 		return
 	}
@@ -656,7 +774,10 @@ dependency_store_task_result_destroy :: proc(result: ^Dependency_Store_Task_Resu
 	free(result, allocator)
 }
 
-dependency_record_destroy :: proc(record: ^dep_store.Stored_Artifact_Record, allocator: mem.Allocator) {
+dependency_record_destroy :: proc(
+	record: ^dep_store.Stored_Artifact_Record,
+	allocator: mem.Allocator,
+) {
 	delete(record.package_name, allocator)
 	delete(record.package_version, allocator)
 	delete(record.object_kind, allocator)
@@ -676,18 +797,18 @@ source_input_from_dependency_record :: proc(
 ) -> Source_Input {
 	source: string
 	if dependency_source_is_xml(record.object_kind, record.file_extension, record.source_text) {
-		source = ddic_xml_dependency_source(record.object_name, record.object_kind, record.source_text, allocator) if candidate.kind == "type" else strings.clone("", allocator)
+		source =
+			ddic_xml_dependency_source(record.object_name, record.object_kind, record.source_text, allocator) if candidate.kind == .Type else strings.clone("", allocator)
 	} else {
 		source = strings.clone(record.source_text, allocator)
 	}
-	return Source_Input {
-		uri    = uri,
-		source = source,
-		mode   = .Dependency_Interface,
-	}
+	return Source_Input{uri = uri, source = source, mode = .Dependency_Interface}
 }
 
-dependency_record_uri :: proc(record: ^dep_store.Stored_Artifact_Record, allocator: mem.Allocator) -> string {
+dependency_record_uri :: proc(
+	record: ^dep_store.Stored_Artifact_Record,
+	allocator: mem.Allocator,
+) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "abapls-cache:/")
 	strings.write_string(&out, record.object_kind)
@@ -709,7 +830,13 @@ add_local_export_matches :: proc(
 	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
 	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
-	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+	uri_keys := project_input_uri_keys(
+		target_uri,
+		dependencies^[:],
+		candidates^[:],
+		len(remote_candidates),
+		uri_key_allocator,
+	)
 
 	added := false
 	for candidate in remote_candidates {
@@ -730,8 +857,9 @@ add_local_export_matches :: proc(
 				continue
 			}
 			input_source: string
-			if dependency_source_is_xml("", path_file_extension(path), source) {
-				input_source = ddic_xml_dependency_source(candidate.name, "", source, allocator) if candidate.kind == "type" else strings.clone("", allocator)
+			if dependency_source_is_xml("", strings.trim_prefix(filepath.ext(path), "."), source) {
+				input_source =
+					ddic_xml_dependency_source(candidate.name, "", source, allocator) if candidate.kind == .Type else strings.clone("", allocator)
 			} else if !local_export_abap_source_matches(candidate, source) {
 				delete(source, allocator)
 				continue
@@ -789,7 +917,17 @@ add_adt_matches :: proc(
 	client: adt.Client
 	adt.client_init(&client, config)
 	defer adt.client_destroy(&client, allocator)
-	return add_adt_matches_with_client(candidates, dependencies, remote_candidates, store, profile, &client, pool, target_uri, allocator)
+	return add_adt_matches_with_client(
+		candidates,
+		dependencies,
+		remote_candidates,
+		store,
+		profile,
+		&client,
+		pool,
+		target_uri,
+		allocator,
+	)
 }
 
 Adt_Fetched_Object :: struct {
@@ -821,7 +959,13 @@ add_adt_matches_with_client :: proc(
 	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
 	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
-	uri_keys := project_input_uri_keys(target_uri, dependencies^[:], candidates^[:], len(remote_candidates), uri_key_allocator)
+	uri_keys := project_input_uri_keys(
+		target_uri,
+		dependencies^[:],
+		candidates^[:],
+		len(remote_candidates),
+		uri_key_allocator,
+	)
 
 	added := false
 	batch_size := pool.options.task_capacity
@@ -830,9 +974,17 @@ add_adt_matches_with_client :: proc(
 		if end > len(remote_candidates) {
 			end = len(remote_candidates)
 		}
-		tasks := make([dynamic]frontend_runtime.Task(^Adt_Fetch_Task_Result), 0, end - start, allocator)
+		tasks := make(
+			[dynamic]frontend_runtime.Task(^Adt_Fetch_Task_Result),
+			0,
+			end - start,
+			allocator,
+		)
 		for candidate in remote_candidates[start:end] {
-			payload := Adt_Fetch_Task_Payload{candidate = candidate, config = &client.connection}
+			payload := Adt_Fetch_Task_Payload {
+				candidate = candidate,
+				config    = &client.connection,
+			}
 			task, err := frontend_runtime.submit_value(pool, payload, adt_fetch_task)
 			assert(err == .None)
 			append(&tasks, task)
@@ -869,48 +1021,107 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 	defer adt.client_destroy(&client, allocator)
 
 	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf("adt_fetch\tadt\tsearch\t%s\t%s\n", payload.candidate.kind, payload.candidate.name)
+		trace_eprintf(
+			"adt_fetch\tadt\tsearch\t%s\t%s\n",
+			dep_store.candidate_kind_text(payload.candidate.kind),
+			payload.candidate.name,
+		)
 	}
 	objects, err := adt.search_repository_objects(&client, payload.candidate.name, 50, allocator)
 	if err != .None {
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tsearch_err\t%s\t%s\t%v\n", payload.candidate.kind, payload.candidate.name, err)
+			trace_eprintf(
+				"adt_fetch\tadt\tsearch_err\t%s\t%s\t%v\n",
+				dep_store.candidate_kind_text(payload.candidate.kind),
+				payload.candidate.name,
+				err,
+			)
 		}
 		adt.object_refs_destroy(&objects, allocator)
-		objects = adt.direct_dependency_object_refs(payload.candidate.name, payload.candidate.kind, allocator)
+		objects = adt.direct_dependency_object_refs(
+			payload.candidate.name,
+			dep_store.candidate_kind_text(payload.candidate.kind),
+			allocator,
+		)
 	} else {
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tsearch_ok\t%s\t%s\t%d\n", payload.candidate.kind, payload.candidate.name, len(objects))
+			trace_eprintf(
+				"adt_fetch\tadt\tsearch_ok\t%s\t%s\t%d\n",
+				dep_store.candidate_kind_text(payload.candidate.kind),
+				payload.candidate.name,
+				len(objects),
+			)
 		}
 	}
 	defer adt.object_refs_destroy(&objects, allocator)
 
-	selected := adt.select_dependency_objects(payload.candidate.name, objects[:], payload.candidate.kind, allocator)
+	selected := adt.select_dependency_objects(
+		payload.candidate.name,
+		objects[:],
+		dep_store.candidate_kind_text(payload.candidate.kind),
+		allocator,
+	)
 	if len(selected) == 0 {
 		adt.object_refs_destroy(&selected, allocator)
-		selected = adt.direct_dependency_object_refs(payload.candidate.name, payload.candidate.kind, allocator)
+		selected = adt.direct_dependency_object_refs(
+			payload.candidate.name,
+			dep_store.candidate_kind_text(payload.candidate.kind),
+			allocator,
+		)
 	}
 	defer adt.object_refs_destroy(&selected, allocator)
 	when adt.DEPENDENCY_FETCH_TRACE {
-		trace_eprintf("adt_fetch\tadt\tselected\t%s\t%s\t%d\n", payload.candidate.kind, payload.candidate.name, len(selected))
+		trace_eprintf(
+			"adt_fetch\tadt\tselected\t%s\t%s\t%d\n",
+			dep_store.candidate_kind_text(payload.candidate.kind),
+			payload.candidate.name,
+			len(selected),
+		)
 	}
 
 	for &object_ref in selected {
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tfetch\t%s\t%s\t%s\t%s\n", payload.candidate.kind, payload.candidate.name, object_ref.object_type, object_ref.name)
+			trace_eprintf(
+				"adt_fetch\tadt\tfetch\t%s\t%s\t%s\t%s\n",
+				dep_store.candidate_kind_text(payload.candidate.kind),
+				payload.candidate.name,
+				object_ref.object_type,
+				object_ref.name,
+			)
 		}
 		fetched, fetch_err := adt.fetch_dependency_object(&client, &object_ref, allocator)
 		if fetch_err != .None {
 			when adt.DEPENDENCY_FETCH_TRACE {
-				trace_eprintf("adt_fetch\tadt\tfetch_err\t%s\t%s\t%s\t%s\t%v\n", payload.candidate.kind, payload.candidate.name, object_ref.object_type, object_ref.name, fetch_err)
+				trace_eprintf(
+					"adt_fetch\tadt\tfetch_err\t%s\t%s\t%s\t%s\t%v\n",
+					dep_store.candidate_kind_text(payload.candidate.kind),
+					payload.candidate.name,
+					object_ref.object_type,
+					object_ref.name,
+					fetch_err,
+				)
 			}
 			continue
 		}
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tfetch_ok\t%s\t%s\t%s\t%s\t%s\t%d\n", payload.candidate.kind, payload.candidate.name, object_ref.object_type, object_ref.name, fetched.manifest_kind, len(fetched.shared_dependencies))
+			trace_eprintf(
+				"adt_fetch\tadt\tfetch_ok\t%s\t%s\t%s\t%s\t%s\t%d\n",
+				dep_store.candidate_kind_text(payload.candidate.kind),
+				payload.candidate.name,
+				object_ref.object_type,
+				object_ref.name,
+				fetched.manifest_kind,
+				len(fetched.shared_dependencies),
+			)
 			adt.trace_dependency_fetch(&object_ref, fetched.manifest_kind, fetched.file_extension)
 		}
-		append(&result.fetched, Adt_Fetched_Object{object_ref = adt.clone_object_ref(&object_ref, allocator), fetched = fetched})
+		append(
+			&result.fetched,
+			Adt_Fetched_Object {
+				object_ref = adt.clone_object_ref(&object_ref, allocator),
+				fetched = fetched,
+			},
+		)
 	}
 	return result
 }
@@ -949,13 +1160,22 @@ add_adt_fetch_task_result :: proc(
 			if input_added {
 				status = "added"
 			}
-			trace_eprintf("adt_fetch\tadt\tinput\t%s\t%s\t%s\t%s\n", status, candidate.kind, entry.object_ref.object_type, entry.object_ref.name)
+			trace_eprintf(
+				"adt_fetch\tadt\tinput\t%s\t%s\t%s\t%s\n",
+				status,
+				dep_store.candidate_kind_text(candidate.kind),
+				entry.object_ref.object_type,
+				entry.object_ref.name,
+			)
 		}
 		if input_added {
 			added = true
 		}
 		for &shared in entry.fetched.shared_dependencies {
-			shared_candidate := Remote_Dependency_Candidate{name = shared.object_ref.name, kind = "include"}
+			shared_candidate := Remote_Dependency_Candidate {
+				name = shared.object_ref.name,
+				kind = .Include,
+			}
 			if add_adt_fetched_dependency_input(
 				candidates,
 				dependencies,
@@ -969,13 +1189,25 @@ add_adt_fetch_task_result :: proc(
 				allocator,
 			) {
 				when adt.DEPENDENCY_FETCH_TRACE {
-					trace_eprintf("adt_fetch\tadt\tshared_input\tadded\t%s\t%s\n", shared.object_ref.object_type, shared.object_ref.name)
-					adt.trace_dependency_fetch(&shared.object_ref, shared.manifest_kind, shared.file_extension)
+					trace_eprintf(
+						"adt_fetch\tadt\tshared_input\tadded\t%s\t%s\n",
+						shared.object_ref.object_type,
+						shared.object_ref.name,
+					)
+					adt.trace_dependency_fetch(
+						&shared.object_ref,
+						shared.manifest_kind,
+						shared.file_extension,
+					)
 				}
 				added = true
 			} else {
 				when adt.DEPENDENCY_FETCH_TRACE {
-					trace_eprintf("adt_fetch\tadt\tshared_input\tskipped\t%s\t%s\n", shared.object_ref.object_type, shared.object_ref.name)
+					trace_eprintf(
+						"adt_fetch\tadt\tshared_input\tskipped\t%s\t%s\n",
+						shared.object_ref.object_type,
+						shared.object_ref.name,
+					)
 				}
 			}
 		}
@@ -1004,29 +1236,62 @@ store_adt_dependency_fetch :: proc(
 ) {
 	if store == nil || profile == nil {
 		when adt.DEPENDENCY_FETCH_TRACE {
-			trace_eprintf("adt_fetch\tadt\tcache\tskipped\t%s\t%s\n", object_ref.object_type, object_ref.name)
+			trace_eprintf(
+				"adt_fetch\tadt\tcache\tskipped\t%s\t%s\n",
+				object_ref.object_type,
+				object_ref.name,
+			)
 		}
 		return
 	}
-	artifacts := make([dynamic]dep_store.Stored_Artifact_Input, 0, 1 + len(fetched.shared_dependencies), allocator)
+	artifacts := make(
+		[dynamic]dep_store.Stored_Artifact_Input,
+		0,
+		1 + len(fetched.shared_dependencies),
+		allocator,
+	)
 	fetched_at := dependency_fetched_at(allocator)
 	append(
 		&artifacts,
-		dependency_artifact_from_adt(object_ref, fetched.manifest_kind, fetched.file_extension, fetched.body, fetched_at, allocator),
+		dependency_artifact_from_adt(
+			object_ref,
+			fetched.manifest_kind,
+			fetched.file_extension,
+			fetched.body,
+			fetched_at,
+			allocator,
+		),
 	)
 	for &shared in fetched.shared_dependencies {
 		append(
 			&artifacts,
-			dependency_artifact_from_adt(&shared.object_ref, shared.manifest_kind, shared.file_extension, shared.body, fetched_at, allocator),
+			dependency_artifact_from_adt(
+				&shared.object_ref,
+				shared.manifest_kind,
+				shared.file_extension,
+				shared.body,
+				fetched_at,
+				allocator,
+			),
 		)
 	}
 	ids, err := dep_store.put_artifacts(store, profile, artifacts[:], allocator)
 	defer delete(ids)
 	when adt.DEPENDENCY_FETCH_TRACE {
 		if err == .None {
-			trace_eprintf("adt_fetch\tadt\tcache\tok\t%s\t%s\t%d\n", object_ref.object_type, object_ref.name, len(artifacts))
+			trace_eprintf(
+				"adt_fetch\tadt\tcache\tok\t%s\t%s\t%d\n",
+				object_ref.object_type,
+				object_ref.name,
+				len(artifacts),
+			)
 		} else {
-			trace_eprintf("adt_fetch\tadt\tcache_err\t%s\t%s\t%v\n", object_ref.object_type, object_ref.name, err)
+			trace_eprintf(
+				"adt_fetch\tadt\tcache_err\t%s\t%s\t%v\n",
+				object_ref.object_type,
+				object_ref.name,
+				err,
+			)
 		}
 	} else {
 		_ = err
@@ -1035,31 +1300,29 @@ store_adt_dependency_fetch :: proc(
 
 dependency_artifact_from_adt :: proc(
 	object_ref: ^adt.Object_Ref,
-	object_kind,
-	file_extension,
-	source,
-	fetched_at: string,
+	object_kind, file_extension, source, fetched_at: string,
 	allocator: mem.Allocator,
 ) -> dep_store.Stored_Artifact_Input {
-	extension := strings.trim_space(file_extension)
+	extension := file_extension
 	source_text := source
-	if dependency_source_is_xml(object_kind, file_extension, source) && dependency_object_kind_is_ddic(object_kind) {
+	if dependency_source_is_xml(object_kind, file_extension, source) &&
+	   dependency_object_kind_is_ddic(object_kind) {
 		source_text = ddic_xml_dependency_source(object_ref.name, object_kind, source, allocator)
 		extension = "abap"
 	}
-	if strings.trim_space(extension) == "" {
+	if extension == "" {
 		extension = "abap"
 	}
 	return dep_store.Stored_Artifact_Input {
-		package_name   = object_ref.package_name,
-		object_kind    = object_kind,
-		object_name    = object_ref.name,
-		object_uri     = object_ref.uri,
-		object_type    = object_ref.object_type,
-		description    = object_ref.description,
+		package_name = object_ref.package_name,
+		object_kind = object_kind,
+		object_name = object_ref.name,
+		object_uri = object_ref.uri,
+		object_type = object_ref.object_type,
+		description = object_ref.description,
 		file_extension = extension,
-		source_text    = source_text,
-		fetched_at     = fetched_at,
+		source_text = source_text,
+		fetched_at = fetched_at,
 	}
 }
 
@@ -1072,7 +1335,7 @@ dependency_fetched_at :: proc(allocator: mem.Allocator) -> string {
 
 standalone_dependency_profile :: proc() -> dep_store.Dependency_Profile {
 	return dep_store.Dependency_Profile {
-		product_version         = "adt",
+		product_version = "adt",
 		default_package_version = "default",
 	}
 }
@@ -1096,7 +1359,8 @@ add_adt_fetched_dependency_input :: proc(
 	}
 	input_source: string
 	if dependency_source_is_xml(object_kind, file_extension, source) {
-		input_source = ddic_xml_dependency_source(object_ref.name, object_kind, source, allocator) if candidate.kind == "type" else strings.clone("", allocator)
+		input_source =
+			ddic_xml_dependency_source(object_ref.name, object_kind, source, allocator) if candidate.kind == .Type else strings.clone("", allocator)
 	} else {
 		input_source = strings.clone(source, allocator)
 	}
@@ -1119,7 +1383,7 @@ adt_dependency_uri :: proc(
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "abapls-adt:")
 	strings.write_string(&out, object_ref.uri)
-	ext := strings.trim_space(file_extension)
+	ext := file_extension
 	if ext != "" && strings.index_byte(object_ref.uri, '.') < 0 {
 		strings.write_byte(&out, '.')
 		strings.write_string(&out, ext)
@@ -1127,7 +1391,10 @@ adt_dependency_uri :: proc(
 	return strings.to_string(out)
 }
 
-manifest_has_project_dotenv :: proc(manifest: ^Workspace_Manifest, allocator: mem.Allocator) -> bool {
+manifest_has_project_dotenv :: proc(
+	manifest: ^Workspace_Manifest,
+	allocator: mem.Allocator,
+) -> bool {
 	path, ok := manifest_project_dotenv_path(manifest, allocator)
 	if ok {
 		delete(path, allocator)
@@ -1138,7 +1405,10 @@ manifest_has_project_dotenv :: proc(manifest: ^Workspace_Manifest, allocator: me
 manifest_project_dotenv_path :: proc(
 	manifest: ^Workspace_Manifest,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	path, ok := join_path2(manifest.root_path, ".env", allocator)
 	if !ok {
 		return "", false
@@ -1159,12 +1429,15 @@ append_dependency_input :: proc(
 	object_name: string,
 	allocator: mem.Allocator,
 ) {
-	if candidate.kind == "include" {
+	if candidate.kind == .Include {
 		append(
 			candidates,
 			Project_Candidate_Input {
 				input = input,
-				object_name = strings.clone(object_name if object_name != "" else candidate.name, allocator),
+				object_name = strings.clone(
+					object_name if object_name != "" else candidate.name,
+					allocator,
+				),
 			},
 		)
 	} else {
@@ -1228,7 +1501,7 @@ collect_local_export_candidate_paths :: proc(
 		case .Directory:
 			collect_local_export_candidate_paths(entry.fullpath, file_names, out, allocator)
 		case .Regular:
-			file_name := canonical_name(path_file_name(entry.fullpath), allocator)
+			file_name := canonical_name(filepath.base(entry.fullpath), allocator)
 			for wanted in file_names {
 				if file_name == wanted && !string_list_contains(out^[:], entry.fullpath) {
 					append(out, strings.clone(entry.fullpath, allocator))
@@ -1243,16 +1516,19 @@ local_export_candidate_file_names :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]string {
 	names := make([dynamic]string, 0, 2, allocator)
-	encoded := encode_local_export_component(candidate.name, allocator)
+	upper := strings.to_upper(candidate.name, allocator)
+	defer delete(upper, allocator)
+	encoded := net_url.percent_encode(upper, allocator)
+	defer delete(encoded, allocator)
 	if encoded == "" {
 		return names
 	}
 	switch candidate.kind {
-	case "include", "function", "static", "report":
+	case .Include, .Function, .Static, .Report:
 		append(&names, local_export_file_name(encoded, "abap", allocator))
-	case "message-class":
+	case .Message_Class:
 		append(&names, local_export_file_name(encoded, "xml", allocator))
-	case "symbol", "type":
+	case .Symbol, .Type:
 		append(&names, local_export_file_name(encoded, "xml", allocator))
 		append(&names, local_export_file_name(encoded, "abap", allocator))
 	}
@@ -1267,48 +1543,40 @@ local_export_file_name :: proc(encoded, extension: string, allocator: mem.Alloca
 	return canonical_name(strings.to_string(out), allocator)
 }
 
-local_export_abap_source_matches :: proc(candidate: Remote_Dependency_Candidate, source: string) -> bool {
-	if candidate.kind != "static" {
+local_export_abap_source_matches :: proc(
+	candidate: Remote_Dependency_Candidate,
+	source: string,
+) -> bool {
+	if candidate.kind != .Static {
 		return true
 	}
 	return source_declares_class_or_interface(source, candidate.name)
 }
 
 source_declares_class_or_interface :: proc(source, name: string) -> bool {
-	rest := source
-	for rest != "" {
-		line: string
-		line, rest = split_line(rest)
-		trimmed := trim_left_ascii_ws(line)
+	lines := source
+	for line in strings.split_lines_iterator(&lines) {
+		trimmed := strings.trim_left_space(line)
 		if strings.has_prefix(trimmed, "*") || strings.has_prefix(trimmed, "\"") {
 			continue
 		}
-		keyword, after_keyword, keyword_ok := split_first_word(trimmed)
-		decl_name, rest2, name_ok := split_first_word(after_keyword)
+		words := trimmed
+		keyword, keyword_ok := strings.fields_iterator(&words)
+		decl_name, name_ok := strings.fields_iterator(&words)
 		if !keyword_ok || !name_ok || !strings.equal_fold(trim_decl_token(decl_name), name) {
 			continue
 		}
 		if strings.equal_fold(keyword, "INTERFACE") {
 			return true
 		}
-		next, _, next_ok := split_first_word(rest2)
-		if strings.equal_fold(keyword, "CLASS") && next_ok && strings.equal_fold(next, "DEFINITION") {
+		next, next_ok := strings.fields_iterator(&words)
+		if strings.equal_fold(keyword, "CLASS") &&
+		   next_ok &&
+		   strings.equal_fold(trim_decl_token(next), "DEFINITION") {
 			return true
 		}
 	}
 	return false
-}
-
-split_first_word :: proc(text: string) -> (string, string, bool) {
-	trimmed := trim_left_ascii_ws(text)
-	if trimmed == "" {
-		return "", "", false
-	}
-	end := 0
-	for end < len(trimmed) && trimmed[end] != ' ' && trimmed[end] != '\t' && trimmed[end] != '\r' && trimmed[end] != '\n' {
-		end += 1
-	}
-	return trimmed[:end], trimmed[end:], true
 }
 
 trim_decl_token :: proc(token: string) -> string {
@@ -1319,35 +1587,15 @@ trim_decl_token :: proc(token: string) -> string {
 	return token[:end]
 }
 
-split_line :: proc(text: string) -> (string, string) {
-	for i in 0 ..< len(text) {
-		if text[i] == '\n' {
-			line := text[:i]
-			if len(line) > 0 && line[len(line) - 1] == '\r' {
-				line = line[:len(line) - 1]
-			}
-			return line, text[i + 1:]
-		}
-	}
-	return text, ""
-}
-
-trim_left_ascii_ws :: proc(text: string) -> string {
-	i := 0
-	for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == '\r' || text[i] == '\n') {
-		i += 1
-	}
-	return text[i:]
-}
-
 dependency_source_is_xml :: proc(object_kind, file_extension, source: string) -> bool {
 	if dependency_file_extension_is_xml(file_extension) {
 		return true
 	}
-	if dependency_file_extension_is_abap(file_extension) && !dependency_object_kind_is_ddic(object_kind) {
+	if dependency_file_extension_is_abap(file_extension) &&
+	   !dependency_object_kind_is_ddic(object_kind) {
 		return false
 	}
-	return strings.has_prefix(strings.trim_space(source), "<")
+	return strings.has_prefix(source, "<")
 }
 
 dependency_object_kind_is_ddic :: proc(object_kind: string) -> bool {
@@ -1355,7 +1603,7 @@ dependency_object_kind_is_ddic :: proc(object_kind: string) -> bool {
 }
 
 dependency_file_extension_is_xml :: proc(file_extension: string) -> bool {
-	ext := strings.trim_space(file_extension)
+	ext := file_extension
 	if strings.has_prefix(ext, ".") {
 		ext = ext[1:]
 	}
@@ -1363,7 +1611,7 @@ dependency_file_extension_is_xml :: proc(file_extension: string) -> bool {
 }
 
 dependency_file_extension_is_abap :: proc(file_extension: string) -> bool {
-	ext := strings.trim_space(file_extension)
+	ext := file_extension
 	if strings.has_prefix(ext, ".") {
 		ext = ext[1:]
 	}
@@ -1382,56 +1630,89 @@ Ddic_Xml_Field :: struct {
 	type_name: string,
 }
 
-ddic_xml_dependency_source :: proc(name, object_kind, xml: string, allocator: mem.Allocator) -> string {
-	kind := ddic_xml_kind(object_kind, xml)
+ddic_xml_dependency_source :: proc(
+	name, object_kind, source: string,
+	allocator: mem.Allocator,
+) -> string {
+	doc, parsed := ddic_xml_parse(source, allocator)
+
+	kind := ddic_xml_kind(object_kind, doc)
 	if kind == .Structure || kind == .Unknown {
-		fields := ddic_xml_fields(xml, allocator)
+		fields := ddic_xml_fields(doc, allocator)
 		defer delete(fields)
 		if len(fields) > 0 {
-			return ddic_xml_structure_source(name, fields[:], allocator)
+			out := ddic_xml_structure_source(name, fields[:], allocator)
+			if parsed {
+				xml_doc.destroy(doc, allocator)
+			}
+			return out
 		}
 	}
 
-	line_type := ddic_xml_table_line_type(xml)
+	line_type := ddic_xml_table_line_type(doc)
 	if kind == .Table_Type || (kind == .Unknown && line_type != "") {
 		if line_type == "" {
-			line_type = ddic_xml_concrete_builtin_type(xml)
+			line_type = ddic_xml_concrete_builtin_type(doc)
 		}
 		if line_type == "" {
 			line_type = "string"
 		}
-		return ddic_xml_table_type_source(name, line_type, allocator)
+		out := ddic_xml_table_type_source(name, line_type, allocator)
+		if parsed {
+			xml_doc.destroy(doc, allocator)
+		}
+		return out
 	}
 
-	base_type := ddic_xml_concrete_builtin_type(xml)
+	base_type := ddic_xml_concrete_builtin_type(doc)
 	if base_type == "" {
 		base_type = "string"
 	}
-	return ddic_xml_type_alias_source(name, base_type, allocator)
+	out := ddic_xml_type_alias_source(name, base_type, allocator)
+	if parsed {
+		xml_doc.destroy(doc, allocator)
+	}
+	return out
 }
 
-ddic_xml_kind :: proc(object_kind, xml: string) -> Ddic_Xml_Kind {
-	kind := strings.trim_space(object_kind)
+ddic_xml_parse_error_ignore :: proc(pos: xml_doc.Pos, fmt: string, args: ..any) {}
+
+ddic_xml_parse :: proc(source: string, allocator: mem.Allocator) -> (^xml_doc.Document, bool) {
+	doc, err := xml_doc.parse(
+		source,
+		xml_doc.DEFAULT_OPTIONS,
+		"",
+		ddic_xml_parse_error_ignore,
+		allocator,
+	)
+	if err != .None {
+		xml_doc.destroy(doc, allocator)
+		return nil, false
+	}
+	return doc, true
+}
+
+ddic_xml_kind :: proc(object_kind: string, doc: ^xml_doc.Document) -> Ddic_Xml_Kind {
 	switch {
-	case strings.equal_fold(kind, "ddic-table-type"):
+	case strings.equal_fold(object_kind, "ddic-table-type"):
 		return .Table_Type
-	case strings.equal_fold(kind, "ddic-structure") ||
-	     strings.equal_fold(kind, "ddic-table") ||
-	     strings.equal_fold(kind, "ddic-view"):
+	case strings.equal_fold(object_kind, "ddic-structure") ||
+	     strings.equal_fold(object_kind, "ddic-table") ||
+	     strings.equal_fold(object_kind, "ddic-view"):
 		return .Structure
-	case strings.equal_fold(kind, "ddic-data-element") ||
-	     strings.equal_fold(kind, "ddic-domain"):
+	case strings.equal_fold(object_kind, "ddic-data-element") ||
+	     strings.equal_fold(object_kind, "ddic-domain"):
 		return .Alias
 	}
-	root := xml_root_name(xml)
+	root := ddic_xml_root_name(doc)
 	switch {
-	case xml_name_equal(root, "ttyp") || ascii_contains_ignore_case(root, "tabletype"):
+	case ddic_xml_name_equal(root, "ttyp") || ascii_contains_ignore_case(root, "tabletype"):
 		return .Table_Type
-	case xml_name_equal(root, "dataElement") || xml_name_equal(root, "domain"):
+	case ddic_xml_name_equal(root, "dataElement") || ddic_xml_name_equal(root, "domain"):
 		return .Alias
-	case xml_name_equal(root, "structure") ||
-	     xml_name_equal(root, "table") ||
-	     xml_name_equal(root, "view"):
+	case ddic_xml_name_equal(root, "structure") ||
+	     ddic_xml_name_equal(root, "table") ||
+	     ddic_xml_name_equal(root, "view"):
 		return .Structure
 	}
 	return .Unknown
@@ -1457,7 +1738,11 @@ ddic_xml_table_type_source :: proc(name, line_type: string, allocator: mem.Alloc
 	return strings.to_string(out)
 }
 
-ddic_xml_structure_source :: proc(name: string, fields: []Ddic_Xml_Field, allocator: mem.Allocator) -> string {
+ddic_xml_structure_source :: proc(
+	name: string,
+	fields: []Ddic_Xml_Field,
+	allocator: mem.Allocator,
+) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "TYPES: BEGIN OF ")
 	write_canonical_abap_name(&out, name, allocator)
@@ -1476,12 +1761,12 @@ ddic_xml_structure_source :: proc(name: string, fields: []Ddic_Xml_Field, alloca
 }
 
 write_canonical_abap_name :: proc(out: ^strings.Builder, name: string, allocator: mem.Allocator) {
-	n := canonical_name(strings.trim_space(name), allocator)
+	n := canonical_name(name, allocator)
 	defer delete(n, allocator)
 	strings.write_string(out, n)
 }
 
-ddic_xml_concrete_builtin_type :: proc(xml: string) -> string {
+ddic_xml_concrete_builtin_type :: proc(doc: ^xml_doc.Document) -> string {
 	text_tags := []string {
 		"DD04V-DATATYPE",
 		"DD01V-DATATYPE",
@@ -1494,12 +1779,12 @@ ddic_xml_concrete_builtin_type :: proc(xml: string) -> string {
 		"abapType",
 		"intType",
 	}
-	if text := xml_first_text_named(xml, text_tags); text != "" {
+	if text := ddic_xml_first_text_named(doc, text_tags); text != "" {
 		if builtin := ddic_builtin_type(text); builtin != "" {
 			return builtin
 		}
 	}
-	if attr := xml_first_attr_named(xml, text_tags); attr != "" {
+	if attr := ddic_xml_first_attr_named(doc, text_tags); attr != "" {
 		if builtin := ddic_builtin_type(attr); builtin != "" {
 			return builtin
 		}
@@ -1507,7 +1792,7 @@ ddic_xml_concrete_builtin_type :: proc(xml: string) -> string {
 	return ""
 }
 
-ddic_xml_table_line_type :: proc(xml: string) -> string {
+ddic_xml_table_line_type :: proc(doc: ^xml_doc.Document) -> string {
 	names := []string {
 		"DD40V-ROWTYPE",
 		"ROWTYPE",
@@ -1518,66 +1803,114 @@ ddic_xml_table_line_type :: proc(xml: string) -> string {
 		"line_type",
 		"typeName",
 	}
-	if text := xml_first_text_named(xml, names); text != "" {
+	if text := ddic_xml_first_text_named(doc, names); text != "" {
 		return ddic_xml_type_name(text)
 	}
-	if attr := xml_first_attr_named(xml, names); attr != "" {
+	if attr := ddic_xml_first_attr_named(doc, names); attr != "" {
 		return ddic_xml_type_name(attr)
 	}
 	return ""
 }
 
-ddic_xml_fields :: proc(xml: string, allocator: mem.Allocator) -> [dynamic]Ddic_Xml_Field {
+ddic_xml_fields :: proc(
+	doc: ^xml_doc.Document,
+	allocator: mem.Allocator,
+) -> [dynamic]Ddic_Xml_Field {
 	fields := make([dynamic]Ddic_Xml_Field, 0, 4, allocator)
-	field_names := []string{"DD03P-FIELDNAME", "FIELDNAME", "fieldName"}
-	pos := 0
-	for {
-		name, _, after, ok := xml_next_text_named(xml, field_names, pos)
-		if !ok {
-			break
-		}
-		window_end := len(xml)
-		_, next_start, _, next_ok := xml_next_text_named(xml, field_names, after)
-		if next_ok {
-			window_end = next_start
-		}
-		ddic_xml_append_field(&fields, name, ddic_xml_field_type(xml[after:window_end]))
-		pos = after
+	if doc != nil && len(doc.elements) > 0 {
+		ddic_xml_collect_fields(doc, 0, &fields)
 	}
-	ddic_xml_collect_attr_fields(xml, &fields)
 	return fields
 }
 
-ddic_xml_collect_attr_fields :: proc(xml: string, fields: ^[dynamic]Ddic_Xml_Field) {
-	pos := 0
-	for pos < len(xml) {
-		start_rel := strings.index_byte(xml[pos:], '<')
-		if start_rel < 0 {
-			break
+ddic_xml_adt_element_info_is_field :: proc(object_type: string) -> bool {
+	if len(object_type) < 6 {
+		return false
+	}
+	return(
+		(strings.equal_fold(object_type[:5], "TABL/") ||
+			strings.equal_fold(object_type[:5], "VIEW/")) &&
+		strings.equal_fold(object_type[len(object_type) - 1:], "F") \
+	)
+}
+
+ddic_xml_adt_element_info_field_type :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+) -> string {
+	data_type := ddic_xml_entry_text_by_key(doc, id, []string{"ddicDataType"})
+	if builtin := ddic_builtin_type(data_type); builtin != "" {
+		return builtin
+	}
+	data_element := ddic_xml_entry_text_by_key(doc, id, []string{"ddicDataElement"})
+	if data_element != "" {
+		return ddic_xml_type_name(data_element)
+	}
+	return ddic_xml_type_name(data_type)
+}
+
+ddic_xml_collect_fields :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+	fields: ^[dynamic]Ddic_Xml_Field,
+) {
+	ddic_xml_collect_dd03p_fields(doc, id, fields)
+
+	element := doc.elements[id]
+	if ddic_xml_field_container_name(element.ident) {
+		name := ddic_xml_attr_value(
+			doc,
+			id,
+			[]string{"DD03P-FIELDNAME", "FIELDNAME", "fieldName", "name"},
+		)
+		if name != "" {
+			ddic_xml_append_field(fields, name, ddic_xml_attr_field_type(doc, id))
 		}
-		start := pos + start_rel
-		end_rel := strings.index_byte(xml[start:], '>')
-		if end_rel < 0 {
-			break
-		}
-		body := strings.trim_space(xml[start + 1:start + end_rel])
-		if xml_opening_tag(body) && xml_field_container_name(xml_tag_name(body)) {
-			name := xml_attr_value(body, []string{"DD03P-FIELDNAME", "FIELDNAME", "fieldName", "name"})
-			if name != "" {
-				ddic_xml_append_field(fields, name, ddic_xml_attr_field_type(body))
+	}
+
+	object_type := ddic_xml_attr_value(doc, id, []string{"type"})
+	if ddic_xml_name_equal(element.ident, "elementInfo") &&
+	   ddic_xml_adt_element_info_is_field(object_type) {
+		ddic_xml_append_field(
+			fields,
+			ddic_xml_attr_value(doc, id, []string{"name"}),
+			ddic_xml_adt_element_info_field_type(doc, id),
+		)
+	}
+
+	for value in element.value {
+		switch child_id in value {
+		case string:
+		case xml_doc.Element_ID:
+			if doc.elements[child_id].kind == .Element {
+				ddic_xml_collect_fields(doc, child_id, fields)
 			}
 		}
-		pos = start + end_rel + 1
+	}
+}
+
+ddic_xml_collect_dd03p_fields :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+	fields: ^[dynamic]Ddic_Xml_Field,
+) {
+	field_names := []string{"DD03P-FIELDNAME", "FIELDNAME", "fieldName"}
+	values := doc.elements[id].value[:]
+	for value, i in values {
+		child_id, ok := value.(xml_doc.Element_ID)
+		if !ok ||
+		   doc.elements[child_id].kind != .Element ||
+		   !ddic_xml_name_matches_any(doc.elements[child_id].ident, field_names) {
+			continue
+		}
+		name := ddic_xml_element_text(doc, child_id)
+		ddic_xml_append_field(fields, name, ddic_xml_field_type_from_siblings(doc, values[i + 1:]))
 	}
 }
 
 ddic_xml_append_field :: proc(fields: ^[dynamic]Ddic_Xml_Field, name, type_name: string) {
-	field_name := strings.trim_space(name)
-	if !ddic_abap_name_ok(field_name) {
-		return
-	}
 	for field in fields^ {
-		if strings.equal_fold(field.name, field_name) {
+		if strings.equal_fold(field.name, name) {
 			return
 		}
 	}
@@ -1585,307 +1918,85 @@ ddic_xml_append_field :: proc(fields: ^[dynamic]Ddic_Xml_Field, name, type_name:
 	if field_type == "" {
 		field_type = "string"
 	}
-	append(fields, Ddic_Xml_Field{name = field_name, type_name = field_type})
+	append(fields, Ddic_Xml_Field{name = name, type_name = field_type})
 }
 
-ddic_xml_field_type :: proc(xml: string) -> string {
-	if builtin := ddic_xml_concrete_builtin_type(xml); builtin != "" {
+ddic_xml_field_type :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> string {
+	if builtin := ddic_xml_concrete_builtin_type_in_node(doc, id); builtin != "" {
 		return builtin
 	}
 	names := []string{"DD03P-ROLLNAME", "ROLLNAME", "rollName", "typeName", "TYPE_NAME"}
-	if text := xml_first_text_named(xml, names); text != "" {
+	if text := ddic_xml_first_text_named_in_node(doc, id, names); text != "" {
 		return ddic_xml_type_name(text)
 	}
-	if attr := xml_first_attr_named(xml, names); attr != "" {
+	if attr := ddic_xml_first_attr_named_in_node(doc, id, names); attr != "" {
 		return ddic_xml_type_name(attr)
 	}
 	return ""
 }
 
-ddic_xml_attr_field_type :: proc(attrs: string) -> string {
-	if attr := xml_attr_value(attrs, []string{"DD03P-DATATYPE", "DATATYPE", "dataType", "builtInType", "abapType", "intType"}); attr != "" {
+ddic_xml_field_type_from_siblings :: proc(
+	doc: ^xml_doc.Document,
+	values: []xml_doc.Value,
+) -> string {
+	field_names := []string{"DD03P-FIELDNAME", "FIELDNAME", "fieldName"}
+	fallback := ""
+	for value in values {
+		child_id, ok := value.(xml_doc.Element_ID)
+		if !ok || doc.elements[child_id].kind != .Element {
+			continue
+		}
+		if ddic_xml_name_matches_any(doc.elements[child_id].ident, field_names) {
+			break
+		}
+		if builtin := ddic_xml_concrete_builtin_type_in_node(doc, child_id); builtin != "" {
+			return builtin
+		}
+		if fallback == "" {
+			fallback = ddic_xml_field_type(doc, child_id)
+		}
+	}
+	return fallback
+}
+
+ddic_xml_attr_field_type :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> string {
+	if attr := ddic_xml_attr_value(
+		doc,
+		id,
+		[]string{"DD03P-DATATYPE", "DATATYPE", "dataType", "builtInType", "abapType", "intType"},
+	); attr != "" {
 		if builtin := ddic_builtin_type(attr); builtin != "" {
 			return builtin
 		}
 	}
-	if attr := xml_attr_value(attrs, []string{"DD03P-ROLLNAME", "ROLLNAME", "rollName", "typeName", "TYPE_NAME", "type"}); attr != "" {
+	if attr := ddic_xml_attr_value(
+		doc,
+		id,
+		[]string{"DD03P-ROLLNAME", "ROLLNAME", "rollName", "typeName", "TYPE_NAME", "type"},
+	); attr != "" {
 		return ddic_xml_type_name(attr)
 	}
 	return ""
 }
 
 ddic_xml_type_name :: proc(raw: string) -> string {
-	trimmed := strings.trim_space(raw)
-	if trimmed == "" {
-		return ""
-	}
-	if builtin := ddic_builtin_type(trimmed); builtin != "" {
+	if builtin := ddic_builtin_type(raw); builtin != "" {
 		return builtin
 	}
-	if ddic_abap_name_ok(trimmed) {
-		return trimmed
+	if ddic_xml_name_reference(raw) {
+		return raw
 	}
 	return ""
 }
 
-ddic_builtin_type :: proc(raw: string) -> string {
-	t := strings.trim_space(raw)
-	switch {
-	case strings.equal_fold(t, "CHAR") ||
-	     strings.equal_fold(t, "CLNT") ||
-	     strings.equal_fold(t, "LANG") ||
-	     strings.equal_fold(t, "CUKY") ||
-	     strings.equal_fold(t, "UNIT") ||
-	     strings.equal_fold(t, "C"):
-		return "c"
-	case strings.equal_fold(t, "NUMC") ||
-	     strings.equal_fold(t, "ACCP") ||
-	     strings.equal_fold(t, "N"):
-		return "n"
-	case strings.equal_fold(t, "DATS") || strings.equal_fold(t, "DATE") || strings.equal_fold(t, "D"):
-		return "d"
-	case strings.equal_fold(t, "TIMS") || strings.equal_fold(t, "TIME") || strings.equal_fold(t, "T"):
-		return "t"
-	case strings.equal_fold(t, "INT1") || strings.equal_fold(t, "B"):
-		return "int1"
-	case strings.equal_fold(t, "INT2") || strings.equal_fold(t, "S"):
-		return "int2"
-	case strings.equal_fold(t, "INT4") || strings.equal_fold(t, "INT") || strings.equal_fold(t, "I"):
-		return "i"
-	case strings.equal_fold(t, "INT8") || strings.equal_fold(t, "8"):
-		return "int8"
-	case strings.equal_fold(t, "DEC") ||
-	     strings.equal_fold(t, "CURR") ||
-	     strings.equal_fold(t, "QUAN") ||
-	     strings.equal_fold(t, "PREC") ||
-	     strings.equal_fold(t, "P"):
-		return "p"
-	case strings.equal_fold(t, "FLTP") || strings.equal_fold(t, "F"):
-		return "f"
-	case strings.equal_fold(t, "RAW") || strings.equal_fold(t, "X"):
-		return "x"
-	case strings.equal_fold(t, "RAWSTRING") ||
-	     strings.equal_fold(t, "XSTRING") ||
-	     strings.equal_fold(t, "XSTR") ||
-	     strings.equal_fold(t, "Y"):
-		return "xstring"
-	case strings.equal_fold(t, "STRING") ||
-	     strings.equal_fold(t, "SSTRING") ||
-	     strings.equal_fold(t, "STRG") ||
-	     strings.equal_fold(t, "G"):
-		return "string"
-	}
-	return ""
-}
-
-xml_root_name :: proc(xml: string) -> string {
-	pos := 0
-	for pos < len(xml) {
-		start_rel := strings.index_byte(xml[pos:], '<')
-		if start_rel < 0 {
-			return ""
-		}
-		start := pos + start_rel
-		end_rel := strings.index_byte(xml[start:], '>')
-		if end_rel < 0 {
-			return ""
-		}
-		body := strings.trim_space(xml[start + 1:start + end_rel])
-		if xml_opening_tag(body) {
-			return xml_tag_name(body)
-		}
-		pos = start + end_rel + 1
-	}
-	return ""
-}
-
-xml_first_text_named :: proc(xml: string, names: []string) -> string {
-	text, _, _, ok := xml_next_text_named(xml, names, 0)
-	return text if ok else ""
-}
-
-xml_next_text_named :: proc(xml: string, names: []string, from: int) -> (string, int, int, bool) {
-	pos := from
-	for pos < len(xml) {
-		start_rel := strings.index_byte(xml[pos:], '<')
-		if start_rel < 0 {
-			break
-		}
-		start := pos + start_rel
-		end_rel := strings.index_byte(xml[start:], '>')
-		if end_rel < 0 {
-			break
-		}
-		body := strings.trim_space(xml[start + 1:start + end_rel])
-		if xml_text_opening_tag(body) && xml_name_matches_any(xml_tag_name(body), names) {
-			value_start := start + end_rel + 1
-			value_end_rel := strings.index_byte(xml[value_start:], '<')
-			if value_end_rel < 0 {
-				break
-			}
-			value_end := value_start + value_end_rel
-			text := strings.trim_space(xml[value_start:value_end])
-			if text != "" {
-				return text, start, value_end, true
-			}
-		}
-		pos = start + end_rel + 1
-	}
-	return "", 0, from, false
-}
-
-xml_first_attr_named :: proc(xml: string, names: []string) -> string {
-	pos := 0
-	for pos < len(xml) {
-		start_rel := strings.index_byte(xml[pos:], '<')
-		if start_rel < 0 {
-			break
-		}
-		start := pos + start_rel
-		end_rel := strings.index_byte(xml[start:], '>')
-		if end_rel < 0 {
-			break
-		}
-		body := strings.trim_space(xml[start + 1:start + end_rel])
-		if xml_opening_tag(body) {
-			if value := xml_attr_value(body, names); value != "" {
-				return value
-			}
-		}
-		pos = start + end_rel + 1
-	}
-	return ""
-}
-
-xml_attr_value :: proc(body: string, names: []string) -> string {
-	i := 0
-	for i < len(body) && !xml_tag_name_end(body[i]) {
-		i += 1
-	}
-	for i < len(body) {
-		for i < len(body) && xml_ws(body[i]) {
-			i += 1
-		}
-		name_start := i
-		for i < len(body) && !xml_attr_name_end(body[i]) {
-			i += 1
-		}
-		name := body[name_start:i]
-		for i < len(body) && xml_ws(body[i]) {
-			i += 1
-		}
-		if i >= len(body) || body[i] != '=' {
-			if i < len(body) {
-				i += 1
-			}
-			continue
-		}
-		i += 1
-		for i < len(body) && xml_ws(body[i]) {
-			i += 1
-		}
-		if i >= len(body) || (body[i] != '"' && body[i] != '\'') {
-			continue
-		}
-		quote := body[i]
-		i += 1
-		value_start := i
-		for i < len(body) && body[i] != quote {
-			i += 1
-		}
-		value := strings.trim_space(body[value_start:i])
-		if xml_name_matches_any(name, names) {
-			return value
-		}
-		if i < len(body) {
-			i += 1
-		}
-	}
-	return ""
-}
-
-xml_tag_name :: proc(body: string) -> string {
-	i := 0
-	if i < len(body) && body[i] == '/' {
-		i += 1
-	}
-	start := i
-	for i < len(body) && !xml_tag_name_end(body[i]) {
-		i += 1
-	}
-	return body[start:i]
-}
-
-xml_opening_tag :: proc(body: string) -> bool {
-	return len(body) > 0 && body[0] != '/' && body[0] != '?' && body[0] != '!'
-}
-
-xml_text_opening_tag :: proc(body: string) -> bool {
-	return xml_opening_tag(body) && !strings.has_suffix(body, "/")
-}
-
-xml_field_container_name :: proc(name: string) -> bool {
-	return xml_name_equal(name, "field") ||
-	       xml_name_equal(name, "component") ||
-	       xml_name_equal(name, "column") ||
-	       ascii_contains_ignore_case(name, "field") ||
-	       ascii_contains_ignore_case(name, "component")
-}
-
-xml_name_matches_any :: proc(name: string, names: []string) -> bool {
-	for candidate in names {
-		if xml_name_equal(name, candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-xml_name_equal :: proc(name, candidate: string) -> bool {
-	if strings.equal_fold(name, candidate) {
-		return true
-	}
-	if i := xml_last_index_byte(name, ':'); i >= 0 && strings.equal_fold(name[i + 1:], candidate) {
-		return true
-	}
-	if i := xml_last_index_byte(name, '-'); i >= 0 && strings.equal_fold(name[i + 1:], candidate) {
-		return true
-	}
-	return false
-}
-
-xml_last_index_byte :: proc(value: string, needle: byte) -> int {
-	i := len(value) - 1
-	for i >= 0 {
-		if value[i] == needle {
-			return i
-		}
-		i -= 1
-	}
-	return -1
-}
-
-xml_tag_name_end :: proc(ch: byte) -> bool {
-	return xml_ws(ch) || ch == '/' || ch == '>'
-}
-
-xml_attr_name_end :: proc(ch: byte) -> bool {
-	return xml_ws(ch) || ch == '=' || ch == '/' || ch == '>'
-}
-
-xml_ws :: proc(ch: byte) -> bool {
-	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
-}
-
-ddic_abap_name_ok :: proc(name: string) -> bool {
-	if name == "" {
+ddic_xml_name_reference :: proc(raw: string) -> bool {
+	if raw == "" {
 		return false
 	}
-	for i in 0 ..< len(name) {
-		ch := name[i]
-		if !(ch >= 'A' && ch <= 'Z' ||
-		     ch >= 'a' && ch <= 'z' ||
-		     ch >= '0' && ch <= '9' ||
+	for ch in transmute([]byte)raw {
+		if !((ch >= 'A' && ch <= 'Z') ||
+		     (ch >= 'a' && ch <= 'z') ||
+		     (ch >= '0' && ch <= '9') ||
 		     ch == '_' ||
 		     ch == '/') {
 			return false
@@ -1894,213 +2005,264 @@ ddic_abap_name_ok :: proc(name: string) -> bool {
 	return true
 }
 
-is_remote_lookup_candidate :: proc(name, kind: string) -> bool {
-	trimmed := strings.trim_space(name)
-	if trimmed == "" {
-		return false
+ddic_builtin_type :: proc(raw: string) -> string {
+	switch {
+	case strings.equal_fold(raw, "CHAR") ||
+	     strings.equal_fold(raw, "CLNT") ||
+	     strings.equal_fold(raw, "LANG") ||
+	     strings.equal_fold(raw, "CUKY") ||
+	     strings.equal_fold(raw, "UNIT") ||
+	     strings.equal_fold(raw, "C"):
+		return "c"
+	case strings.equal_fold(raw, "NUMC") ||
+	     strings.equal_fold(raw, "ACCP") ||
+	     strings.equal_fold(raw, "N"):
+		return "n"
+	case strings.equal_fold(raw, "DATS") ||
+	     strings.equal_fold(raw, "DATE") ||
+	     strings.equal_fold(raw, "D"):
+		return "d"
+	case strings.equal_fold(raw, "TIMS") ||
+	     strings.equal_fold(raw, "TIME") ||
+	     strings.equal_fold(raw, "T"):
+		return "t"
+	case strings.equal_fold(raw, "INT1") || strings.equal_fold(raw, "B"):
+		return "int1"
+	case strings.equal_fold(raw, "INT2") || strings.equal_fold(raw, "S"):
+		return "int2"
+	case strings.equal_fold(raw, "INT4") ||
+	     strings.equal_fold(raw, "INT") ||
+	     strings.equal_fold(raw, "I"):
+		return "i"
+	case strings.equal_fold(raw, "INT8") || strings.equal_fold(raw, "8"):
+		return "int8"
+	case strings.equal_fold(raw, "DEC") ||
+	     strings.equal_fold(raw, "CURR") ||
+	     strings.equal_fold(raw, "QUAN") ||
+	     strings.equal_fold(raw, "PREC") ||
+	     strings.equal_fold(raw, "P"):
+		return "p"
+	case strings.equal_fold(raw, "FLTP") || strings.equal_fold(raw, "F"):
+		return "f"
+	case strings.equal_fold(raw, "RAW") || strings.equal_fold(raw, "X"):
+		return "x"
+	case strings.equal_fold(raw, "RAWSTRING") ||
+	     strings.equal_fold(raw, "XSTRING") ||
+	     strings.equal_fold(raw, "XSTR") ||
+	     strings.equal_fold(raw, "Y"):
+		return "xstring"
+	case strings.equal_fold(raw, "STRING") ||
+	     strings.equal_fold(raw, "SSTRING") ||
+	     strings.equal_fold(raw, "STRG") ||
+	     strings.equal_fold(raw, "G"):
+		return "string"
 	}
-	if is_remote_lookup_name(trimmed) {
-		return true
-	}
-	if kind == "type" || kind == "static" || kind == "function" || kind == "report" {
-		return is_standard_remote_type_like_name(trimmed)
-	}
-	if kind == "message-class" {
-		return is_standard_message_class_name(trimmed)
-	}
-	return false
+	return ""
 }
 
-is_remote_lookup_candidate_after_local_resolution :: proc(name, kind: string) -> bool {
-	trimmed := strings.trim_space(name)
-	if trimmed == "" {
-		return false
+ddic_xml_root_name :: proc(doc: ^xml_doc.Document) -> string {
+	if doc == nil || len(doc.elements) == 0 {
+		return ""
 	}
-	if is_remote_lookup_name(trimmed) {
-		return true
-	}
-	if kind == "type" || kind == "static" || kind == "function" || kind == "report" {
-		return is_standard_remote_type_like_name_after_local_resolution(trimmed)
-	}
-	if kind == "message-class" {
-		return is_standard_message_class_name(trimmed)
-	}
-	return false
+	return doc.elements[0].ident
 }
 
-is_remote_lookup_name :: proc(name: string) -> bool {
-	if name == "" {
-		return false
+ddic_xml_concrete_builtin_type_in_node :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+) -> string {
+	text_tags := []string {
+		"DD04V-DATATYPE",
+		"DD01V-DATATYPE",
+		"DD03P-DATATYPE",
+		"DD40V-DATATYPE",
+		"DATATYPE",
+		"INTTYPE",
+		"dataType",
+		"builtInType",
+		"abapType",
+		"intType",
 	}
-	if name[0] == '/' {
-		return true
-	}
-	return strings.equal_fold(name[:1], "z") || strings.equal_fold(name[:1], "y")
-}
-
-is_standard_remote_type_like_name :: proc(name: string) -> bool {
-	if name == "" || name[0] == '/' {
-		return name != ""
-	}
-	if len(name) <= 1 {
-		return false
-	}
-	if !ascii_alpha(name[0]) {
-		return false
-	}
-	if is_likely_local_identifier_style(name) || is_likely_builtin_type_name(name) {
-		return false
-	}
-	return ascii_name_bytes(name)
-}
-
-is_standard_remote_type_like_name_after_local_resolution :: proc(name: string) -> bool {
-	if name == "" || name[0] == '/' {
-		return name != ""
-	}
-	if len(name) <= 1 {
-		return false
-	}
-	if !ascii_alpha(name[0]) {
-		return false
-	}
-	if is_likely_local_identifier_style(name) || is_likely_builtin_type_name(name) {
-		return false
-	}
-	return ascii_name_bytes(name)
-}
-
-is_standard_message_class_name :: proc(name: string) -> bool {
-	if name == "" || name[0] == '/' {
-		return name != ""
-	}
-	all_digits := true
-	for b in transmute([]byte)name {
-		if !ascii_digit(b) {
-			all_digits = false
-			break
+	if text := ddic_xml_first_text_named_in_node(doc, id, text_tags); text != "" {
+		if builtin := ddic_builtin_type(text); builtin != "" {
+			return builtin
 		}
 	}
-	if all_digits {
-		return true
-	}
-	if !ascii_alpha(name[0]) {
-		return false
-	}
-	return !is_likely_local_identifier_style(name) && ascii_name_bytes(name)
-}
-
-is_likely_builtin_type_name :: proc(name: string) -> bool {
-	builtins := [?]string {
-		"i", "int1", "int2", "int4", "int8", "f", "p", "decfloat", "decfloat16",
-		"decfloat34", "string", "c", "n", "d", "t", "x", "xstring", "data", "any",
-		"abap_bool", "flag", "xfeld", "syst", "guid", "symsgv", "sydatum", "timestamp",
-		"cursor", "tabname", "cdobjectcl", "rs38l_fnam", "memoryid", "time", "timestmp",
-		"object", "standard", "table", "simple", "numeric", "csequence", "clike",
-		"xsequence", "previous", "to",
-	}
-	for value in builtins {
-		if strings.equal_fold(name, value) {
-			return true
-		}
-	}
-	if ascii_has_prefix_ignore_case(name, "char") {
-		for i in 4 ..< len(name) {
-			if !ascii_digit(name[i]) {
-				return false
-			}
-		}
-		return len(name) > 4
-	}
-	return false
-}
-
-is_likely_local_identifier_style :: proc(name: string) -> bool {
-	prefixes := [?]string {
-		"lv_", "ls_", "lt_", "lr_", "lo_", "li_", "lm_", "lx_", "lc_", "ld_",
-		"gv_", "gs_", "gt_", "gr_", "go_", "gi_", "gm_", "gx_", "gc_", "gd_",
-		"mv_", "ms_", "mt_", "mr_", "mo_", "mi_", "mm_", "mx_", "mc_", "md_",
-		"iv_", "is_", "it_", "ir_", "io_", "ii_", "im_", "ix_", "ic_", "id_",
-		"ev_", "es_", "et_", "er_", "eo_", "ei_", "em_", "ex_", "ec_", "ed_",
-		"rv_", "rs_", "rt_", "rr_", "ro_", "ri_", "rm_", "rx_", "rc_", "rd_",
-		"cv_", "cs_", "ct_", "cr_", "co_", "ci_", "cm_", "cc_", "cd_",
-		"sv_", "ss_", "st_", "sr_", "so_", "si_", "sm_", "sx_", "sc_", "sd_",
-		"tv_", "ts_", "tt_", "tr_", "to_", "ti_", "tm_", "tx_", "tc_", "td_",
-		"uv_", "us_", "ut_", "ur_", "uo_", "ui_", "um_", "ux_", "uc_", "ud_",
-		"wv_", "ws_", "wt_", "wr_", "wo_", "wi_", "wm_", "wx_", "wc_", "wd_",
-		"xv_", "xs_", "xt_", "xr_", "xo_", "xi_", "xm_", "xx_", "xc_", "xd_",
-		"yv_", "ys_", "yt_", "yr_", "yo_", "yi_", "ym_", "yx_", "yc_", "yd_",
-		"zv_", "zs_", "zt_", "zr_", "zo_", "zi_", "zm_", "zx_", "zc_", "zd_",
-	}
-	for prefix in prefixes {
-		if ascii_has_prefix_ignore_case(name, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-ascii_name_bytes :: proc(name: string) -> bool {
-	for b in transmute([]byte)name {
-		if !(ascii_alpha(b) || ascii_digit(b) || b == '_' || b == '/') {
-			return false
-		}
-	}
-	return true
-}
-
-ascii_has_prefix_ignore_case :: proc(text, prefix: string) -> bool {
-	return len(text) >= len(prefix) && strings.equal_fold(text[:len(prefix)], prefix)
-}
-
-encode_local_export_component :: proc(value: string, allocator: mem.Allocator) -> string {
-	upper := strings.to_upper(strings.trim_space(value), allocator)
-	out := strings.builder_make(allocator)
-	for b in transmute([]byte)upper {
-		if ascii_alpha(b) || ascii_digit(b) ||
-		   b == '-' || b == '_' || b == '.' || b == '!' || b == '~' ||
-		   b == '*' || b == '\'' || b == '(' || b == ')' {
-			strings.write_byte(&out, b)
-		} else {
-			strings.write_byte(&out, '%')
-			strings.write_byte(&out, hex_digit(b >> 4))
-			strings.write_byte(&out, hex_digit(b & 0x0f))
-		}
-	}
-	return strings.to_string(out)
-}
-
-path_file_name :: proc(path: string) -> string {
-	start := 0
-	for i in 0 ..< len(path) {
-		if path[i] == '/' || path[i] == '\\' {
-			start = i + 1
-		}
-	}
-	return path[start:]
-}
-
-path_file_extension :: proc(path: string) -> string {
-	name := path_file_name(path)
-	for i := len(name) - 1; i >= 0; i -= 1 {
-		if name[i] == '.' {
-			return name[i + 1:]
+	if attr := ddic_xml_first_attr_named_in_node(doc, id, text_tags); attr != "" {
+		if builtin := ddic_builtin_type(attr); builtin != "" {
+			return builtin
 		}
 	}
 	return ""
 }
 
-hex_digit :: proc(value: byte) -> byte {
-	if value <= 9 {
-		return '0' + value
+ddic_xml_first_text_named :: proc(doc: ^xml_doc.Document, names: []string) -> string {
+	if doc == nil {
+		return ""
 	}
-	return 'A' + value - 10
+	for id := xml_doc.Element_ID(0); id < doc.element_count; id += 1 {
+		if doc.elements[id].kind == .Element &&
+		   ddic_xml_name_matches_any(doc.elements[id].ident, names) {
+			if text := ddic_xml_element_text(doc, id); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
-ascii_alpha :: proc(value: byte) -> bool {
-	return('a' <= value && value <= 'z') || ('A' <= value && value <= 'Z')
+ddic_xml_first_attr_named :: proc(doc: ^xml_doc.Document, names: []string) -> string {
+	if doc == nil {
+		return ""
+	}
+	for id := xml_doc.Element_ID(0); id < doc.element_count; id += 1 {
+		if attr := ddic_xml_attr_value(doc, id, names); attr != "" {
+			return attr
+		}
+	}
+	return ""
 }
 
-ascii_digit :: proc(value: byte) -> bool {
-	return '0' <= value && value <= '9'
+ddic_xml_first_text_named_in_node :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+	names: []string,
+) -> string {
+	element := doc.elements[id]
+	if ddic_xml_name_matches_any(element.ident, names) {
+		if text := ddic_xml_element_text(doc, id); text != "" {
+			return text
+		}
+	}
+	for value in element.value {
+		switch child_id in value {
+		case string:
+		case xml_doc.Element_ID:
+			if doc.elements[child_id].kind == .Element {
+				if text := ddic_xml_first_text_named_in_node(doc, child_id, names); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+ddic_xml_first_attr_named_in_node :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+	names: []string,
+) -> string {
+	if attr := ddic_xml_attr_value(doc, id, names); attr != "" {
+		return attr
+	}
+	for value in doc.elements[id].value {
+		switch child_id in value {
+		case string:
+		case xml_doc.Element_ID:
+			if doc.elements[child_id].kind == .Element {
+				if attr := ddic_xml_first_attr_named_in_node(doc, child_id, names); attr != "" {
+					return attr
+				}
+			}
+		}
+	}
+	return ""
+}
+
+ddic_xml_entry_text_by_key :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+	keys: []string,
+) -> string {
+	element := doc.elements[id]
+	if ddic_xml_name_equal(element.ident, "entry") {
+		key := ddic_xml_attr_value(doc, id, []string{"key"})
+		if ddic_xml_name_matches_any(key, keys) {
+			return ddic_xml_element_text(doc, id)
+		}
+	}
+	for value in element.value {
+		switch child_id in value {
+		case string:
+		case xml_doc.Element_ID:
+			if doc.elements[child_id].kind == .Element {
+				if text := ddic_xml_entry_text_by_key(doc, child_id, keys); text != "" {
+					return text
+				}
+			}
+		}
+	}
+	return ""
+}
+
+ddic_xml_element_text :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) -> string {
+	for value in doc.elements[id].value {
+		switch text in value {
+		case string:
+			if text != "" {
+				return text
+			}
+		case xml_doc.Element_ID:
+		}
+	}
+	return ""
+}
+
+ddic_xml_attr_value :: proc(
+	doc: ^xml_doc.Document,
+	id: xml_doc.Element_ID,
+	names: []string,
+) -> string {
+	for attr in doc.elements[id].attribs {
+		if ddic_xml_name_matches_any(attr.key, names) {
+			return attr.val
+		}
+	}
+	return ""
+}
+
+ddic_xml_field_container_name :: proc(name: string) -> bool {
+	return(
+		ddic_xml_name_equal(name, "field") ||
+		ddic_xml_name_equal(name, "component") ||
+		ddic_xml_name_equal(name, "column") ||
+		ascii_contains_ignore_case(name, "field") ||
+		ascii_contains_ignore_case(name, "component") \
+	)
+}
+
+ddic_xml_name_matches_any :: proc(name: string, names: []string) -> bool {
+	for candidate in names {
+		if ddic_xml_name_equal(name, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+ddic_xml_name_equal :: proc(name, candidate: string) -> bool {
+	if strings.equal_fold(name, candidate) {
+		return true
+	}
+	if i := ddic_xml_last_index_byte(name, ':');
+	   i >= 0 && strings.equal_fold(name[i + 1:], candidate) {
+		return true
+	}
+	if i := ddic_xml_last_index_byte(name, '-');
+	   i >= 0 && strings.equal_fold(name[i + 1:], candidate) {
+		return true
+	}
+	return false
+}
+
+ddic_xml_last_index_byte :: proc(value: string, needle: byte) -> int {
+	i := len(value) - 1
+	for i >= 0 {
+		if value[i] == needle {
+			return i
+		}
+		i -= 1
+	}
+	return -1
 }

@@ -163,8 +163,10 @@ remote_dependency_candidates_ignore_plain_identifiers :: proc(t: ^testing.T) {
 	target := Source_Input {
 		uri = "file:///remote_candidates.abap",
 		source = `REPORT zmain.
+TYPES ls_local_type TYPE string.
 DATA lv_ref TYPE REF TO zcl_remote_type.
 DATA ls_local TYPE ls_local_type.
+DATA ls_client TYPE t000.
 unknown_value = 1.
 CALL FUNCTION 'Z_REMOTE_FM'.
 a=>b( ).
@@ -177,16 +179,20 @@ lv_ref->get_url( ).
 
 	has_type := false
 	has_function := false
+	has_standard_type := false
 	has_symbol := false
 	has_routine := false
 	has_local_type := false
 	has_static_a := false
 	for candidate in candidates {
-		if candidate.name == "zcl_remote_type" && candidate.kind == "type" {
+		if candidate.name == "zcl_remote_type" && candidate.kind == .Type {
 			has_type = true
 		}
-		if candidate.name == "z_remote_fm" && candidate.kind == "function" {
+		if candidate.name == "z_remote_fm" && candidate.kind == .Function {
 			has_function = true
+		}
+		if candidate.name == "t000" && candidate.kind == .Type {
+			has_standard_type = true
 		}
 		if candidate.name == "unknown_value" {
 			has_symbol = true
@@ -203,6 +209,7 @@ lv_ref->get_url( ).
 	}
 	testing.expect(t, has_type)
 	testing.expect(t, has_function)
+	testing.expect(t, has_standard_type)
 	testing.expect(t, !has_symbol)
 	testing.expect(t, !has_routine)
 	testing.expect(t, !has_local_type)
@@ -3274,8 +3281,8 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]Source_Input, context.allocator)
 	remote := [?]Remote_Dependency_Candidate {
-		{name = "ZCL_STORE_TASK", kind = "type"},
-		{name = "ZINC_STORE_TASK", kind = "include"},
+		{name = "ZCL_STORE_TASK", kind = .Type},
+		{name = "ZINC_STORE_TASK", kind = .Include},
 	}
 	seen := make(map[i64]bool, context.allocator)
 	before := frontend_runtime.pool_stats(&pool)
@@ -3380,7 +3387,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	added := add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = "type"},
+		Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = .Type},
 		&object_ref,
 		"global-class",
 		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
@@ -3434,7 +3441,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	added := add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		Remote_Dependency_Candidate{name = "tr_objects", kind = "type"},
+		Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
 		&object_ref,
 		"ddic-table-type",
 		"<ttyp/>",
@@ -3607,7 +3614,7 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 	added := add_adt_fetch_task_result(
 		&candidates,
 		&dependencies,
-		Remote_Dependency_Candidate{name = "zcl_task_result", kind = "type"},
+		Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type},
 		result,
 		nil,
 		nil,
@@ -3667,18 +3674,65 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 
 	store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
 
-	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "tr_objects", "type", context.allocator)
+	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "tr_objects", .Type, context.allocator)
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
 	testing.expect(t, ok)
 	testing.expect_value(t, record.object_kind, "ddic-table-type")
 	testing.expect_value(t, record.file_extension, "abap")
 	testing.expect(t, strings.contains(record.source_text, "TYPES tr_objects"))
 
-	shared, shared_ok, shared_err := dep_store.find_artifact_for_candidate(&store, &profile, "zinc_fetched", "include", context.allocator)
+	shared, shared_ok, shared_err := dep_store.find_artifact_for_candidate(&store, &profile, "zinc_fetched", .Include, context.allocator)
 	testing.expect_value(t, shared_err, dep_store.Store_Error.None)
 	testing.expect(t, shared_ok)
 	testing.expect_value(t, shared.object_kind, "include")
 	testing.expect(t, strings.contains(shared.source_text, "gv_fetched"))
+}
+
+@(test)
+adt_fetched_ddic_table_is_cached_as_structure :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("adt-fetch-cache-ddic-table")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	object_ref := adt.Object_Ref {
+		uri          = "/sap/bc/adt/vit/wb/object_type/tabldt/object_name/T000",
+		object_type  = "TABL/DT",
+		name         = "T000",
+		package_name = "SABAP",
+		description  = "Clients",
+	}
+	fetched := adt.Dependency_Fetch_Result {
+		body = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="t000" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="mandt">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">clnt</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="mtext">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">char</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+		file_extension = "xml",
+		manifest_kind  = "ddic-table",
+	}
+
+	store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
+
+	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "t000", .Type, context.allocator)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.object_kind, "ddic-table")
+	testing.expect_value(t, record.file_extension, "abap")
+	testing.expect(t, strings.contains(record.source_text, "TYPES: BEGIN OF t000"))
+	testing.expect(t, strings.contains(record.source_text, "mandt TYPE c"))
+	testing.expect(t, strings.contains(record.source_text, "mtext TYPE c"))
+	testing.expect(t, !strings.contains(record.source_text, "TYPES t000 TYPE string"))
 }
 
 @(test)

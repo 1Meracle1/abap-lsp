@@ -94,7 +94,7 @@ stores_and_looks_up_artifacts :: proc(t: ^testing.T) {
 		&profile,
 		"https://sap.example|100|demo",
 		"cl_abap_typedescr",
-		"type",
+		.Type,
 		context.allocator,
 	)
 	testing.expect_value(t, err, Store_Error.None)
@@ -102,7 +102,7 @@ stores_and_looks_up_artifacts :: proc(t: ^testing.T) {
 
 	lookup: Symbol_Lookup_Result
 	ok: bool
-	lookup, ok, err = lookup_symbol(&store, &profile, "cl_abap_typedescr", "type", context.allocator)
+	lookup, ok, err = lookup_symbol(&store, &profile, "cl_abap_typedescr", .Type, context.allocator)
 	testing.expect_value(t, err, Store_Error.None)
 	testing.expect(t, ok)
 	testing.expect_value(t, lookup.artifact_id, artifact_id)
@@ -141,7 +141,7 @@ candidate_lookup_returns_highest_priority_artifact_kind :: proc(t: ^testing.T) {
 		&store,
 		&profile,
 		"CL_ABAP_TYPEDESCR",
-		"type",
+		.Type,
 		context.allocator,
 	)
 	testing.expect_value(t, err, Store_Error.None)
@@ -165,12 +165,75 @@ candidate_lookup_any_profile_reads_central_cache_artifact :: proc(t: ^testing.T)
 	record, ok, err = find_artifact_for_candidate_any_profile(
 		&store,
 		"CL_ABAP_TYPEDESCR",
-		"type",
+		.Type,
 		context.allocator,
 	)
 	testing.expect_value(t, err, Store_Error.None)
 	testing.expect(t, ok)
 	testing.expect_value(t, record.object_kind, "global-class")
+}
+
+@(test)
+candidate_lookup_filters_type_cache_hits_by_object_type :: proc(t: ^testing.T) {
+	path := workspace_store_path("candidate_lookup_filters_type_cache_hits_by_object_type.sqlite3")
+	store, err := dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	profile := sample_profile()
+
+	report := sample_artifact()
+	report.object_kind = "report"
+	report.object_name = "RSPARAM"
+	report.object_uri = "/sap/bc/adt/programs/programs/RSPARAM"
+	report.object_type = "PROG/P"
+	report.source_text = "REPORT rsparam."
+	report.symbols = nil
+
+	_, err = put_artifact(&store, &profile, &report, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+
+	status: Candidate_Cache_Status
+	status, err = find_cached_candidate(
+		&store,
+		&profile,
+		"https://sap.example|100|demo",
+		"rsparam",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect_value(t, status, Candidate_Cache_Status.Missing)
+
+	ok: bool
+	_, ok, err = find_artifact_for_candidate_any_profile(
+		&store,
+		"rsparam",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect(t, !ok)
+
+	structure := sample_artifact()
+	structure.object_kind = "ddic-structure"
+	structure.object_name = "RSPARAM"
+	structure.object_uri = "/sap/bc/adt/ddic/structures/RSPARAM"
+	structure.object_type = "TABL/DS"
+	structure.source_text = "TYPES rsparam TYPE string."
+	structure.symbols = nil
+
+	_, err = put_artifact(&store, &profile, &structure, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+
+	record: Stored_Artifact_Record
+	record, ok, err = find_artifact_for_candidate_any_profile(
+		&store,
+		"rsparam",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.object_kind, "ddic-structure")
 }
 
 @(test)
@@ -206,7 +269,7 @@ lists_artifacts_by_kind_in_profile_scope :: proc(t: ^testing.T) {
 @(test)
 type_candidates_include_ddic_domains :: proc(t: ^testing.T) {
 	kinds := make([dynamic]string, 0, 8, context.allocator)
-	candidate_artifact_kinds("type", &kinds, context.allocator)
+	candidate_artifact_kinds(.Type, &kinds)
 	found := false
 	for kind in kinds {
 		found = found || kind == "ddic-domain"
@@ -226,7 +289,7 @@ records_negative_candidates_by_profile_scope :: proc(t: ^testing.T) {
 		&profile,
 		"https://sap.example|100|demo",
 		"boolean",
-		"type",
+		.Type,
 		"2026-04-23T10:00:00Z",
 		context.allocator,
 	)
@@ -238,7 +301,7 @@ records_negative_candidates_by_profile_scope :: proc(t: ^testing.T) {
 		&profile,
 		"https://sap.example|100|demo",
 		"boolean",
-		"type",
+		.Type,
 		context.allocator,
 	)
 	testing.expect_value(t, err, Store_Error.None)
@@ -259,7 +322,7 @@ clears_profile_scope :: proc(t: ^testing.T) {
 		&profile,
 		"https://sap.example|100|demo",
 		"boolean",
-		"type",
+		.Type,
 		"2026-04-23T10:00:00Z",
 		context.allocator,
 	)
@@ -273,7 +336,7 @@ clears_profile_scope :: proc(t: ^testing.T) {
 		&profile,
 		"https://sap.example|100|demo",
 		"cl_abap_typedescr",
-		"type",
+		.Type,
 		context.allocator,
 	)
 	testing.expect_value(t, err, Store_Error.None)
@@ -283,7 +346,7 @@ clears_profile_scope :: proc(t: ^testing.T) {
 		&profile,
 		"https://sap.example|100|demo",
 		"boolean",
-		"type",
+		.Type,
 		context.allocator,
 	)
 	testing.expect_value(t, err, Store_Error.None)
