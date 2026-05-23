@@ -95,6 +95,23 @@ ENDFORM.
 }
 
 @(test)
+standard_source_string_type_is_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///seop_source_string.abap",
+		`
+INTERFACE lif_demo.
+  METHODS run IMPORTING it_local_definitions TYPE seop_source_string OPTIONAL.
+ENDINTERFACE.
+`,
+	)
+
+	testing.expect(t, find_symbol(&unit, "seop_source_string", .Builtin_Type) != nil)
+	testing.expect(t, has_reference(&unit, "seop_source_string", .Type, .Type_Ref))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	unit := unit_analysis_make(
 		Unit_Id(0),

@@ -135,6 +135,7 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{"cdobjectcl", .Type, ""},
 	{"rs38l_fnam", .Type, ""},
 	{"memoryid", .Type, ""},
+	{"seop_source_string", .Type, ""},
 	{"abap_true", .Constant, ""},
 	{"abap_false", .Constant, ""},
 	{"abap_undefined", .Constant, ""},
