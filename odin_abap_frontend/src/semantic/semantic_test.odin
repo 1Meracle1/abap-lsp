@@ -1274,6 +1274,49 @@ ENDCLASS.
 }
 
 @(test)
+resolves_qualified_interface_method_parameters :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///qualified_interface_method_params.abap",
+		`
+INTERFACE lif_message.
+  METHODS get_longtext
+    IMPORTING preserve_newlines TYPE abap_bool.
+ENDINTERFACE.
+
+INTERFACE lif_t100_message.
+  INTERFACES lif_message.
+ENDINTERFACE.
+
+CLASS lcl_exception DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_t100_message.
+    METHODS lif_message~get_longtext REDEFINITION.
+ENDCLASS.
+
+CLASS lcl_exception IMPLEMENTATION.
+  METHOD lif_message~get_longtext.
+    DATA lv_keep TYPE abap_bool.
+    lv_keep = preserve_newlines.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	resolved := false
+	for reference in unit.references {
+		if reference.name == "preserve_newlines" &&
+		   reference.namespace == .Value &&
+		   reference.kind == .Identifier &&
+		   reference.has_resolution {
+			resolved = true
+		}
+	}
+	testing.expect(t, resolved)
+}
+
+@(test)
 resolves_class_type_ref_to :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

@@ -496,6 +496,19 @@ method_signature_member_for_scope :: proc(
 	visible: [dynamic]Unit_Id,
 	predecessors: [dynamic]Unit_Id,
 ) -> ^Class_Member_Data {
+	if interface_name, member_name, qualified := qualified_method_parts(method_name); qualified {
+		if member, ok := exposed_interface_member_for_scope(
+			units,
+			unit_index,
+			scope_id,
+			interface_name,
+			member_name,
+			roots,
+			visible,
+		); ok {
+			return member
+		}
+	}
 	member_handle, ok := resolve_visible_class_definition_member(
 		units,
 		unit_index,
@@ -538,6 +551,96 @@ method_signature_member_for_scope :: proc(
 		return inherited
 	}
 	return member
+}
+
+exposed_interface_member_for_scope :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	interface_name, member_name: string,
+	roots: ^Project_Root_Lookup,
+	visible: [dynamic]Unit_Id,
+) -> (^Class_Member_Data, bool) {
+	class_symbol, class_ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
+	if !class_ok {
+		return nil, false
+	}
+	handle, handle_ok := exposed_interface_handle(
+		units,
+		Symbol_Handle{unit = units[unit_index].unit_id, symbol = class_symbol},
+		interface_name,
+		roots,
+		visible,
+		0,
+	)
+	if !handle_ok {
+		return nil, false
+	}
+	interface_unit_index := unit_id_index(handle.unit)
+	if interface_unit_index < 0 || interface_unit_index >= len(units) {
+		return nil, false
+	}
+	member := unit_class_member(&units[interface_unit_index], handle.symbol, member_name)
+	return member, member != nil
+}
+
+exposed_interface_handle :: proc(
+	units: []Unit_Analysis,
+	owner: Symbol_Handle,
+	interface_name: string,
+	roots: ^Project_Root_Lookup,
+	visible: [dynamic]Unit_Id,
+	depth: int,
+) -> (Symbol_Handle, bool) {
+	if depth > len(units) + 8 {
+		return {}, false
+	}
+	unit_index := unit_id_index(owner.unit)
+	if unit_index < 0 || unit_index >= len(units) {
+		return {}, false
+	}
+	unit := &units[unit_index]
+	for implemented in unit.implemented_interfaces {
+		if implemented.owner_symbol != owner.symbol {
+			continue
+		}
+		interface_handle, ok := resolve_type_name_in_project(
+			units,
+			unit_index,
+			implemented.interface_name,
+			roots,
+			visible,
+		)
+		if !ok {
+			continue
+		}
+		if implemented.interface_name == interface_name {
+			return interface_handle, true
+		}
+		if found, found_ok := exposed_interface_handle(
+			units,
+			interface_handle,
+			interface_name,
+			roots,
+			visible,
+			depth + 1,
+		); found_ok {
+			return found, true
+		}
+	}
+	if owner_symbol := symbol(unit, owner.symbol); owner_symbol != nil && owner_symbol.kind == .Class {
+		if superclass, ok := direct_superclass_handle(units, owner, roots, visible); ok {
+			return exposed_interface_handle(
+				units,
+				superclass,
+				interface_name,
+				roots,
+				visible,
+				depth + 1,
+			)
+		}
+	}
+	return {}, false
 }
 
 inherited_project_class_member :: proc(

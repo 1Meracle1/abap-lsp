@@ -1758,6 +1758,7 @@ walk_class_body :: proc(
 
 walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id) {
 	owner := declare_name_if_present(c, scope, stmt.name, .Method, stmt.header_range)
+	add_qualified_method_interface_reference(c, stmt.name, scope, stmt.header_range)
 	previous := c.current_scope
 	c.current_scope = scope
 	method_scope := push_scope(c, .Method, stmt.range, owner)
@@ -1994,6 +1995,7 @@ collect_class_oop_stmt :: proc(
 	case .Methods, .Class_Methods:
 		is_static := stmt.kind == .Class_Methods
 		for member in stmt.members {
+			add_qualified_method_interface_reference(c, member.name, scope, stmt.range)
 			name := method_member_name(member.name)
 			declare_name_if_present(c, scope, name, .Method, stmt.range)
 			parameters := method_parameters_from_signatures(c, member.signatures[:])
@@ -2392,14 +2394,30 @@ enclosing_owner :: proc(c: ^Collector, scope: Scope_Id, kind: Scope_Kind) -> (Sy
 }
 
 method_member_name :: proc(name: string) -> string {
-	i := len(name) - 1
-	for i >= 0 {
-		if name[i] == '~' {
-			return name[i + 1:]
-		}
-		i -= 1
+	if _, member_name, ok := qualified_method_parts(name); ok {
+		return member_name
 	}
 	return name
+}
+
+qualified_method_parts :: proc(name: string) -> (string, string, bool) {
+	for i := len(name) - 1; i >= 0; i -= 1 {
+		if name[i] == '~' {
+			return name[:i], name[i + 1:], i > 0 && i + 1 < len(name)
+		}
+	}
+	return "", "", false
+}
+
+add_qualified_method_interface_reference :: proc(
+	c: ^Collector,
+	name: string,
+	scope: Scope_Id,
+	range: tokenizer.Range,
+) {
+	if interface_name, _, ok := qualified_method_parts(name); ok {
+		add_reference(c, scope, interface_name, .Type, .Type_Ref, range)
+	}
 }
 
 class_member :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> ^Class_Member_Data {
