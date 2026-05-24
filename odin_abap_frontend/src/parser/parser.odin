@@ -1446,7 +1446,7 @@ assignment_operator_index :: proc(p: ^Parser, index: int) -> int {
 	   (p.tokens[index + 1].kind == .Eq || p.tokens[index + 1].kind == .QuestionEq) {
 		return index + 1
 	}
-	if known_stmt_lead_at(p, index) {
+	if known_stmt_lead_at(p, index) && !keyword_like_assignment_lhs_continues(p, index) {
 		return -1
 	}
 	paren_depth := 0
@@ -1484,6 +1484,17 @@ assignment_operator_index :: proc(p: ^Parser, index: int) -> int {
 		}
 	}
 	return -1
+}
+
+keyword_like_assignment_lhs_continues :: proc(p: ^Parser, index: int) -> bool {
+	if index + 1 >= len(p.tokens) {
+		return false
+	}
+	next := p.tokens[index + 1]
+	if selector_operator_starts(p.tokens[index], next) || next.kind == .LBracket {
+		return true
+	}
+	return (next.kind == .LParen || next.kind == .Plus) && tokens_touch(p.tokens[index], next)
 }
 
 expr_lead_token :: proc(tok: Token) -> bool {

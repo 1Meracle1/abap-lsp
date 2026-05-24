@@ -37,7 +37,11 @@ structural_stmt_starts :: proc(p: ^Parser) -> bool {
 
 structural_block_keyword_starts :: proc(p: ^Parser, keyword: string) -> bool {
 	next := next_token_kind(p, 1)
-	return at_keyword(p, keyword) && next != .Minus && next != .Eq && next != .QuestionEq
+	return at_keyword(p, keyword) &&
+	       next != .Minus &&
+	       next != .Eq &&
+	       next != .QuestionEq &&
+	       !keyword_like_assignment_lhs_continues(p, p.index)
 }
 
 parse_control_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

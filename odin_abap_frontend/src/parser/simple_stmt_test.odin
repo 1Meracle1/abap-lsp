@@ -42,6 +42,22 @@ lo->run( ).`
 }
 
 @(test)
+keyword_like_complex_lhs_assignments_parse :: proc(t: ^testing.T) {
+	source := `interface-unicode = 'X'.
+method-alias = seox_true.
+method-state = seoc_state_implemented.
+method[ id = 1 ] = value.
+method+1(2) = value.
+method(2) = value.`
+	parsed := parse(source, "keyword_selector_assignment.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.assign, 6)
+	testing.expect_value(t, counts.invalid_stmt, 0)
+}
+
+@(test)
 missing_rhs_recovery_preserves_following_statement :: proc(t: ^testing.T) {
 	assignment := parse("lv_bad = .\nlv_after = 1.", "missing_rhs.abap", context.allocator)
 	inline := parse("DATA(lv_bad) = .\nDATA lv_after TYPE i.", "inline_rhs.abap", context.allocator)
