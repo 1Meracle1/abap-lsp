@@ -470,7 +470,7 @@ remote_dependency_candidate_for_reference :: proc(
 	case .Include, .Structured_Decl_End:
 		return {}, false
 	case .Static_Target:
-		if !ref.has_resolution || ref.resolution.kind != .External {
+		if ref.has_resolution && ref.resolution.kind != .External {
 			return {}, false
 		}
 		kind = .Static

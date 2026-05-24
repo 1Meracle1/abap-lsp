@@ -184,7 +184,6 @@ DATA ls_local TYPE ls_local_type.
 DATA ls_client TYPE t000.
 unknown_value = 1.
 CALL FUNCTION 'Z_REMOTE_FM'.
-a=>b( ).
 lv_ref->get_url( ).
 `,
 	}
@@ -198,7 +197,6 @@ lv_ref->get_url( ).
 	has_symbol := false
 	has_routine := false
 	has_local_type := false
-	has_static_a := false
 	for candidate in candidates {
 		if candidate.name == "zcl_remote_type" && candidate.kind == .Type {
 			has_type = true
@@ -218,9 +216,6 @@ lv_ref->get_url( ).
 		if candidate.name == "ls_local_type" {
 			has_local_type = true
 		}
-		if candidate.name == "a" {
-			has_static_a = true
-		}
 	}
 	testing.expect(t, has_type)
 	testing.expect(t, has_function)
@@ -228,7 +223,64 @@ lv_ref->get_url( ).
 	testing.expect(t, !has_symbol)
 	testing.expect(t, !has_routine)
 	testing.expect(t, !has_local_type)
-	testing.expect(t, !has_static_a)
+}
+
+@(test)
+remote_dependency_candidates_include_unresolved_static_targets :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = `
+REPORT zmain.
+CLASS lcl_local DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS lcl_local IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+DATA c_generic_error_msg TYPE string.
+cl_message_helper=>set_msg_vars_for_clike( c_generic_error_msg ).
+lcl_local=>run( ).
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+
+	_, static_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "cl_message_helper", kind = .Static}]
+	_, local_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "lcl_local", kind = .Static}]
+	static_found := false
+	local_found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "cl_message_helper" && candidate.kind == .Static {
+			static_found = true
+		}
+		if candidate.name == "lcl_local" && candidate.kind == .Static {
+			local_found = true
+		}
+	}
+
+	testing.expect(t, static_pending)
+	testing.expect(t, !local_pending)
+	testing.expect(t, static_found)
+	testing.expect(t, !local_found)
 }
 
 @(test)
