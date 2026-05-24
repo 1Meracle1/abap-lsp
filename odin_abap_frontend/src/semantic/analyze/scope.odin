@@ -1,6 +1,6 @@
-package abap_frontend_semantic
+package abap_frontend_semantic_analyze
 
-import "../tokenizer"
+import "../../tokenizer"
 
 import "core:mem"
 
@@ -43,6 +43,31 @@ Scope_Data :: struct {
 	declarations:                        [dynamic]Symbol_Id,
 	children:                            [dynamic]Scope_Id,
 	allows_internal_table_line_selector: bool,
+}
+
+Scope_Index_Key :: struct {
+	scope:     Scope_Id,
+	namespace: Namespace,
+	name:      string,
+}
+
+Class_Scope_Index_Key :: struct {
+	class_symbol: Symbol_Id,
+	namespace:    Namespace,
+	name:         string,
+}
+
+Scope_Index :: struct {
+	scope_count:   int,
+	symbols:       map[Scope_Index_Key]Symbol_Id,
+	class_symbols: map[Class_Scope_Index_Key]Symbol_Id,
+}
+
+scope_index_make :: proc(allocator: mem.Allocator) -> Scope_Index {
+	return Scope_Index {
+		symbols = make(map[Scope_Index_Key]Symbol_Id, 0, allocator),
+		class_symbols = make(map[Class_Scope_Index_Key]Symbol_Id, 0, allocator),
+	}
 }
 
 add_scope :: proc(

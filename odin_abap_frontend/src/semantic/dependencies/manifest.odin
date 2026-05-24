@@ -1,7 +1,9 @@
-package abap_frontend_semantic
+package abap_frontend_semantic_dependencies
 
-import dep_store "../dependency_store"
-import toml "../encoding/toml"
+import analyze "../analyze"
+
+import dep_store "../../dependency_store"
+import toml "../../encoding/toml"
 
 import "core:mem"
 import "core:os"
@@ -39,7 +41,7 @@ Workspace_Manifest :: struct {
 }
 
 Manifest_Analysis_Result :: struct {
-	project:       Project_Analysis,
+	project:       analyze.Project_Analysis,
 	ok:            bool,
 	used_manifest: bool,
 	error:         string,
@@ -173,7 +175,7 @@ decode_dependency_profile :: proc(
 analyze_path :: proc(
 	target_path: string,
 	include_paths: []string,
-	options: Analyze_Options,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Manifest_Analysis_Result {
 	assert(options.pool != nil)
@@ -269,20 +271,20 @@ decode_manifest_dependency :: proc(
 analyze_standalone_path :: proc(
 	target_path: string,
 	include_paths: []string,
-	options: Analyze_Options,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Manifest_Analysis_Result {
 	target, target_ok := source_input_from_path(target_path, allocator)
 	if !target_ok {
 		return manifest_analysis_error("failed to read target file")
 	}
-	candidates := make([dynamic]Project_Candidate_Input, 0, len(include_paths), allocator)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(include_paths), allocator)
 	for include_path in include_paths {
 		include, include_ok := source_input_from_path(include_path, allocator)
 		if !include_ok {
 			return manifest_analysis_error("failed to read include file")
 		}
-		append(&candidates, Project_Candidate_Input{input = include})
+		append(&candidates, analyze.Project_Candidate_Input{input = include})
 	}
 	project := analyze_standalone_with_dependency_drain(target, candidates, options, allocator)
 	return Manifest_Analysis_Result{project = project, ok = true}
@@ -293,7 +295,7 @@ analyze_manifest_unit :: proc(
 	unit_index: int,
 	root_keys: []string,
 	include_paths: []string,
-	options: Analyze_Options,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Manifest_Analysis_Result {
 	workspace_files := make([dynamic]string, 0, 32, allocator)
@@ -315,7 +317,7 @@ analyze_manifest_unit_with_workspace_files :: proc(
 	root_keys: []string,
 	workspace_files: []string,
 	include_paths: []string,
-	options: Analyze_Options,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Manifest_Analysis_Result {
 	target, target_ok := source_input_from_manifest_path(manifest, manifest.units[unit_index].root_file, allocator)
@@ -324,7 +326,7 @@ analyze_manifest_unit_with_workspace_files :: proc(
 	}
 
 	dependency_indices := manifest_dependency_indices(manifest, unit_index, allocator)
-	dependencies := make([dynamic]Source_Input, 0, len(dependency_indices), allocator)
+	dependencies := make([dynamic]analyze.Source_Input, 0, len(dependency_indices), allocator)
 	for dependency_index in dependency_indices {
 		dependency, dependency_ok := source_input_from_manifest_path(
 			manifest,
@@ -365,8 +367,8 @@ manifest_candidate_inputs :: proc(
 	root_keys: []string,
 	include_paths: []string,
 	allocator: mem.Allocator,
-) -> [dynamic]Project_Candidate_Input {
-	candidates := make([dynamic]Project_Candidate_Input, 0, len(workspace_files), allocator)
+) -> [dynamic]analyze.Project_Candidate_Input {
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(workspace_files), allocator)
 	keys := make([dynamic]string, 0, len(workspace_files), allocator)
 
 	for path in workspace_files {
@@ -389,7 +391,7 @@ manifest_candidate_inputs :: proc(
 add_manifest_member_candidates :: proc(
 	manifest: ^Workspace_Manifest,
 	unit_index: int,
-	candidates: ^[dynamic]Project_Candidate_Input,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	keys: ^[dynamic]string,
 	root_keys: []string,
 	allocator: mem.Allocator,
@@ -403,7 +405,7 @@ add_manifest_member_candidates :: proc(
 }
 
 add_manifest_candidate_path :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	keys: ^[dynamic]string,
 	path, object_name: string,
 	root_keys: []string,
@@ -423,7 +425,7 @@ add_manifest_candidate_path :: proc(
 	if !ok {
 		return false
 	}
-	append(candidates, Project_Candidate_Input{input = input, object_name = strings.clone(object_name, allocator)})
+	append(candidates, analyze.Project_Candidate_Input{input = input, object_name = strings.clone(object_name, allocator)})
 	append(keys, key)
 	return true
 }
@@ -475,7 +477,7 @@ manifest_reachable_owner_by_key :: proc(
 	target_key: string,
 	workspace_files: []string,
 	root_keys: []string,
-	options: Analyze_Options,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> (int, bool) {
 	for unit, i in manifest.units {
@@ -487,7 +489,7 @@ manifest_reachable_owner_by_key :: proc(
 			continue
 		}
 		candidates := manifest_candidate_inputs(manifest, i, {}, workspace_files, root_keys, {}, allocator)
-		project := analyze_target_with_candidate_inputs(target, candidates[:], {}, options, allocator)
+		project := analyze.analyze_target_with_candidate_inputs(target, candidates[:], {}, options, allocator)
 		for analyzed_unit in project.units {
 			if normalized_uri_path_key(analyzed_unit.uri, allocator) == target_key {
 				return i, true
@@ -585,7 +587,7 @@ source_input_from_manifest_path :: proc(
 	manifest: ^Workspace_Manifest,
 	path: string,
 	allocator: mem.Allocator,
-) -> (Source_Input, bool) {
+) -> (analyze.Source_Input, bool) {
 	abs_path, ok := manifest_absolute_path(manifest.root_path, path, allocator)
 	if !ok {
 		return {}, false
@@ -593,7 +595,7 @@ source_input_from_manifest_path :: proc(
 	return source_input_from_path(abs_path, allocator)
 }
 
-source_input_from_path :: proc(path: string, allocator: mem.Allocator) -> (Source_Input, bool) {
+source_input_from_path :: proc(path: string, allocator: mem.Allocator) -> (analyze.Source_Input, bool) {
 	abs_path, ok := absolute_clean_path(path, allocator)
 	if !ok {
 		return {}, false
@@ -602,7 +604,7 @@ source_input_from_path :: proc(path: string, allocator: mem.Allocator) -> (Sourc
 	if !source_ok {
 		return {}, false
 	}
-	return Source_Input{uri = abs_path, source = source}, true
+	return analyze.Source_Input{uri = abs_path, source = source}, true
 }
 
 read_text_file :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {

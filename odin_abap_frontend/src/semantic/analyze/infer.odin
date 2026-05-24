@@ -1,6 +1,7 @@
-package abap_frontend_semantic
+#+private
+package abap_frontend_semantic_analyze
 
-import "../tokenizer"
+import "../../tokenizer"
 
 import "core:mem"
 import "core:slice"
@@ -202,6 +203,56 @@ apply_inferred_project_facts :: proc(
 		if unit_index >= len(project.units) {
 			continue
 		}
+		unit := &project.units[unit_index]
+		unit.expression_facts = facts.expression_facts
+		unit.value_flow_edges = facts.value_flow_edges
+		for update in facts.symbol_updates {
+			idx := symbol_id_index(update.symbol)
+			if idx < 0 || idx >= len(unit.symbols) {
+				continue
+			}
+			s := &unit.symbols[idx]
+			if update.overwrite_existing || !s.has_declared_type {
+				rerun = rerun || s.structure != update.type_fact.structure ||
+				        s.has_declared_type != update.type_fact.has_declared_type ||
+				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
+				if update.type_fact.structure != INVALID_STRUCTURE_ID {
+					s.structure = update.type_fact.structure
+				}
+				if update.type_fact.has_declared_type {
+					s.declared_type = update.type_fact.declared_type
+					s.has_declared_type = true
+					s.type_clause_display = update.type_fact.type_clause_display
+				}
+			}
+		}
+		for update in facts.assignments {
+			if update.index >= 0 && update.index < len(unit.assignment_sites) {
+				unit.assignment_sites[update.index].lhs = update.lhs
+				unit.assignment_sites[update.index].rhs = update.rhs
+			}
+		}
+		for update in facts.concatenates {
+			if update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites) {
+				unit.concatenate_lines_of_sites[update.index].source = update.source
+			}
+		}
+	}
+	return rerun
+}
+
+apply_inferred_project_facts_for_units :: proc(
+	project: ^Project_Analysis,
+	inferred: []Inferred_Unit_Facts,
+	unit_ids: []Unit_Id,
+) -> bool {
+	rerun := false
+	for unit_id in unit_ids {
+		unit_index := unit_id_index(unit_id)
+		if unit_index < 0 || unit_index >= len(project.units) {
+			continue
+		}
+		facts := inferred[unit_index]
 		unit := &project.units[unit_index]
 		unit.expression_facts = facts.expression_facts
 		unit.value_flow_edges = facts.value_flow_edges

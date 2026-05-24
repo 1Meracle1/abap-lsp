@@ -1,4 +1,4 @@
-package abap_frontend_semantic
+package abap_frontend_semantic_analyze
 
 Unit_Id :: distinct u32
 Scope_Id :: distinct u32

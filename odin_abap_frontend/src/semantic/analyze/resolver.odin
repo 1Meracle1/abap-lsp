@@ -1,35 +1,10 @@
-package abap_frontend_semantic
+package abap_frontend_semantic_analyze
 
-import runtime "../runtime"
-import "../parser"
+import runtime "../../runtime"
+import "../../parser"
 
 import "core:mem"
 import "core:strings"
-
-Scope_Index_Key :: struct {
-	scope:     Scope_Id,
-	namespace: Namespace,
-	name:      string,
-}
-
-Class_Scope_Index_Key :: struct {
-	class_symbol: Symbol_Id,
-	namespace:    Namespace,
-	name:         string,
-}
-
-Scope_Index :: struct {
-	scope_count:   int,
-	symbols:       map[Scope_Index_Key]Symbol_Id,
-	class_symbols: map[Class_Scope_Index_Key]Symbol_Id,
-}
-
-scope_index_make :: proc(allocator: mem.Allocator) -> Scope_Index {
-	return Scope_Index {
-		symbols = make(map[Scope_Index_Key]Symbol_Id, 0, allocator),
-		class_symbols = make(map[Class_Scope_Index_Key]Symbol_Id, 0, allocator),
-	}
-}
 
 build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Scope_Index {
 	index := Scope_Index {

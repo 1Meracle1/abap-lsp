@@ -1,6 +1,6 @@
-package abap_frontend_semantic
+package abap_frontend_semantic_analyze
 
-import "../tokenizer"
+import "../../tokenizer"
 
 import "core:mem"
 
@@ -148,7 +148,7 @@ build_semantic_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> 
 	}
 	for st in unit.structures {
 		for field, i in st.fields {
-			if range_valid(field.decl_range) {
+			if field.decl_range.end > field.decl_range.start {
 				append(
 					&index.structure_fields,
 					Sem_Structure_Field {

@@ -1,7 +1,8 @@
-package abap_frontend_semantic
+#+private
+package abap_frontend_semantic_analyze
 
-import "../ast"
-import "../tokenizer"
+import "../../ast"
+import "../../tokenizer"
 
 import "core:strings"
 

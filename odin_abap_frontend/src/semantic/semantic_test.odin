@@ -6,6 +6,9 @@ import ddic_xml "../ddic_xml"
 import "../parser"
 import "../tokenizer"
 import frontend_runtime "../runtime"
+import analyze "./analyze"
+import deps "./dependencies"
+import sem_query "./query"
 
 import "core:os"
 import filepath "core:path/filepath"
@@ -20,36 +23,36 @@ contains_fold :: proc(source, needle: string) -> bool {
 
 @(test)
 symbol_kind_namespace_occupancy :: proc(t: ^testing.T) {
-	testing.expect(t, symbol_kind_occupies(.Builtin_Type, .Type))
-	testing.expect(t, !symbol_kind_occupies(.Builtin_Type, .Value))
-	testing.expect(t, symbol_kind_occupies(.Builtin_Routine, .Routine))
-	testing.expect(t, !symbol_kind_occupies(.Builtin_Routine, .Type))
-	testing.expect(t, symbol_kind_occupies(.Variable, .Value))
-	testing.expect(t, symbol_kind_occupies(.Report, .Value))
-	testing.expect(t, symbol_kind_occupies(.Method, .Routine))
+	testing.expect(t, analyze.symbol_kind_occupies(.Builtin_Type, .Type))
+	testing.expect(t, !analyze.symbol_kind_occupies(.Builtin_Type, .Value))
+	testing.expect(t, analyze.symbol_kind_occupies(.Builtin_Routine, .Routine))
+	testing.expect(t, !analyze.symbol_kind_occupies(.Builtin_Routine, .Type))
+	testing.expect(t, analyze.symbol_kind_occupies(.Variable, .Value))
+	testing.expect(t, analyze.symbol_kind_occupies(.Report, .Value))
+	testing.expect(t, analyze.symbol_kind_occupies(.Method, .Routine))
 }
 
 @(test)
 creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
-	unit := unit_analysis_make(
-		Unit_Id(0),
+	unit := analyze.unit_analysis_make(
+		analyze.Unit_Id(0),
 		"mem://main.prog.abap",
 		tokenizer.text_range(0, 10),
 		context.allocator,
 	)
 
-	root := scope(&unit, unit.root_scope)
+	root := analyze.scope(&unit, unit.root_scope)
 	testing.expect(t, root != nil)
-	testing.expect_value(t, root.kind, Scope_Kind.File)
+	testing.expect_value(t, root.kind, analyze.Scope_Kind.File)
 	testing.expect_value(t, root.range, tokenizer.text_range(0, 10))
 
-	testing.expect(t, find_symbol(&unit, "i", .Builtin_Type) != nil)
-	testing.expect(t, find_symbol(&unit, "abap_bool", .Builtin_Type) != nil)
-	testing.expect(t, find_symbol(&unit, "abap_true", .Builtin_Constant) != nil)
-	testing.expect(t, find_symbol(&unit, "sy", .Builtin_Variable) != nil)
-	testing.expect(t, find_symbol(&unit, "syst", .Builtin_Type) != nil)
-	testing.expect(t, builtin_routine_spec("strlen") != nil)
-	testing.expect(t, find_symbol(&unit, "strlen", .Builtin_Routine) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "i", .Builtin_Type) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "abap_bool", .Builtin_Type) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "abap_true", .Builtin_Constant) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "sy", .Builtin_Variable) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "syst", .Builtin_Type) != nil)
+	testing.expect(t, analyze.builtin_routine_spec("strlen") != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "strlen", .Builtin_Routine) != nil)
 }
 
 @(test)
@@ -77,12 +80,12 @@ ENDCLASS.`
 
 	parsed := parser.parse(source, "mem://dep.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
-	unit := collect_unit(Unit_Id(0), "mem://dep.abap", source, parsed, context.allocator, .Dependency_Interface)
-	class := find_symbol(&unit, "lcl_dep", .Class)
+	unit := analyze.collect_unit(analyze.Unit_Id(0), "mem://dep.abap", source, parsed, context.allocator, .Dependency_Interface)
+	class := analyze.find_symbol(&unit, "lcl_dep", .Class)
 
-	testing.expect(t, find_symbol(&unit, "zdep", .Report) != nil)
-	testing.expect(t, find_symbol(&unit, "gv_dep", .Variable) != nil)
-	testing.expect(t, find_symbol(&unit, "helper", .Form) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "zdep", .Report) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "gv_dep", .Variable) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "helper", .Form) != nil)
 	testing.expect(t, class != nil)
 	if class != nil {
 		testing.expect(t, class_member_named(&unit, class.id, "pub", .Attribute) != nil)
@@ -136,15 +139,15 @@ ENDFUNCTION.`
 
 	parsed := parser.parse(source, "mem://dep.abap", context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
-	unit := collect_unit(Unit_Id(0), "mem://dep.abap", source, parsed, context.allocator, .Dependency_Interface)
-	iface := find_symbol(&unit, "zif_dep", .Interface)
-	class := find_symbol(&unit, "zcl_dep", .Class)
+	unit := analyze.collect_unit(analyze.Unit_Id(0), "mem://dep.abap", source, parsed, context.allocator, .Dependency_Interface)
+	iface := analyze.find_symbol(&unit, "zif_dep", .Interface)
+	class := analyze.find_symbol(&unit, "zcl_dep", .Class)
 
-	testing.expect(t, find_symbol(&unit, "zdep", .Report) != nil)
-	testing.expect(t, find_symbol(&unit, "zcl_forward", .Class) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "zdep", .Report) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "zcl_forward", .Class) != nil)
 	testing.expect(t, iface != nil)
 	testing.expect(t, class != nil)
-	testing.expect(t, find_symbol(&unit, "z_dep", .Module) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "z_dep", .Module) != nil)
 	if iface != nil {
 		testing.expect(t, class_member_named(&unit, iface.id, "run", .Method) != nil)
 	}
@@ -167,7 +170,7 @@ ENDFUNCTION.`
 
 @(test)
 remote_dependency_candidates_ignore_plain_identifiers :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///remote_candidates.abap",
 		source = `REPORT zmain.
 TYPES ls_local_type TYPE string.
@@ -182,7 +185,7 @@ lv_ref->get_url( ).
 	}
 
 	project := analyze_project_test(t, 0, target, nil)
-	candidates := collect_project_remote_dependency_candidates(&project, context.allocator)
+	candidates := analyze.collect_project_remote_dependency_candidates(&project, context.allocator)
 
 	has_type := false
 	has_function := false
@@ -301,45 +304,45 @@ ENDINTERFACE.
 `,
 	)
 
-	testing.expect(t, find_symbol(&unit, "seop_source_string", .Builtin_Type) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "seop_source_string", .Builtin_Type) != nil)
 	testing.expect(t, has_reference(&unit, "seop_source_string", .Type, .Type_Ref))
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 }
 
 @(test)
 structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
-	unit := unit_analysis_make(
-		Unit_Id(0),
+	unit := analyze.unit_analysis_make(
+		analyze.Unit_Id(0),
 		"mem://main.prog.abap",
 		tokenizer.text_range(0, 0),
 		context.allocator,
 	)
 
-	syst := find_structure(&unit, "syst")
-	screen := find_structure(&unit, "screen")
+	syst := analyze.find_structure(&unit, "syst")
+	screen := analyze.find_structure(&unit, "screen")
 	testing.expect(t, syst != nil)
 	testing.expect(t, screen != nil)
 
-	subrc, ok := structure_field_info(&unit, syst.id, "subrc")
+	subrc, ok := analyze.structure_field_info(&unit, syst.id, "subrc")
 	testing.expect(t, ok)
 	testing.expect_value(t, subrc.name, "subrc")
 	testing.expect(t, .Has_Type_Ref in subrc.flags)
 	testing.expect_value(t, subrc.type_ref.base_name, "i")
 
-	screen_name, ok2 := structure_field_info(&unit, screen.id, "name")
+	screen_name, ok2 := analyze.structure_field_info(&unit, screen.id, "name")
 	testing.expect(t, ok2)
 	testing.expect_value(t, screen_name.name, "name")
 	testing.expect(t, .Has_Type_Ref in screen_name.flags)
 	testing.expect_value(t, screen_name.type_ref.base_name, "c")
 }
 
-collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> Unit_Analysis {
+collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> analyze.Unit_Analysis {
 	parsed := parser.parse(source, uri, context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
-	return analyze_unit(Unit_Id(0), uri, source, parsed, context.allocator)
+	return analyze.analyze_unit(analyze.Unit_Id(0), uri, source, parsed, context.allocator)
 }
 
-has_symbol :: proc(unit: ^Unit_Analysis, kind: Symbol_Kind, name: string) -> bool {
+has_symbol :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Symbol_Kind, name: string) -> bool {
 	for symbol in unit.symbols {
 		if symbol.kind == kind && symbol.name == name {
 			return true
@@ -348,7 +351,7 @@ has_symbol :: proc(unit: ^Unit_Analysis, kind: Symbol_Kind, name: string) -> boo
 	return false
 }
 
-has_scope_kind :: proc(unit: ^Unit_Analysis, kind: Scope_Kind) -> bool {
+has_scope_kind :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Scope_Kind) -> bool {
 	for scope in unit.scopes {
 		if scope.kind == kind {
 			return true
@@ -357,7 +360,7 @@ has_scope_kind :: proc(unit: ^Unit_Analysis, kind: Scope_Kind) -> bool {
 	return false
 }
 
-has_diagnostic :: proc(unit: ^Unit_Analysis, kind: Diagnostic_Kind) -> bool {
+has_diagnostic :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_Kind) -> bool {
 	for diagnostic in unit.diagnostics {
 		if diagnostic.kind == kind {
 			return true
@@ -366,7 +369,7 @@ has_diagnostic :: proc(unit: ^Unit_Analysis, kind: Diagnostic_Kind) -> bool {
 	return false
 }
 
-project_has_diagnostic :: proc(project: ^Project_Analysis, kind: Diagnostic_Kind) -> bool {
+project_has_diagnostic :: proc(project: ^analyze.Project_Analysis, kind: analyze.Diagnostic_Kind) -> bool {
 	for diagnostic in project.diagnostics {
 		if diagnostic.kind == kind {
 			return true
@@ -375,7 +378,7 @@ project_has_diagnostic :: proc(project: ^Project_Analysis, kind: Diagnostic_Kind
 	return false
 }
 
-project_units_have_diagnostic :: proc(project: ^Project_Analysis, kind: Diagnostic_Kind) -> bool {
+project_units_have_diagnostic :: proc(project: ^analyze.Project_Analysis, kind: analyze.Diagnostic_Kind) -> bool {
 	for &unit in project.units {
 		if has_diagnostic(&unit, kind) {
 			return true
@@ -387,9 +390,9 @@ project_units_have_diagnostic :: proc(project: ^Project_Analysis, kind: Diagnost
 analyze_project_test :: proc(
 	t: ^testing.T,
 	worker_count: int,
-	target: Source_Input,
-	candidates: []Source_Input,
-) -> Project_Analysis {
+	target: analyze.Source_Input,
+	candidates: []analyze.Source_Input,
+) -> analyze.Project_Analysis {
 	pool: frontend_runtime.Pool
 	options := frontend_runtime.Options {
 		worker_count = worker_count,
@@ -401,7 +404,7 @@ analyze_project_test :: proc(
 	if pool.options.worker_count > 0 {
 		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
 	}
-	project := analyze_target(target, candidates, Analyze_Options{pool = &pool}, context.allocator)
+	project := analyze.analyze_target(target, candidates, analyze.Analyze_Options{pool = &pool}, context.allocator)
 	if pool.options.worker_count > 0 {
 		frontend_runtime.pool_join(&pool)
 	}
@@ -411,21 +414,21 @@ analyze_project_test :: proc(
 
 analyze_project_dependencies_test :: proc(
 	t: ^testing.T,
-	target: Source_Input,
-	dependencies: []Source_Input,
-) -> Project_Analysis {
+	target: analyze.Source_Input,
+	dependencies: []analyze.Source_Input,
+) -> analyze.Project_Analysis {
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	candidates := make([dynamic]Project_Candidate_Input, 0, 0, context.allocator)
-	project := analyze_target_with_candidate_inputs(
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
 		dependencies,
-		Analyze_Options{pool = &pool},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
@@ -433,14 +436,145 @@ analyze_project_dependencies_test :: proc(
 }
 
 @(test)
+project_state_incremental_dependency_update_resolves_waiting_unit :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "mem://main.abap",
+		source = "DATA lo_dep TYPE REF TO zcl_dep. DATA lo_other TYPE REF TO zcl_other.",
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, 0, 1, context.allocator)
+
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, has_diagnostic(root, .Unresolved_Reference))
+	}
+
+	dep := analyze.Source_Input {
+		uri = "abapls-cache:/global-class/zcl_dep.abap",
+		source = "CLASS zcl_dep DEFINITION. ENDCLASS.",
+		mode = .Dependency_Interface,
+	}
+	append(&dependencies, dep)
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect_value(t, len(project.units), 2)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, reference_resolves_to_uri(&project, root, "zcl_dep", .Type, .Type_Ref, dep.uri))
+		testing.expect(t, has_diagnostic(root, .Unresolved_Reference))
+	}
+}
+
+@(test)
+project_state_dependency_private_change_keeps_interface_signature :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "mem://main.abap",
+		source = "DATA lo_dep TYPE REF TO zcl_dep.",
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, 0, 1, context.allocator)
+	dep := analyze.Source_Input {
+		uri = "abapls-cache:/global-class/zcl_dep.abap",
+		source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.`,
+		mode = .Dependency_Interface,
+	}
+	append(&dependencies, dep)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	dep_unit := analyze.project_unit_by_uri(&project, dep.uri)
+	testing.expect(t, root != nil)
+	testing.expect(t, dep_unit != nil)
+	testing.expect(t, root != nil && reference_resolves_to_uri(&project, root, "zcl_dep", .Type, .Type_Ref, dep.uri))
+	signature := ""
+	if dep_unit != nil {
+		signature = state.interface_signatures[analyze.unit_id_index(dep_unit.unit_id)]
+	}
+
+	dependencies[0].source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS zcl_dep IMPLEMENTATION.
+  METHOD run.
+    DATA lv_private TYPE string.
+  ENDMETHOD.
+ENDCLASS.`
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	dep_unit = analyze.project_unit_by_uri(&project, dep.uri)
+	root = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, dep_unit != nil)
+	if dep_unit != nil {
+		testing.expect_value(t, state.interface_signatures[analyze.unit_id_index(dep_unit.unit_id)], signature)
+	}
+	testing.expect(t, root != nil && reference_resolves_to_uri(&project, root, "zcl_dep", .Type, .Type_Ref, dep.uri))
+}
+
+@(test)
 analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
-	target := Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
-	dependencies := make([dynamic]Source_Input, 0, 5, context.allocator)
-	append(&dependencies, Source_Input{uri = "mem://dep1.abap", source = "REPORT zdep1."})
-	append(&dependencies, Source_Input{uri = "mem://dep2.abap", source = "REPORT zdep2."})
-	append(&dependencies, Source_Input{uri = "mem://dep3.abap", source = "REPORT zdep3."})
-	append(&dependencies, Source_Input{uri = "mem://dep4.abap", source = "REPORT zdep4."})
-	append(&dependencies, Source_Input{uri = "mem://dep5.abap", source = "REPORT zdep5."})
+	target := analyze.Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
+	dependencies := make([dynamic]analyze.Source_Input, 0, 5, context.allocator)
+	append(&dependencies, analyze.Source_Input{uri = "mem://dep1.abap", source = "REPORT zdep1."})
+	append(&dependencies, analyze.Source_Input{uri = "mem://dep2.abap", source = "REPORT zdep2."})
+	append(&dependencies, analyze.Source_Input{uri = "mem://dep3.abap", source = "REPORT zdep3."})
+	append(&dependencies, analyze.Source_Input{uri = "mem://dep4.abap", source = "REPORT zdep4."})
+	append(&dependencies, analyze.Source_Input{uri = "mem://dep5.abap", source = "REPORT zdep5."})
 
 	pool: frontend_runtime.Pool
 	testing.expect_value(
@@ -448,12 +582,12 @@ analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 2}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	project := analyze_target_with_candidate_inputs(
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
 		dependencies[:],
-		Analyze_Options{pool = &pool},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
@@ -461,15 +595,15 @@ analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(project.units), 6)
 }
 
-analyze_path_test :: proc(t: ^testing.T, target_path: string) -> Manifest_Analysis_Result {
+analyze_path_test :: proc(t: ^testing.T, target_path: string) -> deps.Manifest_Analysis_Result {
 	return analyze_path_test_with_options(t, target_path, {})
 }
 
 analyze_path_test_with_options :: proc(
 	t: ^testing.T,
 	target_path: string,
-	options: Analyze_Options,
-) -> Manifest_Analysis_Result {
+	options: analyze.Analyze_Options,
+) -> deps.Manifest_Analysis_Result {
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
@@ -478,7 +612,7 @@ analyze_path_test_with_options :: proc(
 	)
 	run_options := options
 	run_options.pool = &pool
-	result := analyze_path(target_path, nil, run_options, context.allocator)
+	result := deps.analyze_path(target_path, nil, run_options, context.allocator)
 	frontend_runtime.pool_destroy(&pool)
 	return result
 }
@@ -510,38 +644,38 @@ manifest_test_file :: proc(t: ^testing.T, root, relative, source: string) -> str
 	dir := filepath.dir(path)
 	testing.expect(t, os.make_directory_all(dir) == nil)
 	testing.expect(t, os.write_entire_file(path, source) == nil)
-	cleaned, ok := absolute_clean_path(path, context.allocator)
+	cleaned, ok := deps.absolute_clean_path(path, context.allocator)
 	testing.expect(t, ok)
 	return cleaned
 }
 
-analyze_units_project_test :: proc(t: ^testing.T, sources: []Source_Input) -> Project_Analysis {
-	units := make([dynamic]Unit_Analysis, 0, len(sources), context.allocator)
+analyze_units_project_test :: proc(t: ^testing.T, sources: []analyze.Source_Input) -> analyze.Project_Analysis {
+	units := make([dynamic]analyze.Unit_Analysis, 0, len(sources), context.allocator)
 	for source, i in sources {
 		parsed := parser.parse(source.source, source.uri, context.allocator)
 		testing.expect_value(t, len(parsed.errors), 0)
-		unit := collect_unit(Unit_Id(u32(i)), source.uri, source.source, parsed, context.allocator, source.mode)
-		resolve_unit_locally(&unit, context.allocator)
+		unit := analyze.collect_unit(analyze.Unit_Id(u32(i)), source.uri, source.source, parsed, context.allocator, source.mode)
+		analyze.resolve_unit_locally(&unit, context.allocator)
 		append(&units, unit)
 	}
-	project := project_analysis_from_units(units, context.allocator)
+	project := analyze.project_analysis_from_units(units, context.allocator)
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	finish_project_analysis(&project, &pool, {}, context.allocator)
+	analyze.finish_project_analysis(&project, &pool, {}, context.allocator)
 	frontend_runtime.pool_destroy(&pool)
 	return project
 }
 
-include_target_uri :: proc(project: ^Project_Analysis, unit: ^Unit_Analysis, name: string) -> string {
+include_target_uri :: proc(project: ^analyze.Project_Analysis, unit: ^analyze.Unit_Analysis, name: string) -> string {
 	for edge in unit.include_edges {
 		if edge.name != name || !edge.has_target {
 			continue
 		}
-		target_index := unit_id_index(edge.target)
+		target_index := analyze.unit_id_index(edge.target)
 		if target_index >= 0 && target_index < len(project.units) {
 			return project.units[target_index].uri
 		}
@@ -550,11 +684,11 @@ include_target_uri :: proc(project: ^Project_Analysis, unit: ^Unit_Analysis, nam
 }
 
 class_member_named :: proc(
-	unit: ^Unit_Analysis,
-	class_symbol: Symbol_Id,
+	unit: ^analyze.Unit_Analysis,
+	class_symbol: analyze.Symbol_Id,
 	name: string,
-	kind: Class_Member_Kind,
-) -> ^Class_Member_Data {
+	kind: analyze.Class_Member_Kind,
+) -> ^analyze.Class_Member_Data {
 	for &member in unit.class_members {
 		if member.class_symbol == class_symbol && member.kind == kind && member.name == name {
 			return &member
@@ -564,10 +698,10 @@ class_member_named :: proc(
 }
 
 reference_count :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	namespace: Namespace,
-	kind: Reference_Kind,
+	namespace: analyze.Namespace,
+	kind: analyze.Reference_Kind,
 ) -> int {
 	count := 0
 	for reference in unit.references {
@@ -579,20 +713,20 @@ reference_count :: proc(
 }
 
 has_reference :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	namespace: Namespace,
-	kind: Reference_Kind,
+	namespace: analyze.Namespace,
+	kind: analyze.Reference_Kind,
 ) -> bool {
 	return reference_count(unit, name, namespace, kind) > 0
 }
 
 reference_resolves_to_uri :: proc(
-	project: ^Project_Analysis,
-	unit: ^Unit_Analysis,
+	project: ^analyze.Project_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	namespace: Namespace,
-	kind: Reference_Kind,
+	namespace: analyze.Namespace,
+	kind: analyze.Reference_Kind,
 	uri: string,
 ) -> bool {
 	for reference in unit.references {
@@ -603,7 +737,7 @@ reference_resolves_to_uri :: proc(
 		   reference.resolution.kind != .Symbol {
 			continue
 		}
-		unit_index := unit_id_index(reference.resolution.symbol.unit)
+		unit_index := analyze.unit_id_index(reference.resolution.symbol.unit)
 		if unit_index >= 0 && unit_index < len(project.units) && project.units[unit_index].uri == uri {
 			return true
 		}
@@ -612,10 +746,10 @@ reference_resolves_to_uri :: proc(
 }
 
 has_named_argument :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	section: Named_Argument_Section,
-	target_kind: Named_Argument_Target_Kind,
+	section: analyze.Named_Argument_Section,
+	target_kind: analyze.Named_Argument_Target_Kind,
 ) -> bool {
 	for arg in unit.named_arguments {
 		if arg.name == name &&
@@ -629,9 +763,9 @@ has_named_argument :: proc(
 }
 
 has_method_named_argument :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	section: Named_Argument_Section,
+	section: analyze.Named_Argument_Section,
 	base_name: string,
 	method_name: string,
 ) -> bool {
@@ -648,7 +782,7 @@ has_method_named_argument :: proc(
 	return false
 }
 
-field_names_match :: proc(structure: ^Structure_Data, names: []string) -> bool {
+field_names_match :: proc(structure: ^analyze.Structure_Data, names: []string) -> bool {
 	if structure == nil || len(structure.fields) != len(names) {
 		return false
 	}
@@ -660,7 +794,7 @@ field_names_match :: proc(structure: ^Structure_Data, names: []string) -> bool {
 	return true
 }
 
-provided_name_present :: proc(unit: ^Unit_Analysis, name: string) -> bool {
+provided_name_present :: proc(unit: ^analyze.Unit_Analysis, name: string) -> bool {
 	for provided in unit.provided_names {
 		if provided == name {
 			return true
@@ -670,9 +804,9 @@ provided_name_present :: proc(unit: ^Unit_Analysis, name: string) -> bool {
 }
 
 sql_source_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	resolution: Sql_Resolution,
+	resolution: analyze.Sql_Resolution,
 ) -> bool {
 	for source in unit.sql_sources {
 		if source.name == name && source.resolution == resolution {
@@ -683,9 +817,9 @@ sql_source_present :: proc(
 }
 
 sql_source_alias_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name, alias: string,
-	kind: Sql_Source_Kind,
+	kind: analyze.Sql_Source_Kind,
 ) -> bool {
 	for source in unit.sql_sources {
 		if source.name == name && source.alias == alias && source.source_kind == kind {
@@ -696,9 +830,9 @@ sql_source_alias_present :: proc(
 }
 
 sql_projection_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	kind: Sql_Projection_Kind,
+	kind: analyze.Sql_Projection_Kind,
 ) -> bool {
 	for projection in unit.sql_projections {
 		if projection.name == name && projection.kind == kind {
@@ -709,9 +843,9 @@ sql_projection_present :: proc(
 }
 
 sql_projection_alias_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	alias: string,
-	kind: Sql_Projection_Kind,
+	kind: analyze.Sql_Projection_Kind,
 ) -> bool {
 	for projection in unit.sql_projections {
 		if projection.alias == alias && projection.kind == kind {
@@ -721,7 +855,7 @@ sql_projection_alias_present :: proc(
 	return false
 }
 
-sql_name_ref_present :: proc(unit: ^Unit_Analysis, name: string, kind: Sql_Name_Ref_Kind) -> bool {
+sql_name_ref_present :: proc(unit: ^analyze.Unit_Analysis, name: string, kind: analyze.Sql_Name_Ref_Kind) -> bool {
 	for reference in unit.sql_name_refs {
 		if reference.name == name && reference.kind == kind {
 			return true
@@ -731,9 +865,9 @@ sql_name_ref_present :: proc(unit: ^Unit_Analysis, name: string, kind: Sql_Name_
 }
 
 sql_qualified_ref_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	qualifier, name: string,
-	kind: Sql_Name_Ref_Kind,
+	kind: analyze.Sql_Name_Ref_Kind,
 ) -> bool {
 	for reference in unit.sql_name_refs {
 		if reference.qualifier == qualifier && reference.name == name && reference.kind == kind {
@@ -743,7 +877,7 @@ sql_qualified_ref_present :: proc(
 	return false
 }
 
-sql_predicate_present :: proc(unit: ^Unit_Analysis, kind: Sql_Predicate_Kind) -> bool {
+sql_predicate_present :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Sql_Predicate_Kind) -> bool {
 	for predicate in unit.sql_predicates {
 		if predicate.kind == kind {
 			return true
@@ -752,7 +886,7 @@ sql_predicate_present :: proc(unit: ^Unit_Analysis, kind: Sql_Predicate_Kind) ->
 	return false
 }
 
-sql_dynamic_present :: proc(unit: ^Unit_Analysis, kind: Sql_Dynamic_Fragment_Kind) -> bool {
+sql_dynamic_present :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Sql_Dynamic_Fragment_Kind) -> bool {
 	for fragment in unit.sql_dynamic_fragments {
 		if fragment.kind == kind {
 			return true
@@ -762,10 +896,10 @@ sql_dynamic_present :: proc(unit: ^Unit_Analysis, kind: Sql_Dynamic_Fragment_Kin
 }
 
 sql_target_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	name: string,
-	kind: Sql_Target_Kind,
-	flags: Sql_Target_Flags,
+	kind: analyze.Sql_Target_Kind,
+	flags: analyze.Sql_Target_Flags,
 ) -> bool {
 	for target in unit.sql_targets {
 		if target.target_name != name || target.kind != kind {
@@ -797,7 +931,7 @@ string_list_matches :: proc(values: [dynamic]string, expected: []string) -> bool
 }
 
 internal_table_order_present :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^analyze.Unit_Analysis,
 	table_name: string,
 	fields: []string,
 ) -> bool {
@@ -809,7 +943,7 @@ internal_table_order_present :: proc(
 	return false
 }
 
-binary_search_present :: proc(unit: ^Unit_Analysis, table_name: string, fields: []string) -> bool {
+binary_search_present :: proc(unit: ^analyze.Unit_Analysis, table_name: string, fields: []string) -> bool {
 	for read in unit.read_table_binary_searches {
 		if read.table_name == table_name && string_list_matches(read.key_fields, fields) {
 			return true
@@ -819,8 +953,8 @@ binary_search_present :: proc(unit: ^Unit_Analysis, table_name: string, fields: 
 }
 
 system_update_present :: proc(
-	unit: ^Unit_Analysis,
-	statement: System_Field_Statement_Kind,
+	unit: ^analyze.Unit_Analysis,
+	statement: analyze.System_Field_Statement_Kind,
 	field_name: string,
 ) -> bool {
 	for update in unit.system_field_updates {
@@ -896,7 +1030,7 @@ collects_single_include_edge :: proc(t: ^testing.T) {
 	testing.expect(t, !unit.include_edges[0].has_target)
 	testing.expect(t, has_symbol(&unit, .Include, "zinc"))
 	testing.expect_value(t, len(unit.references), 1)
-	testing.expect_value(t, unit.references[0].kind, Reference_Kind.Include)
+	testing.expect_value(t, unit.references[0].kind, analyze.Reference_Kind.Include)
 	testing.expect_value(t, unit.references[0].name, "zinc")
 	testing.expect(t, unit.references[0].has_resolution)
 }
@@ -941,10 +1075,10 @@ collects_tables_work_area_declarations :: proc(t: ^testing.T) {
 
 	table_names := [?]string{"tbtco", "v_op"}
 	for name in table_names {
-		s := find_symbol(&unit, name, .Variable)
+		s := analyze.find_symbol(&unit, name, .Variable)
 		testing.expect(t, s != nil)
 		testing.expect(t, s.has_declared_type)
-		testing.expect_value(t, s.declared_type.namespace, Namespace.Type)
+		testing.expect_value(t, s.declared_type.namespace, analyze.Namespace.Type)
 		testing.expect_value(t, s.declared_type.base_name, name)
 		testing.expect_value(t, s.type_clause_display, name)
 	}
@@ -961,10 +1095,10 @@ legacy_occurs_header_line_keeps_declared_type_clean :: proc(t: ^testing.T) {
 		"DATA int_eket LIKE beket OCCURS 0 WITH HEADER LINE.",
 	)
 
-	s := find_symbol(&unit, "int_eket", .Variable)
+	s := analyze.find_symbol(&unit, "int_eket", .Variable)
 	testing.expect(t, s != nil)
 	testing.expect(t, s.has_declared_type)
-	testing.expect_value(t, s.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, s.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, s.declared_type.base_name, "beket")
 	testing.expect_value(t, s.type_clause_display, "beket")
 }
@@ -981,14 +1115,14 @@ TYPES ty_def TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
 TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.`
 	unit := collect_test_unit(t, "file:///type_ref_display_bounds.abap", source)
 
-	int_eket := find_symbol(&unit, "int_eket", .Variable)
-	lv_value := find_symbol(&unit, "lv_value", .Variable)
-	lv_len := find_symbol(&unit, "lv_len", .Variable)
-	lv_dec := find_symbol(&unit, "lv_dec", .Variable)
-	mv_text := find_symbol(&unit, "mv_text", .Variable)
-	p_count := find_symbol(&unit, "p_count", .Variable)
-	ty_def := find_symbol(&unit, "ty_def", .Type_Def)
-	ty_unique := find_symbol(&unit, "ty_unique", .Type_Def)
+	int_eket := analyze.find_symbol(&unit, "int_eket", .Variable)
+	lv_value := analyze.find_symbol(&unit, "lv_value", .Variable)
+	lv_len := analyze.find_symbol(&unit, "lv_len", .Variable)
+	lv_dec := analyze.find_symbol(&unit, "lv_dec", .Variable)
+	mv_text := analyze.find_symbol(&unit, "mv_text", .Variable)
+	p_count := analyze.find_symbol(&unit, "p_count", .Variable)
+	ty_def := analyze.find_symbol(&unit, "ty_def", .Type_Def)
+	ty_unique := analyze.find_symbol(&unit, "ty_unique", .Type_Def)
 	testing.expect(t, int_eket != nil && lv_value != nil && lv_len != nil && lv_dec != nil)
 	testing.expect(t, mv_text != nil && p_count != nil && ty_def != nil && ty_unique != nil)
 	testing.expect_value(t, int_eket.type_clause_display, "beket")
@@ -1012,14 +1146,14 @@ DATA lr_item TYPE REF TO lif_demo=>ty_line.
 `
 	unit := collect_test_unit(t, "file:///type_ref_ast_paths.abap", source)
 
-	lv_date := find_symbol(&unit, "lv_date", .Variable)
-	lr_item := find_symbol(&unit, "lr_item", .Variable)
+	lv_date := analyze.find_symbol(&unit, "lv_date", .Variable)
+	lr_item := analyze.find_symbol(&unit, "lr_item", .Variable)
 	testing.expect(t, lv_date != nil)
 	testing.expect(t, lr_item != nil)
-	testing.expect_value(t, lv_date.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, lv_date.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, lv_date.declared_type.base_name, "sy")
 	testing.expect_value(t, lv_date.declared_type.field_path[0], "datum")
-	testing.expect_value(t, lr_item.declared_type.namespace, Namespace.Type)
+	testing.expect_value(t, lr_item.declared_type.namespace, analyze.Namespace.Type)
 	testing.expect(t, lr_item.declared_type.is_ref)
 	testing.expect_value(t, lr_item.declared_type.base_name, "lif_demo")
 	testing.expect_value(t, lr_item.declared_type.field_path[0], "ty_line")
@@ -1076,7 +1210,7 @@ ENDCLASS.
 	unit := collect_test_unit(t, "file:///common_name.abap", source)
 
 	testing.expect(t, has_symbol(&unit, .Variable, "common"))
-	class := find_symbol(&unit, "lcl_holder", .Class)
+	class := analyze.find_symbol(&unit, "lcl_holder", .Class)
 	testing.expect(t, class != nil)
 	testing.expect(t, class_member_named(&unit, class.id, "common", .Attribute) != nil)
 }
@@ -1091,10 +1225,10 @@ CONSTANTS: BEGIN OF gc_bapi_proc_mode,
 `
 	unit := collect_test_unit(t, "file:///constant_components.abap", source)
 
-	s := find_symbol(&unit, "gc_bapi_proc_mode", .Constant)
+	s := analyze.find_symbol(&unit, "gc_bapi_proc_mode", .Constant)
 	testing.expect(t, s != nil)
-	testing.expect(t, s.structure != INVALID_STRUCTURE_ID)
-	st := structure(&unit, s.structure)
+	testing.expect(t, s.structure != analyze.INVALID_STRUCTURE_ID)
+	st := analyze.structure(&unit, s.structure)
 	const_fields := [?]string{"aip", "46c"}
 	testing.expect(t, field_names_match(st, const_fields[:]))
 	testing.expect_value(t, st.fields[0].value_clause_display, "'A'")
@@ -1114,9 +1248,9 @@ TYPES: BEGIN OF ty_wrap,
 `
 	unit := collect_test_unit(t, "file:///structured_include.abap", source)
 
-	wrap := find_symbol(&unit, "ty_wrap", .Type_Def)
+	wrap := analyze.find_symbol(&unit, "ty_wrap", .Type_Def)
 	testing.expect(t, wrap != nil)
-	st := structure(&unit, wrap.structure)
+	st := analyze.structure(&unit, wrap.structure)
 	wrap_fields := [?]string{"a", "b"}
 	testing.expect(t, field_names_match(st, wrap_fields[:]))
 	testing.expect_value(t, st.fields[0].type_ref.base_name, "i")
@@ -1135,13 +1269,13 @@ SELECT-OPTIONS s_rogln FOR lv_rogln.
 
 	range_names := [?]string{"r_rogln", "s_rogln"}
 	for name in range_names {
-		s := find_symbol(&unit, name, .Variable)
+		s := analyze.find_symbol(&unit, name, .Variable)
 		testing.expect(t, s != nil)
-		testing.expect(t, s.structure != INVALID_STRUCTURE_ID)
-		st := structure(&unit, s.structure)
+		testing.expect(t, s.structure != analyze.INVALID_STRUCTURE_ID)
+		st := analyze.structure(&unit, s.structure)
 		range_fields := [?]string{"sign", "option", "low", "high"}
 		testing.expect(t, field_names_match(st, range_fields[:]))
-		testing.expect_value(t, st.fields[2].type_ref.namespace, Namespace.Value)
+		testing.expect_value(t, st.fields[2].type_ref.namespace, analyze.Namespace.Value)
 		testing.expect_value(t, st.fields[2].type_ref.base_name, "lv_rogln")
 	}
 }
@@ -1175,8 +1309,8 @@ ENDCLASS.
 `
 	unit := collect_test_unit(t, "file:///class_members.abap", source)
 
-	base := find_symbol(&unit, "zcl_base", .Class)
-	child := find_symbol(&unit, "zcl_child", .Class)
+	base := analyze.find_symbol(&unit, "zcl_base", .Class)
+	child := analyze.find_symbol(&unit, "zcl_child", .Class)
 	testing.expect(t, base != nil)
 	testing.expect(t, child != nil)
 	testing.expect(t, len(unit.class_definitions) >= 2)
@@ -1200,9 +1334,9 @@ ENDCLASS.
 	testing.expect(t, method != nil)
 	testing.expect(t, .Has_Implementation in method.flags)
 	testing.expect_value(t, len(method.parameters), 2)
-	testing.expect_value(t, method.parameters[0].section, Method_Parameter_Section.Importing)
+	testing.expect_value(t, method.parameters[0].section, analyze.Method_Parameter_Section.Importing)
 	testing.expect_value(t, method.parameters[0].name, "iv_value")
-	testing.expect_value(t, method.parameters[1].section, Method_Parameter_Section.Returning)
+	testing.expect_value(t, method.parameters[1].section, analyze.Method_Parameter_Section.Returning)
 	testing.expect_value(t, method.parameters[1].name, "rv_text")
 }
 
@@ -1216,14 +1350,14 @@ ENDCLASS.
 `
 	unit := collect_test_unit(t, "file:///oop_type_ref_paths.abap", source)
 
-	class := find_symbol(&unit, "lcl_date", .Class)
+	class := analyze.find_symbol(&unit, "lcl_date", .Class)
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
 	testing.expect_value(t, len(method.parameters), 1)
 	param := method.parameters[0]
 	testing.expect(t, .Has_Declared_Type in param.flags)
-	testing.expect_value(t, param.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, param.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, param.declared_type.base_name, "sy")
 	testing.expect_value(t, param.declared_type.field_path[0], "datum")
 	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
@@ -1245,8 +1379,8 @@ INTERFACE lif_vis.
 ENDINTERFACE.`
 	unit := collect_test_unit(t, "file:///oop_visibility.abap", source)
 
-	class := find_symbol(&unit, "lcl_vis", .Class)
-	iface := find_symbol(&unit, "lif_vis", .Interface)
+	class := analyze.find_symbol(&unit, "lcl_vis", .Class)
+	iface := analyze.find_symbol(&unit, "lif_vis", .Interface)
 	testing.expect(t, class != nil)
 	testing.expect(t, iface != nil)
 
@@ -1258,10 +1392,10 @@ ENDINTERFACE.`
 	testing.expect(t, prot != nil)
 	testing.expect(t, priv != nil)
 	testing.expect(t, if_pub != nil)
-	testing.expect_value(t, pub.visibility, Visibility.Public)
-	testing.expect_value(t, prot.visibility, Visibility.Protected)
-	testing.expect_value(t, priv.visibility, Visibility.Private)
-	testing.expect_value(t, if_pub.visibility, Visibility.Public)
+	testing.expect_value(t, pub.visibility, analyze.Visibility.Public)
+	testing.expect_value(t, prot.visibility, analyze.Visibility.Protected)
+	testing.expect_value(t, priv.visibility, analyze.Visibility.Private)
+	testing.expect_value(t, if_pub.visibility, analyze.Visibility.Public)
 }
 
 @(test)
@@ -1279,10 +1413,10 @@ ENDCLASS.
 CLASS zcl_deferred DEFINITION DEFERRED.`
 	unit := collect_test_unit(t, "file:///class_header_facts.abap", source)
 
-	abs := find_symbol(&unit, "zcl_abs", .Class)
-	child := find_symbol(&unit, "zcl_child", .Class)
-	impl := find_symbol(&unit, "zcl_impl", .Class)
-	deferred := find_symbol(&unit, "zcl_deferred", .Class)
+	abs := analyze.find_symbol(&unit, "zcl_abs", .Class)
+	child := analyze.find_symbol(&unit, "zcl_child", .Class)
+	impl := analyze.find_symbol(&unit, "zcl_impl", .Class)
+	deferred := analyze.find_symbol(&unit, "zcl_deferred", .Class)
 	testing.expect(t, abs != nil)
 	testing.expect(t, child != nil)
 	testing.expect(t, impl != nil)
@@ -1412,7 +1546,7 @@ ENDCLASS.`
 	unit := collect_test_unit(t, "file:///oop_params.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
-	class := find_symbol(&unit, "lcl", .Class)
+	class := analyze.find_symbol(&unit, "lcl", .Class)
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
@@ -1421,7 +1555,7 @@ ENDCLASS.`
 	testing.expect_value(t, method.parameters[1].name, "iv_state")
 	testing.expect(t, .Is_Optional in method.parameters[1].flags)
 	testing.expect_value(t, method.parameters[2].name, "iv_text")
-	testing.expect_value(t, method.parameters[3].section, Method_Parameter_Section.Returning)
+	testing.expect_value(t, method.parameters[3].section, analyze.Method_Parameter_Section.Returning)
 	testing.expect_value(t, method.parameters[3].name, "rv_ok")
 }
 
@@ -1444,20 +1578,20 @@ ENDFUNCTION.
 	testing.expect_value(t, len(unit.form_routines), 1)
 	form := unit.form_routines[0]
 	testing.expect_value(t, len(form.parameters), 4)
-	ct_rows := unit.symbols[symbol_id_index(form.parameters[0].symbol)]
-	iv_text := unit.symbols[symbol_id_index(form.parameters[1].symbol)]
-	iv_ref := unit.symbols[symbol_id_index(form.parameters[2].symbol)]
+	ct_rows := unit.symbols[analyze.symbol_id_index(form.parameters[0].symbol)]
+	iv_text := unit.symbols[analyze.symbol_id_index(form.parameters[1].symbol)]
+	iv_ref := unit.symbols[analyze.symbol_id_index(form.parameters[2].symbol)]
 	testing.expect_value(t, ct_rows.name, "ct_rows")
-	testing.expect_value(t, ct_rows.declared_type.namespace, Namespace.Value)
-	testing.expect_value(t, form.parameters[0].section, Form_Parameter_Section.Tables)
-	testing.expect_value(t, form.parameters[1].section, Form_Parameter_Section.Using)
-	testing.expect_value(t, form.parameters[1].passing, Form_Parameter_Passing_Kind.Value)
+	testing.expect_value(t, ct_rows.declared_type.namespace, analyze.Namespace.Value)
+	testing.expect_value(t, form.parameters[0].section, analyze.Form_Parameter_Section.Tables)
+	testing.expect_value(t, form.parameters[1].section, analyze.Form_Parameter_Section.Using)
+	testing.expect_value(t, form.parameters[1].passing, analyze.Form_Parameter_Passing_Kind.Value)
 	testing.expect_value(t, iv_text.name, "iv_text")
-	testing.expect_value(t, form.parameters[2].passing, Form_Parameter_Passing_Kind.Reference)
-	testing.expect_value(t, iv_ref.declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, form.parameters[2].passing, analyze.Form_Parameter_Passing_Kind.Reference)
+	testing.expect_value(t, iv_ref.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, iv_ref.declared_type.base_name, "sy")
 	testing.expect_value(t, iv_ref.declared_type.field_path[0], "uname")
-	testing.expect_value(t, form.parameters[3].section, Form_Parameter_Section.Changing)
+	testing.expect_value(t, form.parameters[3].section, analyze.Form_Parameter_Section.Changing)
 
 	testing.expect_value(t, len(unit.function_modules), 1)
 	fm := unit.function_modules[0]
@@ -1466,14 +1600,14 @@ ENDFUNCTION.
 	testing.expect(t, .Is_Optional in fm.parameters[0].flags)
 	testing.expect_value(t, fm.parameters[1].name, "iv_text")
 	testing.expect(t, .Has_Default_Value in fm.parameters[1].flags)
-	testing.expect_value(t, fm.parameters[2].section, Function_Module_Parameter_Section.Exporting)
-	testing.expect_value(t, fm.parameters[2].declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, fm.parameters[2].section, analyze.Function_Module_Parameter_Section.Exporting)
+	testing.expect_value(t, fm.parameters[2].declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, fm.parameters[2].declared_type.base_name, "sy")
 	testing.expect_value(t, fm.parameters[2].declared_type.field_path[0], "uname")
-	testing.expect_value(t, fm.parameters[3].section, Function_Module_Parameter_Section.Changing)
+	testing.expect_value(t, fm.parameters[3].section, analyze.Function_Module_Parameter_Section.Changing)
 	testing.expect_value(t, fm.parameters[3].declared_type.base_name, "object")
-	testing.expect_value(t, fm.parameters[4].section, Function_Module_Parameter_Section.Tables)
-	testing.expect_value(t, fm.parameters[4].declared_type.namespace, Namespace.Value)
+	testing.expect_value(t, fm.parameters[4].section, analyze.Function_Module_Parameter_Section.Tables)
+	testing.expect_value(t, fm.parameters[4].declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, fm.parameters[4].declared_type.base_name, "bapiret2")
 	testing.expect_value(t, len(fm.exceptions), 2)
 	testing.expect_value(t, fm.exceptions[0].name, "failed")
@@ -1500,7 +1634,7 @@ ENDFORM.
 	for reference in unit.references {
 		if reference.name == "lv_count" && reference.kind == .Identifier {
 			testing.expect(t, reference.has_resolution)
-			testing.expect_value(t, reference.resolution.kind, Resolution_Kind.Symbol)
+			testing.expect_value(t, reference.resolution.kind, analyze.Resolution_Kind.Symbol)
 		}
 	}
 	testing.expect_value(t, len(unit.assignment_sites), 1)
@@ -1535,10 +1669,10 @@ ENDFORM.
 `,
 	)
 
-	param := find_symbol(&unit, "cv_result", .Parameter)
+	param := analyze.find_symbol(&unit, "cv_result", .Parameter)
 	testing.expect(t, param != nil)
 	testing.expect(t, param.has_declared_type)
-	testing.expect_value(t, param.declared_type.namespace, Namespace.Type)
+	testing.expect_value(t, param.declared_type.namespace, analyze.Namespace.Type)
 	testing.expect_value(t, param.declared_type.base_name, "string")
 	for reference in unit.references {
 		if reference.name == "cv_result" {
@@ -1652,8 +1786,8 @@ DATA lo_c1 TYPE REF TO c1.
 `,
 	)
 
-	c1 := find_symbol(&unit, "c1", .Class)
-	lo_c1 := find_symbol(&unit, "lo_c1", .Variable)
+	c1 := analyze.find_symbol(&unit, "c1", .Class)
+	lo_c1 := analyze.find_symbol(&unit, "lo_c1", .Variable)
 	testing.expect(t, c1 != nil)
 	testing.expect(t, lo_c1 != nil)
 	testing.expect(t, lo_c1.has_declared_type)
@@ -1679,7 +1813,7 @@ ENDINTERFACE.
 `,
 	)
 
-	ty_tab := find_symbol(&unit, "ty_tab", .Type_Def)
+	ty_tab := analyze.find_symbol(&unit, "ty_tab", .Type_Def)
 	testing.expect(t, ty_tab != nil)
 	testing.expect(t, ty_tab.has_declared_type)
 	testing.expect(t, ty_tab.declared_type.is_ref)
@@ -1703,7 +1837,7 @@ DATA(lr_retriable_errs) = VALUE lcl_archive_connector=>tr_retriable_errs( ).
 `,
 	)
 
-	class_symbol := find_symbol(&unit, "lcl_archive_connector", .Class)
+	class_symbol := analyze.find_symbol(&unit, "lcl_archive_connector", .Class)
 	testing.expect(t, class_symbol != nil)
 	testing.expect(t, has_symbol(&unit, .Type_Def, "tr_retriable_errs"))
 	testing.expect(t, has_symbol(&unit, .Variable, "lr_retriable_errs"))
@@ -1739,16 +1873,16 @@ ENDLOOP.
 		for reference in unit.references {
 			if reference.name == name && reference.kind == .Identifier {
 				testing.expect(t, reference.has_resolution)
-				testing.expect_value(t, reference.resolution.kind, Resolution_Kind.Symbol)
+				testing.expect_value(t, reference.resolution.kind, analyze.Resolution_Kind.Symbol)
 			}
 		}
 	}
-	syst := find_structure(&unit, "syst")
-	screen := find_structure(&unit, "screen")
+	syst := analyze.find_structure(&unit, "syst")
+	screen := analyze.find_structure(&unit, "screen")
 	testing.expect(t, syst != nil)
 	testing.expect(t, screen != nil)
-	subrc, subrc_ok := structure_field_info(&unit, syst.id, "subrc")
-	screen_name, screen_ok := structure_field_info(&unit, screen.id, "name")
+	subrc, subrc_ok := analyze.structure_field_info(&unit, syst.id, "subrc")
+	screen_name, screen_ok := analyze.structure_field_info(&unit, screen.id, "name")
 	testing.expect(t, subrc_ok)
 	testing.expect(t, screen_ok)
 	testing.expect_value(t, subrc.type_ref.base_name, "i")
@@ -1762,52 +1896,52 @@ DATA lv_copy TYPE i.
 lv_copy = lv_value.
 SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).`
 	unit := collect_test_unit(t, "file:///semantic_queries.abap", source)
-	query := semantic(&unit)
-	decl_query := decls(query)
-	ref_query := refs(query)
-	sql_query := sql(query)
-	fact_query := facts(query)
+	query := sem_query.semantic(&unit)
+	decl_query := sem_query.decls(query)
+	ref_query := sem_query.refs(query)
+	sql_query := sem_query.sql(query)
+	fact_query := sem_query.facts(query)
 
 	decl_offset := find_text(source, "lv_value")
 	use_offset := find_text_last(source, "lv_value")
 	testing.expect(t, decl_offset >= 0)
 	testing.expect(t, use_offset > decl_offset)
 
-	sym := decl_symbol_at_offset(decl_query, decl_offset)
+	sym := sem_query.decl_symbol_at_offset(decl_query, decl_offset)
 	testing.expect(t, sym != nil)
 	testing.expect_value(t, sym.name, "lv_value")
 
-	by_range := decl_symbol_with_kind_and_decl_range(decl_query, .Variable, sym.decl_range)
+	by_range := sem_query.decl_symbol_with_kind_and_decl_range(decl_query, .Variable, sym.decl_range)
 	testing.expect(t, by_range != nil)
 	testing.expect_value(t, by_range.id, sym.id)
 
-	ref := ref_reference_at_offset(ref_query, use_offset)
+	ref := sem_query.ref_reference_at_offset(ref_query, use_offset)
 	testing.expect(t, ref != nil)
 	testing.expect_value(t, ref.name, "lv_value")
 	testing.expect(t, ref.has_resolution)
 
-	exact_ref := ref_reference_at_range(ref_query, ref.range)
+	exact_ref := sem_query.ref_reference_at_range(ref_query, ref.range)
 	testing.expect(t, exact_ref != nil)
 	testing.expect_value(t, exact_ref.id, ref.id)
 
-	resolved := ref_resolving_to(
+	resolved := sem_query.ref_resolving_to(
 		ref_query,
-		Symbol_Handle{unit = unit.unit_id, symbol = sym.id},
+		analyze.Symbol_Handle{unit = unit.unit_id, symbol = sym.id},
 		context.allocator,
 	)
 	testing.expect_value(t, len(resolved), 1)
 
 	source_offset := find_text(source, "scarr")
-	sql_ref := sql_name_ref_at_offset(sql_query, source_offset)
+	sql_ref := sem_query.sql_name_ref_at_offset(sql_query, source_offset)
 	testing.expect(t, sql_ref != nil)
-	testing.expect_value(t, sql_ref.kind, Sql_Name_Ref_Kind.Source)
-	testing.expect(t, sql_has_source_named(sql_query, "SCARR"))
-	sql_sources := sql_source_name_refs_named(sql_query, "scarr", context.allocator)
+	testing.expect_value(t, sql_ref.kind, analyze.Sql_Name_Ref_Kind.Source)
+	testing.expect(t, sem_query.sql_has_source_named(sql_query, "SCARR"))
+	sql_sources := sem_query.sql_source_name_refs_named(sql_query, "scarr", context.allocator)
 	testing.expect_value(t, len(sql_sources), 1)
 
-	fact := fact_expression_fact_at_offset(fact_query, use_offset)
+	fact := sem_query.fact_expression_fact_at_offset(fact_query, use_offset)
 	testing.expect(t, fact != nil)
-	testing.expect_value(t, fact.kind, Expression_Fact_Kind.Reference)
+	testing.expect_value(t, fact.kind, analyze.Expression_Fact_Kind.Reference)
 }
 
 @(test)
@@ -1823,26 +1957,26 @@ TYPES: BEGIN OF ty_demo,
        END OF ty_demo.
 `
 	unit := collect_test_unit(t, "file:///decl_queries.abap", source)
-	query := semantic(&unit)
-	decl_query := decls(query)
+	query := sem_query.semantic(&unit)
+	decl_query := sem_query.decls(query)
 
 	method_offset := find_text(source, "run")
-	member := decl_class_member_at_offset(decl_query, method_offset)
+	member := sem_query.decl_class_member_at_offset(decl_query, method_offset)
 	testing.expect(t, member != nil)
-	testing.expect_value(t, member.kind, Class_Member_Kind.Method)
+	testing.expect_value(t, member.kind, analyze.Class_Member_Kind.Method)
 	testing.expect_value(t, member.name, "run")
 
-	class_symbol := find_symbol(&unit, "lcl_demo", .Class)
+	class_symbol := analyze.find_symbol(&unit, "lcl_demo", .Class)
 	testing.expect(t, class_symbol != nil)
-	member_by_name := decl_class_member(decl_query, class_symbol.id, "RUN")
+	member_by_name := sem_query.decl_class_member(decl_query, class_symbol.id, "RUN")
 	testing.expect(t, member_by_name != nil)
 	testing.expect_value(t, member_by_name.name, "run")
 
 	field_offset := find_text(source, "comp")
-	field, ok := decl_structure_field_at_offset(decl_query, field_offset)
+	field, ok := sem_query.decl_structure_field_at_offset(decl_query, field_offset)
 	testing.expect(t, ok)
 	testing.expect_value(t, field.name, "comp")
-	direct, direct_ok := decl_structure_field_info(decl_query, field.owner, "COMP")
+	direct, direct_ok := sem_query.decl_structure_field_info(decl_query, field.owner, "COMP")
 	testing.expect(t, direct_ok)
 	testing.expect_value(t, direct.name, "comp")
 }
@@ -1863,7 +1997,7 @@ ENDFORM.
 
 	testing.expect_value(t, reference_count(&unit, "lv_max_len", .Value, .Identifier), 1)
 	testing.expect_value(t, len(unit.routine_control_regions), 1)
-	testing.expect_value(t, unit.routine_control_regions[0].kind, Routine_Control_Region_Kind.Loop)
+	testing.expect_value(t, unit.routine_control_regions[0].kind, analyze.Routine_Control_Region_Kind.Loop)
 }
 
 @(test)
@@ -1886,7 +2020,7 @@ ENDFORM.
 	testing.expect_value(t, reference_count(&unit, "lv_kind", .Value, .Identifier), 1)
 	testing.expect_value(t, reference_count(&unit, "lc_rs_agg_op", .Value, .Identifier), 2)
 	testing.expect_value(t, len(unit.routine_control_regions), 1)
-	testing.expect_value(t, unit.routine_control_regions[0].kind, Routine_Control_Region_Kind.Case)
+	testing.expect_value(t, unit.routine_control_regions[0].kind, analyze.Routine_Control_Region_Kind.Case)
 }
 
 @(test)
@@ -2068,7 +2202,7 @@ ENDCLASS.
 	testing.expect_value(
 		t,
 		unit.perform_calls[0].arguments[1].section,
-		Perform_Parameter_Section.Changing,
+		analyze.Perform_Parameter_Section.Changing,
 	)
 }
 
@@ -2355,10 +2489,10 @@ SELECT carrid, carrname
 	testing.expect(t, sql_target_present(&unit, "lt_scarr", .Into, {.Is_Table, .Is_Inline}))
 	testing.expect(t, has_reference(&unit, "iv_carrid", .Value, .Identifier))
 
-	target := find_symbol(&unit, "lt_scarr", .Variable)
+	target := analyze.find_symbol(&unit, "lt_scarr", .Variable)
 	testing.expect(t, target != nil)
-	testing.expect(t, target.structure != INVALID_STRUCTURE_ID)
-	st := structure(&unit, target.structure)
+	testing.expect(t, target.structure != analyze.INVALID_STRUCTURE_ID)
+	st := analyze.structure(&unit, target.structure)
 	fields := [?]string{"carrid", "carrname"}
 	testing.expect(t, field_names_match(st, fields[:]))
 }
@@ -2914,7 +3048,7 @@ kind = "class"
 root_file = "src/ZCL_DEP.abap"
 dependency_of = ["src/ZMAIN.abap"]
 `
-	manifest, ok, err := parse_workspace_manifest_text("D:/workspace", "D:/workspace/abapls.toml", source, context.allocator)
+	manifest, ok, err := deps.parse_workspace_manifest_text("D:/workspace", "D:/workspace/abapls.toml", source, context.allocator)
 
 	testing.expect(t, ok)
 	testing.expect_value(t, err, "")
@@ -2973,7 +3107,7 @@ members = [{ file = "src/includes/generated.abap", role = "include", object_name
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
 	testing.expect_value(t, len(result.project.units), 2)
-	root_unit := project_unit_by_uri(&result.project, root_file)
+	root_unit := analyze.project_unit_by_uri(&result.project, root_file)
 	testing.expect(t, root_unit != nil)
 	testing.expect_value(t, include_target_uri(&result.project, root_unit, "ztop"), member_file)
 	testing.expect(t, reference_resolves_to_uri(&result.project, root_unit, "lv_top", .Value, .Identifier, member_file))
@@ -2998,12 +3132,12 @@ members = ["src/ZUNUSED.abap"]
 	unused_file := manifest_test_file(t, root, "src/ZUNUSED.abap", "CLASS zcl_unused DEFINITION. ENDCLASS.")
 
 	result := analyze_path_test(t, root_file)
-	root_unit := project_unit_by_uri(&result.project, root_file)
+	root_unit := analyze.project_unit_by_uri(&result.project, root_file)
 
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
 	testing.expect_value(t, len(result.project.units), 1)
-	testing.expect(t, project_unit_by_uri(&result.project, unused_file) == nil)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, unused_file) == nil)
 	testing.expect(t, root_unit != nil)
 	testing.expect(t, has_diagnostic(root_unit, .Unresolved_Reference))
 }
@@ -3061,7 +3195,7 @@ root_file = "src/ZMAIN.abap"
 	)
 	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. DATA lo_outer TYPE REF TO zcl_outer.")
 
-	result := analyze_path_test_with_options(t, root_file, Analyze_Options{dependency_store_path = store_path})
+	result := analyze_path_test_with_options(t, root_file, analyze.Analyze_Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
@@ -3100,7 +3234,7 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 		"ZMAIN.abap",
 		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_cache.",
 	)
-	result := analyze_path_test_with_options(t, root_file, Analyze_Options{dependency_store_path = store_path})
+	result := analyze_path_test_with_options(t, root_file, analyze.Analyze_Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -3152,7 +3286,7 @@ standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 		"ZMAIN.abap",
 		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_outer.",
 	)
-	result := analyze_path_test_with_options(t, root_file, Analyze_Options{dependency_store_path = store_path})
+	result := analyze_path_test_with_options(t, root_file, analyze.Analyze_Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -3223,10 +3357,10 @@ standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T
 	if pool.options.worker_count > 0 {
 		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
 	}
-	project := analyze_standalone_with_dependency_drain(
-		Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)},
-		make([dynamic]Project_Candidate_Input, context.allocator),
-		Analyze_Options{pool = &pool, dependency_store_path = store_path},
+	project := deps.analyze_standalone_with_dependency_drain(
+		analyze.Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)},
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
+		analyze.Analyze_Options{pool = &pool, dependency_store_path = store_path},
 		context.allocator,
 	)
 	if pool.options.worker_count > 0 {
@@ -3285,15 +3419,15 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	if pool.options.worker_count > 0 {
 		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
 	}
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	dependencies := make([dynamic]Source_Input, context.allocator)
-	remote := [?]Remote_Dependency_Candidate {
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	remote := [?]analyze.Remote_Dependency_Candidate {
 		{name = "ZCL_STORE_TASK", kind = .Type},
 		{name = "ZINC_STORE_TASK", kind = .Include},
 	}
 	seen := make(map[i64]bool, context.allocator)
 	before := frontend_runtime.pool_stats(&pool)
-	added := add_dependency_store_any_profile_matches(
+	added := deps.add_dependency_store_any_profile_matches(
 		&candidates,
 		&dependencies,
 		remote[:],
@@ -3312,8 +3446,8 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, len(candidates), 1)
-	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
-	testing.expect_value(t, candidates[0].input.mode, Source_Mode.Dependency_Interface)
+	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
+	testing.expect_value(t, candidates[0].input.mode, analyze.Source_Mode.Dependency_Interface)
 	testing.expect(t, after.submitted >= before.submitted + u64(len(remote)))
 }
 
@@ -3326,36 +3460,36 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 		"source-code-library/classes/ZCL_LOCAL_EXPORT.abap",
 		"CLASS zcl_local_export DEFINITION. ENDCLASS. CLASS zcl_local_export IMPLEMENTATION. ENDCLASS.",
 	)
-	manifest := Workspace_Manifest {
+	manifest := deps.Workspace_Manifest {
 		root_path          = export_root,
 		dependency_source  = "local-first",
 		local_export_roots = make([dynamic]string, 0, 1, context.allocator),
 	}
 	append(&manifest.local_export_roots, export_root)
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri    = "mem://ZMAIN.abap",
 		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_local_export.",
 	}
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	dependencies := make([dynamic]Source_Input, context.allocator)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	project := analyze_with_manifest_dependency_drain(
+	project := deps.analyze_with_manifest_dependency_drain(
 		&manifest,
 		target,
 		candidates,
 		dependencies,
-		Analyze_Options{pool = &pool},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
 
 	testing.expect_value(t, len(project.units), 2)
-	testing.expect(t, project_unit_by_uri(&project, export_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&project, export_file) != nil)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
@@ -3381,7 +3515,7 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 		"ZPKG/source-code-library/classes/ZCL_LOCAL_CACHE.abap",
 		"CLASS zcl_local_cache DEFINITION. ENDCLASS. CLASS zcl_local_cache IMPLEMENTATION. ENDCLASS.",
 	)
-	manifest := Workspace_Manifest {
+	manifest := deps.Workspace_Manifest {
 		root_path            = root,
 		dependency_source    = "local-first",
 		dependency_store     = profile,
@@ -3389,29 +3523,29 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 		local_export_roots   = make([dynamic]string, 0, 1, context.allocator),
 	}
 	append(&manifest.local_export_roots, export_root)
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri    = "mem://ZMAIN.abap",
 		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_local_cache.",
 	}
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	dependencies := make([dynamic]Source_Input, context.allocator)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	project := analyze_with_manifest_dependency_drain(
+	project := deps.analyze_with_manifest_dependency_drain(
 		&manifest,
 		target,
 		candidates,
 		dependencies,
-		Analyze_Options{pool = &pool, dependency_store_path = store_path},
+		analyze.Analyze_Options{pool = &pool, dependency_store_path = store_path},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
 
-	testing.expect(t, project_unit_by_uri(&project, export_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&project, export_file) != nil)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 
 	record, ok, lookup_err := dep_store.find_artifact_for_candidate(
@@ -3431,8 +3565,8 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 @(test)
 manifest_project_dotenv_gates_adt_dependency_fetch :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("adt-dotenv-gate")
-	manifest := Workspace_Manifest{root_path = root}
-	testing.expect(t, !manifest_has_project_dotenv(&manifest, context.allocator))
+	manifest := deps.Workspace_Manifest{root_path = root}
+	testing.expect(t, !deps.manifest_has_project_dotenv(&manifest, context.allocator))
 
 	manifest_test_file(
 		t,
@@ -3444,25 +3578,25 @@ ABAP_ADT_USER=demo
 ABAP_ADT_PASSWORD=secret
 `,
 	)
-	testing.expect(t, manifest_has_project_dotenv(&manifest, context.allocator))
+	testing.expect(t, deps.manifest_has_project_dotenv(&manifest, context.allocator))
 }
 
 @(test)
 adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri    = "mem://ZMAIN.abap",
 		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_adt_fetch.",
 	}
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	dependencies := make([dynamic]Source_Input, context.allocator)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	object_ref := adt.build_class_object_ref("ZCL_ADT_FETCH", "ZPKG", context.allocator)
 	defer adt.object_ref_destroy(&object_ref, context.allocator)
-	uri_keys := project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+	uri_keys := deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
 
-	added := add_adt_fetched_dependency_input(
+	added := deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = .Type},
+		analyze.Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = .Type},
 		&object_ref,
 		"global-class",
 		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
@@ -3473,7 +3607,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
-	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
+	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
 
 	pool: frontend_runtime.Pool
 	testing.expect_value(
@@ -3481,11 +3615,11 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	project := analyze_target_with_candidate_inputs(
+	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
 		dependencies[:],
-		Analyze_Options{pool = &pool},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
@@ -3497,12 +3631,12 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 
 @(test)
 adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri    = "mem://ZMAIN.abap",
 		source = "REPORT zmain. DATA lt_e071 TYPE tr_objects.",
 	}
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	dependencies := make([dynamic]Source_Input, context.allocator)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	object_ref := adt.Object_Ref {
 		uri = strings.clone("/sap/bc/adt/vit/wb/object_type/ttypda/object_name/TR_OBJECTS", context.allocator),
 		object_type = strings.clone("TTYP/DA", context.allocator),
@@ -3511,12 +3645,12 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		description = strings.clone("Table Type", context.allocator),
 	}
 	defer adt.object_ref_destroy(&object_ref, context.allocator)
-	uri_keys := project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+	uri_keys := deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
 
-	added := add_adt_fetched_dependency_input(
+	added := deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
+		analyze.Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
 		&object_ref,
 		"ddic-table-type",
 		`<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="TR_OBJECTS" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
@@ -3533,7 +3667,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
-	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
+	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
 	testing.expect(t, contains_fold(dependencies[0].source, "type standard table of c with default key"))
 
 	pool: frontend_runtime.Pool
@@ -3542,11 +3676,11 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	project := analyze_target_with_candidate_inputs(
+	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
 		dependencies[:],
-		Analyze_Options{pool = &pool},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
@@ -3558,9 +3692,9 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 
 @(test)
 dependency_xml_detection_prefers_metadata :: proc(t: ^testing.T) {
-	testing.expect(t, dependency_source_is_xml("ddic-table-type", "xml", "not xml"))
-	testing.expect(t, dependency_source_is_xml("ddic-table-type", "abap", "<ttyp/>"))
-	testing.expect(t, !dependency_source_is_xml("global-class", "abap", "<fs> = value."))
+	testing.expect(t, deps.dependency_source_is_xml("ddic-table-type", "xml", "not xml"))
+	testing.expect(t, deps.dependency_source_is_xml("ddic-table-type", "abap", "<ttyp/>"))
+	testing.expect(t, !deps.dependency_source_is_xml("global-class", "abap", "<fs> = value."))
 }
 
 @(test)
@@ -3583,7 +3717,7 @@ ddic_xml_structure_dependency_resolves_fields :: proc(t: ^testing.T) {
 	testing.expect(t, contains_fold(source, "id type c"))
 	testing.expect(t, contains_fold(source, "count type i"))
 
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "mem://ZMAIN.abap",
 		source = `
 REPORT zmain.
@@ -3592,7 +3726,7 @@ ls_row-id = 'A'.
 ls_row-count = 1.
 `,
 	}
-	dependencies := [?]Source_Input {
+	dependencies := [?]analyze.Source_Input {
 		{
 			uri = "abapls-cache:/ddic-table/zddic_row.abap",
 			source = source,
@@ -3600,7 +3734,7 @@ ls_row-count = 1.
 		},
 	}
 	project := analyze_project_dependencies_test(t, target, dependencies[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 
 	testing.expect(t, root != nil)
 	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
@@ -3636,14 +3770,14 @@ ddic_xml_table_type_dependency_uses_row_type :: proc(t: ^testing.T) {
 	testing.expect(t, contains_fold(row_source, "text type string"))
 	testing.expect(t, contains_fold(table_source, "type standard table of zddic_row with default key"))
 
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "mem://ZMAIN.abap",
 		source = `
 REPORT zmain.
 DATA lt_rows TYPE zddic_rows.
 `,
 	}
-	dependencies := [?]Source_Input {
+	dependencies := [?]analyze.Source_Input {
 		{
 			uri = "abapls-cache:/ddic-table-type/zddic_rows.abap",
 			source = table_source,
@@ -3656,8 +3790,8 @@ DATA lt_rows TYPE zddic_rows.
 		},
 	}
 	project := analyze_project_dependencies_test(t, target, dependencies[:])
-	root := project_unit_by_uri(&project, target.uri)
-	table_unit := project_unit_by_uri(&project, dependencies[0].uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	table_unit := analyze.project_unit_by_uri(&project, dependencies[0].uri)
 
 	testing.expect(t, root != nil)
 	testing.expect(t, table_unit != nil)
@@ -3668,12 +3802,12 @@ DATA lt_rows TYPE zddic_rows.
 
 @(test)
 adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T) {
-	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
-	dependencies := make([dynamic]Source_Input, context.allocator)
-	uri_keys := project_input_uri_keys("mem://ZMAIN.abap", dependencies[:], candidates[:], 2, context.allocator)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	uri_keys := deps.project_input_uri_keys("mem://ZMAIN.abap", dependencies[:], candidates[:], 2, context.allocator)
 
-	result := new(Adt_Fetch_Task_Result, context.allocator)
-	result.fetched = make([dynamic]Adt_Fetched_Object, 0, 1, context.allocator)
+	result := new(deps.Adt_Fetch_Task_Result, context.allocator)
+	result.fetched = make([dynamic]deps.Adt_Fetched_Object, 0, 1, context.allocator)
 	shared := make([dynamic]adt.Dependency_Artifact, 0, 1, context.allocator)
 	append(
 		&shared,
@@ -3686,7 +3820,7 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 	)
 	append(
 		&result.fetched,
-		Adt_Fetched_Object {
+		deps.Adt_Fetched_Object {
 			object_ref = adt.build_class_object_ref("ZCL_TASK_RESULT", "ZPKG", context.allocator),
 			fetched = adt.Dependency_Fetch_Result {
 				body                = strings.clone("CLASS zcl_task_result DEFINITION. ENDCLASS. CLASS zcl_task_result IMPLEMENTATION. ENDCLASS.", context.allocator),
@@ -3696,12 +3830,12 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 			},
 		},
 	)
-	defer adt_fetch_task_result_destroy(result, context.allocator)
+	defer deps.adt_fetch_task_result_destroy(result, context.allocator)
 
-	added := add_adt_fetch_task_result(
+	added := deps.add_adt_fetch_task_result(
 		&candidates,
 		&dependencies,
-		Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type},
+		analyze.Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type},
 		result,
 		nil,
 		nil,
@@ -3713,8 +3847,8 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, len(candidates), 1)
-	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
-	testing.expect_value(t, candidates[0].input.mode, Source_Mode.Dependency_Interface)
+	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
+	testing.expect_value(t, candidates[0].input.mode, analyze.Source_Mode.Dependency_Interface)
 	testing.expect(t, strings.contains(dependencies[0].uri, "/oo/classes/ZCL_TASK_RESULT"))
 	testing.expect(t, strings.contains(candidates[0].input.uri, "/programs/includes/ZINC_TASK_RESULT"))
 }
@@ -3765,7 +3899,7 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 		shared_dependencies = shared_dependencies,
 	}
 
-	store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
+	deps.store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
 
 	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "tr_objects", .Type, context.allocator)
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
@@ -3815,7 +3949,7 @@ adt_fetched_ddic_table_is_cached_as_structure :: proc(t: ^testing.T) {
 		manifest_kind  = "ddic-table",
 	}
 
-	store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
+	deps.store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
 
 	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "t000", .Type, context.allocator)
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
@@ -3849,11 +3983,11 @@ root_file = "src/ZMAIN.abap"
 
 	testing.expect(t, root_result.ok)
 	testing.expect(t, root_result.used_manifest)
-	testing.expect(t, project_unit_by_uri(&root_result.project, include_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&root_result.project, include_file) != nil)
 	testing.expect(t, requested_include_result.ok)
 	testing.expect(t, requested_include_result.used_manifest)
-	testing.expect(t, project_unit_by_uri(&requested_include_result.project, root_file) != nil)
-	testing.expect(t, project_unit_by_uri(&requested_include_result.project, include_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&requested_include_result.project, root_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&requested_include_result.project, include_file) != nil)
 	testing.expect_value(t, len(requested_include_result.project.units), 2)
 }
 
@@ -3879,7 +4013,7 @@ root_file = "src/ZMAIN.abap"
 	testing.expect(t, !result.used_manifest)
 	testing.expect_value(t, len(result.project.units), 1)
 	testing.expect_value(t, result.project.units[0].uri, loose_file)
-	testing.expect(t, project_unit_by_uri(&result.project, root_file) == nil)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, root_file) == nil)
 }
 
 @(test)
@@ -3913,24 +4047,24 @@ dependency_of = ["src/ZOTHER.abap"]
 	other_file := manifest_test_file(t, root, "src/ZCL_OTHER.abap", "CLASS zcl_other DEFINITION. ENDCLASS.")
 
 	result := analyze_path_test(t, root_file)
-	root_unit := project_unit_by_uri(&result.project, root_file)
+	root_unit := analyze.project_unit_by_uri(&result.project, root_file)
 
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
 	testing.expect(t, root_unit != nil)
-	testing.expect(t, project_unit_by_uri(&result.project, dependency_file) != nil)
-	testing.expect(t, project_unit_by_uri(&result.project, other_file) == nil)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, dependency_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, other_file) == nil)
 	testing.expect(t, reference_resolves_to_uri(&result.project, root_unit, "zcl_dep", .Type, .Type_Ref, dependency_file))
 	testing.expect(t, !has_diagnostic(root_unit, .Unresolved_Reference))
 }
 
 @(test)
 analyze_target_inline_pool_discovers_reachable_includes_only :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE: ztop, zf01.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/ztop.abap", source = "DATA gv_shared TYPE i."},
 		{uri = "file:///workspace/zf01.abap", source = "FORM run. gv_shared = 1. ENDFORM."},
 		{uri = "file:///workspace/zunused.abap", source = "DATA gv_unused TYPE i."},
@@ -3942,8 +4076,8 @@ analyze_target_inline_pool_discovers_reachable_includes_only :: proc(t: ^testing
 	testing.expect_value(t, project.units[0].uri, target.uri)
 	testing.expect_value(t, project.units[1].uri, candidates[0].uri)
 	testing.expect_value(t, project.units[2].uri, candidates[1].uri)
-	testing.expect(t, project_unit_by_uri(&project, candidates[2].uri) == nil)
-	root := project_unit_by_uri(&project, target.uri)
+	testing.expect(t, analyze.project_unit_by_uri(&project, candidates[2].uri) == nil)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 	testing.expect(t, root != nil)
 	testing.expect_value(t, include_target_uri(&project, root, "ztop"), candidates[0].uri)
 	testing.expect_value(t, include_target_uri(&project, root, "zf01"), candidates[1].uri)
@@ -3952,18 +4086,18 @@ analyze_target_inline_pool_discovers_reachable_includes_only :: proc(t: ^testing
 
 @(test)
 analyze_target_threaded_pool_prefers_includes_folder_candidate :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/src/ZREP/ZREP.abap",
 		source = "REPORT zrep. INCLUDE zrep_top.",
 	}
 	includes_uri := "file:///workspace/src/ZREP/Includes/ZREP_TOP.abap"
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/src/includes/ZREP_TOP.abap", source = "DATA lv_global TYPE i."},
 		{uri = includes_uri, source = "DATA lv_includes TYPE i."},
 	}
 
 	project := analyze_project_test(t, 2, target, candidates[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 	testing.expect(t, root != nil)
 	testing.expect_value(t, include_target_uri(&project, root, "zrep_top"), includes_uri)
 	testing.expect_value(t, len(project.units), 2)
@@ -3971,18 +4105,18 @@ analyze_target_threaded_pool_prefers_includes_folder_candidate :: proc(t: ^testi
 
 @(test)
 analyze_target_prefers_same_folder_before_includes_folder :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/src/ZREP/ZREP.abap",
 		source = "REPORT zrep. INCLUDE zrep_top.",
 	}
 	same_folder_uri := "file:///workspace/src/ZREP/ZREP_TOP.abap"
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/src/ZREP/Includes/ZREP_TOP.abap", source = "DATA lv_includes TYPE i."},
 		{uri = same_folder_uri, source = "DATA lv_same_folder TYPE i."},
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 	testing.expect(t, root != nil)
 	testing.expect_value(t, include_target_uri(&project, root, "zrep_top"), same_folder_uri)
 	testing.expect_value(t, len(project.units), 2)
@@ -3990,24 +4124,24 @@ analyze_target_prefers_same_folder_before_includes_folder :: proc(t: ^testing.T)
 
 @(test)
 analyze_target_ignores_sibling_candidate_without_include_edge :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. gr_demo = 1.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/zmain_top.abap", source = "DATA gr_demo TYPE i."},
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
 
 	testing.expect_value(t, len(project.units), 1)
-	testing.expect(t, project_unit_by_uri(&project, candidates[0].uri) == nil)
+	testing.expect(t, analyze.project_unit_by_uri(&project, candidates[0].uri) == nil)
 	testing.expect(t, len(project.units[0].include_edges) == 0)
 }
 
 @(test)
 project_global_class_resolves_when_name_matches_unit_stem :: proc(t: ^testing.T) {
-	sources := [?]Source_Input {
+	sources := [?]analyze.Source_Input {
 		{
 			uri = "file:///workspace/zcl_parent.abap",
 			source = "CLASS zcl_parent DEFINITION. ENDCLASS.",
@@ -4019,7 +4153,7 @@ project_global_class_resolves_when_name_matches_unit_stem :: proc(t: ^testing.T)
 	}
 
 	project := analyze_units_project_test(t, sources[:])
-	consumer := project_unit_by_uri(&project, sources[1].uri)
+	consumer := analyze.project_unit_by_uri(&project, sources[1].uri)
 
 	testing.expect(t, consumer != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, consumer, "zcl_parent", .Type, .Type_Ref, sources[0].uri))
@@ -4028,16 +4162,16 @@ project_global_class_resolves_when_name_matches_unit_stem :: proc(t: ^testing.T)
 
 @(test)
 project_message_class_resolves_from_dependency_provided_name :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri    = "file:///workspace/zmain.abap",
 		source = "REPORT zmain MESSAGE-ID zmsg.",
 	}
-	dependencies := [?]Source_Input {
+	dependencies := [?]analyze.Source_Input {
 		{uri = "abapls-cache:/message-class/zmsg.abap", source = ""},
 	}
 
 	project := analyze_project_dependencies_test(t, target, dependencies[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 	resolved := false
 	if root != nil {
 		for ref in root.references {
@@ -4054,7 +4188,7 @@ project_message_class_resolves_from_dependency_provided_name :: proc(t: ^testing
 
 @(test)
 project_program_local_class_without_prefix_stays_unit_local :: proc(t: ^testing.T) {
-	sources := [?]Source_Input {
+	sources := [?]analyze.Source_Input {
 		{
 			uri = "file:///workspace/zprogram_top.abap",
 			source = "CLASS zcl_helper DEFINITION. ENDCLASS.",
@@ -4066,7 +4200,7 @@ project_program_local_class_without_prefix_stays_unit_local :: proc(t: ^testing.
 	}
 
 	project := analyze_units_project_test(t, sources[:])
-	consumer := project_unit_by_uri(&project, sources[1].uri)
+	consumer := analyze.project_unit_by_uri(&project, sources[1].uri)
 
 	testing.expect(t, consumer != nil)
 	testing.expect(t, !reference_resolves_to_uri(&project, consumer, "zcl_helper", .Type, .Type_Ref, sources[0].uri))
@@ -4075,7 +4209,7 @@ project_program_local_class_without_prefix_stays_unit_local :: proc(t: ^testing.
 
 @(test)
 analyze_target_reports_unresolved_include :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "INCLUDE zmissing.",
 	}
@@ -4089,7 +4223,7 @@ analyze_target_reports_unresolved_include :: proc(t: ^testing.T) {
 
 @(test)
 analyze_target_allows_missing_if_found_include :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "INCLUDE zmissing IF FOUND.",
 	}
@@ -4103,11 +4237,11 @@ analyze_target_allows_missing_if_found_include :: proc(t: ^testing.T) {
 
 @(test)
 analyze_target_reports_include_cycle :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "INCLUDE za.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/za.abap", source = "INCLUDE zb."},
 		{uri = "file:///workspace/zb.abap", source = "INCLUDE za."},
 	}
@@ -4120,16 +4254,16 @@ analyze_target_reports_include_cycle :: proc(t: ^testing.T) {
 
 @(test)
 analyze_target_resolves_symbols_from_included_units :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "INCLUDE zinc. lv_inc = 1.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/zinc.abap", source = "DATA lv_inc TYPE i."},
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 
 	testing.expect(t, root != nil)
 	testing.expect_value(t, include_target_uri(&project, root, "zinc"), candidates[0].uri)
@@ -4138,18 +4272,18 @@ analyze_target_resolves_symbols_from_included_units :: proc(t: ^testing.T) {
 
 @(test)
 analyze_target_closes_nested_explicit_includes :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "INCLUDE za. gv_leaf = 1.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/za.abap", source = "INCLUDE zb."},
 		{uri = "file:///workspace/zb.abap", source = "DATA gv_leaf TYPE i."},
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	root := project_unit_by_uri(&project, target.uri)
-	za := project_unit_by_uri(&project, candidates[0].uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	za := analyze.project_unit_by_uri(&project, candidates[0].uri)
 
 	testing.expect_value(t, len(project.units), 3)
 	testing.expect(t, root != nil)
@@ -4161,17 +4295,17 @@ analyze_target_closes_nested_explicit_includes :: proc(t: ^testing.T) {
 
 @(test)
 analyze_target_included_units_share_compilation_context :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE: ztop, zf01.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/ztop.abap", source = "DATA gv_shared TYPE i."},
 		{uri = "file:///workspace/zf01.abap", source = "FORM run. gv_shared = 1. ENDFORM."},
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	form := project_unit_by_uri(&project, candidates[1].uri)
+	form := analyze.project_unit_by_uri(&project, candidates[1].uri)
 
 	testing.expect(t, form != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, form, "gv_shared", .Value, .Identifier, candidates[0].uri))
@@ -4179,11 +4313,11 @@ analyze_target_included_units_share_compilation_context :: proc(t: ^testing.T) {
 
 @(test)
 analyze_target_reports_type_declared_in_later_include :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE: zdata, ztypes.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/zdata.abap", source = "DATA ls_object_src TYPE ts_obj_ids."},
 		{uri = "file:///workspace/ztypes.abap", source = `
 TYPES: BEGIN OF ts_obj_ids,
@@ -4193,7 +4327,7 @@ TYPES: BEGIN OF ts_obj_ids,
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	data := project_unit_by_uri(&project, candidates[0].uri)
+	data := analyze.project_unit_by_uri(&project, candidates[0].uri)
 
 	testing.expect(t, data != nil)
 	testing.expect(t, has_diagnostic(data, .Unresolved_Reference))
@@ -4201,11 +4335,11 @@ TYPES: BEGIN OF ts_obj_ids,
 
 @(test)
 analyze_target_accepts_type_declared_in_prior_include :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE ztypes. DATA ls_object_src TYPE ts_obj_ids.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/ztypes.abap", source = `
 TYPES: BEGIN OF ts_obj_ids,
          owner TYPE c LENGTH 12,
@@ -4214,7 +4348,7 @@ TYPES: BEGIN OF ts_obj_ids,
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 
 	testing.expect(t, root != nil)
 	testing.expect(t, !has_diagnostic(root, .Unresolved_Reference))
@@ -4222,7 +4356,7 @@ TYPES: BEGIN OF ts_obj_ids,
 
 @(test)
 analyze_target_links_class_definition_and_implementation_across_ordered_includes :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = `
 REPORT zmain.
@@ -4232,7 +4366,7 @@ START-OF-SELECTION.
   CALL METHOD gr_demo->get_data.
 `,
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/ztop.abap", source = `
 CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
@@ -4249,12 +4383,12 @@ ENDCLASS.
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	top := project_unit_by_uri(&project, candidates[0].uri)
-	cls := project_unit_by_uri(&project, candidates[1].uri)
-	class_symbol: ^Symbol_Data
-	member: ^Class_Member_Data
+	top := analyze.project_unit_by_uri(&project, candidates[0].uri)
+	cls := analyze.project_unit_by_uri(&project, candidates[1].uri)
+	class_symbol: ^analyze.Symbol_Data
+	member: ^analyze.Class_Member_Data
 	if top != nil {
-		class_symbol = find_symbol(top, "lcl_demo", .Class)
+		class_symbol = analyze.find_symbol(top, "lcl_demo", .Class)
 		if class_symbol != nil {
 			member = class_member_named(top, class_symbol.id, "get_data", .Method)
 		}
@@ -4271,11 +4405,11 @@ ENDCLASS.
 
 @(test)
 analyze_target_imports_structure_types_across_includes :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE: ztop, zf01.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/ztop.abap", source = `
 TYPES: BEGIN OF ty_row,
          comp TYPE string,
@@ -4291,7 +4425,7 @@ ENDFORM.
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	form := project_unit_by_uri(&project, candidates[1].uri)
+	form := analyze.project_unit_by_uri(&project, candidates[1].uri)
 
 	testing.expect(t, form != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, form, "gs_row", .Value, .Identifier, candidates[0].uri))
@@ -4300,7 +4434,7 @@ ENDFORM.
 
 @(test)
 analyze_target_propagates_cached_structure_through_class_type_table_component :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = `
 INTERFACE lif_tabl.
@@ -4323,7 +4457,7 @@ CLASS lcl IMPLEMENTATION.
 ENDCLASS.
 `,
 	}
-	dependencies := [?]Source_Input {
+	dependencies := [?]analyze.Source_Input {
 		{
 			uri = "abapls-cache:/ddic-structure/dd03p.abap",
 			source = `
@@ -4335,7 +4469,7 @@ TYPES: BEGIN OF dd03p,
 	}
 
 	project := analyze_project_dependencies_test(t, target, dependencies[:])
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 
 	testing.expect(t, root != nil)
 	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
@@ -4343,11 +4477,11 @@ TYPES: BEGIN OF dd03p,
 
 @(test)
 analyze_target_reclassifies_open_sql_predicate_globals_from_prior_include :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE: ztop, zf01.",
 	}
-	candidates := [?]Source_Input {
+	candidates := [?]analyze.Source_Input {
 		{uri = "file:///workspace/ztop.abap", source = `
 DATA p_lgnum TYPE string.
 DATA p_lgtyp TYPE string.
@@ -4368,7 +4502,7 @@ ENDFORM.
 	}
 
 	project := analyze_project_test(t, 0, target, candidates[:])
-	form := project_unit_by_uri(&project, candidates[1].uri)
+	form := analyze.project_unit_by_uri(&project, candidates[1].uri)
 
 	testing.expect(t, form != nil)
 	names := [?]string{"p_lgnum", "p_lgtyp", "p_lgpla"}
@@ -4380,7 +4514,7 @@ ENDFORM.
 
 @(test)
 validates_project_object_type_method_implementation_and_inherited_visibility :: proc(t: ^testing.T) {
-	target := Source_Input {
+	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = `
 CLASS lcl_parent DEFINITION.
@@ -4412,7 +4546,7 @@ START-OF-SELECTION.
 	}
 
 	project := analyze_project_test(t, 0, target, nil)
-	root := project_unit_by_uri(&project, target.uri)
+	root := analyze.project_unit_by_uri(&project, target.uri)
 
 	testing.expect(t, root != nil)
 	testing.expect(t, has_diagnostic(root, .Invalid_Object_Type_Reference))

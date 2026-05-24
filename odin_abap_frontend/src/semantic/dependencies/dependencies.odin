@@ -1,14 +1,15 @@
-package abap_frontend_semantic
+package abap_frontend_semantic_dependencies
 
-import "../adt"
-import dep_store "../dependency_store"
-import ddic_xml "../ddic_xml"
-import frontend_runtime "../runtime"
+import analyze "../analyze"
+
+import "../../adt"
+import dep_store "../../dependency_store"
+import ddic_xml "../../ddic_xml"
+import frontend_runtime "../../runtime"
 
 import base_runtime "base:runtime"
 import "core:fmt"
 import "core:mem"
-import "core:mem/virtual"
 import net_url "core:net"
 import "core:os"
 import filepath "core:path/filepath"
@@ -17,22 +18,45 @@ import "core:time"
 
 trace_eprintf :: fmt.eprintf
 
-Remote_Dependency_Candidate :: struct {
-	name: string,
-	kind: dep_store.Candidate_Kind,
+@(private)
+dep_store_candidate_kind :: proc(kind: analyze.Remote_Dependency_Kind) -> dep_store.Candidate_Kind {
+	switch kind {
+	case .Include:
+		return .Include
+	case .Message_Class:
+		return .Message_Class
+	case .Report:
+		return .Report
+	case .Function:
+		return .Function
+	case .Static:
+		return .Static
+	case .Type:
+		return .Type
+	case .Symbol:
+		return .Symbol
+	}
+	return .Symbol
+}
+
+@(private)
+remote_candidate_kind_text :: proc(kind: analyze.Remote_Dependency_Kind) -> string {
+	return dep_store.candidate_kind_text(dep_store_candidate_kind(kind))
 }
 
 analyze_with_manifest_dependency_drain :: proc(
 	manifest: ^Workspace_Manifest,
-	target: Source_Input,
-	candidates: [dynamic]Project_Candidate_Input,
-	dependencies: [dynamic]Source_Input,
-	options: Analyze_Options,
+	target: analyze.Source_Input,
+	candidates: [dynamic]analyze.Project_Candidate_Input,
+	dependencies: [dynamic]analyze.Source_Input,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
-) -> Project_Analysis {
+) -> analyze.Project_Analysis {
 	candidate_inputs := candidates
 	dependency_inputs := dependencies
-	project := analyze_target_with_candidate_inputs(
+	state := analyze.project_state_make({}, allocator)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
 		target,
 		candidate_inputs[:],
 		dependency_inputs[:],
@@ -51,7 +75,7 @@ analyze_with_manifest_dependency_drain :: proc(
 	seen_local_candidates := make(map[string]bool, 64, allocator)
 	seen_adt_candidates := make(map[string]bool, 64, allocator)
 	for {
-		remote_candidates := collect_project_remote_dependency_candidates(&project, allocator)
+		remote_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, allocator)
 		added := false
 		if has_store {
 			store_candidates := unseen_remote_candidates(
@@ -118,7 +142,8 @@ analyze_with_manifest_dependency_drain :: proc(
 		if !added {
 			break
 		}
-		project = analyze_target_with_candidate_inputs(
+		project = analyze.project_state_analyze_target_with_candidate_inputs(
+			&state,
 			target,
 			candidate_inputs[:],
 			dependency_inputs[:],
@@ -130,13 +155,13 @@ analyze_with_manifest_dependency_drain :: proc(
 }
 
 analyze_standalone_with_dependency_drain :: proc(
-	target: Source_Input,
-	candidates: [dynamic]Project_Candidate_Input,
-	options: Analyze_Options,
+	target: analyze.Source_Input,
+	candidates: [dynamic]analyze.Project_Candidate_Input,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
-) -> Project_Analysis {
+) -> analyze.Project_Analysis {
 	candidate_inputs := candidates
-	dependency_inputs := make([dynamic]Source_Input, 0, 4, allocator)
+	dependency_inputs := make([dynamic]analyze.Source_Input, 0, 4, allocator)
 	store, err := dep_store.dependency_store_from_override_path(
 		options.dependency_store_path,
 		allocator,
@@ -154,7 +179,7 @@ analyze_standalone_with_dependency_drain :: proc(
 		}
 	}
 	if err != .None && !options.enable_standalone_adt {
-		return analyze_target_with_candidate_inputs(
+		return analyze.analyze_target_with_candidate_inputs(
 			target,
 			candidate_inputs[:],
 			dependency_inputs[:],
@@ -208,31 +233,19 @@ analyze_standalone_with_dependency_drain :: proc(
 	seen_artifacts := make(map[i64]bool, 16, allocator)
 	seen_store_candidates := make(map[string]bool, 64, allocator)
 	seen_adt_candidates := make(map[string]bool, 64, allocator)
-	project_arena: virtual.Arena
-	unit_arenas: []virtual.Arena
-	unit_allocators: []mem.Allocator
-	project_allocator := scratch_analysis_init(
-		&project_arena,
-		&unit_arenas,
-		&unit_allocators,
-		1 + len(dependency_inputs) + len(candidate_inputs),
-		allocator,
-	)
-	project := analyze_target_with_candidate_inputs_allocators(
+	state := analyze.project_state_make({}, allocator)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
 		target,
 		candidate_inputs[:],
 		dependency_inputs[:],
 		options,
-		unit_allocators,
-		project_allocator,
+		allocator,
 	)
 	iteration := 0
 	for {
 		iteration += 1
-		remote_candidates := collect_project_remote_dependency_candidates(
-			&project,
-			project_allocator,
-		)
+		remote_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, allocator)
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
 				"adt_fetch\tdrain\titeration\t%d\tcandidates\t%d\n",
@@ -282,71 +295,25 @@ analyze_standalone_with_dependency_drain :: proc(
 		if !added {
 			break
 		}
-		scratch_analysis_destroy(&project_arena, unit_arenas, unit_allocators, allocator)
-		project_allocator = scratch_analysis_init(
-			&project_arena,
-			&unit_arenas,
-			&unit_allocators,
-			1 + len(dependency_inputs) + len(candidate_inputs),
-			allocator,
-		)
-		project = analyze_target_with_candidate_inputs_allocators(
+		project = analyze.project_state_analyze_target_with_candidate_inputs(
+			&state,
 			target,
 			candidate_inputs[:],
 			dependency_inputs[:],
 			options,
-			unit_allocators,
-			project_allocator,
+			allocator,
 		)
 	}
 	if has_standalone_adt {
 		adt.client_destroy(&standalone_client, allocator)
 		adt.connection_config_destroy(&standalone_config, allocator)
 	}
-	scratch_analysis_destroy(&project_arena, unit_arenas, unit_allocators, allocator)
-	return analyze_target_with_candidate_inputs(
-		target,
-		candidate_inputs[:],
-		dependency_inputs[:],
-		options,
-		allocator,
-	)
-}
-
-scratch_analysis_init :: proc(
-	project_arena: ^virtual.Arena,
-	unit_arenas: ^[]virtual.Arena,
-	unit_allocators: ^[]mem.Allocator,
-	unit_count: int,
-	allocator: mem.Allocator,
-) -> mem.Allocator {
-	assert(virtual.arena_init_growing(project_arena) == .None)
-	unit_arenas^ = make([]virtual.Arena, unit_count, allocator)
-	unit_allocators^ = make([]mem.Allocator, unit_count, allocator)
-	for i in 0 ..< unit_count {
-		assert(virtual.arena_init_growing(&unit_arenas^[i]) == .None)
-		unit_allocators^[i] = virtual.arena_allocator(&unit_arenas^[i])
-	}
-	return virtual.arena_allocator(project_arena)
-}
-
-scratch_analysis_destroy :: proc(
-	project_arena: ^virtual.Arena,
-	unit_arenas: []virtual.Arena,
-	unit_allocators: []mem.Allocator,
-	allocator: mem.Allocator,
-) {
-	for i in 0 ..< len(unit_arenas) {
-		virtual.arena_destroy(&unit_arenas[i])
-	}
-	delete(unit_allocators, allocator)
-	delete(unit_arenas, allocator)
-	virtual.arena_destroy(project_arena)
+	return project
 }
 
 manifest_dependency_store :: proc(
 	manifest: ^Workspace_Manifest,
-	options: Analyze_Options,
+	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> (
 	dep_store.Dependency_Store,
@@ -379,155 +346,12 @@ manifest_local_export_roots :: proc(
 	return roots
 }
 
-collect_project_remote_dependency_candidates :: proc(
-	project: ^Project_Analysis,
-	allocator: mem.Allocator,
-) -> [dynamic]Remote_Dependency_Candidate {
-	out := make([dynamic]Remote_Dependency_Candidate, 0, 8, allocator)
-	index := make(map[string]int, 64, allocator)
-	defer delete(index)
-	for &unit in project.units {
-		for &edge in unit.include_edges {
-			if !edge.has_target {
-				insert_remote_candidate(&out, &index, edge.name, .Include, allocator)
-			}
-		}
-		for &ref in unit.references {
-			if ref.has_resolution && ref.resolution.kind != .External {
-				continue
-			}
-			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
-				insert_remote_candidate(&out, &index, candidate.name, candidate.kind, allocator)
-			}
-		}
-		for &symbol in unit.symbols {
-			if symbol.decl_range.start == symbol.decl_range.end &&
-			   symbol.has_declared_type &&
-			   symbol.declared_type.namespace == .Type {
-				insert_remote_candidate(
-					&out,
-					&index,
-					symbol.declared_type.base_name,
-					.Type,
-					allocator,
-				)
-			}
-		}
-		if unit.has_message_default_class {
-			insert_remote_candidate(
-				&out,
-				&index,
-				unit.message_default_class.name,
-				.Message_Class,
-				allocator,
-			)
-		}
-		for &message in unit.message_uses {
-			if message.class_name != "" {
-				insert_remote_candidate(
-					&out,
-					&index,
-					message.class_name,
-					.Message_Class,
-					allocator,
-				)
-			}
-		}
-		for &sql_source in unit.sql_sources {
-			if sql_source.resolution == .External {
-				insert_remote_candidate(&out, &index, sql_source.name, .Type, allocator)
-			}
-		}
-		for &call_site in unit.call_sites {
-			#partial switch call_site.target.kind {
-			case .Function:
-				insert_remote_candidate(
-					&out,
-					&index,
-					call_site.target.function_name,
-					.Function,
-					allocator,
-				)
-			case .Report:
-				insert_remote_candidate(
-					&out,
-					&index,
-					call_site.target.report_name,
-					.Report,
-					allocator,
-				)
-			}
-		}
-	}
-	return out
-}
-
-remote_dependency_candidate_for_reference :: proc(
-	ref: ^Reference_Data,
-) -> (
-	Remote_Dependency_Candidate,
-	bool,
-) {
-	kind := dep_store.Candidate_Kind.Type
-	switch ref.kind {
-	case .Include, .Structured_Decl_End:
-		return {}, false
-	case .Static_Target:
-		if !ref.has_resolution || ref.resolution.kind != .External {
-			return {}, false
-		}
-		kind = .Static
-	case .Type_Ref:
-		if ref.namespace != .Type {
-			return {}, false
-		}
-		kind = .Type
-	case .Message_Class:
-		kind = .Message_Class
-	case .Routine_Call:
-		return {}, false
-	case .Identifier:
-		return {}, false
-	}
-	return Remote_Dependency_Candidate{name = ref.name, kind = kind}, true
-}
-
-insert_remote_candidate :: proc(
-	out: ^[dynamic]Remote_Dependency_Candidate,
-	index: ^map[string]int,
-	name: string,
-	kind: dep_store.Candidate_Kind,
-	allocator: mem.Allocator,
-) {
-	normalized_name := canonical_name(name, allocator)
-	if normalized_name == "" {
-		return
-	}
-	if existing_index, ok := index^[normalized_name]; ok {
-		if remote_candidate_kind_priority(kind) >
-		   remote_candidate_kind_priority(out^[existing_index].kind) {
-			out^[existing_index].kind = kind
-		}
-		return
-	}
-	index^[normalized_name] = len(out^)
-	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = kind})
-}
-
-remote_candidate_kind_priority :: proc(kind: dep_store.Candidate_Kind) -> int {
-	if kind == .Message_Class {return 5}
-	if kind == .Include || kind == .Function {return 4}
-	if kind == .Static {return 3}
-	if kind == .Type {return 2}
-	return 1
-}
-
 unseen_remote_candidates :: proc(
-	remote_candidates: []Remote_Dependency_Candidate,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	seen: ^map[string]bool,
 	allocator: mem.Allocator,
-) -> [dynamic]Remote_Dependency_Candidate {
-	out := make([dynamic]Remote_Dependency_Candidate, 0, len(remote_candidates), allocator)
+) -> [dynamic]analyze.Remote_Dependency_Candidate {
+	out := make([dynamic]analyze.Remote_Dependency_Candidate, 0, len(remote_candidates), allocator)
 	for candidate in remote_candidates {
 		key := remote_candidate_key(candidate, allocator)
 		if key in seen^ {
@@ -541,20 +365,20 @@ unseen_remote_candidates :: proc(
 }
 
 remote_candidate_key :: proc(
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	allocator: mem.Allocator,
 ) -> string {
 	out := strings.builder_make(allocator)
-	strings.write_string(&out, dep_store.candidate_kind_text(candidate.kind))
+	strings.write_string(&out, remote_candidate_kind_text(candidate.kind))
 	strings.write_byte(&out, '\t')
 	strings.write_string(&out, candidate.name)
 	return strings.to_string(out)
 }
 
 add_dependency_store_matches :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	remote_candidates: []Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	seen_artifacts: ^map[i64]bool,
@@ -578,9 +402,9 @@ add_dependency_store_matches :: proc(
 }
 
 add_dependency_store_any_profile_matches :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	remote_candidates: []Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	seen_artifacts: ^map[i64]bool,
 	pool: ^frontend_runtime.Pool,
@@ -611,14 +435,14 @@ Dependency_Store_Task_Result :: struct {
 Dependency_Store_Task_Payload :: struct {
 	store:       dep_store.Dependency_Store,
 	profile:     ^dep_store.Dependency_Profile,
-	candidate:   Remote_Dependency_Candidate,
+	candidate:   analyze.Remote_Dependency_Candidate,
 	any_profile: bool,
 }
 
 add_dependency_store_matches_impl :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	remote_candidates: []Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	any_profile: bool,
@@ -705,7 +529,7 @@ dependency_store_find_task :: proc(
 			dep_store.reader_find_artifact_for_candidate_any_profile(
 				&reader,
 				payload.candidate.name,
-				payload.candidate.kind,
+				dep_store_candidate_kind(payload.candidate.kind),
 				allocator,
 			)
 	} else if payload.profile != nil {
@@ -713,7 +537,7 @@ dependency_store_find_task :: proc(
 			&reader,
 			payload.profile,
 			payload.candidate.name,
-			payload.candidate.kind,
+			dep_store_candidate_kind(payload.candidate.kind),
 			allocator,
 		)
 	}
@@ -721,9 +545,9 @@ dependency_store_find_task :: proc(
 }
 
 add_dependency_store_task_result :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	candidate: Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	candidate: analyze.Remote_Dependency_Candidate,
 	result: ^Dependency_Store_Task_Result,
 	seen_artifacts: ^map[i64]bool,
 	uri_keys: ^map[string]bool,
@@ -756,7 +580,7 @@ add_dependency_store_task_result :: proc(
 		trace_eprintf(
 			"adt_fetch\t%s\tadd\t%s\t%s\t%s\t%s\n",
 			trace_source,
-			dep_store.candidate_kind_text(candidate.kind),
+			remote_candidate_kind_text(candidate.kind),
 			candidate.name,
 			result.record.object_kind,
 			result.record.object_name,
@@ -793,10 +617,10 @@ dependency_record_destroy :: proc(
 
 source_input_from_dependency_record :: proc(
 	record: ^dep_store.Stored_Artifact_Record,
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	uri: string,
 	allocator: mem.Allocator,
-) -> Source_Input {
+) -> analyze.Source_Input {
 	source: string
 	if dependency_source_is_xml(record.object_kind, record.file_extension, record.source_text) {
 		source =
@@ -804,7 +628,7 @@ source_input_from_dependency_record :: proc(
 	} else {
 		source = strings.clone(record.source_text, allocator)
 	}
-	return Source_Input{uri = uri, source = source, mode = .Dependency_Interface}
+	return analyze.Source_Input{uri = uri, source = source, mode = .Dependency_Interface}
 }
 
 dependency_record_uri :: proc(
@@ -821,9 +645,9 @@ dependency_record_uri :: proc(
 }
 
 add_local_export_matches :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	remote_candidates: []Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	roots: []string,
@@ -888,7 +712,7 @@ add_local_export_matches :: proc(
 			append_dependency_input(
 				candidates,
 				dependencies,
-				Source_Input{uri = path, source = input_source, mode = .Dependency_Interface},
+				analyze.Source_Input{uri = path, source = input_source, mode = .Dependency_Interface},
 				candidate,
 				candidate.name,
 				allocator,
@@ -902,7 +726,7 @@ add_local_export_matches :: proc(
 store_local_export_dependency :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	path: string,
 	roots: []string,
 	source: string,
@@ -940,7 +764,7 @@ store_local_export_dependency :: proc(
 }
 
 local_export_object_kind_type :: proc(
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	file_extension: string,
 	source: string,
 	allocator: mem.Allocator,
@@ -1014,9 +838,9 @@ local_export_package_name :: proc(path: string, roots: []string, allocator: mem.
 }
 
 add_adt_matches :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	remote_candidates: []Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	manifest: ^Workspace_Manifest,
@@ -1068,14 +892,14 @@ Adt_Fetch_Task_Result :: struct {
 }
 
 Adt_Fetch_Task_Payload :: struct {
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	config:    ^adt.Connection_Config,
 }
 
 add_adt_matches_with_client :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	remote_candidates: []Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	client: ^adt.Client,
@@ -1151,7 +975,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 	when adt.DEPENDENCY_FETCH_TRACE {
 		trace_eprintf(
 			"adt_fetch\tadt\tsearch\t%s\t%s\n",
-			dep_store.candidate_kind_text(payload.candidate.kind),
+			remote_candidate_kind_text(payload.candidate.kind),
 			payload.candidate.name,
 		)
 	}
@@ -1160,7 +984,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
 				"adt_fetch\tadt\tsearch_err\t%s\t%s\t%v\n",
-				dep_store.candidate_kind_text(payload.candidate.kind),
+				remote_candidate_kind_text(payload.candidate.kind),
 				payload.candidate.name,
 				err,
 			)
@@ -1168,14 +992,14 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		adt.object_refs_destroy(&objects, allocator)
 		objects = adt.direct_dependency_object_refs(
 			payload.candidate.name,
-			dep_store.candidate_kind_text(payload.candidate.kind),
+			remote_candidate_kind_text(payload.candidate.kind),
 			allocator,
 		)
 	} else {
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
 				"adt_fetch\tadt\tsearch_ok\t%s\t%s\t%d\n",
-				dep_store.candidate_kind_text(payload.candidate.kind),
+				remote_candidate_kind_text(payload.candidate.kind),
 				payload.candidate.name,
 				len(objects),
 			)
@@ -1186,14 +1010,14 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 	selected := adt.select_dependency_objects(
 		payload.candidate.name,
 		objects[:],
-		dep_store.candidate_kind_text(payload.candidate.kind),
+		remote_candidate_kind_text(payload.candidate.kind),
 		allocator,
 	)
 	if len(selected) == 0 {
 		adt.object_refs_destroy(&selected, allocator)
 		selected = adt.direct_dependency_object_refs(
 			payload.candidate.name,
-			dep_store.candidate_kind_text(payload.candidate.kind),
+			remote_candidate_kind_text(payload.candidate.kind),
 			allocator,
 		)
 	}
@@ -1201,7 +1025,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 	when adt.DEPENDENCY_FETCH_TRACE {
 		trace_eprintf(
 			"adt_fetch\tadt\tselected\t%s\t%s\t%d\n",
-			dep_store.candidate_kind_text(payload.candidate.kind),
+			remote_candidate_kind_text(payload.candidate.kind),
 			payload.candidate.name,
 			len(selected),
 		)
@@ -1211,7 +1035,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
 				"adt_fetch\tadt\tfetch\t%s\t%s\t%s\t%s\n",
-				dep_store.candidate_kind_text(payload.candidate.kind),
+				remote_candidate_kind_text(payload.candidate.kind),
 				payload.candidate.name,
 				object_ref.object_type,
 				object_ref.name,
@@ -1222,7 +1046,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 			when adt.DEPENDENCY_FETCH_TRACE {
 				trace_eprintf(
 					"adt_fetch\tadt\tfetch_err\t%s\t%s\t%s\t%s\t%v\n",
-					dep_store.candidate_kind_text(payload.candidate.kind),
+					remote_candidate_kind_text(payload.candidate.kind),
 					payload.candidate.name,
 					object_ref.object_type,
 					object_ref.name,
@@ -1234,7 +1058,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		when adt.DEPENDENCY_FETCH_TRACE {
 			trace_eprintf(
 				"adt_fetch\tadt\tfetch_ok\t%s\t%s\t%s\t%s\t%s\t%d\n",
-				dep_store.candidate_kind_text(payload.candidate.kind),
+				remote_candidate_kind_text(payload.candidate.kind),
 				payload.candidate.name,
 				object_ref.object_type,
 				object_ref.name,
@@ -1255,9 +1079,9 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 }
 
 add_adt_fetch_task_result :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	candidate: Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	candidate: analyze.Remote_Dependency_Candidate,
 	result: ^Adt_Fetch_Task_Result,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
@@ -1291,7 +1115,7 @@ add_adt_fetch_task_result :: proc(
 			trace_eprintf(
 				"adt_fetch\tadt\tinput\t%s\t%s\t%s\t%s\n",
 				status,
-				dep_store.candidate_kind_text(candidate.kind),
+				remote_candidate_kind_text(candidate.kind),
 				entry.object_ref.object_type,
 				entry.object_ref.name,
 			)
@@ -1300,7 +1124,7 @@ add_adt_fetch_task_result :: proc(
 			added = true
 		}
 		for &shared in entry.fetched.shared_dependencies {
-			shared_candidate := Remote_Dependency_Candidate {
+			shared_candidate := analyze.Remote_Dependency_Candidate {
 				name = shared.object_ref.name,
 				kind = .Include,
 			}
@@ -1459,9 +1283,9 @@ standalone_dependency_profile :: proc() -> dep_store.Dependency_Profile {
 }
 
 add_adt_fetched_dependency_input :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	candidate: Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	candidate: analyze.Remote_Dependency_Candidate,
 	object_ref: ^adt.Object_Ref,
 	object_kind: string,
 	source: string,
@@ -1485,7 +1309,7 @@ add_adt_fetched_dependency_input :: proc(
 	append_dependency_input(
 		candidates,
 		dependencies,
-		Source_Input{uri = uri, source = input_source, mode = .Dependency_Interface},
+		analyze.Source_Input{uri = uri, source = input_source, mode = .Dependency_Interface},
 		candidate,
 		object_ref.name,
 		allocator,
@@ -1540,17 +1364,17 @@ manifest_project_dotenv_path :: proc(
 }
 
 append_dependency_input :: proc(
-	candidates: ^[dynamic]Project_Candidate_Input,
-	dependencies: ^[dynamic]Source_Input,
-	input: Source_Input,
-	candidate: Remote_Dependency_Candidate,
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	input: analyze.Source_Input,
+	candidate: analyze.Remote_Dependency_Candidate,
 	object_name: string,
 	allocator: mem.Allocator,
 ) {
 	if candidate.kind == .Include {
 		append(
 			candidates,
-			Project_Candidate_Input {
+			analyze.Project_Candidate_Input {
 				input = input,
 				object_name = strings.clone(
 					object_name if object_name != "" else candidate.name,
@@ -1565,8 +1389,8 @@ append_dependency_input :: proc(
 
 project_input_uri_keys :: proc(
 	target_uri: string,
-	dependencies: []Source_Input,
-	candidates: []Project_Candidate_Input,
+	dependencies: []analyze.Source_Input,
+	candidates: []analyze.Project_Candidate_Input,
 	extra: int,
 	allocator: mem.Allocator,
 ) -> map[string]bool {
@@ -1630,7 +1454,7 @@ collect_local_export_candidate_paths :: proc(
 }
 
 local_export_candidate_file_names :: proc(
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	allocator: mem.Allocator,
 ) -> [dynamic]string {
 	names := make([dynamic]string, 0, 2, allocator)
@@ -1662,7 +1486,7 @@ local_export_file_name :: proc(encoded, extension: string, allocator: mem.Alloca
 }
 
 local_export_abap_source_matches :: proc(
-	candidate: Remote_Dependency_Candidate,
+	candidate: analyze.Remote_Dependency_Candidate,
 	source: string,
 ) -> bool {
 	if candidate.kind != .Static {
@@ -1734,4 +1558,44 @@ dependency_file_extension_is_abap :: proc(file_extension: string) -> bool {
 		ext = ext[1:]
 	}
 	return strings.equal_fold(ext, "abap")
+}
+
+@(private)
+canonical_name :: #force_inline proc(name: string, allocator: mem.Allocator) -> string {
+	return strings.to_lower(name, allocator)
+}
+
+@(private)
+string_list_contains :: proc(values: []string, name: string) -> bool {
+	return string_list_index(values, name) >= 0
+}
+
+@(private)
+string_list_index :: proc(values: []string, name: string) -> int {
+	for value, i in values {
+		if value == name {
+			return i
+		}
+	}
+	return -1
+}
+
+@(private)
+normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string {
+	end := len(uri)
+	for end > 0 && (uri[end - 1] == '/' || uri[end - 1] == '\\') {
+		end -= 1
+	}
+	out := make([]byte, end, allocator)
+	for i in 0 ..< end {
+		ch := uri[i]
+		if ch == '\\' {
+			ch = '/'
+		}
+		if 'A' <= ch && ch <= 'Z' {
+			ch += 'a' - 'A'
+		}
+		out[i] = ch
+	}
+	return string(out)
 }

@@ -1,6 +1,7 @@
-package abap_frontend_semantic
+#+private
+package abap_frontend_semantic_analyze
 
-import "../tokenizer"
+import "../../tokenizer"
 
 import "core:mem"
 

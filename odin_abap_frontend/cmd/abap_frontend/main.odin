@@ -3,7 +3,8 @@ package main
 import "../../src/ast"
 import "../../src/parser"
 import frontend_runtime "../../src/runtime"
-import semantic "../../src/semantic"
+import semantic_analyze "../../src/semantic/analyze"
+import semantic_deps "../../src/semantic/dependencies"
 import stack_trace "../../src/stack_trace"
 import "../../src/tokenizer"
 
@@ -168,10 +169,10 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		}
 	}
 
-	result := semantic.analyze_path(
+	result := semantic_deps.analyze_path(
 		target_path,
 		include_paths[:],
-		semantic.Analyze_Options{pool = &pool, enable_standalone_adt = true},
+		semantic_analyze.Analyze_Options{pool = &pool, enable_standalone_adt = true},
 		allocator,
 	)
 	if !result.ok {
@@ -184,7 +185,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	frontend_runtime.pool_destroy(&pool)
 }
 
-print_analyze_counts :: proc(project: ^semantic.Project_Analysis) {
+print_analyze_counts :: proc(project: ^semantic_analyze.Project_Analysis) {
 	symbols, scopes, references, structures, diagnostics, include_edges, unresolved_refs: int
 	for unit in project.units {
 		symbols += len(unit.symbols)
@@ -297,7 +298,7 @@ print_caret_line :: proc(start_column, width: int) {
 	fmt.println()
 }
 
-print_analyze_diagnostics :: proc(project: ^semantic.Project_Analysis, allocator: mem.Allocator) {
+print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis, allocator: mem.Allocator) {
 	for unit in project.units {
 		line_starts := build_line_starts(unit.source, allocator)
 		uri := display_uri(unit.uri, allocator)
