@@ -228,6 +228,48 @@ lv_ref->get_url( ).
 }
 
 @(test)
+function_remote_candidate_requires_function_module_symbol :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = `
+REPORT zmain.
+FORM z_remote_fm.
+ENDFORM.
+CALL FUNCTION 'Z_REMOTE_FM'.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
+	found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "z_remote_fm" && candidate.kind == .Function {
+			found = true
+		}
+	}
+
+	testing.expect(t, pending)
+	testing.expect(t, found)
+}
+
+@(test)
 resolves_concat_lines_of_builtin :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -688,6 +730,52 @@ TYPES: BEGIN OF enlfdir,
 	testing.expect(t, root != nil)
 	testing.expect(t, root != nil && !has_diagnostic(root, .Unverified_Open_Sql_Source))
 	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
+project_state_unresolved_candidates_skip_resolved_function_dependency :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'.",
+		},
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/function-module/Z_REMOTE_FM.abap",
+			source = "FUNCTION z_remote_fm.\nENDFUNCTION.",
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
+	state_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, false, context.allocator)
+	found_state_candidate := false
+	for candidate in state_candidates {
+		if candidate.name == "z_remote_fm" && candidate.kind == .Function {
+			found_state_candidate = true
+		}
+	}
+
+	testing.expect(t, analyze.project_unit_by_uri(&project, dependencies[0].uri) != nil)
+	testing.expect(t, !pending)
+	testing.expect(t, !found_state_candidate)
 }
 
 @(test)

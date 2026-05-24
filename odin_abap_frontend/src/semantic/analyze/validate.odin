@@ -819,6 +819,36 @@ resolve_type_name_in_project_lookup :: proc(
 	return global_visible_root_symbol_lookup(lookup, .Type, name)
 }
 
+resolve_function_module_in_project_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	unit_id := project.units[unit_index].unit_id
+	if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
+		return handle, true
+	}
+	for visible in lookup.visible[unit_index] {
+		if handle, ok := root_symbol_in_unit_lookup(lookup, visible, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
+			return handle, true
+		}
+	}
+	if handle, ok := global_visible_root_symbol_lookup(lookup, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
+		return handle, true
+	}
+	return {}, false
+}
+
+symbol_handle_is_kind :: proc(project: ^Project_Analysis, handle: Symbol_Handle, kind: Symbol_Kind) -> bool {
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return false
+	}
+	s := symbol(&project.units[unit_index], handle.symbol)
+	return s != nil && s.kind == kind
+}
+
 resolve_type_ref_handle_project_lookup :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,

@@ -344,7 +344,7 @@ call_site_needs_remote_dependency :: proc(
 ) -> bool {
 	#partial switch call_site.target.kind {
 	case .Function:
-		_, ok := resolve_root_name_in_project_lookup(project, lookup, unit_index, .Routine, call_site.target.function_name)
+		_, ok := resolve_function_module_in_project_lookup(project, lookup, unit_index, call_site.target.function_name)
 		return !ok
 	case .Report:
 		_, ok := resolve_root_name_in_project_lookup(project, lookup, unit_index, .Value, call_site.target.report_name)
