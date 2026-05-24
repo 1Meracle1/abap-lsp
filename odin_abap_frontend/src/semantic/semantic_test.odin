@@ -11,6 +11,7 @@ import deps "./dependencies"
 import sem_query "./query"
 import workspace "../workspace"
 
+import "core:mem/virtual"
 import "core:os"
 import filepath "core:path/filepath"
 import "core:strings"
@@ -1832,6 +1833,55 @@ TYPES: BEGIN OF ty_wrap,
 	testing.expect(t, field_names_match(st, wrap_fields[:]))
 	testing.expect_value(t, st.fields[0].type_ref.base_name, "i")
 	testing.expect_value(t, st.fields[1].type_ref.base_name, "string")
+}
+
+@(test)
+project_index_include_graph_rebuild_uses_index_allocator :: proc(t: ^testing.T) {
+	arena: virtual.Arena
+	_ = virtual.arena_init_growing(&arena)
+	defer virtual.arena_destroy(&arena)
+
+	index := analyze.project_index_make(virtual.arena_allocator(&arena))
+	units := make([dynamic]analyze.Unit_Analysis, 0, 2, context.allocator)
+	defer delete(units)
+
+	append(&units, analyze.Unit_Analysis{unit_id = analyze.Unit_Id(0)})
+	first := [?]analyze.Unit_Id{analyze.Unit_Id(0)}
+	analyze.project_index_update_include_graph(&index, units[:], first[:])
+
+	append(&units, analyze.Unit_Analysis{unit_id = analyze.Unit_Id(1)})
+	second := [?]analyze.Unit_Id{analyze.Unit_Id(1)}
+	analyze.project_index_update_include_graph(&index, units[:], second[:])
+
+	testing.expect_value(t, len(index.visible), 2)
+	testing.expect_value(t, len(index.predecessors), 2)
+}
+
+@(test)
+multi_statement_structured_include_expands_known_members :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///multi_statement_structured_include.abap",
+		source = `
+INTERFACE lif_repo.
+  TYPES: BEGIN OF ty_repo_xml,
+           url TYPE string,
+         END OF ty_repo_xml.
+  TYPES: BEGIN OF ty_repo,
+           key TYPE string.
+      INCLUDE TYPE ty_repo_xml.
+  TYPES: END OF ty_repo.
+ENDINTERFACE.
+
+DATA ls_repo TYPE lif_repo=>ty_repo.
+ls_repo-url = 'https://example.invalid'.
+`,
+	}
+
+	project := analyze_project_test(t, 0, target, nil)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
 }
 
 @(test)

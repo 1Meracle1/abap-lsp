@@ -66,7 +66,15 @@ Collector :: struct {
 	sql_targets:                            [dynamic]Sql_Target_Data,
 	provided_names:                         [dynamic]string,
 	loop_source_stack:                      [dynamic]Field_Access,
+	structured_groups:                      [dynamic]Structured_Group_Frame,
 	unit:                                   Unit_Analysis,
+}
+
+Structured_Group_Frame :: struct {
+	name:   string,
+	scope:  Scope_Id,
+	symbol: Symbol_Id,
+	fields: [dynamic]Structure_Field_Data,
 }
 
 Decl_Info :: struct {
@@ -162,6 +170,7 @@ collect_unit :: proc(
 		sql_targets                            = unit.sql_targets,
 		provided_names                         = unit.provided_names,
 		loop_source_stack                      = make([dynamic]Field_Access, 0, 4, allocator),
+		structured_groups                      = make([dynamic]Structured_Group_Frame, 0, 2, allocator),
 		unit                                   = unit,
 	}
 	seed_collector_scope_symbols(&c)
@@ -867,6 +876,9 @@ class_data_clause_info :: proc(n: ast.Class_Data_Clause, range: tokenizer.Range)
 collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, kind: Symbol_Kind) {
 	for i in 0 ..< len(infos) {
 		info := infos[i]
+		if collect_open_structured_group_info(c, scope, info) {
+			continue
+		}
 		if info.depth != 0 {
 			continue
 		}
@@ -875,16 +887,20 @@ collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, k
 			if .Common_Part_Delimiter in info.flags {
 				continue
 			}
-			structure_id := structure_from_group(c, scope, infos, i)
-			_ = declare_collected_symbol(c, scope, info.name, kind, info.range, structure_id)
-			add_reference(
-				c,
-				scope,
-				info.name,
-				.Type if kind == .Type_Def else .Value,
-				.Structured_Decl_End,
-				info.range,
-			)
+			if structured_group_has_matching_end(infos, i) {
+				structure_id := structure_from_group(c, scope, infos, i)
+				_ = declare_collected_symbol(c, scope, info.name, kind, info.range, structure_id)
+				add_reference(
+					c,
+					scope,
+					info.name,
+					.Type if kind == .Type_Def else .Value,
+					.Structured_Decl_End,
+					info.range,
+				)
+			} else {
+				start_open_structured_group(c, scope, info, kind)
+			}
 		case .Normal:
 			declare_info_symbol(c, scope, info, kind)
 		case .Include_Type, .Include_Structure:
@@ -896,6 +912,86 @@ collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, k
 		}
 		collect_decl_info_facts(c, scope, info)
 	}
+}
+
+structured_group_has_matching_end :: proc(infos: []Decl_Info, start: int) -> bool {
+	depth := infos[start].depth
+	for i := start + 1; i < len(infos); i += 1 {
+		if infos[i].kind == .End_Group && infos[i].depth == depth {
+			return true
+		}
+	}
+	return false
+}
+
+start_open_structured_group :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	info: Decl_Info,
+	kind: Symbol_Kind,
+) {
+	if info.name == "" {
+		return
+	}
+	symbol_id := declare_collected_symbol(c, scope, info.name, kind, info.range, INVALID_STRUCTURE_ID)
+	add_reference(
+		c,
+		scope,
+		info.name,
+		.Type if kind == .Type_Def else .Value,
+		.Structured_Decl_End,
+		info.range,
+	)
+	append(
+		&c.structured_groups,
+		Structured_Group_Frame {
+			name = canonical_name(info.name, c.allocator),
+			scope = scope,
+			symbol = symbol_id,
+			fields = make([dynamic]Structure_Field_Data, 0, 4, c.allocator),
+		},
+	)
+}
+
+collect_open_structured_group_info :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	info: Decl_Info,
+) -> bool {
+	index := active_structured_group_index(c, scope)
+	if index < 0 {
+		return false
+	}
+	switch info.kind {
+	case .Normal:
+		if field, ok := structure_field_from_info(c, scope, info); ok {
+			append(&c.structured_groups[index].fields, field)
+		}
+	case .Include_Type, .Include_Structure:
+		extend_structure_from_include(c, scope, &c.structured_groups[index].fields, info)
+	case .End_Group:
+		finish_open_structured_group(c, index)
+	case .Begin_Group:
+		return false
+	}
+	return true
+}
+
+active_structured_group_index :: proc(c: ^Collector, scope: Scope_Id) -> int {
+	if len(c.structured_groups) == 0 {
+		return -1
+	}
+	index := len(c.structured_groups) - 1
+	return index if c.structured_groups[index].scope == scope else -1
+}
+
+finish_open_structured_group :: proc(c: ^Collector, index: int) {
+	frame := c.structured_groups[index]
+	structure_id := push_collected_structure(c, frame.name, frame.fields)
+	if frame.symbol != INVALID_SYMBOL_ID {
+		c.symbols[symbol_id_index(frame.symbol)].structure = structure_id
+	}
+	resize(&c.structured_groups, index)
 }
 
 declare_info_symbol :: proc(

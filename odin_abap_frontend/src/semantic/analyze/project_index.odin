@@ -314,10 +314,10 @@ project_index_destroy_include_graph :: proc(index: ^Project_Index) {
 		delete(item)
 	}
 	if len(index.visible) > 0 {
-		delete(index.visible)
+		delete(index.visible, index.allocator)
 	}
 	if len(index.predecessors) > 0 {
-		delete(index.predecessors)
+		delete(index.predecessors, index.allocator)
 	}
 	index.visible = nil
 	index.predecessors = nil
