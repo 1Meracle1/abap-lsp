@@ -3361,6 +3361,74 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 }
 
 @(test)
+manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("local-export-cache")
+	export_root := external_export_workspace_path("local-export-cache")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	packages := make([dynamic]dep_store.Package_Version, 0, 1, context.allocator)
+	append(&packages, dep_store.Package_Version{package_name = "ZPKG", version = "addon"})
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+		packages                = packages[:],
+	}
+	export_file := manifest_test_file(
+		t,
+		export_root,
+		"ZPKG/source-code-library/classes/ZCL_LOCAL_CACHE.abap",
+		"CLASS zcl_local_cache DEFINITION. ENDCLASS. CLASS zcl_local_cache IMPLEMENTATION. ENDCLASS.",
+	)
+	manifest := Workspace_Manifest {
+		root_path            = root,
+		dependency_source    = "local-first",
+		dependency_store     = profile,
+		has_dependency_store = true,
+		local_export_roots   = make([dynamic]string, 0, 1, context.allocator),
+	}
+	append(&manifest.local_export_roots, export_root)
+	target := Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_local_cache.",
+	}
+	candidates := make([dynamic]Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]Source_Input, context.allocator)
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	project := analyze_with_manifest_dependency_drain(
+		&manifest,
+		target,
+		candidates,
+		dependencies,
+		Analyze_Options{pool = &pool, dependency_store_path = store_path},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect(t, project_unit_by_uri(&project, export_file) != nil)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+
+	record, ok, lookup_err := dep_store.find_artifact_for_candidate(
+		&store,
+		&profile,
+		"zcl_local_cache",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.package_name, "zpkg")
+	testing.expect_value(t, record.package_version, "addon")
+	testing.expect_value(t, record.object_kind, "global-class")
+}
+
+@(test)
 manifest_project_dotenv_gates_adt_dependency_fetch :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("adt-dotenv-gate")
 	manifest := Workspace_Manifest{root_path = root}

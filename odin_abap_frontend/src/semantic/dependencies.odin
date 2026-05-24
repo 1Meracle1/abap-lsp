@@ -82,6 +82,8 @@ analyze_with_manifest_dependency_drain :: proc(
 				&candidate_inputs,
 				&dependency_inputs,
 				local_candidates[:],
+				&store if has_store else nil,
+				&manifest.dependency_store if has_store else nil,
 				roots[:],
 				target.uri,
 				allocator,
@@ -822,6 +824,8 @@ add_local_export_matches :: proc(
 	candidates: ^[dynamic]Project_Candidate_Input,
 	dependencies: ^[dynamic]Source_Input,
 	remote_candidates: []Remote_Dependency_Candidate,
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
 	roots: []string,
 	target_uri: string,
 	allocator: mem.Allocator,
@@ -871,6 +875,16 @@ add_local_export_matches :: proc(
 				delete(input_source, allocator)
 				continue
 			}
+			store_local_export_dependency(
+				store,
+				profile,
+				candidate,
+				path,
+				roots,
+				source,
+				strings.trim_prefix(filepath.ext(path), "."),
+				allocator,
+			)
 			append_dependency_input(
 				candidates,
 				dependencies,
@@ -883,6 +897,120 @@ add_local_export_matches :: proc(
 		}
 	}
 	return added
+}
+
+store_local_export_dependency :: proc(
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	candidate: Remote_Dependency_Candidate,
+	path: string,
+	roots: []string,
+	source: string,
+	file_extension: string,
+	allocator: mem.Allocator,
+) {
+	if store == nil || profile == nil {
+		return
+	}
+	object_kind, object_type := local_export_object_kind_type(candidate, file_extension, source, allocator)
+	package_name := local_export_package_name(path, roots, allocator)
+	if package_name == "" {
+		package_name = candidate.name
+	}
+	source_text := source
+	extension := file_extension if file_extension != "" else "abap"
+	if dependency_source_is_xml(object_kind, file_extension, source) &&
+	   dependency_object_kind_is_ddic(object_kind) {
+		source_text = ddic_xml.dependency_source(candidate.name, object_kind, source, allocator)
+		extension = "abap"
+	}
+	fetched_at, _ := time.time_to_rfc3339(time.now(), allocator=allocator)
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = package_name,
+		object_kind    = object_kind,
+		object_name    = candidate.name,
+		object_uri     = path,
+		object_type    = object_type,
+		description    = "Local export dependency",
+		file_extension = extension,
+		source_text    = source_text,
+		fetched_at     = fetched_at,
+	}
+	_, _ = dep_store.put_artifact(store, profile, &artifact, allocator)
+}
+
+local_export_object_kind_type :: proc(
+	candidate: Remote_Dependency_Candidate,
+	file_extension: string,
+	source: string,
+	allocator: mem.Allocator,
+) -> (string, string) {
+	if dependency_source_is_xml("", file_extension, source) {
+		if candidate.kind == .Message_Class {
+			return "message-class", "MSAG/N"
+		}
+		object_type := local_export_xml_attr(source, "adtcore:type", allocator)
+		if object_type == "" {
+			object_type = local_export_xml_attr(source, "type", allocator)
+		}
+		if object_type == "" {
+			object_type = "TABL/DS"
+		}
+		return adt.infer_ddic_manifest_kind(&adt.Object_Ref{object_type = object_type}), object_type
+	}
+	switch candidate.kind {
+	case .Include:
+		return "include", "PROG/I"
+	case .Report:
+		return "report", "PROG/P"
+	case .Function:
+		return "function-module", "FUGR/FF"
+	case .Message_Class, .Static, .Type, .Symbol:
+		return "global-class", "CLAS/OC"
+	}
+	return "global-class", "CLAS/OC"
+}
+
+local_export_xml_attr :: proc(source, attr: string, allocator: mem.Allocator) -> string {
+	needle := strings.concatenate({attr, "=\""}, allocator)
+	defer delete(needle, allocator)
+	start := strings.index(source, needle)
+	if start < 0 {
+		return ""
+	}
+	value_start := start + len(needle)
+	end := strings.index_byte(source[value_start:], '"')
+	if end < 0 {
+		return ""
+	}
+	return strings.clone(source[value_start:value_start + end], allocator)
+}
+
+local_export_package_name :: proc(path: string, roots: []string, allocator: mem.Allocator) -> string {
+	for root in roots {
+		rel, err := filepath.rel(root, path, allocator)
+		if err != .None {
+			continue
+		}
+		normalized, normalize_err := filepath.replace_separators(rel, '/', allocator)
+		delete(rel, allocator)
+		if normalize_err != nil {
+			continue
+		}
+		defer delete(normalized, allocator)
+		component, component_ok := strings.split_by_byte_iterator(&normalized, '/')
+		if !component_ok {
+			continue
+		}
+		if component == "" || component == "." || component == ".." {
+			continue
+		}
+		if decoded, ok := net_url.percent_decode(component, allocator); ok {
+			return decoded
+		}
+		return strings.clone(component, allocator)
+	}
+	return ""
 }
 
 add_adt_matches :: proc(
