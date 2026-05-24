@@ -441,7 +441,7 @@ seed_inherited_method_scope_parameters :: proc(
 			if method_scope == INVALID_SCOPE_ID {
 				continue
 			}
-			member := method_signature_member_for_scope(
+			member, member_unit_index := method_signature_member_for_scope(
 				units,
 				unit_index,
 				method_symbol.scope,
@@ -458,13 +458,23 @@ seed_inherited_method_scope_parameters :: proc(
 				if method_scope_has_value_symbol(unit, method_scope, param.name) {
 					continue
 				}
+				structure_id := seeded_method_parameter_structure(
+					units,
+					unit_index,
+					member_unit_index,
+					member,
+					param,
+					roots,
+					visible,
+					allocator,
+				)
 				_ = declare_symbol(
 					unit,
 					method_scope,
 					param.name,
 					.Parameter,
 					method_symbol.decl_range,
-					INVALID_STRUCTURE_ID,
+					structure_id,
 					param.declared_type,
 					.Has_Declared_Type in param.flags,
 					param.type_clause_display,
@@ -486,9 +496,9 @@ method_signature_member_for_scope :: proc(
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	predecessors: [dynamic]Unit_Id,
-) -> ^Class_Member_Data {
+) -> (^Class_Member_Data, int) {
 	if interface_name, member_name, qualified := qualified_method_parts(method_name); qualified {
-		if member, ok := exposed_interface_member_for_scope(
+		if member, member_unit_index := exposed_interface_member_for_scope(
 			units,
 			unit_index,
 			scope_id,
@@ -496,8 +506,8 @@ method_signature_member_for_scope :: proc(
 			member_name,
 			roots,
 			visible,
-		); ok {
-			return member
+		); member != nil {
+			return member, member_unit_index
 		}
 	}
 	member_handle, ok := resolve_visible_class_definition_member(
@@ -512,36 +522,36 @@ method_signature_member_for_scope :: proc(
 		predecessors,
 	)
 	if !ok {
-		return nil
+		return nil, -1
 	}
 	member_unit_index := unit_id_index(member_handle.unit)
 	if member_unit_index < 0 || member_unit_index >= len(units) {
-		return nil
+		return nil, -1
 	}
 	member_unit := &units[member_unit_index]
 	member_symbol := symbol(member_unit, member_handle.symbol)
 	if member_symbol == nil {
-		return nil
+		return nil, -1
 	}
 	class_symbol, class_ok := enclosing_class_owner_unit(member_unit, member_symbol.scope)
 	if !class_ok {
-		return nil
+		return nil, -1
 	}
 	member := unit_class_member(member_unit, class_symbol, method_name)
 	if member == nil || len(member.parameters) > 0 || !(.Is_Redefinition in member.flags) {
-		return member
+		return member, member_unit_index
 	}
-	if inherited, inherited_ok := inherited_project_class_member(
+	if inherited, inherited_unit_index := inherited_project_class_member(
 		units,
 		Symbol_Handle{unit = member_handle.unit, symbol = class_symbol},
 		method_name,
 		roots,
 		class_entries,
 		visible,
-	); inherited_ok {
-		return inherited
+	); inherited != nil {
+		return inherited, inherited_unit_index
 	}
-	return member
+	return member, member_unit_index
 }
 
 exposed_interface_member_for_scope :: proc(
@@ -551,10 +561,10 @@ exposed_interface_member_for_scope :: proc(
 	interface_name, member_name: string,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (^Class_Member_Data, bool) {
+) -> (^Class_Member_Data, int) {
 	class_symbol, class_ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
 	if !class_ok {
-		return nil, false
+		return nil, -1
 	}
 	handle, handle_ok := exposed_interface_handle(
 		units,
@@ -565,14 +575,14 @@ exposed_interface_member_for_scope :: proc(
 		0,
 	)
 	if !handle_ok {
-		return nil, false
+		return nil, -1
 	}
 	interface_unit_index := unit_id_index(handle.unit)
 	if interface_unit_index < 0 || interface_unit_index >= len(units) {
-		return nil, false
+		return nil, -1
 	}
 	member := unit_class_member(&units[interface_unit_index], handle.symbol, member_name)
-	return member, member != nil
+	return member, interface_unit_index if member != nil else -1
 }
 
 exposed_interface_handle :: proc(
@@ -641,12 +651,12 @@ inherited_project_class_member :: proc(
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
-) -> (^Class_Member_Data, bool) {
+) -> (^Class_Member_Data, int) {
 	current := class_handle
 	for _ in 0 ..< len(units) + 8 {
 		next, ok := direct_superclass_handle(units, current, roots, visible)
 		if !ok {
-			return nil, false
+			return nil, -1
 		}
 		if _, member_ok := class_member_symbol_by_handle(
 			units,
@@ -659,13 +669,64 @@ inherited_project_class_member :: proc(
 			next_index := unit_id_index(next.unit)
 			if next_index >= 0 && next_index < len(units) {
 				if member := unit_class_member(&units[next_index], next.symbol, name); member != nil {
-					return member, true
+					return member, next_index
 				}
 			}
 		}
 		current = next
 	}
-	return nil, false
+	return nil, -1
+}
+
+seeded_method_parameter_structure :: proc(
+	units: []Unit_Analysis,
+	target_unit_index, member_unit_index: int,
+	member: ^Class_Member_Data,
+	param: Class_Member_Parameter_Data,
+	roots: ^Project_Root_Lookup,
+	visible: [] [dynamic]Unit_Id,
+	allocator: mem.Allocator,
+) -> Structure_Id {
+	if !(.Has_Declared_Type in param.flags) {
+		return INVALID_STRUCTURE_ID
+	}
+	source_scope := class_scope_for_owner(&units[member_unit_index], member.class_symbol)
+	if source_scope == INVALID_SCOPE_ID {
+		return INVALID_STRUCTURE_ID
+	}
+	source_structure, ok := import_structure_for_type_ref(
+		units,
+		member_unit_index,
+		source_scope,
+		param.declared_type,
+		roots,
+		visible[member_unit_index],
+		allocator,
+	)
+	if !ok {
+		return INVALID_STRUCTURE_ID
+	}
+	return import_structure_to_unit(
+		&units[target_unit_index],
+		&units[member_unit_index],
+		source_structure,
+		allocator,
+	)
+}
+
+class_scope_for_owner :: proc(unit: ^Unit_Analysis, owner: Symbol_Id) -> Scope_Id {
+	found := INVALID_SCOPE_ID
+	for s in unit.scopes {
+		if (s.kind == .Class || s.kind == .Interface) && s.owner == owner {
+			if found == INVALID_SCOPE_ID {
+				found = s.id
+			}
+			if len(s.declarations) > 0 {
+				return s.id
+			}
+		}
+	}
+	return found
 }
 
 method_scope_has_value_symbol :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, name: string) -> bool {

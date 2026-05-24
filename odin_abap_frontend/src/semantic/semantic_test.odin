@@ -2420,6 +2420,63 @@ ENDCLASS.
 }
 
 @(test)
+resolves_qualified_interface_method_table_line_fields :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/page.abap",
+		source = `
+CLASS lcl_page DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES:
+      zif_hotkeys.
+    METHODS zif_hotkeys~get_hotkey_actions REDEFINITION.
+ENDCLASS.
+
+CLASS lcl_page IMPLEMENTATION.
+  METHOD zif_hotkeys~get_hotkey_actions.
+    DATA ls_hotkey_action LIKE LINE OF rt_hotkey_actions.
+    ls_hotkey_action-description = 'Stage'.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/interfaces/zif_hotkeys.abap",
+			source = `
+INTERFACE zif_hotkeys DEFERRED.
+
+CLASS cx_root DEFINITION.
+ENDCLASS.
+
+INTERFACE zif_hotkeys.
+  TYPES:
+    BEGIN OF ty_hotkey_action,
+      ui_component TYPE string,
+      action TYPE string,
+      hotkey TYPE string,
+      description TYPE string,
+    END OF ty_hotkey_action.
+  TYPES ty_hotkey_actions TYPE STANDARD TABLE OF ty_hotkey_action
+    WITH DEFAULT KEY
+    WITH UNIQUE SORTED KEY action COMPONENTS ui_component action.
+  METHODS get_hotkey_actions
+    RETURNING VALUE(rt_hotkey_actions) TYPE ty_hotkey_actions
+    RAISING cx_root.
+ENDINTERFACE.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unresolved_Reference))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 resolves_class_type_ref_to :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

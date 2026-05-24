@@ -849,6 +849,7 @@ resolve_project_cross_unit_for_units :: proc(
 		index.visible,
 		index.predecessors,
 		scratch_allocator,
+		allocator,
 	) {
 		for unit_id in affected {
 			unit_index := unit_id_index(unit_id)
@@ -883,6 +884,7 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [] [dynamic]Unit_Id,
 	predecessors: [] [dynamic]Unit_Id,
+	scratch_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) -> bool {
 	changed := false
@@ -892,7 +894,7 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 			continue
 		}
 		unit := &units[unit_index]
-		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), allocator)
+		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), scratch_allocator)
 		for _ in 0 ..< len(unit.symbols) {
 			append(&method_scope_by_owner, INVALID_SCOPE_ID)
 		}
@@ -920,7 +922,7 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 			if method_scope == INVALID_SCOPE_ID {
 				continue
 			}
-			member := method_signature_member_for_scope(
+			member, member_unit_index := method_signature_member_for_scope(
 				units,
 				unit_index,
 				method_symbol.scope,
@@ -937,13 +939,23 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 				if method_scope_has_value_symbol(unit, method_scope, param.name) {
 					continue
 				}
+				structure_id := seeded_method_parameter_structure(
+					units,
+					unit_index,
+					member_unit_index,
+					member,
+					param,
+					roots,
+					visible,
+					allocator,
+				)
 				_ = declare_symbol(
 					unit,
 					method_scope,
 					param.name,
 					.Parameter,
 					method_symbol.decl_range,
-					INVALID_STRUCTURE_ID,
+					structure_id,
 					param.declared_type,
 					.Has_Declared_Type in param.flags,
 					param.type_clause_display,
