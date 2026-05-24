@@ -2,6 +2,7 @@ package abap_frontend_semantic
 
 import "../adt"
 import dep_store "../dependency_store"
+import ddic_xml "../ddic_xml"
 import "../parser"
 import "../tokenizer"
 import frontend_runtime "../runtime"
@@ -10,6 +11,12 @@ import "core:os"
 import filepath "core:path/filepath"
 import "core:strings"
 import "core:testing"
+
+contains_fold :: proc(source, needle: string) -> bool {
+	lower := strings.to_lower(source, context.allocator)
+	defer delete(lower, context.allocator)
+	return strings.contains(lower, needle)
+}
 
 @(test)
 symbol_kind_namespace_occupancy :: proc(t: ^testing.T) {
@@ -3444,7 +3451,13 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
 		&object_ref,
 		"ddic-table-type",
-		"<ttyp/>",
+		`<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="TR_OBJECTS" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="DTEL/DE" adtcore:name="C">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicRowType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
 		"xml",
 		&uri_keys,
 		context.allocator,
@@ -3453,7 +3466,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, dependencies[0].mode, Source_Mode.Dependency_Interface)
-	testing.expect(t, strings.contains(dependencies[0].source, "TYPE STANDARD TABLE OF string WITH DEFAULT KEY"))
+	testing.expect(t, contains_fold(dependencies[0].source, "type standard table of c with default key"))
 
 	pool: frontend_runtime.Pool
 	testing.expect_value(
@@ -3484,25 +3497,23 @@ dependency_xml_detection_prefers_metadata :: proc(t: ^testing.T) {
 
 @(test)
 ddic_xml_structure_dependency_resolves_fields :: proc(t: ^testing.T) {
-	xml := `
-<table>
-  <DD03P_TABLE>
-    <item>
-      <DD03P-FIELDNAME>ID</DD03P-FIELDNAME>
-      <DD03P-DATATYPE>CHAR</DD03P-DATATYPE>
-    </item>
-    <item>
-      <DD03P-FIELDNAME>COUNT</DD03P-FIELDNAME>
-      <DD03P-DATATYPE>INT4</DD03P-DATATYPE>
-    </item>
-  </DD03P_TABLE>
-</table>
-`
-	source := ddic_xml_dependency_source("ZDDIC_ROW", "ddic-table", xml, context.allocator)
+	xml := `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="zddic_row" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="ID">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">CHAR</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="COUNT">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">INT4</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	source := ddic_xml.dependency_source("ZDDIC_ROW", "ddic-table", xml, context.allocator)
 	defer delete(source, context.allocator)
-	testing.expect(t, strings.contains(source, "TYPES: BEGIN OF zddic_row"))
-	testing.expect(t, strings.contains(source, "id TYPE c"))
-	testing.expect(t, strings.contains(source, "count TYPE i"))
+	testing.expect(t, contains_fold(source, "types: begin of zddic_row"))
+	testing.expect(t, contains_fold(source, "id type c"))
+	testing.expect(t, contains_fold(source, "count type i"))
 
 	target := Source_Input {
 		uri = "mem://ZMAIN.abap",
@@ -3530,24 +3541,32 @@ ls_row-count = 1.
 
 @(test)
 ddic_xml_table_type_dependency_uses_row_type :: proc(t: ^testing.T) {
-	row_xml := `
-<structure>
-  <field name="ID" dataType="CHAR"/>
-  <field name="TEXT" builtInType="STRING"/>
-</structure>
-`
-	table_xml := `
-<tableType>
-  <DD40V-ROWTYPE>ZDDIC_ROW</DD40V-ROWTYPE>
-</tableType>
-`
-	row_source := ddic_xml_dependency_source("ZDDIC_ROW", "ddic-structure", row_xml, context.allocator)
+	row_xml := `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="zddic_row" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="ID">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">CHAR</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="TEXT">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataType">STRING</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	table_xml := `<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="zddic_rows" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="ZDDIC_ROW">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicRowType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	row_source := ddic_xml.dependency_source("ZDDIC_ROW", "ddic-structure", row_xml, context.allocator)
 	defer delete(row_source, context.allocator)
-	table_source := ddic_xml_dependency_source("ZDDIC_ROWS", "ddic-table-type", table_xml, context.allocator)
+	table_source := ddic_xml.dependency_source("ZDDIC_ROWS", "ddic-table-type", table_xml, context.allocator)
 	defer delete(table_source, context.allocator)
-	testing.expect(t, strings.contains(row_source, "id TYPE c"))
-	testing.expect(t, strings.contains(row_source, "text TYPE string"))
-	testing.expect(t, strings.contains(table_source, "TYPE STANDARD TABLE OF zddic_row WITH DEFAULT KEY"))
+	testing.expect(t, contains_fold(row_source, "id type c"))
+	testing.expect(t, contains_fold(row_source, "text type string"))
+	testing.expect(t, contains_fold(table_source, "type standard table of zddic_row with default key"))
 
 	target := Source_Input {
 		uri = "mem://ZMAIN.abap",
@@ -3666,7 +3685,13 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 		},
 	)
 	fetched := adt.Dependency_Fetch_Result {
-		body                = "<ttyp/>",
+		body                = `<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="TR_OBJECTS" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="DTEL/DE" adtcore:name="C">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicRowType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
 		file_extension      = "xml",
 		manifest_kind       = "ddic-table-type",
 		shared_dependencies = shared_dependencies,
@@ -3679,7 +3704,7 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 	testing.expect(t, ok)
 	testing.expect_value(t, record.object_kind, "ddic-table-type")
 	testing.expect_value(t, record.file_extension, "abap")
-	testing.expect(t, strings.contains(record.source_text, "TYPES tr_objects"))
+	testing.expect(t, contains_fold(record.source_text, "types tr_objects"))
 
 	shared, shared_ok, shared_err := dep_store.find_artifact_for_candidate(&store, &profile, "zinc_fetched", .Include, context.allocator)
 	testing.expect_value(t, shared_err, dep_store.Store_Error.None)
@@ -3729,10 +3754,10 @@ adt_fetched_ddic_table_is_cached_as_structure :: proc(t: ^testing.T) {
 	testing.expect(t, ok)
 	testing.expect_value(t, record.object_kind, "ddic-table")
 	testing.expect_value(t, record.file_extension, "abap")
-	testing.expect(t, strings.contains(record.source_text, "TYPES: BEGIN OF t000"))
-	testing.expect(t, strings.contains(record.source_text, "mandt TYPE c"))
-	testing.expect(t, strings.contains(record.source_text, "mtext TYPE c"))
-	testing.expect(t, !strings.contains(record.source_text, "TYPES t000 TYPE string"))
+	testing.expect(t, contains_fold(record.source_text, "types: begin of t000"))
+	testing.expect(t, contains_fold(record.source_text, "mandt type c"))
+	testing.expect(t, contains_fold(record.source_text, "mtext type c"))
+	testing.expect(t, !contains_fold(record.source_text, "types t000 type string"))
 }
 
 @(test)
