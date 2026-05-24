@@ -241,18 +241,17 @@ apply_inferred_project_facts :: proc(
 	return rerun
 }
 
-apply_inferred_project_facts_for_units :: proc(
+apply_inferred_project_facts_for_indices :: proc(
 	project: ^Project_Analysis,
 	inferred: []Inferred_Unit_Facts,
-	unit_ids: []Unit_Id,
+	indices: []int,
 ) -> bool {
 	rerun := false
-	for unit_id in unit_ids {
-		unit_index := unit_id_index(unit_id)
+	for unit_index, i in indices {
 		if unit_index < 0 || unit_index >= len(project.units) {
 			continue
 		}
-		facts := inferred[unit_index]
+		facts := inferred[i]
 		unit := &project.units[unit_index]
 		unit.expression_facts = facts.expression_facts
 		unit.value_flow_edges = facts.value_flow_edges

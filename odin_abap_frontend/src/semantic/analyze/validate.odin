@@ -59,14 +59,16 @@ build_validation_lookup :: proc(
 	for entry in roots {
 		handle := Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
 		root_key := Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name}
-		if !(root_key in lookup.root_by_unit) {
-			lookup.root_by_unit[root_key] = handle
+		_, slot, inserted, _ := map_entry(&lookup.root_by_unit, root_key)
+		if inserted {
+			slot^ = handle
 		}
-		unit := &project.units[unit_id_index(entry.unit)]
-		s := symbol(unit, entry.symbol)
-		global_key := Root_Name_Key{namespace = entry.namespace, name = entry.name}
-		if s != nil && root_symbol_visible_by_default(unit, s^) && !(global_key in lookup.global_roots) {
-			lookup.global_roots[global_key] = handle
+		if entry.visible_by_default {
+			global_key := Root_Name_Key{namespace = entry.namespace, name = entry.name}
+			_, global_slot, global_inserted, _ := map_entry(&lookup.global_roots, global_key)
+			if global_inserted {
+				global_slot^ = handle
+			}
 		}
 	}
 	for unit in project.units {
@@ -213,7 +215,7 @@ type_decl_after_reference :: proc(
 		return s != nil && s.decl_range.start > ref_start
 	}
 	target_unit := &project.units[target_index]
-	if s := symbol(target_unit, target.symbol); s != nil && root_symbol_visible_by_default(target_unit, s^) {
+	if s := symbol(target_unit, target.symbol); s != nil && root_symbol_visible_by_default(target_unit, s) {
 		return false
 	}
 	if unit_list_contains(lookup.predecessors[unit_index][:], target.unit) {

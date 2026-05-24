@@ -1,7 +1,10 @@
 package adt
 
+import "core:mem"
+import "core:net"
 import "core:strings"
 import "core:testing"
+import "core:thread"
 import "core:time"
 
 @(test)
@@ -133,22 +136,107 @@ direct_dependency_refs_use_global_name_shape :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(static_refs), 2)
 }
 
-@(test)
-extracts_active_includes_and_shapes_function_module_source :: proc(t: ^testing.T) {
-	source := "FUNCTION-POOL zfg.\r\nINCLUDE lzfguxx.\n* INCLUDE skipped.\nINCLUDE lzfgtop. \" comment\n"
-	names := extract_active_top_level_include_names(source, context.allocator)
-	defer for name in names {
-		delete(name, context.allocator)
-	}
-	defer delete(names)
-	testing.expect_value(t, len(names), 2)
-	testing.expect_value(t, names[0], "LZFGUXX")
-	testing.expect_value(t, names[1], "LZFGTOP")
+Function_Module_Fetch_Test_Server :: struct {
+	listener:         net.TCP_Socket,
+	session_response: string,
+	module_response:  string,
+	group_response:   string,
+	request_buf:      [2048]u8,
+	request_count:    int,
+	group_requested:  bool,
+}
 
-	combined := build_function_module_dependency_source(source, "FUNCTION zfm.\nENDFUNCTION.", context.allocator)
-	defer delete(combined, context.allocator)
-	testing.expect(t, strings.contains(combined, "Omitted in dependency cache"))
-	testing.expect(t, strings.contains(combined, "FUNCTION zfm."))
+function_module_fetch_test_server_run :: proc(t: ^thread.Thread) {
+	server := cast(^Function_Module_Fetch_Test_Server)t.data
+	for {
+		client, _, err := net.accept_tcp(server.listener)
+		if err != nil {
+			return
+		}
+		n, recv_err := net.recv_tcp(client, server.request_buf[:])
+		response := server.session_response
+		if recv_err == nil {
+			server.request_count += 1
+			request := string(server.request_buf[:n])
+			if ascii_contains_ignore_case(request, "/functions/groups/zfg/source/main") {
+				server.group_requested = true
+				response = server.group_response
+			} else if !ascii_contains_ignore_case(request, "/runtime/systemmessages") {
+				response = server.module_response
+			}
+		}
+		_, _ = net.send_tcp(client, transmute([]u8)response)
+		net.close(client)
+	}
+}
+
+test_http_response :: proc(body, extra_headers: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "HTTP/1.1 200 OK\r\nContent-Length: ")
+	strings.write_int(&out, len(body))
+	strings.write_string(&out, "\r\nConnection: close\r\n")
+	strings.write_string(&out, extra_headers)
+	strings.write_string(&out, "\r\n")
+	strings.write_string(&out, body)
+	return strings.to_string(out)
+}
+
+@(test)
+function_module_dependency_fetch_uses_only_module_source :: proc(t: ^testing.T) {
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	testing.expect(t, listen_err == nil)
+	_ = net.set_option(listener, .Receive_Timeout, 500 * time.Millisecond)
+	ep, ep_err := net.bound_endpoint(listener)
+	testing.expect(t, ep_err == nil)
+
+	module_source := "FUNCTION zfm.\n  DATA lv_body TYPE zbody_type.\nENDFUNCTION."
+	group_source := "FUNCTION-POOL zfg.\nINCLUDE lzfgtop.\n"
+	server := Function_Module_Fetch_Test_Server {
+		listener = listener,
+		session_response = test_http_response("ok", "x-csrf-token: token\r\n", context.allocator),
+		module_response = test_http_response(module_source, "", context.allocator),
+		group_response = test_http_response(group_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.module_response, context.allocator)
+	defer delete(server.group_response, context.allocator)
+	worker := thread.create(function_module_fetch_test_server_run)
+	worker.data = &server
+	thread.start(worker)
+
+	base_url := strings.builder_make(context.allocator)
+	strings.write_string(&base_url, "http://127.0.0.1:")
+	strings.write_int(&base_url, ep.port)
+	strings.write_string(&base_url, "/sap/bc/adt")
+	base := strings.to_string(base_url)
+	defer delete(base, context.allocator)
+	client: Client
+	client_init(&client, Connection_Config{base_url = base, username = "demo", password = "secret"})
+	client.http.timeout = 2 * time.Second
+	defer client_destroy(&client, context.allocator)
+	object_ref := Object_Ref {
+		uri = "/sap/bc/adt/functions/groups/ZFG/fmodules/ZFM",
+		object_type = "FUGR/FF",
+		name = "ZFM",
+		package_name = "ZPKG",
+		description = "Function module",
+	}
+
+	result, err := fetch_dependency_object(&client, &object_ref, context.allocator)
+	net.close(listener)
+	thread.join(worker)
+	thread.destroy(worker)
+	defer dependency_fetch_result_destroy(&result, context.allocator)
+
+	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, result.manifest_kind, "function-module")
+	testing.expect_value(t, result.file_extension, "abap")
+	testing.expect_value(t, result.body, module_source)
+	testing.expect_value(t, len(result.shared_dependencies), 0)
+	testing.expect_value(t, server.request_count, 2)
+	testing.expect(t, !server.group_requested)
+	testing.expect(t, !strings.contains(result.body, "FUNCTION-POOL"))
+	testing.expect(t, !strings.contains(result.body, "lzfgtop"))
 }
 
 @(test)

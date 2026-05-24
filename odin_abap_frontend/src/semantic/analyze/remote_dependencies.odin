@@ -1,6 +1,7 @@
 package abap_frontend_semantic_analyze
 
 import "core:mem"
+import base_runtime "base:runtime"
 
 collect_project_remote_dependency_candidates :: proc(
 	project: ^Project_Analysis,
@@ -87,30 +88,50 @@ collect_project_remote_dependency_candidates :: proc(
 
 collect_project_state_remote_dependency_candidates :: proc(
 	state: ^Project_State,
+	include_dependency_interfaces: bool,
 	allocator: mem.Allocator,
 ) -> [dynamic]Remote_Dependency_Candidate {
 	out := make([dynamic]Remote_Dependency_Candidate, 0, len(state.unresolved_candidates), allocator)
-	index := make(map[string]int, len(state.unresolved_candidates) + 8, allocator)
-	defer delete(index)
-	for key in state.unresolved_candidates {
-		insert_remote_candidate(&out, &index, key.name, key.kind, allocator)
+	for key, units in state.unresolved_candidates {
+		if !include_dependency_interfaces &&
+		   !remote_candidate_has_full_source_waiter(state, units[:]) {
+			continue
+		}
+		append(&out, Remote_Dependency_Candidate{name = key.name, kind = key.kind})
 	}
 	return out
+}
+
+@(private)
+remote_candidate_has_full_source_waiter :: proc(
+	state: ^Project_State,
+	units: []Unit_Id,
+) -> bool {
+	for unit_id in units {
+		unit_index := unit_id_index(unit_id)
+		if unit_index >= 0 &&
+		   unit_index < len(state.units) &&
+		   state.units[unit_index].source_mode != .Dependency_Interface {
+			return true
+		}
+	}
+	return false
 }
 
 @(private)
 record_project_unresolved_candidates :: proc(
 	state: ^Project_State,
 	project: ^Project_Analysis,
-	allocator: mem.Allocator,
 ) {
-	state.unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 64, allocator)
-	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, allocator)
+	project_state_unresolved_candidates_destroy(state)
+	candidate_allocator := base_runtime.heap_allocator()
+	state.unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
+	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, candidate_allocator)
 	defer delete(recorded)
 	for &unit in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
-				record_remote_candidate_unit(state, &recorded, edge.name, .Include, unit.unit_id, allocator)
+				record_remote_candidate_unit(state, &recorded, edge.name, .Include, unit.unit_id)
 			}
 		}
 		for &ref in unit.references {
@@ -118,7 +139,7 @@ record_project_unresolved_candidates :: proc(
 				continue
 			}
 			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
-				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.unit_id, allocator)
+				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.unit_id)
 			}
 		}
 		for &symbol in unit.symbols {
@@ -131,7 +152,6 @@ record_project_unresolved_candidates :: proc(
 					symbol.declared_type.base_name,
 					.Type,
 					unit.unit_id,
-					allocator,
 				)
 			}
 		}
@@ -142,7 +162,6 @@ record_project_unresolved_candidates :: proc(
 				unit.message_default_class.name,
 				.Message_Class,
 				unit.unit_id,
-				allocator,
 			)
 		}
 		for &message in unit.message_uses {
@@ -153,13 +172,12 @@ record_project_unresolved_candidates :: proc(
 					message.class_name,
 					.Message_Class,
 					unit.unit_id,
-					allocator,
 				)
 			}
 		}
 		for &sql_source in unit.sql_sources {
 			if sql_source.resolution == .External {
-				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.unit_id, allocator)
+				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.unit_id)
 			}
 		}
 		for &call_site in unit.call_sites {
@@ -171,7 +189,6 @@ record_project_unresolved_candidates :: proc(
 					call_site.target.function_name,
 					.Function,
 					unit.unit_id,
-					allocator,
 				)
 			case .Report:
 				record_remote_candidate_unit(
@@ -180,10 +197,176 @@ record_project_unresolved_candidates :: proc(
 					call_site.target.report_name,
 					.Report,
 					unit.unit_id,
-					allocator,
 				)
 			}
 		}
+	}
+}
+
+@(private)
+record_project_unresolved_candidates_for_units :: proc(
+	state: ^Project_State,
+	project: ^Project_Analysis,
+	unit_ids: []Unit_Id,
+) {
+	project_index_ensure_unit_count(&state.index, len(project.units))
+	for unit_id in unit_ids {
+		unit_index := unit_id_index(unit_id)
+		if unit_index < 0 || unit_index >= len(project.units) {
+			continue
+		}
+		data := &state.index.unit_entries[unit_index]
+		for key in data.unresolved_candidates {
+			remove_remote_candidate_unit(state, key, unit_id)
+		}
+		clear(&data.unresolved_candidates)
+		recorded := make(map[Remote_Dependency_Key]bool, 8, state.index.allocator)
+		unit := &project.units[unit_index]
+		for &edge in unit.include_edges {
+			if !edge.has_target {
+				record_remote_candidate_unit_incremental(state, data, &recorded, edge.name, .Include, unit.unit_id)
+			}
+		}
+		for &ref in unit.references {
+			if ref.has_resolution && ref.resolution.kind != .External {
+				continue
+			}
+			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
+				record_remote_candidate_unit_incremental(
+					state,
+					data,
+					&recorded,
+					candidate.name,
+					candidate.kind,
+					unit.unit_id,
+				)
+			}
+		}
+		for &symbol in unit.symbols {
+			if symbol.decl_range.start == symbol.decl_range.end &&
+			   symbol.has_declared_type &&
+			   symbol.declared_type.namespace == .Type {
+				record_remote_candidate_unit_incremental(
+					state,
+					data,
+					&recorded,
+					symbol.declared_type.base_name,
+					.Type,
+					unit.unit_id,
+				)
+			}
+		}
+		if unit.has_message_default_class {
+			record_remote_candidate_unit_incremental(
+				state,
+				data,
+				&recorded,
+				unit.message_default_class.name,
+				.Message_Class,
+				unit.unit_id,
+			)
+		}
+		for &message in unit.message_uses {
+			if message.class_name != "" {
+				record_remote_candidate_unit_incremental(
+					state,
+					data,
+					&recorded,
+					message.class_name,
+					.Message_Class,
+					unit.unit_id,
+				)
+			}
+		}
+		for &sql_source in unit.sql_sources {
+			if sql_source.resolution == .External {
+				record_remote_candidate_unit_incremental(state, data, &recorded, sql_source.name, .Type, unit.unit_id)
+			}
+		}
+		for &call_site in unit.call_sites {
+			#partial switch call_site.target.kind {
+			case .Function:
+				record_remote_candidate_unit_incremental(
+					state,
+					data,
+					&recorded,
+					call_site.target.function_name,
+					.Function,
+					unit.unit_id,
+				)
+			case .Report:
+				record_remote_candidate_unit_incremental(
+					state,
+					data,
+					&recorded,
+					call_site.target.report_name,
+					.Report,
+					unit.unit_id,
+				)
+			}
+		}
+		delete(recorded)
+	}
+}
+
+@(private)
+project_state_unresolved_candidates_destroy :: proc(state: ^Project_State) {
+	for _, units in state.unresolved_candidates {
+		delete(units)
+	}
+	delete(state.unresolved_candidates)
+}
+
+@(private)
+remove_remote_candidate_unit :: proc(
+	state: ^Project_State,
+	key: Remote_Dependency_Key,
+	unit_id: Unit_Id,
+) {
+	if units, ok := state.unresolved_candidates[key]; ok {
+		write := 0
+		for waiting in units {
+			if waiting == unit_id {
+				continue
+			}
+			units[write] = waiting
+			write += 1
+		}
+		if write == 0 {
+			delete(units)
+			delete_key(&state.unresolved_candidates, key)
+		} else {
+			resize(&units, write)
+			state.unresolved_candidates[key] = units
+		}
+	}
+}
+
+@(private)
+record_remote_candidate_unit_incremental :: proc(
+	state: ^Project_State,
+	data: ^Project_Index_Unit,
+	recorded: ^map[Remote_Dependency_Key]bool,
+	name: string,
+	kind: Remote_Dependency_Kind,
+	unit_id: Unit_Id,
+) {
+	if name == "" {
+		return
+	}
+	key := Remote_Dependency_Key{name = name, kind = kind}
+	if key in recorded^ {
+		return
+	}
+	recorded^[key] = true
+	append(&data.unresolved_candidates, key)
+	if units, ok := state.unresolved_candidates[key]; ok {
+		append(&units, unit_id)
+		state.unresolved_candidates[key] = units
+	} else {
+		waiting_units := make([dynamic]Unit_Id, 0, 2, state.index.allocator)
+		append(&waiting_units, unit_id)
+		state.unresolved_candidates[key] = waiting_units
 	}
 }
 
@@ -194,13 +377,11 @@ record_remote_candidate_unit :: proc(
 	name: string,
 	kind: Remote_Dependency_Kind,
 	unit_id: Unit_Id,
-	allocator: mem.Allocator,
 ) {
-	normalized_name := canonical_name(name, allocator)
-	if normalized_name == "" {
+	if name == "" {
 		return
 	}
-	key := Remote_Dependency_Key{name = normalized_name, kind = kind}
+	key := Remote_Dependency_Key{name = name, kind = kind}
 	if previous, ok := recorded^[key]; ok && previous == unit_id {
 		return
 	}
@@ -209,7 +390,7 @@ record_remote_candidate_unit :: proc(
 		append(&units, unit_id)
 		state.unresolved_candidates[key] = units
 	} else {
-		waiting_units := make([dynamic]Unit_Id, 0, 2, allocator)
+		waiting_units := make([dynamic]Unit_Id, 0, 2, base_runtime.heap_allocator())
 		append(&waiting_units, unit_id)
 		state.unresolved_candidates[key] = waiting_units
 	}

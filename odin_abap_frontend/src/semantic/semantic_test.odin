@@ -646,6 +646,185 @@ project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing
 }
 
 @(test)
+project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{uri = "file:///workspace/a/zcl_shared.abap", source = "CLASS zcl_shared DEFINITION. ENDCLASS."},
+		{uri = "file:///workspace/b/zcl_shared.abap", source = "CLASS zcl_shared DEFINITION. ENDCLASS."},
+		{uri = "file:///workspace/main.abap", source = "DATA lo_shared TYPE REF TO zcl_shared."},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	consumer := analyze.project_unit_by_uri(&project, targets[2].uri)
+
+	testing.expect(t, consumer != nil)
+	testing.expect(t, consumer != nil && reference_resolves_to_uri(&project, consumer, "zcl_shared", .Type, .Type_Ref, targets[0].uri))
+
+	targets[1].source = "CLASS zcl_shared DEFINITION. PUBLIC SECTION. DATA gv_second TYPE i. ENDCLASS."
+	project = analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	consumer = analyze.project_unit_by_uri(&project, targets[2].uri)
+
+	testing.expect(t, consumer != nil)
+	testing.expect(t, consumer != nil && reference_resolves_to_uri(&project, consumer, "zcl_shared", .Type, .Type_Ref, targets[0].uri))
+}
+
+@(test)
+project_state_retained_global_root_removal_exposes_next_winner :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{uri = "file:///workspace/a/zcl_shared.abap", source = "CLASS zcl_shared DEFINITION. ENDCLASS."},
+		{uri = "file:///workspace/b/zcl_shared.abap", source = "CLASS zcl_shared DEFINITION. ENDCLASS."},
+		{uri = "file:///workspace/main.abap", source = "DATA lo_shared TYPE REF TO zcl_shared."},
+	}
+	_ = analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+
+	targets[0].source = "CLASS zcl_first DEFINITION. ENDCLASS."
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	consumer := analyze.project_unit_by_uri(&project, targets[2].uri)
+
+	testing.expect(t, consumer != nil)
+	testing.expect(t, consumer != nil && reference_resolves_to_uri(&project, consumer, "zcl_shared", .Type, .Type_Ref, targets[1].uri))
+}
+
+@(test)
+project_state_retained_provided_name_removal_keeps_other_owner :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{uri = "file:///workspace/first.abap", source = "REPORT zshared."},
+		{uri = "file:///workspace/second.abap", source = "REPORT zshared."},
+	}
+	_ = analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+
+	targets[0].source = "REPORT zfirst."
+	_ = analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+
+	testing.expect(t, "zshared" in state.index.root_lookup.provided_names)
+}
+
+@(test)
+project_state_public_interface_change_revalidates_reverse_dependents :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "file:///workspace/main.abap",
+		source = `
+DATA lo_dep TYPE REF TO zcl_dep.
+START-OF-SELECTION.
+  CALL METHOD lo_dep->run.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zcl_dep.abap",
+			source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+
+	dependencies[0].source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS stop.
+ENDCLASS.`
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil && has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 	target := analyze.Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
 	dependencies := make([dynamic]analyze.Source_Input, 0, 5, context.allocator)
@@ -3721,6 +3900,89 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+adt_fetched_function_module_input_is_dependency_interface :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+REPORT zmain.
+CALL FUNCTION 'Z_REMOTE_FM'
+  EXPORTING iv_value = 1
+  IMPORTING ev_value = DATA(lv_value)
+  EXCEPTIONS failed = 1.
+`,
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	object_ref := adt.Object_Ref {
+		uri = strings.clone("/sap/bc/adt/functions/groups/ZFG/fmodules/Z_REMOTE_FM", context.allocator),
+		object_type = strings.clone("FUGR/FF", context.allocator),
+		name = strings.clone("Z_REMOTE_FM", context.allocator),
+		package_name = strings.clone("ZPKG", context.allocator),
+		description = strings.clone("Function module", context.allocator),
+	}
+	defer adt.object_ref_destroy(&object_ref, context.allocator)
+	uri_keys := deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+
+	added := deps.add_adt_fetched_dependency_input(
+		&candidates,
+		&dependencies,
+		analyze.Remote_Dependency_Candidate{name = "z_remote_fm", kind = .Function},
+		&object_ref,
+		"function-module",
+		`
+FUNCTION z_remote_fm
+  IMPORTING iv_value TYPE i OPTIONAL
+  EXPORTING ev_value TYPE i
+  EXCEPTIONS failed = 1.
+  DATA lv_body TYPE zbody_type.
+  CALL FUNCTION 'Z_BODY'.
+ENDFUNCTION.
+`,
+		"abap",
+		&uri_keys,
+		context.allocator,
+		context.allocator,
+	)
+	testing.expect(t, added)
+	testing.expect_value(t, len(dependencies), 1)
+	testing.expect_value(t, len(candidates), 0)
+	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
+	testing.expect(t, strings.contains(dependencies[0].uri, "/functions/groups/ZFG/fmodules/Z_REMOTE_FM"))
+	testing.expect(t, !strings.contains(dependencies[0].source, "FUNCTION-POOL"))
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	project := analyze.analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	dep_unit := analyze.project_unit_by_uri(&project, dependencies[0].uri)
+	testing.expect(t, dep_unit != nil)
+	if dep_unit != nil {
+		testing.expect(t, analyze.find_symbol(dep_unit, "z_remote_fm", .Module) != nil)
+		testing.expect(t, has_reference(dep_unit, "i", .Type, .Type_Ref))
+		testing.expect(t, !has_reference(dep_unit, "zbody_type", .Type, .Type_Ref))
+		for call_site in dep_unit.call_sites {
+			testing.expect(t, call_site.target.function_name != "z_body")
+		}
+	}
+	remote_after := analyze.collect_project_remote_dependency_candidates(&project, context.allocator)
+	for remote in remote_after {
+		testing.expect(t, !(remote.name == "z_body" && remote.kind == .Function))
+		testing.expect(t, remote.name != "zbody_type")
+	}
 }
 
 @(test)

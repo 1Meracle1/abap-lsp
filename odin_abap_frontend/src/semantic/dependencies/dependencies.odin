@@ -18,6 +18,8 @@ import "core:time"
 
 trace_eprintf :: fmt.eprintf
 
+ADT_FETCH_CANDIDATE_BATCH_SIZE :: 32
+
 @(private)
 dep_store_candidate_kind :: proc(kind: analyze.Remote_Dependency_Kind) -> dep_store.Candidate_Kind {
 	switch kind {
@@ -82,18 +84,28 @@ analyze_inputs_with_dependency_drain :: proc(
 		return project
 	}
 
-	seen_artifacts := make(map[i64]bool, 16, allocator)
-	seen_store_candidates := make(map[string]bool, 64, allocator)
-	seen_local_candidates := make(map[string]bool, 64, allocator)
-	seen_adt_candidates := make(map[string]bool, 64, allocator)
+	drain_allocator := base_runtime.heap_allocator()
+	seen_artifacts := make(map[i64]bool, 16, drain_allocator)
+	seen_store_candidates := make(map[analyze.Remote_Dependency_Key]bool, 64, drain_allocator)
+	seen_local_candidates := make(map[analyze.Remote_Dependency_Key]bool, 64, drain_allocator)
+	seen_adt_candidates := make(map[analyze.Remote_Dependency_Key]bool, 64, drain_allocator)
+	defer delete(seen_artifacts)
+	defer delete(seen_store_candidates)
+	defer delete(seen_local_candidates)
+	defer delete(seen_adt_candidates)
 	for {
-		remote_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, allocator)
+		remote_candidates := analyze.collect_project_state_remote_dependency_candidates(
+			&state,
+			true,
+			drain_allocator,
+		)
 		added := false
 		if has_store {
 			store_candidates := unseen_remote_candidates(
 				remote_candidates[:],
 				&seen_store_candidates,
-				allocator,
+				0,
+				drain_allocator,
 			)
 			if config.store_any_profile || !has_profile {
 				added = add_dependency_store_any_profile_matches(
@@ -125,7 +137,8 @@ analyze_inputs_with_dependency_drain :: proc(
 			local_candidates := unseen_remote_candidates(
 				remote_candidates[:],
 				&seen_local_candidates,
-				allocator,
+				0,
+				drain_allocator,
 			)
 			added = add_local_export_matches(
 				&candidate_inputs,
@@ -140,11 +153,19 @@ analyze_inputs_with_dependency_drain :: proc(
 			delete(local_candidates)
 		}
 		if !added && config.adt_client != nil {
-			adt_candidates := unseen_remote_candidates(
-				remote_candidates[:],
-				&seen_adt_candidates,
-				allocator,
+			adt_remote_candidates := analyze.collect_project_state_remote_dependency_candidates(
+				&state,
+				false,
+				drain_allocator,
 			)
+			adt_candidates := unseen_remote_candidates(
+				adt_remote_candidates[:],
+				&seen_adt_candidates,
+				ADT_FETCH_CANDIDATE_BATCH_SIZE,
+				drain_allocator,
+			)
+			delete(adt_remote_candidates)
+			attempted_adt := len(adt_candidates) > 0
 			added = add_adt_matches_with_client(
 				&candidate_inputs,
 				&dependency_inputs,
@@ -152,11 +173,16 @@ analyze_inputs_with_dependency_drain :: proc(
 				config.store if has_store && has_profile else nil,
 				config.profile if has_store && has_profile else nil,
 				config.adt_client,
+				options.pool,
 				targets[0].uri if len(targets) > 0 else "",
 				allocator,
 			)
 			delete(adt_candidates)
+			if !added && attempted_adt {
+				added = true
+			}
 		}
+		delete(remote_candidates)
 		if !added {
 			break
 		}
@@ -188,14 +214,24 @@ analyze_inputs_with_state :: proc(
 
 unseen_remote_candidates :: proc(
 	remote_candidates: []analyze.Remote_Dependency_Candidate,
-	seen: ^map[string]bool,
+	seen: ^map[analyze.Remote_Dependency_Key]bool,
+	limit: int,
 	allocator: mem.Allocator,
 ) -> [dynamic]analyze.Remote_Dependency_Candidate {
-	out := make([dynamic]analyze.Remote_Dependency_Candidate, 0, len(remote_candidates), allocator)
+	capacity := len(remote_candidates)
+	if limit > 0 && capacity > limit {
+		capacity = limit
+	}
+	out := make([dynamic]analyze.Remote_Dependency_Candidate, 0, capacity, allocator)
 	for candidate in remote_candidates {
-		key := remote_candidate_key(candidate, allocator)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		if !remote_candidate_fetchable(candidate) {
+			continue
+		}
+		key := analyze.Remote_Dependency_Key{name = candidate.name, kind = candidate.kind}
 		if key in seen^ {
-			delete(key, allocator)
 			continue
 		}
 		seen^[key] = true
@@ -204,15 +240,19 @@ unseen_remote_candidates :: proc(
 	return out
 }
 
-remote_candidate_key :: proc(
-	candidate: analyze.Remote_Dependency_Candidate,
-	allocator: mem.Allocator,
-) -> string {
-	out := strings.builder_make(allocator)
-	strings.write_string(&out, remote_candidate_kind_text(candidate.kind))
-	strings.write_byte(&out, '\t')
-	strings.write_string(&out, candidate.name)
-	return strings.to_string(out)
+remote_candidate_fetchable :: proc(candidate: analyze.Remote_Dependency_Candidate) -> bool {
+	if candidate.kind == .Type && analyze.is_builtin_type_name(candidate.name) {
+		return false
+	}
+	if len(candidate.name) > 2 && candidate.name[0] == '<' && candidate.name[len(candidate.name)-1] == '>' {
+		return false
+	}
+	for ch in candidate.name {
+		if ch <= ' ' {
+			return false
+		}
+	}
+	return true
 }
 
 add_dependency_store_matches :: proc(
@@ -294,7 +334,8 @@ add_dependency_store_matches_impl :: proc(
 ) -> bool {
 	assert(pool != nil)
 	uri_key_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	uri_key_backing := base_runtime.heap_allocator()
+	mem.dynamic_arena_init(&uri_key_arena, uri_key_backing, uri_key_backing, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
 	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
 	uri_keys := project_input_uri_keys(
@@ -495,7 +536,8 @@ add_local_export_matches :: proc(
 	allocator: mem.Allocator,
 ) -> bool {
 	uri_key_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	uri_key_backing := base_runtime.heap_allocator()
+	mem.dynamic_arena_init(&uri_key_arena, uri_key_backing, uri_key_backing, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
 	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
 	uri_keys := project_input_uri_keys(
@@ -694,6 +736,11 @@ Adt_Fetch_Task_Result :: struct {
 	fetched: [dynamic]Adt_Fetched_Object,
 }
 
+Adt_Fetch_Task_Payload :: struct {
+	client:    ^adt.Client,
+	candidate: analyze.Remote_Dependency_Candidate,
+}
+
 add_adt_matches_with_client :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
@@ -701,11 +748,14 @@ add_adt_matches_with_client :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	client: ^adt.Client,
+	pool: ^frontend_runtime.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
+	assert(pool != nil)
 	uri_key_arena: mem.Dynamic_Arena
-	mem.dynamic_arena_init(&uri_key_arena, allocator, allocator, alignment = 64)
+	uri_key_backing := base_runtime.heap_allocator()
+	mem.dynamic_arena_init(&uri_key_arena, uri_key_backing, uri_key_backing, alignment = 64)
 	defer mem.dynamic_arena_destroy(&uri_key_arena)
 	uri_key_allocator := mem.dynamic_arena_allocator(&uri_key_arena)
 	uri_keys := project_input_uri_keys(
@@ -716,13 +766,15 @@ add_adt_matches_with_client :: proc(
 		uri_key_allocator,
 	)
 
+	fetch_allocator := base_runtime.heap_allocator()
 	added := false
-	for candidate in remote_candidates {
-		result := fetch_adt_candidate(client, candidate, allocator)
+	start := 0
+	for start < len(remote_candidates) && client.csrf_token == "" {
+		result := fetch_adt_candidate(client, remote_candidates[start], allocator)
 		if add_adt_fetch_task_result(
 			candidates,
 			dependencies,
-			candidate,
+			remote_candidates[start],
 			result,
 			store,
 			profile,
@@ -733,8 +785,54 @@ add_adt_matches_with_client :: proc(
 			added = true
 		}
 		adt_fetch_task_result_destroy(result, allocator)
+		start += 1
+	}
+	batch_size := pool.options.task_capacity
+	if batch_size > ADT_FETCH_CANDIDATE_BATCH_SIZE {
+		batch_size = ADT_FETCH_CANDIDATE_BATCH_SIZE
+	}
+	for start < len(remote_candidates) {
+		end := start + batch_size
+		if end > len(remote_candidates) {
+			end = len(remote_candidates)
+		}
+		tasks := make(
+			[dynamic]frontend_runtime.Task(^Adt_Fetch_Task_Result),
+			0,
+			end - start,
+			allocator,
+		)
+		for candidate in remote_candidates[start:end] {
+			payload := Adt_Fetch_Task_Payload{client = client, candidate = candidate}
+			task, err := frontend_runtime.submit_value(pool, payload, adt_fetch_task)
+			assert(err == .None)
+			append(&tasks, task)
+		}
+		for task, i in tasks {
+			result, _ := frontend_runtime.wait(task)
+			if add_adt_fetch_task_result(
+				candidates,
+				dependencies,
+				remote_candidates[start + i],
+				result,
+				store,
+				profile,
+				&uri_keys,
+				uri_key_allocator,
+				allocator,
+			) {
+				added = true
+			}
+			adt_fetch_task_result_destroy(result, fetch_allocator)
+		}
+		delete(tasks)
+		start = end
 	}
 	return added
+}
+
+adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Result {
+	return fetch_adt_candidate(payload.client, payload.candidate, base_runtime.heap_allocator())
 }
 
 fetch_adt_candidate :: proc(

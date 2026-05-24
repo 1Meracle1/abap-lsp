@@ -335,10 +335,11 @@ is_builtin_type_name :: proc(name: string) -> bool {
 }
 
 Root_Symbol_Entry :: struct {
-	unit:      Unit_Id,
-	symbol:    Symbol_Id,
-	namespace: Namespace,
-	name:      string,
+	unit:               Unit_Id,
+	symbol:             Symbol_Id,
+	namespace:          Namespace,
+	name:               string,
+	visible_by_default: bool,
 }
 
 Project_Root_Lookup :: struct {
@@ -397,7 +398,7 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 	}
 
 	for unit_index in 0 ..< len(units) {
-		import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator)
+		import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator, allocator)
 	}
 }
 
@@ -684,10 +685,21 @@ build_project_root_index :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Root_Symbol_Entry {
 	roots := make([dynamic]Root_Symbol_Entry, 0, 32, allocator)
-	for unit in units {
-		for symbol in unit.symbols {
+	for &unit in units {
+		unit_stem := uri_file_stem(unit.uri)
+		for &symbol in unit.symbols {
 			if symbol.scope != unit.root_scope {
 				continue
+			}
+			visible_by_default := false
+			#partial switch symbol.kind {
+			case .Class, .Interface:
+				visible_by_default = name_is_namespaced(symbol.name) ||
+				                     root_name_matches_unit_stem(unit_stem, symbol.name)
+			case .Type_Def:
+				visible_by_default = root_name_matches_unit_stem(unit_stem, symbol.name)
+			case .Module, .Report:
+				visible_by_default = true
 			}
 			namespaces := [?]Namespace{.Value, .Type, .Routine}
 			for namespace in namespaces {
@@ -699,6 +711,7 @@ build_project_root_index :: proc(
 							symbol = symbol.id,
 							namespace = namespace,
 							name = symbol.name,
+							visible_by_default = visible_by_default,
 						},
 					)
 				}
@@ -731,16 +744,16 @@ build_project_root_lookup :: proc(
 	for entry in roots {
 		handle := Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
 		unit_key := Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name}
-		if !(unit_key in lookup.by_unit) {
-			lookup.by_unit[unit_key] = handle
+		_, slot, inserted, _ := map_entry(&lookup.by_unit, unit_key)
+		if inserted {
+			slot^ = handle
 		}
-		unit := &units[unit_id_index(entry.unit)]
-		s := symbol(unit, entry.symbol)
-		global_key := Root_Name_Key{namespace = entry.namespace, name = entry.name}
-		if s != nil && root_symbol_visible_by_default(unit, s^) {
+		if entry.visible_by_default {
 			lookup.names[entry.name] = true
-			if !(global_key in lookup.global) {
-				lookup.global[global_key] = handle
+			global_key := Root_Name_Key{namespace = entry.namespace, name = entry.name}
+			_, global_slot, global_inserted, _ := map_entry(&lookup.global, global_key)
+			if global_inserted {
+				global_slot^ = handle
 			}
 		}
 	}
@@ -1100,12 +1113,13 @@ global_visible_root_symbol :: proc(
 	return {}, false
 }
 
-root_symbol_visible_by_default :: proc(unit: ^Unit_Analysis, s: Symbol_Data) -> bool {
+root_symbol_visible_by_default :: proc(unit: ^Unit_Analysis, s: ^Symbol_Data) -> bool {
+	stem := uri_file_stem(unit.uri)
 	#partial switch s.kind {
 	case .Class, .Interface:
-		return root_name_matches_unit_stem(unit.uri, s.name) || name_is_namespaced(s.name)
+		return name_is_namespaced(s.name) || root_name_matches_unit_stem(stem, s.name)
 	case .Type_Def:
-		return root_name_matches_unit_stem(unit.uri, s.name)
+		return root_name_matches_unit_stem(stem, s.name)
 	case .Module, .Report:
 		return true
 	case:
@@ -1113,8 +1127,7 @@ root_symbol_visible_by_default :: proc(unit: ^Unit_Analysis, s: Symbol_Data) -> 
 	}
 }
 
-root_name_matches_unit_stem :: proc(uri, name: string) -> bool {
-	stem := uri_file_stem(uri)
+root_name_matches_unit_stem :: proc(stem, name: string) -> bool {
 	if strings.equal_fold(stem, name) {
 		return true
 	}
@@ -1139,11 +1152,11 @@ include_visible_units_for_units :: proc(
 ) -> [] [dynamic]Unit_Id {
 	out := make([][dynamic]Unit_Id, len(units), allocator)
 	for i in 0 ..< len(units) {
-		out[i] = make([dynamic]Unit_Id, 0, len(units), allocator)
+		out[i] = make([dynamic]Unit_Id, allocator)
 	}
 	for unit in units {
-		expansion := make([dynamic]Unit_Id, 0, len(units), allocator)
-		stack := make([dynamic]Unit_Id, 0, len(units), allocator)
+		expansion := make([dynamic]Unit_Id, allocator)
+		stack := make([dynamic]Unit_Id, allocator)
 		collect_include_expansion(units, unit.unit_id, &stack, &expansion)
 		for participant in expansion {
 			idx := unit_id_index(participant)
@@ -1185,11 +1198,11 @@ include_predecessor_units_for_units :: proc(
 ) -> [] [dynamic]Unit_Id {
 	out := make([][dynamic]Unit_Id, len(units), allocator)
 	for i in 0 ..< len(units) {
-		out[i] = make([dynamic]Unit_Id, 0, len(units), allocator)
+		out[i] = make([dynamic]Unit_Id, allocator)
 	}
 	for unit in units {
-		stack := make([dynamic]Unit_Id, 0, len(units), allocator)
-		prior := make([dynamic]Unit_Id, 0, len(units), allocator)
+		stack := make([dynamic]Unit_Id, allocator)
+		prior := make([dynamic]Unit_Id, allocator)
 		_ = record_include_predecessors(units, unit.unit_id, prior, &out, &stack, allocator)
 	}
 	return out
@@ -1203,7 +1216,7 @@ record_include_predecessors :: proc(
 	stack: ^[dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> [dynamic]Unit_Id {
-	expansion := make([dynamic]Unit_Id, 0, len(units), allocator)
+	expansion := make([dynamic]Unit_Id, allocator)
 	idx := unit_id_index(unit_id)
 	if idx < 0 || idx >= len(units) || unit_list_contains(stack^[:], unit_id) {
 		return expansion
@@ -1282,10 +1295,11 @@ import_project_structures_for_unit :: proc(
 	unit_index: int,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
+	scratch_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), allocator)
-	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), allocator)
+	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), scratch_allocator)
+	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), scratch_allocator)
 	defer delete(owner_scopes)
 	defer delete(owner_scope_set)
 	changed := true

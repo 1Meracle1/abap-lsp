@@ -3,7 +3,9 @@ package abap_frontend_semantic_analyze
 import runtime "../../runtime"
 import "../../parser"
 
+import base_runtime "base:runtime"
 import "core:mem"
+import "core:mem/virtual"
 import "core:strings"
 
 Source_Input :: struct {
@@ -52,6 +54,11 @@ Project_Dependency_Edge :: struct {
 	name: string,
 }
 
+Reverse_Dependency_Key :: struct {
+	from: Unit_Id,
+	to:   Unit_Id,
+}
+
 Project_State :: struct {
 	inputs:                [dynamic]Source_Input,
 	units:                 [dynamic]Unit_Analysis,
@@ -60,6 +67,7 @@ Project_State :: struct {
 	reverse_edges:         map[Unit_Id][dynamic]Unit_Id,
 	unresolved_candidates: map[Remote_Dependency_Key][dynamic]Unit_Id,
 	diagnostics:           [dynamic]Diagnostic,
+	index:                 Project_Index,
 
 	candidates:           [dynamic]Project_Candidate_Input,
 	candidate_to_unit:    [dynamic]Unit_Id,
@@ -105,13 +113,15 @@ Project_Validate_State :: struct {
 }
 
 Project_Infer_Payload :: struct {
-	state:      ^Project_Infer_State,
-	unit_index: int,
+	state:        ^Project_Infer_State,
+	unit_index:   int,
+	output_index: int,
 }
 
 Project_Validate_Payload :: struct {
-	state:      ^Project_Validate_State,
-	unit_index: int,
+	state:        ^Project_Validate_State,
+	unit_index:   int,
+	output_index: int,
 }
 
 analyze_target :: proc(
@@ -169,6 +179,7 @@ project_state_make :: proc(
 		reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, 16, allocator),
 		unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 16, allocator),
 		diagnostics = make([dynamic]Diagnostic, 0, 8, allocator),
+		index = project_index_make(allocator),
 		candidates = make([dynamic]Project_Candidate_Input, 0, 8, allocator),
 		candidate_to_unit = make([dynamic]Unit_Id, 0, 8, allocator),
 		candidate_dirs = make([dynamic]string, 0, 8, allocator),
@@ -241,14 +252,23 @@ project_state_set_candidates :: proc(
 	candidates: []Project_Candidate_Input,
 	allocator: mem.Allocator,
 ) {
+	old_candidates := state.candidates[:]
+	old_candidate_dirs := state.candidate_dirs[:]
+	old_candidate_to_unit := state.candidate_to_unit[:]
 	clear(&state.candidates)
 	clear(&state.candidate_to_unit)
 	clear(&state.candidate_dirs)
 	for candidate, i in candidates {
 		append(&state.candidates, candidate)
+		if i < len(old_candidates) && old_candidates[i].input.uri == candidate.input.uri {
+			append(&state.candidate_dirs, old_candidate_dirs[i])
+			append(&state.candidate_to_unit, old_candidate_to_unit[i])
+			continue
+		}
 		append(&state.candidate_dirs, uri_parent_dir_key(candidate.input.uri, allocator))
 		unit_id := INVALID_UNIT_ID
-		key := normalized_uri_path_key(candidate.input.uri, allocator)
+		key_allocator := base_runtime.heap_allocator()
+		key := normalized_uri_path_key(candidate.input.uri, key_allocator)
 		if existing, ok := state.uri_to_unit[key]; ok {
 			unit_id = existing
 			unit_index := unit_id_index(unit_id)
@@ -257,6 +277,7 @@ project_state_set_candidates :: proc(
 				state.unit_candidate_index[unit_index] = i
 			}
 		}
+		delete(key, key_allocator)
 		append(&state.candidate_to_unit, unit_id)
 	}
 }
@@ -289,8 +310,10 @@ project_state_upsert_input :: proc(
 	candidate_index: int,
 	allocator: mem.Allocator,
 ) -> (Unit_Id, bool) {
-	key := normalized_uri_path_key(input.uri, allocator)
+	key_allocator := base_runtime.heap_allocator()
+	key := normalized_uri_path_key(input.uri, key_allocator)
 	if unit_id, ok := state.uri_to_unit[key]; ok {
+		delete(key, key_allocator)
 		unit_index := unit_id_index(unit_id)
 		changed := state.inputs[unit_index].source != input.source ||
 		           state.inputs[unit_index].mode != input.mode
@@ -301,6 +324,8 @@ project_state_upsert_input :: proc(
 		}
 		return unit_id, changed
 	}
+	delete(key, key_allocator)
+	key = normalized_uri_path_key(input.uri, allocator)
 	unit_id := Unit_Id(u32(len(state.units)))
 	state.uri_to_unit[key] = unit_id
 	append(&state.inputs, input)
@@ -324,18 +349,23 @@ project_state_update :: proc(
 	if len(dirty_units) == 0 && len(include_roots) == 0 {
 		return
 	}
-	parsed_units := make([dynamic]Unit_Id, 0, len(dirty_units), allocator)
+	scratch_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&scratch_arena)
+	defer virtual.arena_destroy(&scratch_arena)
+	scratch_allocator := virtual.arena_allocator(&scratch_arena)
+
+	parsed_units := make([dynamic]Unit_Id, 0, len(dirty_units), scratch_allocator)
 	project_state_parse_units(state, dirty_units, options.pool, allocator)
 	project_state_refresh_candidate_units(state, allocator)
 	for unit_id in dirty_units {
 		push_unique_unit(&parsed_units, unit_id)
 	}
 
-	next_roots := make([dynamic]Unit_Id, 0, len(dirty_units) + len(include_roots), allocator)
+	next_roots := make([dynamic]Unit_Id, 0, len(dirty_units) + len(include_roots), scratch_allocator)
 	for unit_id in dirty_units {push_unique_unit(&next_roots, unit_id)}
 	for unit_id in include_roots {push_unique_unit(&next_roots, unit_id)}
 	for len(next_roots) > 0 {
-		new_units := make([dynamic]Unit_Id, 0, 4, allocator)
+		new_units := make([dynamic]Unit_Id, 0, 4, scratch_allocator)
 		project_state_resolve_include_edges(state, next_roots[:], &new_units, allocator)
 		if len(new_units) == 0 {
 			break
@@ -358,8 +388,10 @@ project_state_refresh_candidate_units :: proc(
 		if state.candidate_to_unit[i] != INVALID_UNIT_ID {
 			continue
 		}
-		key := normalized_uri_path_key(candidate.input.uri, allocator)
+		key_allocator := base_runtime.heap_allocator()
+		key := normalized_uri_path_key(candidate.input.uri, key_allocator)
 		unit_id, ok := state.uri_to_unit[key]
+		delete(key, key_allocator)
 		if !ok {
 			continue
 		}
@@ -379,7 +411,9 @@ project_state_parse_units :: proc(
 	pool: ^runtime.Pool,
 	allocator: mem.Allocator,
 ) {
-	indices := make([dynamic]int, 0, len(unit_ids), allocator)
+	index_allocator := base_runtime.heap_allocator()
+	indices := make([dynamic]int, 0, len(unit_ids), index_allocator)
+	defer delete(indices)
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
 		if unit_index >= 0 && unit_index < len(state.units) {
@@ -395,7 +429,7 @@ project_state_parse_units :: proc(
 		unit_allocators = state.unit_allocators,
 		allocator = allocator,
 	}
-	run_project_tasks(pool, indices[:], &work, parse_collect_task, allocator)
+	run_project_tasks(pool, indices[:], &work, parse_collect_task)
 	state.units = work.units
 }
 
@@ -542,8 +576,13 @@ project_state_finish :: proc(
 	pool: ^runtime.Pool,
 	allocator: mem.Allocator,
 ) {
-	affected := make([dynamic]Unit_Id, 0, len(parsed_units) + len(include_roots), allocator)
-	interface_changed := make([dynamic]Unit_Id, 0, len(parsed_units), allocator)
+	scratch_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&scratch_arena)
+	defer virtual.arena_destroy(&scratch_arena)
+	scratch_allocator := virtual.arena_allocator(&scratch_arena)
+
+	affected := make([dynamic]Unit_Id, 0, len(parsed_units) + len(include_roots), scratch_allocator)
+	interface_changed := make([dynamic]Unit_Id, 0, len(parsed_units), scratch_allocator)
 	for unit_id in parsed_units {
 		push_unique_unit(&affected, unit_id)
 		unit_index := unit_id_index(unit_id)
@@ -565,7 +604,7 @@ project_state_finish :: proc(
 	if len(affected) == 0 {
 		return
 	}
-	project_state_prepare_affected_units(state, affected[:], allocator)
+	project_state_prepare_affected_units(state, affected[:])
 	project_state_build_scope_indexes(state, affected[:], pool, allocator)
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
@@ -575,12 +614,14 @@ project_state_finish :: proc(
 	}
 	add_unresolved_include_diagnostics_for_units(state.units[:], affected[:], allocator)
 	diagnose_include_cycles_for_units(state.units[:], affected[:], allocator)
+	project_index_update_units(&state.index, state.units[:], affected[:])
+	project_index_update_include_graph(&state.index, state.units[:], affected[:])
 
 	project := project_state_analysis(state)
-	resolve_project_cross_unit_for_units(project.units[:], affected[:], allocator)
+	resolve_project_cross_unit_for_units(project.units[:], affected[:], &state.index, scratch_allocator, allocator)
 	if project_state_linking_needed(project.units[:], affected[:]) {
 		reset_cross_class_member_implementation_links(project.units[:])
-		link_class_member_implementations(project.units[:], allocator)
+		link_class_member_implementations_with_index(project.units[:], &state.index.root_lookup, state.index.predecessors)
 		project_state_add_class_definition_units(project.units[:], &affected)
 	}
 	reclassify_project_open_sql_predicate_host_variables_for_units(
@@ -588,15 +629,16 @@ project_state_finish :: proc(
 		affected[:],
 		allocator,
 	)
-	lookup := build_validation_lookup(&project, allocator)
+	project_index_update_sql_predicate_columns(&state.index, project.units[:], affected[:])
+	lookup := validation_lookup_from_project_index(&state.index)
 	infer_project_semantic_facts_for_units(&project, &lookup, affected[:], pool, state.unit_allocators, allocator)
 	validate_project_units_for_units(&project, &lookup, affected[:], pool, state.unit_allocators, allocator)
 	rebuild_project_semantic_indexes_for_units(&project, affected[:], pool, state.unit_allocators, allocator)
 	collect_project_diagnostics(&project)
 	state.units = project.units
 	state.diagnostics = project.diagnostics
-	project_state_rebuild_dependency_graph(state, &project, &lookup, allocator)
-	record_project_unresolved_candidates(state, &project, allocator)
+	project_state_update_dependency_graph_for_units(state, &project, &lookup, affected[:])
+	record_project_unresolved_candidates_for_units(state, &project, affected[:])
 }
 
 @(private)
@@ -627,7 +669,7 @@ project_state_expand_reverse_dependents :: proc(
 	roots: []Unit_Id,
 	affected: ^[dynamic]Unit_Id,
 ) {
-	queue := make([dynamic]Unit_Id, 0, len(roots), state.allocator)
+	queue := make([dynamic]Unit_Id, 0, len(roots), base_runtime.heap_allocator())
 	for root in roots {
 		push_unique_unit(&queue, root)
 	}
@@ -642,6 +684,7 @@ project_state_expand_reverse_dependents :: proc(
 			}
 		}
 	}
+	delete(queue)
 }
 
 @(private)
@@ -658,7 +701,6 @@ unit_provides_name :: proc(unit: ^Unit_Analysis, name: string) -> bool {
 project_state_prepare_affected_units :: proc(
 	state: ^Project_State,
 	affected: []Unit_Id,
-	allocator: mem.Allocator,
 ) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
@@ -670,14 +712,15 @@ project_state_prepare_affected_units :: proc(
 			ref.resolution = {}
 			ref.has_resolution = false
 		}
-		next := make([dynamic]Diagnostic, 0, len(unit.diagnostics), allocator)
+		write := 0
 		for diagnostic in unit.diagnostics {
 			if diagnostic.kind == .Unresolved_Include || diagnostic.kind == .Include_Cycle {
 				continue
 			}
-			append(&next, diagnostic)
+			unit.diagnostics[write] = diagnostic
+			write += 1
 		}
-		unit.diagnostics = next
+		resize(&unit.diagnostics, write)
 	}
 }
 
@@ -688,7 +731,8 @@ project_state_build_scope_indexes :: proc(
 	pool: ^runtime.Pool,
 	allocator: mem.Allocator,
 ) {
-	indices := unit_ids_to_indices(affected, len(state.units), allocator)
+	indices := unit_ids_to_indices(affected, len(state.units), base_runtime.heap_allocator())
+	defer delete(indices)
 	if len(indices) == 0 {
 		return
 	}
@@ -698,7 +742,7 @@ project_state_build_scope_indexes :: proc(
 		unit_allocators = state.unit_allocators,
 		allocator = allocator,
 	}
-	run_project_tasks(pool, indices[:], &work, build_scope_index_task, allocator)
+	run_project_tasks(pool, indices[:], &work, build_scope_index_task)
 	state.units = work.units
 }
 
@@ -764,16 +808,13 @@ diagnose_include_cycles_for_units :: proc(
 resolve_project_cross_unit_for_units :: proc(
 	units: []Unit_Analysis,
 	affected: []Unit_Id,
+	index: ^Project_Index,
+	scratch_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) {
 	if len(units) == 0 || len(affected) == 0 {
 		return
 	}
-	roots := build_project_root_index(units, allocator)
-	root_lookup := build_project_root_lookup(units, roots[:], allocator)
-	class_entries := build_project_class_scope_index(units, allocator)
-	visible := include_visible_units_for_units(units, allocator)
-	predecessors := include_predecessor_units_for_units(units, allocator)
 
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
@@ -789,10 +830,10 @@ resolve_project_cross_unit_for_units :: proc(
 				units,
 				unit_index,
 				ref^,
-				&root_lookup,
-				class_entries,
-				visible[unit_index],
-				predecessors[unit_index],
+				&index.root_lookup,
+				index.class_scope_entries,
+				index.visible[unit_index],
+				index.predecessors[unit_index],
 			); ok {
 				ref.resolution = resolution
 				ref.has_resolution = true
@@ -803,11 +844,11 @@ resolve_project_cross_unit_for_units :: proc(
 	if seed_inherited_method_scope_parameters_for_units(
 		units,
 		affected,
-		&root_lookup,
-		class_entries,
-		visible,
-		predecessors,
-		allocator,
+		&index.root_lookup,
+		index.class_scope_entries,
+		index.visible,
+		index.predecessors,
+		scratch_allocator,
 	) {
 		for unit_id in affected {
 			unit_index := unit_id_index(unit_id)
@@ -822,7 +863,14 @@ resolve_project_cross_unit_for_units :: proc(
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
 		if unit_index >= 0 && unit_index < len(units) {
-			import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator)
+			import_project_structures_for_unit(
+				units,
+				unit_index,
+				&index.root_lookup,
+				index.visible[unit_index],
+				scratch_allocator,
+				allocator,
+			)
 		}
 	}
 }
@@ -997,10 +1045,15 @@ project_state_rebuild_dependency_graph :: proc(
 	state: ^Project_State,
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
-	allocator: mem.Allocator,
 ) {
+	project_state_reverse_edges_destroy(state)
 	clear(&state.edges)
-	state.reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, len(project.units) * 2 + 8, allocator)
+	graph_allocator := base_runtime.heap_allocator()
+	edge_seen := make(map[Project_Dependency_Edge]bool, len(project.units) * 4 + 64, graph_allocator)
+	reverse_seen := make(map[Reverse_Dependency_Key]bool, len(project.units) * 2 + 8, graph_allocator)
+	defer delete(edge_seen)
+	defer delete(reverse_seen)
+	state.reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, len(project.units) * 2 + 8, graph_allocator)
 	for unit, unit_index in project.units {
 		for edge in unit.include_edges {
 			if edge.has_target {
@@ -1010,7 +1063,9 @@ project_state_rebuild_dependency_graph :: proc(
 					edge.target,
 					.Include,
 					edge.name,
-					allocator,
+					&edge_seen,
+					&reverse_seen,
+					graph_allocator,
 				)
 			}
 		}
@@ -1025,7 +1080,9 @@ project_state_rebuild_dependency_graph :: proc(
 				ref.resolution.symbol.unit,
 				project_dependency_kind_for_reference(ref),
 				ref.name,
-				allocator,
+				&edge_seen,
+				&reverse_seen,
+				graph_allocator,
 			)
 		}
 		for sql_source in unit.sql_sources {
@@ -1041,7 +1098,9 @@ project_state_rebuild_dependency_graph :: proc(
 					handle.unit,
 					.Sql,
 					sql_source.name,
-					allocator,
+					&edge_seen,
+					&reverse_seen,
+					graph_allocator,
 				)
 			}
 		}
@@ -1060,7 +1119,9 @@ project_state_rebuild_dependency_graph :: proc(
 						handle.unit,
 						.Call,
 						call_site.target.function_name,
-						allocator,
+						&edge_seen,
+						&reverse_seen,
+						graph_allocator,
 					)
 				}
 			case .Report:
@@ -1076,7 +1137,9 @@ project_state_rebuild_dependency_graph :: proc(
 						handle.unit,
 						.Call,
 						call_site.target.report_name,
-						allocator,
+						&edge_seen,
+						&reverse_seen,
+						graph_allocator,
 					)
 				}
 			case:
@@ -1086,24 +1149,245 @@ project_state_rebuild_dependency_graph :: proc(
 }
 
 @(private)
-project_state_add_dependency_edge :: proc(
+project_state_update_dependency_graph_for_units :: proc(
 	state: ^Project_State,
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_ids: []Unit_Id,
+) {
+	project_index_ensure_unit_count(&state.index, len(project.units))
+	for unit_id in unit_ids {
+		unit_index := unit_id_index(unit_id)
+		if unit_index < 0 || unit_index >= len(project.units) {
+			continue
+		}
+		data := &state.index.unit_entries[unit_index]
+		for edge in data.dependency_edges {
+			project_state_decrement_dependency_pair(state, edge.from, edge.to)
+		}
+		project_state_remove_dependency_edges_from_unit(state, unit_id)
+		clear(&data.dependency_edges)
+
+		unit := &project.units[unit_index]
+		graph_allocator := state.index.allocator
+		edge_seen := make(map[Project_Dependency_Edge]bool, len(unit.references) + len(unit.include_edges) + 8, graph_allocator)
+		for edge in unit.include_edges {
+			if edge.has_target {
+				project_state_add_dependency_edge_for_unit(
+					state,
+					data,
+					unit.unit_id,
+					edge.target,
+					.Include,
+					edge.name,
+					&edge_seen,
+					graph_allocator,
+				)
+			}
+		}
+		for ref in unit.references {
+			if !ref.has_resolution || ref.resolution.kind != .Symbol ||
+			   ref.resolution.symbol.unit == unit.unit_id {
+				continue
+			}
+			project_state_add_dependency_edge_for_unit(
+				state,
+				data,
+				unit.unit_id,
+				ref.resolution.symbol.unit,
+				project_dependency_kind_for_reference(ref),
+				ref.name,
+				&edge_seen,
+				graph_allocator,
+			)
+		}
+		for sql_source in unit.sql_sources {
+			if handle, ok := resolve_type_name_in_project_lookup(
+				project,
+				lookup,
+				unit_index,
+				sql_source.name,
+			); ok {
+				project_state_add_dependency_edge_for_unit(
+					state,
+					data,
+					unit.unit_id,
+					handle.unit,
+					.Sql,
+					sql_source.name,
+					&edge_seen,
+					graph_allocator,
+				)
+			}
+		}
+		for call_site in unit.call_sites {
+			#partial switch call_site.target.kind {
+			case .Function:
+				if handle, ok := root_symbol_in_unit_lookup(
+					lookup,
+					unit.unit_id,
+					.Routine,
+					call_site.target.function_name,
+				); ok {
+					project_state_add_dependency_edge_for_unit(
+						state,
+						data,
+						unit.unit_id,
+						handle.unit,
+						.Call,
+						call_site.target.function_name,
+						&edge_seen,
+						graph_allocator,
+					)
+				}
+			case .Report:
+				if handle, ok := root_symbol_in_unit_lookup(
+					lookup,
+					unit.unit_id,
+					.Value,
+					call_site.target.report_name,
+				); ok {
+					project_state_add_dependency_edge_for_unit(
+						state,
+						data,
+						unit.unit_id,
+						handle.unit,
+						.Call,
+						call_site.target.report_name,
+						&edge_seen,
+						graph_allocator,
+					)
+				}
+			case:
+			}
+		}
+		delete(edge_seen)
+	}
+}
+
+@(private)
+project_state_remove_dependency_edges_from_unit :: proc(state: ^Project_State, unit_id: Unit_Id) {
+	write := 0
+	for edge in state.edges {
+		if edge.from == unit_id {
+			continue
+		}
+		state.edges[write] = edge
+		write += 1
+	}
+	resize(&state.edges, write)
+}
+
+@(private)
+project_state_add_dependency_edge_for_unit :: proc(
+	state: ^Project_State,
+	data: ^Project_Index_Unit,
 	from, to: Unit_Id,
 	kind: Project_Dependency_Kind,
 	name: string,
+	edge_seen: ^map[Project_Dependency_Edge]bool,
 	allocator: mem.Allocator,
 ) {
 	if from == INVALID_UNIT_ID || to == INVALID_UNIT_ID || from == to {
 		return
 	}
-	for edge in state.edges {
-		if edge.from == from && edge.to == to && edge.kind == kind && edge.name == name {
-			return
-		}
+	edge := Project_Dependency_Edge{from = from, to = to, kind = kind, name = name}
+	if edge in edge_seen^ {
+		return
 	}
-	append(&state.edges, Project_Dependency_Edge{from = from, to = to, kind = kind, name = name})
+	edge_seen^[edge] = true
+	append(&data.dependency_edges, edge)
+	append(&state.edges, edge)
+	project_state_increment_dependency_pair(state, from, to, allocator)
+}
+
+@(private)
+project_state_increment_dependency_pair :: proc(
+	state: ^Project_State,
+	from, to: Unit_Id,
+	allocator: mem.Allocator,
+) {
+	key := Reverse_Dependency_Key{from = from, to = to}
+	if count, ok := state.index.dependency_pair_counts[key]; ok {
+		state.index.dependency_pair_counts[key] = count + 1
+		return
+	}
+	state.index.dependency_pair_counts[key] = 1
 	if dependents, ok := state.reverse_edges[to]; ok {
 		push_unique_unit(&dependents, from)
+		state.reverse_edges[to] = dependents
+	} else {
+		next_dependents := make([dynamic]Unit_Id, 0, 2, allocator)
+		append(&next_dependents, from)
+		state.reverse_edges[to] = next_dependents
+	}
+}
+
+@(private)
+project_state_decrement_dependency_pair :: proc(state: ^Project_State, from, to: Unit_Id) {
+	key := Reverse_Dependency_Key{from = from, to = to}
+	count, ok := state.index.dependency_pair_counts[key]
+	if !ok {
+		return
+	}
+	if count > 1 {
+		state.index.dependency_pair_counts[key] = count - 1
+		return
+	}
+	delete_key(&state.index.dependency_pair_counts, key)
+	if dependents, dependents_ok := state.reverse_edges[to]; dependents_ok {
+		write := 0
+		for dependent in dependents {
+			if dependent == from {
+				continue
+			}
+			dependents[write] = dependent
+			write += 1
+		}
+		if write == 0 {
+			delete(dependents)
+			delete_key(&state.reverse_edges, to)
+		} else {
+			resize(&dependents, write)
+			state.reverse_edges[to] = dependents
+		}
+	}
+}
+
+@(private)
+project_state_reverse_edges_destroy :: proc(state: ^Project_State) {
+	for _, dependents in state.reverse_edges {
+		delete(dependents)
+	}
+	delete(state.reverse_edges)
+}
+
+@(private)
+project_state_add_dependency_edge :: proc(
+	state: ^Project_State,
+	from, to: Unit_Id,
+	kind: Project_Dependency_Kind,
+	name: string,
+	edge_seen: ^map[Project_Dependency_Edge]bool,
+	reverse_seen: ^map[Reverse_Dependency_Key]bool,
+	allocator: mem.Allocator,
+) {
+	if from == INVALID_UNIT_ID || to == INVALID_UNIT_ID || from == to {
+		return
+	}
+	edge := Project_Dependency_Edge{from = from, to = to, kind = kind, name = name}
+	if edge in edge_seen^ {
+		return
+	}
+	edge_seen^[edge] = true
+	append(&state.edges, edge)
+	reverse_key := Reverse_Dependency_Key{from = from, to = to}
+	if reverse_key in reverse_seen^ {
+		return
+	}
+	reverse_seen^[reverse_key] = true
+	if dependents, ok := state.reverse_edges[to]; ok {
+		append(&dependents, from)
 		state.reverse_edges[to] = dependents
 	} else {
 		next_dependents := make([dynamic]Unit_Id, 0, 2, allocator)
@@ -1259,8 +1543,10 @@ parse_collect_input :: proc(
 	input: Source_Input,
 	allocator: mem.Allocator,
 ) -> Unit_Analysis {
-	parsed: parser.Parsed_File
-	parsed = parser.parse(input.source, input.uri, allocator)
+	parse_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&parse_arena)
+	defer virtual.arena_destroy(&parse_arena)
+	parsed := parser.parse(input.source, input.uri, virtual.arena_allocator(&parse_arena))
 	return collect_unit(unit_id, input.uri, input.source, parsed, allocator, input.mode)
 }
 
@@ -1279,13 +1565,13 @@ run_all_unit_tasks :: proc(
 	pool: ^runtime.Pool,
 	state: ^Project_Work_State,
 	work: proc(Project_Task_Payload) -> runtime.No_Result,
-	allocator: mem.Allocator,
 ) {
-	indices := make([dynamic]int, 0, len(state.units), allocator)
+	indices := make([dynamic]int, 0, len(state.units), base_runtime.heap_allocator())
+	defer delete(indices)
 	for _, i in state.units {
 		append(&indices, i)
 	}
-	run_project_tasks(pool, indices[:], state, work, allocator)
+	run_project_tasks(pool, indices[:], state, work)
 }
 
 @(private)
@@ -1294,15 +1580,15 @@ run_project_tasks :: proc(
 	unit_indices: []int,
 	state: ^Project_Work_State,
 	work: proc(Project_Task_Payload) -> runtime.No_Result,
-	allocator: mem.Allocator,
 ) {
 	batch_size := pool.options.task_capacity
+	task_allocator := base_runtime.heap_allocator()
 	for start := 0; start < len(unit_indices); {
 		end := start + batch_size
 		if end > len(unit_indices) {
 			end = len(unit_indices)
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
 		for unit_index in unit_indices[start:end] {
 			payload := Project_Task_Payload{state = state, unit_index = unit_index}
 			task, err := runtime.submit_value(pool, payload, work)
@@ -1465,7 +1751,7 @@ infer_project_semantic_facts :: proc(
 			unit_allocators = unit_allocators,
 			allocator       = allocator,
 		}
-		run_infer_tasks(pool, &state, allocator)
+		run_infer_tasks(pool, &state)
 		if !apply_inferred_project_facts(project, inferred) {
 			break
 		}
@@ -1481,8 +1767,13 @@ infer_project_semantic_facts_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
+	indices := unit_ids_to_indices(unit_ids, len(project.units), base_runtime.heap_allocator())
+	defer delete(indices)
+	if len(indices) == 0 {
+		return
+	}
 	for _ in 0 ..< 4 {
-		inferred := make([]Inferred_Unit_Facts, len(project.units), allocator)
+		inferred := make([]Inferred_Unit_Facts, len(indices), base_runtime.heap_allocator())
 		state := Project_Infer_State {
 			project         = project,
 			lookup          = lookup,
@@ -1490,8 +1781,10 @@ infer_project_semantic_facts_for_units :: proc(
 			unit_allocators = unit_allocators,
 			allocator       = allocator,
 		}
-		run_infer_tasks_for_units(pool, &state, unit_ids, allocator)
-		if !apply_inferred_project_facts_for_units(project, inferred, unit_ids) {
+		run_infer_tasks_for_indices(pool, &state, indices[:])
+		changed := apply_inferred_project_facts_for_indices(project, inferred, indices[:])
+		delete(inferred)
+		if !changed {
 			break
 		}
 	}
@@ -1513,7 +1806,7 @@ validate_project_units :: proc(
 		unit_allocators = unit_allocators,
 		allocator       = allocator,
 	}
-	run_validate_tasks(pool, &state, allocator)
+	run_validate_tasks(pool, &state)
 	for i in 0 ..< len(project.units) {
 		project.units[i].diagnostics = diagnostics[i]
 	}
@@ -1528,7 +1821,12 @@ validate_project_units_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	diagnostics := make([][dynamic]Diagnostic, len(project.units), allocator)
+	indices := unit_ids_to_indices(unit_ids, len(project.units), base_runtime.heap_allocator())
+	defer delete(indices)
+	if len(indices) == 0 {
+		return
+	}
+	diagnostics := make([][dynamic]Diagnostic, len(indices), base_runtime.heap_allocator())
 	state := Project_Validate_State {
 		project         = project,
 		lookup          = lookup,
@@ -1536,13 +1834,11 @@ validate_project_units_for_units :: proc(
 		unit_allocators = unit_allocators,
 		allocator       = allocator,
 	}
-	run_validate_tasks_for_units(pool, &state, unit_ids, allocator)
-	for unit_id in unit_ids {
-		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < len(project.units) {
-			project.units[unit_index].diagnostics = diagnostics[unit_index]
-		}
+	run_validate_tasks_for_indices(pool, &state, indices[:])
+	for unit_index, i in indices {
+		project.units[unit_index].diagnostics = diagnostics[i]
 	}
+	delete(diagnostics)
 }
 
 @(private)
@@ -1558,7 +1854,7 @@ rebuild_project_semantic_indexes :: proc(
 		unit_allocators = unit_allocators,
 		allocator       = allocator,
 	}
-	run_all_unit_tasks(pool, &state, rebuild_semantic_index_task, allocator)
+	run_all_unit_tasks(pool, &state, rebuild_semantic_index_task)
 	project.units = state.units
 }
 
@@ -1570,7 +1866,8 @@ rebuild_project_semantic_indexes_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	indices := unit_ids_to_indices(unit_ids, len(project.units), allocator)
+	indices := unit_ids_to_indices(unit_ids, len(project.units), base_runtime.heap_allocator())
+	defer delete(indices)
 	if len(indices) == 0 {
 		return
 	}
@@ -1580,7 +1877,7 @@ rebuild_project_semantic_indexes_for_units :: proc(
 		unit_allocators = unit_allocators,
 		allocator       = allocator,
 	}
-	run_project_tasks(pool, indices[:], &state, rebuild_semantic_index_task, allocator)
+	run_project_tasks(pool, indices[:], &state, rebuild_semantic_index_task)
 	project.units = state.units
 }
 
@@ -1588,17 +1885,17 @@ rebuild_project_semantic_indexes_for_units :: proc(
 run_infer_tasks :: proc(
 	pool: ^runtime.Pool,
 	state: ^Project_Infer_State,
-	allocator: mem.Allocator,
 ) {
 	batch_size := pool.options.task_capacity
+	task_allocator := base_runtime.heap_allocator()
 	for start := 0; start < len(state.project.units); {
 		end := start + batch_size
 		if end > len(state.project.units) {
 			end = len(state.project.units)
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
 		for unit_index in start ..< end {
-			payload := Project_Infer_Payload{state = state, unit_index = unit_index}
+			payload := Project_Infer_Payload{state = state, unit_index = unit_index, output_index = unit_index}
 			task, err := runtime.submit_value(pool, payload, infer_task)
 			assert(err == .None)
 			append(&tasks, task)
@@ -1612,22 +1909,25 @@ run_infer_tasks :: proc(
 }
 
 @(private)
-run_infer_tasks_for_units :: proc(
+run_infer_tasks_for_indices :: proc(
 	pool: ^runtime.Pool,
 	state: ^Project_Infer_State,
-	unit_ids: []Unit_Id,
-	allocator: mem.Allocator,
+	indices: []int,
 ) {
-	indices := unit_ids_to_indices(unit_ids, len(state.project.units), allocator)
 	batch_size := pool.options.task_capacity
+	task_allocator := base_runtime.heap_allocator()
 	for start := 0; start < len(indices); {
 		end := start + batch_size
 		if end > len(indices) {
 			end = len(indices)
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
-		for unit_index in indices[start:end] {
-			payload := Project_Infer_Payload{state = state, unit_index = unit_index}
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
+		for unit_index, i in indices[start:end] {
+			payload := Project_Infer_Payload {
+				state = state,
+				unit_index = unit_index,
+				output_index = start + i,
+			}
 			task, err := runtime.submit_value(pool, payload, infer_task)
 			assert(err == .None)
 			append(&tasks, task)
@@ -1644,17 +1944,17 @@ run_infer_tasks_for_units :: proc(
 run_validate_tasks :: proc(
 	pool: ^runtime.Pool,
 	state: ^Project_Validate_State,
-	allocator: mem.Allocator,
 ) {
 	batch_size := pool.options.task_capacity
+	task_allocator := base_runtime.heap_allocator()
 	for start := 0; start < len(state.project.units); {
 		end := start + batch_size
 		if end > len(state.project.units) {
 			end = len(state.project.units)
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
 		for unit_index in start ..< end {
-			payload := Project_Validate_Payload{state = state, unit_index = unit_index}
+			payload := Project_Validate_Payload{state = state, unit_index = unit_index, output_index = unit_index}
 			task, err := runtime.submit_value(pool, payload, validate_task)
 			assert(err == .None)
 			append(&tasks, task)
@@ -1668,22 +1968,25 @@ run_validate_tasks :: proc(
 }
 
 @(private)
-run_validate_tasks_for_units :: proc(
+run_validate_tasks_for_indices :: proc(
 	pool: ^runtime.Pool,
 	state: ^Project_Validate_State,
-	unit_ids: []Unit_Id,
-	allocator: mem.Allocator,
+	indices: []int,
 ) {
-	indices := unit_ids_to_indices(unit_ids, len(state.project.units), allocator)
 	batch_size := pool.options.task_capacity
+	task_allocator := base_runtime.heap_allocator()
 	for start := 0; start < len(indices); {
 		end := start + batch_size
 		if end > len(indices) {
 			end = len(indices)
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, allocator)
-		for unit_index in indices[start:end] {
-			payload := Project_Validate_Payload{state = state, unit_index = unit_index}
+		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
+		for unit_index, i in indices[start:end] {
+			payload := Project_Validate_Payload {
+				state = state,
+				unit_index = unit_index,
+				output_index = start + i,
+			}
 			task, err := runtime.submit_value(pool, payload, validate_task)
 			assert(err == .None)
 			append(&tasks, task)
@@ -1698,7 +2001,7 @@ run_validate_tasks_for_units :: proc(
 
 @(private)
 infer_task :: proc(payload: Project_Infer_Payload) -> runtime.No_Result {
-	payload.state.inferred[payload.unit_index] = infer_unit_semantic_facts(
+	payload.state.inferred[payload.output_index] = infer_unit_semantic_facts(
 		payload.state.project,
 		payload.state.lookup,
 		payload.unit_index,
@@ -1709,7 +2012,7 @@ infer_task :: proc(payload: Project_Infer_Payload) -> runtime.No_Result {
 
 @(private)
 validate_task :: proc(payload: Project_Validate_Payload) -> runtime.No_Result {
-	payload.state.diagnostics[payload.unit_index] = validate_unit_diagnostics(
+	payload.state.diagnostics[payload.output_index] = validate_unit_diagnostics(
 		payload.state.project,
 		payload.state.lookup,
 		payload.unit_index,
@@ -1729,6 +2032,17 @@ diagnostic_message :: proc(prefix, name: string, allocator: mem.Allocator) -> st
 @(private)
 link_class_member_implementations :: proc(units: []Unit_Analysis, allocator: mem.Allocator) {
 	predecessors := include_predecessor_units_for_units(units, allocator)
+	roots := build_project_root_index(units, allocator)
+	root_lookup := build_project_root_lookup(units, roots[:], allocator)
+	link_class_member_implementations_with_index(units, &root_lookup, predecessors)
+}
+
+@(private)
+link_class_member_implementations_with_index :: proc(
+	units: []Unit_Analysis,
+	root_lookup: ^Project_Root_Lookup,
+	predecessors: [][dynamic]Unit_Id,
+) {
 	for unit_index in 0 ..< len(units) {
 		for member_index in 0 ..< len(units[unit_index].class_members) {
 			member := &units[unit_index].class_members[member_index]
@@ -1741,8 +2055,6 @@ link_class_member_implementations :: proc(units: []Unit_Analysis, allocator: mem
 			}
 		}
 	}
-	roots := build_project_root_index(units, allocator)
-	root_lookup := build_project_root_lookup(units, roots[:], allocator)
 	for impl_unit_index in 0 ..< len(units) {
 		for method_symbol in units[impl_unit_index].symbols {
 			if method_symbol.kind != .Method {
@@ -1755,7 +2067,7 @@ link_class_member_implementations :: proc(units: []Unit_Analysis, allocator: mem
 			class_name := symbol(&units[impl_unit_index], class_symbol).name
 			for i := len(predecessors[impl_unit_index]) - 1; i >= 0; i -= 1 {
 				def_unit := predecessors[impl_unit_index][i]
-				class_handle, class_ok := root_symbol_in_unit(&root_lookup, def_unit, .Type, class_name)
+				class_handle, class_ok := root_symbol_in_unit(root_lookup, def_unit, .Type, class_name)
 				if !class_ok || !unit_has_class_definition(&units[unit_id_index(def_unit)], class_handle.symbol) {
 					continue
 				}

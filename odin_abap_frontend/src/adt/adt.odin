@@ -780,20 +780,6 @@ is_function_module_object :: proc(object_ref: ^Object_Ref) -> bool {
 	        ascii_contains_ignore_case(object_ref.uri, "/fmodules/"))
 }
 
-infer_function_group_uri :: proc(object_ref: ^Object_Ref, allocator: mem.Allocator) -> (string, bool) {
-	marker := "/functions/groups/"
-	start := ascii_index_ignore_case(object_ref.uri, marker)
-	if start < 0 {
-		return "", false
-	}
-	tail_start := start + len(marker)
-	group_end := tail_start
-	for group_end < len(object_ref.uri) && object_ref.uri[group_end] != '/' {
-		group_end += 1
-	}
-	return strings.clone(object_ref.uri[:group_end], allocator), true
-}
-
 infer_ddic_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
 	switch {
 	case ascii_starts_with_ignore_case(object_ref.object_type, "DOMA/"):
@@ -857,68 +843,6 @@ build_interface_object_ref :: proc(name, package_name: string, allocator: mem.Al
 	return build_named_ref(name, package_name, "/sap/bc/adt/oo/interfaces/", "INTF/OI", "Global interface", allocator)
 }
 
-extract_active_top_level_include_names :: proc(source: string, allocator: mem.Allocator) -> [dynamic]string {
-	out := make([dynamic]string, allocator)
-	normalized := normalize_abap_source(source, allocator)
-	defer delete(normalized, allocator)
-	line_start := 0
-	for line_start <= len(normalized) {
-		line_end := line_start
-		for line_end < len(normalized) && normalized[line_end] != '\n' {
-			line_end += 1
-		}
-		if include_name, ok := active_include_name_from_line(normalized[line_start:line_end], allocator); ok {
-			insert_unique_string(&out, include_name, allocator)
-		}
-		if line_end == len(normalized) {
-			break
-		}
-		line_start = line_end + 1
-	}
-	return out
-}
-
-build_function_module_dependency_source :: proc(
-	function_group_source,
-	function_module_source: string,
-	allocator: mem.Allocator,
-) -> string {
-	group := normalize_abap_source(function_group_source, allocator)
-	defer delete(group, allocator)
-	module := normalize_abap_source(function_module_source, allocator)
-	defer delete(module, allocator)
-
-	out := strings.builder_make(allocator)
-	line_start := 0
-	for line_start <= len(group) {
-		line_end := line_start
-		for line_end < len(group) && group[line_end] != '\n' {
-			line_end += 1
-		}
-		line := group[line_start:line_end]
-		if include_name, ok := active_include_name_from_line(line, allocator); ok {
-			defer delete(include_name, allocator)
-			if is_function_group_dispatcher_include(include_name) {
-				strings.write_string(&out, "* INCLUDE ")
-				strings.write_string(&out, include_name)
-				strings.write_string(&out, ". Omitted in dependency cache; function module stays in its own unit.")
-			} else {
-				strings.write_string(&out, line)
-			}
-		} else {
-			strings.write_string(&out, line)
-		}
-		if line_end == len(group) {
-			break
-		}
-		strings.write_byte(&out, '\n')
-		line_start = line_end + 1
-	}
-	rendered_group := strings.to_string(out)
-	defer delete(rendered_group, allocator)
-	return join_trimmed_sources(rendered_group, module, allocator)
-}
-
 fetch_function_module_dependency_source :: proc(
 	client: ^Client,
 	object_ref: ^Object_Ref,
@@ -928,64 +852,11 @@ fetch_function_module_dependency_source :: proc(
 	if err != .None {
 		return {}, err
 	}
-	group_uri, ok := infer_function_group_uri(object_ref, allocator)
-	if !ok {
-		return Dependency_Fetch_Result {
-			body                = module_source,
-			file_extension      = strings.clone("abap", allocator),
-			manifest_kind       = strings.clone("function-module", allocator),
-			shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
-		}, .None
-	}
-	defer delete(group_uri, allocator)
-
-	group_source, group_err := fetch_object_source(client, group_uri, allocator)
-	if group_err != .None {
-		return Dependency_Fetch_Result {
-			body                = module_source,
-			file_extension      = strings.clone("abap", allocator),
-			manifest_kind       = strings.clone("function-module", allocator),
-			shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
-		}, .None
-	}
-	defer delete(group_source, allocator)
-
-	shared := make([dynamic]Dependency_Artifact, allocator)
-	include_names := extract_active_top_level_include_names(group_source, allocator)
-	defer {
-		for name in include_names {
-			delete(name, allocator)
-		}
-		delete(include_names)
-	}
-	for include_name in include_names {
-		if is_function_group_dispatcher_include(include_name) {
-			continue
-		}
-		include_path := source_path("/programs/includes/", include_name, allocator)
-		body, include_err := fetch_object_source(client, include_path, allocator)
-		delete(include_path, allocator)
-		if include_err != .None {
-			continue
-		}
-		append(
-			&shared,
-			Dependency_Artifact {
-				object_ref     = build_include_object_ref(include_name, object_ref.package_name, allocator),
-				body           = body,
-				file_extension = strings.clone("abap", allocator),
-				manifest_kind  = strings.clone("include", allocator),
-			},
-		)
-	}
-	sort_dependency_artifacts(shared[:])
-	body := build_function_module_dependency_source(group_source, module_source, allocator)
-	delete(module_source, allocator)
 	return Dependency_Fetch_Result {
-		body                = body,
+		body                = module_source,
 		file_extension      = strings.clone("abap", allocator),
 		manifest_kind       = strings.clone("function-module", allocator),
-		shared_dependencies = shared,
+		shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
 	}, .None
 }
 
@@ -1767,68 +1638,6 @@ is_ddic_domain_object :: proc(object_ref: ^Object_Ref) -> bool {
 	return ascii_starts_with_ignore_case(object_ref.object_type, "DOMA/")
 }
 
-active_include_name_from_line :: proc(line: string, allocator: mem.Allocator) -> (string, bool) {
-	work := line
-	trimmed := strings.trim_left(work, " \t")
-	if strings.has_prefix(trimmed, "*") {
-		return "", false
-	}
-	if quote := strings.index_byte(work, '"'); quote >= 0 {
-		work = work[:quote]
-	}
-	trimmed = strings.trim_space(work)
-	trimmed = strings.trim_right(trimmed, ".")
-	first := next_word(&trimmed)
-	second := next_word(&trimmed)
-	if strings.equal_fold(first, "include") && second != "" && strings.trim_space(trimmed) == "" {
-		return trim_upper(second, allocator), true
-	}
-	return "", false
-}
-
-next_word :: proc(text: ^string) -> string {
-	value := strings.trim_left(text^, " \t")
-	if value == "" {
-		text^ = ""
-		return ""
-	}
-	end := 0
-	for end < len(value) && value[end] != ' ' && value[end] != '\t' {
-		end += 1
-	}
-	word := value[:end]
-	text^ = value[end:]
-	return word
-}
-
-is_function_group_dispatcher_include :: proc(include_name: string) -> bool {
-	return ascii_ends_with_ignore_case(strings.trim_space(include_name), "UXX")
-}
-
-normalize_abap_source :: proc(source: string, allocator: mem.Allocator) -> string {
-	out := strings.builder_make(allocator)
-	i := 0
-	for i < len(source) {
-		if i + 1 < len(source) && source[i] == '\r' && source[i + 1] == '\n' {
-			strings.write_byte(&out, '\n')
-			i += 2
-		} else {
-			strings.write_byte(&out, source[i])
-			i += 1
-		}
-	}
-	return strings.to_string(out)
-}
-
-join_trimmed_sources :: proc(left, right: string, allocator: mem.Allocator) -> string {
-	out := strings.builder_make(allocator)
-	strings.write_string(&out, strings.trim_right(left, " \t\r\n"))
-	strings.write_string(&out, "\n\n")
-	strings.write_string(&out, strings.trim_right(right, " \t\r\n"))
-	strings.write_byte(&out, '\n')
-	return strings.to_string(out)
-}
-
 write_indented_line :: proc(out: ^strings.Builder, indent: int, text: string) {
 	for _ in 0 ..< indent {
 		strings.write_string(out, "  ")
@@ -1978,28 +1787,6 @@ object_ref_less :: proc(left, right: Object_Ref) -> bool {
 	return strings.compare(left.uri, right.uri) < 0
 }
 
-sort_dependency_artifacts :: proc(values: []Dependency_Artifact) {
-	for i in 1 ..< len(values) {
-		value := values[i]
-		j := i
-		for j > 0 && strings.compare(value.object_ref.name, values[j - 1].object_ref.name) < 0 {
-			values[j] = values[j - 1]
-			j -= 1
-		}
-		values[j] = value
-	}
-}
-
-insert_unique_string :: proc(values: ^[dynamic]string, value: string, allocator: mem.Allocator) {
-	for existing in values {
-		if existing == value {
-			delete(value, allocator)
-			return
-		}
-	}
-	append(values, value)
-}
-
 trim_upper :: proc(value: string, allocator: mem.Allocator) -> string {
 	return strings.to_upper(strings.trim_space(value), allocator)
 }
@@ -2017,10 +1804,6 @@ last_index_byte :: proc(value: string, needle: byte) -> int {
 
 ascii_starts_with_ignore_case :: proc(value, prefix: string) -> bool {
 	return len(value) >= len(prefix) && strings.equal_fold(value[:len(prefix)], prefix)
-}
-
-ascii_ends_with_ignore_case :: proc(value, suffix: string) -> bool {
-	return len(value) >= len(suffix) && strings.equal_fold(value[len(value) - len(suffix):], suffix)
 }
 
 ascii_contains_ignore_case :: proc(value, needle: string) -> bool {
