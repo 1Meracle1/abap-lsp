@@ -128,7 +128,8 @@ record_project_unresolved_candidates :: proc(
 	state.unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
 	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, candidate_allocator)
 	defer delete(recorded)
-	for &unit in project.units {
+	lookup := validation_lookup_from_project_index(&state.index)
+	for unit, unit_index in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
 				record_remote_candidate_unit(state, &recorded, edge.name, .Include, unit.unit_id)
@@ -176,7 +177,7 @@ record_project_unresolved_candidates :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source.resolution == .External {
+			if sql_source_needs_remote_dependency(project, &lookup, unit_index, sql_source) {
 				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.unit_id)
 			}
 		}
@@ -210,6 +211,7 @@ record_project_unresolved_candidates_for_units :: proc(
 	unit_ids: []Unit_Id,
 ) {
 	project_index_ensure_unit_count(&state.index, len(project.units))
+	lookup := validation_lookup_from_project_index(&state.index)
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
 		if unit_index < 0 || unit_index >= len(project.units) {
@@ -279,7 +281,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source.resolution == .External {
+			if sql_source_needs_remote_dependency(project, &lookup, unit_index, sql_source) {
 				record_remote_candidate_unit_incremental(state, data, &recorded, sql_source.name, .Type, unit.unit_id)
 			}
 		}
@@ -307,6 +309,20 @@ record_project_unresolved_candidates_for_units :: proc(
 		}
 		delete(recorded)
 	}
+}
+
+@(private)
+sql_source_needs_remote_dependency :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	sql_source: Sql_Source_Data,
+) -> bool {
+	if sql_source.resolution != .External {
+		return false
+	}
+	_, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, sql_source.name)
+	return !ok
 }
 
 @(private)

@@ -646,6 +646,51 @@ project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing
 }
 
 @(test)
+project_state_unresolved_candidates_skip_resolved_open_sql_dependency :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = "REPORT zmain. SELECT funcname FROM enlfdir INTO TABLE @DATA(lt_rows).",
+		},
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/enlfdir.abap",
+			source = `
+TYPES: BEGIN OF enlfdir,
+         funcname TYPE string,
+       END OF enlfdir.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, targets[0].uri)
+	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "enlfdir", kind = .Type}]
+
+	testing.expect(t, !pending)
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unverified_Open_Sql_Source))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
 	pool: frontend_runtime.Pool
 	testing.expect_value(
