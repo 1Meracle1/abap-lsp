@@ -105,10 +105,12 @@ record_project_unresolved_candidates :: proc(
 	allocator: mem.Allocator,
 ) {
 	state.unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 64, allocator)
+	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, allocator)
+	defer delete(recorded)
 	for &unit in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
-				record_remote_candidate_unit(state, edge.name, .Include, unit.unit_id, allocator)
+				record_remote_candidate_unit(state, &recorded, edge.name, .Include, unit.unit_id, allocator)
 			}
 		}
 		for &ref in unit.references {
@@ -116,7 +118,7 @@ record_project_unresolved_candidates :: proc(
 				continue
 			}
 			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
-				record_remote_candidate_unit(state, candidate.name, candidate.kind, unit.unit_id, allocator)
+				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.unit_id, allocator)
 			}
 		}
 		for &symbol in unit.symbols {
@@ -125,6 +127,7 @@ record_project_unresolved_candidates :: proc(
 			   symbol.declared_type.namespace == .Type {
 				record_remote_candidate_unit(
 					state,
+					&recorded,
 					symbol.declared_type.base_name,
 					.Type,
 					unit.unit_id,
@@ -135,6 +138,7 @@ record_project_unresolved_candidates :: proc(
 		if unit.has_message_default_class {
 			record_remote_candidate_unit(
 				state,
+				&recorded,
 				unit.message_default_class.name,
 				.Message_Class,
 				unit.unit_id,
@@ -145,6 +149,7 @@ record_project_unresolved_candidates :: proc(
 			if message.class_name != "" {
 				record_remote_candidate_unit(
 					state,
+					&recorded,
 					message.class_name,
 					.Message_Class,
 					unit.unit_id,
@@ -154,7 +159,7 @@ record_project_unresolved_candidates :: proc(
 		}
 		for &sql_source in unit.sql_sources {
 			if sql_source.resolution == .External {
-				record_remote_candidate_unit(state, sql_source.name, .Type, unit.unit_id, allocator)
+				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.unit_id, allocator)
 			}
 		}
 		for &call_site in unit.call_sites {
@@ -162,6 +167,7 @@ record_project_unresolved_candidates :: proc(
 			case .Function:
 				record_remote_candidate_unit(
 					state,
+					&recorded,
 					call_site.target.function_name,
 					.Function,
 					unit.unit_id,
@@ -170,6 +176,7 @@ record_project_unresolved_candidates :: proc(
 			case .Report:
 				record_remote_candidate_unit(
 					state,
+					&recorded,
 					call_site.target.report_name,
 					.Report,
 					unit.unit_id,
@@ -183,6 +190,7 @@ record_project_unresolved_candidates :: proc(
 @(private)
 record_remote_candidate_unit :: proc(
 	state: ^Project_State,
+	recorded: ^map[Remote_Dependency_Key]Unit_Id,
 	name: string,
 	kind: Remote_Dependency_Kind,
 	unit_id: Unit_Id,
@@ -193,8 +201,12 @@ record_remote_candidate_unit :: proc(
 		return
 	}
 	key := Remote_Dependency_Key{name = normalized_name, kind = kind}
+	if previous, ok := recorded^[key]; ok && previous == unit_id {
+		return
+	}
+	recorded^[key] = unit_id
 	if units, ok := state.unresolved_candidates[key]; ok {
-		push_unique_unit(&units, unit_id)
+		append(&units, unit_id)
 		state.unresolved_candidates[key] = units
 	} else {
 		waiting_units := make([dynamic]Unit_Id, 0, 2, allocator)

@@ -4,9 +4,9 @@ import "../../src/ast"
 import "../../src/parser"
 import frontend_runtime "../../src/runtime"
 import semantic_analyze "../../src/semantic/analyze"
-import semantic_deps "../../src/semantic/dependencies"
 import stack_trace "../../src/stack_trace"
 import "../../src/tokenizer"
+import workspace "../../src/workspace"
 
 import "base:runtime"
 import "core:fmt"
@@ -83,7 +83,7 @@ print_usage :: proc() {
 	fmt.println("       abap_frontend tokens <file>")
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
-	fmt.println("       abap_frontend analyze <file> [--include <file>...]")
+	fmt.println("       abap_frontend analyze <file-or-folder> [--include <file>...]")
 }
 
 read_source :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
@@ -169,10 +169,10 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		}
 	}
 
-	result := semantic_deps.analyze_path(
+	result := workspace.analyze_filesystem_path(
 		target_path,
 		include_paths[:],
-		semantic_analyze.Analyze_Options{pool = &pool, enable_standalone_adt = true},
+		workspace.Options{pool = &pool, enable_adt = true},
 		allocator,
 	)
 	if !result.ok {

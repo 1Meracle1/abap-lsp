@@ -13,9 +13,7 @@ Source_Input :: struct {
 }
 
 Analyze_Options :: struct {
-	pool:                  ^runtime.Pool,
-	dependency_store_path: string,
-	enable_standalone_adt: bool,
+	pool: ^runtime.Pool,
 }
 
 Remote_Dependency_Kind :: enum {
@@ -190,15 +188,36 @@ project_state_analyze_target_with_candidate_inputs :: proc(
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
+	targets := [?]Source_Input{target}
+	return project_state_analyze_targets_with_candidate_inputs(
+		state,
+		targets[:],
+		candidates,
+		dependencies,
+		options,
+		allocator,
+	)
+}
+
+project_state_analyze_targets_with_candidate_inputs :: proc(
+	state: ^Project_State,
+	targets: []Source_Input,
+	candidates: []Project_Candidate_Input,
+	dependencies: []Source_Input,
+	options: Analyze_Options,
+	allocator: mem.Allocator,
+) -> Project_Analysis {
 	assert(options.pool != nil)
 	state.allocator = allocator
 	project_state_set_candidates(state, candidates, allocator)
-	dirty := make([dynamic]Unit_Id, 0, 1 + len(dependencies), allocator)
-	include_roots := make([dynamic]Unit_Id, 0, 1 + len(dependencies), allocator)
-	target_id, target_changed := project_state_upsert_input(state, target, -1, allocator)
-	if target_changed {
-		push_unique_unit(&dirty, target_id)
-		push_unique_unit(&include_roots, target_id)
+	dirty := make([dynamic]Unit_Id, 0, len(targets) + len(dependencies), allocator)
+	include_roots := make([dynamic]Unit_Id, 0, len(targets) + len(dependencies), allocator)
+	for target in targets {
+		target_id, target_changed := project_state_upsert_input(state, target, -1, allocator)
+		if target_changed {
+			push_unique_unit(&dirty, target_id)
+			push_unique_unit(&include_roots, target_id)
+		}
 	}
 	for dependency in dependencies {
 		unit_id, changed := project_state_upsert_input(state, dependency, -1, allocator)
@@ -307,6 +326,7 @@ project_state_update :: proc(
 	}
 	parsed_units := make([dynamic]Unit_Id, 0, len(dirty_units), allocator)
 	project_state_parse_units(state, dirty_units, options.pool, allocator)
+	project_state_refresh_candidate_units(state, allocator)
 	for unit_id in dirty_units {
 		push_unique_unit(&parsed_units, unit_id)
 	}
@@ -327,6 +347,29 @@ project_state_update :: proc(
 	}
 
 	project_state_finish(state, parsed_units[:], include_roots, options.pool, allocator)
+}
+
+@(private)
+project_state_refresh_candidate_units :: proc(
+	state: ^Project_State,
+	allocator: mem.Allocator,
+) {
+	for candidate, i in state.candidates {
+		if state.candidate_to_unit[i] != INVALID_UNIT_ID {
+			continue
+		}
+		key := normalized_uri_path_key(candidate.input.uri, allocator)
+		unit_id, ok := state.uri_to_unit[key]
+		if !ok {
+			continue
+		}
+		state.candidate_to_unit[i] = unit_id
+		unit_index := unit_id_index(unit_id)
+		if unit_index >= 0 && unit_index < len(state.unit_candidate_index) &&
+		   state.unit_candidate_index[unit_index] < 0 {
+			state.unit_candidate_index[unit_index] = i
+		}
+	}
 }
 
 @(private)

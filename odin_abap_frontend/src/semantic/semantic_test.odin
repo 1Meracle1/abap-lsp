@@ -9,6 +9,7 @@ import frontend_runtime "../runtime"
 import analyze "./analyze"
 import deps "./dependencies"
 import sem_query "./query"
+import workspace "../workspace"
 
 import "core:os"
 import filepath "core:path/filepath"
@@ -567,6 +568,84 @@ ENDCLASS.`
 }
 
 @(test)
+project_state_batch_resolves_target_candidates :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	targets := [?]analyze.Source_Input {
+		{uri = "file:///workspace/main.abap", source = "INCLUDE zshared. gv_shared = 1."},
+		{uri = "file:///workspace/generated.abap", source = "REPORT zshared. DATA gv_shared TYPE i."},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(targets), context.allocator)
+	for target in targets {
+		append(&candidates, analyze.Project_Candidate_Input{input = target})
+	}
+	state := analyze.project_state_make({}, context.allocator)
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		candidates[:],
+		{},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, targets[0].uri)
+
+	testing.expect_value(t, len(project.units), 2)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, include_target_uri(&project, root, "zshared"), targets[1].uri)
+		testing.expect(t, reference_resolves_to_uri(&project, root, "gv_shared", .Value, .Identifier, targets[1].uri))
+	}
+}
+
+@(test)
+project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/first.abap",
+			source = "DATA lo_a TYPE REF TO zcl_waiting. DATA lo_b TYPE REF TO zcl_waiting.",
+		},
+		{
+			uri = "file:///workspace/second.abap",
+			source = "DATA lo_c TYPE REF TO zcl_waiting. DATA lo_d TYPE REF TO zcl_waiting.",
+		},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	state := analyze.project_state_make({}, context.allocator)
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		candidates[:],
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	units, ok := state.unresolved_candidates[analyze.Remote_Dependency_Key {
+		name = "zcl_waiting",
+		kind = .Type,
+	}]
+
+	testing.expect(t, ok)
+	testing.expect_value(t, len(units), 2)
+	testing.expect(t, units[0] == project.units[0].unit_id)
+	testing.expect(t, units[1] == project.units[1].unit_id)
+}
+
+@(test)
 analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 	target := analyze.Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
 	dependencies := make([dynamic]analyze.Source_Input, 0, 5, context.allocator)
@@ -595,15 +674,16 @@ analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(project.units), 6)
 }
 
-analyze_path_test :: proc(t: ^testing.T, target_path: string) -> deps.Manifest_Analysis_Result {
-	return analyze_path_test_with_options(t, target_path, {})
+analyze_path_test :: proc(t: ^testing.T, root, target_path: string) -> workspace.Analysis_Result {
+	return analyze_path_test_with_options(t, root, target_path, {})
 }
 
 analyze_path_test_with_options :: proc(
 	t: ^testing.T,
+	root: string,
 	target_path: string,
-	options: analyze.Analyze_Options,
-) -> deps.Manifest_Analysis_Result {
+	options: workspace.Options,
+) -> workspace.Analysis_Result {
 	pool: frontend_runtime.Pool
 	testing.expect_value(
 		t,
@@ -612,7 +692,25 @@ analyze_path_test_with_options :: proc(
 	)
 	run_options := options
 	run_options.pool = &pool
-	result := deps.analyze_path(target_path, nil, run_options, context.allocator)
+	result := workspace.analyze_path(target_path, root, nil, run_options, context.allocator)
+	frontend_runtime.pool_destroy(&pool)
+	return result
+}
+
+analyze_file_path_test_with_options :: proc(
+	t: ^testing.T,
+	target_path: string,
+	options: workspace.Options,
+) -> workspace.Analysis_Result {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	run_options := options
+	run_options.pool = &pool
+	result := workspace.analyze_file_path(target_path, nil, run_options, context.allocator)
 	frontend_runtime.pool_destroy(&pool)
 	return result
 }
@@ -644,7 +742,7 @@ manifest_test_file :: proc(t: ^testing.T, root, relative, source: string) -> str
 	dir := filepath.dir(path)
 	testing.expect(t, os.make_directory_all(dir) == nil)
 	testing.expect(t, os.write_entire_file(path, source) == nil)
-	cleaned, ok := deps.absolute_clean_path(path, context.allocator)
+	cleaned, ok := workspace.absolute_clean_path(path, context.allocator)
 	testing.expect(t, ok)
 	return cleaned
 }
@@ -3048,7 +3146,7 @@ kind = "class"
 root_file = "src/ZCL_DEP.abap"
 dependency_of = ["src/ZMAIN.abap"]
 `
-	manifest, ok, err := deps.parse_workspace_manifest_text("D:/workspace", "D:/workspace/abapls.toml", source, context.allocator)
+	manifest, ok, err := workspace.parse_workspace_manifest_text("D:/workspace", "D:/workspace/abapls.toml", source, context.allocator)
 
 	testing.expect(t, ok)
 	testing.expect_value(t, err, "")
@@ -3102,7 +3200,7 @@ members = [{ file = "src/includes/generated.abap", role = "include", object_name
 	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. INCLUDE ztop. lv_top = 1.")
 	member_file := manifest_test_file(t, root, "src/includes/generated.abap", "DATA lv_top TYPE i.")
 
-	result := analyze_path_test(t, root_file)
+	result := analyze_path_test(t, root, root_file)
 
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
@@ -3131,7 +3229,7 @@ members = ["src/ZUNUSED.abap"]
 	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. DATA lo_unused TYPE REF TO zcl_unused.")
 	unused_file := manifest_test_file(t, root, "src/ZUNUSED.abap", "CLASS zcl_unused DEFINITION. ENDCLASS.")
 
-	result := analyze_path_test(t, root_file)
+	result := analyze_path_test(t, root, root_file)
 	root_unit := analyze.project_unit_by_uri(&result.project, root_file)
 
 	testing.expect(t, result.ok)
@@ -3195,7 +3293,7 @@ root_file = "src/ZMAIN.abap"
 	)
 	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. DATA lo_outer TYPE REF TO zcl_outer.")
 
-	result := analyze_path_test_with_options(t, root_file, analyze.Analyze_Options{dependency_store_path = store_path})
+	result := analyze_path_test_with_options(t, root, root_file, workspace.Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
@@ -3234,7 +3332,7 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 		"ZMAIN.abap",
 		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_cache.",
 	)
-	result := analyze_path_test_with_options(t, root_file, analyze.Analyze_Options{dependency_store_path = store_path})
+	result := analyze_file_path_test_with_options(t, root_file, workspace.Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -3286,7 +3384,7 @@ standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 		"ZMAIN.abap",
 		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_outer.",
 	)
-	result := analyze_path_test_with_options(t, root_file, analyze.Analyze_Options{dependency_store_path = store_path})
+	result := analyze_file_path_test_with_options(t, root_file, workspace.Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -3357,10 +3455,12 @@ standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T
 	if pool.options.worker_count > 0 {
 		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
 	}
-	project := deps.analyze_standalone_with_dependency_drain(
+	project := deps.analyze_with_dependency_drain(
 		analyze.Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)},
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		analyze.Analyze_Options{pool = &pool, dependency_store_path = store_path},
+		make([dynamic]analyze.Source_Input, context.allocator),
+		deps.Dependency_Config{store = &store, profile = &profile, store_any_profile = true},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	if pool.options.worker_count > 0 {
@@ -3460,12 +3560,8 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 		"source-code-library/classes/ZCL_LOCAL_EXPORT.abap",
 		"CLASS zcl_local_export DEFINITION. ENDCLASS. CLASS zcl_local_export IMPLEMENTATION. ENDCLASS.",
 	)
-	manifest := deps.Workspace_Manifest {
-		root_path          = export_root,
-		dependency_source  = "local-first",
-		local_export_roots = make([dynamic]string, 0, 1, context.allocator),
-	}
-	append(&manifest.local_export_roots, export_root)
+	roots := make([dynamic]string, 0, 1, context.allocator)
+	append(&roots, export_root)
 	target := analyze.Source_Input {
 		uri    = "mem://ZMAIN.abap",
 		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_local_export.",
@@ -3478,11 +3574,11 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	project := deps.analyze_with_manifest_dependency_drain(
-		&manifest,
+	project := deps.analyze_with_dependency_drain(
 		target,
 		candidates,
 		dependencies,
+		deps.Dependency_Config{local_export_roots = roots[:]},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -3515,14 +3611,8 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 		"ZPKG/source-code-library/classes/ZCL_LOCAL_CACHE.abap",
 		"CLASS zcl_local_cache DEFINITION. ENDCLASS. CLASS zcl_local_cache IMPLEMENTATION. ENDCLASS.",
 	)
-	manifest := deps.Workspace_Manifest {
-		root_path            = root,
-		dependency_source    = "local-first",
-		dependency_store     = profile,
-		has_dependency_store = true,
-		local_export_roots   = make([dynamic]string, 0, 1, context.allocator),
-	}
-	append(&manifest.local_export_roots, export_root)
+	roots := make([dynamic]string, 0, 1, context.allocator)
+	append(&roots, export_root)
 	target := analyze.Source_Input {
 		uri    = "mem://ZMAIN.abap",
 		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_local_cache.",
@@ -3535,12 +3625,12 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
 		frontend_runtime.Submit_Error.None,
 	)
-	project := deps.analyze_with_manifest_dependency_drain(
-		&manifest,
+	project := deps.analyze_with_dependency_drain(
 		target,
 		candidates,
 		dependencies,
-		analyze.Analyze_Options{pool = &pool, dependency_store_path = store_path},
+		deps.Dependency_Config{store = &store, profile = &profile, local_export_roots = roots[:]},
+		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	frontend_runtime.pool_destroy(&pool)
@@ -3565,8 +3655,9 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 @(test)
 manifest_project_dotenv_gates_adt_dependency_fetch :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("adt-dotenv-gate")
-	manifest := deps.Workspace_Manifest{root_path = root}
-	testing.expect(t, !deps.manifest_has_project_dotenv(&manifest, context.allocator))
+	opened, opened_ok, _ := workspace.open_workspace(root, workspace.Options{enable_adt = true}, context.allocator)
+	testing.expect(t, opened_ok)
+	testing.expect(t, !opened.has_dotenv)
 
 	manifest_test_file(
 		t,
@@ -3578,7 +3669,10 @@ ABAP_ADT_USER=demo
 ABAP_ADT_PASSWORD=secret
 `,
 	)
-	testing.expect(t, deps.manifest_has_project_dotenv(&manifest, context.allocator))
+	opened, opened_ok, _ = workspace.open_workspace(root, workspace.Options{enable_adt = true}, context.allocator)
+	testing.expect(t, opened_ok)
+	testing.expect(t, opened.has_dotenv)
+	workspace.workspace_destroy(&opened, context.allocator)
 }
 
 @(test)
@@ -3978,8 +4072,8 @@ root_file = "src/ZMAIN.abap"
 	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. INCLUDE zinc. lv_inc = 1.")
 	include_file := manifest_test_file(t, root, "src/ZINC.abap", "DATA lv_inc TYPE i.")
 
-	root_result := analyze_path_test(t, root_file)
-	requested_include_result := analyze_path_test(t, include_file)
+	root_result := analyze_path_test(t, root, root_file)
+	requested_include_result := analyze_path_test(t, root, include_file)
 
 	testing.expect(t, root_result.ok)
 	testing.expect(t, root_result.used_manifest)
@@ -4007,7 +4101,7 @@ root_file = "src/ZMAIN.abap"
 	root_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain.")
 	loose_file := manifest_test_file(t, root, "src/ZLOOSE.abap", "DATA lv_loose TYPE i.")
 
-	result := analyze_path_test(t, loose_file)
+	result := analyze_path_test(t, root, loose_file)
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -4046,7 +4140,7 @@ dependency_of = ["src/ZOTHER.abap"]
 	dependency_file := manifest_test_file(t, root, "src/ZCL_DEP.abap", "CLASS zcl_dep DEFINITION. ENDCLASS.")
 	other_file := manifest_test_file(t, root, "src/ZCL_OTHER.abap", "CLASS zcl_other DEFINITION. ENDCLASS.")
 
-	result := analyze_path_test(t, root_file)
+	result := analyze_path_test(t, root, root_file)
 	root_unit := analyze.project_unit_by_uri(&result.project, root_file)
 
 	testing.expect(t, result.ok)
@@ -4552,4 +4646,74 @@ START-OF-SELECTION.
 	testing.expect(t, has_diagnostic(root, .Invalid_Object_Type_Reference))
 	testing.expect(t, has_diagnostic(root, .Missing_Method_Implementation))
 	testing.expect(t, has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
+workspace_folder_path_analyzes_manifest_roots :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("folder-path")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZOTHER"
+root_file = "src/ZOTHER.abap"
+`,
+	)
+	main_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain.")
+	other_file := manifest_test_file(t, root, "src/ZOTHER.abap", "REPORT zother.")
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	result := workspace.analyze_filesystem_path(root, nil, workspace.Options{pool = &pool}, context.allocator)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, result.used_manifest)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, main_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, other_file) != nil)
+}
+
+@(test)
+filesystem_file_path_does_not_open_parent_workspace :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("file-path-no-parent-workspace")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZMAIN"
+root_file = "src/ZMAIN.abap"
+
+[[unit]]
+name = "ZOTHER"
+root_file = "src/ZOTHER.abap"
+`,
+	)
+	main_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain.")
+	other_file := manifest_test_file(t, root, "src/ZOTHER.abap", "REPORT zother.")
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	result := workspace.analyze_filesystem_path(main_file, nil, workspace.Options{pool = &pool}, context.allocator)
+	frontend_runtime.pool_destroy(&pool)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, !result.used_manifest)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, main_file) != nil)
+	testing.expect(t, analyze.project_unit_by_uri(&result.project, other_file) == nil)
 }
