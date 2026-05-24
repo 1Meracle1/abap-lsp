@@ -3566,6 +3566,61 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 }
 
 @(test)
+dependency_store_function_hit_clears_remote_candidate :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-function-hit")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "ZPKG",
+		object_kind    = "function-module",
+		object_name    = "Z_REMOTE_FM",
+		object_uri     = "/sap/bc/adt/functions/groups/ZFG/fmodules/Z_REMOTE_FM",
+		object_type    = "FUGR/FF",
+		description    = "Cached function module",
+		file_extension = "abap",
+		source_text    = "FUNCTION z_remote_fm\n  EXPORTING ev_value TYPE i.\nENDFUNCTION.",
+		fetched_at     = "2026-05-21T00:00:00Z",
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	project := deps.analyze_with_dependency_drain(
+		analyze.Source_Input {
+			uri    = "mem://ZMAIN.abap",
+			source = "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'.",
+		},
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
+		make([dynamic]analyze.Source_Input, context.allocator),
+		deps.Dependency_Config{store = &store, profile = &profile, store_any_profile = true},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	frontend_runtime.pool_destroy(&pool)
+
+	found_module := false
+	for &unit in project.units {
+		if analyze.find_symbol(&unit, "z_remote_fm", .Module) != nil {
+			found_module = true
+		}
+	}
+	testing.expect(t, found_module)
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		testing.expect(t, !(candidate.name == "z_remote_fm" && candidate.kind == .Function))
+	}
+}
+
+@(test)
 standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("standalone-dependency-store-iterative")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)

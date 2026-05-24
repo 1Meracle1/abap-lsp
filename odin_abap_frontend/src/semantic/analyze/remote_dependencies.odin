@@ -10,7 +10,8 @@ collect_project_remote_dependency_candidates :: proc(
 	out := make([dynamic]Remote_Dependency_Candidate, 0, 8, allocator)
 	index := make(map[string]int, 64, allocator)
 	defer delete(index)
-	for &unit in project.units {
+	lookup := build_validation_lookup(project, allocator)
+	for &unit, unit_index in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
 				insert_remote_candidate(&out, &index, edge.name, .Include, allocator)
@@ -58,11 +59,14 @@ collect_project_remote_dependency_candidates :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source.resolution == .External {
+			if sql_source_needs_remote_dependency(project, &lookup, unit_index, sql_source) {
 				insert_remote_candidate(&out, &index, sql_source.name, .Type, allocator)
 			}
 		}
 		for &call_site in unit.call_sites {
+			if !call_site_needs_remote_dependency(project, &lookup, unit_index, call_site) {
+				continue
+			}
 			#partial switch call_site.target.kind {
 			case .Function:
 				insert_remote_candidate(
@@ -182,6 +186,9 @@ record_project_unresolved_candidates :: proc(
 			}
 		}
 		for &call_site in unit.call_sites {
+			if !call_site_needs_remote_dependency(project, &lookup, unit_index, call_site) {
+				continue
+			}
 			#partial switch call_site.target.kind {
 			case .Function:
 				record_remote_candidate_unit(
@@ -286,6 +293,9 @@ record_project_unresolved_candidates_for_units :: proc(
 			}
 		}
 		for &call_site in unit.call_sites {
+			if !call_site_needs_remote_dependency(project, &lookup, unit_index, call_site) {
+				continue
+			}
 			#partial switch call_site.target.kind {
 			case .Function:
 				record_remote_candidate_unit_incremental(
@@ -323,6 +333,42 @@ sql_source_needs_remote_dependency :: proc(
 	}
 	_, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, sql_source.name)
 	return !ok
+}
+
+@(private)
+call_site_needs_remote_dependency :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	call_site: Call_Site_Data,
+) -> bool {
+	#partial switch call_site.target.kind {
+	case .Function:
+		_, ok := resolve_root_name_in_project_lookup(project, lookup, unit_index, .Routine, call_site.target.function_name)
+		return !ok
+	case .Report:
+		_, ok := resolve_root_name_in_project_lookup(project, lookup, unit_index, .Value, call_site.target.report_name)
+		return !ok
+	}
+	return false
+}
+
+@(private)
+resolve_root_name_in_project_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	namespace: Namespace,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	unit_id := project.units[unit_index].unit_id
+	if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, namespace, name); ok {
+		return handle, true
+	}
+	if handle, ok := root_symbol_in_visible_units_lookup(lookup, namespace, name, lookup.visible[unit_index]); ok {
+		return handle, true
+	}
+	return global_visible_root_symbol_lookup(lookup, namespace, name)
 }
 
 @(private)
