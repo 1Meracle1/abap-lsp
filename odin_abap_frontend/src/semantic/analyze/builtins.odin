@@ -15,6 +15,7 @@ Builtin_Field_Spec :: struct {
 	name:           string,
 	type_name:      string,
 	structure_name: string,
+	description:    string,
 }
 
 Builtin_Structure_Spec :: struct {
@@ -36,164 +37,582 @@ Builtin_Routine_Param_Spec :: struct {
 Builtin_Routine_Spec :: struct {
 	name:                     string,
 	params:                   []Builtin_Routine_Param_Spec,
-	hover_params:             []string,
 	return_type:              string,
+	description:              string,
 	supports_named_arguments: bool,
 }
 
 BUILTIN_SCALAR_TYPES :: []string {
-	"i", "int1", "int2", "int4", "int8",
-	"f", "p", "decfloat16", "decfloat34",
-	"string", "c", "n", "d", "t", "x", "xstring", "xsequence",
-	"data", "any", "clike", "csequence",
+	"i",
+	"int1",
+	"int2",
+	"int4",
+	"int8",
+	"f",
+	"p",
+	"decfloat16",
+	"decfloat34",
+	"string",
+	"c",
+	"n",
+	"d",
+	"t",
+	"x",
+	"xstring",
+	"xsequence",
+	"data",
+	"any",
+	"clike",
+	"csequence",
 	"object",
 }
 
-SYST_FIELDS :: []Builtin_Field_Spec {
-	{"abcde", "c", ""},
-	{"batch", "c", ""},
-	{"binpt", "c", ""},
-	{"cprog", "c", ""},
-	{"datum", "d", ""},
-	{"dbcnt", "i", ""},
-	{"fdpos", "i", ""},
-	{"index", "i", ""},
-	{"langu", "c", ""},
-	{"msgid", "c", ""},
-	{"msgno", "n", ""},
-	{"msgty", "c", ""},
-	{"msgv1", "c", ""},
-	{"msgv2", "c", ""},
-	{"msgv3", "c", ""},
-	{"msgv4", "c", ""},
-	{"repid", "c", ""},
-	{"subrc", "i", ""},
-	{"tabix", "i", ""},
-	{"tfill", "i", ""},
-	{"timlo", "t", ""},
-	{"tzone", "i", ""},
-	{"ucomm", "c", ""},
-	{"uname", "c", ""},
-	{"uzeit", "t", ""},
-}
-
-SCREEN_FIELDS :: []Builtin_Field_Spec {
-	{"name", "c", ""},
-	{"group1", "c", ""},
-	{"group2", "c", ""},
-	{"group3", "c", ""},
-	{"group4", "c", ""},
-	{"required", "c", ""},
-	{"input", "c", ""},
-	{"output", "c", ""},
-	{"intensified", "c", ""},
-	{"invisible", "c", ""},
-	{"length", "x", ""},
-	{"active", "c", ""},
-	{"display_3d", "c", ""},
-	{"value_help", "c", ""},
-	{"request", "c", ""},
-	{"values_in_combo", "c", ""},
-}
-
-MATCH_RESULT_FIELDS :: []Builtin_Field_Spec {
-	{"offset", "i", ""},
-	{"length", "i", ""},
-	{"submatches", "match_result_tab", "match_result"},
-	{"line", "i", ""},
-}
-
-CNTL_SIMPLE_EVENT_FIELDS :: []Builtin_Field_Spec {
-	{"eventid", "i", ""},
-	{"appl_event", "abap_bool", ""},
-}
-
 BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
-	{"syst", SYST_FIELDS},
-	{"screen", SCREEN_FIELDS},
-	{"match_result", MATCH_RESULT_FIELDS},
-	{"cntl_simple_event", CNTL_SIMPLE_EVENT_FIELDS},
+	{
+		name = "syst",
+		fields = []Builtin_Field_Spec {
+			{
+				name = "abcde",
+				type_name = "c",
+				structure_name = "",
+				description = "Latin alphabet helper text that can be indexed directly by offset and length.",
+			},
+			{
+				name = "batch",
+				type_name = "c",
+				structure_name = "",
+				description = "Set to 'X' in background processing and initial in dialog processing.",
+			},
+			{
+				name = "binpt",
+				type_name = "c",
+				structure_name = "",
+				description = "Set to 'X' while batch input is being processed.",
+			},
+			{
+				name = "cprog",
+				type_name = "c",
+				structure_name = "",
+				description = "Calling program for external procedures, otherwise the current program.",
+			},
+			{
+				name = "datum",
+				type_name = "d",
+				structure_name = "",
+				description = "Current system date.",
+			},
+			{
+				name = "dbcnt",
+				type_name = "i",
+				structure_name = "",
+				description = "Number of database rows processed by the last SQL statement that documents it.",
+			},
+			{
+				name = "fdpos",
+				type_name = "i",
+				structure_name = "",
+				description = "Found offset after supported search and comparison operations such as FIND.",
+			},
+			{
+				name = "index",
+				type_name = "i",
+				structure_name = "",
+				description = "Loop counter inside DO and WHILE loops; nested loops use the innermost counter.",
+			},
+			{
+				name = "langu",
+				type_name = "c",
+				structure_name = "",
+				description = "Single-character locale language key for the current internal session.",
+			},
+			{
+				name = "msgid",
+				type_name = "c",
+				structure_name = "",
+				description = "Message class captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgno",
+				type_name = "n",
+				structure_name = "",
+				description = "Message number captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgty",
+				type_name = "c",
+				structure_name = "",
+				description = "Message type captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv1",
+				type_name = "c",
+				structure_name = "",
+				description = "First MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv2",
+				type_name = "c",
+				structure_name = "",
+				description = "Second MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv3",
+				type_name = "c",
+				structure_name = "",
+				description = "Third MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "msgv4",
+				type_name = "c",
+				structure_name = "",
+				description = "Fourth MESSAGE placeholder value captured by the last MESSAGE statement.",
+			},
+			{
+				name = "repid",
+				type_name = "c",
+				structure_name = "",
+				description = "Program name exposed through sy-repid and syst-repid; SAP documents this as a predefined constant and type, not a real SYST component.",
+			},
+			{
+				name = "subrc",
+				type_name = "i",
+				structure_name = "",
+				description = "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.",
+			},
+			{
+				name = "tabix",
+				type_name = "i",
+				structure_name = "",
+				description = "Current internal-table index from READ TABLE or LOOP AT on indexed access paths.",
+			},
+			{
+				name = "tfill",
+				type_name = "i",
+				structure_name = "",
+				description = "Row count of the internal table accessed by DESCRIBE TABLE, LOOP AT, or READ TABLE.",
+			},
+			{
+				name = "timlo",
+				type_name = "t",
+				structure_name = "",
+				description = "Current user time in the user's time zone.",
+			},
+			{
+				name = "tzone",
+				type_name = "i",
+				structure_name = "",
+				description = "System time-zone offset from UTC in seconds.",
+			},
+			{
+				name = "ucomm",
+				type_name = "c",
+				structure_name = "",
+				description = "Function code that triggered the current PAI processing.",
+			},
+			{
+				name = "uname",
+				type_name = "c",
+				structure_name = "",
+				description = "User name of the current session.",
+			},
+			{
+				name = "uzeit",
+				type_name = "t",
+				structure_name = "",
+				description = "Current system time.",
+			},
+		},
+	},
+	{
+		name = "screen",
+		fields = []Builtin_Field_Spec {
+			{
+				name = "name",
+				type_name = "c",
+				structure_name = "",
+				description = "Name of the current dynpro field or screen element.",
+			},
+			{
+				name = "group1",
+				type_name = "c",
+				structure_name = "",
+				description = "Modification group 1 of the current screen element.",
+			},
+			{
+				name = "group2",
+				type_name = "c",
+				structure_name = "",
+				description = "Modification group 2 of the current screen element.",
+			},
+			{
+				name = "group3",
+				type_name = "c",
+				structure_name = "",
+				description = "Modification group 3 of the current screen element.",
+			},
+			{
+				name = "group4",
+				type_name = "c",
+				structure_name = "",
+				description = "Modification group 4 of the current screen element.",
+			},
+			{
+				name = "required",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether the field is mandatory on the current dynpro.",
+			},
+			{
+				name = "input",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether the field is ready for input on the current dynpro.",
+			},
+			{
+				name = "output",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether the field is output-only on the current dynpro.",
+			},
+			{
+				name = "intensified",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether the field is highlighted on the current dynpro.",
+			},
+			{
+				name = "invisible",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether the field is hidden on the current dynpro.",
+			},
+			{
+				name = "length",
+				type_name = "x",
+				structure_name = "",
+				description = "Visible field length of the current dynpro element.",
+			},
+			{
+				name = "active",
+				type_name = "c",
+				structure_name = "",
+				description = "Combined active flag for the current dynpro element.",
+			},
+			{
+				name = "display_3d",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether the current dynpro box is shown three-dimensionally.",
+			},
+			{
+				name = "value_help",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether input help is shown for the current dynpro field.",
+			},
+			{
+				name = "request",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether input exists, or is simulated, for the current dynpro field.",
+			},
+			{
+				name = "values_in_combo",
+				type_name = "c",
+				structure_name = "",
+				description = "Whether values exist in the current dynpro dropdown list box.",
+			},
+		},
+	},
+	{
+		name = "match_result",
+		fields = []Builtin_Field_Spec {
+			{
+				name = "offset",
+				type_name = "i",
+				structure_name = "",
+				description = "Zero-based offset of the match in the searched data object.",
+			},
+			{
+				name = "length",
+				type_name = "i",
+				structure_name = "",
+				description = "Length of the matched segment.",
+			},
+			{
+				name = "submatches",
+				type_name = "match_result_tab",
+				structure_name = "match_result",
+				description = "Nested table containing captured submatches for a regex result.",
+			},
+			{
+				name = "line",
+				type_name = "i",
+				structure_name = "",
+				description = "Line number of the match for searches in internal tables.",
+			},
+		},
+	},
+	{
+		name = "cntl_simple_event",
+		fields = []Builtin_Field_Spec {
+			{
+				name = "eventid",
+				type_name = "i",
+				structure_name = "",
+				description = "Control Framework event identifier.",
+			},
+			{
+				name = "appl_event",
+				type_name = "abap_bool",
+				structure_name = "",
+				description = "Whether the event is raised as an application event.",
+			},
+		},
+	},
 }
 
 BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
-	{"abap_bool", .Type, ""},
-	{"flag", .Type, ""},
-	{"xfeld", .Type, ""},
-	{"sy", .Type, "syst"},
-	{"syst", .Type, "syst"},
-	{"screen", .Type, "screen"},
-	{"syst", .Variable, "syst"},
-	{"sy", .Variable, "syst"},
-	{"screen", .Variable, "screen"},
-	{"guid", .Type, ""},
-	{"symsgv", .Type, ""},
-	{"sydatum", .Type, ""},
-	{"timestamp", .Type, ""},
-	{"cursor", .Type, ""},
-	{"match_result", .Type, "match_result"},
-	{"match_result_tab", .Type, "match_result"},
-	{"tabname", .Type, ""},
-	{"cdobjectcl", .Type, ""},
-	{"rs38l_fnam", .Type, ""},
-	{"memoryid", .Type, ""},
-	{"seop_source_string", .Type, ""},
-	{"abap_true", .Constant, ""},
-	{"abap_false", .Constant, ""},
-	{"abap_undefined", .Constant, ""},
-	{"space", .Constant, ""},
-	{"text", .Variable, ""},
-	{"cntl_simple_event", .Type, "cntl_simple_event"},
-	{"cntl_simple_events", .Type, "cntl_simple_event"},
-}
-
-ARG_STRING_PARAMS :: []Builtin_Routine_Param_Spec {
-	{"arg", "string"},
-	{"val", "string"},
-}
-
-VAL_STRING_PARAMS :: []Builtin_Routine_Param_Spec {
-	{"val", "string"},
-}
-
-MIXED_CASE_STRING_PARAMS :: []Builtin_Routine_Param_Spec {
-	{"val", "string"},
-	{"sep", "string"},
-	{"case", "string"},
-	{"min", "i"},
-}
-
-ARG_XSTRING_PARAMS :: []Builtin_Routine_Param_Spec {
-	{"arg", "xstring"},
-	{"val", "xstring"},
-}
-
-ARG_DATA_PARAMS :: []Builtin_Routine_Param_Spec {
-	{"arg", "data"},
-	{"val", "data"},
-}
-
-CONCAT_LINES_OF_PARAMS :: []Builtin_Routine_Param_Spec {
-	{"table", "data"},
-	{"sep", "string"},
+	{name = "abap_bool", kind = .Type, structure_name = ""},
+	{name = "flag", kind = .Type, structure_name = ""},
+	{name = "xfeld", kind = .Type, structure_name = ""},
+	{name = "sy", kind = .Type, structure_name = "syst"},
+	{name = "syst", kind = .Type, structure_name = "syst"},
+	{name = "screen", kind = .Type, structure_name = "screen"},
+	{name = "syst", kind = .Variable, structure_name = "syst"},
+	{name = "sy", kind = .Variable, structure_name = "syst"},
+	{name = "screen", kind = .Variable, structure_name = "screen"},
+	{name = "guid", kind = .Type, structure_name = ""},
+	{name = "symsgv", kind = .Type, structure_name = ""},
+	{name = "sydatum", kind = .Type, structure_name = ""},
+	{name = "timestamp", kind = .Type, structure_name = ""},
+	{name = "cursor", kind = .Type, structure_name = ""},
+	{name = "match_result", kind = .Type, structure_name = "match_result"},
+	{name = "match_result_tab", kind = .Type, structure_name = "match_result"},
+	{name = "syst_short", kind = .Type, structure_name = ""},
+	{name = "syst_byte", kind = .Type, structure_name = ""},
+	{name = "syst_long", kind = .Type, structure_name = ""},
+	{name = "tabname", kind = .Type, structure_name = ""},
+	{name = "cdobjectcl", kind = .Type, structure_name = ""},
+	{name = "rs38l_fnam", kind = .Type, structure_name = ""},
+	{name = "memoryid", kind = .Type, structure_name = ""},
+	{name = "seop_source_string", kind = .Type, structure_name = ""},
+	{name = "synt_errors", kind = .Type, structure_name = ""},
+	{name = "synt_comment", kind = .Type, structure_name = ""},
+	{name = "synt_map", kind = .Type, structure_name = ""},
+	{name = "synt_it_trmsg_raw", kind = .Type, structure_name = ""},
+	{name = "synt_includes", kind = .Type, structure_name = ""},
+	{name = "synt_ext_check", kind = .Type, structure_name = ""},
+	{name = "synt_interval", kind = .Type, structure_name = ""},
+	{name = "synt_crossref", kind = .Type, structure_name = ""},
+	{name = "synt_type_obj", kind = .Type, structure_name = ""},
+	{name = "synt_type_childs", kind = .Type, structure_name = ""},
+	{name = "synt_data_obj", kind = .Type, structure_name = ""},
+	{name = "synt_dpar", kind = .Type, structure_name = ""},
+	{name = "synt_env", kind = .Type, structure_name = ""},
+	{name = "synt_comp_obj", kind = .Type, structure_name = ""},
+	{name = "synt_xcross", kind = .Type, structure_name = ""},
+	{name = "synt_xcross_level", kind = .Type, structure_name = ""},
+	{name = "synt_xcross_stmnt", kind = .Type, structure_name = ""},
+	{name = "synt_ext_obj_use", kind = .Type, structure_name = ""},
+	{name = "synum01", kind = .Type, structure_name = ""},
+	{name = "sychar68k", kind = .Type, structure_name = ""},
+	{name = "abap_classname", kind = .Type, structure_name = ""},
+	{name = "abap_compname", kind = .Type, structure_name = ""},
+	{name = "abap_component_tab", kind = .Type, structure_name = ""},
+	{name = "abap_func_parmbind_tab", kind = .Type, structure_name = ""},
+	{name = "abap_func_excpbind_tab", kind = .Type, structure_name = ""},
+	{name = "abap_trans_srcbind_tab", kind = .Type, structure_name = ""},
+	{name = "abap_trans_resbind_tab", kind = .Type, structure_name = ""},
+	{name = "abap_componentdescr", kind = .Type, structure_name = ""},
+	{name = "abap_abstypename", kind = .Type, structure_name = ""},
+	{name = "abap_table_keydescr_tab", kind = .Type, structure_name = ""},
+	{name = "abap_intfdescr_tab", kind = .Type, structure_name = ""},
+	{name = "abap_typecategory", kind = .Type, structure_name = ""},
+	{name = "abap_typekind", kind = .Type, structure_name = ""},
+	{name = "abap_typepropkind", kind = .Type, structure_name = ""},
+	{name = "abap_component_symbol_tab", kind = .Type, structure_name = ""},
+	{name = "abap_component_view_tab", kind = .Type, structure_name = ""},
+	{name = "abap_structkind", kind = .Type, structure_name = ""},
+	{name = "abap_compdescr_tab", kind = .Type, structure_name = ""},
+	{name = "abapsource", kind = .Type, structure_name = ""},
+	{name = "abap_encoding", kind = .Type, structure_name = ""},
+	{name = "abap_editmask", kind = .Type, structure_name = ""},
+	{name = "abap_helpid", kind = .Type, structure_name = ""},
+	{name = "abap_classkind", kind = .Type, structure_name = ""},
+	{name = "abap_visibility", kind = .Type, structure_name = ""},
+	{name = "abap_frndtypes_tab", kind = .Type, structure_name = ""},
+	{name = "abap_tablekind", kind = .Type, structure_name = ""},
+	{name = "abap_keydefkind", kind = .Type, structure_name = ""},
+	{name = "abap_keydescr_tab", kind = .Type, structure_name = ""},
+	{name = "abap_methname", kind = .Type, structure_name = ""},
+	{name = "abap_methdescr", kind = .Type, structure_name = ""},
+	{name = "abap_endian", kind = .Type, structure_name = ""},
+	{name = "abap_parmkind", kind = .Type, structure_name = ""},
+	{name = "abap_typedef_tab", kind = .Type, structure_name = ""},
+	{name = "abap_attrdescr_tab", kind = .Type, structure_name = ""},
+	{name = "abap_methdescr_tab", kind = .Type, structure_name = ""},
+	{name = "abap_evntdescr_tab", kind = .Type, structure_name = ""},
+	{name = "abap_parmbind_tab", kind = .Type, structure_name = ""},
+	{name = "abap_intfkind", kind = .Type, structure_name = ""},
+	{name = "abap_true", kind = .Constant, structure_name = ""},
+	{name = "abap_false", kind = .Constant, structure_name = ""},
+	{name = "abap_undefined", kind = .Constant, structure_name = ""},
+	{name = "abap_func_exporting", kind = .Constant, structure_name = ""},
+	{name = "abap_func_tables", kind = .Constant, structure_name = ""},
+	{name = "space", kind = .Constant, structure_name = ""},
+	{name = "text", kind = .Variable, structure_name = ""},
+	{name = "cntl_simple_event", kind = .Type, structure_name = "cntl_simple_event"},
+	{name = "cntl_simple_events", kind = .Type, structure_name = "cntl_simple_event"},
 }
 
 BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
-	{"line_exists", []Builtin_Routine_Param_Spec{{"table_line", "data"}}, []string{"table_line"}, "abap_bool", false},
-	{"charlen", []Builtin_Routine_Param_Spec{{"arg", "string"}, {"text", "string"}}, []string{"arg"}, "i", false},
-	{"dbmaxlen", ARG_STRING_PARAMS, []string{"arg"}, "i", false},
-	{"numofchar", []Builtin_Routine_Param_Spec{{"arg", "string"}, {"str", "string"}}, []string{"arg"}, "i", false},
-	{"strlen", ARG_STRING_PARAMS, []string{"arg"}, "i", false},
-	{"substring", []Builtin_Routine_Param_Spec{{"val", "string"}, {"off", "i"}, {"len", "i"}}, []string{"val", "off", "len"}, "string", true},
-	{"condense", []Builtin_Routine_Param_Spec{{"val", "string"}, {"del", "string"}, {"from", "string"}, {"to", "string"}}, []string{"val", "del", "from", "to"}, "string", true},
-	{"replace", []Builtin_Routine_Param_Spec{{"val", "string"}, {"sub", "string"}, {"regex", "string"}, {"with", "string"}, {"occ", "i"}, {"case", "abap_bool"}}, []string{"val", "sub", "regex", "with", "occ", "case"}, "string", true},
-	{"round", []Builtin_Routine_Param_Spec{{"val", "decfloat34"}, {"dec", "i"}, {"prec", "i"}, {"mode", "data"}}, []string{"val", "dec", "prec", "mode"}, "decfloat34", true},
-	{"to_lower", VAL_STRING_PARAMS, []string{"val"}, "string", true},
-	{"to_upper", VAL_STRING_PARAMS, []string{"val"}, "string", true},
-	{"to_mixed", MIXED_CASE_STRING_PARAMS, []string{"val", "sep", "case", "min"}, "string", true},
-	{"from_mixed", MIXED_CASE_STRING_PARAMS, []string{"val", "sep", "case", "min"}, "string", true},
-	{"xstrlen", ARG_XSTRING_PARAMS, []string{"arg"}, "i", false},
-	{"lines", ARG_DATA_PARAMS, []string{"arg"}, "i", false},
-	{"concat_lines_of", CONCAT_LINES_OF_PARAMS, []string{"table", "sep"}, "string", true},
+	{
+		name = "boolc",
+		params = []Builtin_Routine_Param_Spec{{"log_exp", "abap_bool"}},
+		return_type = "string",
+		description = "Returns 'X' as a string when the logical expression is true, otherwise a blank string.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "line_exists",
+		params = []Builtin_Routine_Param_Spec{{"table_line", "data"}},
+		return_type = "abap_bool",
+		description = "Predicate function: returns whether a row exists for the given internal table expression.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "charlen",
+		params = []Builtin_Routine_Param_Spec{{"arg", "string"}, {"text", "string"}},
+		return_type = "i",
+		description = "Length of the first character in the current code page.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "dbmaxlen",
+		params = []Builtin_Routine_Param_Spec{{"arg", "string"}, {"val", "string"}},
+		return_type = "i",
+		description = "Maximum ABAP Dictionary length for a string-like value.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "numofchar",
+		params = []Builtin_Routine_Param_Spec{{"arg", "string"}, {"str", "string"}},
+		return_type = "i",
+		description = "Number of characters in a text value.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "strlen",
+		params = []Builtin_Routine_Param_Spec{{"arg", "string"}, {"val", "string"}},
+		return_type = "i",
+		description = "Number of characters in a text value.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "substring",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"off", "i"}, {"len", "i"}},
+		return_type = "string",
+		description = "Returns a substring of a text-like value; optional `off` selects the start position and optional `len` limits the length (if `len` is omitted, the remainder is returned).",
+		supports_named_arguments = true,
+	},
+	{
+		name = "condense",
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"del", "string"},
+			{"from", "string"},
+			{"to", "string"},
+		},
+		return_type = "string",
+		description = "Returns a condensed character string: strips leading/trailing characters in `del`, replaces runs in `from` using `to` (all default to a single blank when omitted).",
+		supports_named_arguments = true,
+	},
+	{
+		name = "replace",
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"sub", "string"},
+			{"regex", "string"},
+			{"with", "string"},
+			{"occ", "i"},
+			{"case", "abap_bool"},
+		},
+		return_type = "string",
+		description = "Returns a character string where occurrences of `sub` or `regex` in `val` are replaced by `with`; `occ` selects one occurrence or all occurrences and `case` controls case-sensitive matching.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "round",
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "decfloat34"},
+			{"dec", "i"},
+			{"prec", "i"},
+			{"mode", "data"},
+		},
+		return_type = "decfloat34",
+		description = "Rounds a decimal floating-point value to a given number of decimal places (`dec`) or significant digits (`prec`), optionally using a rounding mode from `CL_ABAP_MATH`.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "to_lower",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}},
+		return_type = "string",
+		description = "Returns a text value converted to lowercase.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "to_upper",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}},
+		return_type = "string",
+		description = "Returns a text value converted to uppercase.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "to_mixed",
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"sep", "string"},
+			{"case", "string"},
+			{"min", "i"},
+		},
+		return_type = "string",
+		description = "Converts separator-delimited text to mixed case.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "from_mixed",
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"sep", "string"},
+			{"case", "string"},
+			{"min", "i"},
+		},
+		return_type = "string",
+		description = "Converts mixed-case text to separator-delimited text.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "xstrlen",
+		params = []Builtin_Routine_Param_Spec{{"arg", "xstring"}, {"val", "xstring"}},
+		return_type = "i",
+		description = "Number of bytes in a byte string value.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "lines",
+		params = []Builtin_Routine_Param_Spec{{"arg", "data"}, {"val", "data"}},
+		return_type = "i",
+		description = "Number of rows in an internal table value.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "concat_lines_of",
+		params = []Builtin_Routine_Param_Spec{{"table", "data"}, {"sep", "string"}},
+		return_type = "string",
+		description = "Concatenates the rows of an internal table into one character string, optionally inserting `sep` between rows.",
+		supports_named_arguments = true,
+	},
 }
 
 install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: mem.Allocator) {
@@ -210,13 +629,17 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 			if field.type_name != "" {
 				flags += {.Has_Type_Ref}
 			}
-			append(&fields, Structure_Field_Data {
-				name = field.name,
-				decl_unit = unit.unit_id,
-				structure = nested,
-				type_ref = builtin_type_ref(field.type_name),
-				flags = flags,
-			})
+			append(
+				&fields,
+				Structure_Field_Data {
+					name = field.name,
+					decl_unit = unit.unit_id,
+					structure = nested,
+					type_ref = builtin_type_ref(field.type_name),
+					description = field.description,
+					flags = flags,
+				},
+			)
 		}
 		_ = push_structure(unit, spec.name, fields)
 	}
@@ -265,4 +688,18 @@ builtin_routine_spec :: proc(name: string) -> ^Builtin_Routine_Spec {
 		}
 	}
 	return nil
+}
+
+builtin_structure_field_description :: proc(structure_name, field_name: string) -> string {
+	for structure in BUILTIN_STRUCTURES {
+		if !strings.equal_fold(structure.name, structure_name) {
+			continue
+		}
+		for field in structure.fields {
+			if strings.equal_fold(field.name, field_name) {
+				return field.description
+			}
+		}
+	}
+	return ""
 }

@@ -443,6 +443,7 @@ Structure_Field_Data :: struct {
 	structure:            Structure_Id,
 	type_ref:             Field_Type_Ref_Data,
 	value_clause_display: string,
+	description:          string,
 	flags:                Structure_Field_Flags,
 }
 
@@ -461,6 +462,7 @@ Structure_Field_Info :: struct {
 	structure:            Structure_Id,
 	type_ref:             Field_Type_Ref_Data,
 	value_clause_display: string,
+	description:          string,
 	flags:                Structure_Field_Flags,
 }
 
@@ -1156,6 +1158,7 @@ structure_field_info :: proc(
 		structure            = field.structure,
 		type_ref             = field.type_ref,
 		value_clause_display = field.value_clause_display,
+		description          = field.description,
 		flags                = field.flags,
 	}
 	if field.structure != INVALID_STRUCTURE_ID {

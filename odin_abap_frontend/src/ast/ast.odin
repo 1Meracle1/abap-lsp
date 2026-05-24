@@ -195,6 +195,7 @@ Raw_Operand_Ref :: struct {
 	name:      string,
 	range:     tokenizer.Range,
 	type_base: bool,
+	call_like: bool,
 	path:      [dynamic]Raw_Operand_Path_Segment,
 }
 

@@ -52,7 +52,11 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 	testing.expect(t, analyze.find_symbol(&unit, "abap_true", .Builtin_Constant) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "sy", .Builtin_Variable) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "syst", .Builtin_Type) != nil)
-	testing.expect(t, analyze.builtin_routine_spec("strlen") != nil)
+	strlen := analyze.builtin_routine_spec("strlen")
+	testing.expect(t, strlen != nil)
+	if strlen != nil {
+		testing.expect_value(t, strlen.description, "Number of characters in a text value.")
+	}
 	testing.expect(t, analyze.find_symbol(&unit, "strlen", .Builtin_Routine) != nil)
 }
 
@@ -289,6 +293,31 @@ ENDFORM.
 }
 
 @(test)
+resolves_boolc_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///boolc.abap",
+		`
+FORM run.
+  DATA rv_exists TYPE string.
+  rv_exists = boolc( sy-subrc = 0 OR sy-subrc = 4 ).
+  CALL FUNCTION 'Z_DEMO'
+    EXPORTING
+      iv_exists = boolc( sy-subrc = 0 OR sy-subrc = 4 ).
+ENDFORM.
+`,
+	)
+
+	spec := analyze.builtin_routine_spec("boolc")
+	testing.expect(t, spec != nil)
+	if spec != nil {
+		testing.expect_value(t, spec.return_type, "string")
+	}
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "boolc", .Routine, .Routine_Call))
+}
+
+@(test)
 standard_control_event_table_type_is_builtin :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -353,6 +382,89 @@ ENDINTERFACE.
 }
 
 @(test)
+standard_type_pool_symbols_are_installed :: proc(t: ^testing.T) {
+	unit := analyze.unit_analysis_make(
+		analyze.Unit_Id(0),
+		"mem://type_pool_symbols.abap",
+		tokenizer.text_range(0, 0),
+		context.allocator,
+	)
+
+	type_names := [?]string {
+		"syst_short",
+		"syst_byte",
+		"syst_long",
+		"synt_errors",
+		"synt_comment",
+		"synt_map",
+		"synt_it_trmsg_raw",
+		"synt_includes",
+		"synt_ext_check",
+		"synt_interval",
+		"synt_crossref",
+		"synt_type_obj",
+		"synt_type_childs",
+		"synt_data_obj",
+		"synt_dpar",
+		"synt_env",
+		"synt_comp_obj",
+		"synt_xcross",
+		"synt_xcross_level",
+		"synt_xcross_stmnt",
+		"synt_ext_obj_use",
+		"synum01",
+		"sychar68k",
+		"abap_classname",
+		"abap_compname",
+		"abap_component_tab",
+		"abap_func_parmbind_tab",
+		"abap_func_excpbind_tab",
+		"abap_trans_srcbind_tab",
+		"abap_trans_resbind_tab",
+		"abap_componentdescr",
+		"abap_abstypename",
+		"abap_table_keydescr_tab",
+		"abap_intfdescr_tab",
+		"abap_typecategory",
+		"abap_typekind",
+		"abap_typepropkind",
+		"abap_component_symbol_tab",
+		"abap_component_view_tab",
+		"abap_structkind",
+		"abap_compdescr_tab",
+		"abapsource",
+		"abap_encoding",
+		"abap_editmask",
+		"abap_helpid",
+		"abap_classkind",
+		"abap_visibility",
+		"abap_frndtypes_tab",
+		"abap_tablekind",
+		"abap_keydefkind",
+		"abap_keydescr_tab",
+		"abap_methname",
+		"abap_methdescr",
+		"abap_endian",
+		"abap_parmkind",
+		"abap_typedef_tab",
+		"abap_attrdescr_tab",
+		"abap_methdescr_tab",
+		"abap_evntdescr_tab",
+		"abap_parmbind_tab",
+		"abap_intfkind",
+		"abap_bool",
+	}
+	for name in type_names {
+		testing.expect(t, analyze.find_symbol(&unit, name, .Builtin_Type) != nil)
+	}
+
+	constant_names := [?]string{"abap_func_exporting", "abap_func_tables"}
+	for name in constant_names {
+		testing.expect(t, analyze.find_symbol(&unit, name, .Builtin_Constant) != nil)
+	}
+}
+
+@(test)
 structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	unit := analyze.unit_analysis_make(
 		analyze.Unit_Id(0),
@@ -371,12 +483,15 @@ structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	testing.expect_value(t, subrc.name, "subrc")
 	testing.expect(t, .Has_Type_Ref in subrc.flags)
 	testing.expect_value(t, subrc.type_ref.base_name, "i")
+	testing.expect_value(t, subrc.description, "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.")
+	testing.expect_value(t, analyze.builtin_structure_field_description("syst", "subrc"), subrc.description)
 
 	screen_name, ok2 := analyze.structure_field_info(&unit, screen.id, "name")
 	testing.expect(t, ok2)
 	testing.expect_value(t, screen_name.name, "name")
 	testing.expect(t, .Has_Type_Ref in screen_name.flags)
 	testing.expect_value(t, screen_name.type_ref.base_name, "c")
+	testing.expect_value(t, screen_name.description, "Name of the current dynpro field or screen element.")
 }
 
 collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> analyze.Unit_Analysis {

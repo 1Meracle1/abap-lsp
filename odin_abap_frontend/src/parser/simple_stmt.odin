@@ -481,7 +481,14 @@ populate_raw_operand_fact_lists :: proc(
 			i = next
 			continue
 		}
-		append(refs, ast.Raw_Operand_Ref{name = text, range = tok.range})
+		append(
+			refs,
+			ast.Raw_Operand_Ref {
+				name = text,
+				range = tok.range,
+				call_like = i + 1 < end && p.tokens[i + 1].kind == .LParen,
+			},
+		)
 		i += 1
 	}
 }

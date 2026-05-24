@@ -530,6 +530,10 @@ collect_raw_operand_fact_refs :: proc(
 			kind = .Static_Target
 		}
 		name := canonical_name(ref.name, c.allocator)
+		if ref.call_like && !ref.type_base && len(ref.path) == 0 && builtin_routine_spec(name) != nil {
+			add_reference(c, scope, name, .Routine, .Routine_Call, ref.range)
+			continue
+		}
 		add_reference(c, scope, name, namespace, kind, ref.range)
 		if len(ref.path) > 0 {
 			segments := make([dynamic]Field_Access_Segment, 0, len(ref.path), c.allocator)
