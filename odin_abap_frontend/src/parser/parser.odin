@@ -1442,6 +1442,10 @@ assignment_operator_index :: proc(p: ^Parser, index: int) -> int {
 	if index >= len(p.tokens) || !expr_lead_token(p.tokens[index]) {
 		return -1
 	}
+	if index + 1 < len(p.tokens) &&
+	   (p.tokens[index + 1].kind == .Eq || p.tokens[index + 1].kind == .QuestionEq) {
+		return index + 1
+	}
 	if known_stmt_lead_at(p, index) {
 		return -1
 	}

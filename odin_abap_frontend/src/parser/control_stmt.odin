@@ -22,11 +22,11 @@ control_stmt_starts :: proc(p: ^Parser) -> bool {
 structural_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
 		structural_block_keyword_starts(p, "CLASS") ||
-		at_keyword(p, "INTERFACE") ||
-		at_keyword(p, "METHOD") ||
-		at_keyword(p, "FORM") ||
+		structural_block_keyword_starts(p, "INTERFACE") ||
+		structural_block_keyword_starts(p, "METHOD") ||
+		structural_block_keyword_starts(p, "FORM") ||
 		structural_block_keyword_starts(p, "FUNCTION") ||
-		at_keyword(p, "MODULE") ||
+		structural_block_keyword_starts(p, "MODULE") ||
 		event_block_starts(p) ||
 		at_keyword_phrase(p, "ENHANCEMENT-SECTION") ||
 		at_keyword(p, "ENHANCEMENT") ||
@@ -36,7 +36,8 @@ structural_stmt_starts :: proc(p: ^Parser) -> bool {
 }
 
 structural_block_keyword_starts :: proc(p: ^Parser, keyword: string) -> bool {
-	return at_keyword(p, keyword) && next_token_kind(p, 1) != .Minus
+	next := next_token_kind(p, 1)
+	return at_keyword(p, keyword) && next != .Minus && next != .Eq && next != .QuestionEq
 }
 
 parse_control_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

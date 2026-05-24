@@ -105,6 +105,22 @@ START-OF-SELECTION. WRITE 'start'.`
 }
 
 @(test)
+structural_keyword_variable_assignment_stays_in_current_block :: proc(t: ^testing.T) {
+	source := `FUNCTION z_fm.
+  IF suppress_corr_check IS INITIAL.
+    function = funcname.
+  ENDIF.
+ENDFUNCTION.`
+	parsed := parse(source, "keyword_assignment.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.function_decl, 1)
+	testing.expect_value(t, counts.if_stmt, 1)
+	testing.expect_value(t, counts.assign, 1)
+}
+
+@(test)
 form_and_function_header_parameters_are_ast_fields :: proc(t: ^testing.T) {
 	source := `FORM run TABLES !ct_rows STRUCTURE mara USING VALUE(iv_text) TYPE string REFERENCE(iv_ref) LIKE sy-uname CHANGING cv_count TYPE i.
 ENDFORM.
