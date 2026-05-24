@@ -787,6 +787,13 @@ parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {
 			stmt.target = simple_expr(p, body_start, []string{})
 			return true
 		}
+		if allow_keyword(p, "TIME") {
+			allow_keyword(p, "STAMP")
+			allow_keyword(p, "FIELD")
+			stmt.subject = .Time_Stamp_Field
+			stmt.target = simple_expr(p, body_start, []string{})
+			return true
+		}
 		if allow_keyword(p, "PARAMETER") {
 			allow_keyword(p, "ID")
 			stmt.subject = .Parameter_ID_Field

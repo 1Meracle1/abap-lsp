@@ -2218,6 +2218,25 @@ ENDFORM.
 }
 
 @(test)
+get_time_stamp_field_does_not_reference_keywords :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///get_time_stamp.abap",
+		`
+FORM run.
+  DATA lv_timestamp TYPE timestamp.
+  GET TIME STAMP FIELD lv_timestamp.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_reference(&unit, "time", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "stamp", .Value, .Identifier))
+	testing.expect_value(t, reference_count(&unit, "lv_timestamp", .Value, .Identifier), 1)
+}
+
+@(test)
 validates_unresolved_and_wrong_namespace_references :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

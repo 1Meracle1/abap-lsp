@@ -1823,6 +1823,9 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 	case .Run_Time_Field:
 		emit(p, " RUN TIME FIELD ")
 		emit_node(p, stmt.target)
+	case .Time_Stamp_Field:
+		emit(p, " TIME STAMP FIELD ")
+		emit_node(p, stmt.target)
 	case .Parameter_ID_Field:
 		emit(p, " PARAMETER ID ")
 		emit_node(p, stmt.id)

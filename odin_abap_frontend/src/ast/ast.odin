@@ -1381,6 +1381,7 @@ Runtime_Kind :: enum {
 Runtime_Subject :: enum {
 	None,
 	Run_Time_Field,
+	Time_Stamp_Field,
 	Parameter_ID_Field,
 	Cursor,
 	Reference,

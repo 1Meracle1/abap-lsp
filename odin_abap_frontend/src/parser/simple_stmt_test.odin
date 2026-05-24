@@ -315,12 +315,13 @@ SET PF-STATUS lv_status EXCLUDING lt_excluding.
 SET SCREEN 100.
 SET USER-COMMAND lv_ok.
 SET UPDATE TASK LOCAL.
+GET TIME STAMP FIELD lv_timestamp.
 GET REFERENCE OF ls_data INTO lr_data.`
 	parsed := parse(source, "runtime_details.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	testing.expect_value(t, counts.runtime_stmt, 8)
+	testing.expect_value(t, counts.runtime_stmt, 9)
 	get_parameter := parsed.root.stmts[0].derived_stmt.(^ast.Runtime_Stmt)
 	set_parameter := parsed.root.stmts[1].derived_stmt.(^ast.Runtime_Stmt)
 	cursor := parsed.root.stmts[2].derived_stmt.(^ast.Runtime_Stmt)
@@ -328,7 +329,8 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	screen := parsed.root.stmts[4].derived_stmt.(^ast.Runtime_Stmt)
 	user_command := parsed.root.stmts[5].derived_stmt.(^ast.Runtime_Stmt)
 	update_task := parsed.root.stmts[6].derived_stmt.(^ast.Runtime_Stmt)
-	reference := parsed.root.stmts[7].derived_stmt.(^ast.Runtime_Stmt)
+	time_stamp := parsed.root.stmts[7].derived_stmt.(^ast.Runtime_Stmt)
+	reference := parsed.root.stmts[8].derived_stmt.(^ast.Runtime_Stmt)
 
 	testing.expect_value(t, get_parameter.subject, ast.Runtime_Subject.Parameter_ID_Field)
 	testing.expect(t, get_parameter.id != nil)
@@ -345,6 +347,9 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	testing.expect_value(t, screen.subject, ast.Runtime_Subject.Screen)
 	testing.expect_value(t, user_command.subject, ast.Runtime_Subject.User_Command)
 	testing.expect_value(t, update_task.subject, ast.Runtime_Subject.Update_Task_Local)
+	testing.expect_value(t, time_stamp.subject, ast.Runtime_Subject.Time_Stamp_Field)
+	testing.expect(t, time_stamp.target != nil)
+	testing.expect_value(t, ast.print_node(time_stamp, context.allocator), "GET TIME STAMP FIELD lv_timestamp.")
 	testing.expect_value(t, reference.subject, ast.Runtime_Subject.Reference)
 	testing.expect(t, reference.value != nil)
 	testing.expect(t, reference.target != nil)
