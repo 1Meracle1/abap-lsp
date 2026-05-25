@@ -827,6 +827,28 @@ CREATE OBJECT ri_dyn TYPE (lv_class).`
 }
 
 @(test)
+create_data_ref_to_dynamic_type_tracks_only_runtime_name_expr :: proc(t: ^testing.T) {
+	source := `CREATE DATA lr_lit TYPE REF TO ('CL_W3_API_XML3').
+CREATE DATA lr_var TYPE REF TO (lv_class).`
+	parsed := parse(source, "create_data_dynamic_type_ref.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	lit_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Object_Stmt)
+	var_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Create_Object_Stmt)
+	lit_type := lit_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	var_type := var_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, lit_stmt.type_dynamic)
+	testing.expect(t, var_stmt.type_dynamic)
+	testing.expect(t, lit_type.raw_operand)
+	testing.expect(t, var_type.is_ref)
+	testing.expect(t, lit_type.is_ref)
+	testing.expect_value(t, len(lit_type.raw_refs), 0)
+	testing.expect_value(t, len(var_type.raw_refs), 1)
+	testing.expect_value(t, var_type.raw_refs[0].name, "lv_class")
+}
+
+@(test)
 authority_check_object_keeps_id_fields :: proc(t: ^testing.T) {
 	source := `AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' FIELD lv_tcode.`
 	parsed := parse(source, "authority_check.abap", context.allocator)

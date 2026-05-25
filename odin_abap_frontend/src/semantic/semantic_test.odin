@@ -2376,6 +2376,26 @@ START-OF-SELECTION.
 }
 
 @(test)
+create_data_dynamic_literal_type_is_not_remote_dependency :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///create_data_dynamic_literal.abap",
+		source = `
+DATA lr_xml_api TYPE REF TO data.
+CREATE DATA lr_xml_api TYPE REF TO ('CL_W3_API_XML3').
+`,
+	}
+	project := analyze_project_test(t, 0, target, nil)
+	unit := &project.units[0]
+	candidates := analyze.collect_project_remote_dependency_candidates(&project, context.allocator)
+
+	testing.expect(t, !has_diagnostic(unit, .Unresolved_Reference))
+	testing.expect(t, !has_reference(unit, "('cl_w3_api_xml3')", .Type, .Type_Ref))
+	for candidate in candidates {
+		testing.expect(t, candidate.name != "('cl_w3_api_xml3')")
+	}
+}
+
+@(test)
 resolves_form_changing_parameter_in_body :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

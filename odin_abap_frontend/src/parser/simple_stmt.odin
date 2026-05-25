@@ -656,7 +656,7 @@ raw_operand_skip_keyword :: proc(text: string) -> bool {
 		"INIT", "NEXT", "WHEN", "THEN", "ELSE", "TYPE", "LIKE", "VALUE", "DATA",
 		"FIELD", "SYMBOL", "EXPORTING", "IMPORTING", "CHANGING", "TABLES",
 		"RECEIVING", "EXCEPTIONS", "USING", "RAISING", "RESUMABLE", "MESSAGE",
-		"COMPONENT", "OF", "STRUCTURE", "TO", "INTO", "FROM", "BY", "WITH",
+		"COMPONENT", "OF", "STRUCTURE", "REF", "TO", "INTO", "FROM", "BY", "WITH",
 		"FIELDS", "LINES", "LINE", "TABLE", "OBJECT", "EXCEPTION", "EVENT",
 	}
 	for keyword in keywords {
@@ -1026,7 +1026,7 @@ parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Create_Object_Stmt, start.range, p.allocator)
 	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
 	if allow_keyword(p, "TYPE") {
-		stmt.type_dynamic = current_token(p).kind == .LParen
+		stmt.type_dynamic = create_type_ref_is_dynamic(p)
 		stmt.type_ref = parse_raw_operand_to_period(
 			p,
 			[]string{"EXPORTING", "EXCEPTIONS"},
@@ -1040,6 +1040,14 @@ parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.operands = parse_generic_operands_to_period(p, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+create_type_ref_is_dynamic :: proc(p: ^Parser) -> bool {
+	i := p.index
+	if at_keyword_index(p, i, "REF") && at_keyword_index(p, i + 1, "TO") {
+		i += 2
+	}
+	return i < len(p.tokens) && p.tokens[i].kind == .LParen
 }
 
 text_transform_stmt_starts :: proc(p: ^Parser) -> bool {
