@@ -1164,6 +1164,7 @@ Find_Stmt :: struct {
 	target:       ^Expr,
 	match_offset: ^Expr,
 	match_length: ^Expr,
+	match_count:  ^Expr,
 	results:      ^Expr,
 	submatches:   [dynamic]^Expr,
 }

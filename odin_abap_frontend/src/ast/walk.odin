@@ -316,6 +316,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.target)
 		walk(next, n.match_offset)
 		walk(next, n.match_length)
+		walk(next, n.match_count)
 		walk(next, n.results)
 		walk_expr_list(next, n.submatches)
 	case ^Search_Stmt:

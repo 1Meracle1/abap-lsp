@@ -141,7 +141,7 @@ CONDENSE text NO-GAPS.
 REPLACE FIRST OCCURRENCE OF 'a' IN text WITH 'b'.
 TRANSLATE text TO UPPER CASE.
 SHIFT text RIGHT BY 2 PLACES.
-FIND FIRST OCCURRENCE OF 'a' IN text MATCH OFFSET off RESULTS res.
+FIND FIRST OCCURRENCE OF 'a' IN text MATCH OFFSET off MATCH COUNT cnt RESULTS res.
 SEARCH text FOR pattern STARTING AT first ENDING AT last ABBREVIATED.
 PERFORM frm IN PROGRAM prog USING arg CHANGING out IF FOUND.
 CALL FUNCTION 'Z_FM'.
@@ -177,6 +177,7 @@ WRITE /10(5) text.`
 	testing.expect(t, shift.places != nil)
 	testing.expect_value(t, find.occurrence, ast.Find_Occurrence.First)
 	testing.expect(t, find.match_offset != nil)
+	testing.expect(t, find.match_count != nil)
 	testing.expect(t, find.results != nil)
 	testing.expect(t, search.starting_at != nil)
 	testing.expect(t, search.ending_at != nil)

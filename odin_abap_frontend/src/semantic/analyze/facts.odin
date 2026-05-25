@@ -477,7 +477,9 @@ append_call_argument :: proc(
 	)
 }
 
-named_argument_section_from_ast :: proc(kind: ast.Call_Arg_Section_Kind) -> (
+named_argument_section_from_ast :: proc(
+	kind: ast.Call_Arg_Section_Kind,
+) -> (
 	Named_Argument_Section,
 	bool,
 ) {
@@ -498,11 +500,7 @@ named_argument_section_from_ast :: proc(kind: ast.Call_Arg_Section_Kind) -> (
 	return .Exporting, false
 }
 
-collect_raw_operand_refs :: proc(
-	c: ^Collector,
-	expr: ^ast.Type_Ref_Expr,
-	scope: Scope_Id,
-) {
+collect_raw_operand_refs :: proc(c: ^Collector, expr: ^ast.Type_Ref_Expr, scope: Scope_Id) {
 	collect_raw_operand_fact_refs(c, expr.raw_decls[:], expr.raw_refs[:], scope)
 }
 
@@ -530,7 +528,10 @@ collect_raw_operand_fact_refs :: proc(
 			kind = .Static_Target
 		}
 		name := canonical_name(ref.name, c.allocator)
-		if ref.call_like && !ref.type_base && len(ref.path) == 0 && builtin_routine_spec(name) != nil {
+		if ref.call_like &&
+		   !ref.type_base &&
+		   len(ref.path) == 0 &&
+		   builtin_routine_spec(name) != nil {
 			add_reference(c, scope, name, .Routine, .Routine_Call, ref.range)
 			continue
 		}
@@ -977,19 +978,38 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.match_offset, scope)
 	collect_expr_refs(c, stmt.match_length, scope)
+	collect_expr_refs(c, stmt.match_count, scope)
 	collect_expr_refs(c, stmt.results, scope)
 	collect_expr_list_refs(c, stmt.submatches[:], scope)
 	read_ranges := make([dynamic]tokenizer.Range, 0, 2, c.allocator)
 	write_targets := make([dynamic]Find_Write_Target_Data, 0, 5, c.allocator)
 	if stmt.pattern != nil {append(&read_ranges, stmt.pattern.range)}
 	if stmt.target != nil {append(&read_ranges, stmt.target.range)}
-	if stmt.match_offset !=
-	   nil {append(&write_targets, Find_Write_Target_Data{range = stmt.match_offset.range, definitely_assigned = true})}
-	if stmt.match_length !=
-	   nil {append(&write_targets, Find_Write_Target_Data{range = stmt.match_length.range, definitely_assigned = true})}
+	if stmt.match_offset != nil {
+		append(
+			&write_targets,
+			Find_Write_Target_Data{range = stmt.match_offset.range, definitely_assigned = true},
+		)
+	}
+	if stmt.match_length != nil {
+		append(
+			&write_targets,
+			Find_Write_Target_Data{range = stmt.match_length.range, definitely_assigned = true},
+		)
+	}
+	if stmt.match_count != nil {
+		append(
+			&write_targets,
+			Find_Write_Target_Data{range = stmt.match_count.range, definitely_assigned = true},
+		)
+	}
 	for submatch in stmt.submatches {
-		if submatch !=
-		   nil {append(&write_targets, Find_Write_Target_Data{range = submatch.range, definitely_assigned = true})}
+		if submatch != nil {
+			append(
+				&write_targets,
+				Find_Write_Target_Data{range = submatch.range, definitely_assigned = true},
+			)
+		}
 	}
 	if stmt.results != nil {
 		append(
@@ -1837,13 +1857,7 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 			if access, ok := value_access_from_expr(c, e.table, scope); ok {
 				name = table_order_name_from_access(c, access)
 			}
-			record_read_table_binary_search(
-				c,
-				scope,
-				e.binary_search_clause,
-				name,
-				key_fields[:],
-			)
+			record_read_table_binary_search(c, scope, e.binary_search_clause, name, key_fields[:])
 		}
 	}
 }
@@ -1853,7 +1867,15 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 	is_sql := false
 	if stmt.form == .Db_Table {
 		add_system_field_update(c, scope, stmt.range, .Insert_Db_Table, "subrc")
-		query_id, is_sql = collect_db_table_sql_source(c, stmt.range, stmt.target, scope, nil, tokenizer.Range{}, false)
+		query_id, is_sql = collect_db_table_sql_source(
+			c,
+			stmt.range,
+			stmt.target,
+			scope,
+			nil,
+			tokenizer.Range{},
+			false,
+		)
 		if !is_sql {
 			if stmt.has_db_table_name {
 				query_id, is_sql = collect_db_table_sql_source_name(
@@ -1881,7 +1903,16 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 	collect_expr_refs(c, stmt.reference_into, scope)
 	for a in stmt.assignments {
 		if is_sql && a.column_name != "" {
-			push_sql_name_ref(c, query_id, scope, a.column_range, a.column_name, "", .Column, .Unresolved)
+			push_sql_name_ref(
+				c,
+				query_id,
+				scope,
+				a.column_range,
+				a.column_name,
+				"",
+				.Column,
+				.Unresolved,
+			)
 		} else if is_sql {
 			collect_sql_name_refs_from_expr(c, query_id, a.name, scope, false)
 		} else {
@@ -1969,7 +2000,16 @@ collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: 
 	collect_expr_refs(c, stmt.source, scope)
 	for a in stmt.assignments {
 		if is_sql && a.column_name != "" {
-			push_sql_name_ref(c, query_id, scope, a.column_range, a.column_name, "", .Column, .Unresolved)
+			push_sql_name_ref(
+				c,
+				query_id,
+				scope,
+				a.column_range,
+				a.column_name,
+				"",
+				.Column,
+				.Unresolved,
+			)
 		} else if is_sql {
 			collect_sql_name_refs_from_expr(c, query_id, a.name, scope, false)
 		} else {

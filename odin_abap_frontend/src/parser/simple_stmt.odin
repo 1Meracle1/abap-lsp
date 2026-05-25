@@ -2147,6 +2147,12 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 					body_start,
 					[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
 				)
+			} else if allow_keyword(p, "COUNT") {
+				stmt.match_count = required_simple_expr(
+					p,
+					body_start,
+					[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
+				)
 			} else {
 				stmt.match_offset = required_simple_expr(
 					p,

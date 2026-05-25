@@ -3579,6 +3579,7 @@ FORM run.
   DATA lv_result TYPE string.
   DATA lv_off TYPE i.
   DATA lv_match_len TYPE i.
+  DATA lv_cnt TYPE i.
 
   READ REPORT lv_prog INTO lt_report.
   INSERT REPORT lv_prog FROM lt_source.
@@ -3589,7 +3590,7 @@ FORM run.
   READ DATASET lv_file INTO lv_text ACTUAL LENGTH lv_len.
   GET DATASET lv_file POSITION lv_pos ATTRIBUTES lv_attr.
   CONCATENATE LINES OF lt_source INTO lv_text IN BYTE MODE.
-  FIND ALL OCCURRENCES OF 'A' IN lv_text MATCH OFFSET lv_off MATCH LENGTH lv_match_len RESULTS lv_result.
+  FIND ALL OCCURRENCES OF 'A' IN lv_text MATCH OFFSET lv_off MATCH LENGTH lv_match_len MATCH COUNT lv_cnt RESULTS lv_result.
 ENDFORM.
 `,
 	)
@@ -3601,13 +3602,14 @@ ENDFORM.
 	testing.expect(t, len(unit.concatenate_lines_of_sites) == 1)
 	testing.expect(t, unit.concatenate_lines_of_sites[0].byte_mode)
 	testing.expect(t, len(unit.find_sites) == 1)
-	testing.expect(t, len(unit.find_sites[0].write_targets) == 3)
-	testing.expect(t, unit.find_sites[0].write_targets[2].definitely_assigned)
+	testing.expect(t, len(unit.find_sites[0].write_targets) == 4)
+	testing.expect(t, unit.find_sites[0].write_targets[3].definitely_assigned)
 	testing.expect(t, len(unit.assignment_sites) >= 12)
 	testing.expect(t, has_reference(&unit, "lt_source", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lt_report", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lt_pool", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lv_attr", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "count", .Value, .Identifier))
 }
 
 @(test)

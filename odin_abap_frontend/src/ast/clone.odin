@@ -402,6 +402,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.target = clone(n.target, allocator)
 		r.match_offset = clone(n.match_offset, allocator)
 		r.match_length = clone(n.match_length, allocator)
+		r.match_count = clone(n.match_count, allocator)
 		r.results = clone(n.results, allocator)
 		r.submatches = clone_expr_list(n.submatches, allocator)
 		return r
