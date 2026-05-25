@@ -434,6 +434,12 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit_expr_list(p, n.args, " ")
 		}
 		emit(p, ".")
+	case ^Selection_Screen_Stmt:
+		if n.text != "" {
+			emit(p, n.text)
+		} else {
+			emit(p, "SELECTION-SCREEN.")
+		}
 	case ^Oop_Simple_Stmt:
 		emit_oop_simple_stmt(p, n)
 	case ^If_Stmt:
@@ -879,6 +885,10 @@ emit_ranges_decl :: proc(p: ^Printer, decl: ^Ranges_Decl) {
 }
 
 emit_parameters_decl :: proc(p: ^Printer, decl: ^Parameters_Decl) {
+	if decl.text != "" {
+		emit(p, decl.text)
+		return
+	}
 	emit(p, "PARAMETERS")
 	emit(p, ": " if len(decl.parameters) > 1 else " ")
 	for clause, i in decl.parameters {

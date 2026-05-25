@@ -410,6 +410,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Macro_Def_Stmt:
 	case ^Macro_Call_Stmt:
 		walk_expr_list(next, n.args)
+	case ^Selection_Screen_Stmt:
 	case ^Oop_Simple_Stmt:
 		for member in n.members {
 			for clause in member.signatures {

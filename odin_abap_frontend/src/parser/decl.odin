@@ -322,6 +322,7 @@ parse_parameters_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	period := expect_token(p, .Period)
 	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
+	stmt.text = source_range_text(p, stmt.range)
 	return stmt
 }
 

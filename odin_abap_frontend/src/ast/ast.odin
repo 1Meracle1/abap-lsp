@@ -675,6 +675,7 @@ Ranges_Clause :: struct {
 // ABAP syntax: PARAMETERS statement, for example `PARAMETERS p TYPE i.`
 Parameters_Decl :: struct {
 	using node: Decl,
+	text:       string,
 	parameters: [dynamic]Parameters_Clause,
 }
 
@@ -1553,6 +1554,18 @@ Macro_Call_Stmt :: struct {
 	args:       [dynamic]^Expr,
 }
 
+// ABAP syntax: `SELECTION-SCREEN ...`, including COMMENT-generated text fields.
+Selection_Screen_Stmt :: struct {
+	using node:   Stmt,
+	text:         string,
+	title_name:   string,
+	title_range:  tokenizer.Range,
+	comment_name: string,
+	comment_range: tokenizer.Range,
+	field_name:   string,
+	field_range:  tokenizer.Range,
+}
+
 Oop_Simple_Kind :: enum {
 	Class_Section,
 	Methods,
@@ -2377,6 +2390,7 @@ Any_Node :: union {
 	^Line_Stmt,
 	^Macro_Def_Stmt,
 	^Macro_Call_Stmt,
+	^Selection_Screen_Stmt,
 	^Oop_Simple_Stmt,
 	^If_Stmt,
 	^Case_Stmt,
@@ -2524,6 +2538,7 @@ Any_Stmt :: union {
 	^Line_Stmt,
 	^Macro_Def_Stmt,
 	^Macro_Call_Stmt,
+	^Selection_Screen_Stmt,
 	^Oop_Simple_Stmt,
 	^If_Stmt,
 	^Case_Stmt,

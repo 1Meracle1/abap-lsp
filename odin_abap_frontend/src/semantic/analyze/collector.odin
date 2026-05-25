@@ -660,6 +660,8 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		collect_line_stmt_facts(c, n, scope)
 	case ^ast.Macro_Call_Stmt:
 		collect_expr_list_refs(c, n.args[:], scope)
+	case ^ast.Selection_Screen_Stmt:
+		collect_selection_screen_stmt_facts(c, n, scope)
 	case ^ast.If_Stmt:
 		then_scope := walk_body_in_scope(c, .If_Branch, n.range, n.body)
 		collect_expr_refs(c, n.condition, then_scope)
@@ -748,6 +750,18 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		collect_generate_stmt_facts(c, n, scope)
 	case ^ast.Exec_Sql_Stmt:
 		add_routine_site(c, scope, n.range, .Unknown_Effect)
+	}
+}
+
+collect_selection_screen_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Selection_Screen_Stmt,
+	scope: Scope_Id,
+) {
+	declare_name_if_present(c, scope, stmt.title_name, .Variable, stmt.title_range)
+	declare_name_if_present(c, scope, stmt.comment_name, .Variable, stmt.comment_range)
+	if stmt.field_name != "" {
+		add_reference(c, scope, stmt.field_name, .Value, .Identifier, stmt.field_range)
 	}
 }
 

@@ -747,6 +747,9 @@ keyword_phrase_at_static :: #force_inline proc(p: ^Parser, index: int, $keyword:
 	when keyword == "SELECT-OPTIONS" {
 		return hyphen2_at(p, index, "SELECT", "OPTIONS")
 	}
+	when keyword == "SELECTION-SCREEN" {
+		return hyphen2_at(p, index, "SELECTION", "SCREEN")
+	}
 	when keyword == "CLASS-DATA" {
 		return hyphen2_at(p, index, "CLASS", "DATA")
 	}
@@ -918,6 +921,9 @@ keyword_phrase_at_dynamic :: proc(p: ^Parser, index: int, keyword: string) -> bo
 	}
 	if keyword == "SELECT-OPTIONS" {
 		return hyphen2_at(p, index, "SELECT", "OPTIONS")
+	}
+	if keyword == "SELECTION-SCREEN" {
+		return hyphen2_at(p, index, "SELECTION", "SCREEN")
 	}
 	if keyword == "CLASS-DATA" {
 		return hyphen2_at(p, index, "CLASS", "DATA")
@@ -1138,6 +1144,7 @@ keyword_phrase_token_count :: proc(keyword: string) -> int {
 	}
 	if keyword == "FIELD-SYMBOLS" ||
 	   keyword == "SELECT-OPTIONS" ||
+	   keyword == "SELECTION-SCREEN" ||
 	   keyword == "CLASS-DATA" ||
 	   keyword == "TYPE-POOLS" ||
 	   keyword == "FUNCTION-POOL" ||
@@ -1528,6 +1535,7 @@ known_stmt_lead_at :: proc(p: ^Parser, index: int) -> bool {
 		keyword_phrase_at(p, index, "PARAMETERS") ||
 		keyword_phrase_at(p, index, "PARAMETER") ||
 		keyword_phrase_at(p, index, "SELECT-OPTIONS") ||
+		keyword_phrase_at(p, index, "SELECTION-SCREEN") ||
 		keyword_phrase_at(p, index, "CONTROLS") ||
 		keyword_phrase_at(p, index, "CLASS-DATA") ||
 		keyword_phrase_at(p, index, "TYPE-POOLS") ||

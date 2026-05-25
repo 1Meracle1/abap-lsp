@@ -58,6 +58,69 @@ method(2) = value.`
 }
 
 @(test)
+selection_screen_statements_are_not_macro_calls :: proc(t: ^testing.T) {
+	source := `SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
+SELECTION-SCREEN COMMENT 1(18) sc_url FOR FIELD p_url.
+SELECTION-SCREEN END OF SCREEN 1002.`
+	parsed := parse(source, "selection_screen.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	begin := parsed.root.stmts[0].derived_stmt.(^ast.Selection_Screen_Stmt)
+	comment := parsed.root.stmts[1].derived_stmt.(^ast.Selection_Screen_Stmt)
+	_, macro := parsed.root.stmts[1].derived_stmt.(^ast.Macro_Call_Stmt)
+
+	testing.expect(t, !macro)
+	testing.expect_value(t, begin.title_name, "sc_title")
+	testing.expect_value(t, comment.comment_name, "sc_url")
+	testing.expect_value(t, comment.field_name, "p_url")
+}
+
+@(test)
+selection_screen_block_prints_without_information_loss :: proc(t: ^testing.T) {
+	source := `SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
+SELECTION-SCREEN SKIP.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 1(18) sc_url FOR FIELD p_url.
+PARAMETERS: p_url TYPE string LOWER CASE VISIBLE LENGTH 60 ##SEL_WRONG.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN SKIP.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 1(18) sc_user FOR FIELD p_user.
+PARAMETERS: p_user TYPE string LOWER CASE VISIBLE LENGTH 60.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 1(18) sc_pass FOR FIELD p_pass.
+PARAMETERS: p_pass TYPE c LENGTH 255 LOWER CASE VISIBLE LENGTH 60.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN SKIP.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 1(18) sc_cmnt FOR FIELD p_cmnt.
+PARAMETERS: p_cmnt TYPE c LENGTH 255 LOWER CASE VISIBLE LENGTH 60.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN END OF SCREEN 1002.`
+	parsed := parse(source, "selection_screen_roundtrip.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+call_selection_screen_clauses_are_not_target_refs :: proc(t: ^testing.T) {
+	source := `CALL SELECTION-SCREEN c_dynnr
+  STARTING AT ls_position-start_column ls_position-start_row
+  ENDING AT ls_position-end_column ls_position-end_row.`
+	parsed := parse(source, "call_selection_screen.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	target := stmt.target.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, stmt.kind, ast.Call_Kind.Selection_Screen)
+	testing.expect_value(t, len(target.raw_refs), 1)
+	testing.expect_value(t, target.raw_refs[0].name, "c_dynnr")
+}
+
+@(test)
 missing_rhs_recovery_preserves_following_statement :: proc(t: ^testing.T) {
 	assignment := parse("lv_bad = .\nlv_after = 1.", "missing_rhs.abap", context.allocator)
 	inline := parse("DATA(lv_bad) = .\nDATA lv_after TYPE i.", "inline_rhs.abap", context.allocator)

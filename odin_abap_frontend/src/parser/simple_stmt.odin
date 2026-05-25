@@ -67,6 +67,7 @@ simple_stmt_starts :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "FORMAT") ||
 		at_keyword(p, "POSITION") ||
 		at_keyword(p, "HIDE") ||
+		at_keyword_phrase(p, "SELECTION-SCREEN") ||
 		at_keyword(p, "DEFINE") ||
 		oop_simple_stmt_starts(p) \
 	)
@@ -191,6 +192,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	if list_control_stmt_starts(p) {
 		return parse_list_control_stmt(p)
+	}
+	if at_keyword_phrase(p, "SELECTION-SCREEN") {
+		return parse_selection_screen_stmt(p)
 	}
 	if at_keyword(p, "DEFINE") {
 		return parse_macro_def_stmt(p)
@@ -1127,6 +1131,71 @@ parse_macro_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.args = parse_generic_simple_operands(p, body_start, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+parse_selection_screen_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword_phrase(p, "SELECTION-SCREEN")
+	body_start := p.index
+	stmt := ast.new(ast.Selection_Screen_Stmt, start.range, p.allocator)
+	if allow_keyword(p, "COMMENT") {
+		parse_selection_screen_comment(p, stmt, body_start)
+	} else {
+		for !simple_stmt_done(p, body_start) {
+			if allow_keyword(p, "TITLE") {
+				selection_screen_read_name(p, &stmt.title_name, &stmt.title_range)
+				continue
+			}
+			bump_token(p)
+		}
+	}
+	stmt.range = simple_stmt_range(p, start)
+	stmt.text = source_range_text(p, stmt.range)
+	return stmt
+}
+
+parse_selection_screen_comment :: proc(
+	p: ^Parser,
+	stmt: ^ast.Selection_Screen_Stmt,
+	body_start: int,
+) {
+	parse_selection_screen_comment_position(p, body_start)
+	selection_screen_read_name(p, &stmt.comment_name, &stmt.comment_range)
+	for !simple_stmt_done(p, body_start) {
+		if allow_keyword(p, "FOR") {
+			allow_keyword(p, "FIELD")
+			selection_screen_read_name(p, &stmt.field_name, &stmt.field_range)
+			continue
+		}
+		bump_token(p)
+	}
+}
+
+parse_selection_screen_comment_position :: proc(p: ^Parser, body_start: int) {
+	allow_token(p, .Slash)
+	if !simple_stmt_done(p, body_start) && current_token(p).kind != .LParen {
+		bump_token(p)
+	}
+	if allow_token(p, .LParen) {
+		for !simple_stmt_done(p, body_start) && current_token(p).kind != .RParen {
+			bump_token(p)
+		}
+		allow_token(p, .RParen)
+	}
+}
+
+selection_screen_read_name :: proc(
+	p: ^Parser,
+	name: ^string,
+	range: ^tokenizer.Range,
+) -> bool {
+	tok := current_token(p)
+	if tok.kind != .Ident {
+		return false
+	}
+	name^ = tokenizer.token_lexeme(tok, p.source)
+	range^ = tok.range
+	bump_token(p)
+	return true
 }
 
 oop_simple_stmt_starts :: proc(p: ^Parser) -> bool {
@@ -2355,6 +2424,8 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				"OPTIONS",
 			},
 		)
+	} else if stmt.kind == .Selection_Screen {
+		stmt.target = parse_raw_operand_to_period(p, []string{"STARTING", "ENDING"})
 	} else if stmt.kind == .Transformation {
 		stmt.target = parse_raw_operand_to_period(
 			p,
