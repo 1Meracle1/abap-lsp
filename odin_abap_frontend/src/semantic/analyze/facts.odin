@@ -244,7 +244,6 @@ collect_selector_expr_refs :: proc(
 	access, ok := selector_access_from_expr(c, expr, scope, in_type_position)
 	if !ok {
 		collect_expr_refs(c, expr.base, scope)
-		collect_expr_refs(c, expr.field, scope)
 		return
 	}
 	kind := Reference_Kind.Identifier

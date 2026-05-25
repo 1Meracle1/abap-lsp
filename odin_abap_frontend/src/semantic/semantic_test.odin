@@ -3016,6 +3016,55 @@ CALL METHOD (lv_class)=>if_demo~create_instance.
 }
 
 @(test)
+method_call_chains_do_not_reference_members_after_call_results :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///method_call_chain.abap",
+		`
+INTERFACE if_node.
+  METHODS get_first_child RETURNING VALUE(ro_child) TYPE REF TO if_node.
+  METHODS append_child IMPORTING io_child TYPE REF TO if_node.
+ENDINTERFACE.
+
+INTERFACE if_doc.
+  METHODS get_root RETURNING VALUE(ro_root) TYPE REF TO if_node.
+ENDINTERFACE.
+
+DATA mi_xml_doc TYPE REF TO if_doc.
+DATA mi_child TYPE REF TO if_node.
+mi_xml_doc->get_root( )->get_first_child( )->get_first_child( )->append_child( mi_child ).
+`,
+	)
+
+	testing.expect(t, !has_reference(&unit, "get_first_child", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "append_child", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
+interface_aliases_resolve_inherited_methods :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///interface_alias_method.abap",
+		`
+INTERFACE if_node.
+  METHODS get_root RETURNING VALUE(ro_root) TYPE REF TO if_node.
+ENDINTERFACE.
+
+INTERFACE if_doc.
+  INTERFACES if_node.
+  ALIASES get_root FOR if_node~get_root.
+ENDINTERFACE.
+
+DATA li_doc TYPE REF TO if_doc.
+li_doc->get_root( ).
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 call_transaction_collects_parser_operand_facts_without_keyword_refs :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
