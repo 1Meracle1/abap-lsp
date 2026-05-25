@@ -932,6 +932,16 @@ collect_move_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Move_Stmt, scope: Scop
 	}
 }
 
+collect_move_corresponding_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Move_Corresponding_Stmt,
+	scope: Scope_Id,
+) {
+	for entry in stmt.entries {
+		collect_assignment_stmt_facts(c, stmt.range, entry.target, entry.source, scope, true)
+	}
+}
+
 collect_add_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Add_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)

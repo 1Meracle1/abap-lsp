@@ -309,6 +309,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_unassign_stmt(p, n)
 	case ^Move_Stmt:
 		emit_move_stmt(p, n)
+	case ^Move_Corresponding_Stmt:
+		emit_move_corresponding_stmt(p, n)
 	case ^Add_Stmt:
 		emit_add_stmt(p, n)
 	case ^Subtract_Stmt:
@@ -1371,8 +1373,17 @@ emit_unassign_stmt :: proc(p: ^Printer, stmt: ^Unassign_Stmt) {
 
 emit_move_stmt :: proc(p: ^Printer, stmt: ^Move_Stmt) {
 	emit(p, "MOVE")
-	emit(p, ": " if len(stmt.entries) > 1 else " ")
-	for entry, i in stmt.entries {
+	emit_move_entries(p, stmt.entries)
+}
+
+emit_move_corresponding_stmt :: proc(p: ^Printer, stmt: ^Move_Corresponding_Stmt) {
+	emit(p, "MOVE-CORRESPONDING")
+	emit_move_entries(p, stmt.entries)
+}
+
+emit_move_entries :: proc(p: ^Printer, entries: [dynamic]Move_Entry_Clause) {
+	emit(p, ": " if len(entries) > 1 else " ")
+	for entry, i in entries {
 		if i > 0 {
 			emit(p, ", ")
 		}

@@ -804,6 +804,9 @@ keyword_phrase_at_static :: #force_inline proc(p: ^Parser, index: int, $keyword:
 	when keyword == "AUTHORITY-CHECK" {
 		return hyphen2_at(p, index, "AUTHORITY", "CHECK")
 	}
+	when keyword == "MOVE-CORRESPONDING" {
+		return hyphen2_at(p, index, "MOVE", "CORRESPONDING")
+	}
 	when keyword == "FIELD-GROUPS" {
 		return hyphen2_at(p, index, "FIELD", "GROUPS")
 	}
@@ -978,6 +981,9 @@ keyword_phrase_at_dynamic :: proc(p: ^Parser, index: int, keyword: string) -> bo
 	}
 	if keyword == "AUTHORITY-CHECK" {
 		return hyphen2_at(p, index, "AUTHORITY", "CHECK")
+	}
+	if keyword == "MOVE-CORRESPONDING" {
+		return hyphen2_at(p, index, "MOVE", "CORRESPONDING")
 	}
 	if keyword == "FIELD-GROUPS" {
 		return hyphen2_at(p, index, "FIELD", "GROUPS")
@@ -1191,6 +1197,7 @@ keyword_phrase_token_count :: proc(keyword: string) -> int {
 	   keyword == "TYPE-POOLS" ||
 	   keyword == "FUNCTION-POOL" ||
 	   keyword == "AUTHORITY-CHECK" ||
+	   keyword == "MOVE-CORRESPONDING" ||
 	   keyword == "FIELD-GROUPS" ||
 	   keyword == "LOG-POINT" ||
 	   keyword == "CLASS-METHODS" ||

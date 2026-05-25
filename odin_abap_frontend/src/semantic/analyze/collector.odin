@@ -589,6 +589,8 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		collect_unassign_stmt_facts(c, n, scope)
 	case ^ast.Move_Stmt:
 		collect_move_stmt_facts(c, n, scope)
+	case ^ast.Move_Corresponding_Stmt:
+		collect_move_corresponding_stmt_facts(c, n, scope)
 	case ^ast.Add_Stmt:
 		collect_add_stmt_facts(c, n, scope)
 	case ^ast.Subtract_Stmt:

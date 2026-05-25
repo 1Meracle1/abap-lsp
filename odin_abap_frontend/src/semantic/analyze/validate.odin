@@ -625,10 +625,109 @@ value_handle_for_name :: proc(
 	); ok {
 		return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
 	}
+	if handle, ok := value_alias_handle_for_name(project, lookup, unit_index, scope_id, name); ok {
+		return handle, true
+	}
+	if handle, ok := inherited_value_alias_handle_for_name(project, lookup, unit_index, scope_id, name);
+	   ok {
+		return handle, true
+	}
 	if handle, ok := root_symbol_in_visible_units_lookup(lookup, .Value, name, lookup.visible[unit_index]); ok {
 		return handle, true
 	}
 	return global_visible_root_symbol_lookup(lookup, .Value, name)
+}
+
+value_alias_handle_for_name :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	scope_id: Scope_Id,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], scope_id)
+	if !ok {
+		return {}, false
+	}
+	class_handle := Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol}
+	return class_alias_symbol_by_handle_lookup(project, lookup, unit_index, class_handle, .Value, name)
+}
+
+inherited_value_alias_handle_for_name :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	scope_id: Scope_Id,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], scope_id)
+	if !ok {
+		return {}, false
+	}
+	current := Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol}
+	for _ in 0 ..< len(project.units) + 8 {
+		next, next_ok := direct_superclass_handle_lookup(project, lookup, current)
+		if !next_ok {
+			return {}, false
+		}
+		next_unit_index := unit_id_index(next.unit)
+		if next_unit_index < 0 || next_unit_index >= len(project.units) {
+			return {}, false
+		}
+		if handle, found := class_alias_symbol_by_handle_lookup(
+			project,
+			lookup,
+			next_unit_index,
+			next,
+			.Value,
+			name,
+		); found {
+			return handle, true
+		}
+		current = next
+	}
+	return {}, false
+}
+
+class_alias_symbol_by_handle_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	class_handle: Symbol_Handle,
+	namespace: Namespace,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	for alias in project.units[unit_index].member_aliases {
+		if alias.owner_symbol != class_handle.symbol || alias.alias_name != name {
+			continue
+		}
+		interface_handle, interface_ok := resolve_type_name_in_project_lookup(
+			project,
+			lookup,
+			unit_index,
+			alias.target_interface_name,
+		)
+		if !interface_ok {
+			continue
+		}
+		interface_unit_index := unit_id_index(interface_handle.unit)
+		if interface_unit_index < 0 || interface_unit_index >= len(project.units) {
+			continue
+		}
+		member_name := alias.target_member_name
+		if member_name == "" {
+			member_name = name
+		}
+		if symbol_id, member_ok := class_scope_symbol(
+			&project.units[interface_unit_index].scope_index,
+			interface_handle.symbol,
+			namespace,
+			member_name,
+		); member_ok {
+			return Symbol_Handle{unit = interface_handle.unit, symbol = symbol_id}, true
+		}
+	}
+	return {}, false
 }
 
 resolve_field_access_tail :: proc(

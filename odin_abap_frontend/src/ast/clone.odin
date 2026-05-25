@@ -352,6 +352,10 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.entries = clone_move_entries(n.entries, allocator)
 		return r
+	case ^Move_Corresponding_Stmt:
+		r := clone_shallow(n, allocator)
+		r.entries = clone_move_entries(n.entries, allocator)
+		return r
 	case ^Add_Stmt:
 		r := clone_shallow(n, allocator)
 		r.entries = clone_add_entries(n.entries, allocator)

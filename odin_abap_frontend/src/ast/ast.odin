@@ -996,6 +996,12 @@ Move_Stmt :: struct {
 	entries:    [dynamic]Move_Entry_Clause,
 }
 
+// ABAP syntax: `MOVE-CORRESPONDING source TO target.`
+Move_Corresponding_Stmt :: struct {
+	using node: Stmt,
+	entries:    [dynamic]Move_Entry_Clause,
+}
+
 // ABAP syntax: one ADD entry, for example `source TO target [GIVING result]`.
 Add_Entry_Clause :: struct {
 	source: ^Expr,
@@ -2408,6 +2414,7 @@ Any_Node :: union {
 	^Free_Stmt,
 	^Unassign_Stmt,
 	^Move_Stmt,
+	^Move_Corresponding_Stmt,
 	^Add_Stmt,
 	^Subtract_Stmt,
 	^Multiply_Stmt,
@@ -2559,6 +2566,7 @@ Any_Stmt :: union {
 	^Free_Stmt,
 	^Unassign_Stmt,
 	^Move_Stmt,
+	^Move_Corresponding_Stmt,
 	^Add_Stmt,
 	^Subtract_Stmt,
 	^Multiply_Stmt,

@@ -96,6 +96,10 @@ resolve_reference :: proc(
 	   ok {
 		return symbol_resolution(unit, symbol_id), true
 	}
+	if symbol_id, ok := resolve_current_class_alias(unit, index, ref.scope, ref.namespace, ref.name);
+	   ok {
+		return symbol_resolution(unit, symbol_id), true
+	}
 	if symbol_id, ok := resolve_inherited_class_member(
 		unit,
 		index,
@@ -244,6 +248,60 @@ class_scope_symbol :: proc(
 	return INVALID_SYMBOL_ID, false
 }
 
+resolve_current_class_alias :: proc(
+	unit: ^Unit_Analysis,
+	index: ^Scope_Index,
+	scope_id: Scope_Id,
+	namespace: Namespace,
+	name: string,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	class_symbol, ok := enclosing_class_owner_unit(unit, scope_id)
+	if !ok {
+		return INVALID_SYMBOL_ID, false
+	}
+	return resolve_class_alias(unit, index, scope_id, class_symbol, namespace, name)
+}
+
+resolve_class_alias :: proc(
+	unit: ^Unit_Analysis,
+	index: ^Scope_Index,
+	scope_id: Scope_Id,
+	class_symbol: Symbol_Id,
+	namespace: Namespace,
+	name: string,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	for alias in unit.member_aliases {
+		if alias.owner_symbol != class_symbol || alias.alias_name != name {
+			continue
+		}
+		interface_symbol, interface_ok := lookup_scope_chain(
+			unit,
+			index,
+			scope_id,
+			.Type,
+			alias.target_interface_name,
+		)
+		if !interface_ok {
+			continue
+		}
+		member_name := alias.target_member_name
+		if member_name == "" {
+			member_name = name
+		}
+		if symbol_id, member_ok := class_scope_symbol(index, interface_symbol, namespace, member_name);
+		   member_ok {
+			return symbol_id, true
+		}
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
 resolve_inherited_class_member :: proc(
 	unit: ^Unit_Analysis,
 	index: ^Scope_Index,
@@ -268,6 +326,10 @@ resolve_inherited_class_member :: proc(
 			return INVALID_SYMBOL_ID, false
 		}
 		if found, found_ok := class_scope_symbol(index, super_symbol, namespace, name); found_ok {
+			return found, true
+		}
+		if found, found_ok := resolve_class_alias(unit, index, scope_id, super_symbol, namespace, name);
+		   found_ok {
 			return found, true
 		}
 		current_class = super_symbol

@@ -2013,10 +2013,24 @@ parse_move_entry :: proc(p: ^Parser, body_start: int) -> (ast.Move_Entry_Clause,
 }
 
 parse_move_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	if at_keyword_phrase(p, "MOVE-CORRESPONDING") {
+		start := expect_keyword_phrase(p, "MOVE-CORRESPONDING")
+		body_start := p.index
+		stmt := ast.new(ast.Move_Corresponding_Stmt, start.range, p.allocator)
+		stmt.entries = parse_move_entries(p, body_start)
+		stmt.range = simple_stmt_range(p, start)
+		return stmt
+	}
 	start := expect_keyword(p, "MOVE")
 	body_start := p.index
 	stmt := ast.new(ast.Move_Stmt, start.range, p.allocator)
-	stmt.entries = make([dynamic]ast.Move_Entry_Clause, 0, 2, p.allocator)
+	stmt.entries = parse_move_entries(p, body_start)
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
+parse_move_entries :: proc(p: ^Parser, body_start: int) -> [dynamic]ast.Move_Entry_Clause {
+	entries := make([dynamic]ast.Move_Entry_Clause, 0, 2, p.allocator)
 	allow_keyword(p, "EXACT")
 	allow_token(p, .Colon)
 	for !simple_stmt_done(p, body_start) {
@@ -2027,11 +2041,10 @@ parse_move_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if !ok {
 			break
 		}
-		append(&stmt.entries, entry)
+		append(&entries, entry)
 		consume_simple_entry_tail(p, body_start)
 	}
-	stmt.range = simple_stmt_range(p, start)
-	return stmt
+	return entries
 }
 
 parse_add_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

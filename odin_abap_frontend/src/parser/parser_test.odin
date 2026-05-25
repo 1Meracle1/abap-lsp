@@ -229,6 +229,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.unassign += 1
 	case ^ast.Move_Stmt:
 		counts.move_stmt += 1
+	case ^ast.Move_Corresponding_Stmt:
+		counts.move_stmt += 1
 	case ^ast.Add_Stmt:
 		counts.add_stmt += 1
 	case ^ast.Concatenate_Stmt:

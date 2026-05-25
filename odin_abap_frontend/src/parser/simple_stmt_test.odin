@@ -197,6 +197,16 @@ COMPUTE EXACT lv_sum = a + b.`
 }
 
 @(test)
+move_corresponding_carries_statement_form :: proc(t: ^testing.T) {
+	parsed := parse("MOVE-CORRESPONDING src TO dst.", "move_corresponding.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Move_Corresponding_Stmt)
+	testing.expect_value(t, len(stmt.entries), 1)
+	testing.expect_value(t, ast.print_node(stmt, context.allocator), "MOVE-CORRESPONDING src TO dst.")
+}
+
+@(test)
 simple_text_and_flow_statements_keep_fields :: proc(t: ^testing.T) {
 	source := `CONCATENATE a b INTO c SEPARATED BY sep RESPECTING BLANKS.
 SPLIT text AT sep INTO left right.

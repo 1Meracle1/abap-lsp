@@ -260,6 +260,11 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk(next, clause.source)
 			walk(next, clause.target)
 		}
+	case ^Move_Corresponding_Stmt:
+		for clause in n.entries {
+			walk(next, clause.source)
+			walk(next, clause.target)
+		}
 	case ^Add_Stmt:
 		for clause in n.entries {
 			walk(next, clause.source)

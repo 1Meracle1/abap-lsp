@@ -100,6 +100,45 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 }
 
 @(test)
+interface_attribute_alias_resolves_in_method_body :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://alias_attr.abap",
+		source = `INTERFACE zif_settings.
+  TYPES: BEGIN OF ty_settings,
+           block_commit TYPE abap_bool,
+         END OF ty_settings.
+  TYPES: BEGIN OF ty_repo,
+           local_settings TYPE ty_settings,
+         END OF ty_repo.
+ENDINTERFACE.
+INTERFACE zif_repo.
+  DATA ms_data TYPE zif_settings=>ty_repo READ-ONLY.
+ENDINTERFACE.
+CLASS lcl_repo DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES zif_repo.
+    ALIASES ms_data FOR zif_repo~ms_data.
+ENDCLASS.
+CLASS lcl_repo_online DEFINITION INHERITING FROM lcl_repo.
+  PUBLIC SECTION.
+    METHODS push.
+ENDCLASS.
+CLASS lcl_repo_online IMPLEMENTATION.
+  METHOD push.
+    DATA ls_meta_slug TYPE zif_settings=>ty_repo.
+    MOVE-CORRESPONDING ms_data TO ls_meta_slug.
+    IF ms_data-local_settings-block_commit = abap_true.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+
+	project := analyze_project_test(t, 0, target, nil)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unknown_Field))
+}
+
+@(test)
 dependency_interface_mode_keeps_declarations_and_drops_bodies :: proc(t: ^testing.T) {
 	source := `REPORT zdep.
 DATA gv_dep TYPE zglobal_type.
