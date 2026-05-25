@@ -173,6 +173,21 @@ SORT lt_table BY name DESCENDING.`
 }
 
 @(test)
+sort_by_keeps_component_names :: proc(t: ^testing.T) {
+	source := `SORT cs_webi-pvepparameter BY vepname version function vepparam vepparamtype.`
+	parsed := parse(source, "sort_components.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Sort_Stmt)
+	names := [?]string{"vepname", "version", "function", "vepparam", "vepparamtype"}
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(stmt.fields), len(names))
+	for name, i in names {
+		testing.expect_value(t, stmt.fields[i].name, name)
+	}
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 append_initial_line_keeps_append_shape :: proc(t: ^testing.T) {
 	source := `APPEND INITIAL LINE TO lt_stab ASSIGNING <ls_stab>.`
 	parsed := parse(source, "append_initial_line.abap", context.allocator)

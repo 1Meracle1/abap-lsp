@@ -2091,14 +2091,20 @@ collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: 
 
 collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
-	collect_expr_list_refs(c, stmt.fields[:], scope)
+	for field in stmt.fields {
+		if field.name == "" {
+			collect_expr_refs(c, field.expr, scope)
+		}
+	}
 	if access, ok := value_access_from_expr(c, stmt.target, scope);
 	   ok && len(stmt.fields) > 0 && !stmt.descending {
 		keys := make([dynamic]string, 0, len(stmt.fields), c.allocator)
 		for field in stmt.fields {
-			if name, _, name_ok := expr_name(field); name_ok {
-				append(&keys, canonical_name(name, c.allocator))
+			if field.name == "" {
+				resize(&keys, 0)
+				break
 			}
+			append(&keys, canonical_name(field.name, c.allocator))
 		}
 		if len(keys) > 0 {
 			record_internal_table_order(

@@ -3596,6 +3596,32 @@ ENDFORM.
 }
 
 @(test)
+sort_by_components_are_not_value_references :: proc(t: ^testing.T) {
+	source := `
+TYPES vepparamtype TYPE string.
+
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           vepname TYPE string,
+           version TYPE string,
+           function TYPE string,
+           vepparam TYPE string,
+           vepparamtype TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+
+  SORT lt_rows BY vepname version function vepparam vepparamtype.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///sort_components.abap", source)
+	keys := [?]string{"vepname", "version", "function", "vepparam", "vepparamtype"}
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect(t, !has_reference(&unit, "vepparamtype", .Value, .Identifier))
+	testing.expect(t, internal_table_order_present(&unit, "lt_rows", keys[:]))
+}
+
+@(test)
 collects_select_order_by_into_table_order_fact :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

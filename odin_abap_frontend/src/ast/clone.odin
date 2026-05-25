@@ -689,7 +689,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Sort_Stmt:
 		r := clone_shallow(n, allocator)
 		r.target = clone(n.target, allocator)
-		r.fields = clone_expr_list(n.fields, allocator)
+		r.fields = clone_sort_fields(n.fields, allocator)
 		return r
 	case ^Update_Stmt:
 		r := clone_shallow(n, allocator)
@@ -887,6 +887,16 @@ clone_line_fields :: proc(list: [dynamic]Line_Field_Value_Clause, allocator: mem
 	res := make([dynamic]Line_Field_Value_Clause, 0, len(list), allocator)
 	for clause in list {
 		append(&res, Line_Field_Value_Clause{field = clone(clause.field, allocator), target = clone(clause.target, allocator)})
+	}
+	return res
+}
+
+clone_sort_fields :: proc(list: [dynamic]Sort_Field_Clause, allocator: mem.Allocator) -> [dynamic]Sort_Field_Clause {
+	res := make([dynamic]Sort_Field_Clause, 0, len(list), allocator)
+	for clause in list {
+		next := clause
+		next.expr = clone(clause.expr, allocator)
+		append(&res, next)
 	}
 	return res
 }

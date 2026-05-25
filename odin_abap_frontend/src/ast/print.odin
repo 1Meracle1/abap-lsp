@@ -2584,7 +2584,12 @@ emit_sort_stmt :: proc(p: ^Printer, stmt: ^Sort_Stmt) {
 	}
 	if len(stmt.fields) > 0 {
 		emit(p, " BY ")
-		emit_expr_list(p, stmt.fields, " ")
+		for field, i in stmt.fields {
+			if i > 0 {
+				emit(p, " ")
+			}
+			emit_node(p, field.expr)
+		}
 	}
 	if stmt.descending {
 		emit(p, " DESCENDING")

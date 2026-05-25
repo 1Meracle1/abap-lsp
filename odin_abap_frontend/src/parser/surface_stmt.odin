@@ -1766,7 +1766,7 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "SORT")
 	body_start := p.index
 	stmt := ast.new(ast.Sort_Stmt, start.range, p.allocator)
-	stmt.fields = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+	stmt.fields = make([dynamic]ast.Sort_Field_Clause, 0, 2, p.allocator)
 	stmt.stable = allow_keyword(p, "STABLE")
 	stmt.target = data_expr(p, body_start, []string{"BY", "AS", "ASCENDING", "DESCENDING"})
 	for !data_stmt_done(p, body_start) {
@@ -1776,7 +1776,7 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "BY") {
 			values := data_exprs_until(p, body_start, []string{"AS", "ASCENDING", "DESCENDING"})
-			for value in values {append(&stmt.fields, value)}
+			for value in values {append(&stmt.fields, sort_field_clause(value))}
 			continue
 		}
 		if allow_keyword(p, "DESCENDING") {
@@ -1790,6 +1790,15 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
+}
+
+sort_field_clause :: proc(expr: ^ast.Expr) -> ast.Sort_Field_Clause {
+	clause := ast.Sort_Field_Clause{expr = expr}
+	if id, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
+		clause.name = id.name
+		clause.range = id.range
+	}
+	return clause
 }
 
 parse_sql_assignments :: proc(

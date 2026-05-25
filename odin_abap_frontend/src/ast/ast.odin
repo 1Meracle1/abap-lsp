@@ -2160,11 +2160,17 @@ Modify_Stmt :: struct {
 	connection_clause: tokenizer.Range,
 }
 
+Sort_Field_Clause :: struct {
+	expr:  ^Expr,
+	name:  string,
+	range: tokenizer.Range,
+}
+
 // ABAP syntax: `SORT itab [BY fields ...]`.
 Sort_Stmt :: struct {
 	using node: Stmt,
 	target:     ^Expr,
-	fields:     [dynamic]^Expr,
+	fields:     [dynamic]Sort_Field_Clause,
 	stable:     bool,
 	as_text:    bool,
 	descending: bool,
