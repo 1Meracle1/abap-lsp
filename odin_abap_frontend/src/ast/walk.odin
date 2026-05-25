@@ -401,6 +401,14 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Create_Object_Stmt:
 		walk(next, n.target)
 		walk(next, n.type_ref)
+		walk_data_type_clause(next, n.type_clause)
+		walk(next, n.type_dynamic_expr)
+		walk_expr_list(next, n.operands)
+	case ^Create_Data_Stmt:
+		walk(next, n.target)
+		walk(next, n.type_ref)
+		walk_data_type_clause(next, n.type_clause)
+		walk(next, n.type_dynamic_expr)
 		walk_expr_list(next, n.operands)
 	case ^Text_Transform_Stmt:
 		walk_expr_list(next, n.operands)

@@ -854,8 +854,8 @@ CREATE DATA lr_var TYPE REF TO (lv_class).`
 	parsed := parse(source, "create_data_dynamic_type_ref.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	lit_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Object_Stmt)
-	var_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Create_Object_Stmt)
+	lit_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Data_Stmt)
+	var_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Create_Data_Stmt)
 	lit_type := lit_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	var_type := var_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
@@ -867,6 +867,32 @@ CREATE DATA lr_var TYPE REF TO (lv_class).`
 	testing.expect_value(t, len(lit_type.raw_refs), 0)
 	testing.expect_value(t, len(var_type.raw_refs), 1)
 	testing.expect_value(t, var_type.raw_refs[0].name, "lv_class")
+}
+
+@(test)
+create_data_table_dynamic_type_tracks_runtime_name_expr :: proc(t: ^testing.T) {
+	source := `CREATE DATA lr_field TYPE STANDARD TABLE OF (<ls_table>-tobj_name).
+CREATE DATA lr_var TYPE STANDARD TABLE OF (lv_primary).`
+	parsed := parse(source, "create_data_dynamic_table_type.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	field_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Data_Stmt)
+	var_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Create_Data_Stmt)
+	field_type := field_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	field_dynamic := field_stmt.type_dynamic_expr.derived_expr.(^ast.Type_Ref_Expr)
+	var_type := var_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, field_stmt.type_clause.form, ast.Data_Type_Form.Standard_Table)
+	testing.expect(t, field_stmt.type_dynamic)
+	testing.expect(t, field_type.raw_operand)
+	testing.expect_value(t, len(field_type.raw_refs), 1)
+	testing.expect_value(t, field_type.raw_refs[0].name, "<ls_table>")
+	testing.expect_value(t, field_type.raw_refs[0].path[0].name, "tobj_name")
+	testing.expect_value(t, len(field_dynamic.raw_refs), 1)
+	testing.expect_value(t, var_stmt.type_clause.form, ast.Data_Type_Form.Standard_Table)
+	testing.expect_value(t, len(var_type.raw_refs), 1)
+	testing.expect_value(t, var_type.raw_refs[0].name, "lv_primary")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
 @(test)

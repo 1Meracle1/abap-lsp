@@ -421,6 +421,21 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit_expr_list(p, n.operands, " ")
 		}
 		emit(p, ".")
+	case ^Create_Data_Stmt:
+		emit(p, "CREATE DATA")
+		if n.target != nil {
+			emit_space(p)
+			emit_node(p, n.target)
+		}
+		if n.type_ref != nil {
+			emit(p, " TYPE ")
+			emit_node(p, n.type_ref)
+		}
+		if len(n.operands) > 0 {
+			emit_space(p)
+			emit_expr_list(p, n.operands, " ")
+		}
+		emit(p, ".")
 	case ^Text_Transform_Stmt:
 		emit(p, text_transform_kind_text(n.kind))
 		if len(n.operands) > 0 {

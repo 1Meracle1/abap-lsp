@@ -188,7 +188,7 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return parse_assign_field_stmt(p)
 	}
 	if at_keyword(p, "CREATE") {
-		return parse_create_object_stmt(p)
+		return parse_create_stmt(p)
 	}
 	if text_transform_stmt_starts(p) {
 		return parse_text_transform_stmt(p)
@@ -212,7 +212,9 @@ simple_full_period_stmt_starts :: proc(p: ^Parser) -> bool {
 		runtime_stmt_starts(p) ||
 		at_keyword_phrase(p, "AUTHORITY-CHECK") ||
 		at_keyword(p, "ASSIGN") ||
-		(at_keyword(p, "CREATE") && at_keyword_index(p, p.index + 1, "OBJECT")) ||
+		(at_keyword(p, "CREATE") &&
+				(at_keyword_index(p, p.index + 1, "OBJECT") ||
+				 at_keyword_index(p, p.index + 1, "DATA"))) ||
 		oop_simple_stmt_starts(p) \
 	)
 }
@@ -1044,34 +1046,208 @@ parse_assign_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
-parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+parse_create_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "CREATE")
+	if allow_keyword(p, "DATA") {
+		return parse_create_data_stmt(p, start)
+	}
 	allow_keyword(p, "OBJECT")
+	return parse_create_object_stmt(p, start)
+}
+
+parse_create_object_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	stmt := ast.new(ast.Create_Object_Stmt, start.range, p.allocator)
 	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
-	if allow_keyword(p, "TYPE") {
-		stmt.type_dynamic = create_type_ref_is_dynamic(p)
-		stmt.type_ref = parse_raw_operand_to_period(
-			p,
-			[]string{"EXPORTING", "EXCEPTIONS"},
-			true,
-			false,
-			stmt.type_dynamic,
-			false,
-			!stmt.type_dynamic,
-		)
-	}
+	stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
+		parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
 	stmt.operands = parse_generic_operands_to_period(p, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
 
-create_type_ref_is_dynamic :: proc(p: ^Parser) -> bool {
-	i := p.index
-	if at_keyword_index(p, i, "REF") && at_keyword_index(p, i + 1, "TO") {
-		i += 2
+parse_create_data_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
+	stmt := ast.new(ast.Create_Data_Stmt, start.range, p.allocator)
+	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
+	stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
+		parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
+	stmt.operands = parse_generic_operands_to_period(p, []string{})
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
+parse_create_type_addition :: proc(
+	p: ^Parser,
+	stop_keywords: []string,
+) -> (^ast.Expr, ^ast.Data_Type_Clause, bool, ^ast.Expr) {
+	if !allow_keyword(p, "TYPE") {
+		return nil, nil, false, nil
 	}
-	return i < len(p.tokens) && p.tokens[i].kind == .LParen
+	type_start := p.index
+	type_clause, dynamic_expr := parse_create_type_clause_tail(p, stop_keywords)
+	type_dynamic := dynamic_expr != nil
+	type_ref: ^ast.Expr
+	if p.index > type_start {
+		type_ref = type_ref_expr_from_tokens(p, type_start, p.index, -1, false, true)
+		if type_dynamic {
+			create_type_ref_use_dynamic_facts(type_ref, dynamic_expr, p.allocator)
+		}
+	}
+	return type_ref, type_clause, type_dynamic, dynamic_expr
+}
+
+parse_create_type_clause_tail :: proc(
+	p: ^Parser,
+	stop_keywords: []string,
+) -> (^ast.Data_Type_Clause, ^ast.Expr) {
+	clause, _ := mem.new(ast.Data_Type_Clause, p.allocator)
+	clause.form = .Type
+	if allow_keyword(p, "LINE") {
+		allow_keyword(p, "OF")
+		clause.form = .Type_Line_Of
+	} else if allow_keyword(p, "REF") {
+		allow_keyword(p, "TO")
+		clause.form = .Ref_To
+	} else if allow_keyword(p, "RANGE") {
+		allow_keyword(p, "OF")
+		clause.form = .Range_Of
+	} else if allow_keyword(p, "STANDARD") {
+		allow_keyword(p, "TABLE")
+		allow_keyword(p, "OF")
+		clause.form = .Standard_Table
+	} else if allow_keyword(p, "SORTED") {
+		allow_keyword(p, "TABLE")
+		allow_keyword(p, "OF")
+		clause.form = .Sorted_Table
+	} else if allow_keyword(p, "HASHED") {
+		allow_keyword(p, "TABLE")
+		allow_keyword(p, "OF")
+		clause.form = .Hashed_Table
+	} else if allow_keyword(p, "TABLE") {
+		allow_keyword(p, "OF")
+		clause.form = .Table
+	}
+	dynamic_expr := create_dynamic_type_expr_at(p, p.index)
+	clause.type_ref = parse_create_type_ref_expr(p, stop_keywords)
+	return clause, dynamic_expr
+}
+
+parse_create_type_ref_expr :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Expr {
+	start := p.index
+	if create_type_ref_done(p, start, stop_keywords) {
+		return nil
+	}
+	paren, bracket, brace := 0, 0, 0
+	name_end := -1
+	key_clause: ^ast.Type_Ref_Key_Clause
+	key_clauses := make([dynamic]^ast.Type_Ref_Key_Clause, 0, 1, p.allocator)
+	for !create_type_ref_done(p, start, stop_keywords) {
+		tok := current_token(p)
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if at_keyword(p, "WITH") {
+				if !type_ref_key_clause_starts(p, p.index) {
+					break
+				}
+				if name_end < 0 && p.index > start {
+					name_end = p.tokens[p.index - 1].range.end
+				}
+				next_key := parse_type_ref_key_clause(p)
+				if key_clause == nil {
+					key_clause = next_key
+				}
+				append(&key_clauses, next_key)
+				continue
+			}
+			if p.index > start && type_ref_stop_keyword(p) && !type_ref_selector_field(p) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren == 0 {
+				break
+			}
+			paren -= 1
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket == 0 {
+				break
+			}
+			bracket -= 1
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace == 0 {
+				break
+			}
+			brace -= 1
+		}
+		bump_token(p)
+	}
+	if p.index <= start {
+		return nil
+	}
+	if name_end < 0 {
+		name_end = p.tokens[p.index - 1].range.end
+	}
+	expr := type_ref_expr_from_tokens(p, start, p.index, name_end)
+	expr.key = key_clause
+	expr.keys = key_clauses
+	return expr
+}
+
+create_type_ref_done :: proc(
+	p: ^Parser,
+	start: int,
+	stop_keywords: []string,
+) -> bool {
+	tok := current_token(p)
+	return(
+		tok.kind == .Period ||
+		tok.kind == .Comma ||
+		tok.kind == .Eof ||
+		(p.index > start && simple_current_keyword_in(p, stop_keywords)) \
+	)
+}
+
+create_dynamic_type_expr_at :: proc(p: ^Parser, index: int) -> ^ast.Expr {
+	if index >= len(p.tokens) || p.tokens[index].kind != .LParen {
+		return nil
+	}
+	close := matching_group_index(p, index, .LParen, .RParen)
+	if close <= index + 1 {
+		return nil
+	}
+	expr := type_ref_expr_from_tokens(p, index + 1, close, -1, false, false)
+	populate_raw_operand_facts(p, expr, index + 1, close, false)
+	return expr
+}
+
+create_type_ref_use_dynamic_facts :: proc(
+	type_ref: ^ast.Expr,
+	dynamic_expr: ^ast.Expr,
+	allocator: mem.Allocator,
+) {
+	if type_ref == nil || dynamic_expr == nil {
+		return
+	}
+	ref, ref_ok := type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	dynamic_ref, dynamic_ok := dynamic_expr.derived_expr.(^ast.Type_Ref_Expr)
+	if !ref_ok || !dynamic_ok {
+		return
+	}
+	ref.raw_operand = true
+	ref.raw_decls = make([dynamic]ast.Raw_Operand_Inline_Decl, 0, len(dynamic_ref.raw_decls), allocator)
+	ref.raw_refs = make([dynamic]ast.Raw_Operand_Ref, 0, len(dynamic_ref.raw_refs), allocator)
+	for decl in dynamic_ref.raw_decls {
+		append(&ref.raw_decls, decl)
+	}
+	for raw_ref in dynamic_ref.raw_refs {
+		append(&ref.raw_refs, raw_ref)
+	}
 }
 
 text_transform_stmt_starts :: proc(p: ^Parser) -> bool {

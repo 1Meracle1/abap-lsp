@@ -190,6 +190,16 @@ collect_type_expr_ref :: proc(
 	collect_expr_refs(c, expr, scope)
 }
 
+collect_type_clause_ref :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause, scope: Scope_Id) {
+	if clause == nil {
+		return
+	}
+	if type_ref, ok := type_ref_from_clause(c, clause); ok {
+		range := clause.type_ref.range if clause.type_ref != nil else tokenizer.Range{}
+		add_type_reference(c, scope, type_ref, range)
+	}
+}
+
 collect_constructor_expr_refs :: proc(
 	c: ^Collector,
 	expr: ^ast.Constructor_Expr,
@@ -511,12 +521,35 @@ collect_create_object_stmt_facts :: proc(
 	scope: Scope_Id,
 ) {
 	collect_expr_refs(c, stmt.target, scope)
-	if stmt.type_dynamic {
-		collect_expr_refs(c, stmt.type_ref, scope)
-	} else {
-		collect_type_expr_ref(c, stmt.type_ref, scope, .Type)
-	}
+	collect_create_type_refs(c, scope, stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr)
 	collect_expr_list_refs(c, stmt.operands[:], scope)
+}
+
+collect_create_data_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Create_Data_Stmt,
+	scope: Scope_Id,
+) {
+	collect_expr_refs(c, stmt.target, scope)
+	collect_create_type_refs(c, scope, stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr)
+	collect_expr_list_refs(c, stmt.operands[:], scope)
+}
+
+collect_create_type_refs :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	type_ref: ^ast.Expr,
+	type_clause: ^ast.Data_Type_Clause,
+	type_dynamic: bool,
+	type_dynamic_expr: ^ast.Expr,
+) {
+	if type_dynamic {
+		collect_expr_refs(c, type_dynamic_expr if type_dynamic_expr != nil else type_ref, scope)
+	} else if type_clause != nil {
+		collect_type_clause_ref(c, type_clause, scope)
+	} else {
+		collect_type_expr_ref(c, type_ref, scope, .Type)
+	}
 }
 
 collect_dynamic_call_method_target_refs :: proc(

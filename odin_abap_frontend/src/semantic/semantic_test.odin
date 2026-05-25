@@ -2396,6 +2396,30 @@ CREATE DATA lr_xml_api TYPE REF TO ('CL_W3_API_XML3').
 }
 
 @(test)
+create_data_dynamic_table_type_uses_runtime_name_expr :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///create_data_dynamic_table.abap",
+		`
+TYPES: BEGIN OF ty_table,
+         tobj_name TYPE string,
+       END OF ty_table.
+FIELD-SYMBOLS <ls_table> TYPE ty_table.
+DATA lv_primary TYPE string.
+DATA lr_ref TYPE REF TO data.
+
+CREATE DATA lr_ref TYPE STANDARD TABLE OF (<ls_table>-tobj_name).
+CREATE DATA lr_ref TYPE STANDARD TABLE OF (lv_primary).
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_reference(&unit, "standard table of (<ls_table>-tobj_name)", .Type, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "<ls_table>", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_primary", .Value, .Identifier))
+}
+
+@(test)
 resolves_form_changing_parameter_in_body :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

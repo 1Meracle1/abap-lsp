@@ -74,6 +74,7 @@ Node_Counts :: struct {
 	field_stmt:    int,
 	assign_field:  int,
 	create_object: int,
+	create_data:   int,
 	text_transform: int,
 	list_control: int,
 	line_stmt:     int,
@@ -270,6 +271,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.assign_field += 1
 	case ^ast.Create_Object_Stmt:
 		counts.create_object += 1
+	case ^ast.Create_Data_Stmt:
+		counts.create_data += 1
 	case ^ast.Text_Transform_Stmt:
 		counts.text_transform += 1
 	case ^ast.List_Control_Stmt:

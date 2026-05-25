@@ -1502,7 +1502,20 @@ Create_Object_Stmt :: struct {
 	using node: Stmt,
 	target:     ^Expr,
 	type_ref:   ^Expr,
+	type_clause: ^Data_Type_Clause,
 	type_dynamic: bool,
+	type_dynamic_expr: ^Expr,
+	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: data reference creation `CREATE DATA ref ...`.
+Create_Data_Stmt :: struct {
+	using node: Stmt,
+	target:     ^Expr,
+	type_ref:   ^Expr,
+	type_clause: ^Data_Type_Clause,
+	type_dynamic: bool,
+	type_dynamic_expr: ^Expr,
 	operands:   [dynamic]^Expr,
 }
 
@@ -2409,6 +2422,7 @@ Any_Node :: union {
 	^Field_Stmt,
 	^Assign_Field_Stmt,
 	^Create_Object_Stmt,
+	^Create_Data_Stmt,
 	^Text_Transform_Stmt,
 	^List_Control_Stmt,
 	^Line_Stmt,
@@ -2559,6 +2573,7 @@ Any_Stmt :: union {
 	^Field_Stmt,
 	^Assign_Field_Stmt,
 	^Create_Object_Stmt,
+	^Create_Data_Stmt,
 	^Text_Transform_Stmt,
 	^List_Control_Stmt,
 	^Line_Stmt,
