@@ -1933,12 +1933,15 @@ walk_class_body :: proc(
 
 walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id) {
 	owner := declare_name_if_present(c, scope, stmt.name, .Method, stmt.header_range)
-	add_qualified_method_interface_reference(c, stmt.name, scope, stmt.header_range)
+	add_method_interface_qualifier_reference(c, stmt.qualifier, scope, stmt.qualifier_range)
 	previous := c.current_scope
 	c.current_scope = scope
 	method_scope := push_scope(c, .Method, stmt.range, owner)
 	if class_owner, ok := enclosing_owner(c, scope, .Class); ok {
-		method_name := method_member_name(stmt.name)
+		method_name := stmt.member_name
+		if method_name == "" {
+			method_name = method_member_name(stmt.name)
+		}
 		note_method_implementation(c, class_owner, method_name, stmt.header_range)
 		declare_method_scope_params(c, class_owner, method_name, method_scope)
 		member := class_member(c, class_owner, method_name)
@@ -2050,7 +2053,10 @@ walk_oop_simple_stmt :: proc(c: ^Collector, stmt: ^ast.Oop_Simple_Stmt, scope: S
 	for member in stmt.members {
 		name := member.name
 		if kind == .Method {
-			name = method_member_name(member.name)
+			name = member.member_name
+			if name == "" {
+				name = method_member_name(member.name)
+			}
 		}
 		declare_name_if_present(c, scope, name, kind, stmt.range)
 	}
@@ -2176,8 +2182,11 @@ collect_class_oop_stmt :: proc(
 	case .Methods, .Class_Methods:
 		is_static := stmt.kind == .Class_Methods
 		for member in stmt.members {
-			add_qualified_method_interface_reference(c, member.name, scope, stmt.range)
-			name := method_member_name(member.name)
+			add_method_interface_qualifier_reference(c, member.qualifier, scope, member.qualifier_range)
+			name := member.member_name
+			if name == "" {
+				name = method_member_name(member.name)
+			}
 			declare_name_if_present(c, scope, name, .Method, stmt.range)
 			parameters := method_parameters_from_signatures(c, member.signatures[:])
 			exceptions := method_exceptions_from_signatures(c, member.signatures[:])
@@ -2250,7 +2259,7 @@ collect_class_oop_stmt :: proc(
 					range = stmt.range,
 				},
 			)
-			add_reference(c, scope, name, .Type, .Type_Ref, stmt.range)
+			add_reference(c, scope, name, .Type, .Interface_Use, member.range)
 		}
 	case .Aliases:
 		for member in stmt.members {
@@ -2641,14 +2650,14 @@ qualified_method_parts :: proc(name: string) -> (string, string, bool) {
 	return "", "", false
 }
 
-add_qualified_method_interface_reference :: proc(
+add_method_interface_qualifier_reference :: proc(
 	c: ^Collector,
-	name: string,
+	interface_name: string,
 	scope: Scope_Id,
 	range: tokenizer.Range,
 ) {
-	if interface_name, _, ok := qualified_method_parts(name); ok {
-		add_reference(c, scope, interface_name, .Type, .Type_Ref, range)
+	if interface_name != "" {
+		add_reference(c, scope, interface_name, .Type, .Interface_Use, range)
 	}
 }
 

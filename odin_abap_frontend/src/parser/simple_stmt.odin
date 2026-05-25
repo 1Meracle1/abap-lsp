@@ -1526,11 +1526,16 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			bump_token(p)
 			continue
 		}
-		member_name, next_index, _ := qualified_ident_name_at(p, p.index)
+		member_name, member_range, qualifier, qualifier_range, component_name, component_range, next_index, _ := qualified_ident_parts_at(p, p.index)
 		p.index = next_index
 		member := ast.Oop_Member_Clause {
-			name       = member_name,
-			signatures = make([dynamic]ast.Oop_Signature_Clause, 0, 2, p.allocator),
+			name            = member_name,
+			range           = member_range,
+			qualifier       = qualifier,
+			qualifier_range = qualifier_range,
+			member_name     = component_name,
+			member_range    = component_range,
+			signatures      = make([dynamic]ast.Oop_Signature_Clause, 0, 2, p.allocator),
 		}
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
 			if allow_keyword(p, "REDEFINITION") {

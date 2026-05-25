@@ -201,7 +201,7 @@ ref_reference_at_range :: proc(q: Ref_Queries, range: tokenizer.Range) -> ^analy
 
 ref_type_reference_at_offset :: proc(q: Ref_Queries, offset: int) -> ^analyze.Reference_Data {
 	ref := ref_reference_at_offset(q, offset)
-	if ref == nil || ref.kind != .Type_Ref {
+	if ref == nil || !(ref.kind == .Type_Ref || ref.kind == .Interface_Use) {
 		return nil
 	}
 	return ref
@@ -230,7 +230,8 @@ ref_type_named :: proc(
 ) -> [dynamic]^analyze.Reference_Data {
 	out := make([dynamic]^analyze.Reference_Data, 0, 2, allocator)
 	for &reference in q.unit.references {
-		if reference.kind == .Type_Ref && strings.equal_fold(reference.name, name) {
+		if (reference.kind == .Type_Ref || reference.kind == .Interface_Use) &&
+		   strings.equal_fold(reference.name, name) {
 			append(&out, &reference)
 		}
 	}

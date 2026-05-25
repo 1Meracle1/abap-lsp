@@ -400,40 +400,82 @@ first_name_token_until_period :: proc(p: ^Parser) -> Token {
 }
 
 qualified_ident_name_at :: proc(p: ^Parser, index: int) -> (string, int, bool) {
+	name, _, _, _, _, _, next, ok := qualified_ident_parts_at(p, index)
+	return name, next, ok
+}
+
+qualified_ident_parts_at :: proc(
+	p: ^Parser,
+	index: int,
+) -> (
+	name: string,
+	name_range: Range,
+	qualifier: string,
+	qualifier_range: Range,
+	member_name: string,
+	member_range: Range,
+	next_index: int,
+	ok: bool,
+) {
 	if index < 0 || index >= len(p.tokens) {
-		return "", index, false
+		return "", {}, "", {}, "", {}, index, false
 	}
-	name := p.tokens[index]
-	if name.kind != .Ident {
-		return "", index, false
+	first := p.tokens[index]
+	if first.kind != .Ident {
+		return "", {}, "", {}, "", {}, index, false
 	}
 	if index + 2 < len(p.tokens) &&
 	   p.tokens[index + 1].kind == .Tilde &&
 	   p.tokens[index + 2].kind == .Ident {
+		member := p.tokens[index + 2]
 		out := strings.builder_make(p.allocator)
-		strings.write_string(&out, tokenizer.token_lexeme(name, p.source))
+		strings.write_string(&out, tokenizer.token_lexeme(first, p.source))
 		strings.write_byte(&out, '~')
-		strings.write_string(&out, tokenizer.token_lexeme(p.tokens[index + 2], p.source))
-		return strings.to_string(out), index + 3, true
+		strings.write_string(&out, tokenizer.token_lexeme(member, p.source))
+		return strings.to_string(out),
+			tokenizer.text_range(first.range.start, member.range.end),
+			tokenizer.token_lexeme(first, p.source),
+			first.range,
+			tokenizer.token_lexeme(member, p.source),
+			member.range,
+			index + 3,
+			true
 	}
-	return tokenizer.token_lexeme(name, p.source), index + 1, true
+	text := tokenizer.token_lexeme(first, p.source)
+	return text, first.range, "", {}, text, first.range, index + 1, true
 }
 
 first_qualified_name_until_period :: proc(p: ^Parser) -> string {
+	name, _, _, _, _, _, _ := first_qualified_name_parts_until_period(p)
+	return name
+}
+
+first_qualified_name_parts_until_period :: proc(
+	p: ^Parser,
+) -> (
+	name: string,
+	name_range: Range,
+	qualifier: string,
+	qualifier_range: Range,
+	member_name: string,
+	member_range: Range,
+	ok: bool,
+) {
 	for i in p.index ..< len(p.tokens) {
 		tok := p.tokens[i]
 		if tok.kind == .Period || tok.kind == .Eof {
 			break
 		}
 		if tok.kind == .Ident {
-			name, _, _ := qualified_ident_name_at(p, i)
-			return name
+			part_name, part_range, part_qualifier, part_qualifier_range, part_member, part_member_range, _, part_ok := qualified_ident_parts_at(p, i)
+			return part_name, part_range, part_qualifier, part_qualifier_range, part_member, part_member_range, part_ok
 		}
 		if tok.kind == .String || tok.kind == .Number {
-			return tokenizer.token_lexeme(tok, p.source)
+			text := tokenizer.token_lexeme(tok, p.source)
+			return text, tok.range, "", {}, text, tok.range, true
 		}
 	}
-	return ""
+	return "", {}, "", {}, "", {}, false
 }
 
 next_token_kind :: proc(p: ^Parser, offset: int) -> tokenizer.Token_Kind {

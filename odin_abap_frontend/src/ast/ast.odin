@@ -1652,9 +1652,14 @@ Oop_Member_Flag :: enum {
 Oop_Member_Flags :: bit_set[Oop_Member_Flag]
 
 Oop_Member_Clause :: struct {
-	name:       string,
-	flags:      Oop_Member_Flags,
-	signatures: [dynamic]Oop_Signature_Clause,
+	name:            string,
+	range:           tokenizer.Range,
+	qualifier:       string,
+	qualifier_range: tokenizer.Range,
+	member_name:     string,
+	member_range:    tokenizer.Range,
+	flags:           Oop_Member_Flags,
+	signatures:      [dynamic]Oop_Signature_Clause,
 }
 
 // ABAP syntax: class/interface member declarations handled as simple OOP statements.
@@ -1794,13 +1799,18 @@ Interface_Decl :: struct {
 }
 
 Method_Decl :: struct {
-	using node:   Stmt,
-	name:         string,
-	body:         [dynamic]^Stmt,
-	header_range: tokenizer.Range,
-	header_text:  string,
-	is_amdp:      bool,
-	amdp_body:    string,
+	using node:      Stmt,
+	name:            string,
+	name_range:      tokenizer.Range,
+	qualifier:       string,
+	qualifier_range: tokenizer.Range,
+	member_name:     string,
+	member_range:    tokenizer.Range,
+	body:            [dynamic]^Stmt,
+	header_range:    tokenizer.Range,
+	header_text:     string,
+	is_amdp:         bool,
+	amdp_body:       string,
 }
 
 Parameter_Passing_Kind :: enum {

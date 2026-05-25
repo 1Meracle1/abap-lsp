@@ -224,6 +224,10 @@ DATA ls_client TYPE t000.
 unknown_value = 1.
 CALL FUNCTION 'Z_REMOTE_FM'.
 lv_ref->get_url( ).
+CLASS lcl_remote_impl DEFINITION.
+  PUBLIC SECTION.
+    METHODS zif_remote~run REDEFINITION.
+ENDCLASS.
 `,
 	}
 
@@ -233,6 +237,7 @@ lv_ref->get_url( ).
 	has_type := false
 	has_function := false
 	has_standard_type := false
+	has_interface := false
 	has_symbol := false
 	has_routine := false
 	has_local_type := false
@@ -245,6 +250,9 @@ lv_ref->get_url( ).
 		}
 		if candidate.name == "t000" && candidate.kind == .Type {
 			has_standard_type = true
+		}
+		if candidate.name == "zif_remote" && candidate.kind == .Type {
+			has_interface = true
 		}
 		if candidate.name == "unknown_value" {
 			has_symbol = true
@@ -259,6 +267,7 @@ lv_ref->get_url( ).
 	testing.expect(t, has_type)
 	testing.expect(t, has_function)
 	testing.expect(t, has_standard_type)
+	testing.expect(t, has_interface)
 	testing.expect(t, !has_symbol)
 	testing.expect(t, !has_routine)
 	testing.expect(t, !has_local_type)
@@ -2139,6 +2148,39 @@ ENDCLASS.`
 	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
 	testing.expect(t, has_symbol(&unit, .Method, "create"))
 	testing.expect(t, has_symbol(&unit, .Method, "delete"))
+}
+
+@(test)
+qualified_method_redefinition_qualifier_is_not_order_checked_type_ref :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS lif_demo~run REDEFINITION.
+ENDCLASS.
+
+INTERFACE lif_demo.
+  METHODS run.
+ENDINTERFACE.`
+	unit := collect_test_unit(t, "file:///qualified_method_late_interface.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "lif_demo", .Type, .Interface_Use))
+	testing.expect(t, !has_reference(&unit, "lif_demo", .Type, .Type_Ref))
+}
+
+@(test)
+interface_implementation_is_not_order_checked_type_ref :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_demo.
+ENDCLASS.
+
+INTERFACE lif_demo.
+ENDINTERFACE.`
+	unit := collect_test_unit(t, "file:///late_interface_implementation.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "lif_demo", .Type, .Interface_Use))
+	testing.expect(t, !has_reference(&unit, "lif_demo", .Type, .Type_Ref))
 }
 
 @(test)

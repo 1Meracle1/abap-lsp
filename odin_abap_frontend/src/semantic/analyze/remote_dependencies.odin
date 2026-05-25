@@ -479,6 +479,11 @@ remote_dependency_candidate_for_reference :: proc(
 			return {}, false
 		}
 		kind = .Type
+	case .Interface_Use:
+		if ref.namespace != .Type {
+			return {}, false
+		}
+		kind = .Type
 	case .Message_Class:
 		kind = .Message_Class
 	case .Routine_Call:

@@ -76,6 +76,7 @@ symbol_kind_occupies :: proc(kind: Symbol_Kind, namespace: Namespace) -> bool {
 Reference_Kind :: enum {
 	Identifier,
 	Type_Ref,
+	Interface_Use,
 	Structured_Decl_End,
 	Message_Class,
 	Routine_Call,
