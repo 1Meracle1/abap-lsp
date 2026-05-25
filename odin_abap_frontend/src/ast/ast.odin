@@ -215,6 +215,16 @@ Type_Ref_Expr :: struct {
 	raw_refs:  [dynamic]Raw_Operand_Ref,
 }
 
+// ABAP syntax: dynamic `CALL METHOD` target such as `(lv_class)=>create` or `lo->(lv_method)`.
+Dynamic_Call_Method_Target_Expr :: struct {
+	using node: Expr,
+	base:           ^Expr,
+	method:         ^Expr,
+	selector:       Selector_Op,
+	base_dynamic:   bool,
+	method_dynamic: bool,
+}
+
 // ABAP syntax: Open SQL host expression such as `@lv_value`.
 Host_Expr :: struct {
 	using node: Expr,
@@ -2299,6 +2309,7 @@ Any_Node :: union {
 	^Ident_Expr,
 	^Literal_Expr,
 	^Type_Ref_Expr,
+	^Dynamic_Call_Method_Target_Expr,
 	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,
@@ -2443,6 +2454,7 @@ Any_Expr :: union {
 	^Ident_Expr,
 	^Literal_Expr,
 	^Type_Ref_Expr,
+	^Dynamic_Call_Method_Target_Expr,
 	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,

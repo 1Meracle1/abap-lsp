@@ -2454,6 +2454,8 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			false,
 			true,
 		)
+	} else if stmt.kind == .Method {
+		stmt.target = parse_call_method_target_to_period(p, CALL_METHOD_TARGET_STOP_KEYWORDS)
 	} else {
 		stmt.target = parse_raw_operand_to_period(
 			p,
@@ -2483,11 +2485,139 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+CALL_METHOD_TARGET_STOP_KEYWORDS :: []string {
+	"EXPORTING",
+	"IMPORTING",
+	"CHANGING",
+	"TABLES",
+	"RECEIVING",
+	"EXCEPTIONS",
+	"USING",
+	"AND",
+	"WITH",
+}
+
 CALL_TRANSFORMATION_CLAUSE_KEYWORDS :: []string {
 	"OPTIONS",
 	"PARAMETERS",
 	"SOURCE",
 	"RESULT",
+}
+
+parse_call_method_target_to_period :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Expr {
+	start := p.index
+	raw := parse_raw_operand_to_period(p, stop_keywords)
+	if raw == nil {
+		return nil
+	}
+	if target, ok := dynamic_call_method_target_from_tokens(p, start, p.index); ok {
+		return cast(^ast.Expr)target
+	}
+	return raw
+}
+
+dynamic_call_method_target_from_tokens :: proc(
+	p: ^Parser,
+	start, end: int,
+) -> (
+	^ast.Dynamic_Call_Method_Target_Expr,
+	bool,
+) {
+	op_index := call_method_target_selector_index(p, start, end)
+	if op_index < 0 {
+		method, method_dynamic := call_method_target_part_expr(p, start, end)
+		if !method_dynamic {
+			return nil, false
+		}
+		out := ast.new(
+			ast.Dynamic_Call_Method_Target_Expr,
+			tokenizer.text_range(p.tokens[start].range.start, p.tokens[end - 1].range.end),
+			p.allocator,
+		)
+		out.method = method
+		out.method_dynamic = true
+		return out, true
+	}
+	base, base_dynamic := call_method_target_part_expr(p, start, op_index)
+	method, method_dynamic := call_method_target_part_expr(p, op_index + 1, end)
+	if !base_dynamic && !method_dynamic {
+		return nil, false
+	}
+	out := ast.new(
+		ast.Dynamic_Call_Method_Target_Expr,
+		tokenizer.text_range(p.tokens[start].range.start, p.tokens[end - 1].range.end),
+		p.allocator,
+	)
+	out.base = base
+	out.method = method
+	out.selector = selector_op(p.tokens[op_index].kind)
+	out.base_dynamic = base_dynamic
+	out.method_dynamic = method_dynamic
+	return out, true
+}
+
+call_method_target_part_expr :: proc(
+	p: ^Parser,
+	start, end: int,
+) -> (
+	^ast.Expr,
+	bool,
+) {
+	if end <= start {
+		return nil, false
+	}
+	inner_start, inner_end, is_dynamic := call_method_target_dynamic_group(p, start, end)
+	if is_dynamic {
+		if inner_end <= inner_start {
+			return nil, true
+		}
+		expr := type_ref_expr_from_tokens(p, inner_start, inner_end, -1, true, true)
+		populate_raw_operand_facts(p, expr, inner_start, inner_end, false)
+		return cast(^ast.Expr)expr, true
+	}
+	return cast(^ast.Expr)type_ref_expr_from_tokens(p, start, end, -1, true, true), false
+}
+
+call_method_target_dynamic_group :: proc(
+	p: ^Parser,
+	start, end: int,
+) -> (
+	int,
+	int,
+	bool,
+) {
+	if start < end &&
+	   p.tokens[start].kind == .LParen &&
+	   matching_group_index(p, start, .LParen, .RParen) == end - 1 {
+		return start + 1, end - 1, true
+	}
+	return start, end, false
+}
+
+call_method_target_selector_index :: proc(p: ^Parser, start, end: int) -> int {
+	paren, bracket, brace := 0, 0, 0
+	for i in start ..< end {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && (tok.kind == .Arrow || tok.kind == .FatArrow || tok.kind == .Tilde) {
+			return i
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+	}
+	return -1
 }
 
 parse_call_transformation_operands :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {

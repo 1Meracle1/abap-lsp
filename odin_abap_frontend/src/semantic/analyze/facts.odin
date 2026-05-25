@@ -46,6 +46,8 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 			collect_raw_operand_refs(c, n, scope)
 		}
 		return
+	case ^ast.Dynamic_Call_Method_Target_Expr:
+		collect_dynamic_call_method_target_refs(c, n, scope)
 	case ^ast.Host_Expr:
 		collect_expr_refs(c, n.value, scope)
 	case ^ast.Table_Expr:
@@ -502,6 +504,29 @@ named_argument_section_from_ast :: proc(
 
 collect_raw_operand_refs :: proc(c: ^Collector, expr: ^ast.Type_Ref_Expr, scope: Scope_Id) {
 	collect_raw_operand_fact_refs(c, expr.raw_decls[:], expr.raw_refs[:], scope)
+}
+
+collect_dynamic_call_method_target_refs :: proc(
+	c: ^Collector,
+	expr: ^ast.Dynamic_Call_Method_Target_Expr,
+	scope: Scope_Id,
+) {
+	if expr.base != nil {
+		if expr.base_dynamic {
+			collect_expr_refs(c, expr.base, scope)
+		} else if name, range, ok := expr_name(expr.base); ok {
+			namespace := Namespace.Value
+			kind := Reference_Kind.Identifier
+			if expr.selector == .Fat_Arrow || expr.selector == .Tilde {
+				namespace = .Type
+				kind = .Static_Target
+			}
+			add_reference(c, scope, name, namespace, kind, range)
+		}
+	}
+	if expr.method_dynamic {
+		collect_expr_refs(c, expr.method, scope)
+	}
 }
 
 collect_raw_operand_fact_refs :: proc(
@@ -1178,6 +1203,27 @@ call_stmt_method_target :: proc(
 ) -> Named_Argument_Target {
 	if stmt.target == nil {
 		return Named_Argument_Target{kind = .Implicit_Method}
+	}
+	if dyn, ok := stmt.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr); ok {
+		if dyn.base == nil {
+			return Named_Argument_Target{kind = .Implicit_Method}
+		}
+		namespace := Namespace.Value
+		if dyn.selector == .Fat_Arrow || dyn.selector == .Tilde {
+			namespace = .Type
+		}
+		base_name := ""
+		if !dyn.base_dynamic {
+			if name, _, name_ok := expr_name(dyn.base); name_ok {
+				base_name = canonical_name(name, c.allocator)
+			}
+		}
+		return Named_Argument_Target {
+			kind = .Method,
+			base_namespace = namespace,
+			base_name = base_name,
+			interface_qualified = namespace == .Type,
+		}
 	}
 	if access, ok := selector_access_from_expr(c, stmt.target, scope, false);
 	   ok && len(access.field_path) > 0 {

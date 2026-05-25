@@ -51,6 +51,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Ident_Expr:
 	case ^Literal_Expr:
 	case ^Type_Ref_Expr:
+	case ^Dynamic_Call_Method_Target_Expr:
+		walk(next, n.base)
+		walk(next, n.method)
 	case ^Host_Expr:
 		walk(next, n.value)
 	case ^Table_Expr:

@@ -2954,7 +2954,7 @@ ENDFORM.
 	)
 
 	testing.expect(t, has_method_named_argument(&unit, "iv_value", .Exporting, "lo_client", "run"))
-	testing.expect(t, has_named_argument(&unit, "iv_dyn", .Exporting, .Implicit_Method))
+	testing.expect(t, has_method_named_argument(&unit, "iv_dyn", .Exporting, "lo_client", ""))
 	testing.expect_value(t, reference_count(&unit, "lo_client", .Value, .Identifier), 2)
 	testing.expect_value(t, reference_count(&unit, "lv_value", .Value, .Identifier), 1)
 	testing.expect(t, !has_reference(&unit, "exporting", .Value, .Identifier))
@@ -2971,6 +2971,27 @@ ENDFORM.
 		}
 	}
 	testing.expect_value(t, selector_accesses, 1)
+}
+
+@(test)
+dynamic_static_call_method_targets_do_not_reference_method_names :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///dynamic_static_call_method_target.abap",
+		`
+DATA lv_class TYPE string.
+CALL METHOD ('CL_ABAP_CONV_CODEPAGE')=>create_in.
+CALL METHOD (lv_class)=>create.
+CALL METHOD (lv_class)=>if_demo~create_instance.
+`,
+	)
+
+	testing.expect(t, !has_reference(&unit, "create_in", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "create", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "create_instance", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "if_demo", .Value, .Identifier))
+	testing.expect_value(t, reference_count(&unit, "lv_class", .Value, .Identifier), 2)
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 }
 
 @(test)

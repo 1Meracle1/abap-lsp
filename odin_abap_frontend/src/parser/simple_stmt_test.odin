@@ -652,16 +652,25 @@ CALL METHOD lo->run
 raw_call_method_targets_carry_parser_reference_facts :: proc(t: ^testing.T) {
 	source := `CALL METHOD lo_client->run EXPORTING iv_value = lv_value.
 CALL METHOD lcl_demo=>class_run.
-CALL METHOD lo_client->('RUN') EXPORTING iv_value = lv_value.`
+CALL METHOD lo_client->('RUN') EXPORTING iv_value = lv_value.
+CALL METHOD ('CL_ABAP_CONV_CODEPAGE')=>create_in.
+CALL METHOD (lv_class)=>create.
+CALL METHOD (lv_class)=>if_demo~create_instance.`
 	parsed := parse(source, "raw_call_method_targets.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	instance := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
 	static := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
 	dynamic_call := parsed.root.stmts[2].derived_stmt.(^ast.Call_Stmt)
+	dynamic_static_literal := parsed.root.stmts[3].derived_stmt.(^ast.Call_Stmt)
+	dynamic_static_variable := parsed.root.stmts[4].derived_stmt.(^ast.Call_Stmt)
+	dynamic_static_qualified := parsed.root.stmts[5].derived_stmt.(^ast.Call_Stmt)
 	instance_target := instance.target.derived_expr.(^ast.Type_Ref_Expr)
 	static_target := static.target.derived_expr.(^ast.Type_Ref_Expr)
-	dynamic_target := dynamic_call.target.derived_expr.(^ast.Type_Ref_Expr)
+	dynamic_target := dynamic_call.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
+	dynamic_static_literal_target := dynamic_static_literal.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
+	dynamic_static_variable_target := dynamic_static_variable.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
+	dynamic_static_qualified_target := dynamic_static_qualified.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
 
 	testing.expect(t, instance_target.raw_operand)
 	testing.expect_value(t, instance_target.raw_refs[0].name, "lo_client")
@@ -669,9 +678,18 @@ CALL METHOD lo_client->('RUN') EXPORTING iv_value = lv_value.`
 	testing.expect(t, static_target.raw_refs[0].type_base)
 	testing.expect_value(t, static_target.raw_refs[0].name, "lcl_demo")
 	testing.expect_value(t, static_target.raw_refs[0].path[0].name, "class_run")
-	testing.expect_value(t, len(dynamic_target.raw_refs), 1)
-	testing.expect_value(t, dynamic_target.raw_refs[0].name, "lo_client")
-	testing.expect_value(t, len(dynamic_target.raw_refs[0].path), 0)
+	testing.expect(t, !dynamic_target.base_dynamic)
+	testing.expect(t, dynamic_target.method_dynamic)
+	testing.expect_value(t, ast.print_node(dynamic_target, context.allocator), "lo_client->('RUN')")
+	testing.expect(t, dynamic_static_literal_target.base_dynamic)
+	testing.expect(t, !dynamic_static_literal_target.method_dynamic)
+	testing.expect_value(t, ast.print_node(dynamic_static_literal_target, context.allocator), "('CL_ABAP_CONV_CODEPAGE')=>create_in")
+	testing.expect(t, dynamic_static_variable_target.base_dynamic)
+	testing.expect(t, !dynamic_static_variable_target.method_dynamic)
+	testing.expect_value(t, ast.print_node(dynamic_static_variable_target, context.allocator), "(lv_class)=>create")
+	testing.expect(t, dynamic_static_qualified_target.base_dynamic)
+	testing.expect(t, !dynamic_static_qualified_target.method_dynamic)
+	testing.expect_value(t, ast.print_node(dynamic_static_qualified_target, context.allocator), "(lv_class)=>if_demo~create_instance")
 }
 
 @(test)

@@ -97,6 +97,11 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.raw_decls = clone_raw_operand_decls(n.raw_decls, allocator)
 		r.raw_refs = clone_raw_operand_refs(n.raw_refs, allocator)
 		return r
+	case ^Dynamic_Call_Method_Target_Expr:
+		r := clone_shallow(n, allocator)
+		r.base = clone(n.base, allocator)
+		r.method = clone(n.method, allocator)
+		return r
 	case ^Host_Expr:
 		r := clone_shallow(n, allocator)
 		r.value = clone(n.value, allocator)
