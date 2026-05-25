@@ -1326,6 +1326,8 @@ type_ref_fill_base_path :: proc(
 					ast.Type_Ref_Path_Segment {
 						name = tokenizer.token_lexeme(field, p.source),
 						range = field.range,
+						selector = selector_op(tok.kind),
+						selector_range = tok.range,
 					},
 				)
 				i = next
@@ -1361,7 +1363,7 @@ type_ref_starts_with_ref_to :: proc(p: ^Parser, start, end: int) -> bool {
 }
 
 type_ref_selector_token :: #force_inline proc(kind: tokenizer.Token_Kind) -> bool {
-	return kind == .Minus || kind == .FatArrow || kind == .Tilde
+	return kind == .Minus || kind == .Arrow || kind == .FatArrow || kind == .Tilde
 }
 
 type_ref_path_token :: #force_inline proc(tok: Token) -> bool {

@@ -155,7 +155,7 @@ analyze_inputs_with_dependency_drain :: proc(
 		if !added && config.adt_client != nil {
 			adt_remote_candidates := analyze.collect_project_state_remote_dependency_candidates(
 				&state,
-				false,
+				true,
 				drain_allocator,
 			)
 			adt_candidates := unseen_remote_candidates(

@@ -1517,6 +1517,11 @@ type_ref_from_type_ref_expr :: proc(
 	if base == "" {
 		return {}, false
 	}
+	ns := namespace
+	if len(expr.path) > 0 &&
+	   (expr.path[0].selector == .Fat_Arrow || expr.path[0].selector == .Tilde) {
+		ns = .Type
+	}
 	field_path := make([dynamic]string, 0, len(expr.path), c.allocator)
 	field_ranges := make([dynamic]tokenizer.Range, 0, len(expr.path), c.allocator)
 	for segment in expr.path {
@@ -1524,7 +1529,7 @@ type_ref_from_type_ref_expr :: proc(
 		append(&field_ranges, segment.range)
 	}
 	return Field_Type_Ref_Data {
-			namespace = namespace,
+			namespace = ns,
 			is_ref = is_ref,
 			base_name = canonical_name(base, c.allocator),
 			base_range = base_range,

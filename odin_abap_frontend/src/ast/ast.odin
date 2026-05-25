@@ -171,8 +171,10 @@ Type_Ref_Key_Clause :: struct {
 }
 
 Type_Ref_Path_Segment :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name:           string,
+	range:          tokenizer.Range,
+	selector:       Selector_Op,
+	selector_range: tokenizer.Range,
 }
 
 Raw_Operand_Inline_Decl_Kind :: enum {

@@ -238,6 +238,7 @@ DATA mv_text TYPE string READ-ONLY.`
 type_reference_base_and_path_are_ast_fields :: proc(t: ^testing.T) {
 	source := `DATA lv_date LIKE sy-datum.
 DATA lr_item TYPE REF TO lif_demo=>ty_item.
+DATA lv_phase LIKE lif_demo=>scriptcallphase_enum.
 TYPES ty_field TYPE zstruc-field.
 TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line.`
 	parsed := parse(source, "type_ref_paths.abap", context.allocator)
@@ -245,29 +246,39 @@ TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line
 	testing.expect_value(t, len(parsed.errors), 0)
 	date_decl := parsed.root.stmts[0].derived_stmt.(^ast.Data_Decl)
 	item_decl := parsed.root.stmts[1].derived_stmt.(^ast.Data_Decl)
-	field_decl := parsed.root.stmts[2].derived_stmt.(^ast.Types_Decl)
-	table_decl := parsed.root.stmts[3].derived_stmt.(^ast.Types_Decl)
+	phase_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
+	field_decl := parsed.root.stmts[3].derived_stmt.(^ast.Types_Decl)
+	table_decl := parsed.root.stmts[4].derived_stmt.(^ast.Types_Decl)
 
 	date_ref := date_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, date_ref.base_name, "sy")
 	testing.expect_value(t, source[date_ref.base_range.start:date_ref.base_range.end], "sy")
 	testing.expect_value(t, len(date_ref.path), 1)
 	testing.expect_value(t, date_ref.path[0].name, "datum")
+	testing.expect_value(t, date_ref.path[0].selector, ast.Selector_Op.Dash)
 	testing.expect_value(t, source[date_ref.path[0].range.start:date_ref.path[0].range.end], "datum")
 
 	item_ref := item_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, item_ref.base_name, "lif_demo")
 	testing.expect_value(t, item_ref.path[0].name, "ty_item")
+	testing.expect_value(t, item_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
+
+	phase_ref := phase_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, phase_ref.base_name, "lif_demo")
+	testing.expect_value(t, phase_ref.path[0].name, "scriptcallphase_enum")
+	testing.expect_value(t, phase_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
 
 	field_ref := field_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, field_ref.base_name, "zstruc")
 	testing.expect_value(t, field_ref.path[0].name, "field")
+	testing.expect_value(t, field_ref.path[0].selector, ast.Selector_Op.Dash)
 
 	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, table_ref.name, "REF TO lif_demo=>ty_item")
 	testing.expect(t, table_ref.is_ref)
 	testing.expect_value(t, table_ref.base_name, "lif_demo")
 	testing.expect_value(t, table_ref.path[0].name, "ty_item")
+	testing.expect_value(t, table_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
 }
 
 @(test)

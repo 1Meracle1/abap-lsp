@@ -954,6 +954,60 @@ project_state_unresolved_candidates_skip_resolved_function_dependency :: proc(t:
 }
 
 @(test)
+dependency_interface_static_like_type_ref_is_transitive_candidate :: proc(t: ^testing.T) {
+	pool: frontend_runtime.Pool
+	testing.expect_value(
+		t,
+		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
+		frontend_runtime.Submit_Error.None,
+	)
+	defer frontend_runtime.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_dep.",
+		},
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/zcl_dep.abap",
+			source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING phase LIKE zif_base=>ty_phase.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	_ = analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	full_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, true, context.allocator)
+	root_only_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, false, context.allocator)
+	found_full := false
+	found_root_only := false
+	for candidate in full_candidates {
+		if candidate.name == "zif_base" && candidate.kind == .Type {
+			found_full = true
+		}
+	}
+	for candidate in root_only_candidates {
+		if candidate.name == "zif_base" && candidate.kind == .Type {
+			found_root_only = true
+		}
+	}
+
+	testing.expect(t, found_full)
+	testing.expect(t, !found_root_only)
+}
+
+@(test)
 project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
 	pool: frontend_runtime.Pool
 	testing.expect_value(
@@ -2000,9 +2054,12 @@ ENDCLASS.`
 @(test)
 oop_signature_type_refs_use_ast_paths :: proc(t: ^testing.T) {
 	source := `
+INTERFACE lif_demo.
+  TYPES scriptcallphase_enum TYPE i.
+ENDINTERFACE.
 CLASS lcl_date DEFINITION.
   PUBLIC SECTION.
-    METHODS run IMPORTING iv_date LIKE sy-datum.
+    METHODS run IMPORTING iv_date LIKE sy-datum phase LIKE lif_demo=>scriptcallphase_enum.
 ENDCLASS.
 `
 	unit := collect_test_unit(t, "file:///oop_type_ref_paths.abap", source)
@@ -2011,13 +2068,20 @@ ENDCLASS.
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
-	testing.expect_value(t, len(method.parameters), 1)
-	param := method.parameters[0]
-	testing.expect(t, .Has_Declared_Type in param.flags)
-	testing.expect_value(t, param.declared_type.namespace, analyze.Namespace.Value)
-	testing.expect_value(t, param.declared_type.base_name, "sy")
-	testing.expect_value(t, param.declared_type.field_path[0], "datum")
+	testing.expect_value(t, len(method.parameters), 2)
+	date := method.parameters[0]
+	testing.expect(t, .Has_Declared_Type in date.flags)
+	testing.expect_value(t, date.declared_type.namespace, analyze.Namespace.Value)
+	testing.expect_value(t, date.declared_type.base_name, "sy")
+	testing.expect_value(t, date.declared_type.field_path[0], "datum")
+	phase := method.parameters[1]
+	testing.expect(t, .Has_Declared_Type in phase.flags)
+	testing.expect_value(t, phase.declared_type.namespace, analyze.Namespace.Type)
+	testing.expect_value(t, phase.declared_type.base_name, "lif_demo")
+	testing.expect_value(t, phase.declared_type.field_path[0], "scriptcallphase_enum")
 	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
+	testing.expect(t, has_reference(&unit, "lif_demo", .Type, .Type_Ref))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 }
 
 @(test)
