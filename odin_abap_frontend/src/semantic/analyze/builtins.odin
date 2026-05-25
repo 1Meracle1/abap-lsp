@@ -396,7 +396,6 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "cdobjectcl", kind = .Type, structure_name = ""},
 	{name = "rs38l_fnam", kind = .Type, structure_name = ""},
 	{name = "memoryid", kind = .Type, structure_name = ""},
-	{name = "seop_source_string", kind = .Type, structure_name = ""},
 	{name = "synt_errors", kind = .Type, structure_name = ""},
 	{name = "synt_comment", kind = .Type, structure_name = ""},
 	{name = "synt_map", kind = .Type, structure_name = ""},
