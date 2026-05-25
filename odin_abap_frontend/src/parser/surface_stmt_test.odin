@@ -173,6 +173,35 @@ SORT lt_table BY name DESCENDING.`
 }
 
 @(test)
+append_initial_line_keeps_append_shape :: proc(t: ^testing.T) {
+	source := `APPEND INITIAL LINE TO lt_stab ASSIGNING <ls_stab>.`
+	parsed := parse(source, "append_initial_line.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Append_Stmt)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect(t, stmt.initial_line)
+	testing.expect(t, stmt.source == nil)
+	testing.expect(t, stmt.target != nil)
+	testing.expect(t, stmt.assigning != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+insert_initial_line_keeps_insert_shape :: proc(t: ^testing.T) {
+	source := `INSERT INITIAL LINE INTO TABLE lt_stab ASSIGNING <ls_stab> INDEX 1.`
+	parsed := parse(source, "insert_initial_line.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Insert_Stmt)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect(t, stmt.initial_line)
+	testing.expect(t, stmt.source == nil)
+	testing.expect(t, stmt.target != nil)
+	testing.expect(t, stmt.assigning != nil)
+	testing.expect(t, stmt.index != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), `INSERT INITIAL LINE INTO TABLE lt_stab INDEX 1 ASSIGNING <ls_stab>.`)
+}
+
+@(test)
 data_access_statements_keep_concrete_fields :: proc(t: ^testing.T) {
 	source := `READ TABLE itab INTO DATA(row) WITH KEY id = lv_id TRANSPORTING NO FIELDS.
 INSERT wa INTO TABLE itab INDEX idx ASSIGNING FIELD-SYMBOL(<row>).

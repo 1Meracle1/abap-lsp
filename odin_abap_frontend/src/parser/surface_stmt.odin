@@ -1322,6 +1322,10 @@ parse_insert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		allow_keyword(p, "OF")
 		stmt.form = .Lines_Of
 		stmt.source = data_expr(p, body_start, []string{"INTO", "FROM", "TO", "USING"})
+	} else if allow_keyword(p, "INITIAL") {
+		allow_keyword(p, "LINE")
+		stmt.form = .Internal_Table
+		stmt.initial_line = true
 	} else {
 		first_operand = data_expr(
 			p,
@@ -1499,8 +1503,13 @@ parse_append_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if allow_keyword(p, "LINES") {
 		allow_keyword(p, "OF")
 		stmt.lines_of = true
+	} else if allow_keyword(p, "INITIAL") {
+		allow_keyword(p, "LINE")
+		stmt.initial_line = true
 	}
-	stmt.source = data_expr(p, body_start, []string{"TO", "ASSIGNING", "REFERENCE"})
+	if !stmt.initial_line {
+		stmt.source = data_expr(p, body_start, []string{"TO", "ASSIGNING", "REFERENCE"})
+	}
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "TO") {
 			stmt.sorted = allow_keyword(p, "SORTED")

@@ -2407,7 +2407,11 @@ emit_insert_stmt :: proc(p: ^Printer, stmt: ^Insert_Stmt) {
 	if stmt.form == .Lines_Of {
 		emit(p, "LINES OF ")
 	}
-	emit_node(p, stmt.source)
+	if stmt.initial_line {
+		emit(p, "INITIAL LINE")
+	} else {
+		emit_node(p, stmt.source)
+	}
 	if stmt.target != nil {
 		emit(p, " INTO")
 		if stmt.form == .Internal_Table || stmt.form == .Lines_Of {
@@ -2436,7 +2440,11 @@ emit_append_stmt :: proc(p: ^Printer, stmt: ^Append_Stmt) {
 	if stmt.lines_of {
 		emit(p, "LINES OF ")
 	}
-	emit_node(p, stmt.source)
+	if stmt.initial_line {
+		emit(p, "INITIAL LINE")
+	} else {
+		emit_node(p, stmt.source)
+	}
 	if stmt.target != nil {
 		emit(p, " TO ")
 		if stmt.sorted {

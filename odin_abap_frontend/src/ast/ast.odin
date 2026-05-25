@@ -2053,6 +2053,7 @@ Insert_Stmt :: struct {
 	db_source_range:         tokenizer.Range,
 	has_db_table_name:       bool,
 	dynamic_source:          bool,
+	initial_line:            bool,
 	into_db_table:           bool,
 	from_table:              bool,
 	values_clause:           bool,
@@ -2071,6 +2072,7 @@ Append_Stmt :: struct {
 	target:         ^Expr,
 	assigning:      ^Expr,
 	reference_into: ^Expr,
+	initial_line:   bool,
 	lines_of:       bool,
 	sorted:         bool,
 }
