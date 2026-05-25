@@ -527,6 +527,27 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "cntl_simple_events", kind = .Type, structure_name = "cntl_simple_event"},
 }
 
+NUMERIC_ARG_PARAMS :: []Builtin_Routine_Param_Spec{{"arg", "data"}}
+FLOAT_ARG_PARAMS :: []Builtin_Routine_Param_Spec{{"arg", "f"}}
+IPOW_PARAMS :: []Builtin_Routine_Param_Spec{{"base", "data"}, {"exp", "i"}}
+EXTREMUM_PARAMS :: []Builtin_Routine_Param_Spec {
+	{"val1", "data"},
+	{"val2", "data"},
+	{"val3", "data"},
+	{"val4", "data"},
+	{"val5", "data"},
+	{"val6", "data"},
+	{"val7", "data"},
+	{"val8", "data"},
+	{"val9", "data"},
+}
+DEC_FLOAT_ROUNDING_PARAMS :: []Builtin_Routine_Param_Spec {
+	{"val", "decfloat34"},
+	{"dec", "i"},
+	{"prec", "i"},
+	{"mode", "data"},
+}
+
 BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	{
 		name = "boolc",
@@ -542,6 +563,28 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 		description = "Predicate function: returns whether a row exists for the given internal table expression.",
 		supports_named_arguments = false,
 	},
+	{name = "abs", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Absolute value of `arg`.", supports_named_arguments = false},
+	{name = "sign", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Sign of `arg`: -1, 0, or 1.", supports_named_arguments = false},
+	{name = "ceil", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Smallest integer not less than `arg`.", supports_named_arguments = false},
+	{name = "floor", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Largest integer not greater than `arg`.", supports_named_arguments = false},
+	{name = "trunc", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Integer part of `arg`.", supports_named_arguments = false},
+	{name = "frac", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Decimal part of `arg`.", supports_named_arguments = false},
+	{name = "ipow", params = IPOW_PARAMS, return_type = "data", description = "Integer power: `base` raised to `exp`.", supports_named_arguments = true},
+	{name = "nmax", params = EXTREMUM_PARAMS, return_type = "data", description = "Largest numeric argument.", supports_named_arguments = true},
+	{name = "nmin", params = EXTREMUM_PARAMS, return_type = "data", description = "Smallest numeric argument.", supports_named_arguments = true},
+	{name = "acos", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Arccosine of `arg`.", supports_named_arguments = false},
+	{name = "asin", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Arcsine of `arg`.", supports_named_arguments = false},
+	{name = "atan", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Arctangent of `arg`.", supports_named_arguments = false},
+	{name = "cos", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Cosine of `arg`.", supports_named_arguments = false},
+	{name = "sin", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Sine of `arg`.", supports_named_arguments = false},
+	{name = "tan", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Tangent of `arg`.", supports_named_arguments = false},
+	{name = "cosh", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Hyperbolic cosine of `arg`.", supports_named_arguments = false},
+	{name = "sinh", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Hyperbolic sine of `arg`.", supports_named_arguments = false},
+	{name = "tanh", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Hyperbolic tangent of `arg`.", supports_named_arguments = false},
+	{name = "exp", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Exponential function for base e.", supports_named_arguments = false},
+	{name = "log", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Natural logarithm of `arg`.", supports_named_arguments = false},
+	{name = "log10", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Logarithm of `arg` to base 10.", supports_named_arguments = false},
+	{name = "sqrt", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Square root of `arg`.", supports_named_arguments = false},
 	{
 		name = "charlen",
 		params = []Builtin_Routine_Param_Spec{{"arg", "string"}, {"text", "string"}},
@@ -619,14 +662,16 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	},
 	{
 		name = "round",
-		params = []Builtin_Routine_Param_Spec {
-			{"val", "decfloat34"},
-			{"dec", "i"},
-			{"prec", "i"},
-			{"mode", "data"},
-		},
+		params = DEC_FLOAT_ROUNDING_PARAMS,
 		return_type = "decfloat34",
 		description = "Rounds a decimal floating-point value to a given number of decimal places (`dec`) or significant digits (`prec`), optionally using a rounding mode from `CL_ABAP_MATH`.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "rescale",
+		params = DEC_FLOAT_ROUNDING_PARAMS,
+		return_type = "decfloat34",
+		description = "Rescales a decimal floating-point value by decimal places (`dec`) or precision (`prec`), optionally using a rounding mode from `CL_ABAP_MATH`.",
 		supports_named_arguments = true,
 	},
 	{

@@ -59,6 +59,44 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 		testing.expect_value(t, strlen.description, "Number of characters in a text value.")
 	}
 	testing.expect(t, analyze.find_symbol(&unit, "strlen", .Builtin_Routine) != nil)
+
+	numeric_routines := [?]string {
+		"abs",
+		"sign",
+		"ceil",
+		"floor",
+		"trunc",
+		"frac",
+		"ipow",
+		"nmax",
+		"nmin",
+		"acos",
+		"asin",
+		"atan",
+		"cos",
+		"sin",
+		"tan",
+		"cosh",
+		"sinh",
+		"tanh",
+		"exp",
+		"log",
+		"log10",
+		"sqrt",
+		"round",
+		"rescale",
+	}
+	for name in numeric_routines {
+		testing.expect(t, analyze.builtin_routine_spec(name) != nil)
+		testing.expect(t, analyze.find_symbol(&unit, name, .Builtin_Routine) != nil)
+	}
+	nmin := analyze.builtin_routine_spec("nmin")
+	testing.expect(t, nmin != nil)
+	if nmin != nil {
+		testing.expect_value(t, len(nmin.params), 9)
+		testing.expect_value(t, nmin.params[0].name, "val1")
+		testing.expect(t, nmin.supports_named_arguments)
+	}
 }
 
 @(test)
