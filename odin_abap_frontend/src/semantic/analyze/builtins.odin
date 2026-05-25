@@ -543,6 +543,13 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 		supports_named_arguments = true,
 	},
 	{
+		name = "reverse",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}},
+		return_type = "string",
+		description = "Returns a character string with its characters in reverse order.",
+		supports_named_arguments = true,
+	},
+	{
 		name = "round",
 		params = []Builtin_Routine_Param_Spec {
 			{"val", "decfloat34"},

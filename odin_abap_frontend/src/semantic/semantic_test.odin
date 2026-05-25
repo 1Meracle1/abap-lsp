@@ -346,6 +346,29 @@ ENDFORM.
 }
 
 @(test)
+resolves_reverse_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///reverse.abap",
+		`
+FORM run.
+  DATA lv_name TYPE string.
+  DATA lv_type TYPE string.
+  lv_type = reverse( lv_name ).
+ENDFORM.
+`,
+	)
+
+	spec := analyze.builtin_routine_spec("reverse")
+	testing.expect(t, spec != nil)
+	if spec != nil {
+		testing.expect_value(t, spec.return_type, "string")
+	}
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "reverse", .Routine, .Routine_Call))
+}
+
+@(test)
 resolves_boolc_builtin :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
