@@ -1969,6 +1969,26 @@ ENDCLASS.
 }
 
 @(test)
+interface_method_implementation_resolves_me :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_log.
+  METHODS merge RETURNING VALUE(ro_log) TYPE REF TO lif_log.
+ENDINTERFACE.
+CLASS lcl_log DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_log.
+ENDCLASS.
+CLASS lcl_log IMPLEMENTATION.
+  METHOD lif_log~merge.
+    ro_log = me.
+  ENDMETHOD.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///interface_method_me.abap", source)
+
+	testing.expect(t, has_reference(&unit, "me", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 oop_signature_type_refs_use_ast_paths :: proc(t: ^testing.T) {
 	source := `
 CLASS lcl_date DEFINITION.

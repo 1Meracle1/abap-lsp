@@ -1937,8 +1937,8 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 		method_name := method_member_name(stmt.name)
 		note_method_implementation(c, class_owner, method_name, stmt.header_range)
 		declare_method_scope_params(c, class_owner, method_name, method_scope)
-		if member := class_member(c, class_owner, method_name);
-		   member != nil && !(.Is_Static in member.flags) {
+		member := class_member(c, class_owner, method_name)
+		if member == nil || !(.Is_Static in member.flags) {
 			_ = declare_collected_symbol(
 				c,
 				method_scope,
