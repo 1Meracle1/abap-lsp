@@ -508,6 +508,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Create_Object_Stmt:
 		r := clone_shallow(n, allocator)
+		r.target = clone(n.target, allocator)
+		r.type_ref = clone(n.type_ref, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
 	case ^Text_Transform_Stmt:

@@ -650,7 +650,7 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 	case ^ast.Assign_Field_Stmt:
 		collect_assign_field_stmt_facts(c, n, scope)
 	case ^ast.Create_Object_Stmt:
-		collect_expr_list_refs(c, n.operands[:], scope)
+		collect_create_object_stmt_facts(c, n, scope)
 	case ^ast.Text_Transform_Stmt:
 		collect_expr_list_refs(c, n.operands[:], scope)
 		add_routine_site(c, scope, n.range, .Unknown_Effect)

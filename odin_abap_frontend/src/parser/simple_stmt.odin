@@ -383,6 +383,7 @@ parse_raw_operand_to_period :: proc(
 	allow_leading_stop := false,
 	raw_facts := true,
 	set_name := false,
+	skip_leading_dynamic_group := true,
 ) -> ^ast.Expr {
 	if raw_period_done(p) ||
 	   current_token(p).kind == .Comma ||
@@ -432,7 +433,13 @@ parse_raw_operand_to_period :: proc(
 	}
 	value := type_ref_expr_from_tokens(p, start, p.index, -1, set_name, fill_parts)
 	if raw_facts {
-		populate_raw_operand_facts(p, value, start, p.index)
+		populate_raw_operand_facts(
+			p,
+			value,
+			start,
+			p.index,
+			skip_leading_dynamic_group,
+		)
 	}
 	return value
 }
@@ -447,7 +454,14 @@ parse_generic_operands_to_period :: proc(
 			continue
 		}
 		start := p.index
-		value := parse_raw_operand_to_period(p, stop_keywords)
+		value := parse_raw_operand_to_period(
+			p,
+			stop_keywords,
+			false,
+			false,
+			true,
+			false,
+		)
 		if value != nil {
 			append(&values, value)
 		}
@@ -468,7 +482,14 @@ populate_raw_operand_facts :: proc(
 	expr.raw_operand = true
 	expr.raw_decls = make([dynamic]ast.Raw_Operand_Inline_Decl, 0, 1, p.allocator)
 	expr.raw_refs = make([dynamic]ast.Raw_Operand_Ref, 0, 2, p.allocator)
-	populate_raw_operand_fact_lists(p, start, end, &expr.raw_decls, &expr.raw_refs, skip_leading_dynamic_group)
+	populate_raw_operand_fact_lists(
+		p,
+		start,
+		end,
+		&expr.raw_decls,
+		&expr.raw_refs,
+		skip_leading_dynamic_group,
+	)
 }
 
 populate_raw_operand_fact_lists :: proc(
@@ -1003,6 +1024,19 @@ parse_create_object_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "CREATE")
 	allow_keyword(p, "OBJECT")
 	stmt := ast.new(ast.Create_Object_Stmt, start.range, p.allocator)
+	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
+	if allow_keyword(p, "TYPE") {
+		stmt.type_dynamic = current_token(p).kind == .LParen
+		stmt.type_ref = parse_raw_operand_to_period(
+			p,
+			[]string{"EXPORTING", "EXCEPTIONS"},
+			true,
+			false,
+			stmt.type_dynamic,
+			false,
+			!stmt.type_dynamic,
+		)
+	}
 	stmt.operands = parse_generic_operands_to_period(p, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt

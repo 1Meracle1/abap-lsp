@@ -802,6 +802,31 @@ DATA lv_typed TYPE sy-datum.`
 }
 
 @(test)
+create_object_models_target_and_type_clause :: proc(t: ^testing.T) {
+	source := `CREATE OBJECT ri_html TYPE zcl_abapgit_html.
+CREATE OBJECT ri_dyn TYPE (lv_class).`
+	parsed := parse(source, "create_object_type_ref.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	static_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Object_Stmt)
+	dynamic_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Create_Object_Stmt)
+	static_target := static_stmt.target.derived_expr.(^ast.Type_Ref_Expr)
+	static_type := static_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	dynamic_type := dynamic_stmt.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, len(static_target.raw_refs), 1)
+	testing.expect_value(t, static_target.raw_refs[0].name, "ri_html")
+	testing.expect(t, !static_stmt.type_dynamic)
+	testing.expect(t, !static_type.raw_operand)
+	testing.expect_value(t, ast.print_node(static_stmt.type_ref, context.allocator), "zcl_abapgit_html")
+	testing.expect(t, dynamic_stmt.type_dynamic)
+	testing.expect(t, dynamic_type.raw_operand)
+	testing.expect_value(t, len(dynamic_type.raw_refs), 1)
+	testing.expect_value(t, dynamic_type.raw_refs[0].name, "lv_class")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 authority_check_object_keeps_id_fields :: proc(t: ^testing.T) {
 	source := `AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' FIELD lv_tcode.`
 	parsed := parse(source, "authority_check.abap", context.allocator)

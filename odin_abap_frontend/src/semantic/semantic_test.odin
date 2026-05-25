@@ -2327,6 +2327,27 @@ missing = 2.
 }
 
 @(test)
+create_object_type_clause_uses_type_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///create_object_type.abap",
+		`
+CLASS lcl_html DEFINITION.
+ENDCLASS.
+
+DATA ri_html TYPE REF TO lcl_html.
+
+START-OF-SELECTION.
+  CREATE OBJECT ri_html TYPE lcl_html.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "lcl_html", .Type, .Type_Ref), 2)
+	testing.expect_value(t, reference_count(&unit, "lcl_html", .Value, .Identifier), 0)
+}
+
+@(test)
 resolves_form_changing_parameter_in_body :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

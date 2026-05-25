@@ -1492,6 +1492,9 @@ Assign_Field_Stmt :: struct {
 // ABAP syntax: object creation `CREATE OBJECT ref ...`.
 Create_Object_Stmt :: struct {
 	using node: Stmt,
+	target:     ^Expr,
+	type_ref:   ^Expr,
+	type_dynamic: bool,
 	operands:   [dynamic]^Expr,
 }
 

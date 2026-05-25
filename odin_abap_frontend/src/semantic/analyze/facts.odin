@@ -506,6 +506,20 @@ collect_raw_operand_refs :: proc(c: ^Collector, expr: ^ast.Type_Ref_Expr, scope:
 	collect_raw_operand_fact_refs(c, expr.raw_decls[:], expr.raw_refs[:], scope)
 }
 
+collect_create_object_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Create_Object_Stmt,
+	scope: Scope_Id,
+) {
+	collect_expr_refs(c, stmt.target, scope)
+	if stmt.type_dynamic {
+		collect_expr_refs(c, stmt.type_ref, scope)
+	} else {
+		collect_type_expr_ref(c, stmt.type_ref, scope, .Type)
+	}
+	collect_expr_list_refs(c, stmt.operands[:], scope)
+}
+
 collect_dynamic_call_method_target_refs :: proc(
 	c: ^Collector,
 	expr: ^ast.Dynamic_Call_Method_Target_Expr,

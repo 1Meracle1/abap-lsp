@@ -406,6 +406,14 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, ".")
 	case ^Create_Object_Stmt:
 		emit(p, "CREATE OBJECT")
+		if n.target != nil {
+			emit_space(p)
+			emit_node(p, n.target)
+		}
+		if n.type_ref != nil {
+			emit(p, " TYPE ")
+			emit_node(p, n.type_ref)
+		}
 		if len(n.operands) > 0 {
 			emit_space(p)
 			emit_expr_list(p, n.operands, " ")
