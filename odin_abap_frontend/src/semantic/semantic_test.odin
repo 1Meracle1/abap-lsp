@@ -2208,6 +2208,34 @@ ENDCLASS.`
 }
 
 @(test)
+resolves_old_style_exception_raise :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run EXCEPTIONS failed.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    RAISE failed.
+  ENDMETHOD.
+ENDCLASS.
+FUNCTION z_demo
+  EXCEPTIONS not_found.
+  RAISE not_found.
+ENDFUNCTION.`
+	unit := collect_test_unit(t, "file:///old_style_exceptions.abap", source)
+
+	class := analyze.find_symbol(&unit, "lcl", .Class)
+	testing.expect(t, class != nil)
+	method := class_member_named(&unit, class.id, "run", .Method)
+	testing.expect(t, method != nil)
+	testing.expect_value(t, len(method.exceptions), 1)
+	testing.expect_value(t, method.exceptions[0].name, "failed")
+	testing.expect(t, has_symbol(&unit, .Exception, "failed"))
+	testing.expect(t, has_symbol(&unit, .Exception, "not_found"))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 collects_form_and_function_signatures :: proc(t: ^testing.T) {
 	source := `
 FORM run TABLES !ct_rows STRUCTURE mara USING VALUE(iv_text) TYPE string REFERENCE(iv_ref) LIKE sy-uname CHANGING cv_count TYPE i.

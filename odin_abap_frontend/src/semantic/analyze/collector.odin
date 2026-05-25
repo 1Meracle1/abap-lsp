@@ -2176,6 +2176,7 @@ collect_class_oop_stmt :: proc(
 			name := method_member_name(member.name)
 			declare_name_if_present(c, scope, name, .Method, stmt.range)
 			parameters := method_parameters_from_signatures(c, member.signatures[:])
+			exceptions := method_exceptions_from_signatures(c, member.signatures[:])
 			for param in parameters {
 				if .Has_Declared_Type in param.flags {
 					add_type_reference(c, scope, param.declared_type, param.range)
@@ -2198,6 +2199,7 @@ collect_class_oop_stmt :: proc(
 					decl_range = stmt.range,
 					signature = strings.clone(stmt.text, c.allocator),
 					parameters = parameters,
+					exceptions = exceptions,
 					structure = INVALID_STRUCTURE_ID,
 					flags = flags,
 				},
@@ -2323,6 +2325,39 @@ method_parameters_from_signatures :: proc(
 		}
 	}
 	return parameters
+}
+
+method_exceptions_from_signatures :: proc(
+	c: ^Collector,
+	signatures: []ast.Oop_Signature_Clause,
+) -> [dynamic]Function_Module_Exception_Data {
+	exceptions := make([dynamic]Function_Module_Exception_Data, 0, 1, c.allocator)
+	for sig in signatures {
+		if sig.kind != .Exceptions {
+			continue
+		}
+		for value in sig.values {
+			if value == nil {
+				continue
+			}
+			if raw, ok := value.derived_expr.(^ast.Type_Ref_Expr); ok && len(raw.raw_refs) > 0 {
+				for ref in raw.raw_refs {
+					append(&exceptions, Function_Module_Exception_Data {
+						name  = canonical_name(ref.name, c.allocator),
+						range = ref.range,
+					})
+				}
+				continue
+			}
+			if type_ref, ok := type_ref_from_expr(c, value, .Value); ok {
+				append(&exceptions, Function_Module_Exception_Data {
+					name  = type_ref.base_name,
+					range = type_ref.base_range,
+				})
+			}
+		}
+	}
+	return exceptions
 }
 
 event_parameters_from_signatures :: proc(
@@ -2494,13 +2529,15 @@ function_parameters_from_ast :: proc(
 		append(&parameters, param)
 	}
 	for exception in stmt.exceptions {
+		name := canonical_name(exception.name, c.allocator)
 		append(
 			&exceptions,
 			Function_Module_Exception_Data {
-				name = canonical_name(exception.name, c.allocator),
+				name = name,
 				range = exception.range,
 			},
 		)
+		_ = declare_collected_symbol(c, scope, name, .Exception, exception.range)
 	}
 	return parameters, exceptions
 }
@@ -2661,6 +2698,9 @@ declare_method_scope_params :: proc(
 			has_type,
 			param.type_clause_display,
 		)
+	}
+	for exception in member.exceptions {
+		_ = declare_collected_symbol(c, method_scope, exception.name, .Exception, exception.range)
 	}
 }
 

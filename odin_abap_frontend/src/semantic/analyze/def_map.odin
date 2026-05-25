@@ -17,6 +17,7 @@ Symbol_Kind :: enum {
 	Field_Symbol,
 	Form,
 	Parameter,
+	Exception,
 	Class,
 	Interface,
 	Method,
@@ -62,6 +63,7 @@ symbol_kind_occupies :: proc(kind: Symbol_Kind, namespace: Namespace) -> bool {
 	     .Enum_Member,
 	     .Field_Symbol,
 	     .Parameter,
+	     .Exception,
 	     .Field,
 	     .Include,
 	     .Control,
@@ -588,6 +590,7 @@ Class_Member_Data :: struct {
 	implementation:       Class_Member_Implementation_Data,
 	signature:            string,
 	parameters:           [dynamic]Class_Member_Parameter_Data,
+	exceptions:           [dynamic]Function_Module_Exception_Data,
 	structure:            Structure_Id,
 	flags:                Class_Member_Flags,
 }
