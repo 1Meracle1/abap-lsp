@@ -428,6 +428,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.arg_sections = clone_call_stmt_arg_sections(n.arg_sections, allocator)
 		r.named_args = clone_call_stmt_named_args(n.named_args, allocator)
 		r.transaction_operands = clone_expr_list(n.transaction_operands, allocator)
+		r.transformation_args = clone_call_transformation_args(n.transformation_args, allocator)
 		return r
 	case ^Submit_Stmt:
 		r := clone_shallow(n, allocator)
@@ -820,6 +821,16 @@ clone_call_stmt_named_args :: proc(list: [dynamic]Call_Stmt_Named_Arg, allocator
 		arg := x
 		arg.raw_decls = clone_raw_operand_decls(x.raw_decls, allocator)
 		arg.raw_refs = clone_raw_operand_refs(x.raw_refs, allocator)
+		append(&res, arg)
+	}
+	return res
+}
+
+clone_call_transformation_args :: proc(list: [dynamic]Call_Transformation_Arg, allocator: mem.Allocator) -> [dynamic]Call_Transformation_Arg {
+	res := make([dynamic]Call_Transformation_Arg, 0, len(list), allocator)
+	for x in list {
+		arg := x
+		arg.value = clone(x.value, allocator)
 		append(&res, arg)
 	}
 	return res

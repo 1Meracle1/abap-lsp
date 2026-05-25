@@ -586,6 +586,34 @@ CALL METHOD lo_client->('RUN') EXPORTING iv_value = lv_value.`
 }
 
 @(test)
+call_transformation_id_carries_modeled_args :: proc(t: ^testing.T) {
+	source := `CALL TRANSFORMATION id
+  OPTIONS initial_components = 'suppress'
+  SOURCE (lt_stab)
+  RESULT XML li_doc.`
+	parsed := parse(source, "call_transformation_id.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	target := stmt.target.derived_expr.(^ast.Type_Ref_Expr)
+	source_value := stmt.transformation_args[1].value.derived_expr.(^ast.Type_Ref_Expr)
+	result_value := stmt.transformation_args[2].value.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, stmt.kind, ast.Call_Kind.Transformation)
+	testing.expect_value(t, target.name, "id")
+	testing.expect(t, !target.raw_operand)
+	testing.expect_value(t, len(stmt.transformation_args), 3)
+	testing.expect_value(t, stmt.transformation_args[0].kind, ast.Call_Transformation_Arg_Kind.Options)
+	testing.expect_value(t, stmt.transformation_args[0].name, "initial_components")
+	testing.expect(t, stmt.transformation_args[0].has_eq)
+	testing.expect_value(t, stmt.transformation_args[1].kind, ast.Call_Transformation_Arg_Kind.Source)
+	testing.expect_value(t, source_value.raw_refs[0].name, "lt_stab")
+	testing.expect_value(t, stmt.transformation_args[2].kind, ast.Call_Transformation_Arg_Kind.Result)
+	testing.expect_value(t, stmt.transformation_args[2].name, "XML")
+	testing.expect_value(t, result_value.raw_refs[0].name, "li_doc")
+}
+
+@(test)
 call_transaction_carries_parser_operand_facts :: proc(t: ^testing.T) {
 	source := `CALL TRANSACTION tcode WITH AUTHORITY-CHECK USING bdc_tab MODE mode UPDATE upd MESSAGES INTO msg_tab.
 CALL TRANSACTION tcode WITHOUT AUTHORITY-CHECK USING bdc_tab OPTIONS FROM opt MESSAGES INTO msg_tab.`

@@ -1647,6 +1647,27 @@ emit_call_stmt :: proc(p: ^Printer, stmt: ^Call_Stmt) {
 		emit_space(p)
 		emit_node(p, stmt.target)
 	}
+	current_kind: Call_Transformation_Arg_Kind
+	has_current_kind := false
+	for arg in stmt.transformation_args {
+		if !has_current_kind || current_kind != arg.kind {
+			emit_space(p)
+			emit(p, call_transformation_arg_kind_text(arg.kind))
+			current_kind = arg.kind
+			has_current_kind = true
+		}
+		if arg.name != "" {
+			emit_space(p)
+			emit(p, arg.name)
+			if arg.has_eq {
+				emit(p, " =")
+			}
+		}
+		if arg.value != nil {
+			emit_space(p)
+			emit_node(p, arg.value)
+		}
+	}
 	emit(p, ".")
 }
 
@@ -2796,6 +2817,16 @@ call_kind_text :: proc(kind: Call_Kind) -> string {
 	case .Transaction: return "TRANSACTION"
 	case .Dialog: return "DIALOG"
 	case .Subscreen: return "SUBSCREEN"
+	}
+	return "?"
+}
+
+call_transformation_arg_kind_text :: proc(kind: Call_Transformation_Arg_Kind) -> string {
+	switch kind {
+	case .Options: return "OPTIONS"
+	case .Parameters: return "PARAMETERS"
+	case .Source: return "SOURCE"
+	case .Result: return "RESULT"
 	}
 	return "?"
 }

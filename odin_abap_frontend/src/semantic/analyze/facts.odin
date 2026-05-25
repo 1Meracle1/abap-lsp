@@ -1149,6 +1149,10 @@ collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scop
 		add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
 		collect_expr_refs(c, stmt.target, scope)
 		collect_expr_list_refs(c, stmt.transaction_operands[:], scope)
+	case .Transformation:
+		for arg in stmt.transformation_args {
+			collect_expr_refs(c, arg.value, scope)
+		}
 	case:
 		collect_expr_refs(c, stmt.target, scope)
 	}

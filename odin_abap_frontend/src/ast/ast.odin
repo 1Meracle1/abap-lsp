@@ -1220,6 +1220,21 @@ Call_Stmt_Named_Arg :: struct {
 	raw_refs:    [dynamic]Raw_Operand_Ref,
 }
 
+Call_Transformation_Arg_Kind :: enum {
+	Options,
+	Parameters,
+	Source,
+	Result,
+}
+
+Call_Transformation_Arg :: struct {
+	kind:       Call_Transformation_Arg_Kind,
+	name:       string,
+	name_range: tokenizer.Range,
+	has_eq:     bool,
+	value:      ^Expr,
+}
+
 // ABAP syntax: `CALL METHOD target`, `CALL FUNCTION fm`, and related CALL variants; direct call statements use `call`.
 Call_Stmt :: struct {
 	using node:    Stmt,
@@ -1229,6 +1244,7 @@ Call_Stmt :: struct {
 	arg_sections:  [dynamic]Call_Stmt_Arg_Section,
 	named_args:    [dynamic]Call_Stmt_Named_Arg,
 	transaction_operands: [dynamic]^Expr,
+	transformation_args:  [dynamic]Call_Transformation_Arg,
 }
 
 Submit_Option_Kind :: enum {

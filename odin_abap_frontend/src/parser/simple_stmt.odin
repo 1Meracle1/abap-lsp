@@ -236,6 +236,15 @@ simple_current_keyword_in :: proc(p: ^Parser, keywords: []string) -> bool {
 	return false
 }
 
+token_in_keywords :: proc(p: ^Parser, tok: Token, keywords: []string) -> bool {
+	for keyword in keywords {
+		if token_is_keyword(p, tok, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 simple_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
 	if simple_stmt_done(p, body_start) ||
 	   current_token(p).kind == .Comma ||
@@ -368,6 +377,8 @@ parse_raw_operand_to_period :: proc(
 	stop_keywords: []string,
 	fill_parts := false,
 	allow_leading_stop := false,
+	raw_facts := true,
+	set_name := false,
 ) -> ^ast.Expr {
 	if raw_period_done(p) ||
 	   current_token(p).kind == .Comma ||
@@ -415,8 +426,10 @@ parse_raw_operand_to_period :: proc(
 	if first.kind == .Eof || last.kind == .Eof || first.range.start >= last.range.end {
 		return nil
 	}
-	value := type_ref_expr_from_tokens(p, start, p.index, -1, false, fill_parts)
-	populate_raw_operand_facts(p, value, start, p.index)
+	value := type_ref_expr_from_tokens(p, start, p.index, -1, set_name, fill_parts)
+	if raw_facts {
+		populate_raw_operand_facts(p, value, start, p.index)
+	}
 	return value
 }
 
@@ -439,14 +452,19 @@ parse_generic_operands_to_period :: proc(
 	return values
 }
 
-populate_raw_operand_facts :: proc(p: ^Parser, expr: ^ast.Type_Ref_Expr, start, end: int) {
+populate_raw_operand_facts :: proc(
+	p: ^Parser,
+	expr: ^ast.Type_Ref_Expr,
+	start, end: int,
+	skip_leading_dynamic_group := true,
+) {
 	if expr == nil {
 		return
 	}
 	expr.raw_operand = true
 	expr.raw_decls = make([dynamic]ast.Raw_Operand_Inline_Decl, 0, 1, p.allocator)
 	expr.raw_refs = make([dynamic]ast.Raw_Operand_Ref, 0, 2, p.allocator)
-	populate_raw_operand_fact_lists(p, start, end, &expr.raw_decls, &expr.raw_refs)
+	populate_raw_operand_fact_lists(p, start, end, &expr.raw_decls, &expr.raw_refs, skip_leading_dynamic_group)
 }
 
 populate_raw_operand_fact_lists :: proc(
@@ -454,6 +472,7 @@ populate_raw_operand_fact_lists :: proc(
 	start, end: int,
 	decls: ^[dynamic]ast.Raw_Operand_Inline_Decl,
 	refs: ^[dynamic]ast.Raw_Operand_Ref,
+	skip_leading_dynamic_group := true,
 ) {
 	i := start
 	for i < end {
@@ -462,7 +481,7 @@ populate_raw_operand_fact_lists :: proc(
 			i = next
 			continue
 		}
-		if raw_operand_dynamic_group_at(p, start, i, end) {
+		if skip_leading_dynamic_group && raw_operand_dynamic_group_at(p, start, i, end) {
 			i += 3
 			continue
 		}
@@ -2336,6 +2355,15 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				"OPTIONS",
 			},
 		)
+	} else if stmt.kind == .Transformation {
+		stmt.target = parse_raw_operand_to_period(
+			p,
+			CALL_TRANSFORMATION_CLAUSE_KEYWORDS,
+			false,
+			false,
+			false,
+			true,
+		)
 	} else {
 		stmt.target = parse_raw_operand_to_period(
 			p,
@@ -2356,11 +2384,160 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		parse_call_stmt_raw_arguments(p, stmt)
 	} else if stmt.kind == .Transaction {
 		parse_call_transaction_operands(p, stmt)
+	} else if stmt.kind == .Transformation {
+		parse_call_transformation_operands(p, stmt)
 	} else {
 		consume_raw_until_top_level_period(p)
 	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+CALL_TRANSFORMATION_CLAUSE_KEYWORDS :: []string {
+	"OPTIONS",
+	"PARAMETERS",
+	"SOURCE",
+	"RESULT",
+}
+
+parse_call_transformation_operands :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	stmt.transformation_args = make([dynamic]ast.Call_Transformation_Arg, 0, 4, p.allocator)
+	for !raw_period_done(p) {
+		start := p.index
+		if kind, ok := call_transformation_arg_kind(p, current_token(p)); ok {
+			bump_token(p)
+			parse_call_transformation_arg_list(p, stmt, kind)
+			ensure_forward_progress(p, start)
+			continue
+		}
+		bump_token(p)
+	}
+}
+
+parse_call_transformation_arg_list :: proc(
+	p: ^Parser,
+	stmt: ^ast.Call_Stmt,
+	kind: ast.Call_Transformation_Arg_Kind,
+) {
+	for !raw_period_done(p) && !simple_current_keyword_in(p, CALL_TRANSFORMATION_CLAUSE_KEYWORDS) {
+		start := p.index
+		if allow_token(p, .Comma) || allow_token(p, .Colon) {
+			continue
+		}
+		append_call_transformation_arg(p, stmt, kind)
+		ensure_forward_progress(p, start)
+	}
+}
+
+append_call_transformation_arg :: proc(
+	p: ^Parser,
+	stmt: ^ast.Call_Stmt,
+	kind: ast.Call_Transformation_Arg_Kind,
+) {
+	name := ""
+	name_range := tokenizer.Range{}
+	has_eq := false
+	if call_transformation_named_arg_starts(p, p.index) {
+		tok := bump_token(p)
+		_ = expect_token(p, .Eq)
+		name = tokenizer.token_lexeme(tok, p.source)
+		name_range = tok.range
+		has_eq = true
+	} else if (kind == .Source || kind == .Result) && call_transformation_mode_token(p, current_token(p)) {
+		tok := bump_token(p)
+		name = tokenizer.token_lexeme(tok, p.source)
+		name_range = tok.range
+	}
+	value_start := p.index
+	value_end := call_transformation_arg_value_end(p, value_start)
+	value: ^ast.Expr
+	if value_start < value_end {
+		value = type_ref_expr_from_tokens(p, value_start, value_end, -1, false, false)
+		if raw, ok := value.derived_expr.(^ast.Type_Ref_Expr); ok {
+			populate_raw_operand_facts(p, raw, value_start, value_end, false)
+		}
+	}
+	append(
+		&stmt.transformation_args,
+		ast.Call_Transformation_Arg {
+			kind = kind,
+			name = name,
+			name_range = name_range,
+			has_eq = has_eq,
+			value = value,
+		},
+	)
+	for p.index < value_end {
+		bump_token(p)
+	}
+}
+
+call_transformation_arg_kind :: proc(
+	p: ^Parser,
+	tok: Token,
+) -> (ast.Call_Transformation_Arg_Kind, bool) {
+	if token_is_keyword(p, tok, "OPTIONS") {
+		return .Options, true
+	}
+	if token_is_keyword(p, tok, "PARAMETERS") {
+		return .Parameters, true
+	}
+	if token_is_keyword(p, tok, "SOURCE") {
+		return .Source, true
+	}
+	if token_is_keyword(p, tok, "RESULT") {
+		return .Result, true
+	}
+	return .Options, false
+}
+
+call_transformation_named_arg_starts :: proc(p: ^Parser, index: int) -> bool {
+	if index + 1 >= len(p.tokens) {
+		return false
+	}
+	return raw_operand_ident_like(p.tokens[index]) && p.tokens[index + 1].kind == .Eq
+}
+
+call_transformation_mode_token :: proc(p: ^Parser, tok: Token) -> bool {
+	return token_is_keyword(p, tok, "XML") || token_is_keyword(p, tok, "JSON")
+}
+
+call_transformation_arg_value_end :: proc(p: ^Parser, start: int) -> int {
+	i := start
+	paren, bracket, brace := 0, 0, 0
+	for i < len(p.tokens) {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .Period || tok.kind == .Eof || tok.kind == .Comma ||
+			   token_in_keywords(p, tok, CALL_TRANSFORMATION_CLAUSE_KEYWORDS) ||
+			   (i > start && call_transformation_named_arg_starts(p, i)) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {
+				paren -= 1
+			}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {
+				bracket -= 1
+			}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {
+				brace -= 1
+			}
+		}
+		i += 1
+	}
+	return i
 }
 
 CALL_TRANSACTION_OPERAND_STOP_KEYWORDS :: []string {
