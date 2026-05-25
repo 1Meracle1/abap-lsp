@@ -372,6 +372,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_describe_stmt(p, n)
 	case ^Runtime_Stmt:
 		emit_runtime_stmt(p, n)
+	case ^Receive_Results_Stmt:
+		emit_receive_results_stmt(p, n)
 	case ^Raise_Stmt:
 		emit_raise_stmt(p, n)
 	case ^Authority_Check_Stmt:
@@ -1944,6 +1946,15 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 	if len(stmt.operands) > 0 {
 		emit_space(p)
 		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_receive_results_stmt :: proc(p: ^Printer, stmt: ^Receive_Results_Stmt) {
+	emit(p, "RECEIVE RESULTS FROM FUNCTION")
+	if stmt.target != nil {
+		emit_space(p)
+		emit_node(p, stmt.target)
 	}
 	emit(p, ".")
 }

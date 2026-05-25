@@ -420,6 +420,27 @@ GET REFERENCE OF ls_data INTO lr_data.`
 }
 
 @(test)
+receive_results_from_function_keeps_target_and_arguments :: proc(t: ^testing.T) {
+	source := `RECEIVE RESULTS FROM FUNCTION 'Z_DEMO'
+  IMPORTING ev_value = DATA(lv_value)
+  TABLES et_rows = lt_rows
+  EXCEPTIONS failed = 1.`
+	parsed := parse(source, "receive_results.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.receive_results, 1)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Receive_Results_Stmt)
+	testing.expect(t, stmt.target != nil)
+	testing.expect_value(t, len(stmt.arg_sections), 3)
+	testing.expect_value(t, len(stmt.named_args), 3)
+	testing.expect_value(t, stmt.named_args[0].name, "ev_value")
+	testing.expect_value(t, stmt.named_args[1].name, "et_rows")
+	testing.expect_value(t, stmt.named_args[2].name, "failed")
+}
+
+@(test)
 oop_simple_member_statements_do_not_become_method_calls :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

@@ -378,6 +378,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.offset)
 		walk_expr_list(next, n.excluding)
 		walk_expr_list(next, n.operands)
+	case ^Receive_Results_Stmt:
+		walk(next, n.target)
 	case ^Raise_Stmt:
 		walk(next, n.target)
 		walk_expr_list(next, n.operands)

@@ -479,6 +479,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.excluding = clone_expr_list(n.excluding, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Receive_Results_Stmt:
+		r := clone_shallow(n, allocator)
+		r.target = clone(n.target, allocator)
+		r.arg_sections = clone_call_stmt_arg_sections(n.arg_sections, allocator)
+		r.named_args = clone_call_stmt_named_args(n.named_args, allocator)
+		return r
 	case ^Raise_Stmt:
 		r := clone_shallow(n, allocator)
 		r.target = clone(n.target, allocator)

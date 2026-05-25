@@ -1197,10 +1197,14 @@ collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scop
 }
 
 call_stmt_function_name :: proc(c: ^Collector, stmt: ^ast.Call_Stmt) -> string {
-	if stmt.target == nil {
+	return function_target_name(c, stmt.target)
+}
+
+function_target_name :: proc(c: ^Collector, target: ^ast.Expr) -> string {
+	if target == nil {
 		return ""
 	}
-	text := strings.trim_space(expr_display(c, stmt.target))
+	text := strings.trim_space(expr_display(c, target))
 	if len(text) >= 2 &&
 	   ((text[0] == '\'' && text[len(text) - 1] == '\'') ||
 			   (text[0] == '`' && text[len(text) - 1] == '`')) {
@@ -1283,9 +1287,19 @@ collect_raw_call_stmt_args :: proc(
 	scope: Scope_Id,
 	target: Named_Argument_Target,
 ) {
+	collect_raw_call_args(c, stmt.named_args[:], stmt.range, scope, target)
+}
+
+collect_raw_call_args :: proc(
+	c: ^Collector,
+	named_args: []ast.Call_Stmt_Named_Arg,
+	call_range: tokenizer.Range,
+	scope: Scope_Id,
+	target: Named_Argument_Target,
+) {
 	args := make([dynamic]Call_Argument_Data, 0, 4, c.allocator)
 	ordinal := 0
-	for arg in stmt.named_args {
+	for arg in named_args {
 		section, valid_section := named_argument_section_from_ast(arg.section)
 		has_section := arg.has_section && valid_section
 		name := canonical_name(arg.name, c.allocator)
@@ -1317,7 +1331,7 @@ collect_raw_call_stmt_args :: proc(
 	}
 	append(
 		&c.call_sites,
-		Call_Site_Data{scope = scope, range = stmt.range, target = target, arguments = args},
+		Call_Site_Data{scope = scope, range = call_range, target = target, arguments = args},
 	)
 }
 
@@ -1455,6 +1469,26 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	collect_expr_refs(c, stmt.offset, scope)
 	collect_expr_list_refs(c, stmt.excluding[:], scope)
 	collect_expr_list_refs(c, stmt.operands[:], scope)
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
+collect_receive_results_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Receive_Results_Stmt,
+	scope: Scope_Id,
+) {
+	add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
+	collect_expr_refs(c, stmt.target, scope)
+	collect_raw_call_args(
+		c,
+		stmt.named_args[:],
+		stmt.range,
+		scope,
+		Named_Argument_Target {
+			kind = .Function,
+			function_name = function_target_name(c, stmt.target),
+		},
+	)
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 

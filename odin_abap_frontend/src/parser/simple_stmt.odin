@@ -163,6 +163,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_keyword(p, "DESCRIBE") {
 		return parse_describe_stmt(p)
 	}
+	if at_keyword(p, "RECEIVE") && at_keyword_index(p, p.index + 1, "RESULTS") {
+		return parse_receive_results_stmt(p)
+	}
 	if runtime_stmt_starts(p) {
 		return parse_runtime_stmt(p)
 	}
@@ -909,6 +912,27 @@ parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {
 		}
 	}
 	return false
+}
+
+RECEIVE_RESULTS_FUNCTION_STOP_KEYWORDS :: []string {
+	"EXPORTING",
+	"IMPORTING",
+	"CHANGING",
+	"TABLES",
+	"RECEIVING",
+	"EXCEPTIONS",
+}
+
+parse_receive_results_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "RECEIVE")
+	expect_keyword(p, "RESULTS")
+	expect_keyword(p, "FROM")
+	expect_keyword(p, "FUNCTION")
+	stmt := ast.new(ast.Receive_Results_Stmt, start.range, p.allocator)
+	stmt.target = parse_raw_operand_to_period(p, RECEIVE_RESULTS_FUNCTION_STOP_KEYWORDS)
+	parse_raw_call_arguments(p, &stmt.arg_sections, &stmt.named_args)
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
 }
 
 parse_cursor_runtime_tail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) {
@@ -2850,8 +2874,16 @@ append_call_transaction_operand :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 }
 
 parse_call_stmt_raw_arguments :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
-	stmt.arg_sections = make([dynamic]ast.Call_Stmt_Arg_Section, 0, 2, p.allocator)
-	stmt.named_args = make([dynamic]ast.Call_Stmt_Named_Arg, 0, 4, p.allocator)
+	parse_raw_call_arguments(p, &stmt.arg_sections, &stmt.named_args)
+}
+
+parse_raw_call_arguments :: proc(
+	p: ^Parser,
+	arg_sections: ^[dynamic]ast.Call_Stmt_Arg_Section,
+	named_args: ^[dynamic]ast.Call_Stmt_Named_Arg,
+) {
+	arg_sections^ = make([dynamic]ast.Call_Stmt_Arg_Section, 0, 2, p.allocator)
+	named_args^ = make([dynamic]ast.Call_Stmt_Named_Arg, 0, 4, p.allocator)
 	section := ast.Call_Arg_Section_Kind.Exporting
 	has_section := false
 	for !raw_period_done(p) {
@@ -2859,7 +2891,7 @@ parse_call_stmt_raw_arguments :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 			tok := bump_token(p)
 			section = kind
 			has_section = true
-			append(&stmt.arg_sections, ast.Call_Stmt_Arg_Section{kind = kind, range = tok.range})
+			append(arg_sections, ast.Call_Stmt_Arg_Section{kind = kind, range = tok.range})
 			continue
 		}
 		if !call_stmt_named_arg_starts(p, p.index) {
@@ -2881,7 +2913,7 @@ parse_call_stmt_raw_arguments :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 			populate_raw_operand_fact_lists(p, value_start, value_end, &raw_decls, &raw_refs)
 		}
 		append(
-			&stmt.named_args,
+			named_args,
 			ast.Call_Stmt_Named_Arg {
 				section = section,
 				has_section = has_section,

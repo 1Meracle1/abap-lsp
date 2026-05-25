@@ -3003,6 +3003,42 @@ ENDCLASS.
 }
 
 @(test)
+receive_results_from_function_uses_call_argument_facts :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///receive_results.abap",
+		`
+FORM run.
+  DATA lt_rows TYPE TABLE OF i.
+  RECEIVE RESULTS FROM FUNCTION 'Z_DEMO'
+    IMPORTING ev_value = DATA(lv_value)
+    TABLES et_rows = lt_rows
+    EXCEPTIONS failed = 1.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_named_argument(&unit, "ev_value", .Importing, .Function))
+	testing.expect(t, has_named_argument(&unit, "et_rows", .Tables, .Function))
+	testing.expect(t, has_named_argument(&unit, "failed", .Exceptions, .Function))
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_value"))
+	testing.expect_value(t, reference_count(&unit, "lt_rows", .Value, .Identifier), 1)
+	testing.expect(t, !has_reference(&unit, "results", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "function", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "ev_value", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "failed", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+
+	found_call_site := false
+	for site in unit.call_sites {
+		if site.target.kind == .Function && site.target.function_name == "z_demo" {
+			found_call_site = true
+		}
+	}
+	testing.expect(t, found_call_site)
+}
+
+@(test)
 raw_call_method_target_facts_drive_refs_and_metadata :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

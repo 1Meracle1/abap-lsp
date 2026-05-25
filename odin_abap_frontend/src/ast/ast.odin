@@ -1437,6 +1437,14 @@ Runtime_Stmt :: struct {
 	operands:   [dynamic]^Expr,
 }
 
+// ABAP syntax: `RECEIVE RESULTS FROM FUNCTION fm ...`.
+Receive_Results_Stmt :: struct {
+	using node: Stmt,
+	target:       ^Expr,
+	arg_sections: [dynamic]Call_Stmt_Arg_Section,
+	named_args:   [dynamic]Call_Stmt_Named_Arg,
+}
+
 // ABAP syntax: one `ID auth_field FIELD value` clause inside `AUTHORITY-CHECK OBJECT`.
 Authority_Check_ID_Clause :: struct {
 	id:    ^Expr,
@@ -2393,6 +2401,7 @@ Any_Node :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Receive_Results_Stmt,
 	^Raise_Stmt,
 	^Authority_Check_Stmt,
 	^Field_Groups_Stmt,
@@ -2542,6 +2551,7 @@ Any_Stmt :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Receive_Results_Stmt,
 	^Raise_Stmt,
 	^Authority_Check_Stmt,
 	^Field_Groups_Stmt,
