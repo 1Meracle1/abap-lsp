@@ -930,11 +930,13 @@ parse_header_param_name :: proc(
 	bool,
 ) {
 	i := index
+	escaped := false
 	if i < period_index && tokenizer.token_lexeme(p.tokens[i], p.source) == "!" {
 		i += 1
+		escaped = true
 	}
 	passing := ast.Parameter_Passing_Kind.Direct
-	if at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE") {
+	if !escaped && (at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE")) {
 		passing = .Value if at_keyword_index(p, i, "VALUE") else .Reference
 		i += 1
 		if i < period_index && p.tokens[i].kind == .LParen {

@@ -168,6 +168,22 @@ ENDFUNCTION.`
 }
 
 @(test)
+routine_headers_accept_escaped_keyword_parameters :: proc(t: ^testing.T) {
+	source := `FUNCTION z_keywords
+  IMPORTING !VALUE TYPE i !REFERENCE TYPE string.
+ENDFUNCTION.`
+	parsed := parse(source, "routine_escaped_keyword_parameters.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	function := parsed.root.stmts[0].derived_stmt.(^ast.Function_Decl)
+	testing.expect_value(t, len(function.function_parameters), 2)
+	testing.expect_value(t, function.function_parameters[0].name, "VALUE")
+	testing.expect_value(t, function.function_parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect_value(t, function.function_parameters[1].name, "REFERENCE")
+	testing.expect_value(t, function.function_parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
+}
+
+@(test)
 multiline_class_headers_keep_their_create_addition :: proc(t: ^testing.T) {
 	source := `CLASS zcx_error DEFINITION
   INHERITING FROM cx_static_check

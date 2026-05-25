@@ -488,10 +488,17 @@ Class_Member_Parameter_Flag :: enum {
 }
 Class_Member_Parameter_Flags :: bit_set[Class_Member_Parameter_Flag]
 
+Parameter_Passing_Kind :: enum {
+	Direct,
+	Value,
+	Reference,
+}
+
 Class_Member_Parameter_Data :: struct {
 	section:             Method_Parameter_Section,
 	name:                string,
 	range:               tokenizer.Range,
+	passing:             Parameter_Passing_Kind,
 	declared_type:       Field_Type_Ref_Data,
 	type_clause_display: string,
 	flags:               Class_Member_Parameter_Flags,
@@ -540,6 +547,7 @@ Function_Module_Parameter_Data :: struct {
 	section:             Function_Module_Parameter_Section,
 	name:                string,
 	range:               tokenizer.Range,
+	passing:             Parameter_Passing_Kind,
 	declared_type:       Field_Type_Ref_Data,
 	type_clause_display: string,
 	flags:               Function_Module_Parameter_Flags,

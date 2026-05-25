@@ -886,7 +886,16 @@ clone_oop_signatures :: proc(list: [dynamic]Oop_Signature_Clause, allocator: mem
 clone_oop_parameters :: proc(list: [dynamic]Oop_Parameter_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Parameter_Clause {
 	res := make([dynamic]Oop_Parameter_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Oop_Parameter_Clause{clause.name, clause.range, clone_type_clause(clause.type_clause, allocator), clause.optional})
+		append(
+			&res,
+			Oop_Parameter_Clause {
+				name = clause.name,
+				range = clause.range,
+				passing = clause.passing,
+				type_clause = clone_type_clause(clause.type_clause, allocator),
+				optional = clause.optional,
+			},
+		)
 	}
 	return res
 }

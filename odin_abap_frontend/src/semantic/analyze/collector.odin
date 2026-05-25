@@ -2366,6 +2366,7 @@ class_member_parameter_from_oop :: proc(
 		section = section,
 		name    = canonical_name(clause.name, c.allocator),
 		range   = clause.range,
+		passing = parameter_passing_from_ast(clause.passing),
 	}
 	if clause.type_clause != nil {
 		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
@@ -2465,6 +2466,7 @@ function_parameters_from_ast :: proc(
 			section = function_parameter_section_from_ast(clause.section),
 			name    = canonical_name(clause.name, c.allocator),
 			range   = clause.range,
+			passing = parameter_passing_from_ast(clause.passing),
 		}
 		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
 			param.declared_type = type_ref
@@ -2516,6 +2518,18 @@ form_parameter_section_from_ast :: proc(section: ast.Form_Parameter_Section) -> 
 }
 
 form_parameter_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Form_Parameter_Passing_Kind {
+	switch passing {
+	case .Direct:
+		return .Direct
+	case .Value:
+		return .Value
+	case .Reference:
+		return .Reference
+	}
+	return .Direct
+}
+
+parameter_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Parameter_Passing_Kind {
 	switch passing {
 	case .Direct:
 		return .Direct

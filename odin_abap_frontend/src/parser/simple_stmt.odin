@@ -1340,7 +1340,7 @@ parse_oop_signature_parameters :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cl
 
 parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Clause) -> bool {
 	start := p.index
-	name, name_range, ok := parse_oop_parameter_name(p)
+	name, name_range, passing, ok := parse_oop_parameter_name(p)
 	if !ok {
 		return false
 	}
@@ -1367,32 +1367,49 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 		}
 		break
 	}
-	append(&clause.parameters, ast.Oop_Parameter_Clause{name, name_range, type_clause, optional})
+	append(
+		&clause.parameters,
+		ast.Oop_Parameter_Clause {
+			name = name,
+			range = name_range,
+			passing = passing,
+			type_clause = type_clause,
+			optional = optional,
+		},
+	)
 	append_oop_signature_value(p, clause, start, p.index)
 	return true
 }
 
-parse_oop_parameter_name :: proc(p: ^Parser) -> (string, tokenizer.Range, bool) {
+parse_oop_parameter_name :: proc(p: ^Parser) -> (
+	string,
+	tokenizer.Range,
+	ast.Parameter_Passing_Kind,
+	bool,
+) {
+	escaped := false
 	if tokenizer.token_lexeme(current_token(p), p.source) == "!" {
 		bump_token(p)
+		escaped = true
 	}
-	if at_keyword(p, "VALUE") || at_keyword(p, "REFERENCE") {
+	if !escaped && (at_keyword(p, "VALUE") || at_keyword(p, "REFERENCE")) {
+		passing := ast.Parameter_Passing_Kind.Value if at_keyword(p, "VALUE") else .Reference
 		bump_token(p)
 		allow_token(p, .LParen)
 		tok := current_token(p)
 		if tok.kind != .Ident {
-			return "", tok.range, false
+			return "", tok.range, passing, false
 		}
 		bump_token(p)
 		allow_token(p, .RParen)
-		return tokenizer.token_lexeme(tok, p.source), tok.range, true
+		return tokenizer.token_lexeme(tok, p.source), tok.range, passing, true
 	}
 	tok := current_token(p)
 	if tok.kind != .Ident {
-		return "", tok.range, false
+		return "", tok.range, .Direct, false
 	}
 	bump_token(p)
-	return tokenizer.token_lexeme(tok, p.source), tok.range, true
+	return tokenizer.token_lexeme(tok, p.source), tok.range, .Direct, true
 }
 
 parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
@@ -1556,10 +1573,12 @@ append_oop_signature_value :: proc(
 
 oop_parameter_starts :: proc(p: ^Parser, index: int) -> bool {
 	i := index
+	escaped := false
 	if i < len(p.tokens) && tokenizer.token_lexeme(p.tokens[i], p.source) == "!" {
 		i += 1
+		escaped = true
 	}
-	if at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE") {
+	if !escaped && (at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE")) {
 		if i + 4 >= len(p.tokens) ||
 		   p.tokens[i + 1].kind != .LParen ||
 		   p.tokens[i + 2].kind != .Ident ||

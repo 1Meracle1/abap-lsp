@@ -1601,6 +1601,7 @@ Oop_Signature_Kind :: enum {
 Oop_Parameter_Clause :: struct {
 	name:        string,
 	range:       tokenizer.Range,
+	passing:     Parameter_Passing_Kind,
 	type_clause: ^Data_Type_Clause,
 	optional:    bool,
 }
