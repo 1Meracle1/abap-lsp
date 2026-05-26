@@ -29,6 +29,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\runtime" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\execution" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\http" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\adt" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\ddic_xml" -no-entry-point %ODIN_FLAGS% || exit /b
@@ -40,6 +41,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\runtime" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\execution" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\http" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\adt" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\ddic_xml" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
