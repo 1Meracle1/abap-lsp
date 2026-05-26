@@ -5,22 +5,113 @@ import dep_store "../dependency_store"
 import ddic_xml "../ddic_xml"
 import "../parser"
 import "../tokenizer"
-import frontend_runtime "../runtime"
+import execution "../execution"
 import analyze "./analyze"
 import deps "./dependencies"
 import sem_query "./query"
 import workspace "../workspace"
 
+import "core:mem"
 import "core:mem/virtual"
+import net "core:net"
 import "core:os"
 import filepath "core:path/filepath"
 import "core:strings"
 import "core:testing"
+import "core:thread"
+import "core:time"
 
 contains_fold :: proc(source, needle: string) -> bool {
 	lower := strings.to_lower(source, context.allocator)
 	defer delete(lower, context.allocator)
 	return strings.contains(lower, needle)
+}
+
+Semantic_Adt_Test_Server :: struct {
+	listener:         net.TCP_Socket,
+	session_response: string,
+	search_response:  string,
+	missing_response: string,
+	request_buf:      [4096]u8,
+	request_count:    int,
+	search_count:     int,
+	fetch_count:      int,
+}
+
+semantic_adt_test_server_run :: proc(t: ^thread.Thread) {
+	server := cast(^Semantic_Adt_Test_Server)t.data
+	for {
+		client, _, err := net.accept_tcp(server.listener)
+		if err != nil {
+			return
+		}
+		n, recv_err := net.recv_tcp(client, server.request_buf[:])
+		response := server.missing_response
+		if recv_err == nil {
+			server.request_count += 1
+			request := string(server.request_buf[:n])
+			if strings.contains(request, "/runtime/systemmessages") {
+				response = server.session_response
+			} else if strings.contains(request, "/repository/informationsystem/search") {
+				server.search_count += 1
+				response = server.search_response
+			} else {
+				server.fetch_count += 1
+			}
+		}
+		_, _ = net.send_tcp(client, transmute([]u8)response)
+		net.close(client)
+	}
+}
+
+semantic_test_http_response :: proc(status, body, extra_headers: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "HTTP/1.1 ")
+	strings.write_string(&out, status)
+	strings.write_string(&out, "\r\nContent-Length: ")
+	strings.write_int(&out, len(body))
+	strings.write_string(&out, "\r\nConnection: close\r\n")
+	strings.write_string(&out, extra_headers)
+	strings.write_string(&out, "\r\n")
+	strings.write_string(&out, body)
+	return strings.to_string(out)
+}
+
+semantic_adt_client_for_test_server :: proc(
+	t: ^testing.T,
+	server: ^Semantic_Adt_Test_Server,
+) -> (adt.Client, ^thread.Thread) {
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	testing.expect(t, listen_err == nil)
+	ep, ep_err := net.bound_endpoint(listener)
+	testing.expect(t, ep_err == nil)
+	server.listener = listener
+	worker := thread.create(semantic_adt_test_server_run)
+	worker.data = server
+	thread.start(worker)
+
+	base_url := strings.builder_make(context.allocator)
+	strings.write_string(&base_url, "http://127.0.0.1:")
+	strings.write_int(&base_url, ep.port)
+	strings.write_string(&base_url, "/sap/bc/adt")
+	client: adt.Client
+	adt.client_init(
+		&client,
+		adt.Connection_Config {
+			base_url = strings.to_string(base_url),
+			username = "demo",
+			password = "secret",
+		},
+		context.allocator,
+	)
+	client.http.timeout = 2 * time.Second
+	return client, worker
+}
+
+semantic_adt_test_server_stop :: proc(server: ^Semantic_Adt_Test_Server, worker: ^thread.Thread) {
+	net.close(server.listener)
+	thread.join(worker)
+	thread.destroy(worker)
 }
 
 @(test)
@@ -321,13 +412,9 @@ ENDCLASS.
 
 @(test)
 remote_dependency_candidates_include_unresolved_static_targets :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -379,13 +466,9 @@ lcl_local=>run( ).
 
 @(test)
 function_remote_candidate_requires_function_module_symbol :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -603,7 +686,10 @@ structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> analyze.Unit_Analysis {
 	parsed := parser.parse(source, uri, context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
-	return analyze.analyze_unit(analyze.Unit_Id(0), uri, source, parsed, context.allocator)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 64}, context.allocator)
+	defer execution.pool_destroy(&pool)
+	return analyze.analyze_unit(analyze.Unit_Id(0), uri, source, parsed, &pool, context.allocator)
 }
 
 has_symbol :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Symbol_Kind, name: string) -> bool {
@@ -657,22 +743,22 @@ analyze_project_test :: proc(
 	target: analyze.Source_Input,
 	candidates: []analyze.Source_Input,
 ) -> analyze.Project_Analysis {
-	pool: frontend_runtime.Pool
-	options := frontend_runtime.Options {
+	pool: execution.Pool
+	options := execution.Options {
 		worker_count = worker_count,
 		task_capacity = 128,
 		queue_capacity = 32,
 		deque_capacity = 32,
 	}
-	testing.expect_value(t, frontend_runtime.pool_init(&pool, options, context.allocator), frontend_runtime.Submit_Error.None)
+	execution.pool_init(&pool, options, context.allocator)
 	if pool.options.worker_count > 0 {
-		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
+		execution.pool_start(&pool)
 	}
 	project := analyze.analyze_target(target, candidates, analyze.Analyze_Options{pool = &pool}, context.allocator)
 	if pool.options.worker_count > 0 {
-		frontend_runtime.pool_join(&pool)
+		execution.pool_join(&pool)
 	}
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 	return project
 }
 
@@ -681,12 +767,8 @@ analyze_project_dependencies_test :: proc(
 	target: analyze.Source_Input,
 	dependencies: []analyze.Source_Input,
 ) -> analyze.Project_Analysis {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
 	project := analyze.analyze_target_with_candidate_inputs(
 		target,
@@ -695,19 +777,15 @@ analyze_project_dependencies_test :: proc(
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 	return project
 }
 
 @(test)
 project_state_incremental_dependency_update_resolves_waiting_unit :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	target := analyze.Source_Input {
@@ -757,13 +835,9 @@ project_state_incremental_dependency_update_resolves_waiting_unit :: proc(t: ^te
 
 @(test)
 project_state_dependency_private_change_keeps_interface_signature :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	target := analyze.Source_Input {
@@ -832,13 +906,9 @@ ENDCLASS.`
 
 @(test)
 project_state_batch_resolves_target_candidates :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	targets := [?]analyze.Source_Input {
 		{uri = "file:///workspace/main.abap", source = "INCLUDE zshared. gv_shared = 1."},
@@ -869,13 +939,9 @@ project_state_batch_resolves_target_candidates :: proc(t: ^testing.T) {
 
 @(test)
 project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	targets := [?]analyze.Source_Input {
 		{
@@ -911,13 +977,9 @@ project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing
 
 @(test)
 project_state_unresolved_candidates_skip_resolved_open_sql_dependency :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -956,13 +1018,9 @@ TYPES: BEGIN OF enlfdir,
 
 @(test)
 project_state_unresolved_candidates_skip_resolved_function_dependency :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -1002,13 +1060,9 @@ project_state_unresolved_candidates_skip_resolved_function_dependency :: proc(t:
 
 @(test)
 dependency_interface_static_like_type_ref_is_transitive_candidate :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -1056,13 +1110,9 @@ ENDCLASS.`,
 
 @(test)
 project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -1100,13 +1150,9 @@ project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
 
 @(test)
 project_state_retained_global_root_removal_exposes_next_winner :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -1140,13 +1186,9 @@ project_state_retained_global_root_removal_exposes_next_winner :: proc(t: ^testi
 
 @(test)
 project_state_retained_provided_name_removal_keeps_other_owner :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	targets := [?]analyze.Source_Input {
@@ -1177,13 +1219,9 @@ project_state_retained_provided_name_removal_keeps_other_owner :: proc(t: ^testi
 
 @(test)
 project_state_public_interface_change_revalidates_reverse_dependents :: proc(t: ^testing.T) {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	defer frontend_runtime.pool_destroy(&pool)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
 
 	state := analyze.project_state_make({}, context.allocator)
 	target := analyze.Source_Input {
@@ -1234,7 +1272,7 @@ ENDCLASS.`
 }
 
 @(test)
-analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
+analyze_handles_more_units_than_initial_task_capacity :: proc(t: ^testing.T) {
 	target := analyze.Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
 	dependencies := make([dynamic]analyze.Source_Input, 0, 5, context.allocator)
 	append(&dependencies, analyze.Source_Input{uri = "mem://dep1.abap", source = "REPORT zdep1."})
@@ -1243,12 +1281,8 @@ analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 	append(&dependencies, analyze.Source_Input{uri = "mem://dep4.abap", source = "REPORT zdep4."})
 	append(&dependencies, analyze.Source_Input{uri = "mem://dep5.abap", source = "REPORT zdep5."})
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 2}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 2}, context.allocator)
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	project := analyze.analyze_target_with_candidate_inputs(
 		target,
@@ -1257,7 +1291,7 @@ analyze_batches_more_units_than_task_capacity :: proc(t: ^testing.T) {
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect_value(t, len(project.units), 6)
 }
@@ -1272,16 +1306,12 @@ analyze_path_test_with_options :: proc(
 	target_path: string,
 	options: workspace.Options,
 ) -> workspace.Analysis_Result {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	run_options := options
 	run_options.pool = &pool
 	result := workspace.analyze_path(target_path, root, nil, run_options, context.allocator)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 	return result
 }
 
@@ -1290,16 +1320,12 @@ analyze_file_path_test_with_options :: proc(
 	target_path: string,
 	options: workspace.Options,
 ) -> workspace.Analysis_Result {
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	run_options := options
 	run_options.pool = &pool
 	result := workspace.analyze_file_path(target_path, nil, run_options, context.allocator)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 	return result
 }
 
@@ -1345,14 +1371,10 @@ analyze_units_project_test :: proc(t: ^testing.T, sources: []analyze.Source_Inpu
 		append(&units, unit)
 	}
 	project := analyze.project_analysis_from_units(units, context.allocator)
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	analyze.finish_project_analysis(&project, &pool, {}, context.allocator)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 	return project
 }
 
@@ -4374,24 +4396,20 @@ dependency_store_function_hit_clears_remote_candidate :: proc(t: ^testing.T) {
 	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
 	testing.expect_value(t, err, dep_store.Store_Error.None)
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	project := deps.analyze_with_dependency_drain(
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	project := deps.analyze_with_remote_dependencies(
 		analyze.Source_Input {
 			uri    = "mem://ZMAIN.abap",
 			source = "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'.",
 		},
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
 		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{store = &store, profile = &profile, store_any_profile = true},
+		deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	found_module := false
 	for &unit in project.units {
@@ -4403,6 +4421,263 @@ dependency_store_function_hit_clears_remote_candidate :: proc(t: ^testing.T) {
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
 		testing.expect(t, !(candidate.name == "z_remote_fm" && candidate.kind == .Function))
 	}
+}
+
+@(test)
+cache_hit_resolves_before_unreachable_adt :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("cache-hit-before-adt")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "ZPKG",
+		object_kind    = "global-class",
+		object_name    = "ZCL_CACHE_FIRST",
+		object_uri     = "/sap/bc/adt/oo/classes/ZCL_CACHE_FIRST",
+		object_type    = "CLAS/OC",
+		description    = "Cached class",
+		file_extension = "abap",
+		source_text    = "CLASS zcl_cache_first DEFINITION. ENDCLASS. CLASS zcl_cache_first IMPLEMENTATION. ENDCLASS.",
+		fetched_at     = "2026-05-21T00:00:00Z",
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	client: adt.Client
+	adt.client_init(
+		&client,
+		adt.Connection_Config {
+			base_url = "http://127.0.0.1:1/sap/bc/adt",
+			username = "demo",
+			password = "secret",
+		},
+		context.allocator,
+	)
+	client.http.timeout = 50 * time.Millisecond
+	defer adt.client_destroy(&client, context.allocator)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	project := deps.analyze_with_remote_dependencies(
+		analyze.Source_Input {
+			uri    = "mem://ZMAIN.abap",
+			source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_cache_first.",
+		},
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
+		make([dynamic]analyze.Source_Input, context.allocator),
+		deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 2)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+adt_runs_for_cache_miss_after_cache_hit_reanalysis :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("cache-hit-then-adt")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "ZPKG",
+		object_kind    = "global-class",
+		object_name    = "ZCL_CACHE_THEN_ADT",
+		object_uri     = "/sap/bc/adt/oo/classes/ZCL_CACHE_THEN_ADT",
+		object_type    = "CLAS/OC",
+		description    = "Cached class",
+		file_extension = "abap",
+		source_text    = "CLASS zcl_cache_then_adt DEFINITION. ENDCLASS. CLASS zcl_cache_then_adt IMPLEMENTATION. ENDCLASS.",
+		fetched_at     = "2026-05-21T00:00:00Z",
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response(
+			"200 OK",
+			"CLASS zcl_adt_after_cache DEFINITION. ENDCLASS. CLASS zcl_adt_after_cache IMPLEMENTATION. ENDCLASS.",
+			"",
+			context.allocator,
+		),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	client, worker := semantic_adt_client_for_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	project := deps.analyze_with_remote_dependencies(
+		analyze.Source_Input {
+			uri = "mem://ZMAIN.abap",
+			source = "REPORT zmain. DATA lo_cache TYPE REF TO zcl_cache_then_adt. DATA lo_adt TYPE REF TO zcl_adt_after_cache.",
+		},
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
+		make([dynamic]analyze.Source_Input, context.allocator),
+		deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, server.fetch_count > 0)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+cache_negative_skips_adt_and_allows_local_export_fallback :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("cache-negative-local-fallback")
+	export_root := external_export_workspace_path("cache-negative-local-fallback")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	export_file := manifest_test_file(
+		t,
+		export_root,
+		"source-code-library/includes/ZINC_NEG_LOCAL.abap",
+		"DATA gv_neg_local TYPE i.",
+	)
+	connection_key := "test-connection"
+	err = dep_store.record_negative_lookup(
+		&store,
+		&profile,
+		connection_key,
+		"zinc_neg_local",
+		.Include,
+		"2026-05-21T00:00:00Z",
+		context.allocator,
+	)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	status, status_err := dep_store.find_cached_candidate(
+		&store,
+		&profile,
+		connection_key,
+		"zinc_neg_local",
+		.Include,
+		context.allocator,
+	)
+	testing.expect_value(t, status_err, dep_store.Store_Error.None)
+	testing.expect_value(t, status, dep_store.Candidate_Cache_Status.Negative)
+	probe_candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	probe_dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	probe_seen := make(map[i64]bool, context.allocator)
+	probe_remote := [?]analyze.Remote_Dependency_Candidate {
+		{name = "zinc_neg_local", kind = .Include},
+	}
+	pool_for_probe: execution.Pool
+	execution.pool_init(&pool_for_probe, execution.Options{worker_count = 0, task_capacity = 8}, context.allocator)
+	probe := deps.add_dependency_cache_matches(
+		&probe_candidates,
+		&probe_dependencies,
+		probe_remote[:],
+		&store,
+		&profile,
+		false,
+		connection_key,
+		&probe_seen,
+		&pool_for_probe,
+		"mem://ZMAIN.abap",
+		"cache",
+		context.allocator,
+		context.allocator,
+	)
+	execution.pool_destroy(&pool_for_probe)
+	testing.expect(t, !probe.added)
+	testing.expect_value(t, len(probe.adt_candidates), 0)
+	testing.expect_value(t, len(probe.local_candidates), 1)
+
+	roots := make([dynamic]string, 0, 1, context.allocator)
+	append(&roots, export_root)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	project := deps.analyze_with_remote_dependencies(
+		analyze.Source_Input {
+			uri    = "mem://ZMAIN.abap",
+			source = "REPORT zmain. INCLUDE zinc_neg_local.",
+		},
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
+		make([dynamic]analyze.Source_Input, context.allocator),
+		deps.Dependency_Config {
+			cache = &store,
+			profile = &profile,
+			local_export_roots = roots[:],
+		},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, analyze.project_unit_by_uri(&project, export_file) != nil)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+adt_miss_records_negative_cache_lookup :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("adt-miss-negative-cache")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	client, worker := semantic_adt_client_for_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	_ = deps.analyze_with_remote_dependencies(
+		analyze.Source_Input {
+			uri    = "mem://ZMAIN.abap",
+			source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_missing_remote.",
+		},
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
+		make([dynamic]analyze.Source_Input, context.allocator),
+		deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	status, lookup_err := dep_store.find_cached_candidate(
+		&store,
+		&profile,
+		adt.client_connection_key(&client, context.allocator),
+		"zcl_missing_remote",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect_value(t, status, dep_store.Candidate_Cache_Status.Negative)
+	testing.expect(t, server.request_count > 0)
 }
 
 @(test)
@@ -4510,27 +4785,23 @@ standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T
 	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
 	testing.expect_value(t, err, dep_store.Store_Error.None)
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 2, task_capacity = 8}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 2, task_capacity = 8}, context.allocator)
 	if pool.options.worker_count > 0 {
-		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
+		execution.pool_start(&pool)
 	}
-	project := deps.analyze_with_dependency_drain(
+	project := deps.analyze_with_remote_dependencies(
 		analyze.Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)},
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
 		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{store = &store, profile = &profile, store_any_profile = true},
+		deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	if pool.options.worker_count > 0 {
-		frontend_runtime.pool_join(&pool)
+		execution.pool_join(&pool)
 	}
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect_value(t, len(project.units), 17)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
@@ -4574,14 +4845,10 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
 	testing.expect_value(t, err, dep_store.Store_Error.None)
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 2, task_capacity = 4}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 2, task_capacity = 4}, context.allocator)
 	if pool.options.worker_count > 0 {
-		testing.expect_value(t, frontend_runtime.pool_start(&pool), frontend_runtime.Submit_Error.None)
+		execution.pool_start(&pool)
 	}
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
@@ -4590,8 +4857,8 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 		{name = "ZINC_STORE_TASK", kind = .Include},
 	}
 	seen := make(map[i64]bool, context.allocator)
-	before := frontend_runtime.pool_stats(&pool)
-	added := deps.add_dependency_store_any_profile_matches(
+	before := execution.pool_stats(&pool)
+	added := deps.add_dependency_cache_any_profile_matches(
 		&candidates,
 		&dependencies,
 		remote[:],
@@ -4602,11 +4869,11 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 		context.allocator,
 		context.allocator,
 	)
-	after := frontend_runtime.pool_stats(&pool)
+	after := execution.pool_stats(&pool)
 	if pool.options.worker_count > 0 {
-		frontend_runtime.pool_join(&pool)
+		execution.pool_join(&pool)
 	}
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect(t, added)
 	testing.expect_value(t, len(dependencies), 1)
@@ -4633,13 +4900,9 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 	}
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	project := deps.analyze_with_dependency_drain(
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	project := deps.analyze_with_remote_dependencies(
 		target,
 		candidates,
 		dependencies,
@@ -4647,7 +4910,7 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, analyze.project_unit_by_uri(&project, export_file) != nil)
@@ -4684,21 +4947,17 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 	}
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
-	project := deps.analyze_with_dependency_drain(
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	project := deps.analyze_with_remote_dependencies(
 		target,
 		candidates,
 		dependencies,
-		deps.Dependency_Config{store = &store, profile = &profile, local_export_roots = roots[:]},
+		deps.Dependency_Config{cache = &store, profile = &profile, local_export_roots = roots[:]},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect(t, analyze.project_unit_by_uri(&project, export_file) != nil)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
@@ -4768,12 +5027,8 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
@@ -4781,7 +5036,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
@@ -4853,12 +5108,8 @@ ENDFUNCTION.
 	testing.expect(t, strings.contains(dependencies[0].uri, "/functions/groups/ZFG/fmodules/Z_REMOTE_FM"))
 	testing.expect(t, !strings.contains(dependencies[0].source, "FUNCTION-POOL"))
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
@@ -4866,7 +5117,7 @@ ENDFUNCTION.
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	dep_unit := analyze.project_unit_by_uri(&project, dependencies[0].uri)
 	testing.expect(t, dep_unit != nil)
@@ -4926,12 +5177,8 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
 	testing.expect(t, contains_fold(dependencies[0].source, "type standard table of c with default key"))
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	project := analyze.analyze_target_with_candidate_inputs(
 		target,
 		candidates[:],
@@ -4939,7 +5186,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
@@ -5905,14 +6152,10 @@ root_file = "src/ZOTHER.abap"
 	main_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain.")
 	other_file := manifest_test_file(t, root, "src/ZOTHER.abap", "REPORT zother.")
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	result := workspace.analyze_filesystem_path(root, nil, workspace.Options{pool = &pool}, context.allocator)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect(t, result.ok)
 	testing.expect(t, result.used_manifest)
@@ -5940,14 +6183,10 @@ root_file = "src/ZOTHER.abap"
 	main_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain.")
 	other_file := manifest_test_file(t, root, "src/ZOTHER.abap", "REPORT zother.")
 
-	pool: frontend_runtime.Pool
-	testing.expect_value(
-		t,
-		frontend_runtime.pool_init(&pool, frontend_runtime.Options{worker_count = 0, task_capacity = 128}, context.allocator),
-		frontend_runtime.Submit_Error.None,
-	)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	result := workspace.analyze_filesystem_path(main_file, nil, workspace.Options{pool = &pool}, context.allocator)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)

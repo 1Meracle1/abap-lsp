@@ -1,6 +1,6 @@
 package abap_frontend_semantic_analyze
 
-import runtime "../../runtime"
+import execution "../../execution"
 import "../../parser"
 
 import "core:mem"
@@ -44,6 +44,7 @@ analyze_unit :: proc(
 	unit_id: Unit_Id,
 	uri, source: string,
 	parsed: parser.Parsed_File,
+	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) -> Unit_Analysis {
 	unit := collect_unit(unit_id, uri, source, parsed, allocator)
@@ -51,10 +52,7 @@ analyze_unit :: proc(
 	units := make([dynamic]Unit_Analysis, 0, 1, allocator)
 	append(&units, unit)
 	project := project_analysis_from_units(units, allocator)
-	pool: runtime.Pool
-	assert(runtime.pool_init(&pool, runtime.Options{worker_count = 0, task_capacity = 64}, allocator) == .None)
-	defer runtime.pool_destroy(&pool)
-	finish_project_analysis(&project, &pool, {}, allocator)
+	finish_project_analysis(&project, pool, {}, allocator)
 	return project.units[0]
 }
 

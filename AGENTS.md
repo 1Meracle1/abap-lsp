@@ -9,7 +9,7 @@ This section has priority over every other convention in this file.
 - Implement only what was asked. No features beyond the request.
 - Do not add abstractions for single-use code.
 - Do not add flexibility or configurability that was not requested.
-- Do not add error handling for impossible scenarios.
+- Do not add error handling for impossible scenarios, use assertions if these conditions can be verified in debug builds.
 - If you write 20 lines and it could be 5, rewrite it.
 - Minimize code size aggressively: no pessimization, no bloat, no excess.
 - Write compact, simple, clean, deeply thought-through code from first

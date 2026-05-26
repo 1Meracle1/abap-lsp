@@ -6,7 +6,7 @@ import "core:mem/virtual"
 import "../../adt"
 import ddic_xml "../../ddic_xml"
 import dep_store "../../dependency_store"
-import frontend_runtime "../../runtime"
+import execution "../../execution"
 
 import base_runtime "base:runtime"
 import "core:fmt"
@@ -48,14 +48,20 @@ remote_candidate_kind_text :: proc(kind: analyze.Remote_Dependency_Kind) -> stri
 }
 
 Dependency_Config :: struct {
-	store:              ^dep_store.Dependency_Store,
+	cache:              ^dep_store.Dependency_Store,
 	profile:            ^dep_store.Dependency_Profile,
-	store_any_profile:  bool,
+	cache_any_profile:  bool,
 	local_export_roots: []string,
 	adt_client:         ^adt.Client,
 }
 
-analyze_with_dependency_drain :: proc(
+Cache_Phase_Result :: struct {
+	added:           bool,
+	adt_candidates: [dynamic]analyze.Remote_Dependency_Candidate,
+	local_candidates: [dynamic]analyze.Remote_Dependency_Candidate,
+}
+
+analyze_with_remote_dependencies :: proc(
 	target: analyze.Source_Input,
 	candidates: [dynamic]analyze.Project_Candidate_Input,
 	dependencies: [dynamic]analyze.Source_Input,
@@ -64,7 +70,7 @@ analyze_with_dependency_drain :: proc(
 	allocator: mem.Allocator,
 ) -> analyze.Project_Analysis {
 	targets := [?]analyze.Source_Input{target}
-	return analyze_inputs_with_dependency_drain(
+	return analyze_inputs_with_remote_dependencies(
 		targets[:],
 		candidates,
 		dependencies,
@@ -74,7 +80,7 @@ analyze_with_dependency_drain :: proc(
 	)
 }
 
-analyze_inputs_with_dependency_drain :: proc(
+analyze_inputs_with_remote_dependencies :: proc(
 	targets: []analyze.Source_Input,
 	candidates: [dynamic]analyze.Project_Candidate_Input,
 	dependencies: [dynamic]analyze.Source_Input,
@@ -93,9 +99,9 @@ analyze_inputs_with_dependency_drain :: proc(
 		options,
 		allocator,
 	)
-	has_store := config.store != nil
+	has_cache := config.cache != nil
 	has_profile := config.profile != nil
-	if !has_store && len(config.local_export_roots) == 0 && config.adt_client == nil {
+	if !has_cache && len(config.local_export_roots) == 0 && config.adt_client == nil {
 		return project
 	}
 
@@ -105,7 +111,6 @@ analyze_inputs_with_dependency_drain :: proc(
 	seen_temp_allocator := virtual.arena_allocator(&seen_temp_arena)
 
 	seen_artifacts := make(map[i64]bool, 16, seen_temp_allocator)
-	seen_store_candidates := make(map[analyze.Remote_Dependency_Key]bool, 64, seen_temp_allocator)
 	seen_local_candidates := make(map[analyze.Remote_Dependency_Key]bool, 64, seen_temp_allocator)
 	seen_adt_candidates := make(map[analyze.Remote_Dependency_Key]bool, 64, seen_temp_allocator)
 
@@ -122,100 +127,110 @@ analyze_inputs_with_dependency_drain :: proc(
 			true,
 			temp_allocator,
 		)
-		added := false
-		if has_store {
-			store_candidates := unseen_remote_candidates(
-				remote_candidates[:],
-				&seen_store_candidates,
-				temp_allocator,
-				seen_temp_allocator,
-			)
-			if config.store_any_profile || !has_profile {
-				added = add_dependency_store_any_profile_matches(
-					&candidate_inputs,
-					&dependency_inputs,
-					store_candidates[:],
-					config.store,
-					&seen_artifacts,
-					options.pool,
-					targets[0].uri if len(targets) > 0 else "",
-					allocator,
-					temp_allocator,
-				)
-			} else {
-				added = add_dependency_store_matches(
-					&candidate_inputs,
-					&dependency_inputs,
-					store_candidates[:],
-					config.store,
-					config.profile,
-					&seen_artifacts,
-					options.pool,
-					targets[0].uri if len(targets) > 0 else "",
-					allocator,
-					temp_allocator,
-				)
-			}
+		cache_result := Cache_Phase_Result {
+			adt_candidates = make([dynamic]analyze.Remote_Dependency_Candidate, 0, len(remote_candidates), temp_allocator),
+			local_candidates = make([dynamic]analyze.Remote_Dependency_Candidate, 0, len(remote_candidates), temp_allocator),
 		}
-		if !added && len(config.local_export_roots) > 0 {
-			local_candidates := unseen_remote_candidates(
+		if has_cache {
+			cache_candidates := unseen_remote_candidates(
 				remote_candidates[:],
-				&seen_local_candidates,
+				nil,
 				temp_allocator,
 				seen_temp_allocator,
 			)
-			added = add_local_export_matches(
+			connection_key := adt.client_connection_key(config.adt_client, temp_allocator) if config.adt_client != nil else ""
+			cache_result = add_dependency_cache_matches(
 				&candidate_inputs,
 				&dependency_inputs,
-				local_candidates[:],
-				config.store if has_store && has_profile else nil,
-				config.profile if has_store && has_profile else nil,
-				config.local_export_roots,
+				cache_candidates[:],
+				config.cache,
+				config.profile,
+				config.cache_any_profile || !has_profile,
+				connection_key,
+				&seen_artifacts,
+				options.pool,
 				targets[0].uri if len(targets) > 0 else "",
+				"cache_any" if config.cache_any_profile || !has_profile else "cache",
 				allocator,
-			)
-		}
-		if !added && config.adt_client != nil {
-			adt_remote_candidates := analyze.collect_project_state_remote_dependency_candidates(
-				&state,
-				true,
 				temp_allocator,
 			)
+			if cache_result.added {
+				project = analyze_inputs_with_state(
+					&state,
+					targets,
+					candidate_inputs[:],
+					dependency_inputs[:],
+					options,
+					allocator,
+				)
+				continue
+			}
+		} else {
+			for candidate in remote_candidates {
+				append(&cache_result.adt_candidates, candidate)
+				append(&cache_result.local_candidates, candidate)
+			}
+		}
+
+		if config.adt_client != nil {
 			adt_candidates := unseen_remote_candidates(
-				adt_remote_candidates[:],
+				cache_result.adt_candidates[:],
 				&seen_adt_candidates,
 				temp_allocator,
 				seen_temp_allocator,
 			)
-			attempted_adt := len(adt_candidates) > 0
-			added = add_adt_matches_with_client(
+			if len(adt_candidates) > 0 && add_adt_matches_with_client(
 				&candidate_inputs,
 				&dependency_inputs,
 				adt_candidates[:],
-				config.store if has_store && has_profile else nil,
-				config.profile if has_store && has_profile else nil,
+				config.cache if has_cache && has_profile else nil,
+				config.profile if has_cache && has_profile else nil,
 				config.adt_client,
 				options.pool,
 				targets[0].uri if len(targets) > 0 else "",
 				allocator,
-			)
-			if !added && attempted_adt {
-				added = true
+			) {
+				project = analyze_inputs_with_state(
+					&state,
+					targets,
+					candidate_inputs[:],
+					dependency_inputs[:],
+					options,
+					allocator,
+				)
+				continue
 			}
 		}
-		if added {
-			project = analyze_inputs_with_state(
-				&state,
-				targets,
-				candidate_inputs[:],
-				dependency_inputs[:],
-				options,
-				allocator,
+
+		if len(config.local_export_roots) > 0 {
+			local_candidates := unseen_remote_candidates(
+				cache_result.local_candidates[:],
+				&seen_local_candidates,
+				temp_allocator,
+				seen_temp_allocator,
 			)
+			if add_local_export_matches(
+				&candidate_inputs,
+				&dependency_inputs,
+				local_candidates[:],
+				config.cache if has_cache && has_profile else nil,
+				config.profile if has_cache && has_profile else nil,
+				config.local_export_roots,
+				targets[0].uri if len(targets) > 0 else "",
+				allocator,
+			) {
+				project = analyze_inputs_with_state(
+					&state,
+					targets,
+					candidate_inputs[:],
+					dependency_inputs[:],
+					options,
+					allocator,
+				)
+				continue
+			}
 		}
-		if !added {
-			break
-		}
+		break
 	}
 	return project
 }
@@ -252,6 +267,10 @@ unseen_remote_candidates :: proc(
 		if candidate.kind == .Type && analyze.is_builtin_type_name(candidate.name) {
 			continue
 		}
+		if seen == nil {
+			append(&out, candidate)
+			continue
+		}
 		key := analyze.Remote_Dependency_Key {
 			name = candidate.name,
 			kind = candidate.kind,
@@ -268,25 +287,26 @@ unseen_remote_candidates :: proc(
 	return out
 }
 
-add_dependency_store_matches :: proc(
+add_dependency_profile_cache_matches :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
 	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	seen_artifacts: ^map[i64]bool,
-	pool: ^frontend_runtime.Pool,
+	pool: ^execution.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 	temp_allocator: mem.Allocator,
 ) -> bool {
-	return add_dependency_store_matches_impl(
+	result := add_dependency_cache_matches(
 		candidates,
 		dependencies,
 		remote_candidates,
 		store,
 		profile,
 		false,
+		"",
 		seen_artifacts,
 		pool,
 		target_uri,
@@ -294,26 +314,28 @@ add_dependency_store_matches :: proc(
 		allocator,
 		temp_allocator,
 	)
+	return result.added
 }
 
-add_dependency_store_any_profile_matches :: proc(
+add_dependency_cache_any_profile_matches :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
 	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	seen_artifacts: ^map[i64]bool,
-	pool: ^frontend_runtime.Pool,
+	pool: ^execution.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 	temp_allocator: mem.Allocator,
 ) -> bool {
-	return add_dependency_store_matches_impl(
+	result := add_dependency_cache_matches(
 		candidates,
 		dependencies,
 		remote_candidates,
 		store,
 		nil,
 		true,
+		"",
 		seen_artifacts,
 		pool,
 		target_uri,
@@ -321,35 +343,43 @@ add_dependency_store_any_profile_matches :: proc(
 		allocator,
 		temp_allocator,
 	)
+	return result.added
 }
 
 Dependency_Store_Task_Result :: struct {
-	record: dep_store.Stored_Artifact_Record,
-	ok:     bool,
-	err:    dep_store.Store_Error,
+	record:   dep_store.Stored_Artifact_Record,
+	ok:       bool,
+	negative: bool,
+	err:      dep_store.Store_Error,
 }
 
 Dependency_Store_Task_Payload :: struct {
-	store:       dep_store.Dependency_Store,
-	profile:     ^dep_store.Dependency_Profile,
-	candidate:   analyze.Remote_Dependency_Candidate,
-	any_profile: bool,
+	store:          dep_store.Dependency_Store,
+	profile:        ^dep_store.Dependency_Profile,
+	candidate:      analyze.Remote_Dependency_Candidate,
+	any_profile:    bool,
+	connection_key: string,
 }
 
-add_dependency_store_matches_impl :: proc(
+add_dependency_cache_matches :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
 	remote_candidates: []analyze.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	any_profile: bool,
+	connection_key: string,
 	seen_artifacts: ^map[i64]bool,
-	pool: ^frontend_runtime.Pool,
+	pool: ^execution.Pool,
 	target_uri: string,
 	trace_source: string,
 	allocator: mem.Allocator,
 	temp_allocator: mem.Allocator,
-) -> bool {
+) -> Cache_Phase_Result {
+	result := Cache_Phase_Result {
+		adt_candidates = make([dynamic]analyze.Remote_Dependency_Candidate, 0, len(remote_candidates), temp_allocator),
+		local_candidates = make([dynamic]analyze.Remote_Dependency_Candidate, 0, len(remote_candidates), temp_allocator),
+	}
 	uri_keys := project_input_uri_keys(
 		target_uri,
 		dependencies^[:],
@@ -358,50 +388,56 @@ add_dependency_store_matches_impl :: proc(
 		temp_allocator,
 	)
 
-	added := false
-	batch_size := pool.options.task_capacity
 	task_allocator := base_runtime.heap_allocator()
-	for start := 0; start < len(remote_candidates); {
-		end := min(start + batch_size, len(remote_candidates))
-		tasks := make(
-			[dynamic]frontend_runtime.Task(^Dependency_Store_Task_Result),
-			0,
-			end - start,
-			task_allocator,
-		)
-		defer delete(tasks)
-		candidates_slice := remote_candidates[start:end]
-		for candidate in candidates_slice {
-			payload := Dependency_Store_Task_Payload {
-				store       = store^,
-				profile     = profile,
-				candidate   = candidate,
-				any_profile = any_profile,
-			}
-			task, err := frontend_runtime.submit_value(pool, payload, dependency_store_find_task)
-			assert(err == .None)
-			append(&tasks, task)
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, task_allocator)
+	tasks := make(
+		[dynamic]execution.Task(^Dependency_Store_Task_Result),
+		0,
+		len(remote_candidates),
+		task_allocator,
+	)
+	for candidate in remote_candidates {
+		payload := Dependency_Store_Task_Payload {
+			store          = store^,
+			profile        = profile,
+			candidate      = candidate,
+			any_profile    = any_profile,
+			connection_key = connection_key,
 		}
-		for task, i in tasks {
-			result, _ := frontend_runtime.wait(task)
-			if add_dependency_store_task_result(
-				candidates,
-				dependencies,
-				remote_candidates[start + i],
-				result,
-				seen_artifacts,
-				&uri_keys,
-				temp_allocator,
-				trace_source,
-				allocator,
-			) {
-				added = true
-			}
-			dependency_store_task_result_destroy(result, base_runtime.heap_allocator())
-		}
-		start = end
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, dependency_store_find_task)
+		append(&tasks, task)
 	}
-	return added
+	execution.graph_start(&graph)
+	for task, i in tasks {
+		task_result := execution.wait(task)
+		candidate := remote_candidates[i]
+		if add_dependency_store_task_result(
+			candidates,
+			dependencies,
+			candidate,
+			task_result,
+			seen_artifacts,
+			&uri_keys,
+			temp_allocator,
+			trace_source,
+			allocator,
+		) {
+			result.added = true
+		} else if task_result == nil || task_result.err != .None {
+			append(&result.adt_candidates, candidate)
+			append(&result.local_candidates, candidate)
+		} else if !task_result.ok {
+			if !task_result.negative {
+				append(&result.adt_candidates, candidate)
+			}
+			append(&result.local_candidates, candidate)
+		}
+		dependency_store_task_result_destroy(task_result, base_runtime.heap_allocator())
+	}
+	execution.graph_wait(&graph)
+	execution.graph_destroy(&graph)
+	return result
 }
 
 dependency_store_find_task :: proc(
@@ -429,17 +465,30 @@ dependency_store_find_task :: proc(
 			result.record = clone_dependency_record(&record, result_allocator)
 		}
 	} else if payload.profile != nil {
-		record, ok, err := dep_store.reader_find_artifact_for_candidate(
+		status, err := dep_store.reader_find_cached_candidate(
 			&reader,
 			payload.profile,
+			payload.connection_key,
 			payload.candidate.name,
 			dep_store_candidate_kind(payload.candidate.kind),
 			context.temp_allocator,
 		)
-		result.ok = ok
 		result.err = err
-		if ok && err == .None {
-			result.record = clone_dependency_record(&record, result_allocator)
+		if err == .None && status == .Negative {
+			result.negative = true
+		} else if err == .None && status == .Artifact {
+			record, ok, lookup_err := dep_store.reader_find_artifact_for_candidate(
+				&reader,
+				payload.profile,
+				payload.candidate.name,
+				dep_store_candidate_kind(payload.candidate.kind),
+				context.temp_allocator,
+			)
+			result.ok = ok
+			result.err = lookup_err
+			if ok && lookup_err == .None {
+				result.record = clone_dependency_record(&record, result_allocator)
+			}
 		}
 	}
 	return result
@@ -809,7 +858,7 @@ add_adt_matches_with_client :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	client: ^adt.Client,
-	pool: ^frontend_runtime.Pool,
+	pool: ^execution.Pool,
 	target_uri: string,
 	allocator: mem.Allocator,
 ) -> bool {
@@ -833,24 +882,24 @@ add_adt_matches_with_client :: proc(
 	}
 
 	added := false
-	tasks := make(
-		[dynamic]frontend_runtime.Task(^Adt_Fetch_Task_Result),
-		0,
-		len(remote_candidates),
-		temp_allocator,
-	)
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, base_runtime.heap_allocator())
+	tasks := make([dynamic]execution.Task(^Adt_Fetch_Task_Result), 0, len(remote_candidates), temp_allocator)
 	for candidate in remote_candidates {
 		payload := Adt_Fetch_Task_Payload {
 			client           = client,
 			candidate        = candidate,
-			result_allocator = temp_allocator,
+			result_allocator = base_runtime.heap_allocator(),
 		}
-		task, err := frontend_runtime.submit_value(pool, payload, adt_fetch_task)
-		assert(err == .None)
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, adt_fetch_task)
 		append(&tasks, task)
 	}
+	execution.graph_start(&graph)
 	for task, i in tasks {
-		result, _ := frontend_runtime.wait(task)
+		result := execution.wait(task)
+		if result == nil || len(result.fetched) == 0 {
+			record_adt_negative_lookup(store, profile, client, remote_candidates[i], allocator)
+		}
 		if add_adt_fetch_task_result(
 			candidates,
 			dependencies,
@@ -864,12 +913,42 @@ add_adt_matches_with_client :: proc(
 		) {
 			added = true
 		}
+		adt_fetch_task_result_destroy(result, base_runtime.heap_allocator())
 	}
+	execution.graph_wait(&graph)
+	execution.graph_destroy(&graph)
 	return added
 }
 
+record_adt_negative_lookup :: proc(
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	client: ^adt.Client,
+	candidate: analyze.Remote_Dependency_Candidate,
+	allocator: mem.Allocator,
+) {
+	if store == nil || profile == nil || client == nil {
+		return
+	}
+	temp_arena: mem.Dynamic_Arena
+	backing := base_runtime.heap_allocator()
+	mem.dynamic_arena_init(&temp_arena, backing, backing, alignment = 64)
+	defer mem.dynamic_arena_destroy(&temp_arena)
+	temp_allocator := mem.dynamic_arena_allocator(&temp_arena)
+	recorded_at, _ := time.time_to_rfc3339(time.now(), allocator = temp_allocator)
+	_ = dep_store.record_negative_lookup(
+		store,
+		profile,
+		adt.client_connection_key(client, temp_allocator),
+		candidate.name,
+		dep_store_candidate_kind(candidate.kind),
+		recorded_at,
+		allocator,
+	)
+}
+
 adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Result {
-	if temp_arena := frontend_runtime.current_temp_arena(); temp_arena != nil {
+	if temp_arena := execution.current_temp_arena(); temp_arena != nil {
 		return fetch_adt_candidate(
 			payload.client,
 			payload.candidate,

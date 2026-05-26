@@ -2,7 +2,7 @@ package main
 
 import "../../src/ast"
 import "../../src/parser"
-import frontend_runtime "../../src/runtime"
+import execution "../../src/execution"
 import semantic_analyze "../../src/semantic/analyze"
 import stack_trace "../../src/stack_trace"
 import "../../src/tokenizer"
@@ -147,26 +147,18 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		append(&include_paths, args[i + 1])
 	}
 
-	pool: frontend_runtime.Pool
-	pool_err := frontend_runtime.pool_init(
+	pool: execution.Pool
+	execution.pool_init(
 		&pool,
-		frontend_runtime.Options {
-			worker_count = frontend_runtime.AUTO_WORKER_COUNT,
-			task_capacity = 1024,
+		execution.Options {
+			worker_count = execution.AUTO_WORKER_COUNT,
 			queue_capacity = 128,
 			deque_capacity = 128,
 		},
 		allocator,
 	)
-	if pool_err != .None {
-		fmt.printf("error\truntime\t%v\n", pool_err)
-		os.exit(1)
-	}
 	if pool.options.worker_count > 0 {
-		if start_err := frontend_runtime.pool_start(&pool); start_err != .None {
-			fmt.printf("error\truntime\t%v\n", start_err)
-			os.exit(1)
-		}
+		execution.pool_start(&pool)
 	}
 
 	result := workspace.analyze_filesystem_path(
@@ -177,12 +169,12 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	)
 	if !result.ok {
 		fmt.printf("error\tanalyze\t%s\n", result.error)
-		frontend_runtime.pool_destroy(&pool)
+		execution.pool_destroy(&pool)
 		os.exit(1)
 	}
 	print_analyze_counts(&result.project)
 	print_analyze_diagnostics(&result.project, allocator)
-	frontend_runtime.pool_destroy(&pool)
+	execution.pool_destroy(&pool)
 }
 
 print_analyze_counts :: proc(project: ^semantic_analyze.Project_Analysis) {

@@ -1,18 +1,21 @@
 package abap_frontend_execution
 
 import "base:intrinsics"
+import "core:container/xar"
 import "core:mem"
 import "core:mem/virtual"
 import "core:sync"
 import sysinfo "core:sys/info"
 import "core:thread"
 
-AUTO_WORKER_COUNT :: -1
+AUTO_WORKER_COUNT :: int(-1)
 DEFAULT_TASK_CAPACITY :: 1024
 DEFAULT_QUEUE_CAPACITY :: 1024
 DEFAULT_DEQUE_CAPACITY :: 1024
 DEFAULT_EDGE_CAPACITY :: 1024
 DEFAULT_MAIN_QUEUE_CAPACITY :: 1024
+TASK_STORAGE_SHIFT :: 4
+EDGE_STORAGE_SHIFT :: 4
 
 No_Result :: struct {}
 
@@ -111,12 +114,14 @@ Worker :: struct {
 Pool :: struct {
 	allocator:        mem.Allocator,
 	options:          Options,
-	cells:            []Task_Cell,
-	free_queue:       Mpmc_Index_Ring,
-	free_buffer:      []Mpmc_Cell,
-	edges:            []Task_Edge,
-	edge_free_queue:  Mpmc_Index_Ring,
-	edge_free_buffer: []Mpmc_Cell,
+	cells:            xar.Array(Task_Cell, TASK_STORAGE_SHIFT),
+	free_cells:       [dynamic]u32,
+	cell_count:       u32,
+	cell_lock:        sync.Mutex,
+	edges:            xar.Array(Task_Edge, EDGE_STORAGE_SHIFT),
+	free_edges:       [dynamic]u32,
+	edge_count:       u32,
+	edge_lock:        sync.Mutex,
 	workers:          []Worker,
 	available:        sync.Sema,
 	started:          bool,
@@ -159,28 +164,82 @@ current_worker: ^Worker
 @(private = "file", thread_local)
 current_main_executor: ^Main_Executor
 
+pool_cell :: proc(pool: ^Pool, index: u32) -> ^Task_Cell {
+	assert(index < sync.atomic_load_explicit(&pool.cell_count, .Acquire))
+	return xar.get_ptr_unsafe(&pool.cells, int(index))
+}
+
+pool_edge :: proc(pool: ^Pool, index: u32) -> ^Task_Edge {
+	assert(index < sync.atomic_load_explicit(&pool.edge_count, .Acquire))
+	return xar.get_ptr_unsafe(&pool.edges, int(index))
+}
+
+add_pool_cell_locked :: proc(pool: ^Pool) -> u32 {
+	assert(u64(xar.len(pool.cells)) < u64(INDEX_NONE))
+	index := u32(xar.len(pool.cells))
+	cell, err := xar.push_back_elem_and_get_ptr(&pool.cells, Task_Cell{})
+	assert(err == .None && cell != nil)
+	cell.index = index
+	cell.generation = 1
+	cell.state = .Free
+	sync.atomic_store_explicit(&pool.cell_count, index + 1, .Release)
+	return index
+}
+
+add_pool_edge_locked :: proc(pool: ^Pool) -> u32 {
+	assert(u64(xar.len(pool.edges)) < u64(INDEX_NONE))
+	index := u32(xar.len(pool.edges))
+	edge, err := xar.push_back_elem_and_get_ptr(&pool.edges, Task_Edge{next = INDEX_NONE})
+	assert(err == .None && edge != nil)
+	sync.atomic_store_explicit(&pool.edge_count, index + 1, .Release)
+	return index
+}
+
+reserve_cell_index :: proc(pool: ^Pool) -> u32 {
+	sync.mutex_lock(&pool.cell_lock)
+	defer sync.mutex_unlock(&pool.cell_lock)
+	if len(pool.free_cells) > 0 {
+		return pop(&pool.free_cells)
+	}
+	return add_pool_cell_locked(pool)
+}
+
+release_cell_index :: proc(pool: ^Pool, index: u32) {
+	sync.mutex_lock(&pool.cell_lock)
+	append(&pool.free_cells, index)
+	sync.mutex_unlock(&pool.cell_lock)
+}
+
+reserve_edge_index :: proc(pool: ^Pool) -> u32 {
+	sync.mutex_lock(&pool.edge_lock)
+	defer sync.mutex_unlock(&pool.edge_lock)
+	if len(pool.free_edges) > 0 {
+		return pop(&pool.free_edges)
+	}
+	return add_pool_edge_locked(pool)
+}
+
+release_edge_index :: proc(pool: ^Pool, index: u32) {
+	sync.mutex_lock(&pool.edge_lock)
+	append(&pool.free_edges, index)
+	sync.mutex_unlock(&pool.edge_lock)
+}
+
 pool_init :: proc(pool: ^Pool, options: Options, allocator: mem.Allocator) {
 	opts := normalize_options(options)
 
 	pool^ = {}
 	pool.allocator = allocator
 	pool.options = opts
-	pool.cells = make([]Task_Cell, opts.task_capacity, allocator)
-	pool.free_buffer = make([]Mpmc_Cell, opts.task_capacity, allocator)
-	pool.edges = make([]Task_Edge, opts.edge_capacity, allocator)
-	pool.edge_free_buffer = make([]Mpmc_Cell, opts.edge_capacity, allocator)
-	mpmc_index_ring_init(&pool.free_queue, pool.free_buffer)
-	mpmc_index_ring_init(&pool.edge_free_queue, pool.edge_free_buffer)
-	for i in 0 ..< len(pool.cells) {
-		cell := &pool.cells[i]
-		cell.index = u32(i)
-		cell.generation = 1
-		cell.state = .Free
-		_ = mpmc_index_ring_enqueue(&pool.free_queue, u32(i))
+	xar.init(&pool.cells, allocator)
+	xar.init(&pool.edges, allocator)
+	pool.free_cells = make([dynamic]u32, 0, opts.task_capacity, allocator)
+	pool.free_edges = make([dynamic]u32, 0, opts.edge_capacity, allocator)
+	for _ in 0 ..< opts.task_capacity {
+		append(&pool.free_cells, add_pool_cell_locked(pool))
 	}
-	for i in 0 ..< len(pool.edges) {
-		pool.edges[i].next = INDEX_NONE
-		_ = mpmc_index_ring_enqueue(&pool.edge_free_queue, u32(i))
+	for _ in 0 ..< opts.edge_capacity {
+		append(&pool.free_edges, add_pool_edge_locked(pool))
 	}
 
 	if opts.worker_count > 0 {
@@ -242,10 +301,10 @@ pool_destroy :: proc(pool: ^Pool) {
 		virtual.arena_destroy(&pool.workers[i].temp_arena)
 	}
 	delete(pool.workers, pool.allocator)
-	delete(pool.edge_free_buffer, pool.allocator)
-	delete(pool.edges, pool.allocator)
-	delete(pool.free_buffer, pool.allocator)
-	delete(pool.cells, pool.allocator)
+	delete(pool.free_edges)
+	xar.destroy(&pool.edges)
+	delete(pool.free_cells)
+	xar.destroy(&pool.cells)
 	pool^ = {}
 }
 
@@ -348,7 +407,7 @@ graph_start :: proc(graph: ^Graph) {
 		return
 	}
 	for index in graph.cell_indices {
-		cell := &graph.pool.cells[index]
+		cell := pool_cell(graph.pool, index)
 		if sync.atomic_load_explicit(&cell.state, .Acquire) == .Reserved &&
 		   sync.atomic_load_explicit(&cell.pending_count, .Acquire) == 0 {
 			schedule_cell(cell)
@@ -375,13 +434,13 @@ graph_wait :: proc(graph: ^Graph) {
 graph_destroy :: proc(graph: ^Graph) {
 	pool := graph.pool
 	for index in graph.cell_indices {
-		release_cell(&pool.cells[index])
+		release_cell(pool_cell(pool, index))
 	}
 	for index in graph.edge_indices {
-		pool.edges[index] = Task_Edge {
+		pool_edge(pool, index)^ = Task_Edge {
 			next = INDEX_NONE,
 		}
-		_ = mpmc_index_ring_enqueue(&pool.edge_free_queue, index)
+		release_edge_index(pool, index)
 	}
 	virtual.arena_destroy(&graph.arena)
 	graph^ = {}
@@ -444,7 +503,7 @@ then :: proc(
 
 	invoke :: proc(cell: ^Task_Cell) {
 		work := cast(proc(_: T) -> R)cell.user_proc
-		parent := &cell.graph.pool.cells[cell.parent_index]
+		parent := pool_cell(cell.graph.pool, cell.parent_index)
 		arg: T
 		if size_of(T) > 0 {
 			arg = (^T)(parent.result)^
@@ -491,7 +550,7 @@ then_with :: proc(
 
 	invoke :: proc(cell: ^Task_Cell) {
 		work := cast(proc(_: T, _: P) -> R)cell.user_proc
-		parent := &cell.graph.pool.cells[cell.parent_index]
+		parent := pool_cell(cell.graph.pool, cell.parent_index)
 		arg: T
 		if size_of(T) > 0 {
 			arg = (^T)(parent.result)^
@@ -543,7 +602,7 @@ then_all :: proc(
 		data := cast(^Then_All_Data)cell.user_data
 		results := make([]T, len(data.parent_indices), context.temp_allocator)
 		for parent_index, i in data.parent_indices {
-			parent := &cell.graph.pool.cells[parent_index]
+			parent := pool_cell(cell.graph.pool, parent_index)
 			if size_of(T) > 0 {
 				intrinsics.mem_copy_non_overlapping(
 					&results[i],
@@ -617,9 +676,8 @@ reserve_cell :: proc(
 	} else {
 		assert(executor.main != nil)
 	}
-	index, ok := mpmc_index_ring_dequeue(&pool.free_queue)
-	assert(ok)
-	cell := &pool.cells[index]
+	index := reserve_cell_index(pool)
+	cell := pool_cell(pool, index)
 	cell.index = index
 	cell.state = .Reserved
 	cell.kind = kind
@@ -644,19 +702,19 @@ reserve_cell :: proc(
 
 add_edge :: proc(graph: ^Graph, parent_index, child_index: u32) {
 	pool := graph.pool
-	edge_index, ok := mpmc_index_ring_dequeue(&pool.edge_free_queue)
-	assert(ok)
-	edge := &pool.edges[edge_index]
+	edge_index := reserve_edge_index(pool)
+	edge := pool_edge(pool, edge_index)
 	edge.parent = parent_index
 	edge.child = child_index
-	edge.next = pool.cells[parent_index].first_edge
-	pool.cells[parent_index].first_edge = edge_index
+	parent := pool_cell(pool, parent_index)
+	edge.next = parent.first_edge
+	parent.first_edge = edge_index
 	append(&graph.edge_indices, edge_index)
 }
 
 add_child_edge :: proc(graph: ^Graph, parent_index, child_index: u32) {
-	parent := &graph.pool.cells[parent_index]
-	child := &graph.pool.cells[child_index]
+	parent := pool_cell(graph.pool, parent_index)
+	child := pool_cell(graph.pool, child_index)
 	child.next_sibling = parent.first_child
 	parent.first_child = child_index
 }
@@ -674,10 +732,11 @@ cell_from_task :: proc(task: Task($T)) -> ^Task_Cell {
 
 cell_from_task_allow_completed :: proc(task: Task($T)) -> ^Task_Cell {
 	graph := task.graph
-	if graph == nil || task.index >= u32(len(graph.pool.cells)) {
+	if graph == nil || graph.pool == nil ||
+	   task.index >= sync.atomic_load_explicit(&graph.pool.cell_count, .Acquire) {
 		return nil
 	}
-	cell := &graph.pool.cells[task.index]
+	cell := pool_cell(graph.pool, task.index)
 	if cell.generation != task.generation || cell.graph != graph {
 		return nil
 	}
@@ -758,8 +817,8 @@ finish_cell :: proc(cell: ^Task_Cell) {
 
 	edge_index := cell.first_edge
 	for edge_index != INDEX_NONE {
-		edge := &pool.edges[edge_index]
-		child := &pool.cells[edge.child]
+		edge := pool_edge(pool, edge_index)
+		child := pool_cell(pool, edge.child)
 		if sync.atomic_sub_explicit(&child.pending_count, 1, .Release) == 1 {
 			schedule_cell(child)
 		}
@@ -767,7 +826,7 @@ finish_cell :: proc(cell: ^Task_Cell) {
 	}
 	child_index := cell.first_child
 	for child_index != INDEX_NONE {
-		child := &pool.cells[child_index]
+		child := pool_cell(pool, child_index)
 		next_child := child.next_sibling
 		if sync.atomic_sub_explicit(&child.pending_count, 1, .Release) == 1 {
 			schedule_cell(child)
@@ -800,7 +859,7 @@ release_cell :: proc(cell: ^Task_Cell) {
 	cell.index = index
 	cell.generation = generation
 	cell.state = .Free
-	_ = mpmc_index_ring_enqueue(&pool.free_queue, index)
+	release_cell_index(pool, index)
 }
 
 complete_empty_graph :: proc(graph: ^Graph) {
@@ -858,7 +917,7 @@ execute_next :: proc(worker: ^Worker) -> bool {
 }
 
 execute_index :: proc(pool: ^Pool, index: u32) {
-	cell := &pool.cells[index]
+	cell := pool_cell(pool, index)
 	worker := current_worker
 	if worker != nil {
 		worker_execute_cell(worker, cell)

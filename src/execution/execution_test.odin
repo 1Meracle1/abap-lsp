@@ -170,6 +170,25 @@ capacities_are_normalized :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(main.buffer), 4)
 }
 
+task_and_edge_storage_grows_past_initial_capacity :: proc(t: ^testing.T) {
+	pool: Pool
+	pool_init(&pool, Options{worker_count = 0, task_capacity = 1, edge_capacity = 1}, context.allocator)
+	defer pool_destroy(&pool)
+
+	graph: Graph
+	graph_init(&graph, &pool, context.allocator)
+	defer graph_destroy(&graph)
+
+	parents: [4]Task(int)
+	for i in 0 ..< len(parents) {
+		parents[i] = submit_value(&graph, worker_executor(&pool), i, inc)
+	}
+	total_task := then_all(&graph, parents[:], worker_executor(&pool), sum_values)
+	graph_start(&graph)
+	testing.expect_value(t, wait(total_task), 10)
+	graph_wait(&graph)
+}
+
 graph_arena_payload_survives_until_destroy :: proc(t: ^testing.T) {
 	pool: Pool
 	pool_init(&pool, Options{worker_count = 0, task_capacity = 8, edge_capacity = 8}, context.allocator)
@@ -381,6 +400,7 @@ execution_graph_behaviors :: proc(t: ^testing.T) {
 	independent_roots_run_and_results_are_waitable(t)
 	stats_track_graph_work(t)
 	capacities_are_normalized(t)
+	task_and_edge_storage_grows_past_initial_capacity(t)
 	graph_arena_payload_survives_until_destroy(t)
 	large_payload_and_result_use_graph_arena(t)
 	then_preserves_sequential_dependency(t)

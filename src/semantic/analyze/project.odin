@@ -1,6 +1,6 @@
 package abap_frontend_semantic_analyze
 
-import runtime "../../runtime"
+import execution "../../execution"
 import "../../parser"
 
 import base_runtime "base:runtime"
@@ -15,7 +15,7 @@ Source_Input :: struct {
 }
 
 Analyze_Options :: struct {
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 }
 
 Remote_Dependency_Kind :: enum {
@@ -416,7 +416,7 @@ project_state_refresh_candidate_units :: proc(
 project_state_parse_units :: proc(
 	state: ^Project_State,
 	unit_ids: []Unit_Id,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) {
 	index_allocator := base_runtime.heap_allocator()
@@ -581,7 +581,7 @@ project_state_finish :: proc(
 	state: ^Project_State,
 	parsed_units: []Unit_Id,
 	include_roots: []Unit_Id,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) {
 	scratch_arena: virtual.Arena
@@ -736,7 +736,7 @@ project_state_prepare_affected_units :: proc(
 project_state_build_scope_indexes :: proc(
 	state: ^Project_State,
 	affected: []Unit_Id,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) {
 	indices := unit_ids_to_indices(affected, len(state.units), base_runtime.heap_allocator())
@@ -1536,7 +1536,7 @@ project_analysis_from_units :: proc(
 
 finish_project_analysis :: proc(
 	project: ^Project_Analysis,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1584,9 +1584,9 @@ dir_is_child :: proc(candidate, parent, child: string) -> bool {
 
 @(private)
 run_all_unit_tasks :: proc(
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	state: ^Project_Work_State,
-	work: proc(Project_Task_Payload) -> runtime.No_Result,
+	work: proc(Project_Task_Payload) -> execution.No_Result,
 ) {
 	indices := make([dynamic]int, 0, len(state.units), base_runtime.heap_allocator())
 	defer delete(indices)
@@ -1598,61 +1598,57 @@ run_all_unit_tasks :: proc(
 
 @(private)
 run_project_tasks :: proc(
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_indices: []int,
 	state: ^Project_Work_State,
-	work: proc(Project_Task_Payload) -> runtime.No_Result,
+	work: proc(Project_Task_Payload) -> execution.No_Result,
 ) {
-	batch_size := pool.options.task_capacity
 	task_allocator := base_runtime.heap_allocator()
-	for start := 0; start < len(unit_indices); {
-		end := start + batch_size
-		if end > len(unit_indices) {
-			end = len(unit_indices)
-		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
-		for unit_index in unit_indices[start:end] {
-			payload := Project_Task_Payload{state = state, unit_index = unit_index}
-			task, err := runtime.submit_value(pool, payload, work)
-			assert(err == .None)
-			append(&tasks, task)
-		}
-		for task in tasks {
-			_, _ = runtime.wait(task)
-		}
-		delete(tasks)
-		start = end
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, task_allocator)
+	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(unit_indices), task_allocator)
+	for unit_index in unit_indices {
+		payload := Project_Task_Payload{state = state, unit_index = unit_index}
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, work)
+		append(&tasks, task)
 	}
+	execution.graph_start(&graph)
+	for task in tasks {
+		_ = execution.wait(task)
+	}
+	execution.graph_wait(&graph)
+	delete(tasks)
+	execution.graph_destroy(&graph)
 }
 
 @(private)
-parse_collect_task :: proc(payload: Project_Task_Payload) -> runtime.No_Result {
+parse_collect_task :: proc(payload: Project_Task_Payload) -> execution.No_Result {
 	input := payload.state.inputs[payload.unit_index]
 	payload.state.units[payload.unit_index] = parse_collect_input(
 		Unit_Id(u32(payload.unit_index)),
 		input,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	return runtime.No_Result{}
+	return execution.No_Result{}
 }
 
 @(private)
-build_scope_index_task :: proc(payload: Project_Task_Payload) -> runtime.No_Result {
+build_scope_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Result {
 	unit := &payload.state.units[payload.unit_index]
 	unit.scope_index = build_scope_index(
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	return runtime.No_Result{}
+	return execution.No_Result{}
 }
 
 @(private)
-rebuild_semantic_index_task :: proc(payload: Project_Task_Payload) -> runtime.No_Result {
+rebuild_semantic_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Result {
 	rebuild_semantic_index(
 		&payload.state.units[payload.unit_index],
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	return runtime.No_Result{}
+	return execution.No_Result{}
 }
 
 @(private)
@@ -1760,7 +1756,7 @@ collect_project_diagnostics :: proc(project: ^Project_Analysis) {
 infer_project_semantic_facts :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1785,7 +1781,7 @@ infer_project_semantic_facts_for_units :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
 	unit_ids: []Unit_Id,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1816,7 +1812,7 @@ infer_project_semantic_facts_for_units :: proc(
 validate_project_units :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1839,7 +1835,7 @@ validate_project_units_for_units :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
 	unit_ids: []Unit_Id,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1866,7 +1862,7 @@ validate_project_units_for_units :: proc(
 @(private)
 rebuild_project_semantic_indexes :: proc(
 	project: ^Project_Analysis,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1884,7 +1880,7 @@ rebuild_project_semantic_indexes :: proc(
 rebuild_project_semantic_indexes_for_units :: proc(
 	project: ^Project_Analysis,
 	unit_ids: []Unit_Id,
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
@@ -1905,142 +1901,126 @@ rebuild_project_semantic_indexes_for_units :: proc(
 
 @(private)
 run_infer_tasks :: proc(
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	state: ^Project_Infer_State,
 ) {
-	batch_size := pool.options.task_capacity
 	task_allocator := base_runtime.heap_allocator()
-	for start := 0; start < len(state.project.units); {
-		end := start + batch_size
-		if end > len(state.project.units) {
-			end = len(state.project.units)
-		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
-		for unit_index in start ..< end {
-			payload := Project_Infer_Payload{state = state, unit_index = unit_index, output_index = unit_index}
-			task, err := runtime.submit_value(pool, payload, infer_task)
-			assert(err == .None)
-			append(&tasks, task)
-		}
-		for task in tasks {
-			_, _ = runtime.wait(task)
-		}
-		delete(tasks)
-		start = end
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, task_allocator)
+	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(state.project.units), task_allocator)
+	for unit_index in 0 ..< len(state.project.units) {
+		payload := Project_Infer_Payload{state = state, unit_index = unit_index, output_index = unit_index}
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, infer_task)
+		append(&tasks, task)
 	}
+	execution.graph_start(&graph)
+	for task in tasks {
+		_ = execution.wait(task)
+	}
+	execution.graph_wait(&graph)
+	delete(tasks)
+	execution.graph_destroy(&graph)
 }
 
 @(private)
 run_infer_tasks_for_indices :: proc(
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	state: ^Project_Infer_State,
 	indices: []int,
 ) {
-	batch_size := pool.options.task_capacity
 	task_allocator := base_runtime.heap_allocator()
-	for start := 0; start < len(indices); {
-		end := start + batch_size
-		if end > len(indices) {
-			end = len(indices)
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, task_allocator)
+	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(indices), task_allocator)
+	for unit_index, i in indices {
+		payload := Project_Infer_Payload {
+			state = state,
+			unit_index = unit_index,
+			output_index = i,
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
-		for unit_index, i in indices[start:end] {
-			payload := Project_Infer_Payload {
-				state = state,
-				unit_index = unit_index,
-				output_index = start + i,
-			}
-			task, err := runtime.submit_value(pool, payload, infer_task)
-			assert(err == .None)
-			append(&tasks, task)
-		}
-		for task in tasks {
-			_, _ = runtime.wait(task)
-		}
-		delete(tasks)
-		start = end
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, infer_task)
+		append(&tasks, task)
 	}
+	execution.graph_start(&graph)
+	for task in tasks {
+		_ = execution.wait(task)
+	}
+	execution.graph_wait(&graph)
+	delete(tasks)
+	execution.graph_destroy(&graph)
 }
 
 @(private)
 run_validate_tasks :: proc(
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	state: ^Project_Validate_State,
 ) {
-	batch_size := pool.options.task_capacity
 	task_allocator := base_runtime.heap_allocator()
-	for start := 0; start < len(state.project.units); {
-		end := start + batch_size
-		if end > len(state.project.units) {
-			end = len(state.project.units)
-		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
-		for unit_index in start ..< end {
-			payload := Project_Validate_Payload{state = state, unit_index = unit_index, output_index = unit_index}
-			task, err := runtime.submit_value(pool, payload, validate_task)
-			assert(err == .None)
-			append(&tasks, task)
-		}
-		for task in tasks {
-			_, _ = runtime.wait(task)
-		}
-		delete(tasks)
-		start = end
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, task_allocator)
+	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(state.project.units), task_allocator)
+	for unit_index in 0 ..< len(state.project.units) {
+		payload := Project_Validate_Payload{state = state, unit_index = unit_index, output_index = unit_index}
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, validate_task)
+		append(&tasks, task)
 	}
+	execution.graph_start(&graph)
+	for task in tasks {
+		_ = execution.wait(task)
+	}
+	execution.graph_wait(&graph)
+	delete(tasks)
+	execution.graph_destroy(&graph)
 }
 
 @(private)
 run_validate_tasks_for_indices :: proc(
-	pool: ^runtime.Pool,
+	pool: ^execution.Pool,
 	state: ^Project_Validate_State,
 	indices: []int,
 ) {
-	batch_size := pool.options.task_capacity
 	task_allocator := base_runtime.heap_allocator()
-	for start := 0; start < len(indices); {
-		end := start + batch_size
-		if end > len(indices) {
-			end = len(indices)
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, task_allocator)
+	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(indices), task_allocator)
+	for unit_index, i in indices {
+		payload := Project_Validate_Payload {
+			state = state,
+			unit_index = unit_index,
+			output_index = i,
 		}
-		tasks := make([dynamic]runtime.Task(runtime.No_Result), 0, end - start, task_allocator)
-		for unit_index, i in indices[start:end] {
-			payload := Project_Validate_Payload {
-				state = state,
-				unit_index = unit_index,
-				output_index = start + i,
-			}
-			task, err := runtime.submit_value(pool, payload, validate_task)
-			assert(err == .None)
-			append(&tasks, task)
-		}
-		for task in tasks {
-			_, _ = runtime.wait(task)
-		}
-		delete(tasks)
-		start = end
+		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, validate_task)
+		append(&tasks, task)
 	}
+	execution.graph_start(&graph)
+	for task in tasks {
+		_ = execution.wait(task)
+	}
+	execution.graph_wait(&graph)
+	delete(tasks)
+	execution.graph_destroy(&graph)
 }
 
 @(private)
-infer_task :: proc(payload: Project_Infer_Payload) -> runtime.No_Result {
+infer_task :: proc(payload: Project_Infer_Payload) -> execution.No_Result {
 	payload.state.inferred[payload.output_index] = infer_unit_semantic_facts(
 		payload.state.project,
 		payload.state.lookup,
 		payload.unit_index,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	return runtime.No_Result{}
+	return execution.No_Result{}
 }
 
 @(private)
-validate_task :: proc(payload: Project_Validate_Payload) -> runtime.No_Result {
+validate_task :: proc(payload: Project_Validate_Payload) -> execution.No_Result {
 	payload.state.diagnostics[payload.output_index] = validate_unit_diagnostics(
 		payload.state.project,
 		payload.state.lookup,
 		payload.unit_index,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	return runtime.No_Result{}
+	return execution.No_Result{}
 }
 
 @(private)

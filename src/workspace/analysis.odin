@@ -2,7 +2,7 @@ package abap_frontend_workspace
 
 import adt "../adt"
 import dep_store "../dependency_store"
-import frontend_runtime "../runtime"
+import execution "../execution"
 import analyze "../semantic/analyze"
 import deps "../semantic/dependencies"
 
@@ -11,7 +11,7 @@ import "core:os"
 import "core:strings"
 
 Options :: struct {
-	pool:                  ^frontend_runtime.Pool,
+	pool:                  ^execution.Pool,
 	dependency_store_path: string,
 	enable_adt:            bool,
 }
@@ -241,7 +241,7 @@ analyze_manifest_workspace :: proc(
 		include_paths,
 		allocator,
 	)
-	project := deps.analyze_inputs_with_dependency_drain(
+	project := deps.analyze_inputs_with_remote_dependencies(
 		targets[:],
 		candidates,
 		make([dynamic]analyze.Source_Input, 0, 4, allocator),
@@ -277,7 +277,7 @@ analyze_workspace_files :: proc(
 		}
 		append(&candidates, analyze.Project_Candidate_Input{input = input})
 	}
-	project := deps.analyze_inputs_with_dependency_drain(
+	project := deps.analyze_inputs_with_remote_dependencies(
 		targets[:],
 		candidates,
 		make([dynamic]analyze.Source_Input, 0, 4, allocator),
@@ -307,7 +307,7 @@ analyze_standalone_path :: proc(
 		}
 		append(&candidates, analyze.Project_Candidate_Input{input = include})
 	}
-	project := deps.analyze_with_dependency_drain(
+	project := deps.analyze_with_remote_dependencies(
 		target,
 		candidates,
 		make([dynamic]analyze.Source_Input, 0, 4, allocator),
@@ -376,7 +376,7 @@ analyze_manifest_unit_with_workspace_files :: proc(
 		include_paths,
 		allocator,
 	)
-	project := deps.analyze_with_dependency_drain(
+	project := deps.analyze_with_remote_dependencies(
 		target,
 		candidates,
 		dependencies,
@@ -390,10 +390,10 @@ analyze_manifest_unit_with_workspace_files :: proc(
 dependency_config_from_workspace :: proc(workspace: ^Workspace) -> deps.Dependency_Config {
 	config := deps.Dependency_Config {
 		local_export_roots = workspace.local_export_roots[:],
-		store_any_profile  = !workspace.has_manifest,
+		cache_any_profile  = !workspace.has_manifest,
 	}
 	if workspace.has_store {
-		config.store = &workspace.store
+		config.cache = &workspace.store
 		if workspace.has_manifest && workspace.manifest.has_dependency_store {
 			config.profile = &workspace.manifest.dependency_store
 		} else if !workspace.has_manifest {
