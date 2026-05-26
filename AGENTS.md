@@ -16,35 +16,78 @@ This section has priority over every other convention in this file.
   principles that surgically executes the intention.
 
 ## Project Structure & Module Organization
-This repository is a Rust workspace rooted at `Cargo.toml`. Core crates live under `crates/`, with `abap_lsp_server` as the default binary and supporting libraries such as `abap_parser`, `abap_symbols`, and `abap_lsp` split by responsibility. Shared examples live in `examples/*.abap`, design and architecture notes in `docs/`, and the editor client in `editors/vscode/`. Keep dependency flow one-way: lower layers (`abap_jsonrpc`, `abap_lexer`, `abap_ast`) must not depend on higher layers such as `abap_cache`, `abap_lsp`, or `abap_lsp_server`.
+
+The root implementation is the Odin ABAP frontend. Entry points live under
+`cmd/`, shared packages under `src/`, generated binaries and test data under
+`bin/`, and scratch notes/output under `tmp/`. Keep package boundaries direct:
+tokenizer, AST, parser, semantic analysis, workspace, ADT, dependency store,
+runtime, and persistence code should depend only on the lower-level packages
+they actually use.
+
+The old Rust implementation is preserved under `legacy/`. The VS Code extension
+under `editors/vscode/` still launches the legacy Rust language server until an
+Odin language server replaces it, so server build and launch paths should point
+at `legacy/target/...`.
 
 ## Build, Test, and Development Commands
-Use the wrapper scripts on Windows, or run Cargo directly.
 
-- `.\build.bat` or `cargo build --workspace`: debug build for all crates.
-- `.\build.bat release` or `cargo build --workspace --release`: optimized build.
-- `.\build.bat -p abap_lsp_server`: build one package.
-- `.\test.bat` or `cargo test --workspace`: run the Rust test suite.
-- `cargo test -p abap_parser`: run tests for one crate while iterating.
-- `.\perf_test.bat`: run the repository’s performance checks.
-- `cargo run -p abap_adt_cli -- --help`: inspect the ADT CLI used for live SAP lookups.
-- `cargo run -p abap_cli -- analyze --json <FILE>`: emit a semantic dossier JSON export for one ABAP file.
-- `cargo run -p abap_cli -- analyze --json --with-project <FILE>`: analyze a file with workspace/project context for cross-unit resolution.
-- `cargo run -p abap_cli -- call-graph --json <FILE>`: emit a project-scale call graph JSON export rooted in the workspace around one file.
-- `cargo run -p abap_cli -- call-graph --json --symbol <NAME> <FILE>`: query inbound/outbound/unresolved call edges for one callable symbol within the project graph.
-- `cargo flamegraph -p abap_lsp --example build_semantic_tokens_perf --release`: profile semantic token generation.
+Use the root Odin wrapper scripts on Windows.
 
-## Coding Style & Naming Conventions
-Follow standard Rust style with `rustfmt` formatting and 4-space indentation. Use `snake_case` for functions, modules, and test names, `CamelCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Keep crates focused by responsibility and prefer small internal modules such as `control_stmt.rs` or `type_ref.rs` over oversized files. Avoid async unless there is measured need; prefer immutable `Arc`-published snapshots, one foreground protocol loop, and bounded worker pools for CPU-heavy work. Ask before adding new external dependencies or changing workspace dependency versions.
+- `.\build.bat`: debug build for `cmd/abap_frontend` and `cmd/adt_cli`.
+- `.\build.bat release`: optimized Odin build.
+- `.\build.bat trace-adt-fetch`: build with ADT fetch tracing enabled.
+- `.\run.bat [debug|release] [abap_frontend|adt_cli] ...`: build and run a root Odin executable.
+- `.\test.bat`: check and test the Odin packages.
+- `.\test.bat --no-leak-warnings`: run tests with quieter leak logging.
 
-## Odin Frontend Notes
-Production Odin code should pass retained allocators explicitly instead of relying on `context.allocator`. Use `context.temp_allocator` for transient operation-local work when needed, but give it a clear boundary and reset/release it after the operation completes. Runtime worker threads may use a per-worker temp allocator that is reset after each processed task. Main-thread temp allocation should also stay inside an explicit operation boundary; the exact LSP request boundary can be refined when the Odin LSP server exists. In tests, pass `context.allocator` directly instead of creating a heap allocator or local allocator alias.
+For the legacy Rust server only:
+
+- `.\legacy\build.bat -p abap_lsp_server`: build the legacy debug server.
+- `.\legacy\build.bat release -p abap_lsp_server`: build the legacy release server.
+- `.\legacy\test.bat`: run the legacy Rust workspace tests.
+
+## Odin Coding Style & Naming Conventions
+
+Follow the style already used in `src/`: package names are lower snake case,
+types use `Camel_Case` where the surrounding Odin code does, procedures and
+variables use `snake_case`, and tests are descriptive `snake_case` procedures
+annotated with `@(test)`. Keep modules focused by responsibility and prefer
+small local helpers over framework-like abstractions.
+
+Production Odin code should pass retained allocators explicitly instead of
+relying on `context.allocator`. Use `context.temp_allocator` for transient
+operation-local work only when there is a clear boundary, and reset/release it
+after the operation completes. Runtime worker threads may use a per-worker temp
+allocator reset after each processed task. Main-thread temp allocation should
+stay inside an explicit operation boundary. In tests, pass `context.allocator`
+directly instead of creating a heap allocator or local allocator alias.
+
+Ask before adding new external dependencies, native libraries, toolchain
+requirements, or changing bundled library versions.
 
 ## Testing Guidelines
-Place unit tests alongside implementation when they are tightly scoped, and integration tests under `crates/<crate>/tests/`. Existing tests use descriptive `snake_case` names such as `parses_workspace_examples` and `resolves_do_times_count_variable_in_header`. Reuse `examples/*.abap` for parser coverage when possible, add regression tests for each parser or semantic-analysis fix, and port tests into the crate they exercise instead of rebuilding a root-level monolithic suite.
+
+Place Odin unit tests next to the implementation package they exercise, using
+the existing `*_test.odin` pattern. Add focused regression tests for parser,
+semantic-analysis, workspace, ADT, dependency-store, and runtime fixes. Keep
+test fixtures under `bin/test-data/` when they are generated or temporary.
+
+Run the smallest relevant package check/test while iterating, then use
+`.\test.bat` before handing off broad changes. Use `.\legacy\test.bat` only
+when changing files under `legacy/`.
 
 ## Commit & Pull Request Guidelines
-Recent commits use short, imperative, lower-case subjects focused on behavior, for example `enable semantic analysis on OpenSql SELECT statements`. Keep commits narrow and explain the user-visible or parser-visible change. Pull requests should include a concise summary, linked issue or task when applicable, and the exact validation performed, such as `cargo test --workspace`. Include screenshots only for `editors/vscode` UI changes.
+
+Use short, imperative, lower-case subjects focused on behavior, for example
+`resolve includes from manifest members`. Keep commits narrow and explain the
+user-visible, parser-visible, or tooling-visible change. Pull requests should
+include a concise summary and the exact validation performed, such as
+`.\test.bat` or `.\legacy\test.bat`.
 
 ## Configuration & Environment Notes
-Repository-local environment settings may be stored in `.env` for ADT tooling. Do not commit secrets, SAP credentials, or machine-specific overrides. When live SAP repository or DDIC data is needed, prefer `abap_adt_cli` and `docs/abap-adt-cli.md` over guessing from partial local files. Treat `target/` and generated profiling artifacts as disposable build output.
+
+Repository-local environment settings may be stored in `.env` for ADT tooling.
+Do not commit secrets, SAP credentials, or machine-specific overrides. When live
+SAP repository or DDIC data is needed, prefer the Odin `adt_cli` path before
+guessing from partial local files. Treat `bin/`, `target/`, and generated
+profiling or trace artifacts as disposable build output.

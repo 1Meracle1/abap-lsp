@@ -1,7 +1,7 @@
 # ABAP LSP for Visual Studio Code
 
-ABAP LSP provides ABAP language support backed by the Rust `abap_lsp_server`
-binary in this repository. The extension is source-first: it analyzes local
+ABAP LSP provides ABAP language support backed by the legacy Rust
+`abap_lsp_server` binary in this repository. The extension is source-first: it analyzes local
 ABAP workspaces, can request missing repository/DDIC dependencies through SAP
 ADT, and projects cached remote artifacts as read-only `abapls-cache:` documents.
 
@@ -13,21 +13,21 @@ debugging, transports, or repository administration.
 ## Requirements
 
 - VS Code 1.105 or newer.
-- A built `abap_lsp_server` binary from this repository.
+- A built legacy `abap_lsp_server` binary from this repository.
 - Optional: SAP ADT HTTP(S) access when remote dependency fetches or repository
   search are needed.
 
-Build the server from the repository root:
+Build the legacy server from the repository root:
 
 ```bat
-cargo build -p abap_lsp_server
+.\legacy\build.bat -p abap_lsp_server
 ```
 
 Then point VS Code at the resulting binary, for example:
 
 ```json
 {
-  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\target\\debug\\abap_lsp_server.exe"
+  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\legacy\\target\\debug\\abap_lsp_server.exe"
 }
 ```
 
@@ -36,14 +36,14 @@ Then point VS Code at the resulting binary, for example:
 ### Stdio
 
 `stdio` is the default and the normal editor mode. The extension spawns
-`abap_lsp_server` and talks LSP over standard input/output.
+the legacy `abap_lsp_server` and talks LSP over standard input/output.
 
 Configuration:
 
 ```json
 {
   "abap-ls.serverTransport": "stdio",
-  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\target\\debug\\abap_lsp_server.exe"
+  "abap-ls.serverExecutable": "D:\\dev\\rust\\abap-lsp\\legacy\\target\\debug\\abap_lsp_server.exe"
 }
 ```
 
@@ -63,6 +63,7 @@ Use TCP when you want to run the server yourself, usually under a debugger.
 Start the server:
 
 ```bat
+cd legacy
 cargo run -p abap_lsp_server -- --listen 127.0.0.1:9472
 ```
 
@@ -110,7 +111,7 @@ The server can also discover single `.abap` files under `src/`. Use
 `abapls-unit.toml` sidecars when a unit needs explicit members, include mappings,
 local exported SAP roots, or dependency source preferences.
 
-See `docs/workspace-layout.md` in the repository for the full workspace model.
+See `legacy/docs/workspace-layout.md` in the repository for the full workspace model.
 
 ## SAP Connection
 

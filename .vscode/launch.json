@@ -19,7 +19,7 @@
       ]
     },
     {
-      "name": "Run Extension (Rust Debug)",
+      "name": "Run Extension (Legacy Rust Debug)",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "${execPath}",
@@ -40,17 +40,17 @@
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"
       ],
-      "preLaunchTask": "Build Rust Server and Extension",
+      "preLaunchTask": "Build Legacy Rust Server and Extension",
       "skipFiles": [
         "<node_internals>/**/*.js"
       ],
       "env": {
-        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/target/debug/abap_lsp_server.exe",
+        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/legacy/target/debug/abap_lsp_server.exe",
         "RUST_LOG": "abap_lsp_server=debug,abap_lsp=debug"
       }
     },
     {
-      "name": "Run Extension (Rust Release)",
+      "name": "Run Extension (Legacy Rust Release)",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "${execPath}",
@@ -70,52 +70,36 @@
       "outFiles": [
         "${workspaceFolder}/editors/vscode/out/**/*.js"
       ],
-      "preLaunchTask": "Build Rust Server (Release) and Extension",
+      "preLaunchTask": "Build Legacy Rust Server (Release) and Extension",
       "skipFiles": [
         "<node_internals>/**/*.js"
       ],
       "env": {
-        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/target/release/abap_lsp_server.exe",
+        "__ABAP_LSP_SERVER_PATH": "${workspaceFolder}/legacy/target/release/abap_lsp_server.exe",
         "RUST_LOG": "abap_lsp_server=debug,abap_lsp=debug"
       }
     },
     {
-      "name": "Run Extension (Legacy Pipe)",
-      "type": "extensionHost",
-      "request": "launch",
-      "runtimeExecutable": "${execPath}",
-      "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}/editors/vscode"
-      ],
-      "outFiles": [
-        "${workspaceFolder}/editors/vscode/out/**/*.js"
-      ],
-      "preLaunchTask": "Build Legacy Server and Extension",
-      "skipFiles": [
-        "<node_internals>/**/*.js"
-      ]
-    },
-    {
-      "name": "Attach To Rust Server",
+      "name": "Attach To Legacy Rust Server",
       "type": "lldb",
       "request": "attach",
-      "program": "${workspaceFolder}/target/debug/abap_lsp_server.exe",
+      "program": "${workspaceFolder}/legacy/target/debug/abap_lsp_server.exe",
       "pid": "${command:pickMyProcess}",
       "sourceLanguages": [
         "rust"
       ]
     },
     {
-      "name": "Launch Rust Server (TCP, debug)",
+      "name": "Launch Legacy Rust Server (TCP, debug)",
       "type": "lldb",
       "request": "launch",
-      "program": "${workspaceFolder}/target/debug/abap_lsp_server.exe",
+      "program": "${workspaceFolder}/legacy/target/debug/abap_lsp_server.exe",
       "args": [
         "--listen",
         "127.0.0.1:9472"
       ],
-      "cwd": "${workspaceFolder}",
-      "preLaunchTask": "Build Rust Server",
+      "cwd": "${workspaceFolder}/legacy",
+      "preLaunchTask": "Build Legacy Rust Server",
       "sourceLanguages": [
         "rust"
       ]

@@ -1,25 +1,48 @@
 @echo off
-setlocal enabledelayedexpansion
-cd /D "%~dp0"
+setlocal
 
-set MODE=debug
-set CARGO_ARGS=
+set "ODIN_EXE=D:\dev\odin\toolchain\odin-windows-amd64-dev-2026-05\odin.exe"
+set "ODIN_FLAGS=-vet -warnings-as-errors"
+set "TEST_FLAGS="
+set "ROOT=%~dp0"
 
-:parse
-if "%~1"=="" goto run
-if /I "%~1"=="release" (
-  set MODE=release
+if "%~1"=="" (
+    set "TEST_FLAGS=-define:ODIN_TEST_LOG_LEVEL=error"
+    goto args_done
+)
+
+:parse_args
+if "%~1"=="" goto args_done
+if /I "%~1"=="--no-leak-warnings" (
+    set "TEST_FLAGS=%TEST_FLAGS% -define:ODIN_TEST_LOG_LEVEL=error"
 ) else (
-  set CARGO_ARGS=!CARGO_ARGS! %~1
+    set "TEST_FLAGS=%TEST_FLAGS% %1"
 )
 shift
-goto parse
+goto parse_args
+:args_done
 
-:run
-if /I "%MODE%"=="release" (
-  echo [release mode]
-  cargo test --workspace --release%CARGO_ARGS%
-) else (
-  echo [debug mode]
-  cargo test --workspace%CARGO_ARGS%
-)
+if not exist "%ROOT%bin" mkdir "%ROOT%bin"
+
+"%ODIN_EXE%" check "%ROOT%src\tokenizer" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\encoding\toml" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\runtime" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\http" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\adt" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\ddic_xml" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\semantic" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\persistence\sqlite3" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\dependency_store" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\tokenizer" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\encoding\toml" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\ast" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\parser" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\runtime" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\http" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\adt" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\ddic_xml" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\semantic" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\persistence\sqlite3" -vet -warnings-as-errors %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\dependency_store" -vet -warnings-as-errors %TEST_FLAGS%

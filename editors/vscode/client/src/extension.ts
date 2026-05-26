@@ -156,8 +156,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 /**
- * Production: `serverTransport` "stdio" — extension spawns `serverExecutable` (or __ABAP_LSP_SERVER_PATH / __ABAP_LSP_SERVER_DEBUG) and uses LSP over stdio.
- * Development: start `abap_lsp_server --listen host:port` under a debugger, then set `serverTransport` "tcp" or `__ABAP_LSP_CONNECT=host:port` so the extension connects without spawning.
+ * Production: `serverTransport` "stdio" - extension spawns the legacy Rust `serverExecutable` (or __ABAP_LSP_SERVER_PATH / __ABAP_LSP_SERVER_DEBUG) and uses LSP over stdio.
+ * Development: start the legacy Rust `abap_lsp_server --listen host:port` under a debugger, then set `serverTransport` "tcp" or `__ABAP_LSP_CONNECT=host:port` so the extension connects without spawning.
  */
 function buildServerOptions(): ServerOptions {
 	const config = vscode.workspace.getConfiguration("abap-ls");

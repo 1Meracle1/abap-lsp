@@ -4600,6 +4600,7 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 		&pool,
 		"file:///ZMAIN.abap",
 		context.allocator,
+		context.allocator,
 	)
 	after := frontend_runtime.pool_stats(&pool)
 	if pool.options.worker_count > 0 {

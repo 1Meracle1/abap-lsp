@@ -1,7 +1,8 @@
 target/
+legacy/target/
 coverage/
 logs.txt
-bin/*
+bin/
 .env*
 editors/vscode/node_modules/
 editors/vscode/client/node_modules/
@@ -10,3 +11,4 @@ editors/vscode/client/node_modules/
 tmp
 *.zip
 tools/lsp_replay/__pycache__/
+legacy/tools/lsp_replay/__pycache__/

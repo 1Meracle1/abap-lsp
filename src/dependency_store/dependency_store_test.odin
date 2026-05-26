@@ -60,7 +60,6 @@ sqlite_file_uri_uses_read_only_uri_form_for_workspace_path :: proc(t: ^testing.T
 	path := workspace_store_path("dependency cache.sqlite3")
 	uri := sqlite_file_uri(path, "mode=ro&immutable=1", context.allocator)
 	testing.expect(t, strings.has_prefix(uri, "file://"))
-	testing.expect(t, strings.contains(uri, "odin_abap_frontend"))
 	testing.expect(t, strings.contains(uri, "bin/test-data/dependency_store"))
 	testing.expect(t, strings.contains(uri, "dependency%20cache.sqlite3"))
 	testing.expect(t, strings.has_suffix(uri, "?mode=ro&immutable=1"))
@@ -69,12 +68,12 @@ sqlite_file_uri_uses_read_only_uri_form_for_workspace_path :: proc(t: ^testing.T
 @(test)
 override_store_path_is_absolute :: proc(t: ^testing.T) {
 	path, ok := resolve_dependency_store_path(
-		"odin_abap_frontend/bin/test-data/dependency_store/cache.sqlite3",
+		"bin/test-data/dependency_store/cache.sqlite3",
 		context.allocator,
 	)
 	testing.expect(t, ok)
 	testing.expect(t, filepath.is_abs(path))
-	testing.expect(t, strings.contains(path, "odin_abap_frontend"))
+	testing.expect(t, strings.contains(path, "test-data"))
 }
 
 @(test)

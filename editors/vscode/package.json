@@ -1,7 +1,7 @@
 {
   "name": "abap-lsp",
   "displayName": "ABAP LSP",
-  "description": "Source-first ABAP language support powered by the Rust ABAP LSP server.",
+  "description": "Source-first ABAP language support powered by the legacy Rust ABAP LSP server.",
   "version": "0.0.1",
   "publisher": "1meracle1",
   "license": "MIT",
@@ -111,13 +111,13 @@
           "scope": "window",
           "type": "string",
           "default": "",
-          "description": "Path to the abap_lsp_server binary when serverTransport is \"stdio\". Overrides are: environment variables __ABAP_LSP_SERVER_PATH or __ABAP_LSP_SERVER_DEBUG."
+          "description": "Path to the legacy abap_lsp_server binary when serverTransport is \"stdio\". Overrides are: environment variables __ABAP_LSP_SERVER_PATH or __ABAP_LSP_SERVER_DEBUG."
         },
         "abap-ls.serverTcpAddress": {
           "scope": "window",
           "type": "string",
           "default": "127.0.0.1:9472",
-          "description": "host:port when serverTransport is \"tcp\" (or when __ABAP_LSP_CONNECT is set). Start the server with e.g. abap_lsp_server --listen 127.0.0.1:9472 or ABAP_LSP_LISTEN=127.0.0.1:9472."
+          "description": "host:port when serverTransport is \"tcp\" (or when __ABAP_LSP_CONNECT is set). Start the legacy server with e.g. abap_lsp_server --listen 127.0.0.1:9472 or ABAP_LSP_LISTEN=127.0.0.1:9472."
         },
         "abap-ls.dependencyCache.path": {
           "scope": "machine-overridable",
