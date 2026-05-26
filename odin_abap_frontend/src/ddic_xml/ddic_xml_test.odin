@@ -83,6 +83,21 @@ data_element_dependency_source_uses_dtel_data_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+data_element_dependency_source_uses_clif_reference_type :: proc(t: ^testing.T) {
+	xml := `<blue:wbobj adtcore:name="zde_ref" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>refToClifType</dtel:typeKind>
+    <dtel:typeName>ZIF_REF</dtel:typeName>
+    <dtel:dataType></dtel:dataType>
+  </dtel:dataElement>
+</blue:wbobj>`
+	source := dependency_source("ZDE_REF", "ddic-data-element", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "types zde_ref type ref to zif_ref")
+}
+
+@(test)
 table_type_dependency_source_uses_named_row_type :: proc(t: ^testing.T) {
 	xml := `<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="zrows" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:properties>
@@ -112,7 +127,7 @@ table_type_dependency_source_uses_named_reference_type :: proc(t: ^testing.T) {
 	source := dependency_source("ZREFS", "ddic-table-type", xml, context.allocator)
 	defer delete(source, context.allocator)
 
-	expect_contains_fold(t, source, "type standard table of zif_ref with default key")
+	expect_contains_fold(t, source, "type standard table of ref to zif_ref with default key")
 }
 
 @(test)

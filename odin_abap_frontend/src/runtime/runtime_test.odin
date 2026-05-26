@@ -158,6 +158,62 @@ nested_work :: proc(v: int) -> int {
 	return result + 1
 }
 
+worker_temp_allocator_is_active :: proc(_: int) -> bool {
+	pool := current_pool()
+	return pool != nil &&
+	       len(pool.workers) == 1 &&
+	       context.temp_allocator.data == pool.workers[0].temp_allocator.data
+}
+
+alloc_temp_value :: proc(v: int) -> int {
+	bytes := make([]byte, 16, context.temp_allocator)
+	bytes[0] = byte(v)
+	return int(bytes[0])
+}
+
+worker_temp_survives_nested_wait :: proc(v: int) -> bool {
+	bytes := make([]byte, 16, context.temp_allocator)
+	bytes[0] = 123
+	task, err := submit_value(current_pool(), v, alloc_temp_value)
+	if err != .None {
+		return false
+	}
+	nested, wait_err := wait(task)
+	return wait_err == .None && nested == v && bytes[0] == 123
+}
+
+@(test)
+threaded_worker_uses_task_temp_allocator :: proc(t: ^testing.T) {
+	pool: Pool
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 1, task_capacity = 16, queue_capacity = 8, deque_capacity = 8}, context.allocator), Submit_Error.None)
+	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
+	defer pool_destroy(&pool)
+
+	task, err := submit_value(&pool, 0, worker_temp_allocator_is_active)
+	testing.expect_value(t, err, Submit_Error.None)
+	value, wait_err := wait(task)
+	testing.expect_value(t, wait_err, Wait_Error.None)
+	testing.expect(t, value)
+	testing.expect_value(t, pool.workers[0].temp_arena.total_used, uint(0))
+	pool_join(&pool)
+}
+
+@(test)
+worker_temp_reset_waits_for_outer_task :: proc(t: ^testing.T) {
+	pool: Pool
+	testing.expect_value(t, pool_init(&pool, Options{worker_count = 1, task_capacity = 32, queue_capacity = 8, deque_capacity = 8}, context.allocator), Submit_Error.None)
+	testing.expect_value(t, pool_start(&pool), Submit_Error.None)
+	defer pool_destroy(&pool)
+
+	task, err := submit_value(&pool, 7, worker_temp_survives_nested_wait)
+	testing.expect_value(t, err, Submit_Error.None)
+	value, wait_err := wait(task)
+	testing.expect_value(t, wait_err, Wait_Error.None)
+	testing.expect(t, value)
+	testing.expect_value(t, pool.workers[0].temp_arena.total_used, uint(0))
+	pool_join(&pool)
+}
+
 @(test)
 nested_worker_submit_wait_does_not_deadlock :: proc(t: ^testing.T) {
 	pool: Pool

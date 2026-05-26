@@ -16,6 +16,11 @@ Ddic_Xml_Field :: struct {
 	type_name: string,
 }
 
+Ddic_Xml_Type_Ref :: struct {
+	name:   string,
+	is_ref: bool,
+}
+
 dependency_source :: proc(
 	name, object_kind, source: string,
 	allocator: mem.Allocator,
@@ -33,15 +38,15 @@ dependency_source :: proc(
 	}
 
 	if out == "" {
-		line_type := ddic_xml_table_line_type(doc)
-		if line_type != "" && (kind == .Table_Type || kind == .Unknown) {
-			out = ddic_xml_table_type_source(name, line_type, allocator)
+		line := ddic_xml_table_line_type(doc)
+		if line.name != "" && (kind == .Table_Type || kind == .Unknown) {
+			out = ddic_xml_table_type_source(name, line, allocator)
 		}
 	}
 
 	if out == "" && (kind == .Alias || kind == .Unknown) {
-		base_type := ddic_xml_data_element_builtin_type(doc)
-		if base_type != "" {
+		base_type := ddic_xml_data_element_type(doc)
+		if base_type.name != "" {
 			out = ddic_xml_type_alias_source(name, base_type, allocator)
 		}
 	}
@@ -106,22 +111,36 @@ ddic_xml_kind :: proc(object_kind: string, doc: ^xml_doc.Document) -> Ddic_Xml_K
 	return .Unknown
 }
 
-ddic_xml_type_alias_source :: proc(name, type_name: string, allocator: mem.Allocator) -> string {
+ddic_xml_type_alias_source :: proc(
+	name: string,
+	type_ref: Ddic_Xml_Type_Ref,
+	allocator: mem.Allocator,
+) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "TYPES ")
 	write_canonical_abap_name(&out, name)
 	strings.write_string(&out, " TYPE ")
-	write_canonical_abap_name(&out, type_name)
+	if type_ref.is_ref {
+		strings.write_string(&out, "REF TO ")
+	}
+	write_canonical_abap_name(&out, type_ref.name)
 	strings.write_string(&out, ".\n")
 	return strings.to_string(out)
 }
 
-ddic_xml_table_type_source :: proc(name, line_type: string, allocator: mem.Allocator) -> string {
+ddic_xml_table_type_source :: proc(
+	name: string,
+	line: Ddic_Xml_Type_Ref,
+	allocator: mem.Allocator,
+) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "TYPES ")
 	write_canonical_abap_name(&out, name)
 	strings.write_string(&out, " TYPE STANDARD TABLE OF ")
-	write_canonical_abap_name(&out, line_type)
+	if line.is_ref {
+		strings.write_string(&out, "REF TO ")
+	}
+	write_canonical_abap_name(&out, line.name)
 	strings.write_string(&out, " WITH DEFAULT KEY.\n")
 	return strings.to_string(out)
 }
@@ -203,33 +222,44 @@ ddic_xml_append_field :: proc(fields: ^[dynamic]Ddic_Xml_Field, name, type_name:
 	append(fields, Ddic_Xml_Field{name = name, type_name = type_name})
 }
 
-ddic_xml_table_line_type :: proc(doc: ^xml_doc.Document) -> string {
+ddic_xml_table_line_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {
 	if doc == nil ||
 	   len(doc.elements) == 0 ||
 	   !ddic_xml_name_equal(doc.elements[0].ident, "elementInfo") {
-		return ""
+		return {}
 	}
 	child_id, ok := ddic_xml_direct_child(doc, 0, "elementInfo")
-	if !ok ||
-	   !(strings.equal_fold(ddic_xml_entry_text(doc, child_id, "ddicRowType"), "X") ||
-	     strings.equal_fold(ddic_xml_entry_text(doc, child_id, "ddicReferenceType"), "X")) {
-		return ""
+	if !ok {
+		return {}
 	}
-	return ddic_xml_attr_value(doc, child_id, "name")
+	is_ref := strings.equal_fold(ddic_xml_entry_text(doc, child_id, "ddicReferenceType"), "X")
+	if !is_ref && !strings.equal_fold(ddic_xml_entry_text(doc, child_id, "ddicRowType"), "X") {
+		return {}
+	}
+	return Ddic_Xml_Type_Ref{name = ddic_xml_attr_value(doc, child_id, "name"), is_ref = is_ref}
 }
 
-ddic_xml_data_element_builtin_type :: proc(doc: ^xml_doc.Document) -> string {
+ddic_xml_data_element_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {
 	if doc == nil ||
 	   len(doc.elements) == 0 ||
 	   !ddic_xml_name_equal(doc.elements[0].ident, "wbobj") ||
 	   !strings.equal_fold(ddic_xml_attr_value(doc, 0, "type"), "DTEL/DE") {
-		return ""
+		return {}
 	}
 	data_element_id, ok := ddic_xml_direct_child(doc, 0, "dataElement")
 	if !ok {
-		return ""
+		return {}
 	}
-	return ddic_builtin_type(ddic_xml_direct_child_text(doc, data_element_id, "dataType"))
+	type_kind := ddic_xml_direct_child_text(doc, data_element_id, "typeKind")
+	if strings.equal_fold(type_kind, "refToClifType") {
+		return Ddic_Xml_Type_Ref {
+			name = ddic_xml_direct_child_text(doc, data_element_id, "typeName"),
+			is_ref = true,
+		}
+	}
+	return Ddic_Xml_Type_Ref {
+		name = ddic_builtin_type(ddic_xml_direct_child_text(doc, data_element_id, "dataType")),
+	}
 }
 
 ddic_xml_entry_text :: proc(

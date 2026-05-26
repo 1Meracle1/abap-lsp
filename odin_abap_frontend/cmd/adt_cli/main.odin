@@ -137,7 +137,7 @@ main :: proc() {
 	}
 
 	client: adt.Client
-	adt.client_init(&client, connection)
+	adt.client_init(&client, connection, allocator)
 	if err := run_command(&client, &cli, allocator); err != .None {
 		fail_adt("ADT request", err)
 	}

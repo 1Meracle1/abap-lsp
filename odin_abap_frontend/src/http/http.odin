@@ -199,7 +199,6 @@ client_do_curl :: proc(client: ^Client, request: ^Request, allocator: mem.Alloca
 	if curl.easy_setopt(handle, curl.option.URL, cstring(raw_data(url))) != curl.code.E_OK ||
 	   curl.easy_setopt(handle, curl.option.HTTP_VERSION, c.long(curl.HTTP_VERSION_1_1)) != curl.code.E_OK ||
 	   curl.easy_setopt(handle, curl.option.NOSIGNAL, c.long(1)) != curl.code.E_OK ||
-	   curl.easy_setopt(handle, curl.option.FORBID_REUSE, c.long(1)) != curl.code.E_OK ||
 	   curl.easy_setopt(handle, curl.option.WRITEFUNCTION, curl.write_callback(curl_write_callback)) != curl.code.E_OK ||
 	   curl.easy_setopt(handle, curl.option.WRITEDATA, &body) != curl.code.E_OK ||
 	   curl.easy_setopt(handle, curl.option.HEADERFUNCTION, curl.write_callback(curl_header_callback)) != curl.code.E_OK ||

@@ -345,6 +345,7 @@ add_reference :: proc(
 	namespace: Namespace,
 	kind: Reference_Kind,
 	range: tokenizer.Range,
+	type_is_ref := false,
 ) {
 	id := Reference_Id(u32(len(c.references)))
 	append(
@@ -356,6 +357,7 @@ add_reference :: proc(
 			kind = kind,
 			scope = scope,
 			range = range,
+			type_is_ref = type_is_ref,
 		},
 	)
 }
@@ -1637,7 +1639,7 @@ add_type_reference :: proc(
 	if base_range.start >= base_range.end {
 		base_range = range
 	}
-	add_reference(c, scope, type_ref.base_name, type_ref.namespace, .Type_Ref, base_range)
+	add_reference(c, scope, type_ref.base_name, type_ref.namespace, .Type_Ref, base_range, type_ref.is_ref)
 	if len(type_ref.field_path) > 0 {
 		segments := make([dynamic]Field_Access_Segment, 0, len(type_ref.field_path), c.allocator)
 		for name, i in type_ref.field_path {

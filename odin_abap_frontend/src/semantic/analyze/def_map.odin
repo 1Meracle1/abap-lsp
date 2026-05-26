@@ -308,6 +308,7 @@ Reference_Data :: struct {
 	range:          tokenizer.Range,
 	resolution:     Resolution,
 	has_resolution: bool,
+	type_is_ref:    bool,
 }
 
 Message_Class_Use_Data :: struct {

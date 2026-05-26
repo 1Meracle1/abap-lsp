@@ -22,7 +22,7 @@ collect_project_remote_dependency_candidates :: proc(
 				continue
 			}
 			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
-				insert_remote_candidate(&out, &index, candidate.name, candidate.kind, allocator)
+				insert_remote_candidate(&out, &index, candidate.name, candidate.kind, allocator, candidate.hint)
 			}
 		}
 		for &symbol in unit.symbols {
@@ -35,6 +35,7 @@ collect_project_remote_dependency_candidates :: proc(
 					symbol.declared_type.base_name,
 					.Type,
 					allocator,
+					remote_dependency_hint_for_type_ref(symbol.declared_type),
 				)
 			}
 		}
@@ -96,12 +97,13 @@ collect_project_state_remote_dependency_candidates :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Remote_Dependency_Candidate {
 	out := make([dynamic]Remote_Dependency_Candidate, 0, len(state.unresolved_candidates), allocator)
+	index := make(map[string]int, len(state.unresolved_candidates), allocator)
 	for key, units in state.unresolved_candidates {
 		if !include_dependency_interfaces &&
 		   !remote_candidate_has_full_source_waiter(state, units[:]) {
 			continue
 		}
-		append(&out, Remote_Dependency_Candidate{name = key.name, kind = key.kind})
+		insert_remote_candidate(&out, &index, key.name, key.kind, allocator, key.hint)
 	}
 	return out
 }
@@ -144,7 +146,7 @@ record_project_unresolved_candidates :: proc(
 				continue
 			}
 			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
-				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.unit_id)
+				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.unit_id, candidate.hint)
 			}
 		}
 		for &symbol in unit.symbols {
@@ -157,6 +159,7 @@ record_project_unresolved_candidates :: proc(
 					symbol.declared_type.base_name,
 					.Type,
 					unit.unit_id,
+					remote_dependency_hint_for_type_ref(symbol.declared_type),
 				)
 			}
 		}
@@ -248,6 +251,7 @@ record_project_unresolved_candidates_for_units :: proc(
 					candidate.name,
 					candidate.kind,
 					unit.unit_id,
+					candidate.hint,
 				)
 			}
 		}
@@ -262,6 +266,7 @@ record_project_unresolved_candidates_for_units :: proc(
 					symbol.declared_type.base_name,
 					.Type,
 					unit.unit_id,
+					remote_dependency_hint_for_type_ref(symbol.declared_type),
 				)
 			}
 		}
@@ -412,11 +417,12 @@ record_remote_candidate_unit_incremental :: proc(
 	name: string,
 	kind: Remote_Dependency_Kind,
 	unit_id: Unit_Id,
+	hint := Remote_Dependency_Hint.None,
 ) {
 	if name == "" {
 		return
 	}
-	key := Remote_Dependency_Key{name = name, kind = kind}
+	key := Remote_Dependency_Key{name = name, kind = kind, hint = hint}
 	if key in recorded^ {
 		return
 	}
@@ -439,11 +445,12 @@ record_remote_candidate_unit :: proc(
 	name: string,
 	kind: Remote_Dependency_Kind,
 	unit_id: Unit_Id,
+	hint := Remote_Dependency_Hint.None,
 ) {
 	if name == "" {
 		return
 	}
-	key := Remote_Dependency_Key{name = name, kind = kind}
+	key := Remote_Dependency_Key{name = name, kind = kind, hint = hint}
 	if previous, ok := recorded^[key]; ok && previous == unit_id {
 		return
 	}
@@ -466,6 +473,7 @@ remote_dependency_candidate_for_reference :: proc(
 	bool,
 ) {
 	kind := Remote_Dependency_Kind.Type
+	hint := Remote_Dependency_Hint.None
 	switch ref.kind {
 	case .Include, .Structured_Decl_End:
 		return {}, false
@@ -479,11 +487,15 @@ remote_dependency_candidate_for_reference :: proc(
 			return {}, false
 		}
 		kind = .Type
+		if ref.type_is_ref {
+			hint = .Object_Type
+		}
 	case .Interface_Use:
 		if ref.namespace != .Type {
 			return {}, false
 		}
 		kind = .Type
+		hint = .Interface_Type
 	case .Message_Class:
 		kind = .Message_Class
 	case .Routine_Call:
@@ -491,7 +503,7 @@ remote_dependency_candidate_for_reference :: proc(
 	case .Identifier:
 		return {}, false
 	}
-	return Remote_Dependency_Candidate{name = ref.name, kind = kind}, true
+	return Remote_Dependency_Candidate{name = ref.name, kind = kind, hint = hint}, true
 }
 
 @(private)
@@ -501,6 +513,7 @@ insert_remote_candidate :: proc(
 	name: string,
 	kind: Remote_Dependency_Kind,
 	allocator: mem.Allocator,
+	hint := Remote_Dependency_Hint.None,
 ) {
 	normalized_name := canonical_name(name, allocator)
 	if normalized_name == "" {
@@ -510,11 +523,24 @@ insert_remote_candidate :: proc(
 		if remote_candidate_kind_priority(kind) >
 		   remote_candidate_kind_priority(out^[existing_index].kind) {
 			out^[existing_index].kind = kind
+			out^[existing_index].hint = hint
+		} else if kind == out^[existing_index].kind &&
+		          remote_candidate_hint_priority(hint) >
+		          remote_candidate_hint_priority(out^[existing_index].hint) {
+			out^[existing_index].hint = hint
 		}
 		return
 	}
 	index^[normalized_name] = len(out^)
-	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = kind})
+	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = kind, hint = hint})
+}
+
+@(private)
+remote_dependency_hint_for_type_ref :: proc(type_ref: Field_Type_Ref_Data) -> Remote_Dependency_Hint {
+	if type_ref.is_ref {
+		return .Object_Type
+	}
+	return .None
 }
 
 @(private)
@@ -524,4 +550,11 @@ remote_candidate_kind_priority :: proc(kind: Remote_Dependency_Kind) -> int {
 	if kind == .Static {return 3}
 	if kind == .Type {return 2}
 	return 1
+}
+
+@(private)
+remote_candidate_hint_priority :: proc(hint: Remote_Dependency_Hint) -> int {
+	if hint == .Interface_Type {return 2}
+	if hint == .Object_Type {return 1}
+	return 0
 }

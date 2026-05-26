@@ -1,6 +1,7 @@
 package adt
 
 import http "../http"
+import "core:slice"
 
 import base64 "core:encoding/base64"
 import "core:fmt"
@@ -118,6 +119,18 @@ Source_Fetch :: struct {
 	body:        string,
 }
 
+clone_dependency_fetch_result :: proc(
+	res: ^Dependency_Fetch_Result,
+	allocator: mem.Allocator,
+) -> Dependency_Fetch_Result {
+	return Dependency_Fetch_Result {
+		body = strings.clone(res.body, allocator),
+		file_extension = strings.clone(res.file_extension, allocator),
+		manifest_kind = strings.clone(res.manifest_kind, allocator),
+		shared_dependencies = slice.clone_to_dynamic(res.shared_dependencies[:], allocator),
+	}
+}
+
 trace_dependency_fetch :: proc(object_ref: ^Object_Ref, manifest_kind, file_extension: string) {
 	when DEPENDENCY_FETCH_TRACE {
 		trace_eprintf(
@@ -177,32 +190,62 @@ Client :: struct {
 	http:       http.Client,
 	csrf_token: string,
 	cookie:     string,
+	allocator:  mem.Allocator,
 }
 
 connection_config_from_sources :: proc(
 	overrides: ^Connection_Overrides,
 	dotenv: ^Dotenv_Defaults,
 	allocator: mem.Allocator,
-) -> (Connection_Config, Error) {
-	base_url, ok := first_config_value({"ABAP_ADT_URL", "ABAP_ADT_BASE_URL", "SAPBASE_URL"}, overrides.base_url, dotenv, allocator)
+) -> (
+	Connection_Config,
+	Error,
+) {
+	base_url, ok := first_config_value(
+		{"ABAP_ADT_URL", "ABAP_ADT_BASE_URL", "SAPBASE_URL"},
+		overrides.base_url,
+		dotenv,
+		allocator,
+	)
 	if !ok {
 		return {}, .Missing_Base_Url
 	}
-	username, user_ok := first_config_value({"ABAP_ADT_USER", "ABAP_ADT_USERNAME", "SAPUSER"}, overrides.username, dotenv, allocator)
+	username, user_ok := first_config_value(
+		{"ABAP_ADT_USER", "ABAP_ADT_USERNAME", "SAPUSER"},
+		overrides.username,
+		dotenv,
+		allocator,
+	)
 	if !user_ok {
 		delete(base_url, allocator)
 		return {}, .Missing_Username
 	}
-	password, pass_ok := first_config_value({"ABAP_ADT_PASSWORD", "SAPPASS"}, overrides.password, dotenv, allocator)
+	password, pass_ok := first_config_value(
+		{"ABAP_ADT_PASSWORD", "SAPPASS"},
+		overrides.password,
+		dotenv,
+		allocator,
+	)
 	if !pass_ok {
 		delete(base_url, allocator)
 		delete(username, allocator)
 		return {}, .Missing_Password
 	}
-	sap_client, _ := first_config_value({"ABAP_ADT_CLIENT", "SAPCLIENT"}, overrides.sap_client, dotenv, allocator)
+	sap_client, _ := first_config_value(
+		{"ABAP_ADT_CLIENT", "SAPCLIENT"},
+		overrides.sap_client,
+		dotenv,
+		allocator,
+	)
 	normalized := normalize_base_url(base_url, allocator)
 	delete(base_url, allocator)
-	return Connection_Config{base_url = normalized, username = username, password = password, sap_client = sap_client}, .None
+	return Connection_Config {
+			base_url = normalized,
+			username = username,
+			password = password,
+			sap_client = sap_client,
+		},
+		.None
 }
 
 connection_config_destroy :: proc(config: ^Connection_Config, allocator: mem.Allocator) {
@@ -238,7 +281,13 @@ dotenv_defaults_destroy :: proc(defaults: ^Dotenv_Defaults, allocator: mem.Alloc
 	defaults^ = {}
 }
 
-load_dotenv_defaults :: proc(start_dir: string, allocator: mem.Allocator) -> (Dotenv_Defaults, Error) {
+load_dotenv_defaults :: proc(
+	start_dir: string,
+	allocator: mem.Allocator,
+) -> (
+	Dotenv_Defaults,
+	Error,
+) {
 	bases := make([dynamic]string, 0, 2, allocator)
 	defer delete(bases)
 	if strings.trim_space(start_dir) != "" {
@@ -269,7 +318,11 @@ load_dotenv_defaults :: proc(start_dir: string, allocator: mem.Allocator) -> (Do
 parse_dotenv_contents :: proc(
 	content: string,
 	allocator: mem.Allocator,
-) -> (Dotenv_Defaults, Dotenv_Parse_Error, bool) {
+) -> (
+	Dotenv_Defaults,
+	Dotenv_Parse_Error,
+	bool,
+) {
 	defaults: Dotenv_Defaults
 	dotenv_defaults_init(&defaults, allocator)
 
@@ -292,17 +345,23 @@ parse_dotenv_contents :: proc(
 			eq := strings.index_byte(line, '=')
 			if eq < 0 {
 				dotenv_defaults_destroy(&defaults, allocator)
-				return {}, Dotenv_Parse_Error{line = line_nr, message = "expected KEY=VALUE"}, false
+				return {},
+					Dotenv_Parse_Error{line = line_nr, message = "expected KEY=VALUE"},
+					false
 			}
 			key := strings.trim_space(line[:eq])
 			if key == "" {
 				dotenv_defaults_destroy(&defaults, allocator)
-				return {}, Dotenv_Parse_Error{line = line_nr, message = "missing variable name"}, false
+				return {},
+					Dotenv_Parse_Error{line = line_nr, message = "missing variable name"},
+					false
 			}
 			value, value_ok := parse_dotenv_value(strings.trim_space(line[eq + 1:]), allocator)
 			if !value_ok {
 				dotenv_defaults_destroy(&defaults, allocator)
-				return {}, Dotenv_Parse_Error{line = line_nr, message = "unterminated quoted value"}, false
+				return {},
+					Dotenv_Parse_Error{line = line_nr, message = "unterminated quoted value"},
+					false
 			}
 			defaults.values[strings.clone(key, allocator)] = value
 		}
@@ -318,15 +377,22 @@ parse_dotenv_contents :: proc(
 source_kind_parse :: proc(raw: string) -> (Source_Kind, bool) {
 	value := strings.trim_space(raw)
 	switch {
-	case strings.equal_fold(value, "report") || strings.equal_fold(value, "prog") || strings.equal_fold(value, "program"):
+	case strings.equal_fold(value, "report") ||
+	     strings.equal_fold(value, "prog") ||
+	     strings.equal_fold(value, "program"):
 		return .Report, true
 	case strings.equal_fold(value, "include"):
 		return .Include, true
 	case strings.equal_fold(value, "class"):
 		return .Class, true
-	case strings.equal_fold(value, "function-group") || strings.equal_fold(value, "functiongroup") || strings.equal_fold(value, "fugr"):
+	case strings.equal_fold(value, "function-group") ||
+	     strings.equal_fold(value, "functiongroup") ||
+	     strings.equal_fold(value, "fugr"):
 		return .Function_Group, true
-	case strings.equal_fold(value, "function-module") || strings.equal_fold(value, "functionmodule") || strings.equal_fold(value, "fmodule") || strings.equal_fold(value, "fm"):
+	case strings.equal_fold(value, "function-module") ||
+	     strings.equal_fold(value, "functionmodule") ||
+	     strings.equal_fold(value, "fmodule") ||
+	     strings.equal_fold(value, "fm"):
 		return .Function_Module, true
 	case strings.equal_fold(value, "interface") || strings.equal_fold(value, "intf"):
 		return .Interface, true
@@ -355,15 +421,21 @@ source_kind_string :: proc(kind: Source_Kind) -> string {
 ddic_kind_parse :: proc(raw: string) -> (Ddic_Kind, bool) {
 	value := strings.trim_space(raw)
 	switch {
-	case strings.equal_fold(value, "data-element") || strings.equal_fold(value, "dataelement") || strings.equal_fold(value, "dtel"):
+	case strings.equal_fold(value, "data-element") ||
+	     strings.equal_fold(value, "dataelement") ||
+	     strings.equal_fold(value, "dtel"):
 		return .Data_Element, true
-	case strings.equal_fold(value, "table-type") || strings.equal_fold(value, "tabletype") || strings.equal_fold(value, "ttyp"):
+	case strings.equal_fold(value, "table-type") ||
+	     strings.equal_fold(value, "tabletype") ||
+	     strings.equal_fold(value, "ttyp"):
 		return .Table_Type, true
 	case strings.equal_fold(value, "structure") || strings.equal_fold(value, "struct"):
 		return .Structure, true
 	case strings.equal_fold(value, "view"):
 		return .View, true
-	case strings.equal_fold(value, "table") || strings.equal_fold(value, "database-table") || strings.equal_fold(value, "db-table"):
+	case strings.equal_fold(value, "table") ||
+	     strings.equal_fold(value, "database-table") ||
+	     strings.equal_fold(value, "db-table"):
 		return .Table, true
 	}
 	return {}, false
@@ -390,9 +462,13 @@ child_kind_parse :: proc(raw: string) -> (Child_Kind, bool) {
 	switch {
 	case strings.equal_fold(value, "package") || strings.equal_fold(value, "devclass"):
 		return .Package, true
-	case strings.equal_fold(value, "report") || strings.equal_fold(value, "prog") || strings.equal_fold(value, "program"):
+	case strings.equal_fold(value, "report") ||
+	     strings.equal_fold(value, "prog") ||
+	     strings.equal_fold(value, "program"):
 		return .Report, true
-	case strings.equal_fold(value, "function-group") || strings.equal_fold(value, "functiongroup") || strings.equal_fold(value, "fugr"):
+	case strings.equal_fold(value, "function-group") ||
+	     strings.equal_fold(value, "functiongroup") ||
+	     strings.equal_fold(value, "fugr"):
 		return .Function_Group, true
 	}
 	return {}, false
@@ -422,8 +498,12 @@ child_kind_parent_type :: proc(kind: Child_Kind) -> string {
 	return ""
 }
 
-client_init :: proc(client: ^Client, connection: Connection_Config) {
-	client^ = Client{connection = connection, http = http.default_client()}
+client_init :: proc(client: ^Client, connection: Connection_Config, allocator: mem.Allocator) {
+	client^ = Client {
+		connection = connection,
+		http       = http.default_client(),
+		allocator  = allocator,
+	}
 	client.http.timeout = 60 * time.Second
 }
 
@@ -441,23 +521,23 @@ search_repository_objects :: proc(
 	client: ^Client,
 	query: string,
 	max_results: int,
-	allocator: mem.Allocator,
-) -> ([dynamic]Object_Ref, Error) {
-	url := absolute_url(&client.connection, "/repository/informationsystem/search", allocator)
-	url = append_query_param(url, "operation", "quickSearch", allocator)
-	url = append_query_param(url, "query", query, allocator)
-	max_builder := strings.builder_make(allocator)
+	temp_allocator: mem.Allocator,
+) -> (
+	[dynamic]Object_Ref,
+	Error,
+) {
+	url := absolute_url(&client.connection, "/repository/informationsystem/search", temp_allocator)
+	url = append_query_param(url, "operation", "quickSearch", temp_allocator)
+	url = append_query_param(url, "query", query, temp_allocator)
+	max_builder := strings.builder_make(temp_allocator)
 	strings.write_int(&max_builder, max_results)
 	max_text := strings.to_string(max_builder)
-	defer delete(max_text, allocator)
-	url = append_query_param(url, "maxResults", max_text, allocator)
-	defer delete(url, allocator)
-	body, err := send_text(client, .Get, url, "application/xml", "", "", allocator)
+	url = append_query_param(url, "maxResults", max_text, temp_allocator)
+	body, err := send_text(client, .Get, url, "application/xml", "", "", temp_allocator)
 	if err != .None {
-		return make([dynamic]Object_Ref, allocator), err
+		return make([dynamic]Object_Ref, temp_allocator), err
 	}
-	defer delete(body, allocator)
-	return parse_object_references(body, allocator), .None
+	return parse_object_references(body, temp_allocator), .None
 }
 
 fetch_source :: proc(
@@ -466,18 +546,46 @@ fetch_source :: proc(
 	name: string,
 	function_group: string,
 	allocator: mem.Allocator,
-) -> (Source_Fetch, Error) {
+) -> (
+	Source_Fetch,
+	Error,
+) {
 	switch kind {
 	case .Report:
-		return fetch_source_by_path(client, source_path("/programs/programs/", name, allocator), "direct", allocator)
+		return fetch_source_by_path(
+			client,
+			source_path("/programs/programs/", name, allocator),
+			"direct",
+			allocator,
+		)
 	case .Include:
-		return fetch_source_by_path(client, source_path("/programs/includes/", name, allocator), "direct", allocator)
+		return fetch_source_by_path(
+			client,
+			source_path("/programs/includes/", name, allocator),
+			"direct",
+			allocator,
+		)
 	case .Class:
-		return fetch_source_by_path(client, source_path("/oo/classes/", name, allocator), "direct", allocator)
+		return fetch_source_by_path(
+			client,
+			source_path("/oo/classes/", name, allocator),
+			"direct",
+			allocator,
+		)
 	case .Interface:
-		return fetch_source_by_path(client, source_path("/oo/interfaces/", name, allocator), "direct", allocator)
+		return fetch_source_by_path(
+			client,
+			source_path("/oo/interfaces/", name, allocator),
+			"direct",
+			allocator,
+		)
 	case .Function_Group:
-		return fetch_source_by_path(client, source_path("/functions/groups/", name, allocator), "direct", allocator)
+		return fetch_source_by_path(
+			client,
+			source_path("/functions/groups/", name, allocator),
+			"direct",
+			allocator,
+		)
 	case .Function_Module:
 		if strings.trim_space(function_group) != "" {
 			path := strings.builder_make(allocator)
@@ -495,13 +603,18 @@ fetch_source :: proc(
 	return {}, .Invalid_Url
 }
 
-fetch_object_source :: proc(client: ^Client, object_uri: string, allocator: mem.Allocator) -> (string, Error) {
-	fetched, err := fetch_source_by_path(client, strings.clone(object_uri, allocator), "direct", allocator)
+fetch_object_source :: proc(
+	client: ^Client,
+	object_uri: string,
+	allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
+	fetched, err := fetch_source_by_path(client, object_uri, "direct", allocator)
 	if err != .None {
 		return "", err
 	}
-	defer delete(fetched.request_url, allocator)
-	defer delete(fetched.object_uri, allocator)
 	return fetched.body, .None
 }
 
@@ -509,29 +622,30 @@ fetch_ddic :: proc(
 	client: ^Client,
 	kind: Ddic_Kind,
 	name: string,
-	allocator: mem.Allocator,
-) -> (Ddic_Fetch, Error) {
+	temp_allocator: mem.Allocator,
+) -> (
+	Ddic_Fetch,
+	Error,
+) {
 	accept := "application/vnd.sap.adt.elementinfo+xml"
 	path := ""
 	switch kind {
 	case .Data_Element:
-		path = source_path("/ddic/dataelements/", name, allocator)
+		path = source_path("/ddic/dataelements/", name, temp_allocator)
 		accept = "application/vnd.sap.adt.dataelements.v1+xml, application/vnd.sap.adt.dataelements.v2+xml"
 	case .Table_Type, .Structure, .View, .Table:
-		path = absolute_url(&client.connection, "/ddic/elementinfo", allocator)
-		path = append_query_param(path, "path", name, allocator)
+		path = absolute_url(&client.connection, "/ddic/elementinfo", temp_allocator)
+		path = append_query_param(path, "path", name, temp_allocator)
 	}
-	defer delete(path, allocator)
 	url := path
 	if kind == .Data_Element {
-		url = absolute_url(&client.connection, path, allocator)
-		defer delete(url, allocator)
+		url = absolute_url(&client.connection, path, temp_allocator)
 	}
-	body, err := send_text(client, .Get, url, accept, "", "", allocator)
+	body, err := send_text(client, .Get, url, accept, "", "", temp_allocator)
 	if err != .None {
 		return {}, err
 	}
-	return Ddic_Fetch{request_url = strings.clone(url, allocator), body = body}, .None
+	return Ddic_Fetch{request_url = strings.clone(url, temp_allocator), body = body}, .None
 }
 
 list_children :: proc(
@@ -539,8 +653,18 @@ list_children :: proc(
 	kind: Child_Kind,
 	name: string,
 	allocator: mem.Allocator,
-) -> (Repository_Node_Structure, [dynamic]Child_Entry, Error) {
-	root, err := fetch_repository_node_structure(client, name, child_kind_parent_type(kind), nil, allocator)
+) -> (
+	Repository_Node_Structure,
+	[dynamic]Child_Entry,
+	Error,
+) {
+	root, err := fetch_repository_node_structure(
+		client,
+		name,
+		child_kind_parent_type(kind),
+		nil,
+		allocator,
+	)
 	children := make([dynamic]Child_Entry, allocator)
 	if err != .None {
 		return root, children, err
@@ -566,14 +690,27 @@ list_children :: proc(
 			return root, children, branch_err
 		}
 		for &node in branch.tree_content {
-			append_child_from_node(&children, &node, object_type.category_tag, object_type.label, allocator)
+			append_child_from_node(
+				&children,
+				&node,
+				object_type.category_tag,
+				object_type.label,
+				allocator,
+			)
 		}
 		repository_node_structure_destroy(&branch, allocator)
 	}
 	return root, children, .None
 }
 
-fetch_ddic_object :: proc(client: ^Client, kind, name: string, allocator: mem.Allocator) -> (string, Error) {
+fetch_ddic_object :: proc(
+	client: ^Client,
+	kind, name: string,
+	temp_allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
 	ddic_kind := Ddic_Kind.Structure
 	switch {
 	case strings.equal_fold(strings.trim_space(kind), "ddic-data-element"):
@@ -585,77 +722,110 @@ fetch_ddic_object :: proc(client: ^Client, kind, name: string, allocator: mem.Al
 	case strings.equal_fold(strings.trim_space(kind), "ddic-view"):
 		ddic_kind = .View
 	}
-	fetched, err := fetch_ddic(client, ddic_kind, name, allocator)
+	fetched, err := fetch_ddic(client, ddic_kind, name, temp_allocator)
 	if err != .None {
 		return "", err
 	}
-	defer delete(fetched.request_url, allocator)
-	defer delete(fetched.body, allocator)
-	return format_ddic_xml(fetched.body, allocator), .None
+	return format_ddic_xml(fetched.body, temp_allocator), .None
 }
 
-fetch_message_class :: proc(client: ^Client, name: string, allocator: mem.Allocator) -> (string, Error) {
+fetch_message_class :: proc(
+	client: ^Client,
+	name: string,
+	allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
 	path := source_path("/messageclass/", name, allocator)
-	defer delete(path, allocator)
 	url := absolute_url(&client.connection, path, allocator)
-	defer delete(url, allocator)
-	body, err := send_text(client, .Get, url, "application/vnd.sap.adt.elementinfo+xml", "", "", allocator)
+	body, err := send_text(
+		client,
+		.Get,
+		url,
+		"application/vnd.sap.adt.elementinfo+xml",
+		"",
+		"",
+		allocator,
+	)
 	if err != .None {
 		return "", err
 	}
-	defer delete(body, allocator)
 	return format_ddic_xml(body, allocator), .None
 }
 
 fetch_dependency_object :: proc(
 	client: ^Client,
 	object_ref: ^Object_Ref,
-	allocator: mem.Allocator,
-) -> (Dependency_Fetch_Result, Error) {
-	empty_dependencies := make([dynamic]Dependency_Artifact, allocator)
+	temp_allocator: mem.Allocator,
+) -> (
+	Dependency_Fetch_Result,
+	Error,
+) {
+	if client.csrf_token == "" {
+		if err := ensure_session(client, temp_allocator); err != .None {
+			return {}, err
+		}
+	}
 	if is_message_class_dependency_object(object_ref) {
-		body, err := fetch_message_class(client, object_ref.name, allocator)
+		body, err := fetch_message_class(client, object_ref.name, temp_allocator)
 		if err != .None {
-			delete(empty_dependencies)
 			return {}, err
 		}
 		return Dependency_Fetch_Result {
-			body                = body,
-			file_extension      = strings.clone("xml", allocator),
-			manifest_kind       = strings.clone("message-class", allocator),
-			shared_dependencies = empty_dependencies,
-		}, .None
+				body = body,
+				file_extension = "xml",
+				manifest_kind = "message-class",
+				shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
+			},
+			.None
+	}
+	if is_direct_ddic_elementinfo_object(object_ref) {
+		fetched, err := fetch_ddic(client, .Structure, object_ref.name, temp_allocator)
+		if err != .None {
+			return {}, err
+		}
+		object_type := ddic_object_type_from_xml(fetched.body)
+		if object_type == "" {
+			return {}, .Bad_Status
+		}
+		return Dependency_Fetch_Result {
+				body = format_ddic_xml(fetched.body, temp_allocator),
+				file_extension = "xml",
+				manifest_kind = infer_ddic_manifest_kind_from_object_type(object_type),
+				shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
+			},
+			.None
 	}
 	if is_fetchable_ddic_dependency_object(object_ref) {
 		kind := infer_ddic_manifest_kind(object_ref)
-		body, err := fetch_ddic_object(client, kind, object_ref.name, allocator)
+		body, err := fetch_ddic_object(client, kind, object_ref.name, temp_allocator)
 		if err != .None {
-			delete(empty_dependencies)
 			return {}, err
 		}
 		return Dependency_Fetch_Result {
-			body                = body,
-			file_extension      = strings.clone("xml", allocator),
-			manifest_kind       = strings.clone(kind, allocator),
-			shared_dependencies = empty_dependencies,
-		}, .None
+				body = body,
+				file_extension = "xml",
+				manifest_kind = kind,
+				shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
+			},
+			.None
 	}
 	if is_function_module_object(object_ref) {
-		delete(empty_dependencies)
-		return fetch_function_module_dependency_source(client, object_ref, allocator)
+		return fetch_function_module_dependency_source(client, object_ref, temp_allocator)
 	}
 
-	body, err := fetch_object_source(client, object_ref.uri, allocator)
+	body, err := fetch_object_source(client, object_ref.uri, temp_allocator)
 	if err != .None {
-		delete(empty_dependencies)
 		return {}, err
 	}
 	return Dependency_Fetch_Result {
-		body                = body,
-		file_extension      = strings.clone("abap", allocator),
-		manifest_kind       = strings.clone(infer_repository_manifest_kind(object_ref), allocator),
-		shared_dependencies = empty_dependencies,
-	}, .None
+			body = body,
+			file_extension = "abap",
+			manifest_kind = infer_repository_manifest_kind(object_ref),
+			shared_dependencies = make([dynamic]Dependency_Artifact, temp_allocator),
+		},
+		.None
 }
 
 select_dependency_objects :: proc(
@@ -666,7 +836,7 @@ select_dependency_objects :: proc(
 ) -> [dynamic]Object_Ref {
 	normalized_query := strings.trim_space(query)
 	out := make([dynamic]Object_Ref, allocator)
-	if normalized_query == "" {
+	if len(normalized_query) == 0 {
 		return out
 	}
 
@@ -674,42 +844,57 @@ select_dependency_objects :: proc(
 	for &object_ref in objects {
 		if strings.equal_fold(strings.trim_space(object_ref.name), normalized_query) &&
 		   is_supported_dependency_object(&object_ref, kind_hint) {
-			append_unique_object_ref(&exact, &object_ref, allocator)
+			found: bool
+			for existing in exact {
+				if strings.equal_fold(existing.object_type, object_ref.object_type) &&
+				   strings.equal_fold(existing.uri, object_ref.uri) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				append(&exact, object_ref)
+			}
 		}
 	}
 	if len(exact) > 0 {
 		sort_object_refs(exact[:])
-		delete(out)
 		return drop_shadowed_ddic_domains(exact, allocator)
 	}
-	delete(exact)
 
 	supported := make([dynamic]Object_Ref, allocator)
 	for &object_ref in objects {
 		if is_supported_dependency_object(&object_ref, kind_hint) {
-			append(&supported, clone_object_ref(&object_ref, allocator))
+			append(&supported, object_ref)
 		}
 	}
 	if len(supported) == 0 {
 		for &object_ref in objects {
 			if is_supported_dependency_object(&object_ref, "") {
-				append(&supported, clone_object_ref(&object_ref, allocator))
+				append(&supported, object_ref)
 			}
 		}
 	}
 	if len(supported) == 0 {
 		return out
 	}
-	if best, ok := pick_best_dependency_object(normalized_query, supported[:], kind_hint, allocator); ok {
+	if best, ok := pick_best_dependency_object(
+		normalized_query,
+		supported[:],
+		kind_hint,
+		allocator,
+	); ok {
 		append(&out, best)
 	} else {
-		append(&out, clone_object_ref(&supported[0], allocator))
+		append(&out, supported[0])
 	}
-	object_refs_destroy(&supported, allocator)
 	return out
 }
 
-direct_dependency_object_refs :: proc(name, kind_hint: string, allocator: mem.Allocator) -> [dynamic]Object_Ref {
+direct_dependency_object_refs :: proc(
+	name, kind_hint: string,
+	allocator: mem.Allocator,
+) -> [dynamic]Object_Ref {
 	out := make([dynamic]Object_Ref, allocator)
 	hint := strings.trim_space(kind_hint)
 	switch {
@@ -721,6 +906,14 @@ direct_dependency_object_refs :: proc(name, kind_hint: string, allocator: mem.Al
 		append(&out, build_report_object_ref(name, "", allocator))
 	case strings.equal_fold(hint, "static"):
 		append_direct_class_interface_refs(&out, name, true, allocator)
+	case strings.equal_fold(hint, "object-type"):
+		append(&out, build_class_object_ref(name, "", allocator))
+		append(&out, build_interface_object_ref(name, "", allocator))
+	case strings.equal_fold(hint, "interface-type"):
+		append(&out, build_interface_object_ref(name, "", allocator))
+	case strings.equal_fold(hint, "ddic-type"):
+		append(&out, build_data_element_object_ref(name, allocator))
+		append(&out, build_ddic_elementinfo_object_ref(name, allocator))
 	case strings.equal_fold(hint, "type"):
 		append_direct_class_interface_refs(&out, name, false, allocator)
 	}
@@ -735,64 +928,101 @@ is_supported_dependency_object :: proc(object_ref: ^Object_Ref, kind_hint: strin
 	case strings.equal_fold(hint, "message-class"):
 		return is_message_class_dependency_object(object_ref)
 	case strings.equal_fold(hint, "include"):
-		return ascii_contains_ignore_case(uri, "/programs/includes/") || strings.equal_fold(object_type, "PROG/I")
+		return(
+			ascii_contains_ignore_case(uri, "/programs/includes/") ||
+			strings.equal_fold(object_type, "PROG/I") \
+		)
 	case strings.equal_fold(hint, "report"):
-		return ascii_contains_ignore_case(uri, "/programs/programs/") || strings.equal_fold(object_type, "PROG/P")
+		return(
+			ascii_contains_ignore_case(uri, "/programs/programs/") ||
+			strings.equal_fold(object_type, "PROG/P") \
+		)
 	case strings.equal_fold(hint, "function"):
-		return ascii_contains_ignore_case(uri, "/functions/groups/") || strings.equal_fold(object_type, "FUGR/F") || strings.equal_fold(object_type, "FUGR/FF")
+		return(
+			ascii_contains_ignore_case(uri, "/functions/groups/") ||
+			strings.equal_fold(object_type, "FUGR/F") ||
+			strings.equal_fold(object_type, "FUGR/FF") \
+		)
 	case strings.equal_fold(hint, "static"):
-		return ascii_contains_ignore_case(uri, "/oo/classes/") || ascii_contains_ignore_case(uri, "/oo/interfaces/") || ascii_starts_with_ignore_case(object_type, "CLAS/") || ascii_starts_with_ignore_case(object_type, "INTF/")
+		return(
+			ascii_contains_ignore_case(uri, "/oo/classes/") ||
+			ascii_contains_ignore_case(uri, "/oo/interfaces/") ||
+			ascii_starts_with_ignore_case(object_type, "CLAS/") ||
+			ascii_starts_with_ignore_case(object_type, "INTF/") \
+		)
 	case strings.equal_fold(hint, "type"):
-		return is_fetchable_ddic_dependency_object(object_ref) || ascii_contains_ignore_case(uri, "/oo/classes/") || ascii_contains_ignore_case(uri, "/oo/interfaces/") || ascii_starts_with_ignore_case(object_type, "CLAS/") || ascii_starts_with_ignore_case(object_type, "INTF/")
+		return(
+			is_fetchable_ddic_dependency_object(object_ref) ||
+			ascii_contains_ignore_case(uri, "/oo/classes/") ||
+			ascii_contains_ignore_case(uri, "/oo/interfaces/") ||
+			ascii_starts_with_ignore_case(object_type, "CLAS/") ||
+			ascii_starts_with_ignore_case(object_type, "INTF/") \
+		)
 	}
-	return ascii_contains_ignore_case(uri, "/programs/includes/") ||
-	       ascii_contains_ignore_case(uri, "/programs/programs/") ||
-	       ascii_contains_ignore_case(uri, "/oo/classes/") ||
-	       ascii_contains_ignore_case(uri, "/oo/interfaces/") ||
-	       ascii_contains_ignore_case(uri, "/functions/groups/") ||
-	       is_message_class_dependency_object(object_ref) ||
-	       is_fetchable_ddic_dependency_object(object_ref) ||
-	       strings.equal_fold(object_type, "PROG/I") ||
-	       strings.equal_fold(object_type, "PROG/P") ||
-	       ascii_starts_with_ignore_case(object_type, "CLAS/") ||
-	       ascii_starts_with_ignore_case(object_type, "INTF/")
+	return(
+		ascii_contains_ignore_case(uri, "/programs/includes/") ||
+		ascii_contains_ignore_case(uri, "/programs/programs/") ||
+		ascii_contains_ignore_case(uri, "/oo/classes/") ||
+		ascii_contains_ignore_case(uri, "/oo/interfaces/") ||
+		ascii_contains_ignore_case(uri, "/functions/groups/") ||
+		is_message_class_dependency_object(object_ref) ||
+		is_fetchable_ddic_dependency_object(object_ref) ||
+		strings.equal_fold(object_type, "PROG/I") ||
+		strings.equal_fold(object_type, "PROG/P") ||
+		ascii_starts_with_ignore_case(object_type, "CLAS/") ||
+		ascii_starts_with_ignore_case(object_type, "INTF/") \
+	)
 }
 
 is_ddic_dependency_object :: proc(object_ref: ^Object_Ref) -> bool {
 	object_type := object_ref.object_type
-	return strings.equal_fold(object_type, "DTEL/DE") ||
-	       is_ddic_domain_object(object_ref) ||
-	       strings.equal_fold(object_type, "TABL/DS") ||
-	       strings.equal_fold(object_type, "TABL/DT") ||
-	       strings.equal_fold(object_type, "TABL/DA") ||
-	       strings.equal_fold(object_type, "TTYP/DA") ||
-	       strings.equal_fold(object_type, "VIEW/DV")
+	return(
+		strings.equal_fold(object_type, "DTEL/DE") ||
+		is_ddic_domain_object(object_ref) ||
+		strings.equal_fold(object_type, "TABL/DS") ||
+		strings.equal_fold(object_type, "TABL/DT") ||
+		strings.equal_fold(object_type, "TABL/DA") ||
+		strings.equal_fold(object_type, "TTYP/DA") ||
+		strings.equal_fold(object_type, "VIEW/DV") \
+	)
+}
+
+is_direct_ddic_elementinfo_object :: proc(object_ref: ^Object_Ref) -> bool {
+	return strings.equal_fold(object_ref.object_type, "DDIC/EI")
 }
 
 is_message_class_dependency_object :: proc(object_ref: ^Object_Ref) -> bool {
-	return strings.equal_fold(object_ref.object_type, "MSAG/N") ||
-	       ascii_contains_ignore_case(object_ref.uri, "/sap/bc/adt/messageclass/")
+	return(
+		strings.equal_fold(object_ref.object_type, "MSAG/N") ||
+		ascii_contains_ignore_case(object_ref.uri, "/sap/bc/adt/messageclass/") \
+	)
 }
 
 is_function_module_object :: proc(object_ref: ^Object_Ref) -> bool {
-	return strings.equal_fold(object_ref.object_type, "FUGR/FF") ||
-	       (ascii_contains_ignore_case(object_ref.uri, "/functions/groups/") &&
-	        ascii_contains_ignore_case(object_ref.uri, "/fmodules/"))
+	return(
+		strings.equal_fold(object_ref.object_type, "FUGR/FF") ||
+		(ascii_contains_ignore_case(object_ref.uri, "/functions/groups/") &&
+				ascii_contains_ignore_case(object_ref.uri, "/fmodules/")) \
+	)
 }
 
 infer_ddic_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
+	return infer_ddic_manifest_kind_from_object_type(object_ref.object_type)
+}
+
+infer_ddic_manifest_kind_from_object_type :: proc(object_type: string) -> string {
 	switch {
-	case ascii_starts_with_ignore_case(object_ref.object_type, "DOMA/"):
+	case ascii_starts_with_ignore_case(object_type, "DOMA/"):
 		return "ddic-domain"
-	case strings.equal_fold(object_ref.object_type, "DTEL/DE"):
+	case strings.equal_fold(object_type, "DTEL/DE"):
 		return "ddic-data-element"
-	case strings.equal_fold(object_ref.object_type, "TABL/DS"):
+	case strings.equal_fold(object_type, "TABL/DS"):
 		return "ddic-structure"
-	case strings.equal_fold(object_ref.object_type, "TABL/DT"):
+	case strings.equal_fold(object_type, "TABL/DT"):
 		return "ddic-table"
-	case strings.equal_fold(object_ref.object_type, "TABL/DA") || strings.equal_fold(object_ref.object_type, "TTYP/DA"):
+	case strings.equal_fold(object_type, "TABL/DA") || strings.equal_fold(object_type, "TTYP/DA"):
 		return "ddic-table-type"
-	case strings.equal_fold(object_ref.object_type, "VIEW/DV"):
+	case strings.equal_fold(object_type, "VIEW/DV"):
 		return "ddic-view"
 	}
 	return "ddic-structure"
@@ -800,11 +1030,14 @@ infer_ddic_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
 
 infer_repository_manifest_kind :: proc(object_ref: ^Object_Ref) -> string {
 	switch {
-	case ascii_contains_ignore_case(object_ref.uri, "/programs/includes/") || strings.equal_fold(object_ref.object_type, "PROG/I"):
+	case ascii_contains_ignore_case(object_ref.uri, "/programs/includes/") ||
+	     strings.equal_fold(object_ref.object_type, "PROG/I"):
 		return "include"
-	case ascii_contains_ignore_case(object_ref.uri, "/oo/classes/") || ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/"):
+	case ascii_contains_ignore_case(object_ref.uri, "/oo/classes/") ||
+	     ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/"):
 		return "global-class"
-	case ascii_contains_ignore_case(object_ref.uri, "/oo/interfaces/") || ascii_starts_with_ignore_case(object_ref.object_type, "INTF/"):
+	case ascii_contains_ignore_case(object_ref.uri, "/oo/interfaces/") ||
+	     ascii_starts_with_ignore_case(object_ref.object_type, "INTF/"):
 		return "global-interface"
 	case ascii_contains_ignore_case(object_ref.uri, "/functions/groups/"):
 		return "function-group"
@@ -819,7 +1052,7 @@ build_message_class_object_ref :: proc(name: string, allocator: mem.Allocator) -
 	encoded := encode_path_segment(n, allocator)
 	defer delete(encoded, allocator)
 	strings.write_string(&uri, encoded)
-	return Object_Ref{
+	return Object_Ref {
 		uri = strings.to_string(uri),
 		object_type = strings.clone("MSAG/N", allocator),
 		name = n,
@@ -827,43 +1060,140 @@ build_message_class_object_ref :: proc(name: string, allocator: mem.Allocator) -
 	}
 }
 
-build_include_object_ref :: proc(name, package_name: string, allocator: mem.Allocator) -> Object_Ref {
-	return build_named_ref(name, package_name, "/sap/bc/adt/programs/includes/", "PROG/I", "Include", allocator)
+build_data_element_object_ref :: proc(name: string, allocator: mem.Allocator) -> Object_Ref {
+	return build_named_ref(
+		name,
+		"",
+		"/sap/bc/adt/ddic/dataelements/",
+		"DTEL/DE",
+		"Data element",
+		allocator,
+	)
 }
 
-build_report_object_ref :: proc(name, package_name: string, allocator: mem.Allocator) -> Object_Ref {
-	return build_named_ref(name, package_name, "/sap/bc/adt/programs/programs/", "PROG/P", "Report", allocator)
+build_ddic_elementinfo_object_ref :: proc(name: string, allocator: mem.Allocator) -> Object_Ref {
+	n := trim_upper(name, allocator)
+	return Object_Ref {
+		uri = ddic_dependency_uri_for_object_type(n, "DDIC/EI", allocator),
+		object_type = strings.clone("DDIC/EI", allocator),
+		name = n,
+		description = strings.clone("DDIC element info", allocator),
+	}
 }
 
-build_class_object_ref :: proc(name, package_name: string, allocator: mem.Allocator) -> Object_Ref {
-	return build_named_ref(name, package_name, "/sap/bc/adt/oo/classes/", "CLAS/OC", "Global class", allocator)
+ddic_dependency_uri_for_object_type :: proc(
+	name, object_type: string,
+	allocator: mem.Allocator,
+) -> string {
+	switch {
+	case strings.equal_fold(object_type, "DTEL/DE"):
+		return source_path("/sap/bc/adt/ddic/dataelements/", name, allocator)
+	case strings.equal_fold(object_type, "TABL/DS"):
+		return source_path("/sap/bc/adt/ddic/structures/", name, allocator)
+	case strings.equal_fold(object_type, "TABL/DT"):
+		return vit_ddic_uri("tabldt", name, allocator)
+	case strings.equal_fold(object_type, "TABL/DA") || strings.equal_fold(object_type, "TTYP/DA"):
+		return vit_ddic_uri("ttypda", name, allocator)
+	case strings.equal_fold(object_type, "VIEW/DV"):
+		return vit_ddic_uri("viewdv", name, allocator)
+	}
+	return source_path("/sap/bc/adt/ddic/elementinfo/", name, allocator)
 }
 
-build_interface_object_ref :: proc(name, package_name: string, allocator: mem.Allocator) -> Object_Ref {
-	return build_named_ref(name, package_name, "/sap/bc/adt/oo/interfaces/", "INTF/OI", "Global interface", allocator)
+vit_ddic_uri :: proc(object_type_key, name: string, allocator: mem.Allocator) -> string {
+	n := trim_upper(name, allocator)
+	defer delete(n, allocator)
+	encoded := encode_path_segment(n, allocator)
+	defer delete(encoded, allocator)
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "/sap/bc/adt/vit/wb/object_type/")
+	strings.write_string(&out, object_type_key)
+	strings.write_string(&out, "/object_name/")
+	strings.write_string(&out, encoded)
+	return strings.to_string(out)
+}
+
+build_include_object_ref :: proc(
+	name, package_name: string,
+	allocator: mem.Allocator,
+) -> Object_Ref {
+	return build_named_ref(
+		name,
+		package_name,
+		"/sap/bc/adt/programs/includes/",
+		"PROG/I",
+		"Include",
+		allocator,
+	)
+}
+
+build_report_object_ref :: proc(
+	name, package_name: string,
+	allocator: mem.Allocator,
+) -> Object_Ref {
+	return build_named_ref(
+		name,
+		package_name,
+		"/sap/bc/adt/programs/programs/",
+		"PROG/P",
+		"Report",
+		allocator,
+	)
+}
+
+build_class_object_ref :: proc(
+	name, package_name: string,
+	allocator: mem.Allocator,
+) -> Object_Ref {
+	return build_named_ref(
+		name,
+		package_name,
+		"/sap/bc/adt/oo/classes/",
+		"CLAS/OC",
+		"Global class",
+		allocator,
+	)
+}
+
+build_interface_object_ref :: proc(
+	name, package_name: string,
+	allocator: mem.Allocator,
+) -> Object_Ref {
+	return build_named_ref(
+		name,
+		package_name,
+		"/sap/bc/adt/oo/interfaces/",
+		"INTF/OI",
+		"Global interface",
+		allocator,
+	)
 }
 
 fetch_function_module_dependency_source :: proc(
 	client: ^Client,
 	object_ref: ^Object_Ref,
 	allocator: mem.Allocator,
-) -> (Dependency_Fetch_Result, Error) {
+) -> (
+	Dependency_Fetch_Result,
+	Error,
+) {
 	module_source, err := fetch_object_source(client, object_ref.uri, allocator)
 	if err != .None {
 		return {}, err
 	}
 	return Dependency_Fetch_Result {
-		body                = module_source,
-		file_extension      = strings.clone("abap", allocator),
-		manifest_kind       = strings.clone("function-module", allocator),
-		shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
-	}, .None
+			body = module_source,
+			file_extension = strings.clone("abap", allocator),
+			manifest_kind = strings.clone("function-module", allocator),
+			shared_dependencies = make([dynamic]Dependency_Artifact, allocator),
+		},
+		.None
 }
 
 format_ddic_xml :: proc(xml: string, allocator: mem.Allocator) -> string {
 	trimmed := strings.trim_space(xml)
 	if !strings.has_prefix(trimmed, "<") {
-		return strings.clone(xml, allocator)
+		return xml
 	}
 	out := strings.builder_make(allocator)
 	indent := 0
@@ -902,6 +1232,30 @@ format_ddic_xml :: proc(xml: string, allocator: mem.Allocator) -> string {
 	return strings.to_string(out)
 }
 
+ddic_object_type_from_xml :: proc(xml: string) -> string {
+	search_from := 0
+	for search_from < len(xml) {
+		start_rel := strings.index_byte(xml[search_from:], '<')
+		if start_rel < 0 {
+			return ""
+		}
+		start := search_from + start_rel
+		if start + 1 >= len(xml) {
+			return ""
+		}
+		end_rel := strings.index_byte(xml[start:], '>')
+		if end_rel < 0 {
+			return ""
+		}
+		if xml[start + 1] == '?' || xml[start + 1] == '!' {
+			search_from = start + end_rel + 1
+			continue
+		}
+		return strings.trim_space(read_attr(xml[start:start + end_rel + 1], "type"))
+	}
+	return ""
+}
+
 parse_object_references :: proc(xml: string, allocator: mem.Allocator) -> [dynamic]Object_Ref {
 	out := make([dynamic]Object_Ref, allocator)
 	needle := "<adtcore:objectReference"
@@ -917,25 +1271,26 @@ parse_object_references :: proc(xml: string, allocator: mem.Allocator) -> [dynam
 			break
 		}
 		attrs := xml[start:start + end_rel]
-		entry := Object_Ref{
-			uri = decode_xml_entities(read_attr(attrs, "adtcore:uri"), allocator),
-			object_type = decode_xml_entities(read_attr(attrs, "adtcore:type"), allocator),
-			name = decode_xml_entities(read_attr(attrs, "adtcore:name"), allocator),
+		entry := Object_Ref {
+			uri          = decode_xml_entities(read_attr(attrs, "adtcore:uri"), allocator),
+			object_type  = decode_xml_entities(read_attr(attrs, "adtcore:type"), allocator),
+			name         = decode_xml_entities(read_attr(attrs, "adtcore:name"), allocator),
 			package_name = decode_xml_entities(read_attr(attrs, "adtcore:packageName"), allocator),
-			description = decode_xml_entities(read_attr(attrs, "adtcore:description"), allocator),
+			description  = decode_xml_entities(read_attr(attrs, "adtcore:description"), allocator),
 		}
-		if entry.uri != "" && entry.name != "" {
+		if len(entry.uri) != 0 && len(entry.name) != 0 {
 			append(&out, entry)
-		} else {
-			object_ref_destroy(&entry, allocator)
 		}
 		search_from = start + end_rel + 1
 	}
 	return out
 }
 
-parse_repository_node_structure :: proc(xml: string, allocator: mem.Allocator) -> Repository_Node_Structure {
-	structure := Repository_Node_Structure{
+parse_repository_node_structure :: proc(
+	xml: string,
+	allocator: mem.Allocator,
+) -> Repository_Node_Structure {
+	structure := Repository_Node_Structure {
 		tree_content = make([dynamic]Tree_Node, allocator),
 		categories   = make([dynamic]Category_Info, allocator),
 		object_types = make([dynamic]Object_Type_Info, allocator),
@@ -943,34 +1298,43 @@ parse_repository_node_structure :: proc(xml: string, allocator: mem.Allocator) -
 	blocks := collect_blocks(xml, "SEU_ADT_REPOSITORY_OBJ_NODE", allocator)
 	for block in blocks {
 		expandable := read_tag_text(block, "EXPANDABLE", allocator)
-		append(&structure.tree_content, Tree_Node{
-			object_type = read_tag_text(block, "OBJECT_TYPE", allocator),
-			object_name = read_tag_text(block, "OBJECT_NAME", allocator),
-			object_uri = read_tag_text(block, "OBJECT_URI", allocator),
-			object_vit_uri = read_tag_text(block, "OBJECT_VIT_URI", allocator),
-			expandable = strings.equal_fold(expandable, "X"),
-		})
+		append(
+			&structure.tree_content,
+			Tree_Node {
+				object_type = read_tag_text(block, "OBJECT_TYPE", allocator),
+				object_name = read_tag_text(block, "OBJECT_NAME", allocator),
+				object_uri = read_tag_text(block, "OBJECT_URI", allocator),
+				object_vit_uri = read_tag_text(block, "OBJECT_VIT_URI", allocator),
+				expandable = strings.equal_fold(expandable, "X"),
+			},
+		)
 		delete(expandable, allocator)
 		delete(block, allocator)
 	}
 	delete(blocks)
 	blocks = collect_blocks(xml, "SEU_ADT_OBJECT_CATEGORY_INFO", allocator)
 	for block in blocks {
-		append(&structure.categories, Category_Info{
-			category = read_tag_text(block, "CATEGORY", allocator),
-			label = read_tag_text(block, "CATEGORY_LABEL", allocator),
-		})
+		append(
+			&structure.categories,
+			Category_Info {
+				category = read_tag_text(block, "CATEGORY", allocator),
+				label = read_tag_text(block, "CATEGORY_LABEL", allocator),
+			},
+		)
 		delete(block, allocator)
 	}
 	delete(blocks)
 	blocks = collect_blocks(xml, "SEU_ADT_OBJECT_TYPE_INFO", allocator)
 	for block in blocks {
-		append(&structure.object_types, Object_Type_Info{
-			object_type = read_tag_text(block, "OBJECT_TYPE", allocator),
-			category_tag = read_tag_text(block, "CATEGORY_TAG", allocator),
-			label = read_tag_text(block, "OBJECT_TYPE_LABEL", allocator),
-			node_id = read_tag_text(block, "NODE_ID", allocator),
-		})
+		append(
+			&structure.object_types,
+			Object_Type_Info {
+				object_type = read_tag_text(block, "OBJECT_TYPE", allocator),
+				category_tag = read_tag_text(block, "CATEGORY_TAG", allocator),
+				label = read_tag_text(block, "OBJECT_TYPE_LABEL", allocator),
+				node_id = read_tag_text(block, "NODE_ID", allocator),
+			},
+		)
 		delete(block, allocator)
 	}
 	delete(blocks)
@@ -980,19 +1344,21 @@ parse_repository_node_structure :: proc(xml: string, allocator: mem.Allocator) -
 append_child_from_node :: proc(
 	children: ^[dynamic]Child_Entry,
 	node: ^Tree_Node,
-	category_tag,
-	object_type_label: string,
+	category_tag, object_type_label: string,
 	allocator: mem.Allocator,
 ) {
-	append(children, Child_Entry {
-		category_tag      = strings.clone(category_tag, allocator),
-		object_type_label = strings.clone(object_type_label, allocator),
-		object_type       = strings.clone(node.object_type, allocator),
-		name              = strings.clone(node.object_name, allocator),
-		uri               = strings.clone(node.object_uri, allocator),
-		vit_uri           = strings.clone(node.object_vit_uri, allocator),
-		expandable        = node.expandable,
-	})
+	append(
+		children,
+		Child_Entry {
+			category_tag = strings.clone(category_tag, allocator),
+			object_type_label = strings.clone(object_type_label, allocator),
+			object_type = strings.clone(node.object_type, allocator),
+			name = strings.clone(node.object_name, allocator),
+			uri = strings.clone(node.object_uri, allocator),
+			vit_uri = strings.clone(node.object_vit_uri, allocator),
+			expandable = node.expandable,
+		},
+	)
 }
 
 normalize_base_url :: proc(raw: string, allocator: mem.Allocator) -> string {
@@ -1037,7 +1403,10 @@ object_refs_destroy :: proc(entries: ^[dynamic]Object_Ref, allocator: mem.Alloca
 	entries^ = nil
 }
 
-dependency_fetch_result_destroy :: proc(result: ^Dependency_Fetch_Result, allocator: mem.Allocator) {
+dependency_fetch_result_destroy :: proc(
+	result: ^Dependency_Fetch_Result,
+	allocator: mem.Allocator,
+) {
 	delete(result.body, allocator)
 	delete(result.file_extension, allocator)
 	delete(result.manifest_kind, allocator)
@@ -1056,7 +1425,10 @@ dependency_artifact_destroy :: proc(artifact: ^Dependency_Artifact, allocator: m
 	artifact^ = {}
 }
 
-repository_node_structure_destroy :: proc(structure: ^Repository_Node_Structure, allocator: mem.Allocator) {
+repository_node_structure_destroy :: proc(
+	structure: ^Repository_Node_Structure,
+	allocator: mem.Allocator,
+) {
 	for &node in structure.tree_content {
 		delete(node.object_type, allocator)
 		delete(node.object_name, allocator)
@@ -1079,20 +1451,11 @@ repository_node_structure_destroy :: proc(structure: ^Repository_Node_Structure,
 	structure^ = {}
 }
 
-child_entries_destroy :: proc(children: ^[dynamic]Child_Entry, allocator: mem.Allocator) {
-	for &child in children^ {
-		delete(child.category_tag, allocator)
-		delete(child.object_type_label, allocator)
-		delete(child.object_type, allocator)
-		delete(child.name, allocator)
-		delete(child.uri, allocator)
-		delete(child.vit_uri, allocator)
-	}
-	delete(children^)
-	children^ = nil
-}
-
-absolute_url :: proc(config: ^Connection_Config, path_or_url: string, allocator: mem.Allocator) -> string {
+absolute_url :: proc(
+	config: ^Connection_Config,
+	path_or_url: string,
+	allocator: mem.Allocator,
+) -> string {
 	normalized := path_or_url
 	if !ascii_starts_with_ignore_case(path_or_url, "http://") &&
 	   !ascii_starts_with_ignore_case(path_or_url, "https://") &&
@@ -1113,7 +1476,8 @@ absolute_url :: proc(config: ^Connection_Config, path_or_url: string, allocator:
 		strings.write_string(&out, normalized)
 	}
 	url := strings.to_string(out)
-	if strings.trim_space(config.sap_client) != "" && !ascii_contains_ignore_case(url, "sap-client=") {
+	if strings.trim_space(config.sap_client) != "" &&
+	   !ascii_contains_ignore_case(url, "sap-client=") {
 		url = append_query_param(url, "sap-client", config.sap_client, allocator)
 	}
 	return url
@@ -1121,11 +1485,13 @@ absolute_url :: proc(config: ^Connection_Config, path_or_url: string, allocator:
 
 fetch_repository_node_structure :: proc(
 	client: ^Client,
-	parent_name,
-	parent_type: string,
+	parent_name, parent_type: string,
 	node_keys: []string,
 	allocator: mem.Allocator,
-) -> (Repository_Node_Structure, Error) {
+) -> (
+	Repository_Node_Structure,
+	Error,
+) {
 	url := absolute_url(&client.connection, "/repository/nodestructure", allocator)
 	url = append_query_param(url, "parent_name", parent_name, allocator)
 	url = append_query_param(url, "parent_tech_name", parent_name, allocator)
@@ -1151,10 +1517,16 @@ fetch_repository_node_structure :: proc(
 	return parse_repository_node_structure(xml, allocator), .None
 }
 
-build_node_structure_request_body :: proc(node_keys: []string, allocator: mem.Allocator) -> string {
+build_node_structure_request_body :: proc(
+	node_keys: []string,
+	allocator: mem.Allocator,
+) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n")
-	strings.write_string(&out, "<asx:abap version=\"1.0\" xmlns:asx=\"http://www.sap.com/abapxml\">\n<asx:values>\n<DATA>\n")
+	strings.write_string(
+		&out,
+		"<asx:abap version=\"1.0\" xmlns:asx=\"http://www.sap.com/abapxml\">\n<asx:values>\n<DATA>\n",
+	)
 	if len(node_keys) == 0 {
 		strings.write_string(&out, "<TV_NODEKEY>000000</TV_NODEKEY>\n")
 	} else {
@@ -1190,63 +1562,62 @@ send_text :: proc(
 	accept: string,
 	content_type: string,
 	body: string,
-	allocator: mem.Allocator,
-) -> (string, Error) {
+	temp_allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
 	if method != .Get && client.csrf_token == "" {
-		if err := ensure_session(client, allocator); err != .None {
+		if err := ensure_session(client, temp_allocator); err != .None {
 			return "", err
 		}
 	} else if client.csrf_token == "" {
-		if err := ensure_session(client, allocator); err != .None {
+		if err := ensure_session(client, temp_allocator); err != .None {
 			return "", err
 		}
 	}
 
 	request: http.Request
-	http.request_init(&request, method, url, allocator)
-	defer http.request_destroy(&request, allocator)
-	set_common_headers(&request, client, accept, allocator)
+	http.request_init(&request, method, url, temp_allocator)
+	set_common_headers(&request, client, accept, temp_allocator)
 	if content_type != "" {
-		http.header_set(&request.headers, "Content-Type", content_type, allocator)
+		http.header_set(&request.headers, "Content-Type", content_type, temp_allocator)
 		request.body = transmute([]u8)body
 	}
-	response, http_err := http.client_do(&client.http, &request, allocator)
+	response, http_err := http.client_do(&client.http, &request, temp_allocator)
 	if http_err != .None {
 		return "", http_error_to_adt(http_err)
 	}
-	defer http.response_destroy(&response, allocator)
 	if !status_success(response.status_code) {
 		return "", .Bad_Status
 	}
-	return strings.clone(string(response.body), allocator), .None
+	return string(response.body), .None
 }
 
-ensure_session :: proc(client: ^Client, allocator: mem.Allocator) -> Error {
-	url := absolute_url(&client.connection, "/runtime/systemmessages", allocator)
-	defer delete(url, allocator)
+ensure_session :: proc(client: ^Client, temp_allocator: mem.Allocator) -> Error {
+	url := absolute_url(&client.connection, "/runtime/systemmessages", temp_allocator)
 	request: http.Request
-	http.request_init(&request, .Get, url, allocator)
-	defer http.request_destroy(&request, allocator)
-	set_auth_header(&request, &client.connection, allocator)
-	http.header_set(&request.headers, "Cache-Control", "no-cache", allocator)
-	http.header_set(&request.headers, "Accept", SESSION_BOOTSTRAP_ACCEPT, allocator)
-	http.header_set(&request.headers, "x-csrf-token", "Fetch", allocator)
+	http.request_init(&request, .Get, url, temp_allocator)
+	set_auth_header(&request, &client.connection, temp_allocator)
+	http.header_set(&request.headers, "Cache-Control", "no-cache", temp_allocator)
+	http.header_set(&request.headers, "Accept", SESSION_BOOTSTRAP_ACCEPT, temp_allocator)
+	http.header_set(&request.headers, "x-csrf-token", "Fetch", temp_allocator)
 
-	response, http_err := http.client_do(&client.http, &request, allocator)
+	response, http_err := http.client_do(&client.http, &request, temp_allocator)
 	if http_err != .None {
 		return http_error_to_adt(http_err)
 	}
-	defer http.response_destroy(&response, allocator)
 	if !status_success(response.status_code) {
 		return .Bad_Status
 	}
 	token, ok := http.header_get(response.headers, "x-csrf-token")
-	if !ok || strings.trim_space(token) == "" {
+	token = strings.trim_space(token)
+	if !ok || token == "" {
 		return .Missing_Csrf_Token
 	}
-	client.csrf_token = strings.clone(strings.trim_space(token), allocator)
+	client.csrf_token = strings.clone(token, client.allocator)
 	if cookie, cookie_ok := http.header_get(response.headers, "set-cookie"); cookie_ok {
-		client.cookie = strings.clone(cookie_pair(cookie), allocator)
+		client.cookie = strings.clone(cookie_pair(cookie), client.allocator)
 	}
 	return .None
 }
@@ -1275,7 +1646,12 @@ http_error_to_adt :: proc(err: http.Error) -> Error {
 	return .Http
 }
 
-set_common_headers :: proc(request: ^http.Request, client: ^Client, accept: string, allocator: mem.Allocator) {
+set_common_headers :: proc(
+	request: ^http.Request,
+	client: ^Client,
+	accept: string,
+	allocator: mem.Allocator,
+) {
 	set_auth_header(request, &client.connection, allocator)
 	http.header_set(&request.headers, "Cache-Control", "no-cache", allocator)
 	http.header_set(&request.headers, "Accept", accept, allocator)
@@ -1287,50 +1663,55 @@ set_common_headers :: proc(request: ^http.Request, client: ^Client, accept: stri
 	}
 }
 
-set_auth_header :: proc(request: ^http.Request, config: ^Connection_Config, allocator: mem.Allocator) {
+set_auth_header :: proc(
+	request: ^http.Request,
+	config: ^Connection_Config,
+	allocator: mem.Allocator,
+) {
 	credentials := strings.builder_make(allocator)
 	strings.write_string(&credentials, config.username)
 	strings.write_byte(&credentials, ':')
 	strings.write_string(&credentials, config.password)
 	raw := strings.to_string(credentials)
-	defer delete(raw, allocator)
 	encoded := base64.encode(transmute([]byte)raw, allocator = allocator)
-	defer delete(encoded, allocator)
 	value := strings.builder_make(allocator)
 	strings.write_string(&value, "Basic ")
 	strings.write_string(&value, encoded)
 	header := strings.to_string(value)
-	defer delete(header, allocator)
 	http.header_set(&request.headers, "Authorization", header, allocator)
 }
 
-fetch_source_by_path :: proc(client: ^Client, object_path, resolved_by: string, allocator: mem.Allocator) -> (Source_Fetch, Error) {
-	defer delete(object_path, allocator)
+fetch_source_by_path :: proc(
+	client: ^Client,
+	object_path, resolved_by: string,
+	allocator: mem.Allocator,
+) -> (
+	Source_Fetch,
+	Error,
+) {
 	source_path := object_path
 	if !strings.has_suffix(source_path, "/source/main") {
 		out := strings.builder_make(allocator)
 		strings.write_string(&out, source_path)
 		strings.write_string(&out, "/source/main")
 		source_path = strings.to_string(out)
-		defer delete(source_path, allocator)
 	}
 	url := absolute_url(&client.connection, source_path, allocator)
-	defer delete(url, allocator)
 	body, err := send_text(client, .Get, url, "text/plain", "", "", allocator)
 	if err != .None {
 		return {}, err
 	}
-	return Source_Fetch{
-		request_url = strings.clone(url, allocator),
-		object_uri = strings.clone(object_path, allocator),
-		resolved_by = resolved_by,
-		body = body,
-	}, .None
+	return Source_Fetch {
+			request_url = strings.clone(url, allocator),
+			object_uri = strings.clone(object_path, allocator),
+			resolved_by = resolved_by,
+			body = body,
+		},
+		.None
 }
 
 source_path :: proc(prefix, name: string, allocator: mem.Allocator) -> string {
 	encoded := encode_path_segment(name, allocator)
-	defer delete(encoded, allocator)
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, prefix)
 	strings.write_string(&out, encoded)
@@ -1345,14 +1726,9 @@ append_query_param :: proc(url, key, value: string, allocator: mem.Allocator) ->
 	} else {
 		strings.write_byte(&out, '?')
 	}
-	encoded_key := encode_query_component(key, allocator)
-	defer delete(encoded_key, allocator)
-	strings.write_string(&out, encoded_key)
+	strings.write_string(&out, encode_query_component(key, allocator))
 	strings.write_byte(&out, '=')
-	encoded_value := encode_query_component(value, allocator)
-	defer delete(encoded_value, allocator)
-	strings.write_string(&out, encoded_value)
-	delete(url, allocator)
+	strings.write_string(&out, encode_query_component(value, allocator))
 	return strings.to_string(out)
 }
 
@@ -1365,7 +1741,10 @@ first_config_value :: proc(
 	override: string,
 	dotenv: ^Dotenv_Defaults,
 	allocator: mem.Allocator,
-) -> (string, bool) {
+) -> (
+	string,
+	bool,
+) {
 	if value, ok := normalized_non_empty_clone(override, allocator); ok {
 		return value, true
 	}
@@ -1394,7 +1773,14 @@ normalized_non_empty_clone :: proc(value: string, allocator: mem.Allocator) -> (
 	return strings.clone(trimmed, allocator), true
 }
 
-find_dotenv_from_base :: proc(base: string, repo_first: bool, allocator: mem.Allocator) -> (string, bool) {
+find_dotenv_from_base :: proc(
+	base: string,
+	repo_first: bool,
+	allocator: mem.Allocator,
+) -> (
+	string,
+	bool,
+) {
 	dir := strings.clone(base, allocator)
 	for {
 		if repo_first {
@@ -1464,11 +1850,7 @@ parse_dotenv_value :: proc(raw: string, allocator: mem.Allocator) -> (string, bo
 }
 
 build_named_ref :: proc(
-	name,
-	package_name,
-	prefix,
-	object_type,
-	description: string,
+	name, package_name, prefix, object_type, description: string,
 	allocator: mem.Allocator,
 ) -> Object_Ref {
 	n := trim_upper(name, allocator)
@@ -1477,7 +1859,7 @@ build_named_ref :: proc(
 	uri := strings.builder_make(allocator)
 	strings.write_string(&uri, prefix)
 	strings.write_string(&uri, encoded)
-	return Object_Ref{
+	return Object_Ref {
 		uri = strings.to_string(uri),
 		object_type = strings.clone(object_type, allocator),
 		name = n,
@@ -1487,7 +1869,7 @@ build_named_ref :: proc(
 }
 
 clone_object_ref :: proc(entry: ^Object_Ref, allocator: mem.Allocator) -> Object_Ref {
-	return Object_Ref{
+	return Object_Ref {
 		uri = strings.clone(entry.uri, allocator),
 		object_type = strings.clone(entry.object_type, allocator),
 		name = strings.clone(entry.name, allocator),
@@ -1496,17 +1878,10 @@ clone_object_ref :: proc(entry: ^Object_Ref, allocator: mem.Allocator) -> Object
 	}
 }
 
-append_unique_object_ref :: proc(out: ^[dynamic]Object_Ref, entry: ^Object_Ref, allocator: mem.Allocator) {
-	for existing in out {
-		if strings.equal_fold(existing.object_type, entry.object_type) &&
-		   strings.equal_fold(existing.uri, entry.uri) {
-			return
-		}
-	}
-	append(out, clone_object_ref(entry, allocator))
-}
-
-drop_shadowed_ddic_domains :: proc(objects: [dynamic]Object_Ref, allocator: mem.Allocator) -> [dynamic]Object_Ref {
+drop_shadowed_ddic_domains :: proc(
+	objects: [dynamic]Object_Ref,
+	allocator: mem.Allocator,
+) -> [dynamic]Object_Ref {
 	has_non_domain := false
 	for &object_ref in objects {
 		if is_ddic_dependency_object(&object_ref) && !is_ddic_domain_object(&object_ref) {
@@ -1534,7 +1909,10 @@ pick_best_dependency_object :: proc(
 	objects: []Object_Ref,
 	kind_hint: string,
 	allocator: mem.Allocator,
-) -> (Object_Ref, bool) {
+) -> (
+	Object_Ref,
+	bool,
+) {
 	exact := make([dynamic]Object_Ref, allocator)
 	for &object_ref in objects {
 		if strings.equal_fold(strings.trim_space(object_ref.name), query) &&
@@ -1559,24 +1937,33 @@ pick_preferred_dependency_object :: proc(
 	objects: []Object_Ref,
 	kind_hint: string,
 	allocator: mem.Allocator,
-) -> (Object_Ref, bool) {
+) -> (
+	Object_Ref,
+	bool,
+) {
 	hint := strings.trim_space(kind_hint)
 	for &object_ref in objects {
-		if strings.equal_fold(hint, "report") && strings.equal_fold(object_ref.object_type, "PROG/P") {
+		if strings.equal_fold(hint, "report") &&
+		   strings.equal_fold(object_ref.object_type, "PROG/P") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if strings.equal_fold(hint, "function") && strings.equal_fold(object_ref.object_type, "FUGR/FF") {
+		if strings.equal_fold(hint, "function") &&
+		   strings.equal_fold(object_ref.object_type, "FUGR/FF") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if strings.equal_fold(hint, "static") && ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/") {
+		if strings.equal_fold(hint, "static") &&
+		   ascii_starts_with_ignore_case(object_ref.object_type, "CLAS/") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
-		if strings.equal_fold(hint, "type") && is_ddic_dependency_object(&object_ref) && !is_ddic_domain_object(&object_ref) {
+		if strings.equal_fold(hint, "type") &&
+		   is_ddic_dependency_object(&object_ref) &&
+		   !is_ddic_domain_object(&object_ref) {
 			return clone_object_ref(&object_ref, allocator), true
 		}
 	}
 	for &object_ref in objects {
-		if strings.equal_fold(hint, "function") && strings.equal_fold(object_ref.object_type, "FUGR/F") {
+		if strings.equal_fold(hint, "function") &&
+		   strings.equal_fold(object_ref.object_type, "FUGR/F") {
 			return clone_object_ref(&object_ref, allocator), true
 		}
 		if (strings.equal_fold(hint, "static") || strings.equal_fold(hint, "type")) &&
@@ -1590,7 +1977,12 @@ pick_preferred_dependency_object :: proc(
 	return {}, false
 }
 
-append_direct_class_interface_refs :: proc(out: ^[dynamic]Object_Ref, name: string, fallback_both_kinds: bool, allocator: mem.Allocator) {
+append_direct_class_interface_refs :: proc(
+	out: ^[dynamic]Object_Ref,
+	name: string,
+	fallback_both_kinds: bool,
+	allocator: mem.Allocator,
+) {
 	local := local_object_name(name, allocator)
 	defer delete(local, allocator)
 	if looks_like_global_interface_name(local) {
@@ -1608,12 +2000,22 @@ append_direct_class_interface_refs :: proc(out: ^[dynamic]Object_Ref, name: stri
 }
 
 looks_like_global_class_name :: proc(local: string) -> bool {
-	return strings.has_prefix(local, "CL_") || strings.has_prefix(local, "ZCL_") || strings.has_prefix(local, "YCL_") ||
-	       strings.has_prefix(local, "CX_") || strings.has_prefix(local, "ZCX_") || strings.has_prefix(local, "YCX_")
+	return(
+		strings.has_prefix(local, "CL_") ||
+		strings.has_prefix(local, "ZCL_") ||
+		strings.has_prefix(local, "YCL_") ||
+		strings.has_prefix(local, "CX_") ||
+		strings.has_prefix(local, "ZCX_") ||
+		strings.has_prefix(local, "YCX_") \
+	)
 }
 
 looks_like_global_interface_name :: proc(local: string) -> bool {
-	return strings.has_prefix(local, "IF_") || strings.has_prefix(local, "ZIF_") || strings.has_prefix(local, "YIF_")
+	return(
+		strings.has_prefix(local, "IF_") ||
+		strings.has_prefix(local, "ZIF_") ||
+		strings.has_prefix(local, "YIF_") \
+	)
 }
 
 local_object_name :: proc(name: string, allocator: mem.Allocator) -> string {
@@ -1826,10 +2228,15 @@ ascii_index_ignore_case :: proc(value, needle: string) -> int {
 }
 
 ascii_uri_byte :: proc(value: byte) -> bool {
-	return ('0' <= value && value <= '9') ||
-	       ('A' <= value && value <= 'Z') ||
-	       ('a' <= value && value <= 'z') ||
-	       value == '-' || value == '_' || value == '.' || value == '~'
+	return(
+		('0' <= value && value <= '9') ||
+		('A' <= value && value <= 'Z') ||
+		('a' <= value && value <= 'z') ||
+		value == '-' ||
+		value == '_' ||
+		value == '.' ||
+		value == '~' \
+	)
 }
 
 hex_upper :: proc(value: byte) -> byte {

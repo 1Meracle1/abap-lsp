@@ -2,6 +2,7 @@ package abap_frontend_runtime
 
 import "base:intrinsics"
 import "core:mem"
+import "core:mem/virtual"
 import "core:nbio"
 import sysinfo "core:sys/info"
 import "core:sync"
@@ -133,6 +134,9 @@ Worker :: struct {
 	deque_buffer:   []u32,
 	ingress:        Mpmc_Index_Ring,
 	ingress_buffer: []Mpmc_Cell,
+	temp_arena:     virtual.Arena,
+	temp_allocator: mem.Allocator,
+	temp_depth:     int,
 }
 
 // Pool owns a fixed task-cell slab, fixed queues, and optional worker threads.
@@ -192,6 +196,10 @@ pool_init :: proc(pool: ^Pool, options: Options, allocator: mem.Allocator) -> Su
 			worker.id = i
 			worker.deque_buffer = make([]u32, opts.deque_capacity, allocator)
 			worker.ingress_buffer = make([]Mpmc_Cell, opts.queue_capacity, allocator)
+			if virtual.arena_init_growing(&worker.temp_arena) != .None {
+				return .Invalid_Options
+			}
+			worker.temp_allocator = virtual.arena_allocator(&worker.temp_arena)
 			if !work_deque_init(&worker.deque, worker.deque_buffer) ||
 			   !mpmc_index_ring_init(&worker.ingress, worker.ingress_buffer) {
 				return .Invalid_Options
@@ -209,6 +217,13 @@ current_pool :: proc() -> ^Pool {
 		return nil
 	}
 	return current_worker.pool
+}
+
+current_temp_arena :: proc() -> ^virtual.Arena {
+	if current_worker == nil {
+		return nil
+	}
+	return &current_worker.temp_arena
 }
 
 // available_parallelism returns the logical processor count reported by the OS,
@@ -278,6 +293,7 @@ pool_destroy :: proc(pool: ^Pool) {
 	for i in 0 ..< len(pool.workers) {
 		delete(pool.workers[i].deque_buffer, pool.allocator)
 		delete(pool.workers[i].ingress_buffer, pool.allocator)
+		virtual.arena_destroy(&pool.workers[i].temp_arena)
 	}
 	delete(pool.workers, pool.allocator)
 	delete(pool.free_buffer, pool.allocator)
@@ -885,6 +901,11 @@ finish_cell :: proc(cell: ^Task_Cell) {
 }
 
 execute_cell :: proc(cell: ^Task_Cell) {
+	worker := current_worker
+	if worker != nil {
+		worker_execute_cell(worker, cell)
+		return
+	}
 	if cell.kind == .Nbio_Post {
 		if cell.invoke != nil {
 			cell.invoke(cell)
@@ -895,6 +916,28 @@ execute_cell :: proc(cell: ^Task_Cell) {
 		cell.invoke(cell)
 	}
 	finish_cell(cell)
+}
+
+worker_execute_cell :: proc(worker: ^Worker, cell: ^Task_Cell) {
+	previous_temp_allocator := context.temp_allocator
+	context.temp_allocator = worker.temp_allocator
+	worker.temp_depth += 1
+	temp := virtual.arena_temp_begin(&worker.temp_arena)
+
+	nbio_post := cell.kind == .Nbio_Post
+	if cell.invoke != nil {
+		cell.invoke(cell)
+	}
+
+	virtual.arena_temp_end(temp)
+	worker.temp_depth -= 1
+	if worker.temp_depth == 0 {
+		virtual.arena_free_all(&worker.temp_arena)
+	}
+	context.temp_allocator = previous_temp_allocator
+	if !nbio_post {
+		finish_cell(cell)
+	}
 }
 
 worker_runner :: proc(t: ^thread.Thread) {

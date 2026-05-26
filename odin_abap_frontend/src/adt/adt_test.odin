@@ -59,17 +59,22 @@ parses_repository_node_structure :: proc(t: ^testing.T) {
 
 @(test)
 dotenv_and_connection_sources_match_rust_keys :: proc(t: ^testing.T) {
-	dotenv, parse_err, ok := parse_dotenv_contents(`
+	dotenv, parse_err, ok := parse_dotenv_contents(
+		`
 export ABAP_ADT_URL = https://host.example.com/
 SAPUSER= demo
 SAPPASS='secret'
 ABAP_ADT_CLIENT=100 # inline comment
-`, context.allocator)
+`,
+		context.allocator,
+	)
 	defer dotenv_defaults_destroy(&dotenv, context.allocator)
 	testing.expect(t, ok)
 	testing.expect_value(t, parse_err.line, 0)
 
-	overrides := Connection_Overrides{username = "override_user"}
+	overrides := Connection_Overrides {
+		username = "override_user",
+	}
 	config, err := connection_config_from_sources(&overrides, &dotenv, context.allocator)
 	defer connection_config_destroy(&config, context.allocator)
 	testing.expect_value(t, err, Error.None)
@@ -107,7 +112,10 @@ type_dependency_selection_ignores_same_named_function_group :: proc(t: ^testing.
 			description = strings.clone("Function Group", context.allocator),
 		},
 		{
-			uri = strings.clone("/sap/bc/adt/vit/wb/object_type/ttypda/object_name/TR_OBJECTS", context.allocator),
+			uri = strings.clone(
+				"/sap/bc/adt/vit/wb/object_type/ttypda/object_name/TR_OBJECTS",
+				context.allocator,
+			),
 			object_type = strings.clone("TTYP/DA", context.allocator),
 			name = strings.clone("TR_OBJECTS", context.allocator),
 			package_name = strings.clone("SCTS_PRJ", context.allocator),
@@ -134,6 +142,34 @@ direct_dependency_refs_use_global_name_shape :: proc(t: ^testing.T) {
 	static_refs := direct_dependency_object_refs("demo", "static", context.allocator)
 	defer object_refs_destroy(&static_refs, context.allocator)
 	testing.expect_value(t, len(static_refs), 2)
+
+	object_refs := direct_dependency_object_refs("demo", "object-type", context.allocator)
+	defer object_refs_destroy(&object_refs, context.allocator)
+	testing.expect_value(t, len(object_refs), 2)
+
+	interface_refs := direct_dependency_object_refs("demo", "interface-type", context.allocator)
+	defer object_refs_destroy(&interface_refs, context.allocator)
+	testing.expect_value(t, len(interface_refs), 1)
+	testing.expect_value(t, interface_refs[0].object_type, "INTF/OI")
+
+	ddic_refs := direct_dependency_object_refs("demo", "ddic-type", context.allocator)
+	defer object_refs_destroy(&ddic_refs, context.allocator)
+	testing.expect_value(t, len(ddic_refs), 2)
+	testing.expect_value(t, ddic_refs[0].object_type, "DTEL/DE")
+	testing.expect_value(t, ddic_refs[1].object_type, "DDIC/EI")
+}
+
+@(test)
+ddic_elementinfo_type_is_read_from_xml :: proc(t: ^testing.T) {
+	object_type := ddic_object_type_from_xml(
+		`<?xml version="1.0"?><elementInfo type="TTYP/DA"></elementInfo>`,
+	)
+	testing.expect_value(t, object_type, "TTYP/DA")
+	testing.expect_value(
+		t,
+		infer_ddic_manifest_kind_from_object_type(object_type),
+		"ddic-table-type",
+	)
 }
 
 Function_Module_Fetch_Test_Server :: struct {
@@ -192,10 +228,10 @@ function_module_dependency_fetch_uses_only_module_source :: proc(t: ^testing.T) 
 	module_source := "FUNCTION zfm.\n  DATA lv_body TYPE zbody_type.\nENDFUNCTION."
 	group_source := "FUNCTION-POOL zfg.\nINCLUDE lzfgtop.\n"
 	server := Function_Module_Fetch_Test_Server {
-		listener = listener,
+		listener         = listener,
 		session_response = test_http_response("ok", "x-csrf-token: token\r\n", context.allocator),
-		module_response = test_http_response(module_source, "", context.allocator),
-		group_response = test_http_response(group_source, "", context.allocator),
+		module_response  = test_http_response(module_source, "", context.allocator),
+		group_response   = test_http_response(group_source, "", context.allocator),
 	}
 	defer delete(server.session_response, context.allocator)
 	defer delete(server.module_response, context.allocator)
@@ -211,15 +247,19 @@ function_module_dependency_fetch_uses_only_module_source :: proc(t: ^testing.T) 
 	base := strings.to_string(base_url)
 	defer delete(base, context.allocator)
 	client: Client
-	client_init(&client, Connection_Config{base_url = base, username = "demo", password = "secret"})
+	client_init(
+		&client,
+		Connection_Config{base_url = base, username = "demo", password = "secret"},
+		context.allocator,
+	)
 	client.http.timeout = 2 * time.Second
 	defer client_destroy(&client, context.allocator)
 	object_ref := Object_Ref {
-		uri = "/sap/bc/adt/functions/groups/ZFG/fmodules/ZFM",
-		object_type = "FUGR/FF",
-		name = "ZFM",
+		uri          = "/sap/bc/adt/functions/groups/ZFG/fmodules/ZFM",
+		object_type  = "FUGR/FF",
+		name         = "ZFM",
 		package_name = "ZPKG",
-		description = "Function module",
+		description  = "Function module",
 	}
 
 	result, err := fetch_dependency_object(&client, &object_ref, context.allocator)
@@ -248,7 +288,10 @@ formats_ddic_xml_lines :: proc(t: ^testing.T) {
 
 @(test)
 absolute_url_strips_duplicate_adt_root_and_adds_client :: proc(t: ^testing.T) {
-	config := Connection_Config{base_url = "http://host/sap/bc/adt", sap_client = "100"}
+	config := Connection_Config {
+		base_url   = "http://host/sap/bc/adt",
+		sap_client = "100",
+	}
 	url := absolute_url(&config, "/sap/bc/adt/programs/includes/ZINC", context.allocator)
 	defer delete(url, context.allocator)
 	testing.expect_value(t, url, "http://host/sap/bc/adt/programs/includes/ZINC?sap-client=100")
@@ -257,11 +300,15 @@ absolute_url_strips_duplicate_adt_root_and_adds_client :: proc(t: ^testing.T) {
 @(test)
 adt_request_accepts_https_scheme_and_reports_network_failures :: proc(t: ^testing.T) {
 	client: Client
-	client_init(&client, Connection_Config{
-		base_url = "https://127.0.0.1:1/sap/bc/adt",
-		username = "demo",
-		password = "secret",
-	})
+	client_init(
+		&client,
+		Connection_Config {
+			base_url = "https://127.0.0.1:1/sap/bc/adt",
+			username = "demo",
+			password = "secret",
+		},
+		context.allocator,
+	)
 	client.http.timeout = 2 * time.Second
 	_, err := search_repository_objects(&client, "demo", 1, context.allocator)
 	testing.expect_value(t, err, Error.Http_Network)

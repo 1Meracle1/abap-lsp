@@ -617,7 +617,7 @@ init_workspace_adt :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
 		return
 	}
 	workspace.adt_config = config
-	adt.client_init(&workspace.adt_client, workspace.adt_config)
+	adt.client_init(&workspace.adt_client, workspace.adt_config, allocator)
 	workspace.has_adt = true
 }
 

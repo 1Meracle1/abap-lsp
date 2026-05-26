@@ -265,6 +265,7 @@ CALL FUNCTION 'Z_REMOTE_FM'.
 lv_ref->get_url( ).
 CLASS lcl_remote_impl DEFINITION.
   PUBLIC SECTION.
+    INTERFACES zif_remote.
     METHODS zif_remote~run REDEFINITION.
 ENDCLASS.
 `,
@@ -274,15 +275,18 @@ ENDCLASS.
 	candidates := analyze.collect_project_remote_dependency_candidates(&project, context.allocator)
 
 	has_type := false
+	has_type_hint := false
 	has_function := false
 	has_standard_type := false
 	has_interface := false
+	has_interface_hint := false
 	has_symbol := false
 	has_routine := false
 	has_local_type := false
 	for candidate in candidates {
 		if candidate.name == "zcl_remote_type" && candidate.kind == .Type {
 			has_type = true
+			has_type_hint = candidate.hint == .Object_Type
 		}
 		if candidate.name == "z_remote_fm" && candidate.kind == .Function {
 			has_function = true
@@ -292,6 +296,7 @@ ENDCLASS.
 		}
 		if candidate.name == "zif_remote" && candidate.kind == .Type {
 			has_interface = true
+			has_interface_hint = candidate.hint == .Interface_Type
 		}
 		if candidate.name == "unknown_value" {
 			has_symbol = true
@@ -304,9 +309,11 @@ ENDCLASS.
 		}
 	}
 	testing.expect(t, has_type)
+	testing.expect(t, has_type_hint)
 	testing.expect(t, has_function)
 	testing.expect(t, has_standard_type)
 	testing.expect(t, has_interface)
+	testing.expect(t, has_interface_hint)
 	testing.expect(t, !has_symbol)
 	testing.expect(t, !has_routine)
 	testing.expect(t, !has_local_type)
@@ -893,6 +900,7 @@ project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing
 	units, ok := state.unresolved_candidates[analyze.Remote_Dependency_Key {
 		name = "zcl_waiting",
 		kind = .Type,
+		hint = .Object_Type,
 	}]
 
 	testing.expect(t, ok)
@@ -4270,8 +4278,8 @@ manifest_dependency_store_drains_iteratively :: proc(t: ^testing.T) {
 			object_uri     = "/sap/bc/adt/ddic/dataelements/ZDEP_TYPE",
 			object_type    = "DTEL/DE",
 			description    = "Dependent type",
-			file_extension = "abap",
-			source_text    = "TYPES zdep_type TYPE string.",
+			file_extension = "xml",
+			source_text    = `<blue:wbobj adtcore:name="ZDEP_TYPE" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements"><dtel:dataElement><dtel:typeKind>predefinedAbapType</dtel:typeKind><dtel:dataType>STRING</dtel:dataType></dtel:dataElement></blue:wbobj>`,
 			fetched_at     = "2026-05-21T00:00:00Z",
 		},
 	}
@@ -4426,8 +4434,8 @@ standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 			object_uri     = "/sap/bc/adt/ddic/dataelements/ZSTANDALONE_TYPE",
 			object_type    = "DTEL/DE",
 			description    = "Standalone dependent type",
-			file_extension = "abap",
-			source_text    = "TYPES zstandalone_type TYPE string.",
+			file_extension = "xml",
+			source_text    = `<blue:wbobj adtcore:name="ZSTANDALONE_TYPE" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements"><dtel:dataElement><dtel:typeKind>predefinedAbapType</dtel:typeKind><dtel:dataType>STRING</dtel:dataType></dtel:dataElement></blue:wbobj>`,
 			fetched_at     = "2026-05-21T00:00:00Z",
 		},
 	}
@@ -4780,6 +4788,20 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 }
 
 @(test)
+generic_type_adt_fetch_uses_search_before_direct_ddic_probe :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!deps.adt_candidate_direct_first(analyze.Remote_Dependency_Candidate{name = "scit_clas", kind = .Type}),
+	)
+	testing.expect(
+		t,
+		deps.adt_candidate_direct_first(
+			analyze.Remote_Dependency_Candidate{name = "zcl_demo", kind = .Type, hint = .Object_Type},
+		),
+	)
+}
+
+@(test)
 adt_fetched_function_module_input_is_dependency_interface :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "mem://ZMAIN.abap",
@@ -4920,6 +4942,82 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(project.units), 2)
 	testing.expect(t, !project_has_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+ddic_reference_table_type_generates_ref_to_line_type :: proc(t: ^testing.T) {
+	xml := `<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="ZREFS" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="INTF/OI" adtcore:name="ZIF_REF">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicReferenceType">X</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	table_source := ddic_xml.dependency_source("ZREFS", "ddic-table-type", xml, context.allocator)
+	defer delete(table_source, context.allocator)
+	testing.expect(t, contains_fold(table_source, "type standard table of ref to zif_ref with default key"))
+
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lt_refs TYPE zrefs.",
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table-type/zrefs.abap",
+			source = table_source,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/global-interface/zif_ref.abap",
+			source = "INTERFACE zif_ref. ENDINTERFACE.",
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	table_unit := analyze.project_unit_by_uri(&project, dependencies[0].uri)
+
+	testing.expect(t, table_unit != nil)
+	testing.expect(t, reference_resolves_to_uri(&project, table_unit, "zif_ref", .Type, .Type_Ref, dependencies[1].uri))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Invalid_Object_Type_Reference))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+ddic_reference_data_element_generates_ref_to_type :: proc(t: ^testing.T) {
+	xml := `<blue:wbobj adtcore:name="ZDE_REF" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>refToClifType</dtel:typeKind>
+    <dtel:typeName>ZCL_REF</dtel:typeName>
+    <dtel:dataType></dtel:dataType>
+  </dtel:dataElement>
+</blue:wbobj>`
+	ref_source := ddic_xml.dependency_source("ZDE_REF", "ddic-data-element", xml, context.allocator)
+	defer delete(ref_source, context.allocator)
+	testing.expect(t, contains_fold(ref_source, "type ref to zcl_ref"))
+
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lr_ref TYPE zde_ref.",
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-data-element/zde_ref.abap",
+			source = ref_source,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/global-class/zcl_ref.abap",
+			source = "CLASS zcl_ref DEFINITION. ENDCLASS.",
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	ref_unit := analyze.project_unit_by_uri(&project, dependencies[0].uri)
+
+	testing.expect(t, ref_unit != nil)
+	testing.expect(t, reference_resolves_to_uri(&project, ref_unit, "zcl_ref", .Type, .Type_Ref, dependencies[1].uri))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Invalid_Object_Type_Reference))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 
@@ -5138,8 +5236,8 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
 	testing.expect(t, ok)
 	testing.expect_value(t, record.object_kind, "ddic-table-type")
-	testing.expect_value(t, record.file_extension, "abap")
-	testing.expect(t, contains_fold(record.source_text, "types tr_objects"))
+	testing.expect_value(t, record.file_extension, "xml")
+	testing.expect(t, contains_fold(record.source_text, "ddicrowtype"))
 
 	shared, shared_ok, shared_err := dep_store.find_artifact_for_candidate(&store, &profile, "zinc_fetched", .Include, context.allocator)
 	testing.expect_value(t, shared_err, dep_store.Store_Error.None)
@@ -5149,7 +5247,7 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 }
 
 @(test)
-adt_fetched_ddic_table_is_cached_as_structure :: proc(t: ^testing.T) {
+adt_fetched_ddic_table_preserves_xml_in_cache :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("adt-fetch-cache-ddic-table")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
 	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
@@ -5188,11 +5286,10 @@ adt_fetched_ddic_table_is_cached_as_structure :: proc(t: ^testing.T) {
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
 	testing.expect(t, ok)
 	testing.expect_value(t, record.object_kind, "ddic-table")
-	testing.expect_value(t, record.file_extension, "abap")
-	testing.expect(t, contains_fold(record.source_text, "types: begin of t000"))
-	testing.expect(t, contains_fold(record.source_text, "mandt type c"))
-	testing.expect(t, contains_fold(record.source_text, "mtext type c"))
-	testing.expect(t, !contains_fold(record.source_text, "types t000 type string"))
+	testing.expect_value(t, record.file_extension, "xml")
+	testing.expect(t, contains_fold(record.source_text, "ddicdatatype"))
+	testing.expect(t, contains_fold(record.source_text, "mandt"))
+	testing.expect(t, contains_fold(record.source_text, "mtext"))
 }
 
 @(test)
