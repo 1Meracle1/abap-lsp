@@ -149,6 +149,9 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 }
 
 run_analyze :: proc(args: []string, allocator: mem.Allocator) {
+	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+	defer virtual.arena_temp_end(temp_arena)
+
 	tracker: mem.Tracking_Allocator
 	mem.tracking_allocator_init(&tracker, allocator, allocator)
 	tracked_allocator := mem.tracking_allocator(&tracker)
@@ -156,7 +159,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 
 	target_path := args[2]
 
-	include_paths := make([dynamic]string, 0, 4, tracked_allocator)
+	include_paths := make([dynamic]string, 0, 4, context.temp_allocator)
 	for i := 3; i < len(args); i += 2 {
 		if args[i] != "--include" || i + 1 >= len(args) {
 			print_usage()
@@ -193,7 +196,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	print_analyze_counts(&result.project)
 	print_analyze_diagnostics(&result.project)
 	execution.pool_destroy(&pool)
-	print_analyze_memory_report(&tracker, allocator)
+	print_analyze_memory_report(&tracker)
 	mem.tracking_allocator_destroy(&tracker)
 }
 
@@ -232,8 +235,11 @@ analyze_cli_path :: proc(
 	return workspace.analyze_path(&opened, abs_path, include_paths, options, allocator)
 }
 
-print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator, allocator: mem.Allocator) {
-	totals := make([dynamic]Allocation_Location_Total, 0, 64, allocator)
+print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
+	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+	defer virtual.arena_temp_end(temp_arena)
+
+	totals := make([dynamic]Allocation_Location_Total, 0, 64, context.temp_allocator)
 	for _, entry in tracker.allocation_map {
 		found := false
 		for &total in totals {
@@ -269,7 +275,6 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator, allocator:
 			total.location.procedure,
 		)
 	}
-	delete(totals)
 }
 
 source_location_equal :: proc(a, b: runtime.Source_Code_Location) -> bool {

@@ -94,10 +94,11 @@ infer_unit_semantic_facts :: proc(
 ) -> Inferred_Unit_Facts {
 	unit := &project.units[unit_index]
 	out := inferred_unit_facts_make(unit, allocator)
-	range_facts := range_type_fact_index_make(project, unit_index, allocator)
-	defer delete(range_facts.facts)
-	inline_symbols := inline_symbol_index_make(unit, allocator)
-	defer delete(inline_symbols.symbols)
+	temp_arena := temp_arena_begin()
+	defer temp_arena_end(temp_arena)
+
+	range_facts := range_type_fact_index_make(project, unit_index, context.temp_allocator)
+	inline_symbols := inline_symbol_index_make(unit, context.temp_allocator)
 
 	for ref in unit.references {
 		if ref.namespace != .Value {

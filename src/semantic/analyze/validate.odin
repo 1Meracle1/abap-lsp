@@ -100,8 +100,10 @@ validate_unit_diagnostics :: proc(
 	unit := &project.units[unit_index]
 	hint := validation_diagnostic_hint(unit)
 	out := make([dynamic]Diagnostic, 0, hint, allocator)
-	seen := make(map[Diagnostic_Key]bool, hint, allocator)
-	defer delete(seen)
+	temp_arena := temp_arena_begin()
+	defer temp_arena_end(temp_arena)
+
+	seen := make(map[Diagnostic_Key]bool, hint, context.temp_allocator)
 	for diagnostic in unit.diagnostics {
 		if retained_collector_diagnostic(diagnostic.kind) {
 			append(&out, diagnostic)

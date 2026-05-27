@@ -445,18 +445,16 @@ default_workspace_manifest :: proc(
 }
 
 init_workspace_adt :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
-	path, err := os.join_path({workspace.root_path, ".env"}, allocator)
+	path, err := os.join_path({workspace.root_path, ".env"}, context.temp_allocator)
 	if err != nil {
 		return
 	}
 	info, stat_err := os.stat(path, allocator)
 	if stat_err != nil || info.type != .Regular {
-		delete(path, allocator)
 		return
 	}
 	workspace.has_dotenv = true
 	dotenv, dotenv_err := adt.parse_dotenv_file(path, allocator)
-	delete(path, allocator)
 	if dotenv_err != .None {
 		return
 	}

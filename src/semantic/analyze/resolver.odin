@@ -470,6 +470,9 @@ seed_inherited_method_scope_parameters :: proc(
 	predecessors: [] [dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> bool {
+	temp_arena := temp_arena_begin()
+	defer temp_arena_end(temp_arena)
+
 	changed := false
 	for unit_index in 0 ..< len(units) {
 		unit := &units[unit_index]
@@ -542,7 +545,6 @@ seed_inherited_method_scope_parameters :: proc(
 				changed = true
 			}
 		}
-		delete(method_scope_by_owner)
 	}
 	return changed
 }
@@ -1418,6 +1420,9 @@ import_project_structures_for_unit :: proc(
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) {
+	temp_arena := temp_arena_begin()
+	defer temp_arena_end(temp_arena)
+
 	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), context.temp_allocator)
 	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), context.temp_allocator)
 	changed := true

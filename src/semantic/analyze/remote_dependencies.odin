@@ -8,9 +8,8 @@ collect_project_remote_dependency_candidates :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Remote_Dependency_Candidate {
 	out := make([dynamic]Remote_Dependency_Candidate, 0, 8, allocator)
-	index := make(map[string]int, 64, allocator)
-	defer delete(index)
-	lookup := build_validation_lookup(project, allocator)
+	index := make(map[string]int, 64, context.temp_allocator)
+	lookup := build_validation_lookup(project, context.temp_allocator)
 	for &unit, unit_index in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
@@ -97,7 +96,7 @@ collect_project_state_remote_dependency_candidates :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Remote_Dependency_Candidate {
 	out := make([dynamic]Remote_Dependency_Candidate, 0, len(state.unresolved_candidates), allocator)
-	index := make(map[string]int, len(state.unresolved_candidates), allocator)
+	index := make(map[string]int, len(state.unresolved_candidates), context.temp_allocator)
 	for key, units in state.unresolved_candidates {
 		if !include_dependency_interfaces &&
 		   !remote_candidate_has_full_source_waiter(state, units[:]) {
@@ -132,8 +131,10 @@ record_project_unresolved_candidates :: proc(
 	project_state_unresolved_candidates_destroy(state)
 	candidate_allocator := base_runtime.heap_allocator()
 	state.unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
-	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, candidate_allocator)
-	defer delete(recorded)
+	temp_arena := temp_arena_begin()
+	defer temp_arena_end(temp_arena)
+
+	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, context.temp_allocator)
 	lookup := validation_lookup_from_project_index(&state.index)
 	for unit, unit_index in project.units {
 		for &edge in unit.include_edges {
@@ -222,6 +223,9 @@ record_project_unresolved_candidates_for_units :: proc(
 ) {
 	project_index_ensure_unit_count(&state.index, len(project.units))
 	lookup := validation_lookup_from_project_index(&state.index)
+	temp_arena := temp_arena_begin()
+	defer temp_arena_end(temp_arena)
+
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
 		if unit_index < 0 || unit_index >= len(project.units) {
@@ -232,7 +236,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			remove_remote_candidate_unit(state, key, unit_id)
 		}
 		clear(&data.unresolved_candidates)
-		recorded := make(map[Remote_Dependency_Key]bool, 8, state.index.allocator)
+		recorded := make(map[Remote_Dependency_Key]bool, 8, context.temp_allocator)
 		unit := &project.units[unit_index]
 		for &edge in unit.include_edges {
 			if !edge.has_target {
@@ -322,7 +326,6 @@ record_project_unresolved_candidates_for_units :: proc(
 				)
 			}
 		}
-		delete(recorded)
 	}
 }
 
