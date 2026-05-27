@@ -42,6 +42,12 @@ Builtin_Routine_Spec :: struct {
 	supports_named_arguments: bool,
 }
 
+Builtin_Class_Attribute_Spec :: struct {
+	class_name: string,
+	name:       string,
+	type_name:  string,
+}
+
 BUILTIN_SCALAR_TYPES :: []string {
 	"i",
 	"int1",
@@ -527,6 +533,16 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "cntl_simple_events", kind = .Type, structure_name = "cntl_simple_event"},
 }
 
+BUILTIN_CLASS_ATTRIBUTES :: []Builtin_Class_Attribute_Spec {
+	{class_name = "cl_abap_char_utilities", name = "charsize", type_name = "i"},
+	{class_name = "cl_abap_char_utilities", name = "cr_lf", type_name = "abap_cr_lf"},
+	{class_name = "cl_abap_char_utilities", name = "endian", type_name = "abap_endian"},
+	{class_name = "cl_abap_char_utilities", name = "form_feed", type_name = "abap_char1"},
+	{class_name = "cl_abap_char_utilities", name = "horizontal_tab", type_name = "abap_char1"},
+	{class_name = "cl_abap_char_utilities", name = "minchar", type_name = "abap_char1"},
+	{class_name = "cl_abap_char_utilities", name = "newline", type_name = "abap_char1"},
+}
+
 NUMERIC_ARG_PARAMS :: []Builtin_Routine_Param_Spec{{"arg", "data"}}
 FLOAT_ARG_PARAMS :: []Builtin_Routine_Param_Spec{{"arg", "f"}}
 IPOW_PARAMS :: []Builtin_Routine_Param_Spec{{"base", "data"}, {"exp", "i"}}
@@ -822,4 +838,20 @@ builtin_structure_field_description :: proc(structure_name, field_name: string) 
 		}
 	}
 	return ""
+}
+
+builtin_class_attribute_type_fact :: proc(class_name, attribute_name: string) -> (Type_Fact_Data, bool) {
+	for attribute in BUILTIN_CLASS_ATTRIBUTES {
+		if strings.equal_fold(attribute.class_name, class_name) &&
+		   strings.equal_fold(attribute.name, attribute_name) {
+			return Type_Fact_Data {
+					structure = INVALID_STRUCTURE_ID,
+					declared_type = builtin_type_ref(attribute.type_name),
+					has_declared_type = true,
+					type_clause_display = attribute.type_name,
+				},
+				true
+		}
+	}
+	return {}, false
 }

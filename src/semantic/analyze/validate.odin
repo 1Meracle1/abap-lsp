@@ -809,6 +809,17 @@ type_fact_from_class_member_path :: proc(
 	}
 	member, ok := class_member_in_hierarchy(project, lookup, class_handle, path[0].name, true)
 	if !ok {
+		if fact, builtin_ok := builtin_class_member_type_fact(project, class_handle, path[0].name);
+		   builtin_ok {
+			if len(path) == 1 {
+				return fact, true
+			}
+			if fact.structure == INVALID_STRUCTURE_ID {
+				return {}, false
+			}
+			member_unit := &project.units[unit_id_index(class_handle.unit)]
+			return type_fact_from_structure_path(project, member_unit, fact.structure, path[1:])
+		}
 		return {}, false
 	}
 	fact := class_member_type_fact(member)
@@ -1057,6 +1068,22 @@ unit_class_member_lookup :: proc(
 		return &project.units[unit_index].class_members[member_index]
 	}
 	return nil
+}
+
+builtin_class_member_type_fact :: proc(
+	project: ^Project_Analysis,
+	class_handle: Symbol_Handle,
+	member_name: string,
+) -> (Type_Fact_Data, bool) {
+	unit_index := unit_id_index(class_handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return {}, false
+	}
+	s := symbol(&project.units[unit_index], class_handle.symbol)
+	if s == nil {
+		return {}, false
+	}
+	return builtin_class_attribute_type_fact(s.name, member_name)
 }
 
 class_member_type_fact :: proc(member: ^Class_Member_Data) -> Type_Fact_Data {

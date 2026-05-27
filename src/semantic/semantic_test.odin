@@ -3028,6 +3028,35 @@ ENDLOOP.
 }
 
 @(test)
+resolves_known_cl_abap_char_utilities_attributes :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/main.abap",
+		source = `
+DATA lv_text TYPE string.
+DATA lv_size TYPE i.
+lv_text = cl_abap_char_utilities=>newline.
+lv_text = cl_abap_char_utilities=>cr_lf.
+lv_text = cl_abap_char_utilities=>form_feed.
+lv_text = cl_abap_char_utilities=>horizontal_tab.
+lv_text = cl_abap_char_utilities=>minchar.
+lv_text = cl_abap_char_utilities=>endian.
+lv_size = cl_abap_char_utilities=>charsize.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/cl_abap_char_utilities.abap",
+			source = "CLASS cl_abap_char_utilities DEFINITION. ENDCLASS.",
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 semantic_queries_find_symbols_references_sql_and_facts :: proc(t: ^testing.T) {
 	source := `DATA lv_value TYPE i.
 DATA lv_copy TYPE i.
