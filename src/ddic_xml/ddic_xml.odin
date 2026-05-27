@@ -27,7 +27,7 @@ dependency_source :: proc(
 ) -> string {
 	doc, parsed := ddic_xml_parse(source, allocator)
 	kind := ddic_xml_kind(object_kind, doc)
-	out := ""
+	out: string
 
 	if kind == .Structure || kind == .Unknown {
 		fields := ddic_xml_fields(doc, allocator)
@@ -37,25 +37,22 @@ dependency_source :: proc(
 		delete(fields)
 	}
 
-	if out == "" {
+	if len(out) == 0 {
 		line := ddic_xml_table_line_type(doc)
-		if line.name != "" && (kind == .Table_Type || kind == .Unknown) {
+		if len(line.name) != 0 && (kind == .Table_Type || kind == .Unknown) {
 			out = ddic_xml_table_type_source(name, line, allocator)
 		}
 	}
 
-	if out == "" && (kind == .Alias || kind == .Unknown) {
+	if len(out) == 0 && (kind == .Alias || kind == .Unknown) {
 		base_type := ddic_xml_data_element_type(doc)
-		if base_type.name != "" {
+		if len(base_type.name) != 0 {
 			out = ddic_xml_type_alias_source(name, base_type, allocator)
 		}
 	}
 
 	if parsed {
 		xml_doc.destroy(doc, allocator)
-	}
-	if out == "" {
-		out = strings.clone("", allocator)
 	}
 	return out
 }
@@ -236,7 +233,11 @@ ddic_xml_table_line_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {
 	if !is_ref && !strings.equal_fold(ddic_xml_entry_text(doc, child_id, "ddicRowType"), "X") {
 		return {}
 	}
-	return Ddic_Xml_Type_Ref{name = ddic_xml_attr_value(doc, child_id, "name"), is_ref = is_ref}
+	name := ddic_xml_attr_value(doc, child_id, "name")
+	if name == "" && !is_ref {
+		name = "string"
+	}
+	return Ddic_Xml_Type_Ref{name = name, is_ref = is_ref}
 }
 
 ddic_xml_data_element_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref {

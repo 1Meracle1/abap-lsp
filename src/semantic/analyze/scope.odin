@@ -70,6 +70,12 @@ scope_index_make :: proc(allocator: mem.Allocator) -> Scope_Index {
 	}
 }
 
+scope_index_destroy :: proc(index: ^Scope_Index) {
+	delete(index.symbols)
+	delete(index.class_symbols)
+	index^ = {}
+}
+
 add_scope :: proc(
 	unit: ^Unit_Analysis,
 	kind: Scope_Kind,

@@ -49,6 +49,12 @@ Inferred_Unit_Facts :: struct {
 	concatenates:     [dynamic]Inferred_Concatenate_Update,
 }
 
+inferred_unit_facts_destroy_updates :: proc(facts: ^Inferred_Unit_Facts) {
+	delete(facts.symbol_updates)
+	delete(facts.assignments)
+	delete(facts.concatenates)
+}
+
 inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Inferred_Unit_Facts {
 	value_flow_cap := len(unit.assignment_sites) + len(unit.named_arguments) + len(unit.call_sites)
 	return Inferred_Unit_Facts {
@@ -199,18 +205,15 @@ apply_inferred_project_facts :: proc(
 	inferred: []Inferred_Unit_Facts,
 ) -> bool {
 	rerun := false
-	for facts, unit_index in inferred {
-		if unit_index >= len(project.units) {
-			continue
-		}
+	for &facts, unit_index in inferred {
 		unit := &project.units[unit_index]
+		delete(unit.expression_facts)
+		delete(unit.value_flow_edges)
 		unit.expression_facts = facts.expression_facts
 		unit.value_flow_edges = facts.value_flow_edges
 		for update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
-			if idx < 0 || idx >= len(unit.symbols) {
-				continue
-			}
+			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
 				rerun = rerun || s.structure != update.type_fact.structure ||
@@ -227,16 +230,15 @@ apply_inferred_project_facts :: proc(
 			}
 		}
 		for update in facts.assignments {
-			if update.index >= 0 && update.index < len(unit.assignment_sites) {
-				unit.assignment_sites[update.index].lhs = update.lhs
-				unit.assignment_sites[update.index].rhs = update.rhs
-			}
+			assert(update.index >= 0 && update.index < len(unit.assignment_sites))
+			unit.assignment_sites[update.index].lhs = update.lhs
+			unit.assignment_sites[update.index].rhs = update.rhs
 		}
 		for update in facts.concatenates {
-			if update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites) {
-				unit.concatenate_lines_of_sites[update.index].source = update.source
-			}
+			assert(update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites))
+			unit.concatenate_lines_of_sites[update.index].source = update.source
 		}
+		inferred_unit_facts_destroy_updates(&facts)
 	}
 	return rerun
 }
@@ -248,18 +250,15 @@ apply_inferred_project_facts_for_indices :: proc(
 ) -> bool {
 	rerun := false
 	for unit_index, i in indices {
-		if unit_index < 0 || unit_index >= len(project.units) {
-			continue
-		}
-		facts := inferred[i]
+		facts := &inferred[i]
 		unit := &project.units[unit_index]
+		delete(unit.expression_facts)
+		delete(unit.value_flow_edges)
 		unit.expression_facts = facts.expression_facts
 		unit.value_flow_edges = facts.value_flow_edges
 		for update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
-			if idx < 0 || idx >= len(unit.symbols) {
-				continue
-			}
+			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
 				rerun = rerun || s.structure != update.type_fact.structure ||
@@ -276,16 +275,15 @@ apply_inferred_project_facts_for_indices :: proc(
 			}
 		}
 		for update in facts.assignments {
-			if update.index >= 0 && update.index < len(unit.assignment_sites) {
-				unit.assignment_sites[update.index].lhs = update.lhs
-				unit.assignment_sites[update.index].rhs = update.rhs
-			}
+			assert(update.index >= 0 && update.index < len(unit.assignment_sites))
+			unit.assignment_sites[update.index].lhs = update.lhs
+			unit.assignment_sites[update.index].rhs = update.rhs
 		}
 		for update in facts.concatenates {
-			if update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites) {
-				unit.concatenate_lines_of_sites[update.index].source = update.source
-			}
+			assert(update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites))
+			unit.concatenate_lines_of_sites[update.index].source = update.source
 		}
+		inferred_unit_facts_destroy_updates(facts)
 	}
 	return rerun
 }

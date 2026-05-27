@@ -115,6 +115,20 @@ stores_and_looks_up_artifacts :: proc(t: ^testing.T) {
 }
 
 @(test)
+stores_artifact_with_empty_text_fields :: proc(t: ^testing.T) {
+	path := workspace_store_path("stores_artifact_with_empty_text_fields.sqlite3")
+	store, err := dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	profile := sample_profile()
+	artifact := sample_artifact()
+	artifact.package_name = ""
+	artifact.description = ""
+
+	_, err = put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+}
+
+@(test)
 candidate_lookup_returns_highest_priority_artifact_kind :: proc(t: ^testing.T) {
 	path := workspace_store_path("candidate_lookup_kind_priority.sqlite3")
 	store, err := dependency_store_from_override_path(path, context.allocator)

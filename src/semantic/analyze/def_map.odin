@@ -1119,6 +1119,7 @@ find_symbol :: proc(unit: ^Unit_Analysis, name: string, kind: Symbol_Kind) -> ^S
 }
 
 rebuild_semantic_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) {
+	semantic_index_destroy(&unit.semantic_index)
 	unit.semantic_index = build_semantic_index(unit, allocator)
 }
 

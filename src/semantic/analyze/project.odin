@@ -2,6 +2,7 @@ package abap_frontend_semantic_analyze
 
 import execution "../../execution"
 import "../../parser"
+import uri_key "../../uri_key"
 
 import base_runtime "base:runtime"
 import "core:mem"
@@ -76,15 +77,14 @@ Project_State :: struct {
 	unresolved_candidates: map[Remote_Dependency_Key][dynamic]Unit_Id,
 	diagnostics:           [dynamic]Diagnostic,
 	index:                 Project_Index,
-
-	candidates:           [dynamic]Project_Candidate_Input,
-	candidate_to_unit:    [dynamic]Unit_Id,
-	candidate_dirs:       [dynamic]string,
-	unit_dirs:            [dynamic]string,
-	unit_candidate_index: [dynamic]int,
-	interface_signatures: [dynamic]string,
-	unit_allocators:      []mem.Allocator,
-	allocator:            mem.Allocator,
+	candidates:            [dynamic]Project_Candidate_Input,
+	candidate_to_unit:     [dynamic]Unit_Id,
+	candidate_dirs:        [dynamic]string,
+	unit_dirs:             [dynamic]string,
+	unit_candidate_index:  [dynamic]int,
+	interface_signatures:  [dynamic]string,
+	unit_allocators:       []mem.Allocator,
+	allocator:             mem.Allocator,
 }
 
 Project_Candidate_Input :: struct {
@@ -152,7 +152,14 @@ analyze_target_with_candidate_inputs :: proc(
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
-	return analyze_target_with_candidate_inputs_allocators(target, candidates, dependencies, options, {}, allocator)
+	return analyze_target_with_candidate_inputs_allocators(
+		target,
+		candidates,
+		dependencies,
+		options,
+		{},
+		allocator,
+	)
 }
 
 analyze_target_with_candidate_inputs_allocators :: proc(
@@ -226,28 +233,61 @@ project_state_analyze_targets_with_candidate_inputs :: proc(
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
-	assert(options.pool != nil)
+	return project_state_apply_dirty_inputs(
+		state,
+		targets,
+		candidates,
+		dependencies,
+		{},
+		{},
+		options,
+		allocator,
+	)
+}
+
+project_state_apply_dirty_inputs :: proc(
+	state: ^Project_State,
+	targets: []Source_Input,
+	candidates: []Project_Candidate_Input,
+	dependencies: []Source_Input,
+	dirty: []Unit_Id,
+	include_roots: []Unit_Id,
+	options: Analyze_Options,
+	allocator: mem.Allocator,
+) -> Project_Analysis {
 	state.allocator = allocator
 	project_state_set_candidates(state, candidates, allocator)
-	dirty := make([dynamic]Unit_Id, 0, len(targets) + len(dependencies), allocator)
-	include_roots := make([dynamic]Unit_Id, 0, len(targets) + len(dependencies), allocator)
+	next_dirty := make(
+		[dynamic]Unit_Id,
+		0,
+		len(targets) + len(dependencies) + len(dirty),
+		context.temp_allocator,
+	)
+	next_include_roots := make(
+		[dynamic]Unit_Id,
+		0,
+		len(targets) + len(dependencies) + len(include_roots),
+		context.temp_allocator,
+	)
+	for unit_id in dirty {push_unique_unit(&next_dirty, unit_id)}
+	for unit_id in include_roots {push_unique_unit(&next_include_roots, unit_id)}
 	for target in targets {
 		target_id, target_changed := project_state_upsert_input(state, target, -1, allocator)
 		if target_changed {
-			push_unique_unit(&dirty, target_id)
-			push_unique_unit(&include_roots, target_id)
+			push_unique_unit(&next_dirty, target_id)
+			push_unique_unit(&next_include_roots, target_id)
 		}
 	}
 	for dependency in dependencies {
 		unit_id, changed := project_state_upsert_input(state, dependency, -1, allocator)
 		if changed {
-			push_unique_unit(&dirty, unit_id)
-			push_unique_unit(&include_roots, unit_id)
+			push_unique_unit(&next_dirty, unit_id)
+			push_unique_unit(&next_include_roots, unit_id)
 		}
 	}
-	project_state_mark_active_candidate_changes(state, &dirty, &include_roots)
-	project_state_collect_include_roots_for_candidates(state, &include_roots)
-	project_state_update(state, dirty[:], include_roots[:], options, allocator)
+	project_state_mark_active_candidate_changes(state, &next_dirty, &next_include_roots)
+	project_state_collect_include_roots_for_candidates(state, &next_include_roots)
+	project_state_update(state, next_dirty[:], next_include_roots[:], options, allocator)
 	return project_state_analysis(state)
 }
 
@@ -280,7 +320,8 @@ project_state_set_candidates :: proc(
 		if existing, ok := state.uri_to_unit[key]; ok {
 			unit_id = existing
 			unit_index := unit_id_index(unit_id)
-			if unit_index >= 0 && unit_index < len(state.unit_candidate_index) &&
+			if unit_index >= 0 &&
+			   unit_index < len(state.unit_candidate_index) &&
 			   state.unit_candidate_index[unit_index] < 0 {
 				state.unit_candidate_index[unit_index] = i
 			}
@@ -317,14 +358,18 @@ project_state_upsert_input :: proc(
 	input: Source_Input,
 	candidate_index: int,
 	allocator: mem.Allocator,
-) -> (Unit_Id, bool) {
+) -> (
+	Unit_Id,
+	bool,
+) {
 	key_allocator := base_runtime.heap_allocator()
 	key := normalized_uri_path_key(input.uri, key_allocator)
 	if unit_id, ok := state.uri_to_unit[key]; ok {
 		delete(key, key_allocator)
 		unit_index := unit_id_index(unit_id)
-		changed := state.inputs[unit_index].source != input.source ||
-		           state.inputs[unit_index].mode != input.mode
+		changed :=
+			state.inputs[unit_index].source != input.source ||
+			state.inputs[unit_index].mode != input.mode
 		state.inputs[unit_index] = input
 		if candidate_index >= 0 {
 			state.unit_candidate_index[unit_index] = candidate_index
@@ -357,23 +402,24 @@ project_state_update :: proc(
 	if len(dirty_units) == 0 && len(include_roots) == 0 {
 		return
 	}
-	scratch_arena: virtual.Arena
-	_ = virtual.arena_init_growing(&scratch_arena)
-	defer virtual.arena_destroy(&scratch_arena)
-	scratch_allocator := virtual.arena_allocator(&scratch_arena)
 
-	parsed_units := make([dynamic]Unit_Id, 0, len(dirty_units), scratch_allocator)
+	parsed_units := make([dynamic]Unit_Id, 0, len(dirty_units), context.temp_allocator)
 	project_state_parse_units(state, dirty_units, options.pool, allocator)
 	project_state_refresh_candidate_units(state, allocator)
 	for unit_id in dirty_units {
 		push_unique_unit(&parsed_units, unit_id)
 	}
 
-	next_roots := make([dynamic]Unit_Id, 0, len(dirty_units) + len(include_roots), scratch_allocator)
+	next_roots := make(
+		[dynamic]Unit_Id,
+		0,
+		len(dirty_units) + len(include_roots),
+		context.temp_allocator,
+	)
 	for unit_id in dirty_units {push_unique_unit(&next_roots, unit_id)}
 	for unit_id in include_roots {push_unique_unit(&next_roots, unit_id)}
 	for len(next_roots) > 0 {
-		new_units := make([dynamic]Unit_Id, 0, 4, scratch_allocator)
+		new_units := make([dynamic]Unit_Id, 0, 4, context.temp_allocator)
 		project_state_resolve_include_edges(state, next_roots[:], &new_units, allocator)
 		if len(new_units) == 0 {
 			break
@@ -388,10 +434,7 @@ project_state_update :: proc(
 }
 
 @(private)
-project_state_refresh_candidate_units :: proc(
-	state: ^Project_State,
-	allocator: mem.Allocator,
-) {
+project_state_refresh_candidate_units :: proc(state: ^Project_State, allocator: mem.Allocator) {
 	for candidate, i in state.candidates {
 		if state.candidate_to_unit[i] != INVALID_UNIT_ID {
 			continue
@@ -405,7 +448,8 @@ project_state_refresh_candidate_units :: proc(
 		}
 		state.candidate_to_unit[i] = unit_id
 		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < len(state.unit_candidate_index) &&
+		if unit_index >= 0 &&
+		   unit_index < len(state.unit_candidate_index) &&
 		   state.unit_candidate_index[unit_index] < 0 {
 			state.unit_candidate_index[unit_index] = i
 		}
@@ -432,10 +476,10 @@ project_state_parse_units :: proc(
 		return
 	}
 	work := Project_Work_State {
-		units = state.units,
-		inputs = state.inputs,
+		units           = state.units,
+		inputs          = state.inputs,
 		unit_allocators = state.unit_allocators,
-		allocator = allocator,
+		allocator       = allocator,
 	}
 	run_project_tasks(pool, indices[:], &work, parse_collect_task)
 	state.units = work.units
@@ -458,7 +502,11 @@ project_state_resolve_include_edges :: proc(
 			if edge.has_target {
 				continue
 			}
-			candidate_index, ok := project_state_resolve_include_candidate(state, edge.name, source_dir)
+			candidate_index, ok := project_state_resolve_include_candidate(
+				state,
+				edge.name,
+				source_dir,
+			)
 			if !ok {
 				continue
 			}
@@ -482,7 +530,10 @@ project_state_resolve_include_edges :: proc(
 project_state_resolve_include_candidate :: proc(
 	state: ^Project_State,
 	name, source_dir: string,
-) -> (int, bool) {
+) -> (
+	int,
+	bool,
+) {
 	if source_dir != "" {
 		if candidate, ok := project_state_find_candidate_in_dir(state, name, source_dir); ok {
 			return candidate, true
@@ -508,7 +559,10 @@ project_state_resolve_include_candidate :: proc(
 project_state_find_candidate_in_dir :: proc(
 	state: ^Project_State,
 	name, dir: string,
-) -> (int, bool) {
+) -> (
+	int,
+	bool,
+) {
 	for candidate_dir, i in state.candidate_dirs {
 		if candidate_dir == dir && project_state_candidate_has_name(state, i, name) {
 			return i, true
@@ -521,7 +575,10 @@ project_state_find_candidate_in_dir :: proc(
 project_state_find_candidate_in_child_dir :: proc(
 	state: ^Project_State,
 	name, parent, child: string,
-) -> (int, bool) {
+) -> (
+	int,
+	bool,
+) {
 	for candidate_dir, i in state.candidate_dirs {
 		if dir_is_child(candidate_dir, parent, child) &&
 		   project_state_candidate_has_name(state, i, name) {
@@ -584,13 +641,13 @@ project_state_finish :: proc(
 	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) {
-	scratch_arena: virtual.Arena
-	_ = virtual.arena_init_growing(&scratch_arena)
-	defer virtual.arena_destroy(&scratch_arena)
-	scratch_allocator := virtual.arena_allocator(&scratch_arena)
-
-	affected := make([dynamic]Unit_Id, 0, len(parsed_units) + len(include_roots), scratch_allocator)
-	interface_changed := make([dynamic]Unit_Id, 0, len(parsed_units), scratch_allocator)
+	affected := make(
+		[dynamic]Unit_Id,
+		0,
+		len(parsed_units) + len(include_roots),
+		context.temp_allocator,
+	)
+	interface_changed := make([dynamic]Unit_Id, 0, len(parsed_units), context.temp_allocator)
 	for unit_id in parsed_units {
 		push_unique_unit(&affected, unit_id)
 		unit_index := unit_id_index(unit_id)
@@ -626,10 +683,19 @@ project_state_finish :: proc(
 	project_index_update_include_graph(&state.index, state.units[:], affected[:])
 
 	project := project_state_analysis(state)
-	resolve_project_cross_unit_for_units(project.units[:], affected[:], &state.index, scratch_allocator, allocator)
+	resolve_project_cross_unit_for_units(
+		project.units[:],
+		affected[:],
+		&state.index,
+		allocator,
+	)
 	if project_state_linking_needed(project.units[:], affected[:]) {
 		reset_cross_class_member_implementation_links(project.units[:])
-		link_class_member_implementations_with_index(project.units[:], &state.index.root_lookup, state.index.predecessors)
+		link_class_member_implementations_with_index(
+			project.units[:],
+			&state.index.root_lookup,
+			state.index.predecessors,
+		)
 		project_state_add_class_definition_units(project.units[:], &affected)
 	}
 	reclassify_project_open_sql_predicate_host_variables_for_units(
@@ -639,9 +705,29 @@ project_state_finish :: proc(
 	)
 	project_index_update_sql_predicate_columns(&state.index, project.units[:], affected[:])
 	lookup := validation_lookup_from_project_index(&state.index)
-	infer_project_semantic_facts_for_units(&project, &lookup, affected[:], pool, state.unit_allocators, allocator)
-	validate_project_units_for_units(&project, &lookup, affected[:], pool, state.unit_allocators, allocator)
-	rebuild_project_semantic_indexes_for_units(&project, affected[:], pool, state.unit_allocators, allocator)
+	infer_project_semantic_facts_for_units(
+		&project,
+		&lookup,
+		affected[:],
+		pool,
+		state.unit_allocators,
+		allocator,
+	)
+	validate_project_units_for_units(
+		&project,
+		&lookup,
+		affected[:],
+		pool,
+		state.unit_allocators,
+		allocator,
+	)
+	rebuild_project_semantic_indexes_for_units(
+		&project,
+		affected[:],
+		pool,
+		state.unit_allocators,
+		allocator,
+	)
 	collect_project_diagnostics(&project)
 	state.units = project.units
 	state.diagnostics = project.diagnostics
@@ -706,10 +792,7 @@ unit_provides_name :: proc(unit: ^Unit_Analysis, name: string) -> bool {
 }
 
 @(private)
-project_state_prepare_affected_units :: proc(
-	state: ^Project_State,
-	affected: []Unit_Id,
-) {
+project_state_prepare_affected_units :: proc(state: ^Project_State, affected: []Unit_Id) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
 		if unit_index < 0 || unit_index >= len(state.units) {
@@ -745,10 +828,10 @@ project_state_build_scope_indexes :: proc(
 		return
 	}
 	work := Project_Work_State {
-		units = state.units,
-		inputs = state.inputs,
+		units           = state.units,
+		inputs          = state.inputs,
 		unit_allocators = state.unit_allocators,
-		allocator = allocator,
+		allocator       = allocator,
 	}
 	run_project_tasks(pool, indices[:], &work, build_scope_index_task)
 	state.units = work.units
@@ -817,7 +900,6 @@ resolve_project_cross_unit_for_units :: proc(
 	units: []Unit_Analysis,
 	affected: []Unit_Id,
 	index: ^Project_Index,
-	scratch_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) {
 	if len(units) == 0 || len(affected) == 0 {
@@ -856,7 +938,6 @@ resolve_project_cross_unit_for_units :: proc(
 		index.class_scope_entries,
 		index.visible,
 		index.predecessors,
-		scratch_allocator,
 		allocator,
 	) {
 		for unit_id in affected {
@@ -864,6 +945,7 @@ resolve_project_cross_unit_for_units :: proc(
 			if unit_index < 0 || unit_index >= len(units) {
 				continue
 			}
+			scope_index_destroy(&units[unit_index].scope_index)
 			units[unit_index].scope_index = build_scope_index(&units[unit_index], allocator)
 			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
 		}
@@ -877,7 +959,6 @@ resolve_project_cross_unit_for_units :: proc(
 				unit_index,
 				&index.root_lookup,
 				index.visible[unit_index],
-				scratch_allocator,
 				allocator,
 			)
 		}
@@ -890,9 +971,8 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 	affected: []Unit_Id,
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
-	visible: [] [dynamic]Unit_Id,
-	predecessors: [] [dynamic]Unit_Id,
-	scratch_allocator: mem.Allocator,
+	visible: [][dynamic]Unit_Id,
+	predecessors: [][dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> bool {
 	changed := false
@@ -902,7 +982,8 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 			continue
 		}
 		unit := &units[unit_index]
-		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), scratch_allocator)
+		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), context.temp_allocator)
+
 		for _ in 0 ..< len(unit.symbols) {
 			append(&method_scope_by_owner, INVALID_SCOPE_ID)
 		}
@@ -971,7 +1052,6 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 				changed = true
 			}
 		}
-		delete(method_scope_by_owner)
 	}
 	return changed
 }
@@ -1000,7 +1080,8 @@ project_state_linking_needed :: proc(units: []Unit_Analysis, affected: []Unit_Id
 reset_cross_class_member_implementation_links :: proc(units: []Unit_Analysis) {
 	for &unit in units {
 		for &member in unit.class_members {
-			if !(.Has_Implementation in member.flags) || member.implementation.unit == unit.unit_id {
+			if !(.Has_Implementation in member.flags) ||
+			   member.implementation.unit == unit.unit_id {
 				continue
 			}
 			member.flags -= {.Has_Implementation, .Has_Implementation_Range}
@@ -1045,7 +1126,12 @@ reclassify_project_open_sql_predicate_host_variables_for_units :: proc(
 		if unit_index < 0 || unit_index >= len(units) {
 			continue
 		}
-		next_refs := make([dynamic]Sql_Name_Ref_Data, 0, len(units[unit_index].sql_name_refs), allocator)
+		next_refs := make(
+			[dynamic]Sql_Name_Ref_Data,
+			0,
+			len(units[unit_index].sql_name_refs),
+			allocator,
+		)
 		for sql_ref in units[unit_index].sql_name_refs {
 			if sql_ref.kind == .Column &&
 			   sql_ref_in_predicate(units[unit_index].sql_predicates[:], sql_ref) {
@@ -1069,11 +1155,23 @@ project_state_rebuild_dependency_graph :: proc(
 	project_state_reverse_edges_destroy(state)
 	clear(&state.edges)
 	graph_allocator := base_runtime.heap_allocator()
-	edge_seen := make(map[Project_Dependency_Edge]bool, len(project.units) * 4 + 64, graph_allocator)
-	reverse_seen := make(map[Reverse_Dependency_Key]bool, len(project.units) * 2 + 8, graph_allocator)
+	edge_seen := make(
+		map[Project_Dependency_Edge]bool,
+		len(project.units) * 4 + 64,
+		graph_allocator,
+	)
+	reverse_seen := make(
+		map[Reverse_Dependency_Key]bool,
+		len(project.units) * 2 + 8,
+		graph_allocator,
+	)
 	defer delete(edge_seen)
 	defer delete(reverse_seen)
-	state.reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, len(project.units) * 2 + 8, graph_allocator)
+	state.reverse_edges = make(
+		map[Unit_Id][dynamic]Unit_Id,
+		len(project.units) * 2 + 8,
+		graph_allocator,
+	)
 	for unit, unit_index in project.units {
 		for edge in unit.include_edges {
 			if edge.has_target {
@@ -1090,7 +1188,8 @@ project_state_rebuild_dependency_graph :: proc(
 			}
 		}
 		for ref in unit.references {
-			if !ref.has_resolution || ref.resolution.kind != .Symbol ||
+			if !ref.has_resolution ||
+			   ref.resolution.kind != .Symbol ||
 			   ref.resolution.symbol.unit == unit.unit_id {
 				continue
 			}
@@ -1190,7 +1289,11 @@ project_state_update_dependency_graph_for_units :: proc(
 
 		unit := &project.units[unit_index]
 		graph_allocator := state.index.allocator
-		edge_seen := make(map[Project_Dependency_Edge]bool, len(unit.references) + len(unit.include_edges) + 8, graph_allocator)
+		edge_seen := make(
+			map[Project_Dependency_Edge]bool,
+			len(unit.references) + len(unit.include_edges) + 8,
+			graph_allocator,
+		)
 		for edge in unit.include_edges {
 			if edge.has_target {
 				project_state_add_dependency_edge_for_unit(
@@ -1206,7 +1309,8 @@ project_state_update_dependency_graph_for_units :: proc(
 			}
 		}
 		for ref in unit.references {
-			if !ref.has_resolution || ref.resolution.kind != .Symbol ||
+			if !ref.has_resolution ||
+			   ref.resolution.kind != .Symbol ||
 			   ref.resolution.symbol.unit == unit.unit_id {
 				continue
 			}
@@ -1311,7 +1415,12 @@ project_state_add_dependency_edge_for_unit :: proc(
 	if from == INVALID_UNIT_ID || to == INVALID_UNIT_ID || from == to {
 		return
 	}
-	edge := Project_Dependency_Edge{from = from, to = to, kind = kind, name = name}
+	edge := Project_Dependency_Edge {
+		from = from,
+		to   = to,
+		kind = kind,
+		name = name,
+	}
 	if edge in edge_seen^ {
 		return
 	}
@@ -1327,7 +1436,10 @@ project_state_increment_dependency_pair :: proc(
 	from, to: Unit_Id,
 	allocator: mem.Allocator,
 ) {
-	key := Reverse_Dependency_Key{from = from, to = to}
+	key := Reverse_Dependency_Key {
+		from = from,
+		to   = to,
+	}
 	if count, ok := state.index.dependency_pair_counts[key]; ok {
 		state.index.dependency_pair_counts[key] = count + 1
 		return
@@ -1345,7 +1457,10 @@ project_state_increment_dependency_pair :: proc(
 
 @(private)
 project_state_decrement_dependency_pair :: proc(state: ^Project_State, from, to: Unit_Id) {
-	key := Reverse_Dependency_Key{from = from, to = to}
+	key := Reverse_Dependency_Key {
+		from = from,
+		to   = to,
+	}
 	count, ok := state.index.dependency_pair_counts[key]
 	if !ok {
 		return
@@ -1395,13 +1510,21 @@ project_state_add_dependency_edge :: proc(
 	if from == INVALID_UNIT_ID || to == INVALID_UNIT_ID || from == to {
 		return
 	}
-	edge := Project_Dependency_Edge{from = from, to = to, kind = kind, name = name}
+	edge := Project_Dependency_Edge {
+		from = from,
+		to   = to,
+		kind = kind,
+		name = name,
+	}
 	if edge in edge_seen^ {
 		return
 	}
 	edge_seen^[edge] = true
 	append(&state.edges, edge)
-	reverse_key := Reverse_Dependency_Key{from = from, to = to}
+	reverse_key := Reverse_Dependency_Key {
+		from = from,
+		to   = to,
+	}
 	if reverse_key in reverse_seen^ {
 		return
 	}
@@ -1517,8 +1640,14 @@ write_signature_type_ref :: proc(out: ^strings.Builder, ref: Field_Type_Ref_Data
 }
 
 @(private)
-unit_allocator :: proc(unit_allocators: []mem.Allocator, unit_index: int, fallback: mem.Allocator) -> mem.Allocator {
-	if 0 <= unit_index && unit_index < len(unit_allocators) && unit_allocators[unit_index].procedure != nil {
+unit_allocator :: proc(
+	unit_allocators: []mem.Allocator,
+	unit_index: int,
+	fallback: mem.Allocator,
+) -> mem.Allocator {
+	if 0 <= unit_index &&
+	   unit_index < len(unit_allocators) &&
+	   unit_allocators[unit_index].procedure != nil {
 		return unit_allocators[unit_index]
 	}
 	return fallback
@@ -1577,19 +1706,20 @@ dir_is_child :: proc(candidate, parent, child: string) -> bool {
 	if len(candidate) != len(parent) + 1 + len(child) {
 		return false
 	}
-	return candidate[:len(parent)] == parent &&
-	       candidate[len(parent)] == '/' &&
-	       candidate[len(parent) + 1:] == child
+	return(
+		candidate[:len(parent)] == parent &&
+		candidate[len(parent)] == '/' &&
+		candidate[len(parent) + 1:] == child \
+	)
 }
 
 @(private)
 run_all_unit_tasks :: proc(
 	pool: ^execution.Pool,
 	state: ^Project_Work_State,
-	work: proc(Project_Task_Payload) -> execution.No_Result,
+	work: proc(_: Project_Task_Payload) -> execution.No_Result,
 ) {
-	indices := make([dynamic]int, 0, len(state.units), base_runtime.heap_allocator())
-	defer delete(indices)
+	indices := make([dynamic]int, 0, len(state.units), context.temp_allocator)
 	for _, i in state.units {
 		append(&indices, i)
 	}
@@ -1601,23 +1731,26 @@ run_project_tasks :: proc(
 	pool: ^execution.Pool,
 	unit_indices: []int,
 	state: ^Project_Work_State,
-	work: proc(Project_Task_Payload) -> execution.No_Result,
+	work: proc(_: Project_Task_Payload) -> execution.No_Result,
 ) {
-	task_allocator := base_runtime.heap_allocator()
 	graph: execution.Graph
-	execution.graph_init(&graph, pool, task_allocator)
-	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(unit_indices), task_allocator)
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	tasks := make(
+		[dynamic]execution.Task(execution.No_Result),
+		0,
+		len(unit_indices),
+		context.temp_allocator,
+	)
 	for unit_index in unit_indices {
-		payload := Project_Task_Payload{state = state, unit_index = unit_index}
+		payload := Project_Task_Payload {
+			state      = state,
+			unit_index = unit_index,
+		}
 		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, work)
 		append(&tasks, task)
 	}
 	execution.graph_start(&graph)
-	for task in tasks {
-		_ = execution.wait(task)
-	}
 	execution.graph_wait(&graph)
-	delete(tasks)
 	execution.graph_destroy(&graph)
 }
 
@@ -1635,6 +1768,7 @@ parse_collect_task :: proc(payload: Project_Task_Payload) -> execution.No_Result
 @(private)
 build_scope_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Result {
 	unit := &payload.state.units[payload.unit_index]
+	scope_index_destroy(&unit.scope_index)
 	unit.scope_index = build_scope_index(
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
@@ -1760,8 +1894,12 @@ infer_project_semantic_facts :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	for _ in 0 ..< 4 {
-		inferred := make([]Inferred_Unit_Facts, len(project.units), allocator)
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, base_runtime.heap_allocator())
+	defer execution.graph_destroy(&graph)
+
+	for {
+		inferred := make([]Inferred_Unit_Facts, len(project.units), context.temp_allocator)
 		state := Project_Infer_State {
 			project         = project,
 			lookup          = lookup,
@@ -1769,8 +1907,9 @@ infer_project_semantic_facts :: proc(
 			unit_allocators = unit_allocators,
 			allocator       = allocator,
 		}
-		run_infer_tasks(pool, &state)
-		if !apply_inferred_project_facts(project, inferred) {
+		run_infer_tasks(&graph, &state)
+		changed := apply_inferred_project_facts(project, inferred)
+		if !changed {
 			break
 		}
 	}
@@ -1785,13 +1924,16 @@ infer_project_semantic_facts_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	indices := unit_ids_to_indices(unit_ids, len(project.units), base_runtime.heap_allocator())
-	defer delete(indices)
+	indices := unit_ids_to_indices(unit_ids, len(project.units), context.temp_allocator)
 	if len(indices) == 0 {
 		return
 	}
-	for _ in 0 ..< 4 {
-		inferred := make([]Inferred_Unit_Facts, len(indices), base_runtime.heap_allocator())
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, base_runtime.heap_allocator())
+	defer execution.graph_destroy(&graph)
+
+	for {
+		inferred := make([]Inferred_Unit_Facts, len(indices), context.temp_allocator)
 		state := Project_Infer_State {
 			project         = project,
 			lookup          = lookup,
@@ -1799,9 +1941,8 @@ infer_project_semantic_facts_for_units :: proc(
 			unit_allocators = unit_allocators,
 			allocator       = allocator,
 		}
-		run_infer_tasks_for_indices(pool, &state, indices[:])
+		run_infer_tasks_for_indices(&graph, &state, indices[:])
 		changed := apply_inferred_project_facts_for_indices(project, inferred, indices[:])
-		delete(inferred)
 		if !changed {
 			break
 		}
@@ -1816,7 +1957,7 @@ validate_project_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	diagnostics := make([][dynamic]Diagnostic, len(project.units), allocator)
+	diagnostics := make([][dynamic]Diagnostic, len(project.units), context.temp_allocator)
 	state := Project_Validate_State {
 		project         = project,
 		lookup          = lookup,
@@ -1826,6 +1967,7 @@ validate_project_units :: proc(
 	}
 	run_validate_tasks(pool, &state)
 	for i in 0 ..< len(project.units) {
+		delete(project.units[i].diagnostics)
 		project.units[i].diagnostics = diagnostics[i]
 	}
 }
@@ -1839,12 +1981,11 @@ validate_project_units_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	indices := unit_ids_to_indices(unit_ids, len(project.units), base_runtime.heap_allocator())
-	defer delete(indices)
+	indices := unit_ids_to_indices(unit_ids, len(project.units), context.temp_allocator)
 	if len(indices) == 0 {
 		return
 	}
-	diagnostics := make([][dynamic]Diagnostic, len(indices), base_runtime.heap_allocator())
+	diagnostics := make([][dynamic]Diagnostic, len(indices), context.temp_allocator)
 	state := Project_Validate_State {
 		project         = project,
 		lookup          = lookup,
@@ -1854,9 +1995,9 @@ validate_project_units_for_units :: proc(
 	}
 	run_validate_tasks_for_indices(pool, &state, indices[:])
 	for unit_index, i in indices {
+		delete(project.units[unit_index].diagnostics)
 		project.units[unit_index].diagnostics = diagnostics[i]
 	}
-	delete(diagnostics)
 }
 
 @(private)
@@ -1884,14 +2025,13 @@ rebuild_project_semantic_indexes_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	indices := unit_ids_to_indices(unit_ids, len(project.units), base_runtime.heap_allocator())
-	defer delete(indices)
+	indices := unit_ids_to_indices(unit_ids, len(project.units), context.temp_allocator)
 	if len(indices) == 0 {
 		return
 	}
 	state := Project_Work_State {
 		units           = project.units,
-		inputs          = make([dynamic]Source_Input, 0, 0, allocator),
+		inputs          = make([dynamic]Source_Input, 0, 0, context.temp_allocator),
 		unit_allocators = unit_allocators,
 		allocator       = allocator,
 	}
@@ -1900,68 +2040,74 @@ rebuild_project_semantic_indexes_for_units :: proc(
 }
 
 @(private)
-run_infer_tasks :: proc(
-	pool: ^execution.Pool,
-	state: ^Project_Infer_State,
-) {
-	task_allocator := base_runtime.heap_allocator()
-	graph: execution.Graph
-	execution.graph_init(&graph, pool, task_allocator)
-	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(state.project.units), task_allocator)
+run_infer_tasks :: proc(graph: ^execution.Graph, state: ^Project_Infer_State) {
+	exec := execution.worker_executor(graph.pool)
 	for unit_index in 0 ..< len(state.project.units) {
-		payload := Project_Infer_Payload{state = state, unit_index = unit_index, output_index = unit_index}
-		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, infer_task)
-		append(&tasks, task)
+		payload := Project_Infer_Payload {
+			state        = state,
+			unit_index   = unit_index,
+			output_index = unit_index,
+		}
+		_ = execution.submit_value(
+			graph,
+			exec,
+			payload,
+			infer_task,
+		)
 	}
-	execution.graph_start(&graph)
-	for task in tasks {
-		_ = execution.wait(task)
-	}
-	execution.graph_wait(&graph)
-	delete(tasks)
-	execution.graph_destroy(&graph)
+	execution.graph_start(graph)
+	execution.graph_wait(graph)
+	execution.graph_reset(graph)
 }
 
 @(private)
 run_infer_tasks_for_indices :: proc(
-	pool: ^execution.Pool,
+	graph: ^execution.Graph,
 	state: ^Project_Infer_State,
 	indices: []int,
 ) {
-	task_allocator := base_runtime.heap_allocator()
-	graph: execution.Graph
-	execution.graph_init(&graph, pool, task_allocator)
-	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(indices), task_allocator)
+	exec := execution.worker_executor(graph.pool)
 	for unit_index, i in indices {
 		payload := Project_Infer_Payload {
-			state = state,
-			unit_index = unit_index,
+			state        = state,
+			unit_index   = unit_index,
 			output_index = i,
 		}
-		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, infer_task)
-		append(&tasks, task)
+		_ = execution.submit_value(
+			graph,
+			exec,
+			payload,
+			infer_task,
+		)
 	}
-	execution.graph_start(&graph)
-	for task in tasks {
-		_ = execution.wait(task)
-	}
-	execution.graph_wait(&graph)
-	delete(tasks)
-	execution.graph_destroy(&graph)
+	execution.graph_start(graph)
+	execution.graph_wait(graph)
+	execution.graph_reset(graph)
 }
 
 @(private)
-run_validate_tasks :: proc(
-	pool: ^execution.Pool,
-	state: ^Project_Validate_State,
-) {
+run_validate_tasks :: proc(pool: ^execution.Pool, state: ^Project_Validate_State) {
 	task_allocator := base_runtime.heap_allocator()
 	graph: execution.Graph
 	execution.graph_init(&graph, pool, task_allocator)
-	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(state.project.units), task_allocator)
+	tasks := make(
+		[dynamic]execution.Task(execution.No_Result),
+		0,
+		len(state.project.units),
+		task_allocator,
+	)
 	for unit_index in 0 ..< len(state.project.units) {
-		payload := Project_Validate_Payload{state = state, unit_index = unit_index, output_index = unit_index}
-		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, validate_task)
+		payload := Project_Validate_Payload {
+			state        = state,
+			unit_index   = unit_index,
+			output_index = unit_index,
+		}
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			validate_task,
+		)
 		append(&tasks, task)
 	}
 	execution.graph_start(&graph)
@@ -1979,17 +2125,26 @@ run_validate_tasks_for_indices :: proc(
 	state: ^Project_Validate_State,
 	indices: []int,
 ) {
-	task_allocator := base_runtime.heap_allocator()
 	graph: execution.Graph
-	execution.graph_init(&graph, pool, task_allocator)
-	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(indices), task_allocator)
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	tasks := make(
+		[dynamic]execution.Task(execution.No_Result),
+		0,
+		len(indices),
+		context.temp_allocator,
+	)
 	for unit_index, i in indices {
 		payload := Project_Validate_Payload {
-			state = state,
-			unit_index = unit_index,
+			state        = state,
+			unit_index   = unit_index,
 			output_index = i,
 		}
-		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, validate_task)
+		task := execution.submit_value(
+			&graph,
+			execution.worker_executor(pool),
+			payload,
+			validate_task,
+		)
 		append(&tasks, task)
 	}
 	execution.graph_start(&graph)
@@ -1997,7 +2152,6 @@ run_validate_tasks_for_indices :: proc(
 		_ = execution.wait(task)
 	}
 	execution.graph_wait(&graph)
-	delete(tasks)
 	execution.graph_destroy(&graph)
 }
 
@@ -2050,7 +2204,7 @@ link_class_member_implementations_with_index :: proc(
 			member := &units[unit_index].class_members[member_index]
 			if .Has_Implementation_Range in member.flags {
 				member.implementation = Class_Member_Implementation_Data {
-					unit = units[unit_index].unit_id,
+					unit  = units[unit_index].unit_id,
 					range = member.implementation_range,
 				}
 				member.flags += {.Has_Implementation}
@@ -2062,15 +2216,27 @@ link_class_member_implementations_with_index :: proc(
 			if method_symbol.kind != .Method {
 				continue
 			}
-			class_symbol, ok := enclosing_class_owner_unit(&units[impl_unit_index], method_symbol.scope)
+			class_symbol, ok := enclosing_class_owner_unit(
+				&units[impl_unit_index],
+				method_symbol.scope,
+			)
 			if !ok {
 				continue
 			}
 			class_name := symbol(&units[impl_unit_index], class_symbol).name
 			for i := len(predecessors[impl_unit_index]) - 1; i >= 0; i -= 1 {
 				def_unit := predecessors[impl_unit_index][i]
-				class_handle, class_ok := root_symbol_in_unit(root_lookup, def_unit, .Type, class_name)
-				if !class_ok || !unit_has_class_definition(&units[unit_id_index(def_unit)], class_handle.symbol) {
+				class_handle, class_ok := root_symbol_in_unit(
+					root_lookup,
+					def_unit,
+					.Type,
+					class_name,
+				)
+				if !class_ok ||
+				   !unit_has_class_definition(
+						   &units[unit_id_index(def_unit)],
+						   class_handle.symbol,
+					   ) {
 					continue
 				}
 				member := unit_class_member(
@@ -2078,9 +2244,11 @@ link_class_member_implementations_with_index :: proc(
 					class_handle.symbol,
 					method_symbol.name,
 				)
-				if member != nil && member.kind == .Method && !(.Has_Implementation in member.flags) {
+				if member != nil &&
+				   member.kind == .Method &&
+				   !(.Has_Implementation in member.flags) {
 					member.implementation = Class_Member_Implementation_Data {
-						unit = units[impl_unit_index].unit_id,
+						unit  = units[impl_unit_index].unit_id,
 						range = method_symbol.decl_range,
 					}
 					member.implementation_range = method_symbol.decl_range
@@ -2110,7 +2278,12 @@ reclassify_project_open_sql_predicate_host_variables :: proc(
 		}
 	}
 	for unit_index in 0 ..< len(units) {
-		next_refs := make([dynamic]Sql_Name_Ref_Data, 0, len(units[unit_index].sql_name_refs), allocator)
+		next_refs := make(
+			[dynamic]Sql_Name_Ref_Data,
+			0,
+			len(units[unit_index].sql_name_refs),
+			allocator,
+		)
 		for sql_ref in units[unit_index].sql_name_refs {
 			if sql_ref.kind == .Column &&
 			   sql_ref_in_predicate(units[unit_index].sql_predicates[:], sql_ref) {
@@ -2195,20 +2368,5 @@ uri_parent_dir_key :: proc(uri: string, allocator: mem.Allocator) -> string {
 
 @(private)
 normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string {
-	end := len(uri)
-	for end > 0 && (uri[end - 1] == '/' || uri[end - 1] == '\\') {
-		end -= 1
-	}
-	out := make([]byte, end, allocator)
-	for i in 0 ..< end {
-		ch := uri[i]
-		if ch == '\\' {
-			ch = '/'
-		}
-		if 'A' <= ch && ch <= 'Z' {
-			ch += 'a' - 'A'
-		}
-		out[i] = ch
-	}
-	return string(out)
+	return uri_key.normalized_uri_path_key(uri, allocator)
 }

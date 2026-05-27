@@ -4,7 +4,8 @@ import adt "../adt"
 import dep_store "../dependency_store"
 import execution "../execution"
 import analyze "../semantic/analyze"
-import deps "../semantic/dependencies"
+import remote_deps "../semantic/remote_dependencies"
+import session "../semantic/session"
 
 import "core:mem"
 import "core:os"
@@ -41,24 +42,36 @@ open_workspace :: proc(
 	folder_path: string,
 	options: Options,
 	allocator: mem.Allocator,
-) -> (Workspace, bool, string) {
+) -> (
+	workspace: Workspace,
+	ok: bool,
+	error: string,
+) {
 	root_path, root_ok := absolute_clean_path(folder_path, allocator)
 	if !root_ok {
 		return {}, false, "invalid workspace path"
 	}
-	workspace := Workspace{root_path = root_path}
+	workspace.root_path = root_path
 
-	manifest_path, join_err := os.join_path({root_path, MANIFEST_FILE_NAME}, allocator)
+	manifest_path, join_err := os.join_path(
+		{root_path, MANIFEST_FILE_NAME},
+		context.temp_allocator,
+	)
 	if join_err != nil {
 		return {}, false, "invalid manifest path"
 	}
 	info, stat_err := os.stat(manifest_path, allocator)
 	if stat_err == nil && info.type == .Regular {
-		source, read_ok := read_text_file(manifest_path, allocator)
+		source, read_ok := read_text_file(manifest_path, context.temp_allocator)
 		if !read_ok {
 			return {}, false, "failed to read manifest"
 		}
-		manifest, manifest_ok, manifest_error := parse_workspace_manifest_text(root_path, manifest_path, source, allocator)
+		manifest, manifest_ok, manifest_error := parse_workspace_manifest_text(
+			root_path,
+			manifest_path,
+			source,
+			allocator,
+		)
 		if !manifest_ok {
 			return {}, false, manifest_error
 		}
@@ -69,17 +82,23 @@ open_workspace :: proc(
 	}
 
 	if workspace.manifest.has_dependency_store {
-		store, err := dep_store.dependency_store_from_override_path(options.dependency_store_path, allocator)
+		store, err := dep_store.dependency_store_from_override_path(
+			options.dependency_store_path,
+			allocator,
+		)
 		if err == .None {
 			workspace.store = store
 			workspace.has_store = true
 		}
 	} else if !workspace.has_manifest {
-		store, err := dep_store.dependency_store_from_override_path(options.dependency_store_path, allocator)
+		store, err := dep_store.dependency_store_from_override_path(
+			options.dependency_store_path,
+			allocator,
+		)
 		if err == .None {
 			workspace.store = store
 			workspace.has_store = true
-			workspace.standalone_profile = deps.standalone_dependency_profile()
+			workspace.standalone_profile = remote_deps.standalone_dependency_profile()
 		}
 	}
 
@@ -125,7 +144,11 @@ analyze_workspace_path :: proc(
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
 	assert(options.pool != nil)
-	workspace, workspace_ok, workspace_error := open_workspace(workspace_folder_path, options, allocator)
+	workspace, workspace_ok, workspace_error := open_workspace(
+		workspace_folder_path,
+		options,
+		allocator,
+	)
 	if !workspace_ok {
 		return analysis_error(workspace_error)
 	}
@@ -147,13 +170,18 @@ analyze_file_path :: proc(
 	if !target_ok {
 		return analysis_error("invalid target path")
 	}
-	workspace := Workspace{root_path = strings.clone(os.dir(target_abs), allocator)}
+	workspace := Workspace {
+		root_path = strings.clone(os.dir(target_abs), allocator),
+	}
 	if strings.trim_space(options.dependency_store_path) != "" {
-		store, err := dep_store.dependency_store_from_override_path(options.dependency_store_path, allocator)
+		store, err := dep_store.dependency_store_from_override_path(
+			options.dependency_store_path,
+			allocator,
+		)
 		if err == .None {
 			workspace.store = store
 			workspace.has_store = true
-			workspace.standalone_profile = deps.standalone_dependency_profile()
+			workspace.standalone_profile = remote_deps.standalone_dependency_profile()
 		}
 	}
 	return analyze_standalone_path(&workspace, target_abs, include_paths, options, allocator)
@@ -171,7 +199,11 @@ analyze_path :: proc(
 	if !target_ok {
 		return analysis_error("invalid target path")
 	}
-	workspace, workspace_ok, workspace_error := open_workspace(workspace_folder_path, options, allocator)
+	workspace, workspace_ok, workspace_error := open_workspace(
+		workspace_folder_path,
+		options,
+		allocator,
+	)
 	if !workspace_ok {
 		return analysis_error(workspace_error)
 	}
@@ -183,11 +215,27 @@ analyze_path :: proc(
 
 	target_key := normalized_uri_path_key(target_abs, allocator)
 	root_keys := manifest_root_keys(&workspace.manifest, allocator)
-	if selected, ok := manifest_root_unit_by_key(&workspace.manifest, root_keys[:], target_key); ok {
-		return analyze_manifest_unit(&workspace, selected, root_keys[:], include_paths, options, allocator)
+	if selected, ok := manifest_root_unit_by_key(&workspace.manifest, root_keys[:], target_key);
+	   ok {
+		return analyze_manifest_unit(
+			&workspace,
+			selected,
+			root_keys[:],
+			include_paths,
+			options,
+			allocator,
+		)
 	}
-	if selected, ok := manifest_member_owner_by_key(&workspace.manifest, target_key, allocator); ok {
-		return analyze_manifest_unit(&workspace, selected, root_keys[:], include_paths, options, allocator)
+	if selected, ok := manifest_member_owner_by_key(&workspace.manifest, target_key, allocator);
+	   ok {
+		return analyze_manifest_unit(
+			&workspace,
+			selected,
+			root_keys[:],
+			include_paths,
+			options,
+			allocator,
+		)
 	}
 
 	workspace_files := make([dynamic]string, 0, 32, allocator)
@@ -228,7 +276,11 @@ analyze_manifest_workspace :: proc(
 		if unit.root_file == "" {
 			continue
 		}
-		target, ok := source_input_from_manifest_path(&workspace.manifest, unit.root_file, allocator)
+		target, ok := source_input_from_manifest_path(
+			&workspace.manifest,
+			unit.root_file,
+			allocator,
+		)
 		if !ok {
 			return analysis_error("failed to read manifest root file")
 		}
@@ -241,10 +293,10 @@ analyze_manifest_workspace :: proc(
 		include_paths,
 		allocator,
 	)
-	project := deps.analyze_inputs_with_remote_dependencies(
+	project := session.analysis_session_analyze_once(
 		targets[:],
-		candidates,
-		make([dynamic]analyze.Source_Input, 0, 4, allocator),
+		candidates[:],
+		make([dynamic]analyze.Source_Input, 0, 4, allocator)[:],
 		dependency_config_from_workspace(workspace),
 		analyze.Analyze_Options{pool = options.pool},
 		allocator,
@@ -261,7 +313,12 @@ analyze_workspace_files :: proc(
 	paths := make([dynamic]string, 0, 32, allocator)
 	collect_workspace_abap_files(workspace.root_path, &paths, allocator)
 	targets := make([dynamic]analyze.Source_Input, 0, len(paths), allocator)
-	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(paths) + len(include_paths), allocator)
+	candidates := make(
+		[dynamic]analyze.Project_Candidate_Input,
+		0,
+		len(paths) + len(include_paths),
+		allocator,
+	)
 	for path in paths {
 		input, ok := source_input_from_path(path, allocator)
 		if !ok {
@@ -277,10 +334,10 @@ analyze_workspace_files :: proc(
 		}
 		append(&candidates, analyze.Project_Candidate_Input{input = input})
 	}
-	project := deps.analyze_inputs_with_remote_dependencies(
+	project := session.analysis_session_analyze_once(
 		targets[:],
-		candidates,
-		make([dynamic]analyze.Source_Input, 0, 4, allocator),
+		candidates[:],
+		make([dynamic]analyze.Source_Input, 0, 4, allocator)[:],
 		dependency_config_from_workspace(workspace),
 		analyze.Analyze_Options{pool = options.pool},
 		allocator,
@@ -307,10 +364,11 @@ analyze_standalone_path :: proc(
 		}
 		append(&candidates, analyze.Project_Candidate_Input{input = include})
 	}
-	project := deps.analyze_with_remote_dependencies(
-		target,
-		candidates,
-		make([dynamic]analyze.Source_Input, 0, 4, allocator),
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		candidates[:],
+		make([dynamic]analyze.Source_Input, 0, 4, allocator)[:],
 		dependency_config_from_workspace(workspace),
 		analyze.Analyze_Options{pool = options.pool},
 		allocator,
@@ -348,7 +406,11 @@ analyze_manifest_unit_with_workspace_files :: proc(
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
-	target, target_ok := source_input_from_manifest_path(&workspace.manifest, workspace.manifest.units[unit_index].root_file, allocator)
+	target, target_ok := source_input_from_manifest_path(
+		&workspace.manifest,
+		workspace.manifest.units[unit_index].root_file,
+		allocator,
+	)
 	if !target_ok {
 		return analysis_error("failed to read manifest root file")
 	}
@@ -376,10 +438,11 @@ analyze_manifest_unit_with_workspace_files :: proc(
 		include_paths,
 		allocator,
 	)
-	project := deps.analyze_with_remote_dependencies(
-		target,
-		candidates,
-		dependencies,
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		candidates[:],
+		dependencies[:],
 		dependency_config_from_workspace(workspace),
 		analyze.Analyze_Options{pool = options.pool},
 		allocator,
@@ -387,8 +450,8 @@ analyze_manifest_unit_with_workspace_files :: proc(
 	return Analysis_Result{project = project, ok = true, used_manifest = true}
 }
 
-dependency_config_from_workspace :: proc(workspace: ^Workspace) -> deps.Dependency_Config {
-	config := deps.Dependency_Config {
+dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote_deps.Dependency_Config {
+	config := remote_deps.Dependency_Config {
 		local_export_roots = workspace.local_export_roots[:],
 		cache_any_profile  = !workspace.has_manifest,
 	}
@@ -415,7 +478,12 @@ manifest_candidate_inputs :: proc(
 	include_paths: []string,
 	allocator: mem.Allocator,
 ) -> [dynamic]analyze.Project_Candidate_Input {
-	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(workspace_files), allocator)
+	candidates := make(
+		[dynamic]analyze.Project_Candidate_Input,
+		0,
+		len(workspace_files),
+		allocator,
+	)
 	keys := make([dynamic]string, 0, len(workspace_files), allocator)
 
 	for path in workspace_files {
@@ -423,7 +491,14 @@ manifest_candidate_inputs :: proc(
 	}
 	add_manifest_member_candidates(manifest, unit_index, &candidates, &keys, root_keys, allocator)
 	for dependency_index in dependency_indices {
-		add_manifest_member_candidates(manifest, dependency_index, &candidates, &keys, root_keys, allocator)
+		add_manifest_member_candidates(
+			manifest,
+			dependency_index,
+			&candidates,
+			&keys,
+			root_keys,
+			allocator,
+		)
 	}
 	for include_path in include_paths {
 		abs_path, ok := absolute_clean_path(include_path, allocator)
@@ -442,13 +517,25 @@ manifest_workspace_candidate_inputs :: proc(
 	include_paths: []string,
 	allocator: mem.Allocator,
 ) -> [dynamic]analyze.Project_Candidate_Input {
-	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(workspace_files), allocator)
+	candidates := make(
+		[dynamic]analyze.Project_Candidate_Input,
+		0,
+		len(workspace_files),
+		allocator,
+	)
 	keys := make([dynamic]string, 0, len(workspace_files), allocator)
 	for path in workspace_files {
 		add_manifest_candidate_path(&candidates, &keys, path, "", root_keys, allocator)
 	}
 	for unit_index in 0 ..< len(manifest.units) {
-		add_manifest_member_candidates(manifest, unit_index, &candidates, &keys, root_keys, allocator)
+		add_manifest_member_candidates(
+			manifest,
+			unit_index,
+			&candidates,
+			&keys,
+			root_keys,
+			allocator,
+		)
 	}
 	for include_path in include_paths {
 		abs_path, ok := absolute_clean_path(include_path, allocator)
@@ -470,7 +557,14 @@ add_manifest_member_candidates :: proc(
 	for member in manifest.units[unit_index].members {
 		path, ok := manifest_absolute_path(manifest.root_path, member.file, allocator)
 		if ok {
-			add_manifest_candidate_path(candidates, keys, path, member.object_name, root_keys, allocator)
+			add_manifest_candidate_path(
+				candidates,
+				keys,
+				path,
+				member.object_name,
+				root_keys,
+				allocator,
+			)
 		}
 	}
 }
@@ -496,7 +590,13 @@ add_manifest_candidate_path :: proc(
 	if !ok {
 		return false
 	}
-	append(candidates, analyze.Project_Candidate_Input{input = input, object_name = strings.clone(object_name, allocator)})
+	append(
+		candidates,
+		analyze.Project_Candidate_Input {
+			input = input,
+			object_name = strings.clone(object_name, allocator),
+		},
+	)
 	append(keys, key)
 	return true
 }
@@ -508,7 +608,10 @@ manifest_reachable_owner_by_key :: proc(
 	root_keys: []string,
 	options: Options,
 	allocator: mem.Allocator,
-) -> (int, bool) {
+) -> (
+	int,
+	bool,
+) {
 	for unit, i in manifest.units {
 		if unit.root_file == "" {
 			continue
@@ -517,7 +620,15 @@ manifest_reachable_owner_by_key :: proc(
 		if !target_ok {
 			continue
 		}
-		candidates := manifest_candidate_inputs(manifest, i, {}, workspace_files, root_keys, {}, allocator)
+		candidates := manifest_candidate_inputs(
+			manifest,
+			i,
+			{},
+			workspace_files,
+			root_keys,
+			{},
+			allocator,
+		)
 		project := analyze.analyze_target_with_candidate_inputs(
 			target,
 			candidates[:],
@@ -538,7 +649,10 @@ source_input_from_manifest_path :: proc(
 	manifest: ^Workspace_Manifest,
 	path: string,
 	allocator: mem.Allocator,
-) -> (analyze.Source_Input, bool) {
+) -> (
+	analyze.Source_Input,
+	bool,
+) {
 	abs_path, ok := manifest_absolute_path(manifest.root_path, path, allocator)
 	if !ok {
 		return {}, false
@@ -546,7 +660,13 @@ source_input_from_manifest_path :: proc(
 	return source_input_from_path(abs_path, allocator)
 }
 
-source_input_from_path :: proc(path: string, allocator: mem.Allocator) -> (analyze.Source_Input, bool) {
+source_input_from_path :: proc(
+	path: string,
+	allocator: mem.Allocator,
+) -> (
+	analyze.Source_Input,
+	bool,
+) {
 	abs_path, ok := absolute_clean_path(path, allocator)
 	if !ok {
 		return {}, false
@@ -583,13 +703,16 @@ workspace_local_export_roots :: proc(
 	return roots
 }
 
-default_workspace_manifest :: proc(root_path: string, allocator: mem.Allocator) -> Workspace_Manifest {
+default_workspace_manifest :: proc(
+	root_path: string,
+	allocator: mem.Allocator,
+) -> Workspace_Manifest {
 	return Workspace_Manifest {
-		root_path          = strings.clone(root_path, allocator),
-		connection         = "default",
-		dependency_source  = "local-first",
+		root_path = strings.clone(root_path, allocator),
+		connection = "default",
+		dependency_source = "local-first",
 		local_export_roots = make([dynamic]string, 0, 2, allocator),
-		units              = make([dynamic]Manifest_Unit, 0, 4, allocator),
+		units = make([dynamic]Manifest_Unit, 0, 4, allocator),
 	}
 }
 

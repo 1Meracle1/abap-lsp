@@ -131,7 +131,7 @@ table_type_dependency_source_uses_named_reference_type :: proc(t: ^testing.T) {
 }
 
 @(test)
-table_type_dependency_source_does_not_invent_unnamed_row_type :: proc(t: ^testing.T) {
+table_type_dependency_source_uses_string_for_anonymous_row_type :: proc(t: ^testing.T) {
 	xml := `<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="zstrings" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:elementInfo>
     <abapsource:properties>
@@ -142,7 +142,7 @@ table_type_dependency_source_does_not_invent_unnamed_row_type :: proc(t: ^testin
 	source := dependency_source("ZSTRINGS", "ddic-table-type", xml, context.allocator)
 	defer delete(source, context.allocator)
 
-	testing.expect_value(t, source, "")
+	expect_contains_fold(t, source, "type standard table of string with default key")
 }
 
 @(test)

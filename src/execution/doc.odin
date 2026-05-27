@@ -5,7 +5,8 @@ package abap_frontend_execution
 // A Pool owns fixed task/edge capacity and worker threads. A Graph owns the
 // task DAG, task payload/result storage, and metadata allocated from
 // graph.allocator. Task values returned by submit_value, then, then_with, and
-// then_all are handles into that graph and are valid until graph_destroy.
+// then_all are handles into that graph and are valid until graph_reset or
+// graph_destroy.
 //
 // Basic worker-backed graph:
 //
@@ -24,10 +25,12 @@ package abap_frontend_execution
 //   value := wait(next)
 //   graph_wait(&graph)
 //
-// graph_init initializes a caller-owned Graph value. Use graph_destroy on the
-// same value after graph completion. graph_create allocates the Graph object and
-// marks it owned; that form is required for graph_detach because detached owned
-// graphs self-destroy and free the Graph object when the last task completes.
+// graph_init initializes a caller-owned Graph value. Use graph_reset after
+// graph completion to release the current tasks and submit new work into the
+// same Graph, or graph_destroy when finished with the Graph. graph_create
+// allocates the Graph object and marks it owned; that form is required for
+// graph_detach because detached owned graphs self-destroy and free the Graph
+// object when the last task completes.
 //
 // Main executor:
 //

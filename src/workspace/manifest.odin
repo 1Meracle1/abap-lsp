@@ -2,6 +2,7 @@ package abap_frontend_workspace
 
 import dep_store "../dependency_store"
 import toml "../encoding/toml"
+import uri_key "../uri_key"
 
 import "core:mem"
 import "core:os"
@@ -42,8 +43,7 @@ parse_workspace_manifest_text :: proc(
 	root_path, manifest_path, source: string,
 	allocator: mem.Allocator,
 ) -> (Workspace_Manifest, bool, string) {
-	result := toml.parse_string(source, allocator)
-	defer toml.destroy_parse_result(result, allocator)
+	result := toml.parse_string(source, context.temp_allocator)
 	if len(result.errors) > 0 {
 		return {}, false, "invalid TOML manifest"
 	}
@@ -359,22 +359,7 @@ absolute_clean_path :: proc(path: string, allocator: mem.Allocator) -> (string, 
 }
 
 normalized_uri_path_key :: proc(uri: string, allocator: mem.Allocator) -> string {
-	end := len(uri)
-	for end > 0 && (uri[end - 1] == '/' || uri[end - 1] == '\\') {
-		end -= 1
-	}
-	out := make([]byte, end, allocator)
-	for i in 0 ..< end {
-		ch := uri[i]
-		if ch == '\\' {
-			ch = '/'
-		}
-		if 'A' <= ch && ch <= 'Z' {
-			ch += 'a' - 'A'
-		}
-		out[i] = ch
-	}
-	return string(out)
+	return uri_key.normalized_uri_path_key(uri, allocator)
 }
 
 @(private)

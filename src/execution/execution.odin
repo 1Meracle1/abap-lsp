@@ -9,13 +9,6 @@ import sysinfo "core:sys/info"
 import "core:thread"
 
 AUTO_WORKER_COUNT :: int(-1)
-DEFAULT_TASK_CAPACITY :: 1024
-DEFAULT_QUEUE_CAPACITY :: 1024
-DEFAULT_DEQUE_CAPACITY :: 1024
-DEFAULT_EDGE_CAPACITY :: 1024
-DEFAULT_MAIN_QUEUE_CAPACITY :: 1024
-TASK_STORAGE_SHIFT :: 4
-EDGE_STORAGE_SHIFT :: 4
 
 No_Result :: struct {}
 
@@ -114,11 +107,11 @@ Worker :: struct {
 Pool :: struct {
 	allocator:        mem.Allocator,
 	options:          Options,
-	cells:            xar.Array(Task_Cell, TASK_STORAGE_SHIFT),
+	cells:            xar.Array(Task_Cell, 4),
 	free_cells:       [dynamic]u32,
 	cell_count:       u32,
 	cell_lock:        sync.Mutex,
-	edges:            xar.Array(Task_Edge, EDGE_STORAGE_SHIFT),
+	edges:            xar.Array(Task_Edge, 4),
 	free_edges:       [dynamic]u32,
 	edge_count:       u32,
 	edge_lock:        sync.Mutex,
@@ -327,7 +320,7 @@ main_executor :: proc(main: ^Main_Executor) -> Executor {
 }
 
 main_executor_init :: proc(main: ^Main_Executor, capacity: int, allocator: mem.Allocator) {
-	cap := normalize_capacity(capacity, DEFAULT_MAIN_QUEUE_CAPACITY, 2)
+	cap := normalize_capacity(capacity, 1024, 2)
 	main^ = {}
 	main.allocator = allocator
 	main.buffer = make([]Main_Queue_Cell, cap, allocator)
@@ -370,7 +363,7 @@ current_temp_arena :: proc "contextless" () -> ^virtual.Arena {
 	if current_worker != nil {
 		return &current_worker.temp_arena
 	}
-	return nil
+	unreachable()
 }
 
 recommended_worker_count :: proc "contextless" () -> int {
@@ -431,17 +424,29 @@ graph_wait :: proc(graph: ^Graph) {
 	}
 }
 
-graph_destroy :: proc(graph: ^Graph) {
+graph_reset :: proc(graph: ^Graph) {
+	assert(!graph.detached)
+	assert(!graph.started || sync.atomic_load_explicit(&graph.completed, .Acquire))
 	pool := graph.pool
-	for index in graph.cell_indices {
-		release_cell(pool_cell(pool, index))
-	}
-	for index in graph.edge_indices {
-		pool_edge(pool, index)^ = Task_Edge {
-			next = INDEX_NONE,
-		}
-		release_edge_index(pool, index)
-	}
+	object_allocator := graph.object_allocator
+	owned := graph.owned
+	release_graph_storage(graph)
+	virtual.arena_free_all(&graph.arena)
+	graph.pool = pool
+	graph.allocator = virtual.arena_allocator(&graph.arena)
+	graph.object_allocator = object_allocator
+	graph.cell_indices = make([dynamic]u32, 0, pool.options.task_capacity, graph.allocator)
+	graph.edge_indices = make([dynamic]u32, 0, pool.options.edge_capacity, graph.allocator)
+	graph.started = false
+	graph.detached = false
+	graph.owned = owned
+	graph.completed = false
+	graph.remaining = 0
+	graph.available = {}
+}
+
+graph_destroy :: proc(graph: ^Graph) {
+	release_graph_storage(graph)
 	virtual.arena_destroy(&graph.arena)
 	graph^ = {}
 }
@@ -487,12 +492,7 @@ submit_value :: proc(
 	return Task(R){graph = graph, index = cell.index, generation = cell.generation}
 }
 
-then :: proc(
-	graph: ^Graph,
-	parent: Task($T),
-	exec: Executor,
-	work: proc(_: T) -> $R,
-) -> Task(R) {
+then :: proc(graph: ^Graph, parent: Task($T), exec: Executor, work: proc(_: T) -> $R) -> Task(R) {
 	assert(cell_from_task(parent) != nil && parent.graph == graph)
 	cell := reserve_cell(graph, exec, .Then)
 	cell.user_proc = rawptr(work)
@@ -604,11 +604,7 @@ then_all :: proc(
 		for parent_index, i in data.parent_indices {
 			parent := pool_cell(cell.graph.pool, parent_index)
 			if size_of(T) > 0 {
-				intrinsics.mem_copy_non_overlapping(
-					&results[i],
-					parent.result,
-					size_of(T),
-				)
+				intrinsics.mem_copy_non_overlapping(&results[i], parent.result, size_of(T))
 			}
 		}
 		result := data.work(results)
@@ -659,11 +655,7 @@ alloc_task_storage :: proc(graph: ^Graph, $T: typeid) -> rawptr {
 	return ptr
 }
 
-reserve_cell :: proc(
-	graph: ^Graph,
-	exec: Executor,
-	kind: Task_Kind,
-) -> ^Task_Cell {
+reserve_cell :: proc(graph: ^Graph, exec: Executor, kind: Task_Kind) -> ^Task_Cell {
 	assert(!graph.started)
 	pool := graph.pool
 	assert(!sync.atomic_load_explicit(&pool.shutting_down, .Acquire))
@@ -732,7 +724,8 @@ cell_from_task :: proc(task: Task($T)) -> ^Task_Cell {
 
 cell_from_task_allow_completed :: proc(task: Task($T)) -> ^Task_Cell {
 	graph := task.graph
-	if graph == nil || graph.pool == nil ||
+	if graph == nil ||
+	   graph.pool == nil ||
 	   task.index >= sync.atomic_load_explicit(&graph.pool.cell_count, .Acquire) {
 		return nil
 	}
@@ -862,6 +855,19 @@ release_cell :: proc(cell: ^Task_Cell) {
 	release_cell_index(pool, index)
 }
 
+release_graph_storage :: proc(graph: ^Graph) {
+	pool := graph.pool
+	for index in graph.cell_indices {
+		release_cell(pool_cell(pool, index))
+	}
+	for index in graph.edge_indices {
+		pool_edge(pool, index)^ = Task_Edge {
+			next = INDEX_NONE,
+		}
+		release_edge_index(pool, index)
+	}
+}
+
 complete_empty_graph :: proc(graph: ^Graph) {
 	sync.atomic_store_explicit(&graph.completed, true, .Release)
 	sync.sema_post(&graph.available)
@@ -943,8 +949,6 @@ worker_execute_cell :: proc(worker: ^Worker, cell: ^Task_Cell) {
 }
 
 main_executor_execute_cell :: proc(main: ^Main_Executor, cell: ^Task_Cell) {
-	previous_temp_allocator := context.temp_allocator
-	previous_main_executor := current_main_executor
 	current_main_executor = main
 	context.temp_allocator = main.temp_allocator
 	main.temp_depth += 1
@@ -957,8 +961,6 @@ main_executor_execute_cell :: proc(main: ^Main_Executor, cell: ^Task_Cell) {
 	if main.temp_depth == 0 {
 		virtual.arena_free_all(&main.temp_arena)
 	}
-	context.temp_allocator = previous_temp_allocator
-	current_main_executor = previous_main_executor
 }
 
 help_or_yield :: proc(pool: ^Pool) {
@@ -977,15 +979,11 @@ normalize_options :: proc(options: Options) -> Options {
 	} else if result.worker_count > limit {
 		result.worker_count = limit
 	}
-	result.task_capacity = normalize_capacity(result.task_capacity, DEFAULT_TASK_CAPACITY, 1)
-	result.queue_capacity = normalize_capacity(result.queue_capacity, DEFAULT_QUEUE_CAPACITY, 1)
-	result.deque_capacity = normalize_capacity(result.deque_capacity, DEFAULT_DEQUE_CAPACITY, 1)
-	result.edge_capacity = normalize_capacity(result.edge_capacity, DEFAULT_EDGE_CAPACITY, 1)
-	result.main_queue_capacity = normalize_capacity(
-	result.main_queue_capacity,
-		DEFAULT_MAIN_QUEUE_CAPACITY,
-		2,
-	)
+	result.task_capacity = normalize_capacity(result.task_capacity, 1024, 1)
+	result.queue_capacity = normalize_capacity(result.queue_capacity, 1024, 1)
+	result.deque_capacity = normalize_capacity(result.deque_capacity, 1024, 1)
+	result.edge_capacity = normalize_capacity(result.edge_capacity, 1024, 1)
+	result.main_queue_capacity = normalize_capacity(result.main_queue_capacity, 1024, 2)
 	return result
 }
 

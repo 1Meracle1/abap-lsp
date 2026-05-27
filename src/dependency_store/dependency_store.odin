@@ -1572,10 +1572,15 @@ step_done :: proc(stmt: ^sqlite3.Statement) -> Store_Error {
 }
 
 bind_text :: proc(stmt: ^sqlite3.Statement, index: int, value: string) -> Store_Error {
+	text := strings.unsafe_string_to_cstring(value)
+	if len(value) == 0 {
+		empty := [?]byte{0}
+		text = cstring(raw_data(empty[:]))
+	}
 	if sqlite3.bind_text(
 		stmt,
 		c.int(index),
-		strings.unsafe_string_to_cstring(value),
+		text,
 		c.int(len(value)),
 		sqlite3.DESTRUCTOR_TRANSIENT,
 	) != sqlite3.OK {

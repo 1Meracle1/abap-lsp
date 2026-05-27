@@ -87,6 +87,17 @@ semantic_index_make :: proc(allocator: mem.Allocator) -> Semantic_Index {
 	}
 }
 
+semantic_index_destroy :: proc(index: ^Semantic_Index) {
+	delete(index.symbols)
+	delete(index.references)
+	delete(index.scopes)
+	delete(index.sql_queries)
+	delete(index.sql_name_refs)
+	delete(index.class_members)
+	delete(index.structure_fields)
+	index^ = {}
+}
+
 build_semantic_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Semantic_Index {
 	index := Semantic_Index {
 		symbols          = make([dynamic]Sem_Symbol, 0, len(unit.symbols), allocator),

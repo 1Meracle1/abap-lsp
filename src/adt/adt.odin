@@ -1,7 +1,6 @@
 package adt
 
 import http "../http"
-import "core:slice"
 
 import base64 "core:encoding/base64"
 import "core:fmt"
@@ -123,11 +122,27 @@ clone_dependency_fetch_result :: proc(
 	res: ^Dependency_Fetch_Result,
 	allocator: mem.Allocator,
 ) -> Dependency_Fetch_Result {
+	shared := make([dynamic]Dependency_Artifact, 0, len(res.shared_dependencies), allocator)
+	for &artifact in res.shared_dependencies {
+		append(&shared, clone_dependency_artifact(&artifact, allocator))
+	}
 	return Dependency_Fetch_Result {
 		body = strings.clone(res.body, allocator),
 		file_extension = strings.clone(res.file_extension, allocator),
 		manifest_kind = strings.clone(res.manifest_kind, allocator),
-		shared_dependencies = slice.clone_to_dynamic(res.shared_dependencies[:], allocator),
+		shared_dependencies = shared,
+	}
+}
+
+clone_dependency_artifact :: proc(
+	artifact: ^Dependency_Artifact,
+	allocator: mem.Allocator,
+) -> Dependency_Artifact {
+	return Dependency_Artifact {
+		object_ref     = clone_object_ref(&artifact.object_ref, allocator),
+		body           = strings.clone(artifact.body, allocator),
+		file_extension = strings.clone(artifact.file_extension, allocator),
+		manifest_kind  = strings.clone(artifact.manifest_kind, allocator),
 	}
 }
 

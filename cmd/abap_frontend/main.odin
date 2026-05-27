@@ -13,6 +13,7 @@ import "core:fmt"
 import "core:mem"
 import "core:mem/virtual"
 import "core:os"
+import "core:slice"
 import "core:strings"
 
 Node_Count :: struct {
@@ -22,6 +23,12 @@ Node_Count :: struct {
 
 Node_Counts :: struct {
 	items: [dynamic]Node_Count,
+}
+
+Allocation_Location_Total :: struct {
+	location: runtime.Source_Code_Location,
+	bytes:    i64,
+	count:    int,
 }
 
 Tree_State :: struct {
@@ -44,6 +51,12 @@ main :: proc() {
 	arena: virtual.Arena
 	_ = virtual.arena_init_growing(&arena, mem.Gigabyte)
 	allocator := virtual.arena_allocator(&arena)
+	context.allocator = allocator
+
+	temp_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&temp_arena, mem.Gigabyte)
+	temp_allocator := virtual.arena_allocator(&temp_arena)
+	context.temp_allocator = temp_allocator
 
 	command := args[1]
 	if command == "analyze" {
@@ -136,9 +149,14 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 }
 
 run_analyze :: proc(args: []string, allocator: mem.Allocator) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, allocator, allocator)
+	tracked_allocator := mem.tracking_allocator(&tracker)
+	context.allocator = tracked_allocator
+
 	target_path := args[2]
 
-	include_paths := make([dynamic]string, 0, 4, allocator)
+	include_paths := make([dynamic]string, 0, 4, tracked_allocator)
 	for i := 3; i < len(args); i += 2 {
 		if args[i] != "--include" || i + 1 >= len(args) {
 			print_usage()
@@ -155,7 +173,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 			queue_capacity = 128,
 			deque_capacity = 128,
 		},
-		allocator,
+		tracked_allocator,
 	)
 	if pool.options.worker_count > 0 {
 		execution.pool_start(&pool)
@@ -165,7 +183,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		target_path,
 		include_paths[:],
 		workspace.Options{pool = &pool, enable_adt = true},
-		allocator,
+		tracked_allocator,
 	)
 	if !result.ok {
 		fmt.printf("error\tanalyze\t%s\n", result.error)
@@ -173,8 +191,58 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		os.exit(1)
 	}
 	print_analyze_counts(&result.project)
-	print_analyze_diagnostics(&result.project, allocator)
+	print_analyze_diagnostics(&result.project)
 	execution.pool_destroy(&pool)
+	print_analyze_memory_report(&tracker, allocator)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator, allocator: mem.Allocator) {
+	totals := make([dynamic]Allocation_Location_Total, 0, 64, allocator)
+	for _, entry in tracker.allocation_map {
+		found := false
+		for &total in totals {
+			if source_location_equal(total.location, entry.location) {
+				total.bytes += i64(entry.size)
+				total.count += 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			append(&totals, Allocation_Location_Total{entry.location, i64(entry.size), 1})
+		}
+	}
+	slice.sort_by(totals[:], allocation_location_total_less)
+
+	fmt.printf(
+		"memory\tused: %d KB\tpeak: %d KB\ttotal_allocated: %d KB\tallocations\t%d\tlocations\t%d\n",
+		tracker.current_memory_allocated / mem.Kilobyte,
+		tracker.peak_memory_allocated / mem.Kilobyte,
+		tracker.total_memory_allocated / mem.Kilobyte,
+		tracker.total_allocation_count,
+		len(totals),
+	)
+	for total in totals {
+		fmt.printf(
+			"memory_location\t%d KB\tallocations: %d\t%s(%d:%d)\tproc: %s\n",
+			total.bytes / mem.Kilobyte,
+			total.count,
+			total.location.file_path,
+			total.location.line,
+			total.location.column,
+			total.location.procedure,
+		)
+	}
+	delete(totals)
+}
+
+source_location_equal :: proc(a, b: runtime.Source_Code_Location) -> bool {
+	return a.file_path == b.file_path && a.line == b.line && a.column == b.column && a.procedure == b.procedure
+}
+
+allocation_location_total_less :: proc(a, b: Allocation_Location_Total) -> bool {
+	return a.bytes > b.bytes
 }
 
 print_analyze_counts :: proc(project: ^semantic_analyze.Project_Analysis) {
@@ -290,10 +358,13 @@ print_caret_line :: proc(start_column, width: int) {
 	fmt.println()
 }
 
-print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis, allocator: mem.Allocator) {
+print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis) {
 	for unit in project.units {
-		line_starts := build_line_starts(unit.source, allocator)
-		uri := display_uri(unit.uri, allocator)
+		temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+		defer virtual.arena_temp_end(temp_arena)
+
+		line_starts := build_line_starts(unit.source, context.temp_allocator)
+		uri := display_uri(unit.uri, context.temp_allocator)
 		for diagnostic in unit.diagnostics {
 			start := source_position(unit.source, line_starts[:], diagnostic.range.start)
 			end := source_position(unit.source, line_starts[:], diagnostic.range.end)
@@ -307,8 +378,6 @@ print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis, a
 			print_caret_line(start.column, width)
 			fmt.println()
 		}
-		delete(uri, allocator)
-		delete(line_starts)
 	}
 }
 

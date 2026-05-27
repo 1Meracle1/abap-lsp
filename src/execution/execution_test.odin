@@ -205,6 +205,30 @@ graph_arena_payload_survives_until_destroy :: proc(t: ^testing.T) {
 	testing.expect_value(t, wait(task), 42)
 }
 
+graph_reset_reuses_graph_for_new_work :: proc(t: ^testing.T) {
+	pool: Pool
+	pool_init(&pool, Options{worker_count = 0, task_capacity = 8, edge_capacity = 8}, context.allocator)
+	defer pool_destroy(&pool)
+
+	graph: Graph
+	graph_init(&graph, &pool, context.allocator)
+	defer graph_destroy(&graph)
+
+	first_roots: [2]Task(int)
+	first_roots[0] = submit_value(&graph, worker_executor(&pool), 1, inc)
+	first_roots[1] = submit_value(&graph, worker_executor(&pool), 2, inc)
+	first := then_all(&graph, first_roots[:], worker_executor(&pool), sum_values)
+	graph_start(&graph)
+	testing.expect_value(t, wait(first), 5)
+	graph_wait(&graph)
+	graph_reset(&graph)
+
+	second := submit_value(&graph, worker_executor(&pool), 3, square)
+	graph_start(&graph)
+	testing.expect_value(t, wait(second), 9)
+	graph_wait(&graph)
+}
+
 large_payload_and_result_use_graph_arena :: proc(t: ^testing.T) {
 	pool: Pool
 	pool_init(&pool, Options{worker_count = 0, task_capacity = 8, edge_capacity = 8}, context.allocator)
@@ -402,6 +426,7 @@ execution_graph_behaviors :: proc(t: ^testing.T) {
 	capacities_are_normalized(t)
 	task_and_edge_storage_grows_past_initial_capacity(t)
 	graph_arena_payload_survives_until_destroy(t)
+	graph_reset_reuses_graph_for_new_work(t)
 	large_payload_and_result_use_graph_arena(t)
 	then_preserves_sequential_dependency(t)
 	then_all_runs_after_all_parents_complete(t)

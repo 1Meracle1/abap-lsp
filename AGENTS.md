@@ -54,13 +54,8 @@ variables use `snake_case`, and tests are descriptive `snake_case` procedures
 annotated with `@(test)`. Keep modules focused by responsibility and prefer
 small local helpers over framework-like abstractions.
 
-Production Odin code should pass retained allocators explicitly instead of
-relying on `context.allocator`. Use `context.temp_allocator` for transient
-operation-local work only when there is a clear boundary, and reset/release it
-after the operation completes. Runtime worker threads may use a per-worker temp
-allocator reset after each processed task. Main-thread temp allocation should
-stay inside an explicit operation boundary. In tests, pass `context.allocator`
-directly instead of creating a heap allocator or local allocator alias.
+Default procedure calling convention passes implicit `context` pointer on each call- this context variable is local to each scope.
+In tests, pass `context.allocator` directly instead of creating a heap allocator or local allocator alias.
 
 Ask before adding new external dependencies, native libraries, toolchain
 requirements, or changing bundled library versions.

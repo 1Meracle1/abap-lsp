@@ -7,8 +7,9 @@ import "../parser"
 import "../tokenizer"
 import execution "../execution"
 import analyze "./analyze"
-import deps "./dependencies"
+import remote_deps "./remote_dependencies"
 import sem_query "./query"
+import session "./session"
 import workspace "../workspace"
 
 import "core:mem"
@@ -934,6 +935,124 @@ project_state_batch_resolves_target_candidates :: proc(t: ^testing.T) {
 	if root != nil {
 		testing.expect_value(t, include_target_uri(&project, root, "zshared"), targets[1].uri)
 		testing.expect(t, reference_resolves_to_uri(&project, root, "gv_shared", .Value, .Identifier, targets[1].uri))
+	}
+}
+
+@(test)
+analysis_session_keeps_targets_that_are_also_candidates :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	targets := [?]analyze.Source_Input {
+		{uri = "file:///workspace/main.abap", source = "INCLUDE zshared. gv_shared = 1."},
+		{uri = "file:///workspace/generated.abap", source = "REPORT zshared. DATA gv_shared TYPE i."},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, len(targets), context.allocator)
+	for target in targets {
+		append(&candidates, analyze.Project_Candidate_Input{input = target})
+	}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		candidates[:],
+		{},
+		remote_deps.Dependency_Config{},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, targets[0].uri)
+
+	testing.expect_value(t, len(project.units), 2)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, include_target_uri(&project, root, "zshared"), targets[1].uri)
+		testing.expect(t, reference_resolves_to_uri(&project, root, "gv_shared", .Value, .Identifier, targets[1].uri))
+	}
+}
+
+@(test)
+analysis_session_keeps_unchanged_inputs_clean :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	target := analyze.Source_Input {
+		uri = "file:///workspace/main.abap",
+		source = "REPORT zmain. INCLUDE ztop. lv_top = 1.",
+	}
+	include := analyze.Source_Input {
+		uri = "file:///workspace/ztop.abap",
+		source = "DATA lv_top TYPE i.",
+	}
+	changes := [?]session.Input_Change {
+		{kind = .Upsert, role = .Target, input = target},
+		{kind = .Upsert, role = .Candidate, input = include, object_name = "ztop"},
+	}
+	analysis_session := session.analysis_session_make(
+		remote_deps.Dependency_Config{},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	defer session.analysis_session_destroy(&analysis_session)
+
+	first := session.analysis_session_apply_changes(&analysis_session, changes[:])
+	second := session.analysis_session_apply_changes(&analysis_session, changes[:])
+	root := analyze.project_unit_by_uri(&second.project, target.uri)
+
+	testing.expect_value(t, len(first.project.units), 2)
+	testing.expect_value(t, second.dirty_count, 0)
+	testing.expect_value(t, len(second.project.units), 2)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, include_target_uri(&second.project, root, "ztop"), include.uri)
+	}
+}
+
+@(test)
+analysis_session_ignores_editor_change_to_immutable_dependency :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	target := analyze.Source_Input {
+		uri = "file:///workspace/main.abap",
+		source = "DATA lo_dep TYPE REF TO zcl_dep.",
+	}
+	dependency := analyze.Source_Input {
+		uri = "file:///workspace/zcl_dep.abap",
+		source = "CLASS zcl_dep DEFINITION. ENDCLASS.",
+		mode = .Dependency_Interface,
+	}
+	initial := [?]session.Input_Change {
+		{kind = .Upsert, role = .Target, input = target},
+		{kind = .Upsert, role = .Dependency, input = dependency, immutable = true},
+	}
+	editor_change := [?]session.Input_Change {
+		{
+			kind = .Upsert,
+			role = .Dependency,
+			input = analyze.Source_Input {
+				uri = dependency.uri,
+				source = "",
+				mode = .Dependency_Interface,
+			},
+		},
+	}
+	analysis_session := session.analysis_session_make(
+		remote_deps.Dependency_Config{},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	defer session.analysis_session_destroy(&analysis_session)
+
+	_ = session.analysis_session_apply_changes(&analysis_session, initial[:])
+	result := session.analysis_session_apply_changes(&analysis_session, editor_change[:])
+	root := analyze.project_unit_by_uri(&result.project, target.uri)
+
+	testing.expect_value(t, result.dirty_count, 0)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, reference_resolves_to_uri(&result.project, root, "zcl_dep", .Type, .Type_Ref, dependency.uri))
 	}
 }
 
@@ -4398,14 +4517,16 @@ dependency_store_function_hit_clears_remote_candidate :: proc(t: ^testing.T) {
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	project := deps.analyze_with_remote_dependencies(
-		analyze.Source_Input {
-			uri    = "mem://ZMAIN.abap",
-			source = "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'.",
-		},
-		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. CALL FUNCTION 'Z_REMOTE_FM'.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -4462,14 +4583,16 @@ cache_hit_resolves_before_unreachable_adt :: proc(t: ^testing.T) {
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	project := deps.analyze_with_remote_dependencies(
-		analyze.Source_Input {
-			uri    = "mem://ZMAIN.abap",
-			source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_cache_first.",
-		},
-		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_cache_first.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -4522,20 +4645,31 @@ adt_runs_for_cache_miss_after_cache_hit_reanalysis :: proc(t: ^testing.T) {
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	project := deps.analyze_with_remote_dependencies(
-		analyze.Source_Input {
-			uri = "mem://ZMAIN.abap",
-			source = "REPORT zmain. DATA lo_cache TYPE REF TO zcl_cache_then_adt. DATA lo_adt TYPE REF TO zcl_adt_after_cache.",
-		},
-		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lo_cache TYPE REF TO zcl_cache_then_adt. DATA lo_adt TYPE REF TO zcl_adt_after_cache.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
 
 	testing.expect(t, server.fetch_count > 0)
+	_, cached, cache_err := dep_store.find_artifact_for_candidate(
+		&store,
+		&profile,
+		"zcl_adt_after_cache",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, cache_err, dep_store.Store_Error.None)
+	testing.expect(t, cached)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 
@@ -4585,7 +4719,13 @@ cache_negative_skips_adt_and_allows_local_export_fallback :: proc(t: ^testing.T)
 	}
 	pool_for_probe: execution.Pool
 	execution.pool_init(&pool_for_probe, execution.Options{worker_count = 0, task_capacity = 8}, context.allocator)
-	probe := deps.add_dependency_cache_matches(
+	probe_temp_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&probe_temp_arena)
+	defer virtual.arena_destroy(&probe_temp_arena)
+	previous_temp_allocator := context.temp_allocator
+	context.temp_allocator = virtual.arena_allocator(&probe_temp_arena)
+	defer context.temp_allocator = previous_temp_allocator
+	probe := remote_deps.add_dependency_cache_matches(
 		&probe_candidates,
 		&probe_dependencies,
 		probe_remote[:],
@@ -4597,8 +4737,6 @@ cache_negative_skips_adt_and_allows_local_export_fallback :: proc(t: ^testing.T)
 		&pool_for_probe,
 		"mem://ZMAIN.abap",
 		"cache",
-		context.allocator,
-		context.allocator,
 	)
 	execution.pool_destroy(&pool_for_probe)
 	testing.expect(t, !probe.added)
@@ -4609,14 +4747,16 @@ cache_negative_skips_adt_and_allows_local_export_fallback :: proc(t: ^testing.T)
 	append(&roots, export_root)
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	project := deps.analyze_with_remote_dependencies(
-		analyze.Source_Input {
-			uri    = "mem://ZMAIN.abap",
-			source = "REPORT zmain. INCLUDE zinc_neg_local.",
-		},
-		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config {
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. INCLUDE zinc_neg_local.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config {
 			cache = &store,
 			profile = &profile,
 			local_export_roots = roots[:],
@@ -4654,14 +4794,16 @@ adt_miss_records_negative_cache_lookup :: proc(t: ^testing.T) {
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	_ = deps.analyze_with_remote_dependencies(
-		analyze.Source_Input {
-			uri    = "mem://ZMAIN.abap",
-			source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_missing_remote.",
-		},
-		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lo_dep TYPE REF TO zcl_missing_remote.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	_ = session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -4790,11 +4932,13 @@ standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T
 	if pool.options.worker_count > 0 {
 		execution.pool_start(&pool)
 	}
-	project := deps.analyze_with_remote_dependencies(
-		analyze.Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)},
-		make([dynamic]analyze.Project_Candidate_Input, context.allocator),
-		make([dynamic]analyze.Source_Input, context.allocator),
-		deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
+	target := analyze.Source_Input{uri = "file:///ZMAIN.abap", source = strings.to_string(target_source)}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -4857,17 +5001,25 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 		{name = "ZINC_STORE_TASK", kind = .Include},
 	}
 	seen := make(map[i64]bool, context.allocator)
+	temp_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&temp_arena)
+	defer virtual.arena_destroy(&temp_arena)
+	previous_temp_allocator := context.temp_allocator
+	context.temp_allocator = virtual.arena_allocator(&temp_arena)
+	defer context.temp_allocator = previous_temp_allocator
 	before := execution.pool_stats(&pool)
-	added := deps.add_dependency_cache_any_profile_matches(
+	cache_result := remote_deps.add_dependency_cache_matches(
 		&candidates,
 		&dependencies,
 		remote[:],
 		&store,
+		nil,
+		true,
+		"",
 		&seen,
 		&pool,
 		"file:///ZMAIN.abap",
-		context.allocator,
-		context.allocator,
+		"store_any",
 	)
 	after := execution.pool_stats(&pool)
 	if pool.options.worker_count > 0 {
@@ -4875,7 +5027,7 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	}
 	execution.pool_destroy(&pool)
 
-	testing.expect(t, added)
+	testing.expect(t, cache_result.added)
 	testing.expect_value(t, len(dependencies), 1)
 	testing.expect_value(t, len(candidates), 1)
 	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
@@ -4902,11 +5054,12 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	project := deps.analyze_with_remote_dependencies(
-		target,
-		candidates,
-		dependencies,
-		deps.Dependency_Config{local_export_roots = roots[:]},
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		candidates[:],
+		dependencies[:],
+		remote_deps.Dependency_Config{local_export_roots = roots[:]},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -4949,11 +5102,12 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	project := deps.analyze_with_remote_dependencies(
-		target,
-		candidates,
-		dependencies,
-		deps.Dependency_Config{cache = &store, profile = &profile, local_export_roots = roots[:]},
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		candidates[:],
+		dependencies[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, local_export_roots = roots[:]},
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
@@ -5009,9 +5163,9 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	object_ref := adt.build_class_object_ref("ZCL_ADT_FETCH", "ZPKG", context.allocator)
 	defer adt.object_ref_destroy(&object_ref, context.allocator)
-	uri_keys := deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+	uri_keys := remote_deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
 
-	added := deps.add_adt_fetched_dependency_input(
+	added := remote_deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
 		analyze.Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = .Type},
@@ -5020,7 +5174,6 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
 		"abap",
 		&uri_keys,
-		context.allocator,
 		context.allocator,
 	)
 	testing.expect(t, added)
@@ -5047,11 +5200,11 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 generic_type_adt_fetch_uses_search_before_direct_ddic_probe :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
-		!deps.adt_candidate_direct_first(analyze.Remote_Dependency_Candidate{name = "scit_clas", kind = .Type}),
+		!remote_deps.adt_candidate_direct_first(analyze.Remote_Dependency_Candidate{name = "scit_clas", kind = .Type}),
 	)
 	testing.expect(
 		t,
-		deps.adt_candidate_direct_first(
+		remote_deps.adt_candidate_direct_first(
 			analyze.Remote_Dependency_Candidate{name = "zcl_demo", kind = .Type, hint = .Object_Type},
 		),
 	)
@@ -5079,9 +5232,9 @@ CALL FUNCTION 'Z_REMOTE_FM'
 		description = strings.clone("Function module", context.allocator),
 	}
 	defer adt.object_ref_destroy(&object_ref, context.allocator)
-	uri_keys := deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+	uri_keys := remote_deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
 
-	added := deps.add_adt_fetched_dependency_input(
+	added := remote_deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
 		analyze.Remote_Dependency_Candidate{name = "z_remote_fm", kind = .Function},
@@ -5098,7 +5251,6 @@ ENDFUNCTION.
 `,
 		"abap",
 		&uri_keys,
-		context.allocator,
 		context.allocator,
 	)
 	testing.expect(t, added)
@@ -5152,9 +5304,9 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		description = strings.clone("Table Type", context.allocator),
 	}
 	defer adt.object_ref_destroy(&object_ref, context.allocator)
-	uri_keys := deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
+	uri_keys := remote_deps.project_input_uri_keys(target.uri, dependencies[:], candidates[:], 1, context.allocator)
 
-	added := deps.add_adt_fetched_dependency_input(
+	added := remote_deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
 		analyze.Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
@@ -5169,7 +5321,6 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 </abapsource:elementInfo>`,
 		"xml",
 		&uri_keys,
-		context.allocator,
 		context.allocator,
 	)
 	testing.expect(t, added)
@@ -5271,9 +5422,9 @@ ddic_reference_data_element_generates_ref_to_type :: proc(t: ^testing.T) {
 
 @(test)
 dependency_xml_detection_prefers_metadata :: proc(t: ^testing.T) {
-	testing.expect(t, deps.dependency_source_is_xml("ddic-table-type", "xml", "not xml"))
-	testing.expect(t, deps.dependency_source_is_xml("ddic-table-type", "abap", "<ttyp/>"))
-	testing.expect(t, !deps.dependency_source_is_xml("global-class", "abap", "<fs> = value."))
+	testing.expect(t, remote_deps.dependency_source_is_xml("ddic-table-type", "xml", "not xml"))
+	testing.expect(t, remote_deps.dependency_source_is_xml("ddic-table-type", "abap", "<ttyp/>"))
+	testing.expect(t, !remote_deps.dependency_source_is_xml("global-class", "abap", "<fs> = value."))
 }
 
 @(test)
@@ -5383,43 +5534,46 @@ DATA lt_rows TYPE zddic_rows.
 adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T) {
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
-	uri_keys := deps.project_input_uri_keys("mem://ZMAIN.abap", dependencies[:], candidates[:], 2, context.allocator)
+	uri_keys := remote_deps.project_input_uri_keys("mem://ZMAIN.abap", dependencies[:], candidates[:], 2, context.allocator)
 
-	result := new(deps.Adt_Fetch_Task_Result, context.allocator)
-	result.fetched = make([dynamic]deps.Adt_Fetched_Object, 0, 1, context.allocator)
-	shared := make([dynamic]adt.Dependency_Artifact, 0, 1, context.allocator)
-	append(
-		&shared,
-		adt.Dependency_Artifact {
-			object_ref     = adt.build_include_object_ref("ZINC_TASK_RESULT", "ZPKG", context.allocator),
-			body           = strings.clone("DATA gv_shared TYPE string.", context.allocator),
-			file_extension = strings.clone("abap", context.allocator),
-			manifest_kind  = strings.clone("include", context.allocator),
-		},
+	result_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&result_arena)
+	defer virtual.arena_destroy(&result_arena)
+	result_allocator := virtual.arena_allocator(&result_arena)
+	result := new(remote_deps.Adt_Fetch_Task_Result, result_allocator)
+	result.fetched = make([dynamic]remote_deps.Adt_Fetched_Object, 0, 1, result_allocator)
+	object_ref := adt.build_class_object_ref("ZCL_TASK_RESULT", "ZPKG", result_allocator)
+	candidate := analyze.Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type}
+	remote_deps.append_prepared_adt_input(
+		result,
+		candidate,
+		&object_ref,
+		"global-class",
+		"abap",
+		"CLASS zcl_task_result DEFINITION. ENDCLASS. CLASS zcl_task_result IMPLEMENTATION. ENDCLASS.",
+		false,
+		result_allocator,
+		context.temp_allocator,
 	)
-	append(
-		&result.fetched,
-		deps.Adt_Fetched_Object {
-			object_ref = adt.build_class_object_ref("ZCL_TASK_RESULT", "ZPKG", context.allocator),
-			fetched = adt.Dependency_Fetch_Result {
-				body                = strings.clone("CLASS zcl_task_result DEFINITION. ENDCLASS. CLASS zcl_task_result IMPLEMENTATION. ENDCLASS.", context.allocator),
-				file_extension      = strings.clone("abap", context.allocator),
-				manifest_kind       = strings.clone("global-class", context.allocator),
-				shared_dependencies = shared,
-			},
-		},
+	include_ref := adt.build_include_object_ref("ZINC_TASK_RESULT", "ZPKG", result_allocator)
+	remote_deps.append_prepared_adt_input(
+		result,
+		analyze.Remote_Dependency_Candidate{name = "ZINC_TASK_RESULT", kind = .Include},
+		&include_ref,
+		"include",
+		"abap",
+		"DATA gv_shared TYPE string.",
+		true,
+		result_allocator,
+		context.temp_allocator,
 	)
-	defer deps.adt_fetch_task_result_destroy(result, context.allocator)
 
-	added := deps.add_adt_fetch_task_result(
+	added := remote_deps.add_adt_fetch_task_result(
 		&candidates,
 		&dependencies,
-		analyze.Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type},
+		candidate,
 		result,
-		nil,
-		nil,
 		&uri_keys,
-		context.allocator,
 		context.allocator,
 	)
 
@@ -5478,7 +5632,7 @@ adt_fetched_dependency_is_cached :: proc(t: ^testing.T) {
 		shared_dependencies = shared_dependencies,
 	}
 
-	deps.store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
+	remote_deps.store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
 
 	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "tr_objects", .Type, context.allocator)
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
@@ -5528,7 +5682,7 @@ adt_fetched_ddic_table_preserves_xml_in_cache :: proc(t: ^testing.T) {
 		manifest_kind  = "ddic-table",
 	}
 
-	deps.store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
+	remote_deps.store_adt_dependency_fetch(&store, &profile, &object_ref, &fetched, context.allocator)
 
 	record, ok, lookup_err := dep_store.find_artifact_for_candidate(&store, &profile, "t000", .Type, context.allocator)
 	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
@@ -6161,6 +6315,27 @@ root_file = "src/ZOTHER.abap"
 	testing.expect(t, result.used_manifest)
 	testing.expect(t, analyze.project_unit_by_uri(&result.project, main_file) != nil)
 	testing.expect(t, analyze.project_unit_by_uri(&result.project, other_file) != nil)
+}
+
+@(test)
+workspace_folder_path_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("folder-path-empty-manifest")
+	manifest_test_file(t, root, "abapls.toml", "version = 1")
+	main_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. INCLUDE zinc. lv_inc = 1.")
+	include_file := manifest_test_file(t, root, "src/ZINC.abap", "DATA lv_inc TYPE i.")
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	result := workspace.analyze_filesystem_path(root, nil, workspace.Options{pool = &pool}, context.allocator)
+	execution.pool_destroy(&pool)
+	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
+
+	testing.expect(t, result.ok)
+	testing.expect_value(t, len(result.project.units), 2)
+	testing.expect(t, root_unit != nil)
+	if root_unit != nil {
+		testing.expect_value(t, include_target_uri(&result.project, root_unit, "zinc"), include_file)
+	}
 }
 
 @(test)

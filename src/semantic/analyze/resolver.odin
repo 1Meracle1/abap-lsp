@@ -458,7 +458,7 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 	}
 
 	for unit_index in 0 ..< len(units) {
-		import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator, allocator)
+		import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator)
 	}
 }
 
@@ -473,7 +473,7 @@ seed_inherited_method_scope_parameters :: proc(
 	changed := false
 	for unit_index in 0 ..< len(units) {
 		unit := &units[unit_index]
-		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), allocator)
+		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), context.temp_allocator)
 		for _ in 0 ..< len(unit.symbols) {
 			append(&method_scope_by_owner, INVALID_SCOPE_ID)
 		}
@@ -1416,13 +1416,10 @@ import_project_structures_for_unit :: proc(
 	unit_index: int,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-	scratch_allocator: mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), scratch_allocator)
-	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), scratch_allocator)
-	defer delete(owner_scopes)
-	defer delete(owner_scope_set)
+	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), context.temp_allocator)
+	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), context.temp_allocator)
 	changed := true
 	for changed {
 		changed = false
