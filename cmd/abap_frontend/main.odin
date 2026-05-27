@@ -179,7 +179,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		execution.pool_start(&pool)
 	}
 
-	result := workspace.analyze_filesystem_path(
+	result := analyze_cli_path(
 		target_path,
 		include_paths[:],
 		workspace.Options{pool = &pool, enable_adt = true},
@@ -195,6 +195,41 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	execution.pool_destroy(&pool)
 	print_analyze_memory_report(&tracker, allocator)
 	mem.tracking_allocator_destroy(&tracker)
+}
+
+analyze_cli_path :: proc(
+	path: string,
+	include_paths: []string,
+	options: workspace.Options,
+	allocator: mem.Allocator,
+) -> workspace.Analysis_Result {
+	abs_path, ok := workspace.absolute_clean_path(path, allocator)
+	if !ok {
+		return workspace.Analysis_Result{ok = false, error = "invalid path"}
+	}
+	info, err := os.stat(abs_path, allocator)
+	if err != nil {
+		return workspace.Analysis_Result{ok = false, error = "invalid path"}
+	}
+	if info.type == .Directory {
+		opened, workspace_ok, workspace_error := workspace.open_workspace(abs_path, options, allocator)
+		if !workspace_ok {
+			return workspace.Analysis_Result{ok = false, error = workspace_error}
+		}
+		defer workspace.workspace_destroy(&opened, allocator)
+		return workspace.analyze_workspace(&opened, include_paths, options, allocator)
+	}
+
+	opened, workspace_ok, workspace_error := workspace.open_standalone_workspace(
+		os.dir(abs_path),
+		options,
+		allocator,
+	)
+	if !workspace_ok {
+		return workspace.Analysis_Result{ok = false, error = workspace_error}
+	}
+	defer workspace.workspace_destroy(&opened, allocator)
+	return workspace.analyze_path(&opened, abs_path, include_paths, options, allocator)
 }
 
 print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator, allocator: mem.Allocator) {

@@ -1429,12 +1429,19 @@ analyze_path_test_with_options :: proc(
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	run_options := options
 	run_options.pool = &pool
-	result := workspace.analyze_path(target_path, root, nil, run_options, context.allocator)
+	opened, workspace_ok, workspace_error := workspace.open_workspace(root, run_options, context.allocator)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return workspace.Analysis_Result{ok = false, error = workspace_error}
+	}
+	result := workspace.analyze_path(&opened, target_path, nil, run_options, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	return result
 }
 
-analyze_file_path_test_with_options :: proc(
+analyze_standalone_path_test_with_options :: proc(
 	t: ^testing.T,
 	target_path: string,
 	options: workspace.Options,
@@ -1443,7 +1450,24 @@ analyze_file_path_test_with_options :: proc(
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	run_options := options
 	run_options.pool = &pool
-	result := workspace.analyze_file_path(target_path, nil, run_options, context.allocator)
+	target_abs, target_ok := workspace.absolute_clean_path(target_path, context.allocator)
+	testing.expect(t, target_ok)
+	if !target_ok {
+		execution.pool_destroy(&pool)
+		return workspace.Analysis_Result{ok = false, error = "invalid target path"}
+	}
+	opened, workspace_ok, workspace_error := workspace.open_standalone_workspace(
+		filepath.dir(target_abs),
+		run_options,
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return workspace.Analysis_Result{ok = false, error = workspace_error}
+	}
+	result := workspace.analyze_path(&opened, target_abs, nil, run_options, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	return result
 }
@@ -4482,7 +4506,7 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 		"ZMAIN.abap",
 		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_cache.",
 	)
-	result := analyze_file_path_test_with_options(t, root_file, workspace.Options{dependency_store_path = store_path})
+	result := analyze_standalone_path_test_with_options(t, root_file, workspace.Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -4865,7 +4889,7 @@ standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 		"ZMAIN.abap",
 		"REPORT zmain. DATA lo_dep TYPE REF TO zcl_standalone_outer.",
 	)
-	result := analyze_file_path_test_with_options(t, root_file, workspace.Options{dependency_store_path = store_path})
+	result := analyze_standalone_path_test_with_options(t, root_file, workspace.Options{dependency_store_path = store_path})
 
 	testing.expect(t, result.ok)
 	testing.expect(t, !result.used_manifest)
@@ -6287,7 +6311,7 @@ START-OF-SELECTION.
 }
 
 @(test)
-workspace_folder_path_analyzes_manifest_roots :: proc(t: ^testing.T) {
+analyze_workspace_uses_manifest_roots :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("folder-path")
 	manifest_test_file(
 		t,
@@ -6308,7 +6332,18 @@ root_file = "src/ZOTHER.abap"
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	result := workspace.analyze_filesystem_path(root, nil, workspace.Options{pool = &pool}, context.allocator)
+	opened, workspace_ok, _ := workspace.open_workspace(
+		root,
+		workspace.Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return
+	}
+	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 
 	testing.expect(t, result.ok)
@@ -6318,7 +6353,7 @@ root_file = "src/ZOTHER.abap"
 }
 
 @(test)
-workspace_folder_path_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) {
+analyze_workspace_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("folder-path-empty-manifest")
 	manifest_test_file(t, root, "abapls.toml", "version = 1")
 	main_file := manifest_test_file(t, root, "src/ZMAIN.abap", "REPORT zmain. INCLUDE zinc. lv_inc = 1.")
@@ -6326,7 +6361,18 @@ workspace_folder_path_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) 
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	result := workspace.analyze_filesystem_path(root, nil, workspace.Options{pool = &pool}, context.allocator)
+	opened, workspace_ok, _ := workspace.open_workspace(
+		root,
+		workspace.Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return
+	}
+	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
 
@@ -6339,7 +6385,7 @@ workspace_folder_path_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) 
 }
 
 @(test)
-filesystem_file_path_does_not_open_parent_workspace :: proc(t: ^testing.T) {
+standalone_workspace_does_not_open_parent_manifest :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("file-path-no-parent-workspace")
 	manifest_test_file(
 		t,
@@ -6360,7 +6406,18 @@ root_file = "src/ZOTHER.abap"
 
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
-	result := workspace.analyze_filesystem_path(main_file, nil, workspace.Options{pool = &pool}, context.allocator)
+	opened, workspace_ok, _ := workspace.open_standalone_workspace(
+		filepath.dir(main_file),
+		workspace.Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return
+	}
+	result := workspace.analyze_path(&opened, main_file, nil, workspace.Options{pool = &pool}, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 
 	testing.expect(t, result.ok)
