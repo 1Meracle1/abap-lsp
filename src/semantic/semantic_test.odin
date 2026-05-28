@@ -3927,6 +3927,56 @@ ENDCLASS.
 }
 
 @(test)
+read_table_table_line_key_is_pseudo_component :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_defs.
+  TYPES ty_languages TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+ENDINTERFACE.
+CLASS lcl_table DEFINITION.
+  PRIVATE SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_table IMPLEMENTATION.
+  METHOD run.
+    DATA lt_i18n_langs TYPE lif_defs=>ty_languages.
+    READ TABLE lt_i18n_langs WITH KEY table_line = '*' TRANSPORTING NO FIELDS.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///read_table_table_line_key.abap", source)
+
+	testing.expect(t, has_reference(&unit, "lt_i18n_langs", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "table_line", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+delete_adjacent_duplicates_comparing_all_fields_is_clause :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_table DEFINITION.
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_row,
+             component TYPE string,
+           END OF ty_row.
+    DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_table IMPLEMENTATION.
+  METHOD run.
+    DELETE ADJACENT DUPLICATES FROM lt_rows COMPARING ALL FIELDS.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///delete_adjacent_duplicates_all_fields.abap", source)
+
+	testing.expect(t, has_reference(&unit, "lt_rows", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "all", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "fields", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 data_cluster_media_collect_refs_without_keyword_refs :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

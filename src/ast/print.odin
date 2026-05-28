@@ -2850,7 +2850,11 @@ emit_delete_stmt :: proc(p: ^Printer, stmt: ^Delete_Stmt) {
 			if i > 0 {
 				emit(p, " ")
 			}
-			emit_node(p, clause.expr)
+			if clause.all_fields {
+				emit(p, "ALL FIELDS")
+			} else {
+				emit_node(p, clause.expr)
+			}
 		}
 	}
 	emit(p, ".")

@@ -1286,7 +1286,7 @@ clone_read_table_entries :: proc(list: [dynamic]Read_Table_Entry_Clause, allocat
 clone_delete_comparing_clauses :: proc(list: [dynamic]Delete_Comparing_Clause, allocator: mem.Allocator) -> [dynamic]Delete_Comparing_Clause {
 	res := make([dynamic]Delete_Comparing_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Delete_Comparing_Clause{expr = clone(clause.expr, allocator), name = clause.name, range = clause.range})
+		append(&res, Delete_Comparing_Clause{all_fields = clause.all_fields, expr = clone(clause.expr, allocator), name = clause.name, range = clause.range})
 	}
 	return res
 }
@@ -1294,7 +1294,7 @@ clone_delete_comparing_clauses :: proc(list: [dynamic]Delete_Comparing_Clause, a
 clone_read_table_key_values :: proc(list: [dynamic]Read_Table_Key_Value_Clause, allocator: mem.Allocator) -> [dynamic]Read_Table_Key_Value_Clause {
 	res := make([dynamic]Read_Table_Key_Value_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Read_Table_Key_Value_Clause{name = clause.name, value = clone(clause.value, allocator)})
+		append(&res, Read_Table_Key_Value_Clause{name = clause.name, name_range = clause.name_range, table_line = clause.table_line, value = clone(clause.value, allocator)})
 	}
 	return res
 }

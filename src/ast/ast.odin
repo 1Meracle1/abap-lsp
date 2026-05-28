@@ -2197,8 +2197,10 @@ Read_Table_Key_Kind :: enum {
 
 // ABAP syntax: one `name = value` component inside a READ TABLE key clause.
 Read_Table_Key_Value_Clause :: struct {
-	name:  string,
-	value: ^Expr,
+	name:       string,
+	name_range: tokenizer.Range,
+	table_line: bool,
+	value:      ^Expr,
 }
 
 // ABAP syntax: one READ TABLE entry, including chained entries after `READ TABLE:`.
@@ -2336,9 +2338,10 @@ Delete_Form :: enum {
 }
 
 Delete_Comparing_Clause :: struct {
-	expr:  ^Expr,
-	name:  string,
-	range: tokenizer.Range,
+	all_fields: bool,
+	expr:       ^Expr,
+	name:       string,
+	range:      tokenizer.Range,
 }
 
 // ABAP syntax: `DELETE itab ...`, `DELETE FROM dbtab ...`, or `DELETE ADJACENT DUPLICATES FROM itab`.

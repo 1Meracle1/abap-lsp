@@ -1145,6 +1145,7 @@ parse_read_table_key_values :: proc(
 				bump_token(p)
 			}
 			expect_token(p, .Eq)
+			name := p.source[name_start:name_end_byte]
 			value := data_expr(
 				p,
 				body_start,
@@ -1162,8 +1163,10 @@ parse_read_table_key_values :: proc(
 			append(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {
-					name = p.source[name_start:name_end_byte],
-					value = value,
+					name       = name,
+					name_range = tokenizer.text_range(name_start, name_end_byte),
+					table_line = strings.equal_fold(name, "table_line"),
+					value      = value,
 				},
 			)
 			continue
@@ -2035,6 +2038,18 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "COMPARING") {
+			if at_keyword(p, "ALL") && at_keyword_index(p, p.index + 1, "FIELDS") {
+				all_start := bump_token(p)
+				fields := bump_token(p)
+				append(
+					&stmt.comparing,
+					ast.Delete_Comparing_Clause {
+						all_fields = true,
+						range      = tokenizer.text_range(all_start.range.start, fields.range.end),
+					},
+				)
+				continue
+			}
 			more := data_exprs_until(p, body_start, []string{})
 			for value in more {append(&stmt.comparing, delete_comparing_clause(value))}
 			continue

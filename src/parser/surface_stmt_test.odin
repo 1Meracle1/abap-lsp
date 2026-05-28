@@ -249,6 +249,27 @@ DELETE ADJACENT DUPLICATES FROM itab COMPARING matnr.`
 }
 
 @(test)
+read_table_and_delete_model_pseudo_components :: proc(t: ^testing.T) {
+	source := `READ TABLE itab WITH KEY table_line = '*' TRANSPORTING NO FIELDS.
+DELETE ADJACENT DUPLICATES FROM itab COMPARING ALL FIELDS.`
+	parsed := parse(source, "data_access_pseudo_components.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	delete_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Delete_Stmt)
+
+	testing.expect_value(t, len(read.entries[0].key_values), 1)
+	key := read.entries[0].key_values[0]
+	testing.expect_value(t, key.name, "table_line")
+	testing.expect_value(t, source[key.name_range.start:key.name_range.end], "table_line")
+	testing.expect(t, key.table_line)
+	testing.expect_value(t, len(delete_stmt.comparing), 1)
+	testing.expect(t, delete_stmt.comparing[0].all_fields)
+	testing.expect_value(t, source[delete_stmt.comparing[0].range.start:delete_stmt.comparing[0].range.end], "ALL FIELDS")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 read_table_binary_search_stores_range :: proc(t: ^testing.T) {
 	source := `READ TABLE itab INTO wa WITH KEY id = lv_id BINARY SEARCH.`
 	parsed := parse(source, "read_table_binary_search_clause.abap", context.allocator)
