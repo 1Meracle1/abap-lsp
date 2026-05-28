@@ -764,6 +764,34 @@ SELECT matnr FROM mara INTO @DATA(lv_new) WHERE matnr = @lv_key.`
 }
 
 @(test)
+open_sql_projection_named_value_before_dynamic_source_is_valid :: proc(t: ^testing.T) {
+	source := `SELECT value FROM (zcl_abapgit_persistence_db=>c_tabname)
+  INTO TABLE rt_repo_ids
+  WHERE type = zcl_abapgit_persistence_db=>c_type_repo.`
+	parsed := parse(source, "sql_value_column_dynamic_source.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	projection := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, projection.name, "value")
+	testing.expect(t, stmt.query.source_clause.dynamic_source)
+	testing.expect(t, stmt.query.where_cond != nil)
+}
+
+@(test)
+open_sql_source_named_cross_is_not_join_without_join_keyword :: proc(t: ^testing.T) {
+	source := `SELECT COUNT(*) FROM cross
+  WHERE ( type = 'P' OR type = 'Q' ) AND name = lv_paramid.`
+	parsed := parse(source, "sql_cross_table.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	source_expr := stmt.query.source_clause.source.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, source_expr.name, "cross")
+	testing.expect(t, stmt.query.where_cond != nil)
+}
+
+@(test)
 open_sql_sap_validated_tail_orderings_are_valid :: proc(t: ^testing.T) {
 	source := `SELECT trkorr FROM e070 ORDER BY trkorr INTO TABLE @lt_rows.
 SELECT trkorr FROM e070 INTO TABLE @lt_rows UP TO 10 ROWS WHERE trkorr = @lv_trkorr.

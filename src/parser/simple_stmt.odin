@@ -981,7 +981,7 @@ parse_data_cluster_parameters :: proc(
 ) -> [dynamic]ast.Data_Cluster_Parameter_Clause {
 	parameters := make([dynamic]ast.Data_Cluster_Parameter_Clause, 0, 2, p.allocator)
 	allow_token(p, .Colon)
-	for !simple_stmt_done(p, body_start) && !at_keyword(p, stop_keyword) {
+	for !data_cluster_parameters_done(p, stop_keyword) {
 		if allow_token(p, .Comma) {
 			continue
 		}
@@ -993,6 +993,11 @@ parse_data_cluster_parameters :: proc(
 		ensure_forward_progress(p, start)
 	}
 	return parameters
+}
+
+data_cluster_parameters_done :: proc(p: ^Parser, stop_keyword: string) -> bool {
+	tok := current_token(p)
+	return tok.kind == .Period || tok.kind == .Eof || at_keyword(p, stop_keyword)
 }
 
 parse_data_cluster_medium :: proc(
@@ -1064,7 +1069,7 @@ parse_data_cluster_parameter :: proc(
 	stop_keyword: string,
 	parameter_keyword: string,
 ) -> (ast.Data_Cluster_Parameter_Clause, bool) {
-	if simple_stmt_done(p, body_start) || at_keyword(p, stop_keyword) {
+	if data_cluster_parameters_done(p, stop_keyword) {
 		return {}, false
 	}
 	parameter: ast.Data_Cluster_Parameter_Clause

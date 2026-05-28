@@ -35,18 +35,22 @@ parse_logical_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	return parse_or_expr(p)
 }
 
-expr_stop_keyword :: proc(p: ^Parser) -> bool {
+expr_stop_keyword_at :: proc(p: ^Parser, index: int) -> bool {
 	for keyword in p.expr_stop_keywords {
-		if at_keyword_phrase(p, keyword) {
+		if keyword_phrase_at(p, index, keyword) {
 			return true
 		}
 	}
 	for keyword in p.expr_extra_stop_keywords {
-		if at_keyword_phrase(p, keyword) {
+		if keyword_phrase_at(p, index, keyword) {
 			return true
 		}
 	}
 	return false
+}
+
+expr_stop_keyword :: proc(p: ^Parser) -> bool {
+	return expr_stop_keyword_at(p, p.index)
 }
 
 parse_or_expr :: proc(p: ^Parser) -> ^ast.Expr {
@@ -1807,6 +1811,9 @@ constructor_expr_starts :: proc(p: ^Parser, tok: Token) -> bool {
 	   next.kind == .Comma ||
 	   next.kind == .RParen ||
 	   next.kind == .RBracket {
+		return false
+	}
+	if expr_stop_keyword_at(p, p.index + 1) {
 		return false
 	}
 	if _, ok := comparison_op(p, next); ok {

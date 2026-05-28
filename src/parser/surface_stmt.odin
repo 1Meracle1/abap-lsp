@@ -745,7 +745,7 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 	clause.joins = make([dynamic]ast.Select_Join_Clause, 0, 2, p.allocator)
 	start := current_token(p)
 	clause.dynamic_source = current_token(p).kind == .LParen
-	clause.source = sql_data_expr(
+	clause.source = parse_select_source_expr(
 		p,
 		body_start,
 		[]string{"AS", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
@@ -760,7 +760,7 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 			break
 		}
 		join := ast.Select_Join_Clause{kind = kind}
-		join.source = sql_data_expr(
+		join.source = parse_select_source_expr(
 			p,
 			body_start,
 			[]string{"AS", "ON", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
@@ -782,6 +782,17 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 		clause.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
 	}
 	return clause
+}
+
+parse_select_source_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
+	value := sql_data_expr(p, body_start, stop_keywords)
+	if value != nil || !select_join_keyword_at(p, p.index) || select_join_kind_starts_at(p, p.index) {
+		return value
+	}
+	tok := bump_token(p)
+	expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
+	expr.name = tokenizer.token_lexeme(tok, p.source)
+	return expr
 }
 
 parse_select_alias :: proc(p: ^Parser) -> string {
@@ -840,6 +851,24 @@ select_join_kind :: proc(p: ^Parser) -> (ast.Select_Join_Kind, bool) {
 		return .Inner, true
 	}
 	return .Inner, false
+}
+
+select_join_kind_starts_at :: proc(p: ^Parser, index: int) -> bool {
+	if at_keyword_index(p, index, "INNER") {
+		return at_keyword_index(p, index + 1, "JOIN")
+	}
+	if at_keyword_index(p, index, "LEFT") ||
+	   at_keyword_index(p, index, "RIGHT") ||
+	   at_keyword_index(p, index, "FULL") {
+		return(
+			at_keyword_index(p, index + 1, "JOIN") ||
+			(at_keyword_index(p, index + 1, "OUTER") && at_keyword_index(p, index + 2, "JOIN")) \
+		)
+	}
+	if at_keyword_index(p, index, "CROSS") {
+		return at_keyword_index(p, index + 1, "JOIN")
+	}
+	return at_keyword_index(p, index, "JOIN")
 }
 
 select_set_kind :: proc(p: ^Parser) -> (ast.Select_Set_Kind, bool) {

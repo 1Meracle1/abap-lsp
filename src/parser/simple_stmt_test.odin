@@ -1056,6 +1056,21 @@ EXPORT variscreens = lt_variscreens TO MEMORY ID '%_SCRNR_%'.`
 }
 
 @(test)
+export_to_memory_accepts_multiline_parameters_without_commas :: proc(t: ^testing.T) {
+	source := `EXPORT scpr3_display_only = lv_display_only
+       scpr3_bcset_id     = lv_bcset_id
+  TO MEMORY ID 'SCPR3_PARAMETER'.`
+	parsed := parse(source, "export_memory_multiline.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	export_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Export_Stmt)
+	testing.expect_value(t, len(export_stmt.parameters), 2)
+	testing.expect_value(t, export_stmt.parameters[0].name, "scpr3_display_only")
+	testing.expect_value(t, export_stmt.parameters[1].name, "scpr3_bcset_id")
+	testing.expect_value(t, export_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
+}
+
+@(test)
 data_cluster_medium_variants_model_entries :: proc(t: ^testing.T) {
 	source := `IMPORT row = ls_row FROM DATA BUFFER lv_xstr.
 EXPORT row = ls_row TO DATA BUFFER lv_xstr.
