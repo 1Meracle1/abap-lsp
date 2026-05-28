@@ -1650,6 +1650,9 @@ emit_find_stmt :: proc(p: ^Printer, stmt: ^Find_Stmt) {
 	emit_node(p, stmt.pattern)
 	if stmt.target != nil {
 		emit(p, " IN ")
+		if stmt.in_table {
+			emit(p, "TABLE ")
+		}
 		emit_node(p, stmt.target)
 	}
 	if stmt.match_offset != nil {

@@ -1176,13 +1176,14 @@ Find_Occurrence :: enum {
 	All,
 }
 
-// ABAP syntax: `FIND [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN target ...`.
+// ABAP syntax: `FIND [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN [TABLE] target ...`.
 Find_Stmt :: struct {
 	using node:   Stmt,
 	occurrence:   Find_Occurrence,
 	regex:        bool,
 	pattern:      ^Expr,
 	target:       ^Expr,
+	in_table:     bool,
 	match_offset: ^Expr,
 	match_length: ^Expr,
 	match_count:  ^Expr,

@@ -313,6 +313,20 @@ FIND ALL OCCURRENCES OF 'A' IN lv_text RESULTS lv_result.`
 }
 
 @(test)
+find_in_table_keeps_target_after_table_keyword :: proc(t: ^testing.T) {
+	source := `FIND REGEX 'CLASS\s+(.*)\s+DEFINITION' IN TABLE ct_source SUBMATCHES cv_clsname IGNORING CASE ##REGEX_POSIX.`
+	parsed := parse(source, "find_in_table.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	find := parsed.root.stmts[0].derived_stmt.(^ast.Find_Stmt)
+	target := find.target.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect(t, find.in_table)
+	testing.expect_value(t, target.name, "ct_source")
+	testing.expect_value(t, len(find.submatches), 1)
+}
+
+@(test)
 message_heads_keep_compact_class_fact :: proc(t: ^testing.T) {
 	source := `MESSAGE e001(zmsg) WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
 MESSAGE ID zmsg TYPE lv_type NUMBER lv_no.

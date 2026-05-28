@@ -2861,6 +2861,7 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.regex = allow_keyword(p, "REGEX")
 	stmt.pattern = required_simple_expr(p, body_start, []string{"IN"})
 	if allow_keyword(p, "IN") {
+		stmt.in_table = allow_keyword(p, "TABLE")
 		stmt.target = required_simple_expr(
 			p,
 			body_start,
