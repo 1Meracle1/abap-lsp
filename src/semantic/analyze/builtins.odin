@@ -669,6 +669,27 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 		supports_named_arguments = true,
 	},
 	{
+		name = "matches",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"regex", "string"}, {"case", "abap_bool"}},
+		return_type = "abap_bool",
+		description = "Predicate function: returns whether a text value matches a regular expression.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "find",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"sub", "string"}, {"regex", "string"}, {"occ", "i"}, {"case", "abap_bool"}},
+		return_type = "i",
+		description = "Returns the offset of a substring or regular-expression match in a text value.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "repeat",
+		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"occ", "i"}},
+		return_type = "string",
+		description = "Returns a string containing `val` repeated `occ` times.",
+		supports_named_arguments = true,
+	},
+	{
 		name = "escape",
 		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"format", "data"}},
 		return_type = "string",
