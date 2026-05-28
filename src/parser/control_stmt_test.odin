@@ -234,6 +234,28 @@ CLASS lcl_deferred DEFINITION DEFERRED.`
 }
 
 @(test)
+oop_load_statements_are_not_class_or_interface_declarations :: proc(t: ^testing.T) {
+	source := `INTERFACE if_demo.
+  CLASS cl_gui_column_tree DEFINITION LOAD.
+ENDINTERFACE.
+INTERFACE if_sxml LOAD.`
+	parsed := parse(source, "oop_load.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.class_decl, 0)
+	testing.expect_value(t, len(parsed.root.stmts), 2)
+
+	iface := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl)
+	class_load := iface.body[0].derived_stmt.(^ast.Oop_Load_Stmt)
+	interface_load := parsed.root.stmts[1].derived_stmt.(^ast.Oop_Load_Stmt)
+	testing.expect_value(t, class_load.kind, ast.Oop_Load_Kind.Class)
+	testing.expect_value(t, class_load.name, "cl_gui_column_tree")
+	testing.expect_value(t, interface_load.kind, ast.Oop_Load_Kind.Interface)
+	testing.expect_value(t, interface_load.name, "if_sxml")
+}
+
+@(test)
 class_header_friends_are_ast_fields :: proc(t: ^testing.T) {
 	source := `CLASS lcl_target DEFINITION
   CREATE PRIVATE

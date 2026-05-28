@@ -3745,6 +3745,49 @@ ENDINTERFACE.
 }
 
 @(test)
+class_definition_load_does_not_shadow_cached_class :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "abapls-cache:/global-interface/if_salv_c_keys.abap",
+		source = `
+INTERFACE if_salv_c_keys.
+  CLASS cl_gui_column_tree DEFINITION LOAD.
+  CONSTANTS paste TYPE i VALUE cl_gui_column_tree=>key_paste.
+ENDINTERFACE.
+`,
+		mode = .Dependency_Interface,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/cl_tree_control_base.abap",
+			source = `
+CLASS cl_tree_control_base DEFINITION.
+  PUBLIC SECTION.
+    CONSTANTS key_paste TYPE i VALUE 8.
+ENDCLASS.
+`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/global-class/cl_gui_column_tree.abap",
+			source = `
+CLASS cl_gui_column_tree DEFINITION
+  INHERITING FROM cl_tree_control_base.
+ENDCLASS.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && analyze.find_symbol(root, "cl_gui_column_tree", .Class) == nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unresolved_Reference))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 resolves_class_type_ref_to :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

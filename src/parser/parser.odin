@@ -176,6 +176,9 @@ parse_stmt_result :: proc(p: ^Parser) -> ^ast.Stmt {
 	if control_stmt_starts(p) {
 		return parse_control_stmt(p)
 	}
+	if oop_load_stmt_starts(p) {
+		return parse_oop_load_stmt(p)
+	}
 	if structural_stmt_starts(p) {
 		return parse_structural_stmt(p)
 	}

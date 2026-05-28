@@ -44,6 +44,60 @@ structural_block_keyword_starts :: proc(p: ^Parser, keyword: string) -> bool {
 	       !keyword_like_assignment_lhs_continues(p, p.index)
 }
 
+oop_load_stmt_starts :: proc(p: ^Parser) -> bool {
+	if at_keyword(p, "CLASS") {
+		return oop_load_name_token(next_token_kind(p, 1)) &&
+		       at_keyword_index(p, p.index + 2, "DEFINITION") &&
+		       at_keyword_index(p, p.index + 3, "LOAD")
+	}
+	return at_keyword(p, "INTERFACE") &&
+	       oop_load_name_token(next_token_kind(p, 1)) &&
+	       at_keyword_index(p, p.index + 2, "LOAD")
+}
+
+oop_load_name_token :: #force_inline proc(kind: tokenizer.Token_Kind) -> bool {
+	return kind == .Ident || kind == .Number
+}
+
+parse_oop_load_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := current_token(p)
+	stmt := ast.new(ast.Oop_Load_Stmt, start.range, p.allocator)
+	if allow_keyword(p, "CLASS") {
+		stmt.kind = .Class
+	} else {
+		expect_keyword(p, "INTERFACE")
+		stmt.kind = .Interface
+	}
+
+	name := current_token(p)
+	if !oop_load_name_token(name.kind) {
+		error_current(p, "syntax error: expected load target")
+		return nil
+	}
+	bump_token(p)
+	stmt.name = tokenizer.token_lexeme(name, p.source)
+	stmt.name_range = name.range
+
+	if stmt.kind == .Class {
+		if !allow_keyword(p, "DEFINITION") {
+			error_current(p, "syntax error: expected keyword")
+			return nil
+		}
+	}
+	if !allow_keyword(p, "LOAD") {
+		error_current(p, "syntax error: expected keyword")
+		return nil
+	}
+
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after load statement")
+	if period.kind != .Period {
+		return nil
+	}
+	stmt.range = tokenizer.text_range(start.range.start, statement_end(p, period))
+	stmt.text = source_range_text(p, stmt.range)
+	return stmt
+}
+
 parse_control_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_keyword(p, "IF") {
 		return parse_if_stmt(p)

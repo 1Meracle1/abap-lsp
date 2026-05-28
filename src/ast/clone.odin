@@ -621,6 +621,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.members = clone_oop_members(n.members, allocator)
 		return r
+	case ^Oop_Load_Stmt:
+		return clone_shallow(n, allocator)
 	case ^If_Stmt:
 		r := clone_shallow(n, allocator)
 		r.condition = clone(n.condition, allocator)

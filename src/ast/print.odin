@@ -525,6 +525,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		}
 	case ^Oop_Simple_Stmt:
 		emit_oop_simple_stmt(p, n)
+	case ^Oop_Load_Stmt:
+		emit_oop_load_stmt(p, n)
 	case ^If_Stmt:
 		emit_if_stmt(p, n)
 	case ^Case_Stmt:
@@ -2368,6 +2370,22 @@ emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
 		}
 	}
 	emit(p, ".")
+}
+
+emit_oop_load_stmt :: proc(p: ^Printer, stmt: ^Oop_Load_Stmt) {
+	if stmt.text != "" {
+		emit(p, stmt.text)
+		return
+	}
+	if stmt.kind == .Class {
+		emit(p, "CLASS ")
+		emit(p, stmt.name)
+		emit(p, " DEFINITION LOAD.")
+	} else {
+		emit(p, "INTERFACE ")
+		emit(p, stmt.name)
+		emit(p, " LOAD.")
+	}
 }
 
 emit_amdp_method :: proc(p: ^Printer, stmt: ^Method_Decl) {

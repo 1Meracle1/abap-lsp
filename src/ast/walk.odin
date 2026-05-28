@@ -494,6 +494,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 				}
 			}
 		}
+	case ^Oop_Load_Stmt:
 	case ^If_Stmt:
 		walk(next, n.condition)
 		walk_stmt_list(next, n.body)

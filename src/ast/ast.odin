@@ -1835,6 +1835,20 @@ Oop_Simple_Stmt :: struct {
 	members:    [dynamic]Oop_Member_Clause,
 }
 
+Oop_Load_Kind :: enum {
+	Class,
+	Interface,
+}
+
+// ABAP syntax: load directive such as `CLASS cls DEFINITION LOAD.` or `INTERFACE intf LOAD.`.
+Oop_Load_Stmt :: struct {
+	using node: Stmt,
+	kind:       Oop_Load_Kind,
+	name:       string,
+	name_range: tokenizer.Range,
+	text:       string,
+}
+
 // ABAP syntax: `ELSEIF condition.` arm inside an IF block.
 Elseif_Clause :: struct {
 	range:     tokenizer.Range,
@@ -2649,6 +2663,7 @@ Any_Node :: union {
 	^Macro_Call_Stmt,
 	^Selection_Screen_Stmt,
 	^Oop_Simple_Stmt,
+	^Oop_Load_Stmt,
 	^If_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
@@ -2810,6 +2825,7 @@ Any_Stmt :: union {
 	^Macro_Call_Stmt,
 	^Selection_Screen_Stmt,
 	^Oop_Simple_Stmt,
+	^Oop_Load_Stmt,
 	^If_Stmt,
 	^Case_Stmt,
 	^While_Stmt,
