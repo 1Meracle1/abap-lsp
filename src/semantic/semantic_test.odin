@@ -981,6 +981,76 @@ project_state_incremental_dependency_update_resolves_waiting_unit :: proc(t: ^te
 }
 
 @(test)
+project_state_dependency_structure_update_revalidates_dependents :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "mem://main.abap",
+		source = `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run CHANGING !ct_rows TYPE zrows.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA lv_name TYPE string.
+    FIELD-SYMBOLS <row> LIKE LINE OF ct_rows.
+    lv_name = <row>-full_name.
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, 0, 2, context.allocator)
+	append(
+		&dependencies,
+		analyze.Source_Input {
+			uri = "abapls-cache:/ddic-table-type/zrows.abap",
+			source = "TYPES zrows TYPE STANDARD TABLE OF zrow WITH DEFAULT KEY.",
+			mode = .Dependency_Interface,
+		},
+	)
+
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && has_diagnostic(root, .Unknown_Field))
+
+	append(
+		&dependencies,
+		analyze.Source_Input {
+			uri = "abapls-cache:/ddic-structure/zrow.abap",
+			source = `TYPES: BEGIN OF zrow,
+         full_name TYPE string,
+       END OF zrow.`,
+			mode = .Dependency_Interface,
+		},
+	)
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect_value(t, len(project.units), 3)
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 project_state_dependency_private_change_keeps_interface_signature :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
@@ -6616,6 +6686,53 @@ DATA lt_rows TYPE zddic_rows.
 	testing.expect(t, table_unit != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, root, "zddic_rows", .Type, .Type_Ref, dependencies[0].uri))
 	testing.expect(t, reference_resolves_to_uri(&project, table_unit, "zddic_row", .Type, .Type_Ref, dependencies[1].uri))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+ddic_table_type_line_of_parameter_resolves_row_fields :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS add_sources CHANGING !ct_enhancements TYPE enh_hook_impl_it.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD add_sources.
+    DATA lv_source TYPE string.
+    FIELD-SYMBOLS <ls_enhancement> LIKE LINE OF ct_enhancements.
+    LOOP AT ct_enhancements ASSIGNING <ls_enhancement>.
+      lv_source = <ls_enhancement>-full_name.
+      INSERT lv_source INTO <ls_enhancement>-source INDEX 1.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table-type/enh_hook_impl_it.abap",
+			source = "TYPES enh_hook_impl_it TYPE STANDARD TABLE OF enh_hook_impl WITH DEFAULT KEY.",
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-structure/enh_hook_impl.abap",
+			source = `TYPES: BEGIN OF enh_hook_impl,
+         full_name TYPE string,
+         source TYPE rswsourcet,
+       END OF enh_hook_impl.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table-type/rswsourcet.abap",
+			source = "TYPES rswsourcet TYPE STANDARD TABLE OF string WITH DEFAULT KEY.",
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 

@@ -8,13 +8,14 @@ import "core:strings"
 
 build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Scope_Index {
 	index := Scope_Index {
-		scope_count = len(unit.scopes),
-		symbols = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2, allocator),
+		scope_count   = len(unit.scopes),
+		symbols       = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2, allocator),
 		class_symbols = make(map[Class_Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
 	}
 	for symbol in unit.symbols {
 		class_symbol := INVALID_SYMBOL_ID
-		if scope_data := scope(unit, symbol.scope); scope_data != nil &&
+		if scope_data := scope(unit, symbol.scope);
+		   scope_data != nil &&
 		   (scope_data.kind == .Class || scope_data.kind == .Interface) &&
 		   scope_data.owner != INVALID_SYMBOL_ID {
 			class_symbol = scope_data.owner
@@ -22,17 +23,11 @@ build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Sco
 		namespaces := [?]Namespace{.Value, .Type, .Routine}
 		for namespace in namespaces {
 			if symbol_kind_occupies(symbol.kind, namespace) {
-				index.symbols[Scope_Index_Key {
-					scope = symbol.scope,
-					namespace = namespace,
-					name = symbol.name,
-				}] = symbol.id
+				index.symbols[Scope_Index_Key{scope = symbol.scope, namespace = namespace, name = symbol.name}] =
+					symbol.id
 				if class_symbol != INVALID_SYMBOL_ID {
-					index.class_symbols[Class_Scope_Index_Key {
-						class_symbol = class_symbol,
-						namespace = namespace,
-						name = symbol.name,
-					}] = symbol.id
+					index.class_symbols[Class_Scope_Index_Key{class_symbol = class_symbol, namespace = namespace, name = symbol.name}] =
+						symbol.id
 				}
 			}
 		}
@@ -90,12 +85,22 @@ resolve_reference :: proc(
 	); ok {
 		return resolution_for_symbol(unit, symbol_id), true
 	}
-	if symbol_id, ok := resolve_current_class_member(unit, index, ref.scope, ref.namespace, ref.name);
-	   ok {
+	if symbol_id, ok := resolve_current_class_member(
+		unit,
+		index,
+		ref.scope,
+		ref.namespace,
+		ref.name,
+	); ok {
 		return symbol_resolution(unit, symbol_id), true
 	}
-	if symbol_id, ok := resolve_current_class_alias(unit, index, ref.scope, ref.namespace, ref.name);
-	   ok {
+	if symbol_id, ok := resolve_current_class_alias(
+		unit,
+		index,
+		ref.scope,
+		ref.namespace,
+		ref.name,
+	); ok {
 		return symbol_resolution(unit, symbol_id), true
 	}
 	if symbol_id, ok := resolve_inherited_class_member(
@@ -141,7 +146,11 @@ lookup_scope_chain :: proc(
 	for current != INVALID_SCOPE_ID {
 		scope_idx := scope_id_index(current)
 		if scope_idx >= 0 && scope_idx < index.scope_count {
-			key := Scope_Index_Key{scope = current, namespace = namespace, name = name}
+			key := Scope_Index_Key {
+				scope     = current,
+				namespace = namespace,
+				name      = name,
+			}
 			if symbol_id, ok := index.symbols[key]; ok {
 				return symbol_id, true
 			}
@@ -210,7 +219,13 @@ enclosing_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> 
 	return INVALID_SYMBOL_ID, false
 }
 
-enclosing_instance_method_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> (Symbol_Id, bool) {
+enclosing_instance_method_class_owner_unit :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+) -> (
+	Symbol_Id,
+	bool,
+) {
 	current := scope_id
 	for current != INVALID_SCOPE_ID {
 		s := scope(unit, current)
@@ -257,11 +272,9 @@ class_scope_symbol :: proc(
 	Symbol_Id,
 	bool,
 ) {
-	if symbol_id, ok := index.class_symbols[Class_Scope_Index_Key {
-		class_symbol = class_symbol,
-		namespace = namespace,
-		name = name,
-	}]; ok {
+	if symbol_id, ok :=
+		   index.class_symbols[Class_Scope_Index_Key{class_symbol = class_symbol, namespace = namespace, name = name}];
+	   ok {
 		return symbol_id, true
 	}
 	return INVALID_SYMBOL_ID, false
@@ -313,8 +326,12 @@ resolve_class_alias :: proc(
 		if member_name == "" {
 			member_name = name
 		}
-		if symbol_id, member_ok := class_scope_symbol(index, interface_symbol, namespace, member_name);
-		   member_ok {
+		if symbol_id, member_ok := class_scope_symbol(
+			index,
+			interface_symbol,
+			namespace,
+			member_name,
+		); member_ok {
 			return symbol_id, true
 		}
 	}
@@ -347,8 +364,14 @@ resolve_inherited_class_member :: proc(
 		if found, found_ok := class_scope_symbol(index, super_symbol, namespace, name); found_ok {
 			return found, true
 		}
-		if found, found_ok := resolve_class_alias(unit, index, scope_id, super_symbol, namespace, name);
-		   found_ok {
+		if found, found_ok := resolve_class_alias(
+			unit,
+			index,
+			scope_id,
+			super_symbol,
+			namespace,
+			name,
+		); found_ok {
 			return found, true
 		}
 		current_class = super_symbol
@@ -458,15 +481,33 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 		}
 	}
 
-	if seed_inherited_method_scope_parameters(units, &root_lookup, class_entries, visible, predecessors, allocator) {
+	if seed_inherited_method_scope_parameters(
+		units,
+		&root_lookup,
+		class_entries,
+		visible,
+		predecessors,
+		allocator,
+	) {
 		for unit_index in 0 ..< len(units) {
 			units[unit_index].scope_index = build_scope_index(&units[unit_index], allocator)
 			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
 		}
 	}
 
-	for unit_index in 0 ..< len(units) {
-		import_project_structures_for_unit(units, unit_index, &root_lookup, visible[unit_index], allocator)
+	changed := false
+	for changed {
+		for unit_index in 0 ..< len(units) {
+			changed =
+				import_project_structures_for_unit(
+					units,
+					unit_index,
+					&root_lookup,
+					visible[unit_index],
+					allocator,
+				) ||
+				changed
+		}
 	}
 }
 
@@ -474,8 +515,8 @@ seed_inherited_method_scope_parameters :: proc(
 	units: []Unit_Analysis,
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
-	visible: [] [dynamic]Unit_Id,
-	predecessors: [] [dynamic]Unit_Id,
+	visible: [][dynamic]Unit_Id,
+	predecessors: [][dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> bool {
 	temp_arena := temp_arena_begin()
@@ -484,7 +525,12 @@ seed_inherited_method_scope_parameters :: proc(
 	changed := false
 	for unit_index in 0 ..< len(units) {
 		unit := &units[unit_index]
-		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), context.temp_allocator)
+		method_scope_by_owner := make(
+			[dynamic]Scope_Id,
+			0,
+			len(unit.symbols),
+			context.temp_allocator,
+		)
 		for _ in 0 ..< len(unit.symbols) {
 			append(&method_scope_by_owner, INVALID_SCOPE_ID)
 		}
@@ -566,7 +612,10 @@ method_signature_member_for_scope :: proc(
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	predecessors: [dynamic]Unit_Id,
-) -> (^Class_Member_Data, int) {
+) -> (
+	^Class_Member_Data,
+	int,
+) {
 	if interface_name, member_name, qualified := qualified_method_parts(method_name); qualified {
 		if member, member_unit_index := exposed_interface_member_for_scope(
 			units,
@@ -631,7 +680,10 @@ exposed_interface_member_for_scope :: proc(
 	interface_name, member_name: string,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (^Class_Member_Data, int) {
+) -> (
+	^Class_Member_Data,
+	int,
+) {
 	class_symbol, class_ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
 	if !class_ok {
 		return nil, -1
@@ -662,7 +714,10 @@ exposed_interface_handle :: proc(
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
 	depth: int,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	if depth > len(units) + 8 {
 		return {}, false
 	}
@@ -699,7 +754,8 @@ exposed_interface_handle :: proc(
 			return found, true
 		}
 	}
-	if owner_symbol := symbol(unit, owner.symbol); owner_symbol != nil && owner_symbol.kind == .Class {
+	if owner_symbol := symbol(unit, owner.symbol);
+	   owner_symbol != nil && owner_symbol.kind == .Class {
 		if superclass, ok := direct_superclass_handle(units, owner, roots, visible); ok {
 			return exposed_interface_handle(
 				units,
@@ -721,7 +777,10 @@ inherited_project_class_member :: proc(
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
-) -> (^Class_Member_Data, int) {
+) -> (
+	^Class_Member_Data,
+	int,
+) {
 	current := class_handle
 	for _ in 0 ..< len(units) + 8 {
 		next, ok := direct_superclass_handle(units, current, roots, visible)
@@ -738,7 +797,8 @@ inherited_project_class_member :: proc(
 		); member_ok {
 			next_index := unit_id_index(next.unit)
 			if next_index >= 0 && next_index < len(units) {
-				if member := unit_class_member(&units[next_index], next.symbol, name); member != nil {
+				if member := unit_class_member(&units[next_index], next.symbol, name);
+				   member != nil {
 					return member, next_index
 				}
 			}
@@ -754,7 +814,7 @@ seeded_method_parameter_structure :: proc(
 	member: ^Class_Member_Data,
 	param: Class_Member_Parameter_Data,
 	roots: ^Project_Root_Lookup,
-	visible: [] [dynamic]Unit_Id,
+	visible: [][dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> Structure_Id {
 	if !(.Has_Declared_Type in param.flags) {
@@ -799,11 +859,15 @@ class_scope_for_owner :: proc(unit: ^Unit_Analysis, owner: Symbol_Id) -> Scope_I
 	return found
 }
 
-method_scope_has_value_symbol :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, name: string) -> bool {
+method_scope_has_value_symbol :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	name: string,
+) -> bool {
 	if s := scope(unit, scope_id); s != nil {
 		for symbol_id in s.declarations {
-			if item := symbol(unit, symbol_id); item != nil && item.name == name &&
-			   symbol_kind_occupies(item.kind, .Value) {
+			if item := symbol(unit, symbol_id);
+			   item != nil && item.name == name && symbol_kind_occupies(item.kind, .Value) {
 				return true
 			}
 		}
@@ -825,8 +889,9 @@ build_project_root_index :: proc(
 			visible_by_default := false
 			#partial switch symbol.kind {
 			case .Class, .Interface:
-				visible_by_default = name_is_namespaced(symbol.name) ||
-				                     root_name_matches_unit_stem(unit_stem, symbol.name)
+				visible_by_default =
+					name_is_namespaced(symbol.name) ||
+					root_name_matches_unit_stem(unit_stem, symbol.name)
 			case .Type_Def:
 				visible_by_default = root_name_matches_unit_stem(unit_stem, symbol.name)
 			case .Module, .Report:
@@ -873,15 +938,25 @@ build_project_root_lookup :: proc(
 		}
 	}
 	for entry in roots {
-		handle := Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
-		unit_key := Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name}
+		handle := Symbol_Handle {
+			unit   = entry.unit,
+			symbol = entry.symbol,
+		}
+		unit_key := Root_Symbol_Key {
+			unit      = entry.unit,
+			namespace = entry.namespace,
+			name      = entry.name,
+		}
 		_, slot, inserted, _ := map_entry(&lookup.by_unit, unit_key)
 		if inserted {
 			slot^ = handle
 		}
 		if entry.visible_by_default {
 			lookup.names[entry.name] = true
-			global_key := Root_Name_Key{namespace = entry.namespace, name = entry.name}
+			global_key := Root_Name_Key {
+				namespace = entry.namespace,
+				name      = entry.name,
+			}
 			_, global_slot, global_inserted, _ := map_entry(&lookup.global, global_key)
 			if global_inserted {
 				global_slot^ = handle
@@ -913,8 +988,8 @@ build_project_class_scope_index :: proc(
 				if symbol_kind_occupies(symbol.kind, namespace) {
 					key := Project_Class_Member_Key {
 						class_symbol = scope_data.owner,
-						namespace = namespace,
-						name = symbol.name,
+						namespace    = namespace,
+						name         = symbol.name,
 					}
 					if key in out {
 						continue
@@ -976,8 +1051,7 @@ resolve_project_reference :: proc(
 		); ok {
 			return Resolution{kind = .Symbol, symbol = handle}, true
 		}
-		if handle, ok := root_symbol_in_visible_units(namespace, ref.name, roots, visible);
-		   ok {
+		if handle, ok := root_symbol_in_visible_units(namespace, ref.name, roots, visible); ok {
 			return Resolution{kind = .Symbol, symbol = handle}, true
 		}
 		if handle, ok := global_visible_root_symbol(roots, namespace, ref.name); ok {
@@ -1009,7 +1083,10 @@ resolve_project_super :: proc(
 	scope_id: Scope_Id,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	class_symbol, ok := enclosing_instance_method_class_owner_unit(&units[unit_index], scope_id)
 	if !ok {
 		return {}, false
@@ -1030,12 +1107,18 @@ resolve_inherited_project_symbol :: proc(
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	current, ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
 	if !ok {
 		return {}, false
 	}
-	current_handle := Symbol_Handle{unit = units[unit_index].unit_id, symbol = current}
+	current_handle := Symbol_Handle {
+		unit   = units[unit_index].unit_id,
+		symbol = current,
+	}
 	for _ in 0 ..< len(units) + 8 {
 		next, next_ok := direct_superclass_handle(units, current_handle, roots, visible)
 		if !next_ok {
@@ -1061,7 +1144,10 @@ direct_superclass_handle :: proc(
 	current: Symbol_Handle,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	unit_index := unit_id_index(current.unit)
 	if unit_index < 0 || unit_index >= len(units) {
 		return {}, false
@@ -1079,9 +1165,11 @@ resolve_type_name_in_project :: proc(
 	name: string,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
-	if handle, ok := root_symbol_in_unit(roots, units[unit_index].unit_id, .Type, name);
-	   ok {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
+	if handle, ok := root_symbol_in_unit(roots, units[unit_index].unit_id, .Type, name); ok {
 		return handle, true
 	}
 	if handle, ok := root_symbol_in_visible_units(.Type, name, roots, visible); ok {
@@ -1100,7 +1188,10 @@ resolve_visible_class_definition_member :: proc(
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	predecessors: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	class_symbol, ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
 	if !ok {
 		return {}, false
@@ -1161,7 +1252,10 @@ class_member_symbol_in_unit_by_class_name :: proc(
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	inherited: bool,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	class_handle, ok := root_symbol_in_unit(roots, unit_id, .Type, class_name)
 	if !ok || !unit_has_class_definition(&units[unit_id_index(unit_id)], class_handle.symbol) {
 		return {}, false
@@ -1183,15 +1277,18 @@ class_member_symbol_by_handle :: proc(
 	name: string,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	inherited: bool,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(units) {
 		return {}, false
 	}
 	key := Project_Class_Member_Key {
 		class_symbol = class_handle.symbol,
-		namespace = namespace,
-		name = name,
+		namespace    = namespace,
+		name         = name,
 	}
 	if entry, ok := class_entries[key]; ok {
 		if inherited {
@@ -1210,7 +1307,10 @@ root_symbol_in_visible_units :: proc(
 	name: string,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	for unit_id in visible {
 		if handle, ok := root_symbol_in_unit(roots, unit_id, namespace, name); ok {
 			return handle, true
@@ -1224,8 +1324,15 @@ root_symbol_in_unit :: proc(
 	unit_id: Unit_Id,
 	namespace: Namespace,
 	name: string,
-) -> (Symbol_Handle, bool) {
-	key := Root_Symbol_Key{unit = unit_id, namespace = namespace, name = name}
+) -> (
+	Symbol_Handle,
+	bool,
+) {
+	key := Root_Symbol_Key {
+		unit      = unit_id,
+		namespace = namespace,
+		name      = name,
+	}
 	if handle, ok := roots.by_unit[key]; ok {
 		return handle, true
 	}
@@ -1236,8 +1343,14 @@ global_visible_root_symbol :: proc(
 	roots: ^Project_Root_Lookup,
 	namespace: Namespace,
 	name: string,
-) -> (Symbol_Handle, bool) {
-	key := Root_Name_Key{namespace = namespace, name = name}
+) -> (
+	Symbol_Handle,
+	bool,
+) {
+	key := Root_Name_Key {
+		namespace = namespace,
+		name      = name,
+	}
 	if handle, ok := roots.global[key]; ok {
 		return handle, true
 	}
@@ -1269,8 +1382,12 @@ root_name_matches_unit_stem :: proc(stem, name: string) -> bool {
 		}
 	}
 	component := name[component_start:]
-	return component_start > 0 && component != "" && len(stem) >= len(component) &&
-	       strings.equal_fold(stem[len(stem) - len(component):], component)
+	return(
+		component_start > 0 &&
+		component != "" &&
+		len(stem) >= len(component) &&
+		strings.equal_fold(stem[len(stem) - len(component):], component) \
+	)
 }
 
 name_is_namespaced :: proc(name: string) -> bool {
@@ -1280,7 +1397,7 @@ name_is_namespaced :: proc(name: string) -> bool {
 include_visible_units_for_units :: proc(
 	units: []Unit_Analysis,
 	allocator: mem.Allocator,
-) -> [] [dynamic]Unit_Id {
+) -> [][dynamic]Unit_Id {
 	out := make([][dynamic]Unit_Id, len(units), allocator)
 	for i in 0 ..< len(units) {
 		out[i] = make([dynamic]Unit_Id, allocator)
@@ -1326,7 +1443,7 @@ collect_include_expansion :: proc(
 include_predecessor_units_for_units :: proc(
 	units: []Unit_Analysis,
 	allocator: mem.Allocator,
-) -> [] [dynamic]Unit_Id {
+) -> [][dynamic]Unit_Id {
 	out := make([][dynamic]Unit_Id, len(units), allocator)
 	for i in 0 ..< len(units) {
 		out[i] = make([dynamic]Unit_Id, allocator)
@@ -1427,12 +1544,23 @@ import_project_structures_for_unit :: proc(
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
-) {
+) -> bool {
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	owner_scopes := make([dynamic]Scope_Id, 0, len(units[unit_index].structures), context.temp_allocator)
-	owner_scope_set := make([dynamic]bool, 0, len(units[unit_index].structures), context.temp_allocator)
+	owner_scopes := make(
+		[dynamic]Scope_Id,
+		0,
+		len(units[unit_index].structures),
+		context.temp_allocator,
+	)
+	owner_scope_set := make(
+		[dynamic]bool,
+		0,
+		len(units[unit_index].structures),
+		context.temp_allocator,
+	)
+	any_changed := false
 	changed := true
 	for changed {
 		changed = false
@@ -1452,6 +1580,7 @@ import_project_structures_for_unit :: proc(
 			); ok {
 				s.structure = structure_id
 				changed = true
+				any_changed = true
 			}
 		}
 		resize(&owner_scopes, 0)
@@ -1470,7 +1599,9 @@ import_project_structures_for_unit :: proc(
 				owner_scope_set[index] = true
 			}
 		}
-		for structure_index := 0; structure_index < len(units[unit_index].structures); structure_index += 1 {
+		for structure_index := 0;
+		    structure_index < len(units[unit_index].structures);
+		    structure_index += 1 {
 			if structure_index >= len(owner_scopes) {
 				append(&owner_scopes, units[unit_index].root_scope)
 				append(&owner_scope_set, false)
@@ -1490,13 +1621,16 @@ import_project_structures_for_unit :: proc(
 					visible,
 					allocator,
 				); ok {
-					units[unit_index].structures[structure_index].fields[field_index].structure = structure_id
+					units[unit_index].structures[structure_index].fields[field_index].structure =
+						structure_id
 					changed = true
+					any_changed = true
 				}
 			}
 		}
 	}
 	sync_class_member_structures_for_unit(&units[unit_index])
+	return any_changed
 }
 
 sync_class_member_structures_for_unit :: proc(unit: ^Unit_Analysis) {
@@ -1504,7 +1638,12 @@ sync_class_member_structures_for_unit :: proc(unit: ^Unit_Analysis) {
 		if member.kind != .Attribute {
 			continue
 		}
-		symbol_id, ok := class_scope_symbol(&unit.scope_index, member.class_symbol, .Value, member.name)
+		symbol_id, ok := class_scope_symbol(
+			&unit.scope_index,
+			member.class_symbol,
+			.Value,
+			member.name,
+		)
 		if !ok {
 			continue
 		}
@@ -1522,11 +1661,15 @@ import_structure_for_type_ref :: proc(
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
-) -> (Structure_Id, bool) {
+) -> (
+	Structure_Id,
+	bool,
+) {
 	if type_ref.base_name == "" || is_builtin_type_name(type_ref.base_name) {
 		return INVALID_STRUCTURE_ID, false
 	}
-	if structure_id, ok := local_structure_for_type_ref(&units[unit_index], scope_id, type_ref); ok {
+	if structure_id, ok := local_structure_for_type_ref(&units[unit_index], scope_id, type_ref);
+	   ok {
 		return structure_id, true
 	}
 	handle, ok := resolve_type_ref_handle_project(units, unit_index, type_ref, roots, visible)
@@ -1579,19 +1722,31 @@ local_structure_for_type_ref :: proc(
 	unit: ^Unit_Analysis,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
-) -> (Structure_Id, bool) {
+) -> (
+	Structure_Id,
+	bool,
+) {
 	namespaces := [?]Namespace{.Type, .Value, .Routine}
 	for namespace in namespaces {
 		if !(namespace == type_ref.namespace ||
-		     (type_ref.namespace == .Type && namespace == .Value)) {
+			   (type_ref.namespace == .Type && namespace == .Value)) {
 			continue
 		}
-		symbol_id, ok := lookup_scope_chain(unit, &unit.scope_index, scope_id, namespace, type_ref.base_name)
+		symbol_id, ok := lookup_scope_chain(
+			unit,
+			&unit.scope_index,
+			scope_id,
+			namespace,
+			type_ref.base_name,
+		)
 		if !ok {
 			continue
 		}
-		if structure_id, structure_ok := local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:]);
-		   structure_ok {
+		if structure_id, structure_ok := local_structure_for_symbol_path(
+			unit,
+			symbol_id,
+			type_ref.field_path[:],
+		); structure_ok {
 			return structure_id, true
 		}
 	}
@@ -1623,7 +1778,10 @@ inherited_class_attribute_symbol_for_type_ref :: proc(
 	unit: ^Unit_Analysis,
 	scope_id: Scope_Id,
 	name: string,
-) -> (Symbol_Id, bool) {
+) -> (
+	Symbol_Id,
+	bool,
+) {
 	current_class, ok := enclosing_class_owner_unit(unit, scope_id)
 	if !ok {
 		return INVALID_SYMBOL_ID, false
@@ -1633,7 +1791,13 @@ inherited_class_attribute_symbol_for_type_ref :: proc(
 		if !has_super {
 			return INVALID_SYMBOL_ID, false
 		}
-		super_symbol, super_ok := lookup_scope_chain(unit, &unit.scope_index, scope_id, .Type, super_name)
+		super_symbol, super_ok := lookup_scope_chain(
+			unit,
+			&unit.scope_index,
+			scope_id,
+			.Type,
+			super_name,
+		)
 		if !super_ok {
 			return INVALID_SYMBOL_ID, false
 		}
@@ -1650,7 +1814,10 @@ local_structure_for_symbol_path :: proc(
 	unit: ^Unit_Analysis,
 	symbol_id: Symbol_Id,
 	path: []string,
-) -> (Structure_Id, bool) {
+) -> (
+	Structure_Id,
+	bool,
+) {
 	current_symbol_id := symbol_id
 	current_path := path
 	s := symbol(unit, current_symbol_id)
@@ -1658,7 +1825,11 @@ local_structure_for_symbol_path :: proc(
 		if len(current_path) == 0 {
 			return INVALID_STRUCTURE_ID, false
 		}
-		nested, nested_ok := class_type_symbol_handle_in_unit(unit, current_symbol_id, current_path[0])
+		nested, nested_ok := class_type_symbol_handle_in_unit(
+			unit,
+			current_symbol_id,
+			current_path[0],
+		)
 		if !nested_ok {
 			return INVALID_STRUCTURE_ID, false
 		}
@@ -1676,7 +1847,10 @@ resolve_unit_structure_path :: proc(
 	unit: ^Unit_Analysis,
 	start: Structure_Id,
 	path: []string,
-) -> (Structure_Id, bool) {
+) -> (
+	Structure_Id,
+	bool,
+) {
 	current := start
 	for field_name in path {
 		field := structure_field(unit, current, field_name)
@@ -1692,13 +1866,19 @@ class_type_symbol_handle :: proc(
 	units: []Unit_Analysis,
 	class_handle: Symbol_Handle,
 	name: string,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(units) {
 		return {}, false
 	}
-	if symbol_id, ok := class_type_symbol_handle_in_unit(&units[unit_index], class_handle.symbol, name);
-	   ok {
+	if symbol_id, ok := class_type_symbol_handle_in_unit(
+		&units[unit_index],
+		class_handle.symbol,
+		name,
+	); ok {
 		return Symbol_Handle{unit = class_handle.unit, symbol = symbol_id}, true
 	}
 	return {}, false
@@ -1708,8 +1888,15 @@ class_type_symbol_handle_in_unit :: proc(
 	unit: ^Unit_Analysis,
 	class_symbol: Symbol_Id,
 	name: string,
-) -> (Symbol_Id, bool) {
-	key := Class_Scope_Index_Key{class_symbol = class_symbol, namespace = .Type, name = name}
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	key := Class_Scope_Index_Key {
+		class_symbol = class_symbol,
+		namespace    = .Type,
+		name         = name,
+	}
 	if symbol_id, ok := unit.scope_index.class_symbols[key]; ok {
 		return symbol_id, true
 	}
@@ -1722,11 +1909,14 @@ resolve_type_ref_handle_project :: proc(
 	type_ref: Field_Type_Ref_Data,
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
-) -> (Symbol_Handle, bool) {
+) -> (
+	Symbol_Handle,
+	bool,
+) {
 	all_namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in all_namespaces {
 		if !(namespace == type_ref.namespace ||
-		     (type_ref.namespace == .Value && namespace == .Type)) {
+			   (type_ref.namespace == .Value && namespace == .Type)) {
 			continue
 		}
 		if handle, ok := root_symbol_in_unit(
@@ -1745,8 +1935,7 @@ resolve_type_ref_handle_project :: proc(
 		); ok {
 			return handle, true
 		}
-		if handle, ok := global_visible_root_symbol(roots, namespace, type_ref.base_name);
-		   ok {
+		if handle, ok := global_visible_root_symbol(roots, namespace, type_ref.base_name); ok {
 			return handle, true
 		}
 	}

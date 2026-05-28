@@ -677,8 +677,17 @@ project_state_finish :: proc(
 	for unit_id in include_roots {
 		push_unique_unit(&affected, unit_id)
 	}
-	project_state_collect_remote_waiters(state, interface_changed[:], &affected)
-	project_state_expand_reverse_dependents(state, interface_changed[:], &affected)
+	remote_waiters := make([dynamic]Unit_Id, 0, len(interface_changed), context.temp_allocator)
+	project_state_collect_remote_waiters(state, interface_changed[:], &affected, &remote_waiters)
+	reverse_roots := make(
+		[dynamic]Unit_Id,
+		0,
+		len(interface_changed) + len(remote_waiters),
+		context.temp_allocator,
+	)
+	for unit_id in interface_changed {push_unique_unit(&reverse_roots, unit_id)}
+	for unit_id in remote_waiters {push_unique_unit(&reverse_roots, unit_id)}
+	project_state_expand_reverse_dependents(state, reverse_roots[:], &affected)
 
 	if len(affected) == 0 {
 		return
@@ -697,12 +706,7 @@ project_state_finish :: proc(
 	project_index_update_include_graph(&state.index, state.units[:], affected[:])
 
 	project := project_state_analysis(state)
-	resolve_project_cross_unit_for_units(
-		project.units[:],
-		affected[:],
-		&state.index,
-		allocator,
-	)
+	resolve_project_cross_unit_for_units(project.units[:], affected[:], &state.index, allocator)
 	if project_state_linking_needed(project.units[:], affected[:]) {
 		reset_cross_class_member_implementation_links(project.units[:])
 		link_class_member_implementations_with_index(
@@ -754,6 +758,7 @@ project_state_collect_remote_waiters :: proc(
 	state: ^Project_State,
 	providers: []Unit_Id,
 	affected: ^[dynamic]Unit_Id,
+	waiters: ^[dynamic]Unit_Id,
 ) {
 	for provider in providers {
 		unit_index := unit_id_index(provider)
@@ -766,6 +771,7 @@ project_state_collect_remote_waiters :: proc(
 			}
 			for unit_id in units {
 				push_unique_unit(affected, unit_id)
+				push_unique_unit(waiters, unit_id)
 			}
 		}
 	}
@@ -777,9 +783,6 @@ project_state_expand_reverse_dependents :: proc(
 	roots: []Unit_Id,
 	affected: ^[dynamic]Unit_Id,
 ) {
-	temp_arena := temp_arena_begin()
-	defer temp_arena_end(temp_arena)
-
 	queue := make([dynamic]Unit_Id, 0, len(roots), context.temp_allocator)
 	for root in roots {
 		push_unique_unit(&queue, root)
@@ -987,16 +990,21 @@ resolve_project_cross_unit_for_units :: proc(
 		}
 	}
 
-	for unit_id in affected {
-		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < len(units) {
-			import_project_structures_for_unit(
-				units,
-				unit_index,
-				&index.root_lookup,
-				index.visible[unit_index],
-				allocator,
-			)
+	changed := false
+	for changed {
+		for unit_id in affected {
+			unit_index := unit_id_index(unit_id)
+			if unit_index >= 0 && unit_index < len(units) {
+				changed =
+					import_project_structures_for_unit(
+						units,
+						unit_index,
+						&index.root_lookup,
+						index.visible[unit_index],
+						allocator,
+					) ||
+					changed
+			}
 		}
 	}
 }
@@ -1018,7 +1026,12 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 			continue
 		}
 		unit := &units[unit_index]
-		method_scope_by_owner := make([dynamic]Scope_Id, 0, len(unit.symbols), context.temp_allocator)
+		method_scope_by_owner := make(
+			[dynamic]Scope_Id,
+			0,
+			len(unit.symbols),
+			context.temp_allocator,
+		)
 
 		for _ in 0 ..< len(unit.symbols) {
 			append(&method_scope_by_owner, INVALID_SCOPE_ID)
@@ -2100,12 +2113,7 @@ run_infer_tasks :: proc(graph: ^execution.Graph, state: ^Project_Infer_State) {
 			unit_index   = unit_index,
 			output_index = unit_index,
 		}
-		_ = execution.submit_value(
-			graph,
-			exec,
-			payload,
-			infer_task,
-		)
+		_ = execution.submit_value(graph, exec, payload, infer_task)
 	}
 	execution.graph_start(graph)
 	execution.graph_wait(graph)
@@ -2125,12 +2133,7 @@ run_infer_tasks_for_indices :: proc(
 			unit_index   = unit_index,
 			output_index = i,
 		}
-		_ = execution.submit_value(
-			graph,
-			exec,
-			payload,
-			infer_task,
-		)
+		_ = execution.submit_value(graph, exec, payload, infer_task)
 	}
 	execution.graph_start(graph)
 	execution.graph_wait(graph)
