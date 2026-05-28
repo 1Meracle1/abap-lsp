@@ -460,8 +460,7 @@ parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.kind = .Last
 	} else if allow_keyword(p, "NEW") {
 		stmt.kind = .New
-		stmt.expr = parse_expr(p)
-		if stmt.expr == nil {
+		if !parse_at_group_field(p, stmt) {
 			return nil
 		}
 	} else {
@@ -470,8 +469,7 @@ parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		stmt.kind = .End_Of
-		stmt.expr = parse_expr(p)
-		if stmt.expr == nil {
+		if !parse_at_group_field(p, stmt) {
 			return nil
 		}
 	}
@@ -490,6 +488,16 @@ parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	return stmt
+}
+
+parse_at_group_field :: proc(p: ^Parser, stmt: ^ast.At_Stmt) -> bool {
+	name := expect_token_message(p, .Ident, "syntax error: expected group processing field")
+	if name.kind != .Ident {
+		return false
+	}
+	stmt.field_name = tokenizer.token_lexeme(name, p.source)
+	stmt.field_range = name.range
+	return true
 }
 
 parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

@@ -1892,14 +1892,35 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 	previous := c.current_scope
 	c.current_scope = scope
 	at_scope := push_scope(c, .At_Block, stmt.range)
-	collect_expr_refs(c, stmt.expr, at_scope)
-	if stmt.expr != nil && len(c.loop_source_stack) > 0 {
+	if stmt.expr != nil {
+		collect_expr_refs(c, stmt.expr, at_scope)
+	}
+	if stmt.field_name != "" && len(c.loop_source_stack) > 0 {
 		source := c.loop_source_stack[len(c.loop_source_stack) - 1]
+		field := Field_Access_Segment {
+			name = canonical_name(stmt.field_name, c.allocator),
+			range = stmt.field_range,
+		}
+		path := make([dynamic]Field_Access_Segment, 0, len(source.field_path) + 1, c.allocator)
+		for segment in source.field_path {
+			append(&path, segment)
+		}
+		append(&path, field)
+		append(
+			&c.field_accesses,
+			Field_Access {
+				scope = at_scope,
+				base_namespace = source.base_namespace,
+				base_name = source.base_name,
+				base_range = source.base_range,
+				field_path = path,
+			},
+		)
 		append(
 			&c.loop_at_field_contexts,
 			Loop_At_Field_Context {
 				scope = at_scope,
-				range = stmt.expr.range,
+				range = stmt.field_range,
 				source_access = source,
 			},
 		)

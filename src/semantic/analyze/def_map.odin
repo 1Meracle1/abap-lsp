@@ -381,6 +381,7 @@ Diagnostic_Kind :: enum {
 	Invalid_Open_Sql_Into_Target,
 	Invalid_Open_Sql_Syntax,
 	Invalid_Message,
+	Invalid_Control_Break,
 	Invalid_Constructor_For_Iterator_Reuse,
 	Missing_Tables_Declaration,
 	Unreachable_Code,

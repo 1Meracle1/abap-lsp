@@ -527,7 +527,10 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		case .End_Of:
 			emit(p, "END OF")
 		}
-		if n.expr != nil {
+		if n.field_name != "" {
+			emit_space(p)
+			emit(p, n.field_name)
+		} else if n.expr != nil {
 			emit_space(p)
 			emit_node(p, n.expr)
 		}

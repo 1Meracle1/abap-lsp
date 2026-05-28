@@ -3626,7 +3626,10 @@ collects_at_group_kinds_fields_and_loop_contexts :: proc(t: ^testing.T) {
 		"file:///at_groups.abap",
 		`
 FORM run.
-  DATA itab TYPE TABLE OF i.
+  TYPES: BEGIN OF ty_row,
+           src_plant TYPE i,
+         END OF ty_row.
+  DATA itab TYPE TABLE OF ty_row.
   LOOP AT itab.
     AT FIRST.
     ENDAT.
@@ -3663,13 +3666,57 @@ ENDFORM.
 	testing.expect_value(t, new_, 1)
 	testing.expect_value(t, end_of, 1)
 	testing.expect_value(t, reference_count(&unit, "itab", .Value, .Identifier), 1)
-	testing.expect_value(t, reference_count(&unit, "src_plant", .Value, .Identifier), 2)
+	testing.expect_value(t, reference_count(&unit, "src_plant", .Value, .Identifier), 0)
 	testing.expect_value(t, len(unit.loop_at_field_contexts), 2)
 	testing.expect(t, system_update_present(&unit, .Loop_At, "subrc"))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
 	keywords := [?]string{"first", "last", "new", "end", "of", "endat"}
 	for keyword in keywords {
 		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
 	}
+}
+
+@(test)
+validates_at_group_fields_against_loop_source :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///at_group_field.abap",
+		`
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           good TYPE i,
+         END OF ty_row.
+  DATA itab TYPE TABLE OF ty_row.
+  LOOP AT itab.
+    AT NEW missing.
+    ENDAT.
+  ENDLOOP.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
+rejects_at_groups_outside_loop_at :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///at_group_context.abap",
+		`
+FORM run.
+  AT FIRST.
+  ENDAT.
+  AT NEW any_field.
+  ENDAT.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_diagnostic(&unit, .Invalid_Control_Break))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 }
 
 @(test)

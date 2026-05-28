@@ -120,6 +120,7 @@ validate_unit_diagnostics :: proc(
 	validate_field_accesses(project, lookup, unit_index, &out, &seen, allocator)
 	validate_call_sites(project, lookup, unit_index, &out, &seen, allocator)
 	validate_open_sql(project, lookup, unit_index, &out, &seen, allocator)
+	validate_at_groups(project, unit_index, &out, &seen)
 	return out
 }
 
@@ -675,6 +676,42 @@ sql_source_for_name_ref :: proc(
 		return &source_data, true
 	}
 	return nil, false
+}
+
+validate_at_groups :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+) {
+	unit := &project.units[unit_index]
+	for region in unit.routine_control_regions {
+		if region.kind != .At || at_group_has_loop_context(unit, region.at.scope) {
+			continue
+		}
+		append_diag(
+			out,
+			seen,
+			.Invalid_Control_Break,
+			region.at.range,
+			"AT group requires LOOP AT context",
+		)
+	}
+}
+
+at_group_has_loop_context :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> bool {
+	current := scope_id
+	for current != INVALID_SCOPE_ID {
+		s := scope(unit, current)
+		if s == nil {
+			return false
+		}
+		if s.kind == .Loop_Block {
+			return true
+		}
+		current = s.parent
+	}
+	return false
 }
 
 sql_predicate_column_name :: proc(

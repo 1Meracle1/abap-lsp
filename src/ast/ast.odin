@@ -1890,6 +1890,8 @@ At_Stmt :: struct {
 	using node: Stmt,
 	kind:       At_Stmt_Kind,
 	expr:       ^Expr,
+	field_name: string,
+	field_range: tokenizer.Range,
 	body:       [dynamic]^Stmt,
 }
 

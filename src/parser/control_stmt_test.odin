@@ -72,8 +72,8 @@ ENDLOOP.`
 	testing.expect_value(t, end_of.kind, ast.At_Stmt_Kind.End_Of)
 	testing.expect(t, first.expr == nil)
 	testing.expect(t, last.expr == nil)
-	testing.expect(t, new_.expr != nil)
-	testing.expect(t, end_of.expr != nil)
+	testing.expect_value(t, new_.field_name, "field")
+	testing.expect_value(t, end_of.field_name, "field")
 }
 
 @(test)
