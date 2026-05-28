@@ -846,6 +846,149 @@ FIELD-SYMBOLS <ls_result> LIKE LINE OF lt_result.
 	}
 }
 
+@(test)
+abap_component_descriptors_validate_known_fields :: proc(t: ^testing.T) {
+	valid := collect_test_unit(
+		t,
+		"file:///abap_componentdescr_valid.abap",
+		`
+FIELD-SYMBOLS <ls_component> TYPE abap_componentdescr.
+FIELD-SYMBOLS <ls_simple> TYPE abap_simple_componentdescr.
+DATA lv_type TYPE string.
+<ls_component>-name = 'FIELD'.
+<ls_component>-type = lv_type.
+<ls_component>-as_include = abap_false.
+<ls_component>-suffix = '_S'.
+<ls_simple>-name = 'FIELD'.
+<ls_simple>-type = lv_type.
+`,
+	)
+	invalid := collect_test_unit(
+		t,
+		"file:///abap_componentdescr_invalid.abap",
+		`
+FIELD-SYMBOLS <ls_component> TYPE abap_componentdescr.
+FIELD-SYMBOLS <ls_simple> TYPE abap_simple_componentdescr.
+<ls_component>-missing = 'FIELD'.
+<ls_simple>-as_include = abap_false.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&valid, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid, .Unknown_Field))
+	expect_structure_fields(t, &valid, "abap_componentdescr", "name", "type", "as_include", "suffix")
+	expect_structure_fields(t, &valid, "abap_simple_componentdescr", "name", "type")
+}
+
+@(test)
+abap_type_pool_structures_validate_known_fields :: proc(t: ^testing.T) {
+	valid := collect_test_unit(
+		t,
+		"file:///abap_type_pool_structures_valid.abap",
+		`
+DATA lr_data TYPE REF TO data.
+DATA lr_object TYPE REF TO object.
+DATA lt_components TYPE abap_component_tab.
+DATA lt_symbols TYPE abap_component_symbol_tab.
+DATA lt_views TYPE abap_component_view_tab.
+FIELD-SYMBOLS <ls_comp> TYPE abap_compdescr.
+FIELD-SYMBOLS <ls_key> TYPE abap_keydescr.
+FIELD-SYMBOLS <ls_component> LIKE LINE OF lt_components.
+FIELD-SYMBOLS <ls_symbol> LIKE LINE OF lt_symbols.
+FIELD-SYMBOLS <ls_view> LIKE LINE OF lt_views.
+FIELD-SYMBOLS <ls_table_key> TYPE abap_table_keydescr.
+FIELD-SYMBOLS <ls_key_component> LIKE LINE OF <ls_table_key>-components.
+FIELD-SYMBOLS <ls_func_parm> TYPE abap_func_parmbind.
+FIELD-SYMBOLS <ls_func_excp> TYPE abap_func_excpbind.
+FIELD-SYMBOLS <ls_parm_bind> TYPE abap_parmbind.
+FIELD-SYMBOLS <ls_excp_bind> TYPE abap_excpbind.
+FIELD-SYMBOLS <ls_method> TYPE abap_methdescr.
+FIELD-SYMBOLS <ls_method_parm> LIKE LINE OF <ls_method>-parameters.
+FIELD-SYMBOLS <ls_method_excp> LIKE LINE OF <ls_method>-exceptions.
+FIELD-SYMBOLS <ls_attr> TYPE abap_attrdescr.
+FIELD-SYMBOLS <ls_intf> TYPE abap_intfdescr.
+FIELD-SYMBOLS <ls_type> TYPE abap_typedef.
+FIELD-SYMBOLS <ls_event> TYPE abap_evntdescr.
+FIELD-SYMBOLS <ls_event_parm> LIKE LINE OF <ls_event>-parameters.
+FIELD-SYMBOLS <ls_friend> TYPE abap_frnddescr.
+FIELD-SYMBOLS <ls_trans_parm> TYPE abap_trans_parmbind.
+FIELD-SYMBOLS <ls_trans_parm_obj> TYPE abap_trans_parm_obj_bind.
+FIELD-SYMBOLS <ls_trans_obj> TYPE abap_trans_objbind.
+<ls_comp>-name = 'FIELD'.
+<ls_key>-name = 'PRIMARY'.
+<ls_component>-as_include = abap_false.
+<ls_symbol>-name = 'FIELD'.
+<ls_view>-type = lr_data.
+<ls_table_key>-name = 'PRIMARY'.
+<ls_table_key>-access_kind = 'S'.
+<ls_key_component>-name = 'FIELD'.
+<ls_func_parm>-value = lr_data.
+<ls_func_parm>-tables_wa = lr_data.
+<ls_func_excp>-message = lr_data.
+<ls_func_excp>-name = 'ERROR'.
+<ls_parm_bind>-kind = 'I'.
+<ls_parm_bind>-value = lr_data.
+<ls_excp_bind>-name = 'ERROR'.
+<ls_method>-name = 'RUN'.
+<ls_method>-is_raising_excps = abap_false.
+<ls_method_parm>-name = 'INPUT'.
+<ls_method_parm>-by_value = abap_true.
+<ls_method_excp>-name = 'ERROR'.
+<ls_method_excp>-is_resumable = abap_false.
+<ls_attr>-name = 'ATTR'.
+<ls_attr>-is_read_only = abap_false.
+<ls_intf>-name = 'LIF_INT'.
+<ls_intf>-is_inherited = abap_false.
+<ls_type>-name = 'TY_DATA'.
+<ls_type>-alias_for = 'TY_ALIAS'.
+<ls_event>-name = 'EVENT'.
+<ls_event>-alias_for = 'ALIAS'.
+<ls_event_parm>-name = 'INPUT'.
+<ls_friend>-name = 'LCL_FRIEND'.
+<ls_trans_parm>-name = 'ROOT'.
+<ls_trans_parm>-value = 'ROOT'.
+<ls_trans_parm_obj>-name = 'ROOT'.
+<ls_trans_parm_obj>-value = lr_data.
+<ls_trans_obj>-name = 'ROOT'.
+<ls_trans_obj>-value = lr_object.
+`,
+	)
+	invalid := collect_test_unit(
+		t,
+		"file:///abap_type_pool_structures_invalid.abap",
+		`
+FIELD-SYMBOLS <ls_table_key> TYPE abap_table_keydescr.
+FIELD-SYMBOLS <ls_method> TYPE abap_methdescr.
+FIELD-SYMBOLS <ls_func_parm> TYPE abap_func_parmbind.
+<ls_table_key>-missing = abap_true.
+<ls_method>-missing = abap_true.
+<ls_func_parm>-missing = 1.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&valid, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid, .Unknown_Field))
+	expect_structure_fields(t, &valid, "abap_compdescr", "length", "decimals", "type_kind", "name")
+	expect_structure_fields(t, &valid, "abap_keydescr", "name")
+	expect_structure_fields(t, &valid, "abap_table_keycompdescr", "name")
+	expect_structure_fields(t, &valid, "abap_table_keydescr", "components", "name", "is_primary", "access_kind", "is_unique", "key_kind")
+	expect_structure_fields(t, &valid, "abap_parmdescr", "length", "decimals", "type_kind", "name", "parm_kind", "by_value", "is_optional")
+	expect_structure_fields(t, &valid, "abap_excpdescr", "name", "is_resumable")
+	expect_structure_fields(t, &valid, "abap_frnddescr", "name")
+	expect_structure_fields(t, &valid, "abap_intfdescr", "name", "is_inherited")
+	expect_structure_fields(t, &valid, "abap_typedef", "name", "alias_for", "visibility", "is_interface", "is_inherited")
+	expect_structure_fields(t, &valid, "abap_attrdescr", "length", "decimals", "name", "type_kind", "visibility", "is_interface", "is_inherited", "is_class", "is_constant", "is_virtual", "is_read_only", "alias_for")
+	expect_structure_fields(t, &valid, "abap_methdescr", "parameters", "exceptions", "name", "for_event", "of_class", "visibility", "is_interface", "is_inherited", "is_redefined", "is_abstract", "is_final", "is_class", "alias_for", "is_raising_excps")
+	expect_structure_fields(t, &valid, "abap_evntdescr", "parameters", "name", "visibility", "is_interface", "is_inherited", "is_class", "alias_for")
+	expect_structure_fields(t, &valid, "abap_func_parmbind", "value", "tables_wa", "kind", "name")
+	expect_structure_fields(t, &valid, "abap_func_excpbind", "message", "value", "name")
+	expect_structure_fields(t, &valid, "abap_parmbind", "name", "kind", "value")
+	expect_structure_fields(t, &valid, "abap_excpbind", "name", "value")
+	expect_structure_fields(t, &valid, "abap_trans_parmbind", "name", "value")
+	expect_structure_fields(t, &valid, "abap_trans_parm_obj_bind", "name", "value")
+	expect_structure_fields(t, &valid, "abap_trans_objbind", "name", "value")
+}
+
 collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> analyze.Unit_Analysis {
 	parsed := parser.parse(source, uri, context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -1923,6 +2066,19 @@ field_names_match :: proc(structure: ^analyze.Structure_Data, names: []string) -
 		}
 	}
 	return true
+}
+
+expect_structure_fields :: proc(
+	t: ^testing.T,
+	unit: ^analyze.Unit_Analysis,
+	name: string,
+	fields: ..string,
+) {
+	st := analyze.find_structure(unit, name)
+	testing.expect(t, st != nil)
+	if st != nil {
+		testing.expect(t, field_names_match(st, fields))
+	}
 }
 
 provided_name_present :: proc(unit: ^analyze.Unit_Analysis, name: string) -> bool {
