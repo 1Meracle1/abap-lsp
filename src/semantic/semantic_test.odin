@@ -375,6 +375,7 @@ ENDCLASS.
 	has_symbol := false
 	has_routine := false
 	has_local_type := false
+	has_builtin_backing_type := false
 	for candidate in candidates {
 		if candidate.name == "zcl_remote_type" && candidate.kind == .Type {
 			has_type = true
@@ -399,6 +400,12 @@ ENDCLASS.
 		if candidate.name == "ls_local_type" {
 			has_local_type = true
 		}
+		if candidate.kind == .Type &&
+		   (candidate.name == "abap_bool" ||
+		    candidate.name == "abap_func_parmbind" ||
+		    candidate.name == "icon_l2") {
+			has_builtin_backing_type = true
+		}
 	}
 	testing.expect(t, has_type)
 	testing.expect(t, has_type_hint)
@@ -409,6 +416,7 @@ ENDCLASS.
 	testing.expect(t, !has_symbol)
 	testing.expect(t, !has_routine)
 	testing.expect(t, !has_local_type)
+	testing.expect(t, !has_builtin_backing_type)
 }
 
 @(test)
@@ -628,29 +636,95 @@ standard_type_pool_symbols_are_installed :: proc(t: ^testing.T) {
 		testing.expect(t, analyze.find_symbol(&unit, name, .Builtin_Type) != nil)
 	}
 
-	constant_names := [?]string {
-		"abap_true",
-		"abap_false",
-		"abap_undefined",
-		"abap_on",
-		"abap_off",
-		"abap_max_abs_type_name_ln",
-		"abap_max_class_name_ln",
-		"abap_max_intf_name_ln",
-		"abap_max_comp_name_ln",
-		"abap_max_key_name_ln",
-		"abap_max_class_comp_name_ln",
-		"abap_max_edit_mask_ln",
-		"abap_max_help_id_ln",
-		"abap_max_db_string_ln",
-		"abap_max_db_rawstring_ln",
-		"abap_func_exporting",
-		"abap_func_importing",
-		"abap_func_tables",
-		"abap_func_changing",
+	type_specs := [?][3]string {
+		{"abap_bool", "c", "c LENGTH 1"},
+		{"abap_keycompname", "abap_keyname", "abap_keyname"},
+		{"abap_func_parmbind_tab", "abap_func_parmbind", "SORTED TABLE OF abap_func_parmbind WITH UNIQUE KEY kind name"},
+		{"abap_trans_parmname", "string", "string"},
+		{"abap_trans_parmref", "data", "REF TO data"},
+		{"abap_byte_order_utf8", "x", "x LENGTH 3"},
+		{"abap_encoding", "abap_encod", "abap_encod"},
 	}
-	for name in constant_names {
-		testing.expect(t, analyze.find_symbol(&unit, name, .Builtin_Constant) != nil)
+	for spec in type_specs {
+		s := analyze.find_symbol(&unit, spec[0], .Builtin_Type)
+		testing.expect(t, s != nil)
+		testing.expect(t, s.has_declared_type)
+		testing.expect_value(t, s.declared_type.base_name, spec[1])
+		testing.expect_value(t, s.type_clause_display, spec[2])
+	}
+	trans_ref := analyze.find_symbol(&unit, "abap_trans_parmref", .Builtin_Type)
+	testing.expect(t, trans_ref != nil && trans_ref.declared_type.is_ref)
+
+	constant_specs := [?][3]string {
+		{"abap_true", "abap_bool", "'X'"},
+		{"abap_false", "abap_bool", "' '"},
+		{"abap_undefined", "abap_bool", "'-'"},
+		{"abap_on", "abap_bool", "'X'"},
+		{"abap_off", "abap_bool", "' '"},
+		{"abap_max_abs_type_name_ln", "i", "200"},
+		{"abap_max_class_name_ln", "i", "30"},
+		{"abap_max_intf_name_ln", "i", "30"},
+		{"abap_max_comp_name_ln", "i", "30"},
+		{"abap_max_key_name_ln", "i", "255"},
+		{"abap_max_class_comp_name_ln", "i", "61"},
+		{"abap_max_edit_mask_ln", "i", "7"},
+		{"abap_max_help_id_ln", "i", "62"},
+		{"abap_max_db_string_ln", "i", "536870912"},
+		{"abap_max_db_rawstring_ln", "i", "1073741824"},
+		{"abap_func_exporting", "abap_func_parmbind-kind", "10"},
+		{"abap_func_importing", "abap_func_parmbind-kind", "20"},
+		{"abap_func_tables", "abap_func_parmbind-kind", "30"},
+		{"abap_func_changing", "abap_func_parmbind-kind", "40"},
+		{"icon_led_red", "icon_l2", "'@5C@'"},
+		{"icon_led_yellow", "icon_l2", "'@5D@'"},
+		{"icon_led_green", "icon_l2", "'@5B@'"},
+		{"icon_led_inactive", "icon_l2", "'@BZ@'"},
+		{"icon_message_information", "icon_l4", "'@19@'"},
+		{"icon_system_help", "icon_l2", "'@35@'"},
+		{"icon_stack", "icon_l2", "'@3B@'"},
+		{"icon_abap", "icon_l2", "'@9U@'"},
+		{"icon_warning", "icon_l2", "'@AH@'"},
+		{"icon_package_standard", "icon_l2", "'@QC@'"},
+		{"icon_no_status", "icon_l2", "'@MG@'"},
+		{"icon_create", "icon_l2", "'@0Y@'"},
+		{"icon_delete", "icon_l2", "'@11@'"},
+		{"icon_change", "icon_l2", "'@0Z@'"},
+		{"icon_adopt", "icon_l2", "'@IL@'"},
+		{"icon_okay", "icon_l2", "'@0V@'"},
+		{"icon_set_state", "icon_l2", "'@3J@'"},
+		{"col_background", "c", "'0'"},
+		{"col_heading", "c", "'1'"},
+		{"col_normal", "c", "'2'"},
+		{"col_total", "c", "'3'"},
+		{"col_key", "c", "'4'"},
+		{"col_positive", "c", "'5'"},
+		{"col_negative", "c", "'6'"},
+		{"col_group", "c", "'7'"},
+		{"space", "c", "' '"},
+	}
+	for spec in constant_specs {
+		s := analyze.find_symbol(&unit, spec[0], .Builtin_Constant)
+		testing.expect(t, s != nil)
+		testing.expect(t, s.has_declared_type)
+		testing.expect_value(t, s.type_clause_display, spec[1])
+		testing.expect_value(t, s.value_clause_display, spec[2])
+	}
+	builtin_constant_count := 0
+	for s in unit.symbols {
+		if s.kind != .Builtin_Constant {
+			continue
+		}
+		builtin_constant_count += 1
+		testing.expect(t, s.has_declared_type)
+		testing.expect(t, s.value_clause_display != "")
+	}
+	testing.expect_value(t, builtin_constant_count, len(constant_specs))
+
+	abap_func_exporting := analyze.find_symbol(&unit, "abap_func_exporting", .Builtin_Constant)
+	testing.expect(t, abap_func_exporting != nil)
+	if abap_func_exporting != nil {
+		testing.expect_value(t, abap_func_exporting.declared_type.base_name, "abap_func_parmbind")
+		testing.expect_value(t, abap_func_exporting.declared_type.field_path[0], "kind")
 	}
 }
 

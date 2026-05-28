@@ -24,9 +24,19 @@ Builtin_Structure_Spec :: struct {
 }
 
 Builtin_Symbol_Spec :: struct {
-	name:           string,
-	kind:           Builtin_Type_Kind,
-	structure_name: string,
+	name:                 string,
+	kind:                 Builtin_Type_Kind,
+	structure_name:       string,
+	type_name:            string,
+	type_field_name:      string,
+	type_clause_display:  string,
+	value_clause_display: string,
+}
+
+Builtin_Type_Metadata :: struct {
+	type_name:           string,
+	type_clause_display: string,
+	is_ref:              bool,
 }
 
 Builtin_Routine_Param_Spec :: struct {
@@ -514,29 +524,420 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "abap_trans_resname", kind = .Type, structure_name = ""},
 	{name = "abap_trans_resbind", kind = .Type, structure_name = ""},
 	{name = "abap_trans_resbind_tab_sorted", kind = .Type, structure_name = ""},
-	{name = "abap_true", kind = .Constant, structure_name = ""},
-	{name = "abap_false", kind = .Constant, structure_name = ""},
-	{name = "abap_undefined", kind = .Constant, structure_name = ""},
-	{name = "abap_on", kind = .Constant, structure_name = ""},
-	{name = "abap_off", kind = .Constant, structure_name = ""},
-	{name = "abap_max_abs_type_name_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_class_name_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_intf_name_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_comp_name_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_key_name_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_class_comp_name_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_edit_mask_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_help_id_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_db_string_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_max_db_rawstring_ln", kind = .Constant, structure_name = ""},
-	{name = "abap_func_exporting", kind = .Constant, structure_name = ""},
-	{name = "abap_func_importing", kind = .Constant, structure_name = ""},
-	{name = "abap_func_tables", kind = .Constant, structure_name = ""},
-	{name = "abap_func_changing", kind = .Constant, structure_name = ""},
-	{name = "space", kind = .Constant, structure_name = ""},
+	{name = "abap_true", kind = .Constant, type_name = "abap_bool", value_clause_display = "'X'"},
+	{name = "abap_false", kind = .Constant, type_name = "abap_bool", value_clause_display = "' '"},
+	{
+		name = "abap_undefined",
+		kind = .Constant,
+		type_name = "abap_bool",
+		value_clause_display = "'-'",
+	},
+	{name = "abap_on", kind = .Constant, type_name = "abap_bool", value_clause_display = "'X'"},
+	{name = "abap_off", kind = .Constant, type_name = "abap_bool", value_clause_display = "' '"},
+	{
+		name = "abap_max_abs_type_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "200",
+	},
+	{
+		name = "abap_max_class_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "30",
+	},
+	{
+		name = "abap_max_intf_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "30",
+	},
+	{
+		name = "abap_max_comp_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "30",
+	},
+	{
+		name = "abap_max_key_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "255",
+	},
+	{
+		name = "abap_max_class_comp_name_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "61",
+	},
+	{
+		name = "abap_max_edit_mask_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "7",
+	},
+	{name = "abap_max_help_id_ln", kind = .Constant, type_name = "i", value_clause_display = "62"},
+	{
+		name = "abap_max_db_string_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "536870912",
+	},
+	{
+		name = "abap_max_db_rawstring_ln",
+		kind = .Constant,
+		type_name = "i",
+		value_clause_display = "1073741824",
+	},
+	{
+		name = "abap_func_exporting",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		type_clause_display = "abap_func_parmbind-kind",
+		value_clause_display = "10",
+	},
+	{
+		name = "abap_func_importing",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		type_clause_display = "abap_func_parmbind-kind",
+		value_clause_display = "20",
+	},
+	{
+		name = "abap_func_tables",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		type_clause_display = "abap_func_parmbind-kind",
+		value_clause_display = "30",
+	},
+	{
+		name = "abap_func_changing",
+		kind = .Constant,
+		type_name = "abap_func_parmbind",
+		type_field_name = "kind",
+		type_clause_display = "abap_func_parmbind-kind",
+		value_clause_display = "40",
+	},
+	{
+		name = "icon_led_red",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@5C@'",
+	},
+	{
+		name = "icon_led_yellow",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@5D@'",
+	},
+	{
+		name = "icon_led_green",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@5B@'",
+	},
+	{
+		name = "icon_led_inactive",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@BZ@'",
+	},
+	{
+		name = "icon_message_information",
+		kind = .Constant,
+		type_name = "icon_l4",
+		value_clause_display = "'@19@'",
+	},
+	{
+		name = "icon_system_help",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@35@'",
+	},
+	{
+		name = "icon_stack",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@3B@'",
+	},
+	{name = "icon_abap", kind = .Constant, type_name = "icon_l2", value_clause_display = "'@9U@'"},
+	{
+		name = "icon_warning",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@AH@'",
+	},
+	{
+		name = "icon_package_standard",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@QC@'",
+	},
+	{
+		name = "icon_no_status",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@MG@'",
+	},
+	{
+		name = "icon_create",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@0Y@'",
+	},
+	{
+		name = "icon_delete",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@11@'",
+	},
+	{
+		name = "icon_change",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@0Z@'",
+	},
+	{
+		name = "icon_adopt",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@IL@'",
+	},
+	{name = "icon_okay", kind = .Constant, type_name = "icon_l2", value_clause_display = "'@0V@'"},
+	{
+		name = "icon_set_state",
+		kind = .Constant,
+		type_name = "icon_l2",
+		value_clause_display = "'@3J@'",
+	},
+	{name = "col_background", kind = .Constant, type_name = "c", value_clause_display = "'0'"},
+	{name = "col_heading", kind = .Constant, type_name = "c", value_clause_display = "'1'"},
+	{name = "col_normal", kind = .Constant, type_name = "c", value_clause_display = "'2'"},
+	{name = "col_total", kind = .Constant, type_name = "c", value_clause_display = "'3'"},
+	{name = "col_key", kind = .Constant, type_name = "c", value_clause_display = "'4'"},
+	{name = "col_positive", kind = .Constant, type_name = "c", value_clause_display = "'5'"},
+	{name = "col_negative", kind = .Constant, type_name = "c", value_clause_display = "'6'"},
+	{name = "col_group", kind = .Constant, type_name = "c", value_clause_display = "'7'"},
+	{name = "space", kind = .Constant, type_name = "c", value_clause_display = "' '"},
 	{name = "text", kind = .Variable, structure_name = ""},
 	{name = "cntl_simple_event", kind = .Type, structure_name = "cntl_simple_event"},
 	{name = "cntl_simple_events", kind = .Type, structure_name = "cntl_simple_event"},
+}
+
+builtin_type_metadata :: proc(name: string) -> (Builtin_Type_Metadata, bool) {
+	switch name {
+	case "abap_bool",
+	     "abap_typekind",
+	     "abap_typecategory",
+	     "abap_typepropkind",
+	     "abap_structkind",
+	     "abap_tablekind",
+	     "abap_keydefkind",
+	     "abap_classkind",
+	     "abap_intfkind",
+	     "abap_parmkind",
+	     "abap_visibility",
+	     "abap_char1":
+		return {type_name = "c", type_clause_display = "c LENGTH 1"}, true
+	case "abap_cr_lf":
+		return {type_name = "c", type_clause_display = "c LENGTH 2"}, true
+	case "abap_byte_order_mark":
+		return {type_name = "x", type_clause_display = "x LENGTH 2"}, true
+	case "abap_byte_order_utf8":
+		return {type_name = "x", type_clause_display = "x LENGTH 3"}, true
+	case "abap_editmask":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_edit_mask_ln"}, true
+	case "abap_helpid":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_help_id_ln"}, true
+	case "abap_typename", "abap_attrname", "abap_methname", "abap_evntname":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_class_comp_name_ln"},
+			true
+	case "abap_abstypename":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_abs_type_name_ln"}, true
+	case "abap_compname", "abap_parmname", "abap_excpname":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_comp_name_ln"}, true
+	case "abap_keyname":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_key_name_ln"}, true
+	case "abap_keycompname":
+		return {type_name = "abap_keyname", type_clause_display = "abap_keyname"}, true
+	case "abap_classname":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_class_name_ln"}, true
+	case "abap_intfname":
+		return {type_name = "c", type_clause_display = "c LENGTH abap_max_intf_name_ln"}, true
+	case "abap_compdescr_tab":
+		return {
+				type_name = "abap_compdescr",
+				type_clause_display = "STANDARD TABLE OF abap_compdescr WITH KEY name",
+			},
+			true
+	case "abap_component_tab":
+		return {
+				type_name = "abap_componentdescr",
+				type_clause_display = "STANDARD TABLE OF abap_componentdescr WITH KEY name",
+			},
+			true
+	case "abap_component_symbol_tab":
+		return {
+				type_name = "abap_simple_componentdescr",
+				type_clause_display = "HASHED TABLE OF abap_simple_componentdescr WITH UNIQUE KEY name",
+			},
+			true
+	case "abap_component_view_tab":
+		return {
+				type_name = "abap_simple_componentdescr",
+				type_clause_display = "STANDARD TABLE OF abap_simple_componentdescr WITH KEY name",
+			},
+			true
+	case "abap_keydescr_tab":
+		return {
+				type_name = "abap_keydescr",
+				type_clause_display = "STANDARD TABLE OF abap_keydescr WITH KEY name",
+			},
+			true
+	case "abap_table_keydescr_tab":
+		return {
+				type_name = "abap_table_keydescr",
+				type_clause_display = "STANDARD TABLE OF abap_table_keydescr WITH NON-UNIQUE KEY name",
+			},
+			true
+	case "abap_parmdescr_tab":
+		return {
+				type_name = "abap_parmdescr",
+				type_clause_display = "STANDARD TABLE OF abap_parmdescr WITH KEY name",
+			},
+			true
+	case "abap_excpdescr_tab":
+		return {
+				type_name = "abap_excpdescr",
+				type_clause_display = "STANDARD TABLE OF abap_excpdescr WITH KEY name",
+			},
+			true
+	case "abap_frnddescr_tab":
+		return {
+				type_name = "abap_frnddescr",
+				type_clause_display = "STANDARD TABLE OF abap_frnddescr WITH KEY name",
+			},
+			true
+	case "abap_intfdescr_tab":
+		return {
+				type_name = "abap_intfdescr",
+				type_clause_display = "STANDARD TABLE OF abap_intfdescr WITH KEY name",
+			},
+			true
+	case "abap_typedef_tab":
+		return {
+				type_name = "abap_typedef",
+				type_clause_display = "STANDARD TABLE OF abap_typedef WITH KEY name",
+			},
+			true
+	case "abap_attrdescr_tab":
+		return {
+				type_name = "abap_attrdescr",
+				type_clause_display = "STANDARD TABLE OF abap_attrdescr WITH KEY name",
+			},
+			true
+	case "abap_methdescr_tab":
+		return {
+				type_name = "abap_methdescr",
+				type_clause_display = "STANDARD TABLE OF abap_methdescr WITH KEY name",
+			},
+			true
+	case "abap_evntdescr_tab":
+		return {
+				type_name = "abap_evntdescr",
+				type_clause_display = "STANDARD TABLE OF abap_evntdescr WITH KEY name",
+			},
+			true
+	case "abap_frndtypes_tab":
+		return {
+				type_name = "cl_abap_typedescr",
+				type_clause_display = "STANDARD TABLE OF REF TO cl_abap_typedescr WITH KEY table_line",
+				is_ref = true,
+			},
+			true
+	case "abap_func_parmbind_tab":
+		return {
+				type_name = "abap_func_parmbind",
+				type_clause_display = "SORTED TABLE OF abap_func_parmbind WITH UNIQUE KEY kind name",
+			},
+			true
+	case "abap_func_excpbind_tab":
+		return {
+				type_name = "abap_func_excpbind",
+				type_clause_display = "HASHED TABLE OF abap_func_excpbind WITH UNIQUE KEY name",
+			},
+			true
+	case "abap_parmbind_tab":
+		return {
+				type_name = "abap_parmbind",
+				type_clause_display = "HASHED TABLE OF abap_parmbind WITH UNIQUE KEY name",
+			},
+			true
+	case "abap_excpbind_tab":
+		return {
+				type_name = "abap_excpbind",
+				type_clause_display = "HASHED TABLE OF abap_excpbind WITH UNIQUE KEY name",
+			},
+			true
+	case "abap_encoding":
+		return {type_name = "abap_encod", type_clause_display = "abap_encod"}, true
+	case "abap_endian":
+		return {type_name = "abap_endia", type_clause_display = "abap_endia"}, true
+	case "abap_trans_parmname",
+	     "abap_trans_parmvalue",
+	     "abap_trans_objname",
+	     "abap_trans_srcname",
+	     "abap_trans_resname":
+		return {type_name = "string", type_clause_display = "string"}, true
+	case "abap_trans_parmref":
+		return {type_name = "data", type_clause_display = "REF TO data", is_ref = true}, true
+	case "abap_trans_parmbind_tab":
+		return {
+				type_name = "abap_trans_parmbind",
+				type_clause_display = "STANDARD TABLE OF abap_trans_parmbind WITH KEY name",
+			},
+			true
+	case "abap_trans_parm_obj_bind_tab":
+		return {
+				type_name = "abap_trans_parm_obj_bind",
+				type_clause_display = "SORTED TABLE OF abap_trans_parm_obj_bind WITH UNIQUE KEY name",
+			},
+			true
+	case "abap_trans_objbind_tab":
+		return {
+				type_name = "abap_trans_objbind",
+				type_clause_display = "STANDARD TABLE OF abap_trans_objbind WITH KEY name",
+			},
+			true
+	case "abap_trans_srcbind_tab":
+		return {
+				type_name = "abap_trans_srcbind",
+				type_clause_display = "STANDARD TABLE OF abap_trans_srcbind WITH KEY name",
+			},
+			true
+	case "abap_trans_srcbind_tab_sorted":
+		return {
+				type_name = "abap_trans_srcbind",
+				type_clause_display = "SORTED TABLE OF abap_trans_srcbind WITH UNIQUE KEY name",
+			},
+			true
+	case "abap_trans_resbind_tab":
+		return {
+				type_name = "abap_trans_resbind",
+				type_clause_display = "STANDARD TABLE OF abap_trans_resbind WITH KEY name",
+			},
+			true
+	case "abap_trans_resbind_tab_sorted":
+		return {
+				type_name = "abap_trans_resbind",
+				type_clause_display = "SORTED TABLE OF abap_trans_resbind WITH UNIQUE KEY name",
+			},
+			true
+	}
+	return {}, false
 }
 
 BUILTIN_CLASS_ATTRIBUTES :: []Builtin_Class_Attribute_Spec {
@@ -1002,7 +1403,44 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 				structure = s.id
 			}
 		}
-		_ = declare_symbol(unit, root_scope, spec.name, kind, zero, structure)
+		declared_type := Field_Type_Ref_Data{}
+		has_declared_type := false
+		type_name := spec.type_name
+		type_display := spec.type_clause_display
+		type_is_ref := false
+		if spec.kind == .Type && type_name == "" {
+			if metadata, ok := builtin_type_metadata(spec.name); ok {
+				type_name = metadata.type_name
+				type_display = metadata.type_clause_display
+				type_is_ref = metadata.is_ref
+			}
+		}
+		if type_name != "" {
+			declared_type = builtin_type_ref(type_name)
+			declared_type.is_ref = type_is_ref
+			has_declared_type = true
+			if spec.type_field_name != "" {
+				declared_type.field_path = make([dynamic]string, 0, 1, allocator)
+				declared_type.field_ranges = make([dynamic]tokenizer.Range, 0, 1, allocator)
+				append(&declared_type.field_path, spec.type_field_name)
+				append(&declared_type.field_ranges, zero)
+			}
+		}
+		if type_display == "" {
+			type_display = type_name
+		}
+		_ = declare_symbol(
+			unit,
+			root_scope,
+			spec.name,
+			kind,
+			zero,
+			structure,
+			declared_type,
+			has_declared_type,
+			type_display,
+			spec.value_clause_display,
+		)
 	}
 	for routine in BUILTIN_ROUTINES {
 		return_type := builtin_type_ref(routine.return_type)

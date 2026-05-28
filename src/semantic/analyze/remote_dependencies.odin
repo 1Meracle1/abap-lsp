@@ -25,7 +25,8 @@ collect_project_remote_dependency_candidates :: proc(
 			}
 		}
 		for &symbol in unit.symbols {
-			if symbol.decl_range.start == symbol.decl_range.end &&
+			if !symbol_kind_is_builtin(symbol.kind) &&
+			   symbol.decl_range.start == symbol.decl_range.end &&
 			   symbol.has_declared_type &&
 			   symbol.declared_type.namespace == .Type {
 				insert_remote_candidate(
@@ -151,7 +152,8 @@ record_project_unresolved_candidates :: proc(
 			}
 		}
 		for &symbol in unit.symbols {
-			if symbol.decl_range.start == symbol.decl_range.end &&
+			if !symbol_kind_is_builtin(symbol.kind) &&
+			   symbol.decl_range.start == symbol.decl_range.end &&
 			   symbol.has_declared_type &&
 			   symbol.declared_type.namespace == .Type {
 				record_remote_candidate_unit(
@@ -260,7 +262,8 @@ record_project_unresolved_candidates_for_units :: proc(
 			}
 		}
 		for &symbol in unit.symbols {
-			if symbol.decl_range.start == symbol.decl_range.end &&
+			if !symbol_kind_is_builtin(symbol.kind) &&
+			   symbol.decl_range.start == symbol.decl_range.end &&
 			   symbol.has_declared_type &&
 			   symbol.declared_type.namespace == .Type {
 				record_remote_candidate_unit_incremental(
