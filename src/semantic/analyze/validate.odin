@@ -720,10 +720,7 @@ class_handle_for_call_target :: proc(
 		if !ok {
 			return {}, false
 		}
-		if !fact.has_declared_type {
-			return {}, false
-		}
-		return resolve_type_ref_handle_project_lookup(project, lookup, unit_index, fact.declared_type)
+		return class_handle_from_type_fact(project, lookup, unit_index, fact)
 	}
 	if site.target.base_namespace == .Type {
 		return resolve_type_name_in_project_lookup(project, lookup, unit_index, site.target.base_name)
@@ -766,7 +763,112 @@ class_handle_from_symbol :: proc(
 	if s == nil || !s.has_declared_type {
 		return {}, false
 	}
-	return resolve_type_ref_handle_project_lookup(project, lookup, site_unit_index, s.declared_type)
+	line_of := s.has_type_clause_form && type_form_is_line_of(s.type_clause_form)
+	return class_handle_from_declared_type(project, lookup, site_unit_index, s.declared_type, line_of, 0)
+}
+
+class_handle_from_type_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	fact: Type_Fact_Data,
+) -> (Symbol_Handle, bool) {
+	if !fact.has_declared_type {
+		return {}, false
+	}
+	return class_handle_from_declared_type(project, lookup, unit_index, fact.declared_type, false, 0)
+}
+
+class_handle_from_declared_type :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	type_ref: Field_Type_Ref_Data,
+	line_of: bool,
+	depth: int,
+) -> (Symbol_Handle, bool) {
+	if depth > len(project.units) + 16 {
+		return {}, false
+	}
+	handle, ok := resolve_type_ref_leaf_handle_project_lookup(project, lookup, unit_index, type_ref)
+	if !ok {
+		return {}, false
+	}
+	s := symbol_for_project_handle(project, handle)
+	if s == nil {
+		return {}, false
+	}
+	if line_of {
+		if !s.has_declared_type {
+			return {}, false
+		}
+		next_line_of := !(s.has_type_clause_form && type_form_is_table(s.type_clause_form))
+		return class_handle_from_declared_type(
+			project,
+			lookup,
+			unit_index,
+			s.declared_type,
+			next_line_of,
+			depth + 1,
+		)
+	}
+	if s.kind == .Class || s.kind == .Interface {
+		return handle, true
+	}
+	if !s.has_declared_type {
+		return {}, false
+	}
+	next_line_of := s.has_type_clause_form && type_form_is_line_of(s.type_clause_form)
+	return class_handle_from_declared_type(
+		project,
+		lookup,
+		unit_index,
+		s.declared_type,
+		next_line_of,
+		depth + 1,
+	)
+}
+
+resolve_type_ref_leaf_handle_project_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	type_ref: Field_Type_Ref_Data,
+) -> (Symbol_Handle, bool) {
+	handle, ok := resolve_type_ref_handle_project_lookup(project, lookup, unit_index, type_ref)
+	if !ok {
+		return {}, false
+	}
+	for name in type_ref.field_path {
+		next, next_ok := class_type_symbol_handle(project.units[:], handle, name)
+		if !next_ok {
+			return {}, false
+		}
+		handle = next
+	}
+	return handle, true
+}
+
+type_form_is_line_of :: proc(form: ast.Data_Type_Form) -> bool {
+	return form == .Like_Line_Of || form == .Type_Line_Of
+}
+
+type_form_is_table :: proc(form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Any_Table,
+	     .Table,
+	     .Like_Table,
+	     .Index_Table,
+	     .Standard_Table,
+	     .Sorted_Table,
+	     .Hashed_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table,
+	     .Range_Of:
+		return true
+	}
+	return false
 }
 
 value_handle_for_name :: proc(

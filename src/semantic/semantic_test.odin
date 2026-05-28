@@ -3986,6 +3986,31 @@ START-OF-SELECTION.
 }
 
 @(test)
+method_receiver_can_be_line_of_nested_table_ref_type :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///line_of_nested_table_ref_type.abap",
+		`
+INTERFACE lif_repo.
+  METHODS get_package RETURNING VALUE(rv_package) TYPE string.
+ENDINTERFACE.
+
+INTERFACE lif_repo_srv.
+  TYPES ty_repo_list TYPE STANDARD TABLE OF REF TO lif_repo WITH DEFAULT KEY.
+ENDINTERFACE.
+
+FIELD-SYMBOLS <repo> TYPE LINE OF lif_repo_srv=>ty_repo_list.
+DATA lv_package TYPE string.
+
+START-OF-SELECTION.
+  lv_package = <repo>->get_package( ).
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 me_and_super_are_not_valid_outside_instance_methods :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
