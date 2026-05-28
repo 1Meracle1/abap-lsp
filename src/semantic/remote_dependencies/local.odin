@@ -1,8 +1,8 @@
 package abap_frontend_semantic_remote_dependencies
 
-import "../../adt"
-import dep_store "../../dependency_store"
-import analyze "../analyze"
+import "src:adt"
+import dep_store "src:dependency_store"
+import analyze "src:semantic/analyze"
 
 import base_runtime "base:runtime"
 import "core:mem"

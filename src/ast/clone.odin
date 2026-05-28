@@ -1,6 +1,6 @@
 package abap_frontend_ast
 
-import "../tokenizer"
+import "src:tokenizer"
 
 import "base:intrinsics"
 import "core:mem"

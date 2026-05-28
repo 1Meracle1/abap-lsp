@@ -1,8 +1,8 @@
 #+private
 package abap_frontend_workspace
 
-import dep_store "../dependency_store"
-import toml "../encoding/toml"
+import dep_store "src:dependency_store"
+import toml "src:encoding/toml"
 
 import "core:mem"
 import "core:os"

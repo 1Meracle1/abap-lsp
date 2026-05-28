@@ -1,12 +1,12 @@
 package main
 
-import "../../src/ast"
-import "../../src/parser"
-import execution "../../src/execution"
-import semantic_analyze "../../src/semantic/analyze"
-import stack_trace "../../src/stack_trace"
-import "../../src/tokenizer"
-import workspace "../../src/workspace"
+import "src:ast"
+import "src:parser"
+import execution "src:execution"
+import semantic_analyze "src:semantic/analyze"
+import stack_trace "src:stack_trace"
+import "src:tokenizer"
+import workspace "src:workspace"
 
 import "base:runtime"
 import "core:fmt"

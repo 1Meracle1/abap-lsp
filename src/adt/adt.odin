@@ -1,6 +1,6 @@
 package adt
 
-import http "../http"
+import http "src:http"
 
 import base64 "core:encoding/base64"
 import "core:fmt"

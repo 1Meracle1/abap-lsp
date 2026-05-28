@@ -1,6 +1,6 @@
 package main
 
-import adt "../../src/adt"
+import adt "src:adt"
 
 import json "core:encoding/json"
 import "core:fmt"

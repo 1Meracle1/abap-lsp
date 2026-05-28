@@ -1,6 +1,6 @@
 package abap_frontend_parser
 
-import "../ast"
+import "src:ast"
 
 import "core:testing"
 

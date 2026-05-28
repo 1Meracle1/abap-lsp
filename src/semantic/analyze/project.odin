@@ -1,8 +1,8 @@
 package abap_frontend_semantic_analyze
 
-import execution "../../execution"
-import "../../parser"
-import uri_key "../../uri_key"
+import execution "src:execution"
+import "src:parser"
+import uri_key "src:uri_key"
 
 import base_runtime "base:runtime"
 import "core:mem"

@@ -1,7 +1,7 @@
 package abap_frontend_semantic_query
 
-import analyze "../analyze"
-import "../../tokenizer"
+import analyze "src:semantic/analyze"
+import "src:tokenizer"
 
 import "core:mem"
 import "core:strings"

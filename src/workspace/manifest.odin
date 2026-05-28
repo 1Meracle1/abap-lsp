@@ -1,8 +1,8 @@
 package abap_frontend_workspace
 
-import dep_store "../dependency_store"
-import toml "../encoding/toml"
-import uri_key "../uri_key"
+import dep_store "src:dependency_store"
+import toml "src:encoding/toml"
+import uri_key "src:uri_key"
 
 import "core:mem"
 import "core:os"

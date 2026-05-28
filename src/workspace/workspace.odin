@@ -1,10 +1,10 @@
 package abap_frontend_workspace
 
-import adt "../adt"
-import dep_store "../dependency_store"
-import execution "../execution"
-import analyze "../semantic/analyze"
-import remote_deps "../semantic/remote_dependencies"
+import adt "src:adt"
+import dep_store "src:dependency_store"
+import execution "src:execution"
+import analyze "src:semantic/analyze"
+import remote_deps "src:semantic/remote_dependencies"
 
 import "core:mem"
 import "core:os"

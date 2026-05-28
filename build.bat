@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 set "ODIN_EXE=D:\dev\odin\toolchain\odin-windows-amd64-dev-2026-05\odin.exe"
-set "ODIN_FLAGS=-vet -warnings-as-errors"
+set "ODIN_FLAGS=-collection:src=src -vet -warnings-as-errors"
 set "ODIN_LINKER_FLAGS=-extra-linker-flags:/STACK:4000000,2000000"
 set "ROOT=%~dp0"
 set "MODE=debug"

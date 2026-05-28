@@ -1,8 +1,8 @@
 package abap_frontend_semantic_analyze
 
-import "../../ast"
-import "../../parser"
-import "../../tokenizer"
+import "src:ast"
+import "src:parser"
+import "src:tokenizer"
 
 import "core:mem"
 import "core:strings"

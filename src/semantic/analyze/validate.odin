@@ -1,8 +1,8 @@
 #+private
 package abap_frontend_semantic_analyze
 
-import "../../tokenizer"
-import "../../ast"
+import "src:tokenizer"
+import "src:ast"
 
 import "core:mem"
 
@@ -99,12 +99,11 @@ validate_unit_diagnostics :: proc(
 	allocator: mem.Allocator,
 ) -> [dynamic]Diagnostic {
 	unit := &project.units[unit_index]
-	hint := validation_diagnostic_hint(unit)
-	out := make([dynamic]Diagnostic, 0, hint, allocator)
+	out := make([dynamic]Diagnostic, 0, 8, allocator)
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	seen := make(map[Diagnostic_Key]bool, hint, context.temp_allocator)
+	seen := make(map[Diagnostic_Key]bool, 8, context.temp_allocator)
 	for diagnostic in unit.diagnostics {
 		if retained_collector_diagnostic(diagnostic.kind) {
 			append(&out, diagnostic)
@@ -128,19 +127,6 @@ Diagnostic_Key :: struct {
 	range_start: int,
 	range_end:   int,
 	message:     string,
-}
-
-validation_diagnostic_hint :: proc(unit: ^Unit_Analysis) -> int {
-	hint := len(unit.diagnostics) +
-	        len(unit.references) +
-	        len(unit.field_accesses) +
-	        len(unit.call_sites) +
-	        len(unit.sql_sources) +
-	        len(unit.sql_name_refs)
-	if hint < 8 {
-		return 8
-	}
-	return hint
 }
 
 diagnostic_key :: #force_inline proc(diagnostic: Diagnostic) -> Diagnostic_Key {

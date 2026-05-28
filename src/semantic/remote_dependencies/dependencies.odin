@@ -1,10 +1,10 @@
 package abap_frontend_semantic_remote_dependencies
 
-import "../../adt"
-import ddic_xml "../../ddic_xml"
-import dep_store "../../dependency_store"
-import analyze "../analyze"
-import uri_key "../../uri_key"
+import "src:adt"
+import ddic_xml "src:ddic_xml"
+import dep_store "src:dependency_store"
+import analyze "src:semantic/analyze"
+import uri_key "src:uri_key"
 
 import "core:fmt"
 import "core:mem"

@@ -1,9 +1,9 @@
 #+private
 package abap_frontend_workspace
 
-import adt "../adt"
-import analyze "../semantic/analyze"
-import session "../semantic/session"
+import adt "src:adt"
+import analyze "src:semantic/analyze"
+import session "src:semantic/session"
 
 import "core:mem"
 import "core:os"

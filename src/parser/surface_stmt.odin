@@ -1,7 +1,7 @@
 package abap_frontend_parser
 
-import "../ast"
-import "../tokenizer"
+import "src:ast"
+import "src:tokenizer"
 
 import "core:mem"
 import "core:strings"

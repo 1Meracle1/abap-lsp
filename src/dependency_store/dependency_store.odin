@@ -1,6 +1,6 @@
 package abap_frontend_dependency_store
 
-import sqlite3 "../persistence/sqlite3"
+import sqlite3 "src:persistence/sqlite3"
 
 import "core:c"
 import "core:mem"

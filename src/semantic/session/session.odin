@@ -1,9 +1,9 @@
 package abap_frontend_semantic_session
 
-import "../../adt"
-import analyze "../analyze"
-import remote_deps "../remote_dependencies"
-import uri_key "../../uri_key"
+import "src:adt"
+import analyze "src:semantic/analyze"
+import remote_deps "src:semantic/remote_dependencies"
+import uri_key "src:uri_key"
 
 import "core:hash"
 import "core:mem"

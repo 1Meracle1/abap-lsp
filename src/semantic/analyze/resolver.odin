@@ -1,7 +1,7 @@
 package abap_frontend_semantic_analyze
 
-import execution "../../execution"
-import "../../parser"
+import execution "src:execution"
+import "src:parser"
 
 import "core:mem"
 import "core:strings"

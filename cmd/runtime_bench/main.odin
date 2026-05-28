@@ -1,7 +1,7 @@
 package main
 
-import execution "../../src/execution"
-import runtime "../../src/runtime"
+import execution "src:execution"
+import runtime "src:runtime"
 
 import "core:fmt"
 import "core:os"
