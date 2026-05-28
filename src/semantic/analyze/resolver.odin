@@ -495,8 +495,9 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 		}
 	}
 
-	changed := false
+	changed := true
 	for changed {
+		changed = false
 		for unit_index in 0 ..< len(units) {
 			changed =
 				import_project_structures_for_unit(

@@ -2435,6 +2435,40 @@ ENDCLASS.
 }
 
 @(test)
+private_structured_class_type_resolves_in_method_implementation :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_error DEFINITION.
+  PUBLIC SECTION.
+    DATA a1 TYPE string.
+    METHODS run.
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_message_parts,
+             a1 LIKE a1,
+             a2 LIKE a1,
+             a3 LIKE a1,
+             a4 LIKE a1,
+           END OF ty_message_parts.
+ENDCLASS.
+
+CLASS lcl_error IMPLEMENTATION.
+  METHOD run.
+    DATA ls_msg TYPE ty_message_parts.
+    DATA lv_text TYPE string.
+    ls_msg = lv_text.
+    lv_text = ls_msg-a1.
+    lv_text = ls_msg-a2.
+    lv_text = ls_msg-a3.
+    lv_text = ls_msg-a4.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///private_structured_class_type.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 selection_ranges_collect_range_structure :: proc(t: ^testing.T) {
 	source := `
 TYPES zattp_gln TYPE string.

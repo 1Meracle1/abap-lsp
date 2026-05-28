@@ -990,8 +990,9 @@ resolve_project_cross_unit_for_units :: proc(
 		}
 	}
 
-	changed := false
+	changed := true
 	for changed {
+		changed = false
 		for unit_id in affected {
 			unit_index := unit_id_index(unit_id)
 			if unit_index >= 0 && unit_index < len(units) {
