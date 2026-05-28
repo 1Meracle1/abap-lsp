@@ -441,10 +441,24 @@ call_target_from_callee :: proc(
 			base_name = access.base_name,
 			method_name = method_name,
 			method_range = method_range,
+			receiver_path = method_receiver_path(c, access),
 			interface_qualified = access.base_namespace == .Type,
 		}
 	}
 	return Named_Argument_Target{}
+}
+
+method_receiver_path :: proc(
+	c: ^Collector,
+	access: Field_Access,
+) -> [dynamic]Field_Access_Segment {
+	assert(len(access.field_path) > 0)
+	count := len(access.field_path) - 1
+	path := make([dynamic]Field_Access_Segment, 0, count, c.allocator)
+	for i in 0 ..< count {
+		append(&path, access.field_path[i])
+	}
+	return path
 }
 
 collect_call_arg_list_refs :: proc(
@@ -1401,6 +1415,7 @@ call_stmt_method_target :: proc(
 			base_name = access.base_name,
 			method_name = method.name,
 			method_range = method.range,
+			receiver_path = method_receiver_path(c, access),
 			interface_qualified = access.base_namespace == .Type,
 		}
 	}
@@ -1413,12 +1428,28 @@ call_stmt_method_target :: proc(
 			if ref.type_base {
 				namespace = .Type
 			}
+			receiver_path := make(
+				[dynamic]Field_Access_Segment,
+				0,
+				len(ref.path) - 1,
+				c.allocator,
+			)
+			for i in 0 ..< len(ref.path) - 1 {
+				append(
+					&receiver_path,
+					Field_Access_Segment {
+						name = canonical_name(ref.path[i].name, c.allocator),
+						range = ref.path[i].range,
+					},
+				)
+			}
 			return Named_Argument_Target {
 				kind = .Method,
 				base_namespace = namespace,
 				base_name = canonical_name(ref.name, c.allocator),
 				method_name = canonical_name(ref.path[len(ref.path) - 1].name, c.allocator),
 				method_range = ref.path[len(ref.path) - 1].range,
+				receiver_path = receiver_path,
 				interface_qualified = namespace == .Type,
 			}
 		}

@@ -665,6 +665,7 @@ Named_Argument_Target :: struct {
 	routine_name:        string,
 	method_name:         string,
 	method_range:        tokenizer.Range,
+	receiver_path:       [dynamic]Field_Access_Segment,
 	base_namespace:      Namespace,
 	base_name:           string,
 	interface_qualified: bool,

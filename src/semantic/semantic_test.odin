@@ -3950,6 +3950,42 @@ ENDCLASS.
 }
 
 @(test)
+method_receiver_can_be_structure_component_object_ref :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///component_method_receiver.abap",
+		`
+INTERFACE lif_repo.
+  METHODS get_selected_branch RETURNING VALUE(rv_branch) TYPE string.
+ENDINTERFACE.
+
+TYPES: BEGIN OF ty_merge,
+         repo_online TYPE REF TO lif_repo,
+       END OF ty_merge.
+
+DATA ms_merge TYPE ty_merge.
+DATA lv_branch TYPE string.
+
+START-OF-SELECTION.
+  lv_branch = ms_merge-repo_online->get_selected_branch( ).
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	found := false
+	for site in unit.call_sites {
+		if site.target.kind == .Method &&
+		   site.target.base_name == "ms_merge" &&
+		   site.target.method_name == "get_selected_branch" &&
+		   len(site.target.receiver_path) == 1 &&
+		   site.target.receiver_path[0].name == "repo_online" {
+			found = true
+		}
+	}
+	testing.expect(t, found)
+}
+
+@(test)
 me_and_super_are_not_valid_outside_instance_methods :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

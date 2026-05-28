@@ -705,6 +705,26 @@ class_handle_for_call_target :: proc(
 	unit_index: int,
 	site: Call_Site_Data,
 ) -> (Symbol_Handle, bool) {
+	if len(site.target.receiver_path) > 0 {
+		fact, ok := resolve_field_access_tail(
+			project,
+			lookup,
+			unit_index,
+			Field_Access {
+				scope = site.scope,
+				base_namespace = site.target.base_namespace,
+				base_name = site.target.base_name,
+				field_path = site.target.receiver_path,
+			},
+		)
+		if !ok {
+			return {}, false
+		}
+		if !fact.has_declared_type {
+			return {}, false
+		}
+		return resolve_type_ref_handle_project_lookup(project, lookup, unit_index, fact.declared_type)
+	}
 	if site.target.base_namespace == .Type {
 		return resolve_type_name_in_project_lookup(project, lookup, unit_index, site.target.base_name)
 	}
