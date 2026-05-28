@@ -115,6 +115,7 @@ validate_unit_diagnostics :: proc(
 	validate_create_data_type_handles(project, lookup, unit_index, &out, &seen, allocator)
 	validate_object_type_refs(project, lookup, unit_index, &out, &seen, allocator)
 	validate_missing_method_implementations(project, unit_index, &out, &seen, allocator)
+	validate_generic_builtin_types(project, unit_index, &out, &seen, allocator)
 	validate_generic_table_types(project, unit_index, &out, &seen, allocator)
 	validate_parameter_types(project, unit_index, &out, &seen, allocator)
 	validate_field_accesses(project, lookup, unit_index, &out, &seen, allocator)
@@ -472,6 +473,58 @@ validate_missing_method_implementations :: proc(
 	}
 }
 
+validate_generic_builtin_types :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+	allocator: mem.Allocator,
+) {
+	unit := &project.units[unit_index]
+	for s in unit.symbols {
+		if symbol_kind_is_builtin(s.kind) ||
+		   !s.has_declared_type ||
+		   s.declared_type.namespace != .Type ||
+		   len(s.declared_type.field_path) > 0 {
+			continue
+		}
+		if s.declared_type.base_name == "object" && !s.declared_type.is_ref {
+			append_diag(
+				out,
+				seen,
+				.Invalid_Object_Type_Reference,
+				type_ref_or_decl_range(s),
+				diagnostic_message("object type needs REF TO: ", s.declared_type.base_name, allocator),
+			)
+			continue
+		}
+		if !invalid_generic_builtin_type_use(s) {
+			continue
+		}
+		message := "generic type only allowed for parameters and field symbols: "
+		if s.declared_type.is_ref {
+			message = "generic type not allowed after REF TO: "
+		}
+		append_diag(
+			out,
+			seen,
+			.Invalid_Generic_Builtin_Type,
+			type_ref_or_decl_range(s),
+			diagnostic_message(message, s.declared_type.base_name, allocator),
+		)
+	}
+}
+
+invalid_generic_builtin_type_use :: proc "contextless" (s: Symbol_Data) -> bool {
+	if !is_generic_builtin_type_name(s.declared_type.base_name) {
+		return false
+	}
+	if s.declared_type.is_ref {
+		return !is_generic_builtin_ref_type_name(s.declared_type.base_name)
+	}
+	return s.kind != .Parameter && s.kind != .Field_Symbol
+}
+
 validate_generic_table_types :: proc(
 	project: ^Project_Analysis,
 	unit_index: int,
@@ -498,7 +551,17 @@ validate_generic_table_types :: proc(
 
 generic_table_category_type :: #force_inline proc "contextless" (s: Symbol_Data) -> bool {
 	return s.has_type_clause_form &&
-	       (s.type_clause_form == .Any_Table || s.type_clause_form == .Index_Table)
+	       (s.type_clause_form == .Any_Table ||
+	        s.type_clause_form == .Index_Table ||
+	        (!s.has_declared_type &&
+	         (s.type_clause_form == .Table ||
+	          s.type_clause_form == .Standard_Table ||
+	          s.type_clause_form == .Sorted_Table ||
+	          s.type_clause_form == .Hashed_Table)))
+}
+
+type_ref_or_decl_range :: #force_inline proc "contextless" (s: Symbol_Data) -> tokenizer.Range {
+	return s.declared_type.base_range if s.declared_type.base_range.start != s.declared_type.base_range.end else s.decl_range
 }
 
 validate_parameter_types :: proc(

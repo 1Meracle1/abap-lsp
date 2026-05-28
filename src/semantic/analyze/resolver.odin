@@ -402,19 +402,6 @@ innermost_loop_allows_internal_table_line_selector :: proc(
 	return false
 }
 
-is_builtin_type_name :: proc(name: string) -> bool {
-	// Semantic references and type refs are canonicalized before this hot path.
-	switch name {
-	case "i", "int1", "int2", "int4", "int8",
-	     "f", "p", "decfloat16", "decfloat34",
-	     "string", "c", "n", "d", "t", "x", "xstring", "xsequence",
-	     "data", "any", "any table", "clike", "csequence",
-	     "object":
-		return true
-	}
-	return false
-}
-
 Root_Symbol_Entry :: struct {
 	unit:               Unit_Id,
 	symbol:             Symbol_Id,

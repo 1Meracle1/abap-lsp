@@ -368,6 +368,7 @@ Diagnostic_Kind :: enum {
 	Invalid_Object_Type_Reference,
 	Invalid_Parameter_Type,
 	Invalid_Generic_Table_Type,
+	Invalid_Generic_Builtin_Type,
 	Invalid_Create_Data_Target,
 	Invalid_Create_Data_Type_Handle,
 	Incompatible_Assignment_Type,

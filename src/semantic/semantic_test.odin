@@ -141,6 +141,8 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 	testing.expect_value(t, root.range, tokenizer.text_range(0, 10))
 
 	testing.expect(t, analyze.find_symbol(&unit, "i", .Builtin_Type) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "simple", .Builtin_Type) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "numeric", .Builtin_Type) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "abap_bool", .Builtin_Type) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "abap_true", .Builtin_Constant) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "sy", .Builtin_Variable) != nil)
@@ -189,6 +191,46 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 		testing.expect_value(t, nmin.params[0].name, "val1")
 		testing.expect(t, nmin.supports_named_arguments)
 	}
+}
+
+@(test)
+field_symbol_type_simple_resolves_as_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"mem://simple_type.abap",
+		"FIELD-SYMBOLS <lv_version> TYPE simple.",
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
+generic_builtin_types_are_context_checked :: proc(t: ^testing.T) {
+	valid := `FIELD-SYMBOLS <value> TYPE simple.
+FORM demo USING iv_number TYPE numeric CHANGING cv_data TYPE data.
+ENDFORM.
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_text TYPE csequence.
+ENDCLASS.
+DATA lr_data TYPE REF TO data.
+DATA lr_object TYPE REF TO object.`
+	valid_unit := collect_test_unit(t, "file:///generic_builtins_valid.abap", valid)
+
+	testing.expect(t, !has_diagnostic(&valid_unit, .Invalid_Generic_Builtin_Type))
+	testing.expect(t, !has_diagnostic(&valid_unit, .Invalid_Object_Type_Reference))
+	testing.expect(t, !has_diagnostic(&valid_unit, .Unresolved_Reference))
+
+	invalid := `DATA lv_simple TYPE simple.
+TYPES ty_numeric TYPE numeric.
+CONSTANTS c_any TYPE any VALUE IS INITIAL.
+DATA lr_simple TYPE REF TO simple.
+DATA lo_object TYPE object.`
+	invalid_unit := collect_test_unit(t, "file:///generic_builtins_invalid.abap", invalid)
+
+	testing.expect(t, has_diagnostic(&invalid_unit, .Invalid_Generic_Builtin_Type))
+	testing.expect(t, has_diagnostic(&invalid_unit, .Invalid_Object_Type_Reference))
+	testing.expect(t, !has_diagnostic(&invalid_unit, .Unresolved_Reference))
 }
 
 @(test)

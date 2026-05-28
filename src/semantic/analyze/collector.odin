@@ -2787,6 +2787,8 @@ declare_method_scope_params :: proc(
 			param.declared_type,
 			has_type,
 			param.type_clause_display,
+			type_clause_form = param.type_clause_form,
+			has_type_clause_form = param.has_type_clause_form,
 		)
 	}
 	for exception in member.exceptions {

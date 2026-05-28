@@ -58,7 +58,7 @@ Builtin_Class_Attribute_Spec :: struct {
 	type_name:  string,
 }
 
-BUILTIN_SCALAR_TYPES :: []string {
+BUILTIN_PRIMITIVE_TYPES :: []string {
 	"i",
 	"int1",
 	"int2",
@@ -75,12 +75,45 @@ BUILTIN_SCALAR_TYPES :: []string {
 	"t",
 	"x",
 	"xstring",
+}
+
+BUILTIN_GENERIC_PRIMITIVE_TYPES :: []string {
 	"xsequence",
 	"data",
 	"any",
+	"simple",
+	"decfloat",
+	"numeric",
 	"clike",
 	"csequence",
 	"object",
+}
+
+is_builtin_primitive_type_name :: #force_inline proc "contextless" (name: string) -> bool {
+	return builtin_type_name_in(BUILTIN_PRIMITIVE_TYPES, name)
+}
+
+is_generic_builtin_type_name :: #force_inline proc "contextless" (name: string) -> bool {
+	return builtin_type_name_in(BUILTIN_GENERIC_PRIMITIVE_TYPES, name)
+}
+
+is_generic_builtin_ref_type_name :: #force_inline proc "contextless" (name: string) -> bool {
+	return name == "data" || name == "object"
+}
+
+is_builtin_type_name :: #force_inline proc "contextless" (name: string) -> bool {
+	return is_builtin_primitive_type_name(name) ||
+	       is_generic_builtin_type_name(name) ||
+	       name == "any table"
+}
+
+builtin_type_name_in :: proc "contextless" (names: []string, name: string) -> bool {
+	for builtin in names {
+		if builtin == name {
+			return true
+		}
+	}
+	return false
 }
 
 BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
@@ -1426,7 +1459,10 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 	}
 
 	zero := tokenizer.text_range(0, 0)
-	for name in BUILTIN_SCALAR_TYPES {
+	for name in BUILTIN_PRIMITIVE_TYPES {
+		_ = declare_symbol(unit, root_scope, name, .Builtin_Type, zero)
+	}
+	for name in BUILTIN_GENERIC_PRIMITIVE_TYPES {
 		_ = declare_symbol(unit, root_scope, name, .Builtin_Type, zero)
 	}
 	for spec in BUILTIN_SYMBOLS {
