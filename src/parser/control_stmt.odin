@@ -736,6 +736,7 @@ parse_named_block_stmt :: proc(
 			stmt.flags += {.Abstract}
 		}
 		stmt.superclass_name, stmt.superclass_range = named_block_header_superclass(p, start_index, period_index)
+		stmt.friends = named_block_header_friends(p, start_index, period_index)
 	}
 	when intrinsics.type_has_field(T, "form_parameters") {
 		stmt.form_parameters = parse_form_header_parameters(p, start_index, period_index)
@@ -806,6 +807,40 @@ named_block_header_superclass :: proc(
 		}
 	}
 	return "", tokenizer.text_range(0, 0)
+}
+
+named_block_header_friends :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+) -> [dynamic]ast.Class_Friend_Clause {
+	friends := make([dynamic]ast.Class_Friend_Clause, 0, 1, p.allocator)
+	i := start_index
+	for i < period_index {
+		if !token_is_keyword(p, p.tokens[i], "FRIENDS") {
+			i += 1
+			continue
+		}
+		i += 1
+		for i < period_index {
+			tok := p.tokens[i]
+			if tok.kind == .Comma {
+				i += 1
+				continue
+			}
+			if tok.kind != .Ident && tok.kind != .Number {
+				break
+			}
+			append(
+				&friends,
+				ast.Class_Friend_Clause {
+					name = tokenizer.token_lexeme(tok, p.source),
+					range = tok.range,
+				},
+			)
+			i += 1
+		}
+	}
+	return friends
 }
 
 parse_form_header_parameters :: proc(

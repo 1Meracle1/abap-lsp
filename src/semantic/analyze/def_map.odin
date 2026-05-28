@@ -622,6 +622,12 @@ Class_Inheritance_Data :: struct {
 	superclass_name: string,
 }
 
+Class_Friend_Data :: struct {
+	class_symbol: Symbol_Id,
+	friend_name:  string,
+	range:        tokenizer.Range,
+}
+
 Class_Definition_Data :: struct {
 	class_symbol: Symbol_Id,
 	is_abstract:  bool,
@@ -1028,6 +1034,7 @@ Unit_Analysis :: struct {
 	class_members:                          [dynamic]Class_Member_Data,
 	class_definitions:                      [dynamic]Class_Definition_Data,
 	class_inheritance:                      [dynamic]Class_Inheritance_Data,
+	class_friends:                          [dynamic]Class_Friend_Data,
 	implemented_interfaces:                 [dynamic]Implemented_Interface_Data,
 	member_aliases:                         [dynamic]Member_Alias_Data,
 	form_routines:                          [dynamic]Form_Routine_Data,

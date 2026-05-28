@@ -1944,6 +1944,11 @@ Class_Decl_Flag :: enum {
 
 Class_Decl_Flags :: bit_set[Class_Decl_Flag]
 
+Class_Friend_Clause :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
 Class_Decl :: struct {
 	using node:        Stmt,
 	name:              string,
@@ -1953,6 +1958,7 @@ Class_Decl :: struct {
 	flags:             Class_Decl_Flags,
 	superclass_name:   string,
 	superclass_range:  tokenizer.Range,
+	friends:           [dynamic]Class_Friend_Clause,
 }
 
 Interface_Decl :: struct {

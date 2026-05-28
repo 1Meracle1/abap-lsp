@@ -38,6 +38,7 @@ Collector :: struct {
 	class_members:                          [dynamic]Class_Member_Data,
 	class_definitions:                      [dynamic]Class_Definition_Data,
 	class_inheritance:                      [dynamic]Class_Inheritance_Data,
+	class_friends:                          [dynamic]Class_Friend_Data,
 	implemented_interfaces:                 [dynamic]Implemented_Interface_Data,
 	member_aliases:                         [dynamic]Member_Alias_Data,
 	form_routines:                          [dynamic]Form_Routine_Data,
@@ -155,6 +156,7 @@ collect_unit :: proc(
 		class_members                          = unit.class_members,
 		class_definitions                      = unit.class_definitions,
 		class_inheritance                      = unit.class_inheritance,
+		class_friends                          = unit.class_friends,
 		implemented_interfaces                 = unit.implemented_interfaces,
 		member_aliases                         = unit.member_aliases,
 		form_routines                          = unit.form_routines,
@@ -222,6 +224,7 @@ finish_collector :: proc(c: ^Collector) -> Unit_Analysis {
 	c.unit.class_members = c.class_members
 	c.unit.class_definitions = c.class_definitions
 	c.unit.class_inheritance = c.class_inheritance
+	c.unit.class_friends = c.class_friends
 	c.unit.implemented_interfaces = c.implemented_interfaces
 	c.unit.member_aliases = c.member_aliases
 	c.unit.form_routines = c.form_routines
@@ -1935,6 +1938,18 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 	if !(.Implementation in stmt.flags) && !(.Bodyless in stmt.flags) && owner != INVALID_SYMBOL_ID {
 		c.forward_type_symbols[owner] = false
 		add_class_definition(c, owner, .Abstract in stmt.flags)
+		for friend in stmt.friends {
+			if friend.name != "" {
+				append(
+					&c.class_friends,
+					Class_Friend_Data {
+						class_symbol = owner,
+						friend_name = canonical_name(friend.name, c.allocator),
+						range = friend.range,
+					},
+				)
+			}
+		}
 		if stmt.superclass_name != "" {
 			superclass := canonical_name(stmt.superclass_name, c.allocator)
 			append(

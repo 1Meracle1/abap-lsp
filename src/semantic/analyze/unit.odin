@@ -33,6 +33,7 @@ unit_analysis_make :: proc(
 	unit.class_members = make([dynamic]Class_Member_Data, 0, 0, allocator)
 	unit.class_definitions = make([dynamic]Class_Definition_Data, 0, 0, allocator)
 	unit.class_inheritance = make([dynamic]Class_Inheritance_Data, 0, 0, allocator)
+	unit.class_friends = make([dynamic]Class_Friend_Data, 0, 0, allocator)
 	unit.implemented_interfaces = make([dynamic]Implemented_Interface_Data, 0, 0, allocator)
 	unit.member_aliases = make([dynamic]Member_Alias_Data, 0, 0, allocator)
 	unit.form_routines = make([dynamic]Form_Routine_Data, 0, 0, allocator)

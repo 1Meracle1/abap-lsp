@@ -663,6 +663,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Class_Decl:
 		r := clone_shallow(n, allocator)
 		r.body = clone_stmt_list(n.body, allocator)
+		r.friends = clone_class_friends(n.friends, allocator)
 		return r
 	case ^Interface_Decl:
 		r := clone_shallow(n, allocator)
@@ -924,6 +925,14 @@ clone_call_transformation_args :: proc(list: [dynamic]Call_Transformation_Arg, a
 		arg := x
 		arg.value = clone(x.value, allocator)
 		append(&res, arg)
+	}
+	return res
+}
+
+clone_class_friends :: proc(list: [dynamic]Class_Friend_Clause, allocator: mem.Allocator) -> [dynamic]Class_Friend_Clause {
+	res := make([dynamic]Class_Friend_Clause, 0, len(list), allocator)
+	for friend in list {
+		append(&res, friend)
 	}
 	return res
 }

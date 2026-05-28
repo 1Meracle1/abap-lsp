@@ -234,6 +234,28 @@ CLASS lcl_deferred DEFINITION DEFERRED.`
 }
 
 @(test)
+class_header_friends_are_ast_fields :: proc(t: ^testing.T) {
+	source := `CLASS lcl_target DEFINITION
+  CREATE PRIVATE
+  FRIENDS lcl_friend zcl_global.
+ENDCLASS.`
+	parsed := parse(source, "class_header_friends.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+
+	class := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	testing.expect_value(t, len(class.friends), 2)
+	testing.expect_value(t, class.friends[0].name, "lcl_friend")
+	testing.expect_value(t, class.friends[1].name, "zcl_global")
+	testing.expect_value(
+		t,
+		source[class.friends[0].range.start:class.friends[0].range.end],
+		"lcl_friend",
+	)
+}
+
+@(test)
 empty_control_flow_headers_report_specific_errors :: proc(t: ^testing.T) {
 	source := `IF . ENDIF.
 IF ok = abap_true. ELSEIF . ENDIF.

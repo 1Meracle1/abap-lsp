@@ -1160,7 +1160,7 @@ resolve_field_access_tail :: proc(
 		if !ok {
 			return {}, false
 		}
-		return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:])
+		return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:], unit_index, access.scope)
 	}
 	if access.base_name == "super" {
 		class_symbol, class_ok := enclosing_instance_method_class_owner_unit(
@@ -1178,7 +1178,7 @@ resolve_field_access_tail :: proc(
 		if !super_ok {
 			return {}, false
 		}
-		return type_fact_from_class_member_path(project, lookup, super_handle, access.field_path[:])
+		return type_fact_from_class_member_path(project, lookup, super_handle, access.field_path[:], unit_index, access.scope)
 	}
 	base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
 	if !ok {
@@ -1237,7 +1237,7 @@ resolve_field_access_tail :: proc(
 	if base_symbol.has_declared_type {
 		if class_handle, class_ok := class_handle_from_symbol(project, lookup, unit_index, base);
 		   class_ok {
-			return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:])
+			return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:], unit_index, access.scope)
 		}
 	}
 	return {}, false
@@ -1308,11 +1308,21 @@ type_fact_from_class_member_path :: proc(
 	lookup: ^Validation_Lookup,
 	class_handle: Symbol_Handle,
 	path: []Field_Access_Segment,
+	access_unit_index := -1,
+	access_scope := INVALID_SCOPE_ID,
 ) -> (Type_Fact_Data, bool) {
 	if len(path) == 0 {
 		return unknown_type_fact(), true
 	}
-	member, ok := class_member_in_hierarchy(project, lookup, class_handle, path[0].name, true)
+	member, ok := class_member_in_hierarchy(
+		project,
+		lookup,
+		class_handle,
+		path[0].name,
+		true,
+		access_unit_index,
+		access_scope,
+	)
 	if !ok {
 		if fact, builtin_ok := builtin_class_member_type_fact(project, class_handle, path[0].name);
 		   builtin_ok {
@@ -1358,9 +1368,12 @@ class_member_in_hierarchy :: proc(
 	class_handle: Symbol_Handle,
 	name: string,
 	inherited: bool,
+	access_unit_index := -1,
+	access_scope := INVALID_SCOPE_ID,
 ) -> (^Class_Member_Data, bool) {
 	if member := unit_class_member_lookup(project, lookup, class_handle, name); member != nil {
-		if inherited && member.visibility == .Private {
+		if inherited && member.visibility == .Private &&
+		   !class_private_member_visible(project, class_handle, access_unit_index, access_scope) {
 			return nil, false
 		}
 		return member, true
@@ -1372,7 +1385,48 @@ class_member_in_hierarchy :: proc(
 	if !ok {
 		return nil, false
 	}
-	return class_member_in_hierarchy(project, lookup, next, name, true)
+	return class_member_in_hierarchy(project, lookup, next, name, true, access_unit_index, access_scope)
+}
+
+class_private_member_visible :: proc(
+	project: ^Project_Analysis,
+	class_handle: Symbol_Handle,
+	access_unit_index: int,
+	access_scope: Scope_Id,
+) -> bool {
+	if access_unit_index < 0 || access_unit_index >= len(project.units) {
+		return false
+	}
+	access_unit := &project.units[access_unit_index]
+	caller_symbol, ok := enclosing_class_owner_unit(access_unit, access_scope)
+	if !ok {
+		return false
+	}
+	if access_unit.unit_id == class_handle.unit && caller_symbol == class_handle.symbol {
+		return true
+	}
+	caller := symbol(access_unit, caller_symbol)
+	if caller == nil {
+		return false
+	}
+	return class_has_friend(project, class_handle, caller.name)
+}
+
+class_has_friend :: proc(
+	project: ^Project_Analysis,
+	class_handle: Symbol_Handle,
+	friend_name: string,
+) -> bool {
+	unit_index := unit_id_index(class_handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return false
+	}
+	for friend in project.units[unit_index].class_friends {
+		if friend.class_symbol == class_handle.symbol && friend.friend_name == friend_name {
+			return true
+		}
+	}
+	return false
 }
 
 interface_member_in_class :: proc(

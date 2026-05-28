@@ -3705,6 +3705,51 @@ lv_size = cl_abap_char_utilities=>charsize.
 }
 
 @(test)
+friend_class_can_access_private_static_attribute :: proc(t: ^testing.T) {
+	allowed := collect_test_unit(
+		t,
+		"file:///friend_static_attribute.abap",
+		`
+CLASS lcl_target DEFINITION FRIENDS lcl_friend.
+  PRIVATE SECTION.
+    CLASS-DATA gv_value TYPE i.
+ENDCLASS.
+CLASS lcl_friend DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS lcl_friend IMPLEMENTATION.
+  METHOD run.
+    lcl_target=>gv_value = 1.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+	denied := collect_test_unit(
+		t,
+		"file:///non_friend_static_attribute.abap",
+		`
+CLASS lcl_target DEFINITION.
+  PRIVATE SECTION.
+    CLASS-DATA gv_value TYPE i.
+ENDCLASS.
+CLASS lcl_other DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS lcl_other IMPLEMENTATION.
+  METHOD run.
+    lcl_target=>gv_value = 1.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&allowed, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&denied, .Unknown_Field))
+}
+
+@(test)
 semantic_queries_find_symbols_references_sql_and_facts :: proc(t: ^testing.T) {
 	source := `DATA lv_value TYPE i.
 DATA lv_copy TYPE i.
