@@ -4351,6 +4351,87 @@ ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO FIELD-SYMBOL(<fs_raw>).
 }
 
 @(test)
+assign_dereferenced_data_reference_does_not_validate_star_field :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///assign_deref_data_ref.abap",
+		`
+DATA lr_data TYPE REF TO data.
+FIELD-SYMBOLS <fs> TYPE any.
+ASSIGN lr_data->* TO <fs>.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	deref_seen := false
+	for access in unit.field_accesses {
+		if access.base_name == "lr_data" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "*" &&
+		   access.field_path[0].deref {
+			deref_seen = true
+		}
+	}
+	testing.expect(t, deref_seen)
+}
+
+@(test)
+dereference_operator_requires_data_reference :: proc(t: ^testing.T) {
+	generic_any := collect_test_unit(
+		t,
+		"file:///assign_deref_generic_any.abap",
+		`
+FORM run USING iv_data TYPE any.
+  FIELD-SYMBOLS <fs> TYPE any.
+  ASSIGN iv_data->* TO <fs>.
+ENDFORM.
+`,
+	)
+	nested_type_ref := collect_test_unit(
+		t,
+		"file:///assign_deref_nested_type_ref.abap",
+		`
+INTERFACE lif_types.
+  TYPES: BEGIN OF ty_row,
+           name TYPE string,
+         END OF ty_row.
+ENDINTERFACE.
+DATA lr_row TYPE REF TO lif_types=>ty_row.
+FIELD-SYMBOLS <fs> TYPE any.
+ASSIGN lr_row->* TO <fs>.
+`,
+	)
+	non_ref := collect_test_unit(
+		t,
+		"file:///assign_deref_non_ref.abap",
+		`
+TYPES: BEGIN OF ty_row,
+         name TYPE string,
+       END OF ty_row.
+DATA ls_row TYPE ty_row.
+FIELD-SYMBOLS <fs> TYPE any.
+ASSIGN ls_row->* TO <fs>.
+`,
+	)
+	object_ref := collect_test_unit(
+		t,
+		"file:///assign_deref_object_ref.abap",
+		`
+CLASS lcl DEFINITION.
+ENDCLASS.
+DATA lo_obj TYPE REF TO lcl.
+FIELD-SYMBOLS <fs> TYPE any.
+ASSIGN lo_obj->* TO <fs>.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&generic_any, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&nested_type_ref, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&non_ref, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&object_ref, .Unknown_Field))
+}
+
+@(test)
 delete_adjacent_duplicates_comparing_uses_table_line_fields :: proc(t: ^testing.T) {
 	source := `
 CLASS lcl_table DEFINITION.

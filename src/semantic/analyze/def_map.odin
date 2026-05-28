@@ -415,6 +415,7 @@ Table_Work_Area_Data :: struct {
 Field_Access_Segment :: struct {
 	name:  string,
 	range: tokenizer.Range,
+	deref: bool,
 }
 
 Field_Access :: struct {

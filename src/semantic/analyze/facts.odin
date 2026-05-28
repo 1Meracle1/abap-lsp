@@ -313,7 +313,11 @@ selector_access_from_expr :: proc(
 	}
 	append(
 		&access.field_path,
-		Field_Access_Segment{name = canonical_name(name, c.allocator), range = range},
+		Field_Access_Segment {
+			name = canonical_name(name, c.allocator),
+			range = range,
+			deref = sel.op == .Arrow && name == "*",
+		},
 	)
 	return access, true
 }
@@ -795,6 +799,7 @@ collect_raw_operand_fact_refs :: proc(
 					Field_Access_Segment {
 						name = canonical_name(segment.name, c.allocator),
 						range = segment.range,
+						deref = segment.selector == .Arrow && segment.name == "*",
 					},
 				)
 			}

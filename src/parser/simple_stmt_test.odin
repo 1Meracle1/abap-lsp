@@ -1033,6 +1033,20 @@ DATA lv_typed TYPE sy-datum.`
 }
 
 @(test)
+raw_assign_deref_path_keeps_arrow_selector :: proc(t: ^testing.T) {
+	parsed := parse(`ASSIGN lr_data->* TO <fs>.`, "assign_deref.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Field_Stmt)
+	operand := assign.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, operand.raw_operand)
+	testing.expect_value(t, operand.raw_refs[0].name, "lr_data")
+	testing.expect_value(t, operand.raw_refs[0].path[0].name, "*")
+	testing.expect_value(t, operand.raw_refs[0].path[0].selector, ast.Selector_Op.Arrow)
+}
+
+@(test)
 memory_transfer_statements_model_entries :: proc(t: ^testing.T) {
 	source := `IMPORT variscreens = lt_variscreens FROM MEMORY ID '%_SCRNR_%'.
 EXPORT variscreens = lt_variscreens TO MEMORY ID '%_SCRNR_%'.`

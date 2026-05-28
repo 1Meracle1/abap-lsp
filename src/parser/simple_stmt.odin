@@ -677,6 +677,7 @@ raw_operand_selector_ref :: proc(
 			ast.Raw_Operand_Path_Segment {
 				name = tokenizer.token_lexeme(field, p.source),
 				range = field.range,
+				selector = selector_op(op.kind),
 			},
 		)
 		i += 2

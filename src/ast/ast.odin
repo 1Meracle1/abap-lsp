@@ -200,8 +200,9 @@ Raw_Operand_Inline_Decl :: struct {
 }
 
 Raw_Operand_Path_Segment :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name:     string,
+	range:    tokenizer.Range,
+	selector: Selector_Op,
 }
 
 Raw_Operand_Ref :: struct {

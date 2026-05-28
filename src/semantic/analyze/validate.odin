@@ -372,7 +372,7 @@ type_ref_is_object_ref :: proc(
 	if type_ref.base_name == "object" {
 		return true
 	}
-	handle, ok := resolve_type_ref_handle_project_lookup(project, lookup, unit_index, type_ref)
+	handle, ok := resolve_type_ref_leaf_handle_project_lookup(project, lookup, unit_index, type_ref)
 	if !ok {
 		return false
 	}
@@ -1189,8 +1189,50 @@ resolve_field_access_tail :: proc(
 	if base_symbol == nil {
 		return {}, false
 	}
+	if len(access.field_path) > 0 && access.field_path[0].deref {
+		if base_symbol.has_declared_type &&
+		   !base_symbol.declared_type.is_ref &&
+		   len(base_symbol.declared_type.field_path) == 0 &&
+		   base_symbol.declared_type.base_name != "object" &&
+		   is_generic_builtin_type_name(base_symbol.declared_type.base_name) {
+			return unknown_type_fact(), true
+		}
+		if !base_symbol.has_declared_type ||
+		   !base_symbol.declared_type.is_ref ||
+		   type_ref_is_object_ref(project, lookup, unit_index, base_symbol.declared_type) {
+			return {}, false
+		}
+		if len(access.field_path) == 1 {
+			fact := Type_Fact_Data {
+				structure = base_symbol.structure,
+				declared_type = base_symbol.declared_type,
+				has_declared_type = true,
+				type_clause_display = base_symbol.type_clause_display,
+			}
+			fact.declared_type.is_ref = false
+			return fact, true
+		}
+		if base_symbol.structure == INVALID_STRUCTURE_ID {
+			return unknown_type_fact(), true
+		}
+		return type_fact_from_structure_path(
+			project,
+			lookup,
+			unit_index,
+			base_unit,
+			base_symbol.structure,
+			access.field_path[1:],
+		)
+	}
 	if base_symbol.structure != INVALID_STRUCTURE_ID {
-		return type_fact_from_structure_path(project, base_unit, base_symbol.structure, access.field_path[:])
+		return type_fact_from_structure_path(
+			project,
+			lookup,
+			unit_index,
+			base_unit,
+			base_symbol.structure,
+			access.field_path[:],
+		)
 	}
 	if base_symbol.has_declared_type {
 		if class_handle, class_ok := class_handle_from_symbol(project, lookup, unit_index, base);
@@ -1203,6 +1245,8 @@ resolve_field_access_tail :: proc(
 
 type_fact_from_structure_path :: proc(
 	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
 	start_unit: ^Unit_Analysis,
 	start_structure: Structure_Id,
 	path: []Field_Access_Segment,
@@ -1210,7 +1254,32 @@ type_fact_from_structure_path :: proc(
 	current_unit := start_unit
 	current_structure := start_structure
 	fact := Type_Fact_Data{structure = current_structure}
+	unknown_after_deref := false
 	for segment in path {
+		if segment.deref {
+			if fact.has_declared_type &&
+			   !fact.declared_type.is_ref &&
+			   len(fact.declared_type.field_path) == 0 &&
+			   fact.declared_type.base_name != "object" &&
+			   is_generic_builtin_type_name(fact.declared_type.base_name) {
+				return unknown_type_fact(), true
+			}
+			if !fact.has_declared_type ||
+			   !fact.declared_type.is_ref ||
+			   type_ref_is_object_ref(project, lookup, unit_index, fact.declared_type) {
+				return {}, false
+			}
+			fact.declared_type.is_ref = false
+			current_structure = fact.structure
+			unknown_after_deref = current_structure == INVALID_STRUCTURE_ID
+			continue
+		}
+		if current_structure == INVALID_STRUCTURE_ID {
+			if unknown_after_deref {
+				return unknown_type_fact(), true
+			}
+			return {}, false
+		}
 		field := structure_field(current_unit, current_structure, segment.name)
 		if field == nil {
 			return {}, false
@@ -1221,6 +1290,8 @@ type_fact_from_structure_path :: proc(
 			has_declared_type = .Has_Type_Ref in field.flags,
 			type_clause_display = field.type_ref.base_name,
 		}
+		unknown_after_deref = false
+		current_structure = field.structure
 		if field.structure == INVALID_STRUCTURE_ID {
 			continue
 		}
@@ -1228,7 +1299,6 @@ type_fact_from_structure_path :: proc(
 		if next_unit_index >= 0 && next_unit_index < len(project.units) {
 			current_unit = &project.units[next_unit_index]
 		}
-		current_structure = field.structure
 	}
 	return fact, true
 }
@@ -1253,7 +1323,14 @@ type_fact_from_class_member_path :: proc(
 				return {}, false
 			}
 			member_unit := &project.units[unit_id_index(class_handle.unit)]
-			return type_fact_from_structure_path(project, member_unit, fact.structure, path[1:])
+			return type_fact_from_structure_path(
+				project,
+				lookup,
+				unit_id_index(class_handle.unit),
+				member_unit,
+				fact.structure,
+				path[1:],
+			)
 		}
 		return {}, false
 	}
@@ -1265,7 +1342,14 @@ type_fact_from_class_member_path :: proc(
 	if fact.structure == INVALID_STRUCTURE_ID {
 		return {}, false
 	}
-	return type_fact_from_structure_path(project, member_unit, fact.structure, path[1:])
+	return type_fact_from_structure_path(
+		project,
+		lookup,
+		unit_id_index(class_handle.unit),
+		member_unit,
+		fact.structure,
+		path[1:],
+	)
 }
 
 class_member_in_hierarchy :: proc(
