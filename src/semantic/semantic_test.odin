@@ -4188,6 +4188,50 @@ li_doc->get_root( ).
 }
 
 @(test)
+interface_inherited_methods_resolve_without_alias :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///interface_inherited_method.abap",
+		`
+INTERFACE if_node.
+  METHODS set_value IMPORTING value TYPE string.
+ENDINTERFACE.
+
+INTERFACE if_text.
+  INTERFACES if_node.
+ENDINTERFACE.
+
+DATA li_text TYPE REF TO if_text.
+li_text->set_value( value = 'x' ).
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+interface_qualified_instance_calls_do_not_treat_interface_as_field :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///interface_qualified_instance_call.abap",
+		`
+INTERFACE if_node.
+  METHODS set_value IMPORTING value TYPE string.
+ENDINTERFACE.
+
+INTERFACE if_attr.
+  INTERFACES if_node.
+ENDINTERFACE.
+
+DATA li_attr TYPE REF TO if_attr.
+li_attr->if_node~set_value( value = 'x' ).
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 call_transaction_collects_parser_operand_facts_without_keyword_refs :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

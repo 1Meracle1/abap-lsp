@@ -398,6 +398,18 @@ collect_call_method_selector_target_refs :: proc(
 	if !ok {
 		return false
 	}
+	if receiver, receiver_op, interface_name, interface_range, _, _, qualified :=
+		interface_qualified_method_parts(target);
+	   qualified {
+		if id, id_ok := receiver.derived_expr.(^ast.Ident_Expr);
+		   id_ok && receiver_op == .Fat_Arrow {
+			add_reference(c, scope, id.name, .Type, .Static_Target, id.range)
+		} else {
+			collect_expr_refs(c, receiver, scope)
+		}
+		add_reference(c, scope, interface_name, .Type, .Type_Ref, interface_range)
+		return true
+	}
 	if id, id_ok := sel.base.derived_expr.(^ast.Ident_Expr); id_ok {
 		namespace := Namespace.Value
 		kind := Reference_Kind.Identifier
@@ -427,6 +439,9 @@ call_target_from_callee :: proc(
 		}
 		return Named_Argument_Target{kind = .Implicit_Method, method_name = name, method_range = id.range}
 	}
+	if target, ok := interface_qualified_method_target_from_expr(c, callee, scope); ok {
+		return target
+	}
 	if access, ok := selector_access_from_expr(c, callee, scope, false); ok {
 		method_name := ""
 		method_range := tokenizer.Range{}
@@ -446,6 +461,60 @@ call_target_from_callee :: proc(
 		}
 	}
 	return Named_Argument_Target{}
+}
+
+interface_qualified_method_target_from_expr :: proc(
+	c: ^Collector,
+	expr: ^ast.Expr,
+	scope: Scope_Id,
+) -> (Named_Argument_Target, bool) {
+	receiver, receiver_op, _, _, method_name, method_range, ok :=
+		interface_qualified_method_parts(expr)
+	if !ok {
+		return {}, false
+	}
+	target := Named_Argument_Target {
+		kind = .Method,
+		method_name = canonical_name(method_name, c.allocator),
+		method_range = method_range,
+		interface_qualified = true,
+	}
+	if access, access_ok := selector_access_from_expr(c, receiver, scope, false); access_ok {
+		if len(access.field_path) == 0 && receiver_op == .Fat_Arrow {
+			access.base_namespace = .Type
+		}
+		target.base_namespace = access.base_namespace
+		target.base_name = access.base_name
+		target.receiver_path = access.field_path
+	}
+	return target, true
+}
+
+interface_qualified_method_parts :: proc(
+	expr: ^ast.Expr,
+) -> (
+	receiver: ^ast.Expr,
+	receiver_op: ast.Selector_Op,
+	interface_name: string,
+	interface_range: tokenizer.Range,
+	method_name: string,
+	method_range: tokenizer.Range,
+	ok: bool,
+) {
+	sel, sel_ok := expr.derived_expr.(^ast.Selector_Expr)
+	if !sel_ok || sel.op != .Tilde {
+		return
+	}
+	receiver_sel, receiver_ok := sel.base.derived_expr.(^ast.Selector_Expr)
+	if !receiver_ok || (receiver_sel.op != .Arrow && receiver_sel.op != .Fat_Arrow) {
+		return
+	}
+	iface_name, iface_range, interface_ok := expr_name(receiver_sel.field)
+	meth_name, meth_range, method_ok := expr_name(sel.field)
+	if !interface_ok || !method_ok {
+		return
+	}
+	return receiver_sel.base, receiver_sel.op, iface_name, iface_range, meth_name, meth_range, true
 }
 
 method_receiver_path :: proc(
@@ -1405,6 +1474,9 @@ call_stmt_method_target :: proc(
 			method_range = method_range,
 			interface_qualified = namespace == .Type,
 		}
+	}
+	if target, ok := interface_qualified_method_target_from_expr(c, stmt.target, scope); ok {
+		return target
 	}
 	if access, ok := selector_access_from_expr(c, stmt.target, scope, false);
 	   ok && len(access.field_path) > 0 {

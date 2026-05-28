@@ -1280,11 +1280,74 @@ interface_member_by_name :: proc(
 	if !ok {
 		return nil, false
 	}
-	member := unit_class_member_lookup(project, lookup, handle, member_name)
-	if member == nil {
+	return interface_member_by_handle(project, lookup, handle, member_name, 0)
+}
+
+interface_member_by_handle :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	member_name: string,
+	depth: int,
+) -> (^Class_Member_Data, bool) {
+	if depth > len(project.units) + 8 {
 		return nil, false
 	}
-	return member, true
+	if member := unit_class_member_lookup(project, lookup, handle, member_name); member != nil {
+		return member, true
+	}
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return nil, false
+	}
+	unit := &project.units[unit_index]
+	for alias in unit.member_aliases {
+		if alias.owner_symbol != handle.symbol || alias.alias_name != member_name {
+			continue
+		}
+		target, ok := resolve_type_name_in_project_lookup(
+			project,
+			lookup,
+			unit_index,
+			alias.target_interface_name,
+		)
+		if !ok {
+			continue
+		}
+		if aliased, aliased_ok := interface_member_by_handle(
+			project,
+			lookup,
+			target,
+			alias.target_member_name,
+			depth + 1,
+		); aliased_ok {
+			return aliased, true
+		}
+	}
+	for implemented in unit.implemented_interfaces {
+		if implemented.owner_symbol != handle.symbol {
+			continue
+		}
+		next, ok := resolve_type_name_in_project_lookup(
+			project,
+			lookup,
+			unit_index,
+			implemented.interface_name,
+		)
+		if !ok {
+			continue
+		}
+		if inherited, inherited_ok := interface_member_by_handle(
+			project,
+			lookup,
+			next,
+			member_name,
+			depth + 1,
+		); inherited_ok {
+			return inherited, true
+		}
+	}
+	return nil, false
 }
 
 resolve_type_name_in_project_lookup :: proc(
