@@ -454,6 +454,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk_expr_list(next, n.operands)
 	case ^Text_Transform_Stmt:
 		walk_expr_list(next, n.operands)
+	case ^Wait_Stmt:
+		walk(next, n.condition)
+		walk(next, n.duration)
 	case ^Convert_Time_Stamp_Stmt:
 		walk(next, n.time_stamp)
 		walk(next, n.time_zone)

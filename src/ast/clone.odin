@@ -577,6 +577,11 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Wait_Stmt:
+		r := clone_shallow(n, allocator)
+		r.condition = clone(n.condition, allocator)
+		r.duration = clone(n.duration, allocator)
+		return r
 	case ^Convert_Time_Stamp_Stmt:
 		r := clone_shallow(n, allocator)
 		r.time_stamp = clone(n.time_stamp, allocator)

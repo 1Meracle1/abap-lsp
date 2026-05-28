@@ -409,12 +409,31 @@ set_field lv_a lv_b.`
 	testing.expect_value(t, counts.field_groups, 1)
 	testing.expect_value(t, counts.insert_dummy, 1)
 	testing.expect_value(t, counts.field_stmt, 1)
-	testing.expect_value(t, counts.text_transform, 4)
+	testing.expect_value(t, counts.text_transform, 3)
+	testing.expect_value(t, counts.wait_stmt, 1)
 	testing.expect_value(t, counts.list_control, 6)
 	testing.expect_value(t, counts.assign_field, 1)
 	testing.expect_value(t, counts.create_object, 1)
 	testing.expect_value(t, counts.macro_def, 1)
 	testing.expect_value(t, counts.macro_call, 1)
+}
+
+@(test)
+wait_stmt_keeps_condition_and_duration :: proc(t: ^testing.T) {
+	source := `WAIT UP TO 1 SECONDS.
+WAIT UNTIL mv_free <> lv_free UP TO 120 SECONDS.`
+	parsed := parse(source, "wait_stmt.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.wait_stmt, 2)
+	wait_duration := parsed.root.stmts[0].derived_stmt.(^ast.Wait_Stmt)
+	wait_until := parsed.root.stmts[1].derived_stmt.(^ast.Wait_Stmt)
+	testing.expect(t, wait_duration.condition == nil)
+	testing.expect(t, wait_duration.duration != nil)
+	testing.expect(t, wait_until.condition != nil)
+	testing.expect(t, wait_until.duration != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
 }
 
 @(test)

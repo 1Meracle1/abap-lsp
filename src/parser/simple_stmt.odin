@@ -211,6 +211,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_keyword(p, "CONVERT") {
 		return parse_convert_stmt(p)
 	}
+	if at_keyword(p, "WAIT") {
+		return parse_wait_stmt(p)
+	}
 	if text_transform_stmt_starts(p) {
 		return parse_text_transform_stmt(p)
 	}
@@ -290,6 +293,25 @@ simple_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^as
 
 required_simple_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
 	expr := simple_expr(p, body_start, stop_keywords)
+	if expr == nil {
+		error_current(p, "syntax error: expected expression")
+	}
+	return expr
+}
+
+required_simple_logical_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
+	if simple_stmt_done(p, body_start) ||
+	   current_token(p).kind == .Comma ||
+	   current_token(p).kind == .Colon ||
+	   simple_current_keyword_in(p, stop_keywords) ||
+	   !expr_lead_token(current_token(p)) {
+		error_current(p, "syntax error: expected expression")
+		return nil
+	}
+	old_stops := p.expr_stop_keywords
+	p.expr_stop_keywords = stop_keywords
+	defer p.expr_stop_keywords = old_stops
+	expr := parse_logical_expr(p)
 	if expr == nil {
 		error_current(p, "syntax error: expected expression")
 	}
@@ -1662,8 +1684,7 @@ text_transform_stmt_starts :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "OVERLAY") ||
 		at_keyword(p, "PACK") ||
 		at_keyword(p, "UNPACK") ||
-		at_keyword(p, "CONVERT") ||
-		at_keyword(p, "WAIT") \
+		at_keyword(p, "CONVERT") \
 	)
 }
 
@@ -1679,10 +1700,24 @@ parse_text_transform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.kind = .Unpack
 	} else if token_is_keyword(p, start, "CONVERT") {
 		stmt.kind = .Convert
-	} else {
-		stmt.kind = .Wait
 	}
 	stmt.operands = parse_generic_simple_operands(p, body_start, []string{})
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
+parse_wait_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "WAIT")
+	body_start := p.index
+	stmt := ast.new(ast.Wait_Stmt, start.range, p.allocator)
+	if allow_keyword(p, "UNTIL") {
+		stmt.condition = required_simple_logical_expr(p, body_start, []string{"UP"})
+	}
+	if allow_keyword(p, "UP") {
+		expect_keyword(p, "TO")
+		stmt.duration = required_simple_expr(p, body_start, []string{"SECONDS"})
+		expect_keyword(p, "SECONDS")
+	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }

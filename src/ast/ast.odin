@@ -1655,14 +1655,20 @@ Text_Transform_Kind :: enum {
 	Pack,
 	Unpack,
 	Convert,
-	Wait,
 }
 
-// ABAP syntax: compact classic string/runtime statements such as `OVERLAY`, `PACK`, `UNPACK`, `CONVERT`, and `WAIT`.
+// ABAP syntax: compact classic string statements such as `OVERLAY`, `PACK`, `UNPACK`, and `CONVERT`.
 Text_Transform_Stmt :: struct {
 	using node: Stmt,
 	kind:       Text_Transform_Kind,
 	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: `WAIT [UNTIL cond] [UP TO n SECONDS].`
+Wait_Stmt :: struct {
+	using node: Stmt,
+	condition:  ^Expr,
+	duration:   ^Expr,
 }
 
 Convert_Time_Stamp_Kind :: enum {
@@ -2608,6 +2614,7 @@ Any_Node :: union {
 	^Create_Object_Stmt,
 	^Create_Data_Stmt,
 	^Text_Transform_Stmt,
+	^Wait_Stmt,
 	^Convert_Time_Stamp_Stmt,
 	^List_Control_Stmt,
 	^Line_Stmt,
@@ -2768,6 +2775,7 @@ Any_Stmt :: union {
 	^Create_Object_Stmt,
 	^Create_Data_Stmt,
 	^Text_Transform_Stmt,
+	^Wait_Stmt,
 	^Convert_Time_Stamp_Stmt,
 	^List_Control_Stmt,
 	^Line_Stmt,

@@ -463,6 +463,18 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit_expr_list(p, n.operands, " ")
 		}
 		emit(p, ".")
+	case ^Wait_Stmt:
+		emit(p, "WAIT")
+		if n.condition != nil {
+			emit(p, " UNTIL ")
+			emit_node(p, n.condition)
+		}
+		if n.duration != nil {
+			emit(p, " UP TO ")
+			emit_node(p, n.duration)
+			emit(p, " SECONDS")
+		}
+		emit(p, ".")
 	case ^Convert_Time_Stamp_Stmt:
 		emit_convert_time_stamp_stmt(p, n)
 	case ^List_Control_Stmt:
@@ -3219,7 +3231,6 @@ text_transform_kind_text :: proc(kind: Text_Transform_Kind) -> string {
 	case .Pack: return "PACK"
 	case .Unpack: return "UNPACK"
 	case .Convert: return "CONVERT"
-	case .Wait: return "WAIT"
 	}
 	return "?"
 }
