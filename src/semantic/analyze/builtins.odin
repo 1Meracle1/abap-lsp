@@ -569,6 +569,13 @@ DEC_FLOAT_ROUNDING_PARAMS :: []Builtin_Routine_Param_Spec {
 	{"prec", "i"},
 	{"mode", "data"},
 }
+SUBSTRING_MATCH_PARAMS :: []Builtin_Routine_Param_Spec {
+	{"val", "string"},
+	{"sub", "string"},
+	{"regex", "string"},
+	{"occ", "i"},
+	{"case", "abap_bool"},
+}
 
 BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	{
@@ -585,28 +592,160 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 		description = "Predicate function: returns whether a row exists for the given internal table expression.",
 		supports_named_arguments = false,
 	},
-	{name = "abs", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Absolute value of `arg`.", supports_named_arguments = false},
-	{name = "sign", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Sign of `arg`: -1, 0, or 1.", supports_named_arguments = false},
-	{name = "ceil", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Smallest integer not less than `arg`.", supports_named_arguments = false},
-	{name = "floor", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Largest integer not greater than `arg`.", supports_named_arguments = false},
-	{name = "trunc", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Integer part of `arg`.", supports_named_arguments = false},
-	{name = "frac", params = NUMERIC_ARG_PARAMS, return_type = "data", description = "Decimal part of `arg`.", supports_named_arguments = false},
-	{name = "ipow", params = IPOW_PARAMS, return_type = "data", description = "Integer power: `base` raised to `exp`.", supports_named_arguments = true},
-	{name = "nmax", params = EXTREMUM_PARAMS, return_type = "data", description = "Largest numeric argument.", supports_named_arguments = true},
-	{name = "nmin", params = EXTREMUM_PARAMS, return_type = "data", description = "Smallest numeric argument.", supports_named_arguments = true},
-	{name = "acos", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Arccosine of `arg`.", supports_named_arguments = false},
-	{name = "asin", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Arcsine of `arg`.", supports_named_arguments = false},
-	{name = "atan", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Arctangent of `arg`.", supports_named_arguments = false},
-	{name = "cos", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Cosine of `arg`.", supports_named_arguments = false},
-	{name = "sin", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Sine of `arg`.", supports_named_arguments = false},
-	{name = "tan", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Tangent of `arg`.", supports_named_arguments = false},
-	{name = "cosh", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Hyperbolic cosine of `arg`.", supports_named_arguments = false},
-	{name = "sinh", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Hyperbolic sine of `arg`.", supports_named_arguments = false},
-	{name = "tanh", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Hyperbolic tangent of `arg`.", supports_named_arguments = false},
-	{name = "exp", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Exponential function for base e.", supports_named_arguments = false},
-	{name = "log", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Natural logarithm of `arg`.", supports_named_arguments = false},
-	{name = "log10", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Logarithm of `arg` to base 10.", supports_named_arguments = false},
-	{name = "sqrt", params = FLOAT_ARG_PARAMS, return_type = "f", description = "Square root of `arg`.", supports_named_arguments = false},
+	{
+		name = "abs",
+		params = NUMERIC_ARG_PARAMS,
+		return_type = "data",
+		description = "Absolute value of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "sign",
+		params = NUMERIC_ARG_PARAMS,
+		return_type = "data",
+		description = "Sign of `arg`: -1, 0, or 1.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "ceil",
+		params = NUMERIC_ARG_PARAMS,
+		return_type = "data",
+		description = "Smallest integer not less than `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "floor",
+		params = NUMERIC_ARG_PARAMS,
+		return_type = "data",
+		description = "Largest integer not greater than `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "trunc",
+		params = NUMERIC_ARG_PARAMS,
+		return_type = "data",
+		description = "Integer part of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "frac",
+		params = NUMERIC_ARG_PARAMS,
+		return_type = "data",
+		description = "Decimal part of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "ipow",
+		params = IPOW_PARAMS,
+		return_type = "data",
+		description = "Integer power: `base` raised to `exp`.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "nmax",
+		params = EXTREMUM_PARAMS,
+		return_type = "data",
+		description = "Largest numeric argument.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "nmin",
+		params = EXTREMUM_PARAMS,
+		return_type = "data",
+		description = "Smallest numeric argument.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "acos",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Arccosine of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "asin",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Arcsine of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "atan",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Arctangent of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "cos",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Cosine of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "sin",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Sine of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "tan",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Tangent of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "cosh",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Hyperbolic cosine of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "sinh",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Hyperbolic sine of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "tanh",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Hyperbolic tangent of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "exp",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Exponential function for base e.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "log",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Natural logarithm of `arg`.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "log10",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Logarithm of `arg` to base 10.",
+		supports_named_arguments = false,
+	},
+	{
+		name = "sqrt",
+		params = FLOAT_ARG_PARAMS,
+		return_type = "f",
+		description = "Square root of `arg`.",
+		supports_named_arguments = false,
+	},
 	{
 		name = "charlen",
 		params = []Builtin_Routine_Param_Spec{{"arg", "string"}, {"text", "string"}},
@@ -643,6 +782,32 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 		supports_named_arguments = true,
 	},
 	{
+		name = "substring_before",
+		params = SUBSTRING_MATCH_PARAMS,
+		return_type = "string",
+		description = "Returns the text before a substring or regular-expression match.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "substring_after",
+		params = SUBSTRING_MATCH_PARAMS,
+		return_type = "string",
+		description = "Returns the text after a substring or regular-expression match.",
+		supports_named_arguments = true,
+	},
+	{
+		name = "shift_left",
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"places", "i"},
+			{"circular", "abap_bool"},
+			{"sub", "string"},
+		},
+		return_type = "string",
+		description = "Returns a text value shifted left.",
+		supports_named_arguments = true,
+	},
+	{
 		name = "condense",
 		params = []Builtin_Routine_Param_Spec {
 			{"val", "string"},
@@ -670,14 +835,24 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	},
 	{
 		name = "matches",
-		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"regex", "string"}, {"case", "abap_bool"}},
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"regex", "string"},
+			{"case", "abap_bool"},
+		},
 		return_type = "abap_bool",
 		description = "Predicate function: returns whether a text value matches a regular expression.",
 		supports_named_arguments = true,
 	},
 	{
 		name = "find",
-		params = []Builtin_Routine_Param_Spec{{"val", "string"}, {"sub", "string"}, {"regex", "string"}, {"occ", "i"}, {"case", "abap_bool"}},
+		params = []Builtin_Routine_Param_Spec {
+			{"val", "string"},
+			{"sub", "string"},
+			{"regex", "string"},
+			{"occ", "i"},
+			{"case", "abap_bool"},
+		},
 		return_type = "i",
 		description = "Returns the offset of a substring or regular-expression match in a text value.",
 		supports_named_arguments = true,
@@ -867,7 +1042,12 @@ builtin_structure_field_description :: proc(structure_name, field_name: string) 
 	return ""
 }
 
-builtin_class_attribute_type_fact :: proc(class_name, attribute_name: string) -> (Type_Fact_Data, bool) {
+builtin_class_attribute_type_fact :: proc(
+	class_name, attribute_name: string,
+) -> (
+	Type_Fact_Data,
+	bool,
+) {
 	for attribute in BUILTIN_CLASS_ATTRIBUTES {
 		if strings.equal_fold(attribute.class_name, class_name) &&
 		   strings.equal_fold(attribute.name, attribute_name) {
