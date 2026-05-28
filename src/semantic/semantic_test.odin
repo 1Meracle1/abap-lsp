@@ -802,6 +802,50 @@ structure_field_lookup_for_syst_and_screen :: proc(t: ^testing.T) {
 	testing.expect_value(t, screen_name.description, "Name of the current dynpro field or screen element.")
 }
 
+@(test)
+transformation_bind_table_line_fields_are_validated :: proc(t: ^testing.T) {
+	valid := collect_test_unit(
+		t,
+		"file:///transformation_bind_valid.abap",
+		`
+DATA lt_source TYPE abap_trans_srcbind_tab.
+DATA lt_result TYPE abap_trans_resbind_tab.
+FIELD-SYMBOLS <ls_source> LIKE LINE OF lt_source.
+FIELD-SYMBOLS <ls_result> LIKE LINE OF lt_result.
+APPEND INITIAL LINE TO lt_source ASSIGNING <ls_source>.
+APPEND INITIAL LINE TO lt_result ASSIGNING <ls_result>.
+<ls_source>-name = 'ROOT'.
+GET REFERENCE OF lt_source INTO <ls_source>-value.
+<ls_result>-name = 'ROOT'.
+GET REFERENCE OF lt_result INTO <ls_result>-value.
+`,
+	)
+	invalid := collect_test_unit(
+		t,
+		"file:///transformation_bind_invalid.abap",
+		`
+DATA lt_result TYPE abap_trans_resbind_tab.
+FIELD-SYMBOLS <ls_result> LIKE LINE OF lt_result.
+<ls_result>-missing = 'ROOT'.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&valid, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid, .Unknown_Field))
+	srcbind := analyze.find_structure(&valid, "abap_trans_srcbind")
+	resbind := analyze.find_structure(&valid, "abap_trans_resbind")
+	testing.expect(t, srcbind != nil)
+	testing.expect(t, resbind != nil)
+	if srcbind != nil {
+		value, ok := analyze.structure_field_info(&valid, srcbind.id, "value")
+		testing.expect(t, ok && value.type_ref.is_ref)
+	}
+	if resbind != nil {
+		value, ok := analyze.structure_field_info(&valid, resbind.id, "value")
+		testing.expect(t, ok && value.type_ref.is_ref)
+	}
+}
+
 collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> analyze.Unit_Analysis {
 	parsed := parser.parse(source, uri, context.allocator)
 	testing.expect_value(t, len(parsed.errors), 0)

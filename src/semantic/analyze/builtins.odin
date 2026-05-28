@@ -15,6 +15,7 @@ Builtin_Field_Spec :: struct {
 	name:           string,
 	type_name:      string,
 	structure_name: string,
+	is_ref:         bool,
 	description:    string,
 }
 
@@ -467,6 +468,20 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 			},
 		},
 	},
+	{
+		name = "abap_trans_srcbind",
+		fields = []Builtin_Field_Spec {
+			{name = "name", type_name = "abap_trans_srcname"},
+			{name = "value", type_name = "data", is_ref = true},
+		},
+	},
+	{
+		name = "abap_trans_resbind",
+		fields = []Builtin_Field_Spec {
+			{name = "name", type_name = "abap_trans_resname"},
+			{name = "value", type_name = "data", is_ref = true},
+		},
+	},
 }
 
 BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
@@ -530,8 +545,8 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "abap_func_excpbind_tab", kind = .Type, structure_name = ""},
 	{name = "abap_func_parmbind", kind = .Type, structure_name = ""},
 	{name = "abap_func_excpbind", kind = .Type, structure_name = ""},
-	{name = "abap_trans_srcbind_tab", kind = .Type, structure_name = ""},
-	{name = "abap_trans_resbind_tab", kind = .Type, structure_name = ""},
+	{name = "abap_trans_srcbind_tab", kind = .Type, structure_name = "abap_trans_srcbind"},
+	{name = "abap_trans_resbind_tab", kind = .Type, structure_name = "abap_trans_resbind"},
 	{name = "abap_componentdescr", kind = .Type, structure_name = ""},
 	{name = "abap_simple_componentdescr", kind = .Type, structure_name = ""},
 	{name = "abap_abstypename", kind = .Type, structure_name = ""},
@@ -596,11 +611,11 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "abap_trans_objbind", kind = .Type, structure_name = ""},
 	{name = "abap_trans_objbind_tab", kind = .Type, structure_name = ""},
 	{name = "abap_trans_srcname", kind = .Type, structure_name = ""},
-	{name = "abap_trans_srcbind", kind = .Type, structure_name = ""},
-	{name = "abap_trans_srcbind_tab_sorted", kind = .Type, structure_name = ""},
+	{name = "abap_trans_srcbind", kind = .Type, structure_name = "abap_trans_srcbind"},
+	{name = "abap_trans_srcbind_tab_sorted", kind = .Type, structure_name = "abap_trans_srcbind"},
 	{name = "abap_trans_resname", kind = .Type, structure_name = ""},
-	{name = "abap_trans_resbind", kind = .Type, structure_name = ""},
-	{name = "abap_trans_resbind_tab_sorted", kind = .Type, structure_name = ""},
+	{name = "abap_trans_resbind", kind = .Type, structure_name = "abap_trans_resbind"},
+	{name = "abap_trans_resbind_tab_sorted", kind = .Type, structure_name = "abap_trans_resbind"},
 	{name = "abap_true", kind = .Constant, type_name = "abap_bool", value_clause_display = "'X'"},
 	{name = "abap_false", kind = .Constant, type_name = "abap_bool", value_clause_display = "' '"},
 	{
@@ -1447,13 +1462,15 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 			if field.type_name != "" {
 				flags += {.Has_Type_Ref}
 			}
+			type_ref := builtin_type_ref(field.type_name)
+			type_ref.is_ref = field.is_ref
 			append(
 				&fields,
 				Structure_Field_Data {
 					name = field.name,
 					decl_unit = unit.unit_id,
 					structure = nested,
-					type_ref = builtin_type_ref(field.type_name),
+					type_ref = type_ref,
 					description = field.description,
 					flags = flags,
 				},
