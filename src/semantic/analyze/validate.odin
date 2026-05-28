@@ -771,6 +771,10 @@ value_handle_for_name :: proc(
 	if handle, ok := value_alias_handle_for_name(project, lookup, unit_index, scope_id, name); ok {
 		return handle, true
 	}
+	if handle, ok := inherited_value_handle_for_name(project, lookup, unit_index, scope_id, name);
+	   ok {
+		return handle, true
+	}
 	if handle, ok := inherited_value_alias_handle_for_name(project, lookup, unit_index, scope_id, name);
 	   ok {
 		return handle, true
@@ -792,6 +796,43 @@ current_class_value_symbol :: proc(
 		return INVALID_SYMBOL_ID, false
 	}
 	return class_scope_symbol(&project.units[unit_index].scope_index, class_symbol, .Value, name)
+}
+
+inherited_value_handle_for_name :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	scope_id: Scope_Id,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], scope_id)
+	if !ok {
+		return {}, false
+	}
+	current := Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol}
+	for _ in 0 ..< len(project.units) + 8 {
+		next, next_ok := direct_superclass_handle_lookup(project, lookup, current)
+		if !next_ok {
+			return {}, false
+		}
+		next_unit_index := unit_id_index(next.unit)
+		if next_unit_index < 0 || next_unit_index >= len(project.units) {
+			return {}, false
+		}
+		member := unit_class_member_lookup(project, lookup, next, name)
+		if member != nil && member.kind == .Attribute && member.visibility != .Private {
+			if symbol_id, symbol_ok := class_scope_symbol(
+				&project.units[next_unit_index].scope_index,
+				next.symbol,
+				.Value,
+				name,
+			); symbol_ok {
+				return Symbol_Handle{unit = next.unit, symbol = symbol_id}, true
+			}
+		}
+		current = next
+	}
+	return {}, false
 }
 
 value_alias_handle_for_name :: proc(

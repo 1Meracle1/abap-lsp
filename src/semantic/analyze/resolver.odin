@@ -1509,6 +1509,22 @@ import_project_structures_for_unit :: proc(
 			}
 		}
 	}
+	sync_class_member_structures_for_unit(&units[unit_index])
+}
+
+sync_class_member_structures_for_unit :: proc(unit: ^Unit_Analysis) {
+	for &member in unit.class_members {
+		if member.kind != .Attribute {
+			continue
+		}
+		symbol_id, ok := class_scope_symbol(&unit.scope_index, member.class_symbol, .Value, member.name)
+		if !ok {
+			continue
+		}
+		if s := symbol(unit, symbol_id); s != nil {
+			member.structure = s.structure
+		}
+	}
 }
 
 import_structure_for_type_ref :: proc(
@@ -1604,7 +1620,43 @@ local_structure_for_type_ref :: proc(
 			}
 		}
 	}
+	if type_ref.namespace == .Value {
+		if symbol_id, symbol_ok := inherited_class_attribute_symbol_for_type_ref(
+			unit,
+			scope_id,
+			type_ref.base_name,
+		); symbol_ok {
+			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])
+		}
+	}
 	return INVALID_STRUCTURE_ID, false
+}
+
+inherited_class_attribute_symbol_for_type_ref :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	name: string,
+) -> (Symbol_Id, bool) {
+	current_class, ok := enclosing_class_owner_unit(unit, scope_id)
+	if !ok {
+		return INVALID_SYMBOL_ID, false
+	}
+	for _ in 0 ..= len(unit.class_inheritance) {
+		super_name, has_super := class_superclass_name(unit, current_class)
+		if !has_super {
+			return INVALID_SYMBOL_ID, false
+		}
+		super_symbol, super_ok := lookup_scope_chain(unit, &unit.scope_index, scope_id, .Type, super_name)
+		if !super_ok {
+			return INVALID_SYMBOL_ID, false
+		}
+		member := unit_class_member(unit, super_symbol, name)
+		if member != nil && member.kind == .Attribute && member.visibility != .Private {
+			return class_scope_symbol(&unit.scope_index, super_symbol, .Value, name)
+		}
+		current_class = super_symbol
+	}
+	return INVALID_SYMBOL_ID, false
 }
 
 local_structure_for_symbol_path :: proc(

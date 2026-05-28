@@ -2280,6 +2280,49 @@ ls_repo-url = 'https://example.invalid'.
 }
 
 @(test)
+inherited_structured_attribute_resolves_in_method_body :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///inherited_structured_attribute.abap",
+		source = `
+INTERFACE lif_defs.
+  TYPES: BEGIN OF ty_sig,
+           obj_name TYPE string,
+         END OF ty_sig.
+  TYPES: BEGIN OF ty_item.
+      INCLUDE TYPE ty_sig.
+  TYPES: END OF ty_item.
+ENDINTERFACE.
+
+CLASS lcl_parent DEFINITION.
+  PROTECTED SECTION.
+    DATA ms_item TYPE lif_defs=>ty_item.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD run.
+    DATA ls_item LIKE ms_item.
+    DATA lv_name TYPE string.
+    ls_item-obj_name = ms_item-obj_name.
+    me->ms_item-obj_name = lv_name.
+    lv_name = ms_item-obj_name.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+
+	project := analyze_project_test(t, 0, target, nil)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 selection_ranges_collect_range_structure :: proc(t: ^testing.T) {
 	source := `
 TYPES zattp_gln TYPE string.
