@@ -456,6 +456,10 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.operands = clone_write_operands(n.operands, allocator)
 		return r
+	case ^Write_To_Stmt:
+		r := clone_shallow(n, allocator)
+		r.entries = clone_write_to_entries(n.entries, allocator)
+		return r
 	case ^Assert_Stmt:
 		r := clone_shallow(n, allocator)
 		r.condition = clone(n.condition, allocator)
@@ -1331,6 +1335,17 @@ clone_write_operands :: proc(list: [dynamic]Write_Operand_Clause, allocator: mem
 			line_break = clause.line_break,
 			position   = clone(clause.position, allocator),
 			length     = clone(clause.length, allocator),
+		})
+	}
+	return res
+}
+
+clone_write_to_entries :: proc(list: [dynamic]Write_To_Entry_Clause, allocator: mem.Allocator) -> [dynamic]Write_To_Entry_Clause {
+	res := make([dynamic]Write_To_Entry_Clause, 0, len(list), allocator)
+	for entry in list {
+		append(&res, Write_To_Entry_Clause {
+			source = clone(entry.source, allocator),
+			target = clone(entry.target, allocator),
 		})
 	}
 	return res

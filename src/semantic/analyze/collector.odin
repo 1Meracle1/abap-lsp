@@ -637,6 +637,8 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		collect_message_stmt_facts(c, n, scope)
 	case ^ast.Write_Stmt:
 		collect_write_stmt_facts(c, n, scope)
+	case ^ast.Write_To_Stmt:
+		collect_write_to_stmt_facts(c, n, scope)
 	case ^ast.Assert_Stmt:
 		collect_expr_refs(c, n.condition, scope)
 	case ^ast.Check_Stmt:

@@ -249,6 +249,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.message += 1
 	case ^ast.Write_Stmt:
 		counts.write += 1
+	case ^ast.Write_To_Stmt:
+		counts.write += 1
 	case ^ast.Assert_Stmt:
 		counts.assert_stmt += 1
 	case ^ast.Check_Stmt:

@@ -363,6 +363,11 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk(next, clause.position)
 			walk(next, clause.length)
 		}
+	case ^Write_To_Stmt:
+		for entry in n.entries {
+			walk(next, entry.source)
+			walk(next, entry.target)
+		}
 	case ^Assert_Stmt:
 		walk(next, n.condition)
 	case ^Check_Stmt:

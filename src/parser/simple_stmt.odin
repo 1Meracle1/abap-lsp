@@ -3814,8 +3814,8 @@ parse_message_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_write_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "WRITE")
 	body_start := p.index
-	stmt := ast.new(ast.Write_Stmt, start.range, p.allocator)
-	stmt.operands = make([dynamic]ast.Write_Operand_Clause, 0, 2, p.allocator)
+	operands := make([dynamic]ast.Write_Operand_Clause, 0, 2, p.allocator)
+	entries := make([dynamic]ast.Write_To_Entry_Clause, 0, 2, p.allocator)
 	allow_token(p, .Colon)
 	for !simple_stmt_done(p, body_start) {
 		if allow_token(p, .Comma) {
@@ -3840,16 +3840,30 @@ parse_write_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			}
 		}
 		clause.value = simple_expr(p, body_start, []string{})
+		if allow_keyword(p, "TO") {
+			append(&entries, ast.Write_To_Entry_Clause {
+				source = clause.value,
+				target = required_simple_expr(p, body_start, []string{}),
+			})
+			continue
+		}
 		if clause.value != nil ||
 		   clause.line_break ||
 		   clause.position != nil ||
 		   clause.length != nil {
-			append(&stmt.operands, clause)
+			append(&operands, clause)
 		} else {
 			bump_token(p)
 		}
 	}
-	stmt.range = simple_stmt_range(p, start)
+	stmt_range := simple_stmt_range(p, start)
+	if len(entries) > 0 {
+		stmt := ast.new(ast.Write_To_Stmt, stmt_range, p.allocator)
+		stmt.entries = entries
+		return stmt
+	}
+	stmt := ast.new(ast.Write_Stmt, stmt_range, p.allocator)
+	stmt.operands = operands
 	return stmt
 }
 

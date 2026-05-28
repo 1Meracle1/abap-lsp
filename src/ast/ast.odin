@@ -1341,7 +1341,7 @@ Message_Stmt :: struct {
 	raising:      ^Expr,
 }
 
-// ABAP syntax: one WRITE operand, for example `/ value`, `AT pos(len)`, or `value`.
+// ABAP syntax: one report-list WRITE operand, for example `/ value`, `AT pos(len)`, or `value`.
 Write_Operand_Clause :: struct {
 	value:      ^Expr,
 	line_break: bool,
@@ -1353,6 +1353,18 @@ Write_Operand_Clause :: struct {
 Write_Stmt :: struct {
 	using node: Stmt,
 	operands:   [dynamic]Write_Operand_Clause,
+}
+
+// ABAP syntax: one `WRITE source TO target` conversion entry.
+Write_To_Entry_Clause :: struct {
+	source: ^Expr,
+	target: ^Expr,
+}
+
+// ABAP syntax: `WRITE source TO target.`
+Write_To_Stmt :: struct {
+	using node: Stmt,
+	entries:    [dynamic]Write_To_Entry_Clause,
 }
 
 // ABAP syntax: `ASSERT condition.`
@@ -2544,6 +2556,7 @@ Any_Node :: union {
 	^Submit_Stmt,
 	^Message_Stmt,
 	^Write_Stmt,
+	^Write_To_Stmt,
 	^Assert_Stmt,
 	^Check_Stmt,
 	^Flow_Stmt,
@@ -2702,6 +2715,7 @@ Any_Stmt :: union {
 	^Submit_Stmt,
 	^Message_Stmt,
 	^Write_Stmt,
+	^Write_To_Stmt,
 	^Assert_Stmt,
 	^Check_Stmt,
 	^Flow_Stmt,

@@ -3310,6 +3310,26 @@ ENDFORM.
 }
 
 @(test)
+collects_write_to_target_without_keyword_reference :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///write_to.abap",
+		`
+FORM run.
+  DATA lv_date TYPE d.
+  DATA lv_date_string TYPE string.
+  WRITE lv_date TO lv_date_string.
+ENDFORM.
+`,
+	)
+
+	testing.expect_value(t, reference_count(&unit, "lv_date", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lv_date_string", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "to", .Value, .Identifier), 0)
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 collects_at_group_kinds_fields_and_loop_contexts :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

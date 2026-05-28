@@ -352,6 +352,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_message_stmt(p, n)
 	case ^Write_Stmt:
 		emit_write_stmt(p, n)
+	case ^Write_To_Stmt:
+		emit_write_to_stmt(p, n)
 	case ^Assert_Stmt:
 		emit(p, "ASSERT ")
 		emit_node(p, n.condition)
@@ -1902,6 +1904,22 @@ emit_write_stmt :: proc(p: ^Printer, stmt: ^Write_Stmt) {
 			}
 			emit_node(p, clause.value)
 		}
+	}
+	emit(p, ".")
+}
+
+emit_write_to_stmt :: proc(p: ^Printer, stmt: ^Write_To_Stmt) {
+	emit(p, "WRITE")
+	if len(stmt.entries) > 0 {
+		emit_space(p)
+	}
+	for entry, i in stmt.entries {
+		if i > 0 {
+			emit_space(p)
+		}
+		emit_node(p, entry.source)
+		emit(p, " TO ")
+		emit_node(p, entry.target)
 	}
 	emit(p, ".")
 }

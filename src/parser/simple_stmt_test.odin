@@ -273,6 +273,28 @@ WRITE /10(5) text.`
 }
 
 @(test)
+write_to_operands_keep_targets :: proc(t: ^testing.T) {
+	source := `WRITE: lv_date TO lv_date_string,
+       lv_time TO lv_time_string.`
+	parsed := parse(source, "write_to.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	write := parsed.root.stmts[0].derived_stmt.(^ast.Write_To_Stmt)
+	testing.expect_value(t, len(write.entries), 2)
+	testing.expect(t, write.entries[0].source != nil)
+	testing.expect(t, write.entries[0].target != nil)
+	testing.expect(t, write.entries[1].source != nil)
+	testing.expect(t, write.entries[1].target != nil)
+	first_target := write.entries[0].target.derived_expr.(^ast.Ident_Expr)
+	second_target := write.entries[1].target.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, first_target.name, "lv_date_string")
+	testing.expect_value(t, second_target.name, "lv_time_string")
+
+	single := parse(`WRITE lv_date TO lv_date_string.`, "write_to_print.abap", context.allocator)
+	testing.expect_value(t, ast.print_node(single.root.stmts[0], context.allocator), "WRITE lv_date TO lv_date_string.")
+}
+
+@(test)
 string_statement_parser_facts_keep_modes :: proc(t: ^testing.T) {
 	source := `CONCATENATE LINES OF lt_source INTO lv_text IN BYTE MODE.
 FIND ALL OCCURRENCES OF 'A' IN lv_text RESULTS lv_result.`

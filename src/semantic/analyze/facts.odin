@@ -1574,6 +1574,13 @@ collect_write_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Write_Stmt, scope: Sc
 	}
 }
 
+collect_write_to_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Write_To_Stmt, scope: Scope_Id) {
+	for entry in stmt.entries {
+		collect_expr_refs(c, entry.source, scope)
+		collect_write_target_expr(c, scope, stmt.range, entry.target, expr_range(entry.source))
+	}
+}
+
 collect_flow_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Flow_Stmt, scope: Scope_Id) {
 	kind := Routine_Site_Kind.Return
 	#partial switch stmt.kind {

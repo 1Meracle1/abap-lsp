@@ -673,6 +673,8 @@ node_type_name :: proc(node: ^ast.Node) -> string {
 		return "Message_Stmt"
 	case ^ast.Write_Stmt:
 		return "Write_Stmt"
+	case ^ast.Write_To_Stmt:
+		return "Write_To_Stmt"
 	case ^ast.Assert_Stmt:
 		return "Assert_Stmt"
 	case ^ast.Check_Stmt:
