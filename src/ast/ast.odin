@@ -1452,6 +1452,21 @@ Runtime_Stmt :: struct {
 	operands:   [dynamic]^Expr,
 }
 
+Bit_Kind :: enum {
+	Get,
+	Set,
+}
+
+// ABAP syntax: `GET BIT bit OF source INTO target.` or `SET BIT bit OF target TO value.`
+Bit_Stmt :: struct {
+	using node: Stmt,
+	kind:       Bit_Kind,
+	position:   ^Expr,
+	source:     ^Expr,
+	target:     ^Expr,
+	value:      ^Expr,
+}
+
 Locale_Kind :: enum {
 	Get,
 	Set,
@@ -2485,6 +2500,7 @@ Any_Node :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Bit_Stmt,
 	^Locale_Stmt,
 	^Set_Cursor_Stmt,
 	^Receive_Results_Stmt,
@@ -2640,6 +2656,7 @@ Any_Stmt :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Bit_Stmt,
 	^Locale_Stmt,
 	^Set_Cursor_Stmt,
 	^Receive_Results_Stmt,

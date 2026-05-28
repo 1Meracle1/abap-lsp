@@ -172,6 +172,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if (at_keyword(p, "GET") || at_keyword(p, "SET")) && at_keyword_index(p, p.index + 1, "LOCALE") {
 		return parse_locale_stmt(p)
 	}
+	if bit_stmt_starts(p) {
+		return parse_bit_stmt(p)
+	}
 	if runtime_stmt_starts(p) {
 		return parse_runtime_stmt(p)
 	}
@@ -788,6 +791,46 @@ runtime_stmt_starts :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "RECEIVE") ||
 		at_keyword_phrase(p, "LOG-POINT") \
 	)
+}
+
+bit_stmt_starts :: proc(p: ^Parser) -> bool {
+	return(
+		(at_keyword(p, "GET") || at_keyword(p, "SET")) &&
+		at_keyword_index(p, p.index + 1, "BIT") \
+	)
+}
+
+parse_bit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := current_token(p)
+	stmt := ast.new(ast.Bit_Stmt, start.range, p.allocator)
+	stmt.kind = .Get if allow_keyword(p, "GET") else .Set
+	if stmt.kind == .Set {
+		expect_keyword(p, "SET")
+	}
+	expect_keyword(p, "BIT")
+	body_start := p.index
+	stmt.position = required_simple_expr(p, body_start, []string{"OF"})
+	if !allow_keyword(p, "OF") {
+		error_current(p, "syntax error: expected keyword")
+		return stmt
+	}
+	if stmt.kind == .Get {
+		stmt.source = required_simple_expr(p, body_start, []string{"INTO"})
+		if !allow_keyword(p, "INTO") {
+			error_current(p, "syntax error: expected keyword")
+			return stmt
+		}
+		stmt.target = required_simple_expr(p, body_start, []string{})
+	} else {
+		stmt.target = required_simple_expr(p, body_start, []string{"TO"})
+		if !allow_keyword(p, "TO") {
+			error_current(p, "syntax error: expected keyword")
+			return stmt
+		}
+		stmt.value = required_simple_expr(p, body_start, []string{})
+	}
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
 }
 
 parse_runtime_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

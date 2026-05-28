@@ -1593,6 +1593,18 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
+collect_bit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Bit_Stmt, scope: Scope_Id) {
+	collect_expr_refs(c, stmt.position, scope)
+	if stmt.kind == .Get {
+		collect_expr_refs(c, stmt.source, scope)
+		collect_write_target_expr(c, scope, stmt.range, stmt.target, expr_range(stmt.source))
+	} else {
+		collect_expr_refs(c, stmt.value, scope)
+		collect_write_target_expr(c, scope, stmt.range, stmt.target, expr_range(stmt.value))
+	}
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
 collect_locale_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Locale_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.language, scope)
 	collect_expr_refs(c, stmt.country, scope)

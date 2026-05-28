@@ -483,6 +483,13 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.excluding = clone_expr_list(n.excluding, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Bit_Stmt:
+		r := clone_shallow(n, allocator)
+		r.position = clone(n.position, allocator)
+		r.source = clone(n.source, allocator)
+		r.target = clone(n.target, allocator)
+		r.value = clone(n.value, allocator)
+		return r
 	case ^Locale_Stmt:
 		r := clone_shallow(n, allocator)
 		r.language = clone(n.language, allocator)

@@ -66,6 +66,7 @@ Node_Counts :: struct {
 	transaction_stmt: int,
 	describe_stmt: int,
 	runtime_stmt:  int,
+	bit_stmt:      int,
 	locale_stmt:   int,
 	set_cursor:    int,
 	receive_results: int,
@@ -260,6 +261,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.describe_stmt += 1
 	case ^ast.Runtime_Stmt:
 		counts.runtime_stmt += 1
+	case ^ast.Bit_Stmt:
+		counts.bit_stmt += 1
 	case ^ast.Locale_Stmt:
 		counts.locale_stmt += 1
 	case ^ast.Set_Cursor_Stmt:

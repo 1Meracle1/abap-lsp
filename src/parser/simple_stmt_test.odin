@@ -468,6 +468,29 @@ GET REFERENCE OF ls_data INTO lr_data.`
 }
 
 @(test)
+get_set_bit_use_dedicated_stmt :: proc(t: ^testing.T) {
+	source := `GET BIT 1 OF lv_x INTO DATA(lv_bit).
+SET BIT lv_pos OF lv_x TO lv_bit.`
+	parsed := parse(source, "bit_stmt.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.bit_stmt, 2)
+	testing.expect_value(t, counts.runtime_stmt, 0)
+	get_bit := parsed.root.stmts[0].derived_stmt.(^ast.Bit_Stmt)
+	set_bit := parsed.root.stmts[1].derived_stmt.(^ast.Bit_Stmt)
+	testing.expect_value(t, get_bit.kind, ast.Bit_Kind.Get)
+	testing.expect(t, get_bit.position != nil)
+	testing.expect(t, get_bit.source != nil)
+	testing.expect(t, get_bit.target != nil)
+	testing.expect_value(t, set_bit.kind, ast.Bit_Kind.Set)
+	testing.expect(t, set_bit.position != nil)
+	testing.expect(t, set_bit.target != nil)
+	testing.expect(t, set_bit.value != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 set_cursor_uses_dedicated_stmt :: proc(t: ^testing.T) {
 	source := `SET CURSOR FIELD 'P_PASS'.
 SET CURSOR FIELD l_dynpro_field-screenname OFFSET lv_off.

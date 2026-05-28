@@ -374,6 +374,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_describe_stmt(p, n)
 	case ^Runtime_Stmt:
 		emit_runtime_stmt(p, n)
+	case ^Bit_Stmt:
+		emit_bit_stmt(p, n)
 	case ^Locale_Stmt:
 		emit_locale_stmt(p, n)
 	case ^Set_Cursor_Stmt:
@@ -1984,6 +1986,25 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 	if len(stmt.operands) > 0 {
 		emit_space(p)
 		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_bit_stmt :: proc(p: ^Printer, stmt: ^Bit_Stmt) {
+	if stmt.kind == .Get {
+		emit(p, "GET BIT ")
+		emit_node(p, stmt.position)
+		emit(p, " OF ")
+		emit_node(p, stmt.source)
+		emit(p, " INTO ")
+		emit_node(p, stmt.target)
+	} else {
+		emit(p, "SET BIT ")
+		emit_node(p, stmt.position)
+		emit(p, " OF ")
+		emit_node(p, stmt.target)
+		emit(p, " TO ")
+		emit_node(p, stmt.value)
 	}
 	emit(p, ".")
 }

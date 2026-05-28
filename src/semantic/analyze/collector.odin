@@ -645,6 +645,8 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		collect_describe_stmt_facts(c, n, scope)
 	case ^ast.Runtime_Stmt:
 		collect_runtime_stmt_facts(c, n, scope)
+	case ^ast.Bit_Stmt:
+		collect_bit_stmt_facts(c, n, scope)
 	case ^ast.Locale_Stmt:
 		collect_locale_stmt_facts(c, n, scope)
 	case ^ast.Set_Cursor_Stmt:

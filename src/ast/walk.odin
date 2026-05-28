@@ -383,6 +383,11 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.offset)
 		walk_expr_list(next, n.excluding)
 		walk_expr_list(next, n.operands)
+	case ^Bit_Stmt:
+		walk(next, n.position)
+		walk(next, n.source)
+		walk(next, n.target)
+		walk(next, n.value)
 	case ^Locale_Stmt:
 		walk(next, n.language)
 		walk(next, n.country)
