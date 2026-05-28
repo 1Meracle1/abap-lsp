@@ -1028,7 +1028,9 @@ DATA lv_typed TYPE sy-datum.`
 	raise_target := raise.target.derived_expr.(^ast.Type_Ref_Expr)
 	raise_args := raise.operands[0].derived_expr.(^ast.Type_Ref_Expr)
 	assign := parsed.root.stmts[1].derived_stmt.(^ast.Assign_Field_Stmt)
-	assign_args := assign.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+	assign_component := assign.component.derived_expr.(^ast.Type_Ref_Expr)
+	assign_structure := assign.structure.derived_expr.(^ast.Type_Ref_Expr)
+	assign_target := assign.target.derived_expr.(^ast.Type_Ref_Expr)
 	decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
 	type_ref := decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 
@@ -1041,12 +1043,13 @@ DATA lv_typed TYPE sy-datum.`
 	testing.expect_value(t, len(raise_args.raw_refs), 1)
 	testing.expect_value(t, raise_args.raw_refs[0].name, "ls_row")
 	testing.expect_value(t, raise_args.raw_refs[0].path[0].name, "field")
-	testing.expect_value(t, len(assign_args.raw_decls), 1)
-	testing.expect_value(t, assign_args.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
-	testing.expect_value(t, assign_args.raw_decls[0].name, "<fs_raw>")
-	testing.expect_value(t, len(assign_args.raw_refs), 2)
-	testing.expect_value(t, assign_args.raw_refs[0].name, "lv_name")
-	testing.expect_value(t, assign_args.raw_refs[1].name, "ls_row")
+	testing.expect_value(t, len(assign_component.raw_refs), 1)
+	testing.expect_value(t, assign_component.raw_refs[0].name, "lv_name")
+	testing.expect_value(t, len(assign_structure.raw_refs), 1)
+	testing.expect_value(t, assign_structure.raw_refs[0].name, "ls_row")
+	testing.expect_value(t, len(assign_target.raw_decls), 1)
+	testing.expect_value(t, assign_target.raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
+	testing.expect_value(t, assign_target.raw_decls[0].name, "<fs_raw>")
 	testing.expect(t, !type_ref.raw_operand)
 	testing.expect_value(t, len(type_ref.raw_refs), 0)
 }
@@ -1057,12 +1060,51 @@ raw_assign_deref_path_keeps_arrow_selector :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Field_Stmt)
-	operand := assign.operands[0].derived_expr.(^ast.Type_Ref_Expr)
+	operand := assign.source.derived_expr.(^ast.Type_Ref_Expr)
 
 	testing.expect(t, operand.raw_operand)
 	testing.expect_value(t, operand.raw_refs[0].name, "lr_data")
 	testing.expect_value(t, operand.raw_refs[0].path[0].name, "*")
 	testing.expect_value(t, operand.raw_refs[0].path[0].selector, ast.Selector_Op.Arrow)
+}
+
+@(test)
+raw_assign_casting_does_not_reference_clause_keyword :: proc(t: ^testing.T) {
+	parsed := parse(`ASSIGN lv_x TO <lv_y> CASTING.`, "assign_casting.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Field_Stmt)
+	source := assign.source.derived_expr.(^ast.Type_Ref_Expr)
+	target := assign.target.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, assign.casting)
+	testing.expect_value(t, len(source.raw_refs), 1)
+	testing.expect_value(t, source.raw_refs[0].name, "lv_x")
+	testing.expect_value(t, len(target.raw_refs), 1)
+	testing.expect_value(t, target.raw_refs[0].name, "<lv_y>")
+}
+
+@(test)
+assign_casting_addition_is_modeled_and_printed :: proc(t: ^testing.T) {
+	source := `ASSIGN lv_x TO <lv_y> CASTING TYPE i DECIMALS lv_dec.`
+	parsed := parse(source, "assign_casting_type.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Field_Stmt)
+
+	testing.expect(t, assign.casting)
+	testing.expect(t, assign.casting_type != nil)
+	testing.expect(t, assign.casting_decimals != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+assign_rejects_addition_keywords_outside_casting_position :: proc(t: ^testing.T) {
+	without_casting := parse(`ASSIGN lv_x TO <lv_y> TYPE i.`, "assign_bad_type.abap", context.allocator)
+	before_to := parse(`ASSIGN lv_x CASTING TO <lv_y>.`, "assign_bad_casting.abap", context.allocator)
+
+	expect_error_contains(t, without_casting, "unexpected ASSIGN addition")
+	expect_error_contains(t, before_to, "expected TO in ASSIGN statement")
 }
 
 @(test)

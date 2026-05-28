@@ -438,7 +438,12 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Field_Stmt:
 		walk_expr_list(next, n.operands)
 	case ^Assign_Field_Stmt:
-		walk_expr_list(next, n.operands)
+		walk(next, n.source)
+		walk(next, n.component)
+		walk(next, n.structure)
+		walk(next, n.target)
+		walk(next, n.casting_type)
+		walk(next, n.casting_decimals)
 	case ^Create_Object_Stmt:
 		walk(next, n.target)
 		walk(next, n.type_ref)

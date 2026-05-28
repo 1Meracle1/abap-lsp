@@ -1906,7 +1906,18 @@ collect_assign_field_stmt_facts :: proc(
 	scope: Scope_Id,
 ) {
 	add_system_field_update(c, scope, stmt.range, .Assign, "subrc")
-	collect_expr_list_refs(c, stmt.operands[:], scope)
+	collect_expr_refs(c, stmt.source, scope)
+	collect_expr_refs(c, stmt.component, scope)
+	collect_expr_refs(c, stmt.structure, scope)
+	collect_expr_refs(c, stmt.target, scope)
+	if stmt.casting_type != nil {
+		if raw_type, ok := stmt.casting_type.derived_expr.(^ast.Type_Ref_Expr); ok && raw_type.raw_operand {
+			collect_expr_refs(c, stmt.casting_type, scope)
+		} else {
+			collect_type_expr_ref(c, stmt.casting_type, scope, .Type)
+		}
+	}
+	collect_expr_refs(c, stmt.casting_decimals, scope)
 }
 
 collect_line_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Line_Stmt, scope: Scope_Id) {

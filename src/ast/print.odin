@@ -417,9 +417,31 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit(p, ".")
 	case ^Assign_Field_Stmt:
 		emit(p, "ASSIGN")
-		if len(n.operands) > 0 {
+		if n.component != nil {
+			emit(p, " COMPONENT ")
+			emit_node(p, n.component)
+			if n.structure != nil {
+				emit(p, " OF STRUCTURE ")
+				emit_node(p, n.structure)
+			}
+		} else if n.source != nil {
 			emit_space(p)
-			emit_expr_list(p, n.operands, " ")
+			emit_node(p, n.source)
+		}
+		if n.target != nil {
+			emit(p, " TO ")
+			emit_node(p, n.target)
+		}
+		if n.casting {
+			emit(p, " CASTING")
+			if n.casting_type != nil {
+				emit(p, " TYPE ")
+				emit_node(p, n.casting_type)
+			}
+			if n.casting_decimals != nil {
+				emit(p, " DECIMALS ")
+				emit_node(p, n.casting_decimals)
+			}
 		}
 		emit(p, ".")
 	case ^Create_Object_Stmt:

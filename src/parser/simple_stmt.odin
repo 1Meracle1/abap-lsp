@@ -436,7 +436,7 @@ parse_raw_operand_to_period :: proc(
 	if raw_period_done(p) ||
 	   current_token(p).kind == .Comma ||
 	   current_token(p).kind == .Colon ||
-	   (!allow_leading_stop && simple_current_keyword_in(p, stop_keywords)) {
+	   (!allow_leading_stop && raw_operand_stop_keyword(p, stop_keywords)) {
 		return nil
 	}
 	start := p.index
@@ -450,7 +450,7 @@ parse_raw_operand_to_period :: proc(
 		if top && (current_token(p).kind == .Comma ||
 		           current_token(p).kind == .Colon ||
 		           ((!allow_leading_stop || p.index > start) &&
-		            simple_current_keyword_in(p, stop_keywords))) {
+		            raw_operand_stop_keyword(p, stop_keywords))) {
 			break
 		}
 		tok := bump_token(p)
@@ -490,6 +490,10 @@ parse_raw_operand_to_period :: proc(
 		)
 	}
 	return value
+}
+
+raw_operand_stop_keyword :: proc(p: ^Parser, stop_keywords: []string) -> bool {
+	return simple_current_keyword_in(p, stop_keywords) && !type_ref_selector_field(p)
 }
 
 parse_generic_operands_to_period :: proc(
@@ -1402,12 +1406,84 @@ parse_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+assign_field_expect_keyword :: proc(p: ^Parser, keyword, message: string) -> bool {
+	if allow_keyword(p, keyword) {
+		return true
+	}
+	error_current(p, message)
+	return false
+}
+
+assign_field_finish_after_error :: proc(p: ^Parser, stmt: ^ast.Assign_Field_Stmt, start: Token) -> ^ast.Stmt {
+	recover_to_statement_boundary(p, nil, false)
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
 parse_assign_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "ASSIGN")
 	stmt := ast.new(ast.Assign_Field_Stmt, start.range, p.allocator)
-	stmt.operands = parse_generic_operands_to_period(p, []string{})
+	if allow_keyword(p, "COMPONENT") {
+		stmt.component = parse_raw_operand_to_period(p, []string{"OF", "TO", "CASTING"})
+		if stmt.component == nil {
+			error_current(p, "syntax error: expected ASSIGN COMPONENT operand")
+		}
+		if !assign_field_expect_keyword(p, "OF", "syntax error: expected OF after ASSIGN COMPONENT") {
+			return assign_field_finish_after_error(p, stmt, start)
+		}
+		if !assign_field_expect_keyword(p, "STRUCTURE", "syntax error: expected STRUCTURE after ASSIGN COMPONENT OF") {
+			return assign_field_finish_after_error(p, stmt, start)
+		}
+		stmt.structure = parse_raw_operand_to_period(p, []string{"TO", "CASTING"})
+		if stmt.structure == nil {
+			error_current(p, "syntax error: expected ASSIGN STRUCTURE operand")
+		}
+	} else {
+		stmt.source = parse_raw_operand_to_period(p, []string{"TO", "CASTING"})
+		if stmt.source == nil {
+			error_current(p, "syntax error: expected ASSIGN source operand")
+		}
+	}
+	if !assign_field_expect_keyword(p, "TO", "syntax error: expected TO in ASSIGN statement") {
+		return assign_field_finish_after_error(p, stmt, start)
+	}
+	stmt.target = parse_raw_operand_to_period(p, []string{"CASTING", "TYPE", "DECIMALS"})
+	if stmt.target == nil {
+		error_current(p, "syntax error: expected ASSIGN target")
+	}
+	parse_assign_field_casting_addition(p, stmt)
+	if !raw_period_done(p) {
+		error_current(p, "syntax error: unexpected ASSIGN addition")
+		recover_to_statement_boundary(p, nil, false)
+	}
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+parse_assign_field_casting_addition :: proc(p: ^Parser, stmt: ^ast.Assign_Field_Stmt) {
+	if !allow_keyword(p, "CASTING") {
+		return
+	}
+	stmt.casting = true
+	stmt.casting_range = previous_token(p).range
+	if allow_keyword(p, "TYPE") {
+		type_start := p.index
+		stmt.casting_type = parse_create_type_ref_expr(p, []string{"DECIMALS"})
+		if stmt.casting_type == nil {
+			error_current(p, "syntax error: expected type after ASSIGN CASTING TYPE")
+		} else if dynamic_type := create_dynamic_type_expr_at(p, type_start); dynamic_type != nil {
+			create_type_ref_use_dynamic_facts(stmt.casting_type, dynamic_type, p.allocator)
+		}
+	}
+	if allow_keyword(p, "DECIMALS") {
+		stmt.casting_decimals = parse_raw_operand_to_period(
+			p,
+			[]string{"TYPE", "CASTING"},
+		)
+		if stmt.casting_decimals == nil {
+			error_current(p, "syntax error: expected decimals after ASSIGN CASTING DECIMALS")
+		}
+	}
 }
 
 parse_create_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

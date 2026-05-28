@@ -1621,10 +1621,17 @@ Field_Stmt :: struct {
 	operands:   [dynamic]^Expr,
 }
 
-// ABAP syntax: field-symbol assignment `ASSIGN ... TO <fs>.`
+// ABAP syntax: field-symbol assignment `ASSIGN ... TO <fs> [CASTING ...]`.
 Assign_Field_Stmt :: struct {
 	using node: Stmt,
-	operands:   [dynamic]^Expr,
+	source:           ^Expr,
+	component:        ^Expr,
+	structure:        ^Expr,
+	target:           ^Expr,
+	casting:          bool,
+	casting_range:    tokenizer.Range,
+	casting_type:     ^Expr,
+	casting_decimals: ^Expr,
 }
 
 // ABAP syntax: object creation `CREATE OBJECT ref ...`.

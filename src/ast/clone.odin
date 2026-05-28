@@ -554,7 +554,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		return r
 	case ^Assign_Field_Stmt:
 		r := clone_shallow(n, allocator)
-		r.operands = clone_expr_list(n.operands, allocator)
+		r.source = clone(n.source, allocator)
+		r.component = clone(n.component, allocator)
+		r.structure = clone(n.structure, allocator)
+		r.target = clone(n.target, allocator)
+		r.casting_type = clone(n.casting_type, allocator)
+		r.casting_decimals = clone(n.casting_decimals, allocator)
 		return r
 	case ^Create_Object_Stmt:
 		r := clone_shallow(n, allocator)
