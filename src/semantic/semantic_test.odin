@@ -4941,6 +4941,37 @@ UNION ALL SELECT * FROM spfli INTO TABLE @lt_rows.
 }
 
 @(test)
+collects_parenthesized_open_sql_where_as_static_predicate :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///sql_parenthesized_where.abap",
+		`
+DATA rv_transport TYPE string.
+DATA iv_program_id TYPE string.
+DATA iv_object_type TYPE string.
+DATA iv_object_name TYPE string.
+
+SELECT SINGLE a~trkorr FROM e070 AS a JOIN e071 AS b ON a~trkorr = b~trkorr
+  INTO rv_transport
+  WHERE ( a~trstatus = 'D' OR a~trstatus = 'L' )
+    AND a~trfunction <> 'G'
+    AND NOT ( a~trfunction = 'F' AND ( a~tarsystem = '' OR a~tarsystem = 'SAP' ) )
+    AND b~pgmid = iv_program_id AND b~object = iv_object_type AND b~obj_name = iv_object_name.
+`,
+	)
+
+	testing.expect_value(t, len(unit.sql_queries), 1)
+	testing.expect(t, !(.Has_Dynamic_Where in unit.sql_queries[0].flags))
+	testing.expect(t, sql_predicate_present(&unit, .Where))
+	testing.expect(t, !sql_predicate_present(&unit, .Dynamic_Where))
+	testing.expect(t, sql_source_alias_present(&unit, "e070", "a", .From))
+	testing.expect(t, sql_source_alias_present(&unit, "e071", "b", .Join))
+	testing.expect(t, sql_qualified_ref_present(&unit, "a", "trstatus", .Qualified_Column))
+	testing.expect(t, sql_qualified_ref_present(&unit, "b", "obj_name", .Qualified_Column))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 collects_sql_for_all_entries_and_dynamic_where_predicates :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

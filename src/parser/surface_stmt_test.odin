@@ -594,6 +594,23 @@ SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 }
 
 @(test)
+open_sql_parenthesized_static_where_keeps_alias_refs :: proc(t: ^testing.T) {
+	source := `SELECT SINGLE a~trkorr FROM e070 AS a JOIN e071 AS b ON a~trkorr = b~trkorr
+  INTO rv_transport
+  WHERE ( a~trstatus = 'D' OR a~trstatus = 'L' )
+    AND b~pgmid = iv_program_id.`
+	parsed := parse(source, "sql_parenthesized_alias_where.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect(t, !stmt.query.dynamic_where)
+	testing.expect_value(t, len(stmt.query.source_clause.joins), 1)
+	testing.expect_value(t, stmt.query.source_clause.alias, "a")
+	testing.expect_value(t, stmt.query.source_clause.joins[0].alias, "b")
+	testing.expect_value(t, source[stmt.query.where_clause.start:stmt.query.where_clause.end], "WHERE ( a~trstatus = 'D' OR a~trstatus = 'L' )\n    AND b~pgmid = iv_program_id")
+}
+
+@(test)
 open_sql_invalid_aliases_and_partial_joins_are_diagnosed :: proc(t: ^testing.T) {
 	source := `SELECT carrid AS FROM mara AS WHERE carrid = @lv_carrid INTO TABLE @lt_rows.
 SELECT * FROM mara INNER WHERE matnr = @lv_matnr INTO TABLE @lt_rows.`
@@ -807,6 +824,7 @@ open_sql_source_named_cross_is_not_join_without_join_keyword :: proc(t: ^testing
 	source_expr := stmt.query.source_clause.source.derived_expr.(^ast.Ident_Expr)
 	testing.expect_value(t, source_expr.name, "cross")
 	testing.expect(t, stmt.query.where_cond != nil)
+	testing.expect(t, !stmt.query.dynamic_where)
 }
 
 @(test)

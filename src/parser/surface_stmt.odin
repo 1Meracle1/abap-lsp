@@ -483,13 +483,13 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 				select_reject_clause(p, start, "syntax error: invalid SELECT WHERE clause placement", body_start, stop_at_rparen)
 				continue
 			}
-			query.dynamic_where = current_token(p).kind == .LParen
 			query.where_cond = sql_logical_expr(
 				p,
 				body_start,
 				[]string{"INTO", "APPENDING", "WHERE", "FOR", "GROUP", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
 			)
 			if query.where_cond != nil {
+				query.dynamic_where = sql_dynamic_where_expr(query.where_cond)
 				query.where_clause = select_clause_expr_range(p, start, query.where_cond)
 				state.has_where = true
 			}
@@ -1307,6 +1307,29 @@ dml_dynamic_source :: proc(expr: ^ast.Expr) -> bool {
 	return ok
 }
 
+sql_dynamic_where_expr :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	paren, ok := expr.derived_expr.(^ast.Paren_Expr)
+	return ok && sql_dynamic_where_operand(paren.expr)
+}
+
+sql_dynamic_where_operand :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return true
+	case ^ast.Host_Expr:
+		return sql_dynamic_where_operand(n.value)
+	case ^ast.Selector_Expr:
+		return sql_dynamic_where_operand(n.base) && sql_dynamic_where_operand(n.field)
+	}
+	return false
+}
+
 insert_set_db_source_facts :: proc(stmt: ^ast.Insert_Stmt) {
 	if stmt.target == nil {
 		return
@@ -1763,13 +1786,13 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				)
 				continue
 			}
-			stmt.dynamic_where = current_token(p).kind == .LParen
 			stmt.where_cond = sql_logical_expr(
 				p,
 				body_start,
 				[]string{"INDEX", "TRANSPORTING", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
 			)
 			if stmt.where_cond != nil {
+				stmt.dynamic_where = sql_dynamic_where_expr(stmt.where_cond)
 				stmt.where_clause = tokenizer.text_range(where_start.range.start, previous_token(p).range.end)
 			}
 			continue
@@ -2006,13 +2029,13 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				)
 				continue
 			}
-			stmt.dynamic_where = current_token(p).kind == .LParen
 			stmt.where_cond = sql_logical_expr(
 				p,
 				body_start,
 				[]string{"FROM", "SET", "USING", "CLIENT", "CONNECTION"},
 			)
 			if stmt.where_cond != nil {
+				stmt.dynamic_where = sql_dynamic_where_expr(stmt.where_cond)
 				stmt.where_clause = tokenizer.text_range(where_start.range.start, previous_token(p).range.end)
 			}
 			continue
@@ -2110,13 +2133,13 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				)
 				continue
 			}
-			stmt.dynamic_where = current_token(p).kind == .LParen
 			stmt.where_cond = sql_logical_expr(
 				p,
 				body_start,
 				[]string{"INDEX", "USING", "COMPARING", "CLIENT", "CONNECTION"},
 			)
 			if stmt.where_cond != nil {
+				stmt.dynamic_where = sql_dynamic_where_expr(stmt.where_cond)
 				stmt.where_clause = tokenizer.text_range(where_start.range.start, previous_token(p).range.end)
 			}
 			continue
