@@ -341,6 +341,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Call_Stmt:
 		walk(next, n.call)
 		walk(next, n.target)
+		for arg in n.named_args {
+			walk(next, arg.value)
+		}
 		walk_expr_list(next, n.transaction_operands)
 		for arg in n.transformation_args {
 			walk(next, arg.value)

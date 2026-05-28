@@ -860,6 +860,26 @@ CALL METHOD lo->run
 }
 
 @(test)
+call_method_args_keep_value_exprs_and_keyword_names :: proc(t: ^testing.T) {
+	source := `CALL METHOD lo->run
+  EXPORTING tables = get_field_rules( )
+  CHANGING cv_value = lv_value.`
+	parsed := parse(source, "call_method_value_exprs.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	testing.expect_value(t, len(stmt.arg_sections), 2)
+	testing.expect_value(t, len(stmt.named_args), 2)
+	testing.expect_value(t, stmt.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exporting)
+	testing.expect_value(t, stmt.arg_sections[1].kind, ast.Call_Arg_Section_Kind.Changing)
+	testing.expect_value(t, stmt.named_args[0].section, ast.Call_Arg_Section_Kind.Exporting)
+	testing.expect_value(t, stmt.named_args[0].name, "tables")
+	_, is_call := stmt.named_args[0].value.derived_expr.(^ast.Call_Expr)
+	testing.expect(t, is_call)
+	testing.expect(t, stmt.named_args[1].value != nil)
+}
+
+@(test)
 raw_call_method_targets_carry_parser_reference_facts :: proc(t: ^testing.T) {
 	source := `CALL METHOD lo_client->run EXPORTING iv_value = lv_value.
 CALL METHOD lcl_demo=>class_run.
@@ -1123,6 +1143,37 @@ CREATE OBJECT ri_dyn TYPE (lv_class).`
 	testing.expect_value(t, len(dynamic_type.raw_refs), 1)
 	testing.expect_value(t, dynamic_type.raw_refs[0].name, "lv_class")
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+create_object_models_exporting_as_call_args :: proc(t: ^testing.T) {
+	source := `CREATE OBJECT ro_generic
+  EXPORTING
+    io_field_rules = get_field_rules( )
+    tables         = ms_item.`
+	parsed := parse(source, "create_object_exporting.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Object_Stmt)
+	section := stmt.operands[0].derived_expr.(^ast.Call_Arg_Section_Expr)
+	arg := section.args[0].derived_expr.(^ast.Call_Named_Arg_Expr)
+
+	testing.expect_value(t, section.kind, ast.Call_Arg_Section_Kind.Exporting)
+	testing.expect_value(t, arg.name, "io_field_rules")
+	testing.expect_value(t, section.args[1].derived_expr.(^ast.Call_Named_Arg_Expr).name, "tables")
+	_, ok := arg.value.derived_expr.(^ast.Call_Expr)
+	testing.expect(t, ok)
+}
+
+@(test)
+create_object_exporting_rejects_stray_section_tokens :: proc(t: ^testing.T) {
+	source := `CREATE OBJECT ro_generic
+  EXPORTING
+    io_field_rules = get_field_rules( )1
+    is_item        = 1ms_item.`
+	parsed := parse(source, "create_object_bad_exporting.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
 }
 
 @(test)

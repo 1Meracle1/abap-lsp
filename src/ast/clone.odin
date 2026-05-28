@@ -896,6 +896,7 @@ clone_call_stmt_named_args :: proc(list: [dynamic]Call_Stmt_Named_Arg, allocator
 	res := make([dynamic]Call_Stmt_Named_Arg, 0, len(list), allocator)
 	for x in list {
 		arg := x
+		arg.value = clone(x.value, allocator)
 		arg.raw_decls = clone_raw_operand_decls(x.raw_decls, allocator)
 		arg.raw_refs = clone_raw_operand_refs(x.raw_refs, allocator)
 		append(&res, arg)

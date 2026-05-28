@@ -496,6 +496,28 @@ parse_generic_operands_to_period :: proc(
 	return values
 }
 
+parse_call_operands_to_period :: proc(p: ^Parser) -> [dynamic]^ast.Expr {
+	values := make([dynamic]^ast.Expr, 0, 4, p.allocator)
+	for !raw_period_done(p) {
+		if allow_token(p, .Colon) || allow_token(p, .Comma) {
+			continue
+		}
+		start := p.index
+		if call_argument_section_starts(p) {
+			if section := parse_call_arg_section_expr(p); section != nil {
+				append(&values, section)
+			}
+		} else if value := parse_raw_operand_to_period(
+			p,
+			[]string{"EXPORTING", "IMPORTING", "CHANGING", "TABLES", "RECEIVING", "EXCEPTIONS"},
+		); value != nil {
+			append(&values, value)
+		}
+		ensure_forward_progress(p, start)
+	}
+	return values
+}
+
 populate_raw_operand_facts :: proc(
 	p: ^Parser,
 	expr: ^ast.Type_Ref_Expr,
@@ -1374,7 +1396,7 @@ parse_create_object_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
 	stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
 		parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
-	stmt.operands = parse_generic_operands_to_period(p, []string{})
+	stmt.operands = parse_call_operands_to_period(p)
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -1390,7 +1412,7 @@ parse_create_data_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 		stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
 			parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
 	}
-	stmt.operands = parse_generic_operands_to_period(p, []string{})
+	stmt.operands = parse_call_operands_to_period(p)
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -3472,7 +3494,8 @@ parse_raw_call_arguments :: proc(
 	section := ast.Call_Arg_Section_Kind.Exporting
 	has_section := false
 	for !raw_period_done(p) {
-		if kind := call_argument_section_kind(p, current_token(p)); kind != .Unknown {
+		if call_argument_section_starts(p) {
+			kind := call_argument_section_kind(p, current_token(p))
 			tok := bump_token(p)
 			section = kind
 			has_section = true
@@ -3497,6 +3520,7 @@ parse_raw_call_arguments :: proc(
 			)
 			populate_raw_operand_fact_lists(p, value_start, value_end, &raw_decls, &raw_refs)
 		}
+		value := parse_complete_logical_expr(p, value_start, value_end)
 		append(
 			named_args,
 			ast.Call_Stmt_Named_Arg {
@@ -3505,6 +3529,7 @@ parse_raw_call_arguments :: proc(
 				name = tokenizer.token_lexeme(name, p.source),
 				name_range = name.range,
 				value_range = value_range,
+				value = value,
 				raw_decls = raw_decls,
 				raw_refs = raw_refs,
 			},
@@ -3533,7 +3558,7 @@ call_stmt_arg_value_end :: proc(p: ^Parser, start: int) -> int {
 			if tok.kind == .Period || tok.kind == .Eof {
 				break
 			}
-			if call_argument_section_kind(p, tok) != .Unknown {
+			if call_argument_section_starts_at(p, i) {
 				break
 			}
 			if i > start && call_stmt_named_arg_starts(p, i) {

@@ -794,6 +794,36 @@ has_diagnostic :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_Ki
 	return false
 }
 
+@(test)
+parse_errors_are_analysis_diagnostics :: proc(t: ^testing.T) {
+	source := `CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_generic.
+ENDCLASS.
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD get_generic.
+    DATA ro_generic TYPE REF TO object.
+    CREATE OBJECT ro_generic EXPORTING io_field_rules = get_field_rules( )1.
+  ENDMETHOD.
+ENDCLASS.`
+	parsed := parser.parse(source, "file:///syntax_diagnostic.abap", context.allocator)
+	testing.expect(t, len(parsed.errors) > 0)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 64}, context.allocator)
+	defer execution.pool_destroy(&pool)
+	unit := analyze.analyze_unit(
+		analyze.Unit_Id(0),
+		"file:///syntax_diagnostic.abap",
+		source,
+		parsed,
+		&pool,
+		context.allocator,
+	)
+
+	testing.expect(t, has_diagnostic(&unit, .Syntax_Error))
+}
+
 project_has_diagnostic :: proc(project: ^analyze.Project_Analysis, kind: analyze.Diagnostic_Kind) -> bool {
 	for diagnostic in project.diagnostics {
 		if diagnostic.kind == kind {
@@ -2811,6 +2841,134 @@ START-OF-SELECTION.
 }
 
 @(test)
+create_object_exporting_method_result_uses_routine_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///create_object_exporting_method.abap",
+		`
+CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_generic.
+  PRIVATE SECTION.
+    METHODS get_field_rules RETURNING VALUE(ro_rules) TYPE REF TO object.
+ENDCLASS.
+
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD get_generic.
+    DATA ro_generic TYPE REF TO object.
+    DATA ms_item TYPE i.
+    CREATE OBJECT ro_generic
+      EXPORTING
+        io_field_rules = get_field_rules( )
+        is_item        = ms_item.
+  ENDMETHOD.
+
+  METHOD get_field_rules.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Routine, .Routine_Call), 1)
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Value, .Identifier), 0)
+}
+
+@(test)
+call_method_sections_method_results_use_routine_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///call_method_sections_method.abap",
+		`
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS consume
+      IMPORTING iv_value TYPE i
+      EXPORTING ev_value TYPE i
+      CHANGING cv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD consume.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+  PRIVATE SECTION.
+    METHODS get_field_rules RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD run.
+    DATA lo_dep TYPE REF TO lcl_dep.
+    CALL METHOD lo_dep->consume
+      EXPORTING iv_value = get_field_rules( )
+      IMPORTING ev_value = get_field_rules( )
+      CHANGING cv_value = get_field_rules( ).
+  ENDMETHOD.
+
+  METHOD get_field_rules.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Routine, .Routine_Call), 3)
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Value, .Identifier), 0)
+}
+
+@(test)
+new_call_and_constructor_forms_use_routine_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///new_call_and_constructor_forms.abap",
+		`
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING iv_value TYPE i.
+    METHODS consume
+      EXPORTING ev_value TYPE i
+      CHANGING cv_value TYPE i.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD constructor.
+  ENDMETHOD.
+
+  METHOD consume.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+  PRIVATE SECTION.
+    METHODS get_field_rules RETURNING VALUE(rv_value) TYPE i.
+ENDCLASS.
+
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD run.
+    DATA lo_dep TYPE REF TO lcl_dep.
+    CREATE OBJECT lo_dep EXPORTING iv_value = get_field_rules( ).
+    lo_dep = NEW lcl_dep( iv_value = get_field_rules( ) ).
+    lo_dep->consume( IMPORTING ev_value = get_field_rules( ) CHANGING cv_value = get_field_rules( ) ).
+  ENDMETHOD.
+
+  METHOD get_field_rules.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Routine, .Routine_Call), 4)
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Value, .Identifier), 0)
+}
+
+@(test)
 create_data_dynamic_literal_type_is_not_remote_dependency :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///create_data_dynamic_literal.abap",
@@ -3645,7 +3803,7 @@ ENDFORM.
 	testing.expect(t, has_method_named_argument(&unit, "iv_value", .Exporting, "lo_client", "run"))
 	testing.expect(t, has_method_named_argument(&unit, "iv_dyn", .Exporting, "lo_client", ""))
 	testing.expect_value(t, reference_count(&unit, "lo_client", .Value, .Identifier), 2)
-	testing.expect_value(t, reference_count(&unit, "lv_value", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lv_value", .Value, .Identifier), 2)
 	testing.expect(t, !has_reference(&unit, "exporting", .Value, .Identifier))
 	testing.expect(t, !has_reference(&unit, "iv_value", .Value, .Identifier))
 	testing.expect(t, !has_reference(&unit, "iv_dyn", .Value, .Identifier))

@@ -1469,7 +1469,13 @@ collect_raw_call_args :: proc(
 			},
 		)
 		if arg.value_range.start < arg.value_range.end {
-			collect_raw_operand_fact_refs(c, arg.raw_decls[:], arg.raw_refs[:], scope)
+			type_fact := unknown_type_fact()
+			if arg.value != nil {
+				collect_expr_refs(c, arg.value, scope)
+				type_fact = type_fact_from_expr(c, arg.value, scope)
+			} else {
+				collect_raw_operand_fact_refs(c, arg.raw_decls[:], arg.raw_refs[:], scope)
+			}
 			append(
 				&args,
 				Call_Argument_Data {
@@ -1478,6 +1484,7 @@ collect_raw_call_args :: proc(
 					section = section,
 					has_section = has_section,
 					ordinal = ordinal,
+					type_fact = type_fact,
 				},
 			)
 			ordinal += 1

@@ -1249,6 +1249,7 @@ Call_Stmt_Named_Arg :: struct {
 	name:        string,
 	name_range:  tokenizer.Range,
 	value_range: tokenizer.Range,
+	value:       ^Expr,
 	raw_decls:   [dynamic]Raw_Operand_Inline_Decl,
 	raw_refs:    [dynamic]Raw_Operand_Ref,
 }

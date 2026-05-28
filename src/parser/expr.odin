@@ -628,17 +628,21 @@ parse_call_arg_section_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	section.name = tokenizer.token_lexeme(name, p.source)
 	section.args = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	for current_token(p).kind != .RParen &&
+	    current_token(p).kind != .Period &&
 	    current_token(p).kind != .Eof &&
 	    !call_argument_section_starts(p) {
 		if allow_token(p, .Comma) {
 			continue
 		}
 		start := p.index
-		arg := parse_call_arg_expr(p)
-		if arg != nil {
-			append(&section.args, arg)
-			section.range.end = arg.range.end
+		if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
+			arg := parse_call_arg_expr(p)
+			if arg != nil {
+				append(&section.args, arg)
+				section.range.end = arg.range.end
+			}
 		} else {
+			error_current(p, "syntax error: expected named argument")
 			bump_token(p)
 		}
 		ensure_forward_progress(p, start)
@@ -879,6 +883,19 @@ parse_constructor_value_expr :: proc(p: ^Parser) -> ^ast.Expr {
 }
 
 parse_complete_concat_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
+	return parse_complete_expr_with(p, start, end, parse_concat_expr)
+}
+
+parse_complete_logical_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
+	return parse_complete_expr_with(p, start, end, parse_logical_expr)
+}
+
+parse_complete_expr_with :: proc(
+	p: ^Parser,
+	start,
+	end: int,
+	parse_proc: proc(^Parser) -> ^ast.Expr,
+) -> ^ast.Expr {
 	if start >= end {
 		return nil
 	}
@@ -900,7 +917,7 @@ parse_complete_concat_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
 		errors = make([dynamic]Parse_Error, 0, 1, context.temp_allocator),
 		allocator = p.allocator,
 	}
-	expr := parse_concat_expr(&nested)
+	expr := parse_proc(&nested)
 	if expr == nil || current_token(&nested).kind != .Eof || len(nested.errors) > 0 {
 		return nil
 	}
@@ -1840,7 +1857,17 @@ constructor_kind :: proc(p: ^Parser, tok: Token) -> ast.Constructor_Kind {
 }
 
 call_argument_section_starts :: proc(p: ^Parser) -> bool {
-	return call_argument_section_kind(p, current_token(p)) != .Unknown
+	return call_argument_section_starts_at(p, p.index)
+}
+
+call_argument_section_starts_at :: proc(p: ^Parser, index: int) -> bool {
+	if index >= len(p.tokens) {
+		return false
+	}
+	if p.tokens[index].kind == .Ident && index + 1 < len(p.tokens) && p.tokens[index + 1].kind == .Eq {
+		return false
+	}
+	return call_argument_section_kind(p, p.tokens[index]) != .Unknown
 }
 
 call_argument_section_kind :: proc(p: ^Parser, tok: Token) -> ast.Call_Arg_Section_Kind {

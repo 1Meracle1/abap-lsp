@@ -351,6 +351,7 @@ Message_Class_Entry_Data :: struct {
 }
 
 Diagnostic_Kind :: enum {
+	Syntax_Error,
 	Duplicate_Declaration,
 	Shadowed_Symbol,
 	Mismatched_Structured_Declaration,

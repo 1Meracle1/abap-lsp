@@ -112,6 +112,18 @@ collect_unit :: proc(
 	unit := unit_analysis_make(unit_id, uri, root_range, allocator)
 	unit.source = source
 	unit.source_mode = mode
+	if mode == .Full {
+		for e in parsed.errors {
+			append(
+				&unit.diagnostics,
+				Diagnostic {
+					kind = .Syntax_Error,
+					range = e.range,
+					message = strings.clone(e.message, allocator),
+				},
+			)
+		}
+	}
 	c := Collector {
 		source                                 = source,
 		mode                                   = mode,

@@ -149,6 +149,7 @@ diagnostic_key_from_values :: #force_inline proc(
 
 retained_collector_diagnostic :: proc(kind: Diagnostic_Kind) -> bool {
 	return(
+		kind == .Syntax_Error ||
 		kind == .Duplicate_Declaration ||
 		kind == .Shadowed_Symbol ||
 		kind == .Mismatched_Structured_Declaration ||

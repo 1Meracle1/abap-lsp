@@ -1,8 +1,8 @@
 package main
 
 import "src:ast"
-import "src:parser"
 import execution "src:execution"
+import "src:parser"
 import semantic_analyze "src:semantic/analyze"
 import stack_trace "src:stack_trace"
 import "src:tokenizer"
@@ -15,6 +15,8 @@ import "core:mem/virtual"
 import "core:os"
 import "core:slice"
 import "core:strings"
+
+DEPENDENCY_FETCH_TRACE :: #config(ABAP_FRONTEND_TRACE_ADT_FETCH, false)
 
 Node_Count :: struct {
 	name:  string,
@@ -196,7 +198,9 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	print_analyze_counts(&result.project)
 	print_analyze_diagnostics(&result.project)
 	execution.pool_destroy(&pool)
-	print_analyze_memory_report(&tracker)
+	when DEPENDENCY_FETCH_TRACE {
+		print_analyze_memory_report(&tracker)
+	}
 	mem.tracking_allocator_destroy(&tracker)
 }
 
@@ -215,7 +219,11 @@ analyze_cli_path :: proc(
 		return workspace.Analysis_Result{ok = false, error = "invalid path"}
 	}
 	if info.type == .Directory {
-		opened, workspace_ok, workspace_error := workspace.open_workspace(abs_path, options, allocator)
+		opened, workspace_ok, workspace_error := workspace.open_workspace(
+			abs_path,
+			options,
+			allocator,
+		)
 		if !workspace_ok {
 			return workspace.Analysis_Result{ok = false, error = workspace_error}
 		}
@@ -278,7 +286,12 @@ print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
 }
 
 source_location_equal :: proc(a, b: runtime.Source_Code_Location) -> bool {
-	return a.file_path == b.file_path && a.line == b.line && a.column == b.column && a.procedure == b.procedure
+	return(
+		a.file_path == b.file_path &&
+		a.line == b.line &&
+		a.column == b.column &&
+		a.procedure == b.procedure \
+	)
 }
 
 allocation_location_total_less :: proc(a, b: Allocation_Location_Total) -> bool {
@@ -348,10 +361,7 @@ source_position :: proc(source: string, starts: []int, offset: int) -> Source_Po
 			hi = mid - 1
 		}
 	}
-	return Source_Position {
-		line = line_index + 1,
-		column = pos - starts[line_index] + 1,
-	}
+	return Source_Position{line = line_index + 1, column = pos - starts[line_index] + 1}
 }
 
 source_line_text :: proc(source: string, starts: []int, line: int) -> string {
@@ -413,7 +423,14 @@ print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis) {
 			if end.line != start.line {
 				width = len(line_text) - start.column + 2
 			}
-			fmt.printf("%s(%d:%d) %v: %s\n", uri, start.line, start.column, diagnostic.kind, diagnostic.message)
+			fmt.printf(
+				"%s(%d:%d) %v: %s\n",
+				uri,
+				start.line,
+				start.column,
+				diagnostic.kind,
+				diagnostic.message,
+			)
 			fmt.printf("    %s\n", line_text)
 			print_caret_line(start.column, width)
 			fmt.println()
