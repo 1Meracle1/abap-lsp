@@ -1593,6 +1593,13 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
+collect_locale_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Locale_Stmt, scope: Scope_Id) {
+	collect_expr_refs(c, stmt.language, scope)
+	collect_expr_refs(c, stmt.country, scope)
+	collect_expr_refs(c, stmt.modifier, scope)
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
 collect_convert_time_stamp_stmt_facts :: proc(
 	c: ^Collector,
 	stmt: ^ast.Convert_Time_Stamp_Stmt,

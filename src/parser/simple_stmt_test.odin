@@ -415,12 +415,15 @@ SET SCREEN 100.
 SET USER-COMMAND lv_ok.
 SET UPDATE TASK LOCAL.
 GET TIME STAMP FIELD lv_timestamp.
+GET LOCALE LANGUAGE lv_language COUNTRY lv_country MODIFIER lv_modifier.
+SET LOCALE LANGUAGE lv_language.
 GET REFERENCE OF ls_data INTO lr_data.`
 	parsed := parse(source, "runtime_details.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, counts.runtime_stmt, 9)
+	testing.expect_value(t, counts.locale_stmt, 2)
 	get_parameter := parsed.root.stmts[0].derived_stmt.(^ast.Runtime_Stmt)
 	set_parameter := parsed.root.stmts[1].derived_stmt.(^ast.Runtime_Stmt)
 	cursor := parsed.root.stmts[2].derived_stmt.(^ast.Runtime_Stmt)
@@ -429,7 +432,9 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	user_command := parsed.root.stmts[5].derived_stmt.(^ast.Runtime_Stmt)
 	update_task := parsed.root.stmts[6].derived_stmt.(^ast.Runtime_Stmt)
 	time_stamp := parsed.root.stmts[7].derived_stmt.(^ast.Runtime_Stmt)
-	reference := parsed.root.stmts[8].derived_stmt.(^ast.Runtime_Stmt)
+	locale := parsed.root.stmts[8].derived_stmt.(^ast.Locale_Stmt)
+	set_locale := parsed.root.stmts[9].derived_stmt.(^ast.Locale_Stmt)
+	reference := parsed.root.stmts[10].derived_stmt.(^ast.Runtime_Stmt)
 
 	testing.expect_value(t, get_parameter.subject, ast.Runtime_Subject.Parameter_ID_Field)
 	testing.expect(t, get_parameter.id != nil)
@@ -449,6 +454,14 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	testing.expect_value(t, time_stamp.subject, ast.Runtime_Subject.Time_Stamp_Field)
 	testing.expect(t, time_stamp.target != nil)
 	testing.expect_value(t, ast.print_node(time_stamp, context.allocator), "GET TIME STAMP FIELD lv_timestamp.")
+	testing.expect_value(t, locale.kind, ast.Locale_Kind.Get)
+	testing.expect(t, locale.language != nil)
+	testing.expect(t, locale.country != nil)
+	testing.expect(t, locale.modifier != nil)
+	testing.expect_value(t, ast.print_node(locale, context.allocator), "GET LOCALE LANGUAGE lv_language COUNTRY lv_country MODIFIER lv_modifier.")
+	testing.expect_value(t, set_locale.kind, ast.Locale_Kind.Set)
+	testing.expect(t, set_locale.language != nil)
+	testing.expect_value(t, ast.print_node(set_locale, context.allocator), "SET LOCALE LANGUAGE lv_language.")
 	testing.expect_value(t, reference.subject, ast.Runtime_Subject.Reference)
 	testing.expect(t, reference.value != nil)
 	testing.expect(t, reference.target != nil)

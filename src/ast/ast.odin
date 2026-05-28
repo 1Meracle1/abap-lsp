@@ -1432,7 +1432,12 @@ Runtime_Subject :: enum {
 	Update_Task_Local,
 }
 
-// ABAP syntax: compact runtime/environment statements such as `GET`, `SET`, `LOG-POINT`, `SET HANDLER`, and `GET BADI`.
+// ABAP syntax consumed here:
+// `GET RUN TIME FIELD`, `GET TIME STAMP FIELD`, `GET PARAMETER ID`,
+// `GET CURSOR`, `GET REFERENCE OF`, `GET BADI`, `SET PARAMETER ID`,
+// `SET PF-STATUS`, `SET TITLEBAR`, `SET SCREEN`, `SET USER-COMMAND`,
+// `SET UPDATE TASK LOCAL`, `SET HANDLER`, `LOG-POINT`, `EXPORT`, `IMPORT`,
+// and generic fallback forms for unmodeled `GET`/`SET`/`EXPORT`/`IMPORT`/`RECEIVE`.
 Runtime_Stmt :: struct {
 	using node: Stmt,
 	kind:       Runtime_Kind,
@@ -1445,6 +1450,21 @@ Runtime_Stmt :: struct {
 	offset:     ^Expr,
 	excluding:  [dynamic]^Expr,
 	operands:   [dynamic]^Expr,
+}
+
+Locale_Kind :: enum {
+	Get,
+	Set,
+}
+
+// ABAP syntax: `GET LOCALE LANGUAGE lang [COUNTRY country] [MODIFIER modifier].`
+// or `SET LOCALE LANGUAGE lang [COUNTRY country] [MODIFIER modifier].`
+Locale_Stmt :: struct {
+	using node: Stmt,
+	kind:       Locale_Kind,
+	language:   ^Expr,
+	country:    ^Expr,
+	modifier:   ^Expr,
 }
 
 // ABAP syntax: `SET CURSOR FIELD field [OFFSET off].` or `SET CURSOR line column.`
@@ -2465,6 +2485,7 @@ Any_Node :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Locale_Stmt,
 	^Set_Cursor_Stmt,
 	^Receive_Results_Stmt,
 	^Raise_Stmt,
@@ -2619,6 +2640,7 @@ Any_Stmt :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Locale_Stmt,
 	^Set_Cursor_Stmt,
 	^Receive_Results_Stmt,
 	^Raise_Stmt,

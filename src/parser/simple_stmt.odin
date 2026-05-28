@@ -169,6 +169,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_keyword(p, "SET") && at_keyword_index(p, p.index + 1, "CURSOR") {
 		return parse_set_cursor_stmt(p)
 	}
+	if (at_keyword(p, "GET") || at_keyword(p, "SET")) && at_keyword_index(p, p.index + 1, "LOCALE") {
+		return parse_locale_stmt(p)
+	}
 	if runtime_stmt_starts(p) {
 		return parse_runtime_stmt(p)
 	}
@@ -920,6 +923,40 @@ parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {
 		}
 	}
 	return false
+}
+
+parse_locale_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := current_token(p)
+	stmt := ast.new(ast.Locale_Stmt, start.range, p.allocator)
+	if allow_keyword(p, "GET") {
+		stmt.kind = .Get
+	} else {
+		expect_keyword(p, "SET")
+		stmt.kind = .Set
+	}
+	expect_keyword(p, "LOCALE")
+	parse_locale_tail(p, stmt)
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
+parse_locale_tail :: proc(p: ^Parser, stmt: ^ast.Locale_Stmt) {
+	body_start := p.index
+	for !simple_stmt_done(p, body_start) {
+		if allow_keyword(p, "LANGUAGE") {
+			stmt.language = simple_expr(p, body_start, []string{"COUNTRY", "MODIFIER"})
+			continue
+		}
+		if allow_keyword(p, "COUNTRY") {
+			stmt.country = simple_expr(p, body_start, []string{"LANGUAGE", "MODIFIER"})
+			continue
+		}
+		if allow_keyword(p, "MODIFIER") {
+			stmt.modifier = simple_expr(p, body_start, []string{"LANGUAGE", "COUNTRY"})
+			continue
+		}
+		bump_token(p)
+	}
 }
 
 parse_set_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

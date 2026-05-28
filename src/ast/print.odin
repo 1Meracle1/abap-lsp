@@ -374,6 +374,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_describe_stmt(p, n)
 	case ^Runtime_Stmt:
 		emit_runtime_stmt(p, n)
+	case ^Locale_Stmt:
+		emit_locale_stmt(p, n)
 	case ^Set_Cursor_Stmt:
 		emit_set_cursor_stmt(p, n)
 	case ^Receive_Results_Stmt:
@@ -1982,6 +1984,24 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 	if len(stmt.operands) > 0 {
 		emit_space(p)
 		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_locale_stmt :: proc(p: ^Printer, stmt: ^Locale_Stmt) {
+	emit(p, "GET" if stmt.kind == .Get else "SET")
+	emit(p, " LOCALE")
+	if stmt.language != nil {
+		emit(p, " LANGUAGE ")
+		emit_node(p, stmt.language)
+	}
+	if stmt.country != nil {
+		emit(p, " COUNTRY ")
+		emit_node(p, stmt.country)
+	}
+	if stmt.modifier != nil {
+		emit(p, " MODIFIER ")
+		emit_node(p, stmt.modifier)
 	}
 	emit(p, ".")
 }
