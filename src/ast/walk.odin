@@ -428,6 +428,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.type_ref)
 		walk_data_type_clause(next, n.type_clause)
 		walk(next, n.type_dynamic_expr)
+		walk(next, n.type_handle)
 		walk_expr_list(next, n.operands)
 	case ^Text_Transform_Stmt:
 		walk_expr_list(next, n.operands)

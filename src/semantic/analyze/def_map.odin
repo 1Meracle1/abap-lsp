@@ -257,6 +257,14 @@ Sql_Target_Data :: struct {
 	flags:        Sql_Target_Flags,
 }
 
+Create_Data_Type_Handle_Site_Data :: struct {
+	scope:        Scope_Id,
+	target_name:  string,
+	target_range: tokenizer.Range,
+	handle_name:  string,
+	handle_range: tokenizer.Range,
+}
+
 Field_Type_Ref_Data :: struct {
 	namespace:    Namespace,
 	is_ref:       bool,
@@ -359,6 +367,8 @@ Diagnostic_Kind :: enum {
 	Invalid_Object_Type_Reference,
 	Invalid_Parameter_Type,
 	Invalid_Generic_Table_Type,
+	Invalid_Create_Data_Target,
+	Invalid_Create_Data_Type_Handle,
 	Incompatible_Assignment_Type,
 	Incompatible_Argument_Type,
 	Invalid_Concatenate_Source,
@@ -1039,6 +1049,7 @@ Unit_Analysis :: struct {
 	sql_name_refs:                          [dynamic]Sql_Name_Ref_Data,
 	sql_predicates:                         [dynamic]Sql_Predicate_Data,
 	sql_targets:                            [dynamic]Sql_Target_Data,
+	create_data_type_handles:               [dynamic]Create_Data_Type_Handle_Site_Data,
 	provided_names:                         [dynamic]string,
 	scope_index:                            Scope_Index,
 	semantic_index:                         Semantic_Index,

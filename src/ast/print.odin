@@ -439,6 +439,10 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit(p, " TYPE ")
 			emit_node(p, n.type_ref)
 		}
+		if n.type_handle != nil {
+			emit(p, " TYPE HANDLE ")
+			emit_node(p, n.type_handle)
+		}
 		if len(n.operands) > 0 {
 			emit_space(p)
 			emit_expr_list(p, n.operands, " ")

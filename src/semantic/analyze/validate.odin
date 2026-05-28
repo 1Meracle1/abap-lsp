@@ -112,6 +112,7 @@ validate_unit_diagnostics :: proc(
 	}
 	validate_later_include_type_refs(project, lookup, unit_index, &out, &seen, allocator)
 	validate_unresolved_references(project, lookup, unit_index, &out, &seen, allocator)
+	validate_create_data_type_handles(project, lookup, unit_index, &out, &seen, allocator)
 	validate_object_type_refs(project, lookup, unit_index, &out, &seen, allocator)
 	validate_missing_method_implementations(project, unit_index, &out, &seen, allocator)
 	validate_generic_table_types(project, unit_index, &out, &seen, allocator)
@@ -289,6 +290,119 @@ symbol_exists_in_other_namespace :: proc(
 		}
 	}
 	return false
+}
+
+validate_create_data_type_handles :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+	allocator: mem.Allocator,
+) {
+	unit := &project.units[unit_index]
+	for site in unit.create_data_type_handles {
+		if site.target_name != "" {
+			if handle, ok := value_handle_for_name(project, lookup, unit_index, site.scope, site.target_name);
+			   ok && create_data_target_is_invalid(project, lookup, unit_index, handle) {
+				append_diag(
+					out,
+					seen,
+					.Invalid_Create_Data_Target,
+					site.target_range,
+					diagnostic_message("CREATE DATA target must be a data reference: ", site.target_name, allocator),
+				)
+			}
+		}
+		if handle, ok := value_handle_for_name(project, lookup, unit_index, site.scope, site.handle_name);
+		   ok && !create_data_handle_is_datadescr_ref(project, lookup, unit_index, handle) {
+			append_diag(
+				out,
+				seen,
+				.Invalid_Create_Data_Type_Handle,
+				site.handle_range,
+				diagnostic_message("TYPE HANDLE operand must be REF TO cl_abap_datadescr or subclass: ", site.handle_name, allocator),
+			)
+		}
+	}
+}
+
+create_data_target_is_invalid :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	handle: Symbol_Handle,
+) -> bool {
+	s := symbol_for_project_handle(project, handle)
+	if s == nil || !s.has_declared_type {
+		return false
+	}
+	return !s.declared_type.is_ref || type_ref_is_object_ref(project, lookup, unit_index, s.declared_type)
+}
+
+create_data_handle_is_datadescr_ref :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	handle: Symbol_Handle,
+) -> bool {
+	s := symbol_for_project_handle(project, handle)
+	if s == nil || !s.has_declared_type || !s.declared_type.is_ref {
+		return false
+	}
+	if s.declared_type.base_name == "cl_abap_datadescr" {
+		return true
+	}
+	if is_builtin_type_name(s.declared_type.base_name) {
+		return false
+	}
+	type_handle, ok := resolve_type_ref_handle_project_lookup(project, lookup, unit_index, s.declared_type)
+	return !ok || class_is_or_inherits_from_name(project, lookup, type_handle, "cl_abap_datadescr")
+}
+
+type_ref_is_object_ref :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	type_ref: Field_Type_Ref_Data,
+) -> bool {
+	if type_ref.base_name == "object" {
+		return true
+	}
+	handle, ok := resolve_type_ref_handle_project_lookup(project, lookup, unit_index, type_ref)
+	if !ok {
+		return false
+	}
+	s := symbol_for_project_handle(project, handle)
+	return s != nil && (s.kind == .Class || s.kind == .Interface)
+}
+
+class_is_or_inherits_from_name :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	name: string,
+) -> bool {
+	current := handle
+	for {
+		s := symbol_for_project_handle(project, current)
+		if s != nil && s.name == name {
+			return true
+		}
+		next, ok := direct_superclass_handle_lookup(project, lookup, current)
+		if !ok {
+			return false
+		}
+		current = next
+	}
+}
+
+symbol_for_project_handle :: proc(project: ^Project_Analysis, handle: Symbol_Handle) -> ^Symbol_Data {
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return nil
+	}
+	return symbol(&project.units[unit_index], handle.symbol)
 }
 
 validate_object_type_refs :: proc(

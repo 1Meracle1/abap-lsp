@@ -1172,8 +1172,14 @@ parse_create_object_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 parse_create_data_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	stmt := ast.new(ast.Create_Data_Stmt, start.range, p.allocator)
 	stmt.target = parse_raw_operand_to_period(p, []string{"TYPE", "EXPORTING", "EXCEPTIONS"})
-	stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
-		parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
+	if at_keyword(p, "TYPE") && at_keyword_index(p, p.index + 1, "HANDLE") {
+		bump_token(p)
+		bump_token(p)
+		stmt.type_handle = parse_raw_operand_to_period(p, []string{"EXPORTING", "EXCEPTIONS"})
+	} else {
+		stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr =
+			parse_create_type_addition(p, []string{"EXPORTING", "EXCEPTIONS"})
+	}
 	stmt.operands = parse_generic_operands_to_period(p, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt

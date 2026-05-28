@@ -1570,6 +1570,7 @@ Create_Data_Stmt :: struct {
 	type_clause: ^Data_Type_Clause,
 	type_dynamic: bool,
 	type_dynamic_expr: ^Expr,
+	type_handle: ^Expr,
 	operands:   [dynamic]^Expr,
 }
 

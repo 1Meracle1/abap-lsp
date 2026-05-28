@@ -2781,6 +2781,82 @@ CREATE DATA lr_ref TYPE STANDARD TABLE OF (lv_primary).
 }
 
 @(test)
+create_data_type_handle_uses_value_reference :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///create_data_type_handle.abap",
+		`
+DATA rr_data TYPE REF TO data.
+DATA lo_table TYPE REF TO data.
+
+CREATE DATA rr_data TYPE HANDLE lo_table.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "lo_table", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "handle lo_table", .Type, .Type_Ref))
+}
+
+@(test)
+validates_create_data_type_handle_static_types :: proc(t: ^testing.T) {
+	valid := collect_test_unit(
+		t,
+		"file:///create_data_type_handle_valid.abap",
+		`
+CLASS cl_abap_datadescr DEFINITION.
+ENDCLASS.
+CLASS cl_abap_elemdescr DEFINITION INHERITING FROM cl_abap_datadescr.
+ENDCLASS.
+
+DATA lr_i TYPE REF TO i.
+DATA lo_descr TYPE REF TO cl_abap_elemdescr.
+
+CREATE DATA lr_i TYPE HANDLE lo_descr.
+`,
+	)
+	invalid := collect_test_unit(
+		t,
+		"file:///create_data_type_handle_invalid.abap",
+		`
+CLASS cl_abap_typedescr DEFINITION.
+ENDCLASS.
+CLASS cl_abap_datadescr DEFINITION INHERITING FROM cl_abap_typedescr.
+ENDCLASS.
+
+DATA lr_data TYPE REF TO data.
+DATA lo_descr TYPE REF TO cl_abap_typedescr.
+
+CREATE DATA lr_data TYPE HANDLE lo_descr.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&valid, .Invalid_Create_Data_Type_Handle))
+	testing.expect(t, !has_diagnostic(&valid, .Invalid_Create_Data_Target))
+	testing.expect(t, has_diagnostic(&invalid, .Invalid_Create_Data_Type_Handle))
+}
+
+@(test)
+validates_create_data_type_handle_target_is_data_ref :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///create_data_type_handle_target.abap",
+		`
+CLASS cl_abap_datadescr DEFINITION.
+ENDCLASS.
+
+DATA lv_i TYPE i.
+DATA lo_descr TYPE REF TO cl_abap_datadescr.
+
+CREATE DATA lv_i TYPE HANDLE lo_descr.
+`,
+	)
+
+	testing.expect(t, has_diagnostic(&unit, .Invalid_Create_Data_Target))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Create_Data_Type_Handle))
+}
+
+@(test)
 resolves_form_changing_parameter_in_body :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

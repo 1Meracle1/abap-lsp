@@ -550,6 +550,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.type_ref = clone(n.type_ref, allocator)
 		r.type_clause = clone_type_clause(n.type_clause, allocator)
 		r.type_dynamic_expr = clone(n.type_dynamic_expr, allocator)
+		r.type_handle = clone(n.type_handle, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
 	case ^Text_Transform_Stmt:

@@ -64,6 +64,7 @@ Collector :: struct {
 	sql_name_refs:                          [dynamic]Sql_Name_Ref_Data,
 	sql_predicates:                         [dynamic]Sql_Predicate_Data,
 	sql_targets:                            [dynamic]Sql_Target_Data,
+	create_data_type_handles:               [dynamic]Create_Data_Type_Handle_Site_Data,
 	provided_names:                         [dynamic]string,
 	loop_source_stack:                      [dynamic]Field_Access,
 	structured_groups:                      [dynamic]Structured_Group_Frame,
@@ -168,6 +169,7 @@ collect_unit :: proc(
 		sql_name_refs                          = unit.sql_name_refs,
 		sql_predicates                         = unit.sql_predicates,
 		sql_targets                            = unit.sql_targets,
+		create_data_type_handles               = unit.create_data_type_handles,
 		provided_names                         = unit.provided_names,
 		loop_source_stack                      = make([dynamic]Field_Access, 0, 4, allocator),
 		structured_groups                      = make([dynamic]Structured_Group_Frame, 0, 2, allocator),
@@ -234,6 +236,7 @@ finish_collector :: proc(c: ^Collector) -> Unit_Analysis {
 	c.unit.sql_name_refs = c.sql_name_refs
 	c.unit.sql_predicates = c.sql_predicates
 	c.unit.sql_targets = c.sql_targets
+	c.unit.create_data_type_handles = c.create_data_type_handles
 	c.unit.provided_names = c.provided_names
 	return c.unit
 }

@@ -4,6 +4,7 @@ package abap_frontend_semantic_analyze
 import "src:ast"
 import "src:tokenizer"
 
+import "core:mem"
 import "core:strings"
 
 collect_decl_info_facts :: proc(c: ^Collector, scope: Scope_Id, info: Decl_Info) {
@@ -596,7 +597,36 @@ collect_create_data_stmt_facts :: proc(
 ) {
 	collect_expr_refs(c, stmt.target, scope)
 	collect_create_type_refs(c, scope, stmt.type_ref, stmt.type_clause, stmt.type_dynamic, stmt.type_dynamic_expr)
+	collect_expr_refs(c, stmt.type_handle, scope)
+	if stmt.type_handle != nil {
+		target_name, target_range, _ := raw_operand_simple_ref(stmt.target, c.allocator)
+		handle_name, handle_range, handle_ok := raw_operand_simple_ref(stmt.type_handle, c.allocator)
+		if handle_ok {
+			append(
+				&c.create_data_type_handles,
+				Create_Data_Type_Handle_Site_Data {
+					scope = scope,
+					target_name = target_name,
+					target_range = target_range,
+					handle_name = handle_name,
+					handle_range = handle_range,
+				},
+			)
+		}
+	}
 	collect_expr_list_refs(c, stmt.operands[:], scope)
+}
+
+raw_operand_simple_ref :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (string, tokenizer.Range, bool) {
+	if expr == nil {
+		return "", tokenizer.Range{}, false
+	}
+	raw, ok := expr.derived_expr.(^ast.Type_Ref_Expr)
+	if !ok || len(raw.raw_refs) != 1 || len(raw.raw_refs[0].path) > 0 {
+		return "", tokenizer.Range{}, false
+	}
+	ref := raw.raw_refs[0]
+	return canonical_name(ref.name, allocator), ref.range, ref.name != ""
 }
 
 collect_create_type_refs :: proc(

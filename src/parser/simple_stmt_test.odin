@@ -999,6 +999,23 @@ CREATE DATA lr_var TYPE STANDARD TABLE OF (lv_primary).`
 }
 
 @(test)
+create_data_type_handle_tracks_value_operand :: proc(t: ^testing.T) {
+	source := `CREATE DATA rr_data TYPE HANDLE lo_table.`
+	parsed := parse(source, "create_data_type_handle.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Create_Data_Stmt)
+	handle := stmt.type_handle.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect(t, stmt.type_ref == nil)
+	testing.expect(t, stmt.type_clause == nil)
+	testing.expect(t, handle.raw_operand)
+	testing.expect_value(t, len(handle.raw_refs), 1)
+	testing.expect_value(t, handle.raw_refs[0].name, "lo_table")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 authority_check_object_keeps_id_fields :: proc(t: ^testing.T) {
 	source := `AUTHORITY-CHECK OBJECT 'S_TCODE' ID 'TCD' FIELD lv_tcode.`
 	parsed := parse(source, "authority_check.abap", context.allocator)
