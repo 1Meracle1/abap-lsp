@@ -2369,16 +2369,16 @@ collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: 
 
 collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
+	target_access, has_target_access := value_access_from_expr(c, stmt.target, scope)
 	for field in stmt.fields {
 		if field.name == "" {
 			collect_expr_refs(c, field.expr, scope)
 		}
 	}
-	if access, ok := value_access_from_expr(c, stmt.target, scope);
-	   ok && len(stmt.fields) > 0 && !stmt.descending {
+	if has_target_access && len(stmt.fields) > 0 && !stmt.descending {
 		keys := make([dynamic]string, 0, len(stmt.fields), c.allocator)
 		for field in stmt.fields {
-			if field.name == "" {
+			if field.name == "" || field.descending {
 				resize(&keys, 0)
 				break
 			}
@@ -2389,7 +2389,7 @@ collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scop
 				c,
 				scope,
 				stmt.range,
-				table_order_name_from_access(c, access),
+				table_order_name_from_access(c, target_access),
 				keys[:],
 			)
 		}

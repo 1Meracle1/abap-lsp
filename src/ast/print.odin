@@ -2808,6 +2808,15 @@ emit_sort_stmt :: proc(p: ^Printer, stmt: ^Sort_Stmt) {
 				emit(p, " ")
 			}
 			emit_node(p, field.expr)
+			if field.ascending {
+				emit(p, " ASCENDING")
+			}
+			if field.descending {
+				emit(p, " DESCENDING")
+			}
+			if field.as_text {
+				emit(p, " AS TEXT")
+			}
 		}
 	}
 	if stmt.descending {

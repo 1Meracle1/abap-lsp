@@ -188,6 +188,26 @@ sort_by_keeps_component_names :: proc(t: ^testing.T) {
 }
 
 @(test)
+sort_by_keeps_nested_component_exprs_and_modifiers :: proc(t: ^testing.T) {
+	source := `SORT rs_component-view_metadata BY definition-component_name ASCENDING definition-view_name ASCENDING.`
+	parsed := parse(source, "sort_nested_components.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Sort_Stmt)
+	first := stmt.fields[0].expr.derived_expr.(^ast.Selector_Expr)
+	first_base := first.base.derived_expr.(^ast.Ident_Expr)
+	first_field := first.field.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(stmt.fields), 2)
+	testing.expect_value(t, stmt.fields[0].name, "definition-component_name")
+	testing.expect_value(t, stmt.fields[1].name, "definition-view_name")
+	testing.expect_value(t, first_base.name, "definition")
+	testing.expect_value(t, first_field.name, "component_name")
+	testing.expect(t, stmt.fields[0].ascending)
+	testing.expect(t, stmt.fields[1].ascending)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 append_initial_line_keeps_append_shape :: proc(t: ^testing.T) {
 	source := `APPEND INITIAL LINE TO lt_stab ASSIGNING <ls_stab>.`
 	parsed := parse(source, "append_initial_line.abap", context.allocator)

@@ -2318,9 +2318,12 @@ Modify_Stmt :: struct {
 }
 
 Sort_Field_Clause :: struct {
-	expr:  ^Expr,
-	name:  string,
-	range: tokenizer.Range,
+	expr:       ^Expr,
+	name:       string,
+	range:      tokenizer.Range,
+	ascending:  bool,
+	descending: bool,
+	as_text:    bool,
 }
 
 // ABAP syntax: `SORT itab [BY fields ...]`.

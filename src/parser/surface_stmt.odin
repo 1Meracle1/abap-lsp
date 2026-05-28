@@ -1778,8 +1778,7 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "BY") {
-			values := data_exprs_until(p, body_start, []string{"AS", "ASCENDING", "DESCENDING"})
-			for value in values {append(&stmt.fields, sort_field_clause(value))}
+			parse_sort_by_fields(p, body_start, stmt)
 			continue
 		}
 		if allow_keyword(p, "DESCENDING") {
@@ -1795,13 +1794,74 @@ parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
-sort_field_clause :: proc(expr: ^ast.Expr) -> ast.Sort_Field_Clause {
+parse_sort_by_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast.Sort_Stmt) {
+	for !data_stmt_done(p, body_start) {
+		if allow_token(p, .Comma) || allow_token(p, .Colon) {
+			continue
+		}
+		if allow_keyword(p, "ASCENDING") {
+			if len(stmt.fields) > 0 {
+				stmt.fields[len(stmt.fields) - 1].ascending = true
+				stmt.fields[len(stmt.fields) - 1].descending = false
+			}
+			continue
+		}
+		if allow_keyword(p, "DESCENDING") {
+			if len(stmt.fields) > 0 {
+				stmt.fields[len(stmt.fields) - 1].ascending = false
+				stmt.fields[len(stmt.fields) - 1].descending = true
+			}
+			continue
+		}
+		if allow_keyword(p, "AS") {
+			text := allow_keyword(p, "TEXT")
+			if text && len(stmt.fields) > 0 {
+				stmt.fields[len(stmt.fields) - 1].as_text = true
+			}
+			continue
+		}
+		start := p.index
+		value := data_expr(p, body_start, []string{"AS", "ASCENDING", "DESCENDING"})
+		if value != nil {
+			append(&stmt.fields, sort_field_clause(p, value))
+		} else {
+			bump_token(p)
+		}
+		ensure_forward_progress(p, start)
+	}
+}
+
+sort_field_clause :: proc(p: ^Parser, expr: ^ast.Expr) -> ast.Sort_Field_Clause {
 	clause := ast.Sort_Field_Clause{expr = expr}
-	if id, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
-		clause.name = id.name
-		clause.range = id.range
+	if sort_field_name_expr(expr) {
+		clause.name = p.source[expr.range.start:expr.range.end]
+		clause.range = expr.range
 	}
 	return clause
+}
+
+sort_field_name_expr :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	if _, _, ok := sort_field_segment_name(expr); ok {
+		return true
+	}
+	sel, ok := expr.derived_expr.(^ast.Selector_Expr)
+	return ok && sel.op == .Dash && sort_field_name_expr(sel.base) && sort_field_name_expr(sel.field)
+}
+
+sort_field_segment_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
+	if expr == nil {
+		return "", tokenizer.Range{}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Literal_Expr:
+		return n.value, n.range, n.value != ""
+	}
+	return "", tokenizer.Range{}, false
 }
 
 parse_sql_assignments :: proc(

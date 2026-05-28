@@ -4766,6 +4766,31 @@ ENDCLASS.
 }
 
 @(test)
+sort_by_nested_components_are_table_fields_not_value_refs :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_definition,
+           component_name TYPE string,
+           view_name TYPE string,
+         END OF ty_definition.
+  TYPES: BEGIN OF ty_view,
+           definition TYPE ty_definition,
+         END OF ty_view.
+  DATA lt_view TYPE STANDARD TABLE OF ty_view WITH EMPTY KEY.
+
+  SORT lt_view BY definition-component_name ASCENDING definition-view_name ASCENDING.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///sort_nested_components.abap", source)
+	keys := [?]string{"definition-component_name", "definition-view_name"}
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_reference(&unit, "definition", .Value, .Identifier))
+	testing.expect(t, internal_table_order_present(&unit, "lt_view", keys[:]))
+}
+
+@(test)
 collects_select_order_by_into_table_order_fact :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
