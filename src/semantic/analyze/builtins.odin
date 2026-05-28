@@ -490,6 +490,8 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "syst_byte", kind = .Type, structure_name = ""},
 	{name = "syst_long", kind = .Type, structure_name = ""},
 	{name = "tabname", kind = .Type, structure_name = ""},
+	{name = "progname", kind = .Type, structure_name = ""},
+	{name = "include", kind = .Type, structure_name = ""},
 	{name = "cdobjectcl", kind = .Type, structure_name = ""},
 	{name = "rs38l_fnam", kind = .Type, structure_name = ""},
 	{name = "memoryid", kind = .Type, structure_name = ""},
@@ -823,6 +825,8 @@ builtin_type_metadata :: proc(name: string) -> (Builtin_Type_Metadata, bool) {
 		return {type_name = "x", type_clause_display = "x LENGTH 2"}, true
 	case "abap_byte_order_utf8":
 		return {type_name = "x", type_clause_display = "x LENGTH 3"}, true
+	case "progname", "include":
+		return {type_name = "c", type_clause_display = "c LENGTH 40"}, true
 	case "abap_editmask":
 		return {type_name = "c", type_clause_display = "c LENGTH abap_max_edit_mask_ln"}, true
 	case "abap_helpid":

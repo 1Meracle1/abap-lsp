@@ -1344,6 +1344,10 @@ extend_structure_from_include :: proc(
 		return
 	}
 	add_type_reference(c, scope, type_ref, info.range)
+	if field, field_ok := include_type_component_field(c, scope, info, type_ref); field_ok {
+		append(fields, field)
+		return
+	}
 	resolved := INVALID_STRUCTURE_ID
 	if found, found_ok := resolve_field_type_ref(c, scope, type_ref); found_ok {
 		resolved = found
@@ -1373,6 +1377,40 @@ extend_structure_from_include :: proc(
 			},
 		)
 	}
+}
+
+include_type_component_field :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	info: Decl_Info,
+	type_ref: Field_Type_Ref_Data,
+) -> (Structure_Field_Data, bool) {
+	if info.kind != .Include_Type ||
+	   info.as_name != "" ||
+	   info.renaming_suffix != "" ||
+	   info.occurs != nil {
+		return {}, false
+	}
+	is_field := info.value_clause != nil
+	if !is_field && type_ref.base_name != "" && len(type_ref.field_path) == 0 {
+		symbol_id, ok := lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, type_ref.namespace)
+		if !ok && type_ref.namespace == .Type {
+			symbol_id, ok = lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, .Value)
+		}
+		is_field = ok && c.symbols[symbol_id_index(symbol_id)].structure == INVALID_STRUCTURE_ID
+	}
+	if !is_field {
+		return {}, false
+	}
+	flags := Structure_Field_Flags{.Has_Decl_Range, .Has_Type_Ref}
+	return Structure_Field_Data {
+		name = "include",
+		decl_range = info.range,
+		decl_unit = c.unit_id,
+		type_ref = type_ref,
+		value_clause_display = value_clause_display(c, info.value_clause),
+		flags = flags,
+	}, true
 }
 
 push_collected_structure :: proc(

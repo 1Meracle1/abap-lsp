@@ -686,6 +686,8 @@ standard_type_pool_symbols_are_installed :: proc(t: ^testing.T) {
 		{"abap_trans_parmref", "data", "REF TO data"},
 		{"abap_byte_order_utf8", "x", "x LENGTH 3"},
 		{"abap_encoding", "abap_encod", "abap_encod"},
+		{"progname", "c", "c LENGTH 40"},
+		{"include", "c", "c LENGTH 40"},
 	}
 	for spec in type_specs {
 		s := analyze.find_symbol(&unit, spec[0], .Builtin_Type)
@@ -2340,6 +2342,74 @@ TYPES: BEGIN OF ty_wrap,
 	testing.expect(t, field_names_match(st, wrap_fields[:]))
 	testing.expect_value(t, st.fields[0].type_ref.base_name, "i")
 	testing.expect_value(t, st.fields[1].type_ref.base_name, "string")
+}
+
+@(test)
+structured_component_named_include_resolves_as_field :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF ty_src_info,
+         program TYPE progname,
+         include TYPE progname,
+         line    TYPE i,
+       END OF ty_src_info.
+DATA ms_src_info TYPE ty_src_info.
+DATA include_name TYPE progname.
+include_name = ms_src_info-include.
+`
+	unit := collect_test_unit(t, "file:///component_include.abap", source)
+
+	src_info := analyze.find_symbol(&unit, "ty_src_info", .Type_Def)
+	testing.expect(t, src_info != nil)
+	st := analyze.structure(&unit, src_info.structure)
+	fields := [?]string{"program", "include", "line"}
+	testing.expect(t, field_names_match(st, fields[:]))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+like_line_of_table_with_include_component_resolves_field :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF abap_callstack_line,
+         mainprogram TYPE progname,
+         include     TYPE include,
+         line        TYPE i,
+       END OF abap_callstack_line.
+TYPES abap_callstack TYPE STANDARD TABLE OF abap_callstack_line WITH DEFAULT KEY.
+DATA mt_callstack TYPE abap_callstack.
+FIELD-SYMBOLS <ls_callstack> LIKE LINE OF mt_callstack.
+DATA include_name TYPE progname.
+include_name = <ls_callstack>-include.
+`
+	unit := collect_test_unit(t, "file:///callstack_include.abap", source)
+
+	line := analyze.find_symbol(&unit, "abap_callstack_line", .Type_Def)
+	testing.expect(t, line != nil)
+	st := analyze.structure(&unit, line.structure)
+	fields := [?]string{"mainprogram", "include", "line"}
+	testing.expect(t, field_names_match(st, fields[:]))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+structured_include_type_does_not_add_include_field :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF ty_base,
+         a TYPE i,
+       END OF ty_base.
+TYPES: BEGIN OF ty_wrap,
+         INCLUDE TYPE ty_base,
+       END OF ty_wrap.
+DATA ls_wrap TYPE ty_wrap.
+ls_wrap-include = 1.
+`
+	unit := collect_test_unit(t, "file:///real_structured_include.abap", source)
+
+	wrap := analyze.find_symbol(&unit, "ty_wrap", .Type_Def)
+	testing.expect(t, wrap != nil)
+	st := analyze.structure(&unit, wrap.structure)
+	fields := [?]string{"a"}
+	testing.expect(t, field_names_match(st, fields[:]))
+	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
 }
 
 @(test)
