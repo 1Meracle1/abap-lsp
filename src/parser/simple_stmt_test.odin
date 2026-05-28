@@ -402,7 +402,8 @@ set_field lv_a lv_b.`
 	testing.expect_value(t, counts.flow_stmt, 4)
 	testing.expect_value(t, counts.transaction_stmt, 2)
 	testing.expect_value(t, counts.describe_stmt, 1)
-	testing.expect_value(t, counts.runtime_stmt, 4)
+	testing.expect_value(t, counts.runtime_stmt, 3)
+	testing.expect_value(t, counts.set_handler, 1)
 	testing.expect_value(t, counts.raise_stmt, 2)
 	testing.expect_value(t, counts.authority_check, 1)
 	testing.expect_value(t, counts.field_groups, 1)
@@ -501,6 +502,31 @@ GET REFERENCE OF ls_data INTO lr_data.`
 	testing.expect_value(t, reference.subject, ast.Runtime_Subject.Reference)
 	testing.expect(t, reference.value != nil)
 	testing.expect(t, reference.target != nil)
+}
+
+@(test)
+set_handler_stmt_keeps_sender_and_activation :: proc(t: ^testing.T) {
+	source := `SET HANDLER on_event FOR mi_html_viewer ACTIVATION space.
+SET HANDLER on_ev_object_saved FOR ALL INSTANCES ACTIVATION abap_false.`
+	parsed := parse(source, "set_handler.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.runtime_stmt, 0)
+	testing.expect_value(t, counts.set_handler, 2)
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Set_Handler_Stmt)
+	second := parsed.root.stmts[1].derived_stmt.(^ast.Set_Handler_Stmt)
+
+	testing.expect_value(t, len(first.handlers), 1)
+	testing.expect(t, first.sender != nil)
+	testing.expect(t, first.activation != nil)
+	testing.expect(t, !first.all_instances)
+	testing.expect_value(t, ast.print_node(first, context.allocator), "SET HANDLER on_event FOR mi_html_viewer ACTIVATION space.")
+	testing.expect_value(t, len(second.handlers), 1)
+	testing.expect(t, second.sender == nil)
+	testing.expect(t, second.activation != nil)
+	testing.expect(t, second.all_instances)
+	testing.expect_value(t, ast.print_node(second, context.allocator), "SET HANDLER on_ev_object_saved FOR ALL INSTANCES ACTIVATION abap_false.")
 }
 
 @(test)

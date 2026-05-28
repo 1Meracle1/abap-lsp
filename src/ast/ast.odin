@@ -1422,7 +1422,6 @@ Runtime_Kind :: enum {
 	Get,
 	Set,
 	Log_Point,
-	Set_Handler,
 	Get_Badi,
 	Export,
 	Import,
@@ -1441,7 +1440,6 @@ Runtime_Subject :: enum {
 	Screen,
 	User_Command,
 	Badi,
-	Handler,
 	Update_Task_Local,
 }
 
@@ -1478,7 +1476,7 @@ Data_Cluster_Parameter_Clause :: struct {
 // `GET RUN TIME FIELD`, `GET TIME STAMP FIELD`, `GET PARAMETER ID`,
 // `GET CURSOR`, `GET REFERENCE OF`, `GET BADI`, `SET PARAMETER ID`,
 // `SET PF-STATUS`, `SET TITLEBAR`, `SET SCREEN`, `SET USER-COMMAND`,
-// `SET UPDATE TASK LOCAL`, `SET HANDLER`, `LOG-POINT`,
+// `SET UPDATE TASK LOCAL`, `LOG-POINT`,
 // and generic fallback forms for unmodeled `GET`/`SET`/`EXPORT`/`IMPORT`/`RECEIVE`.
 Runtime_Stmt :: struct {
 	using node: Stmt,
@@ -1492,6 +1490,15 @@ Runtime_Stmt :: struct {
 	offset:     ^Expr,
 	excluding:  [dynamic]^Expr,
 	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: `SET HANDLER handler [FOR sender|FOR ALL INSTANCES] [ACTIVATION flag].`
+Set_Handler_Stmt :: struct {
+	using node: Stmt,
+	handlers:   [dynamic]^Expr,
+	sender:     ^Expr,
+	activation: ^Expr,
+	all_instances: bool,
 }
 
 // ABAP syntax: `IMPORT parameter_list FROM medium`.
@@ -2567,6 +2574,7 @@ Any_Node :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Set_Handler_Stmt,
 	^Import_Stmt,
 	^Export_Stmt,
 	^Bit_Stmt,
@@ -2726,6 +2734,7 @@ Any_Stmt :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Set_Handler_Stmt,
 	^Import_Stmt,
 	^Export_Stmt,
 	^Bit_Stmt,

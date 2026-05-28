@@ -487,6 +487,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.excluding = clone_expr_list(n.excluding, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Set_Handler_Stmt:
+		r := clone_shallow(n, allocator)
+		r.handlers = clone_expr_list(n.handlers, allocator)
+		r.sender = clone(n.sender, allocator)
+		r.activation = clone(n.activation, allocator)
+		return r
 	case ^Import_Stmt:
 		r := clone_shallow(n, allocator)
 		r.medium = clone_data_cluster_medium(n.medium, allocator)

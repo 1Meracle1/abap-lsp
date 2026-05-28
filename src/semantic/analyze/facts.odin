@@ -1630,6 +1630,26 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
+collect_set_handler_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Set_Handler_Stmt, scope: Scope_Id) {
+	for handler in stmt.handlers {
+		collect_handler_ref(c, handler, scope)
+	}
+	collect_expr_refs(c, stmt.sender, scope)
+	collect_expr_refs(c, stmt.activation, scope)
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
+collect_handler_ref :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
+	if expr == nil {
+		return
+	}
+	if name, range, ok := expr_name(expr); ok {
+		add_reference(c, scope, name, .Routine, .Routine_Call, range)
+		return
+	}
+	collect_call_method_target_refs(c, expr, scope)
+}
+
 collect_import_stmt_facts :: proc(
 	c: ^Collector,
 	stmt: ^ast.Import_Stmt,

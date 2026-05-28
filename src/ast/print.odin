@@ -376,6 +376,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_describe_stmt(p, n)
 	case ^Runtime_Stmt:
 		emit_runtime_stmt(p, n)
+	case ^Set_Handler_Stmt:
+		emit_set_handler_stmt(p, n)
 	case ^Import_Stmt:
 		emit_import_stmt(p, n)
 	case ^Export_Stmt:
@@ -2008,13 +2010,31 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 	case .Badi:
 		emit(p, " BADI ")
 		emit_node(p, stmt.target)
-	case .Handler:
 	case .Update_Task_Local:
 		emit(p, " UPDATE TASK LOCAL")
 	}
 	if len(stmt.operands) > 0 {
 		emit_space(p)
 		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_set_handler_stmt :: proc(p: ^Printer, stmt: ^Set_Handler_Stmt) {
+	emit(p, "SET HANDLER")
+	if len(stmt.handlers) > 0 {
+		emit_space(p)
+		emit_expr_list(p, stmt.handlers, " ")
+	}
+	if stmt.all_instances {
+		emit(p, " FOR ALL INSTANCES")
+	} else if stmt.sender != nil {
+		emit(p, " FOR ")
+		emit_node(p, stmt.sender)
+	}
+	if stmt.activation != nil {
+		emit(p, " ACTIVATION ")
+		emit_node(p, stmt.activation)
 	}
 	emit(p, ".")
 }
@@ -3146,7 +3166,6 @@ runtime_kind_text :: proc(kind: Runtime_Kind) -> string {
 	case .Get: return "GET"
 	case .Set: return "SET"
 	case .Log_Point: return "LOG-POINT"
-	case .Set_Handler: return "SET HANDLER"
 	case .Get_Badi: return "GET BADI"
 	case .Export: return "EXPORT"
 	case .Import: return "IMPORT"

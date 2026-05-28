@@ -388,6 +388,10 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.offset)
 		walk_expr_list(next, n.excluding)
 		walk_expr_list(next, n.operands)
+	case ^Set_Handler_Stmt:
+		walk_expr_list(next, n.handlers)
+		walk(next, n.sender)
+		walk(next, n.activation)
 	case ^Import_Stmt:
 		walk_data_cluster_medium(next, n.medium)
 		for clause in n.parameters {

@@ -181,6 +181,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if export_stmt_starts(p) {
 		return parse_export_stmt(p)
 	}
+	if set_handler_stmt_starts(p) {
+		return parse_set_handler_stmt(p)
+	}
 	if runtime_stmt_starts(p) {
 		return parse_runtime_stmt(p)
 	}
@@ -799,6 +802,10 @@ runtime_stmt_starts :: proc(p: ^Parser) -> bool {
 	)
 }
 
+set_handler_stmt_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword(p, "SET") && at_keyword_index(p, p.index + 1, "HANDLER")
+}
+
 bit_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
 		(at_keyword(p, "GET") || at_keyword(p, "SET")) &&
@@ -845,12 +852,7 @@ parse_runtime_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	subject := ast.Runtime_Subject.None
 	if at_keyword(p, "SET") {
 		expect_keyword(p, "SET")
-		if allow_keyword(p, "HANDLER") {
-			kind = .Set_Handler
-			subject = .Handler
-		} else {
-			kind = .Set
-		}
+		kind = .Set
 	} else if at_keyword(p, "EXPORT") {
 		expect_keyword(p, "EXPORT")
 		kind = .Export
@@ -1153,6 +1155,27 @@ parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {
 		}
 	}
 	return false
+}
+
+parse_set_handler_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "SET")
+	expect_keyword(p, "HANDLER")
+	stmt := ast.new(ast.Set_Handler_Stmt, start.range, p.allocator)
+	body_start := p.index
+	stmt.handlers = parse_exprs_until(p, body_start, []string{"FOR", "ACTIVATION"})
+	if allow_keyword(p, "FOR") {
+		if allow_keyword(p, "ALL") {
+			allow_keyword(p, "INSTANCES")
+			stmt.all_instances = true
+		} else {
+			stmt.sender = simple_expr(p, body_start, []string{"ACTIVATION"})
+		}
+	}
+	if allow_keyword(p, "ACTIVATION") {
+		stmt.activation = simple_expr(p, body_start, []string{})
+	}
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
 }
 
 parse_locale_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
