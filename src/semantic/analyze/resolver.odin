@@ -1592,12 +1592,12 @@ local_structure_for_type_ref :: proc(
 			return structure_id, true
 		}
 	}
-	if type_ref.namespace == .Value {
+	if type_ref.namespace == .Value || type_ref.namespace == .Type {
 		if class_symbol, ok := enclosing_class_owner_unit(unit, scope_id); ok {
 			if symbol_id, symbol_ok := class_scope_symbol(
 				&unit.scope_index,
 				class_symbol,
-				.Value,
+				type_ref.namespace,
 				type_ref.base_name,
 			); symbol_ok {
 				return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])

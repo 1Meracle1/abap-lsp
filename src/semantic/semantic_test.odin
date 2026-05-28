@@ -4619,6 +4619,34 @@ ENDFORM.
 }
 
 @(test)
+sort_target_resolves_class_local_type_component :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl DEFINITION.
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_header,
+             vepname TYPE string,
+             version TYPE string,
+           END OF ty_header.
+    TYPES: BEGIN OF ty_webi,
+             pvepheader TYPE STANDARD TABLE OF ty_header WITH DEFAULT KEY,
+           END OF ty_webi.
+    METHODS sort CHANGING cs_webi TYPE ty_webi.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD sort.
+    SORT cs_webi-pvepheader BY vepname version.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///sort_class_type_component.abap", source)
+	keys := [?]string{"vepname", "version"}
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, internal_table_order_present(&unit, "cs_webi-pvepheader", keys[:]))
+}
+
+@(test)
 collects_select_order_by_into_table_order_fact :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
