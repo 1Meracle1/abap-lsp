@@ -483,6 +483,13 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.excluding = clone_expr_list(n.excluding, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Set_Cursor_Stmt:
+		r := clone_shallow(n, allocator)
+		r.field = clone(n.field, allocator)
+		r.offset = clone(n.offset, allocator)
+		r.line = clone(n.line, allocator)
+		r.column = clone(n.column, allocator)
+		return r
 	case ^Receive_Results_Stmt:
 		r := clone_shallow(n, allocator)
 		r.target = clone(n.target, allocator)

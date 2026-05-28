@@ -166,6 +166,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_keyword(p, "RECEIVE") && at_keyword_index(p, p.index + 1, "RESULTS") {
 		return parse_receive_results_stmt(p)
 	}
+	if at_keyword(p, "SET") && at_keyword_index(p, p.index + 1, "CURSOR") {
+		return parse_set_cursor_stmt(p)
+	}
 	if runtime_stmt_starts(p) {
 		return parse_runtime_stmt(p)
 	}
@@ -914,6 +917,24 @@ parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {
 		}
 	}
 	return false
+}
+
+parse_set_cursor_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "SET")
+	expect_keyword(p, "CURSOR")
+	body_start := p.index
+	stmt := ast.new(ast.Set_Cursor_Stmt, start.range, p.allocator)
+	if allow_keyword(p, "FIELD") {
+		stmt.field = simple_expr(p, body_start, []string{"OFFSET"})
+		if allow_keyword(p, "OFFSET") {
+			stmt.offset = simple_expr(p, body_start, []string{})
+		}
+	} else {
+		stmt.line = simple_expr(p, body_start, []string{})
+		stmt.column = simple_expr(p, body_start, []string{})
+	}
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
 }
 
 RECEIVE_RESULTS_FUNCTION_STOP_KEYWORDS :: []string {

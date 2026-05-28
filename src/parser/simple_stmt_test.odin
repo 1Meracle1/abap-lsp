@@ -430,6 +430,28 @@ GET REFERENCE OF ls_data INTO lr_data.`
 }
 
 @(test)
+set_cursor_uses_dedicated_stmt :: proc(t: ^testing.T) {
+	source := `SET CURSOR FIELD 'P_PASS'.
+SET CURSOR FIELD l_dynpro_field-screenname OFFSET lv_off.
+SET CURSOR 2 ls-cline.`
+	parsed := parse(source, "set_cursor.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.set_cursor, 3)
+	field := parsed.root.stmts[0].derived_stmt.(^ast.Set_Cursor_Stmt)
+	field_with_offset := parsed.root.stmts[1].derived_stmt.(^ast.Set_Cursor_Stmt)
+	position := parsed.root.stmts[2].derived_stmt.(^ast.Set_Cursor_Stmt)
+
+	testing.expect(t, field.field != nil)
+	testing.expect(t, field_with_offset.field != nil)
+	testing.expect(t, field_with_offset.offset != nil)
+	testing.expect(t, position.line != nil)
+	testing.expect(t, position.column != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 receive_results_from_function_keeps_target_and_arguments :: proc(t: ^testing.T) {
 	source := `RECEIVE RESULTS FROM FUNCTION 'Z_DEMO'
   IMPORTING ev_value = DATA(lv_value)

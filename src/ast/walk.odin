@@ -383,6 +383,11 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.offset)
 		walk_expr_list(next, n.excluding)
 		walk_expr_list(next, n.operands)
+	case ^Set_Cursor_Stmt:
+		walk(next, n.field)
+		walk(next, n.offset)
+		walk(next, n.line)
+		walk(next, n.column)
 	case ^Receive_Results_Stmt:
 		walk(next, n.target)
 	case ^Raise_Stmt:

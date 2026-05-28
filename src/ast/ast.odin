@@ -1447,6 +1447,15 @@ Runtime_Stmt :: struct {
 	operands:   [dynamic]^Expr,
 }
 
+// ABAP syntax: `SET CURSOR FIELD field [OFFSET off].` or `SET CURSOR line column.`
+Set_Cursor_Stmt :: struct {
+	using node: Stmt,
+	field:      ^Expr,
+	offset:     ^Expr,
+	line:       ^Expr,
+	column:     ^Expr,
+}
+
 // ABAP syntax: `RECEIVE RESULTS FROM FUNCTION fm ...`.
 Receive_Results_Stmt :: struct {
 	using node: Stmt,
@@ -2441,6 +2450,7 @@ Any_Node :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Set_Cursor_Stmt,
 	^Receive_Results_Stmt,
 	^Raise_Stmt,
 	^Authority_Check_Stmt,
@@ -2593,6 +2603,7 @@ Any_Stmt :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Set_Cursor_Stmt,
 	^Receive_Results_Stmt,
 	^Raise_Stmt,
 	^Authority_Check_Stmt,

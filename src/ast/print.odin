@@ -374,6 +374,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_describe_stmt(p, n)
 	case ^Runtime_Stmt:
 		emit_runtime_stmt(p, n)
+	case ^Set_Cursor_Stmt:
+		emit_set_cursor_stmt(p, n)
 	case ^Receive_Results_Stmt:
 		emit_receive_results_stmt(p, n)
 	case ^Raise_Stmt:
@@ -1978,6 +1980,28 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 	if len(stmt.operands) > 0 {
 		emit_space(p)
 		emit_expr_list(p, stmt.operands, " ")
+	}
+	emit(p, ".")
+}
+
+emit_set_cursor_stmt :: proc(p: ^Printer, stmt: ^Set_Cursor_Stmt) {
+	emit(p, "SET CURSOR")
+	if stmt.field != nil {
+		emit(p, " FIELD ")
+		emit_node(p, stmt.field)
+		if stmt.offset != nil {
+			emit(p, " OFFSET ")
+			emit_node(p, stmt.offset)
+		}
+	} else {
+		if stmt.line != nil {
+			emit_space(p)
+			emit_node(p, stmt.line)
+		}
+		if stmt.column != nil {
+			emit_space(p)
+			emit_node(p, stmt.column)
+		}
 	}
 	emit(p, ".")
 }
