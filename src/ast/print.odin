@@ -374,6 +374,10 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_describe_stmt(p, n)
 	case ^Runtime_Stmt:
 		emit_runtime_stmt(p, n)
+	case ^Import_Stmt:
+		emit_import_stmt(p, n)
+	case ^Export_Stmt:
+		emit_export_stmt(p, n)
 	case ^Bit_Stmt:
 		emit_bit_stmt(p, n)
 	case ^Locale_Stmt:
@@ -1992,6 +1996,52 @@ emit_runtime_stmt :: proc(p: ^Printer, stmt: ^Runtime_Stmt) {
 		emit_expr_list(p, stmt.operands, " ")
 	}
 	emit(p, ".")
+}
+
+emit_import_stmt :: proc(p: ^Printer, stmt: ^Import_Stmt) {
+	emit(p, "IMPORT")
+	if len(stmt.parameters) > 0 {
+		emit(p, " ")
+		emit_data_cluster_parameters(p, stmt.parameters)
+	}
+	emit(p, " FROM ")
+	emit_data_cluster_medium(p, stmt.medium)
+	emit(p, ".")
+}
+
+emit_export_stmt :: proc(p: ^Printer, stmt: ^Export_Stmt) {
+	emit(p, "EXPORT")
+	if len(stmt.parameters) > 0 {
+		emit(p, " ")
+		emit_data_cluster_parameters(p, stmt.parameters)
+	}
+	emit(p, " TO ")
+	emit_data_cluster_medium(p, stmt.medium)
+	emit(p, ".")
+}
+
+emit_data_cluster_medium :: proc(p: ^Printer, medium: Data_Cluster_Medium_Clause) {
+	switch medium.kind {
+	case .Memory_ID:
+		emit(p, "MEMORY ID ")
+		emit_node(p, medium.id)
+	}
+}
+
+emit_data_cluster_parameters :: proc(
+	p: ^Printer,
+	parameters: [dynamic]Data_Cluster_Parameter_Clause,
+) {
+	for entry, i in parameters {
+		if i > 0 {
+			emit(p, " ")
+		}
+		if entry.name != "" {
+			emit(p, entry.name)
+			emit(p, " = ")
+		}
+		emit_node(p, entry.value)
+	}
 }
 
 emit_bit_stmt :: proc(p: ^Printer, stmt: ^Bit_Stmt) {

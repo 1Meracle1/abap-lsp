@@ -1623,6 +1623,41 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
+collect_import_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Import_Stmt,
+	scope: Scope_Id,
+) {
+	for parameter in stmt.parameters {
+		collect_write_target_expr(c, scope, stmt.range, parameter.value)
+	}
+	collect_data_cluster_medium_refs(c, stmt.medium, scope)
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
+collect_export_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Export_Stmt,
+	scope: Scope_Id,
+) {
+	for parameter in stmt.parameters {
+		collect_expr_refs(c, parameter.value, scope)
+	}
+	collect_data_cluster_medium_refs(c, stmt.medium, scope)
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
+collect_data_cluster_medium_refs :: proc(
+	c: ^Collector,
+	medium: ast.Data_Cluster_Medium_Clause,
+	scope: Scope_Id,
+) {
+	switch medium.kind {
+	case .Memory_ID:
+		collect_expr_refs(c, medium.id, scope)
+	}
+}
+
 collect_bit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Bit_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.position, scope)
 	if stmt.kind == .Get {

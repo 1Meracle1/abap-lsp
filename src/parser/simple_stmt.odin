@@ -175,6 +175,12 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if bit_stmt_starts(p) {
 		return parse_bit_stmt(p)
 	}
+	if import_stmt_starts(p) {
+		return parse_import_stmt(p)
+	}
+	if export_stmt_starts(p) {
+		return parse_export_stmt(p)
+	}
 	if runtime_stmt_starts(p) {
 		return parse_runtime_stmt(p)
 	}
@@ -876,6 +882,108 @@ parse_runtime_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.operands = parse_generic_operands_to_period(p, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
+}
+
+import_stmt_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword(p, "IMPORT") && data_cluster_medium_tail_present(p, "FROM")
+}
+
+export_stmt_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword(p, "EXPORT") && data_cluster_medium_tail_present(p, "TO")
+}
+
+data_cluster_medium_tail_present :: proc(p: ^Parser, keyword: string) -> bool {
+	for i := p.index; i + 2 < len(p.tokens); i += 1 {
+		tok := p.tokens[i]
+		if tok.kind == .Period || tok.kind == .Eof {
+			break
+		}
+		if token_is_keyword(p, tok, keyword) &&
+		   token_is_keyword(p, p.tokens[i + 1], "MEMORY") &&
+		   token_is_keyword(p, p.tokens[i + 2], "ID") {
+			return true
+		}
+	}
+	return false
+}
+
+parse_import_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "IMPORT")
+	body_start := p.index
+	stmt := ast.new(ast.Import_Stmt, start.range, p.allocator)
+	stmt.parameters = parse_data_cluster_parameters(p, body_start, "FROM")
+	expect_keyword(p, "FROM")
+	stmt.medium = parse_data_cluster_medium(p, body_start)
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
+parse_export_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "EXPORT")
+	body_start := p.index
+	stmt := ast.new(ast.Export_Stmt, start.range, p.allocator)
+	stmt.parameters = parse_data_cluster_parameters(p, body_start, "TO")
+	expect_keyword(p, "TO")
+	stmt.medium = parse_data_cluster_medium(p, body_start)
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
+}
+
+parse_data_cluster_parameters :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keyword: string,
+) -> [dynamic]ast.Data_Cluster_Parameter_Clause {
+	parameters := make([dynamic]ast.Data_Cluster_Parameter_Clause, 0, 2, p.allocator)
+	allow_token(p, .Colon)
+	for !simple_stmt_done(p, body_start) && !at_keyword(p, stop_keyword) {
+		if allow_token(p, .Comma) {
+			continue
+		}
+		start := p.index
+		parameter, ok := parse_data_cluster_parameter(p, body_start, stop_keyword)
+		if ok {
+			append(&parameters, parameter)
+		}
+		ensure_forward_progress(p, start)
+	}
+	return parameters
+}
+
+parse_data_cluster_medium :: proc(
+	p: ^Parser,
+	body_start: int,
+) -> ast.Data_Cluster_Medium_Clause {
+	expect_keyword(p, "MEMORY")
+	expect_keyword(p, "ID")
+	medium := ast.Data_Cluster_Medium_Clause {
+		kind = .Memory_ID,
+		id   = required_simple_expr(p, body_start, []string{}),
+	}
+	consume_simple_entry_tail(p, body_start)
+	return medium
+}
+
+parse_data_cluster_parameter :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keyword: string,
+) -> (ast.Data_Cluster_Parameter_Clause, bool) {
+	if simple_stmt_done(p, body_start) || at_keyword(p, stop_keyword) {
+		return {}, false
+	}
+	parameter: ast.Data_Cluster_Parameter_Clause
+	stop := []string{stop_keyword}
+	if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
+		name := bump_token(p)
+		expect_token(p, .Eq)
+		parameter.name = tokenizer.token_lexeme(name, p.source)
+		parameter.name_range = name.range
+		parameter.value = required_simple_expr(p, body_start, stop)
+		return parameter, true
+	}
+	parameter.value = required_simple_expr(p, body_start, stop)
+	return parameter, parameter.value != nil
 }
 
 parse_runtime_detail :: proc(p: ^Parser, stmt: ^ast.Runtime_Stmt) -> bool {

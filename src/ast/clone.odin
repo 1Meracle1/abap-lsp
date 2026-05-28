@@ -483,6 +483,16 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.excluding = clone_expr_list(n.excluding, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Import_Stmt:
+		r := clone_shallow(n, allocator)
+		r.medium = clone_data_cluster_medium(n.medium, allocator)
+		r.parameters = clone_data_cluster_parameters(n.parameters, allocator)
+		return r
+	case ^Export_Stmt:
+		r := clone_shallow(n, allocator)
+		r.medium = clone_data_cluster_medium(n.medium, allocator)
+		r.parameters = clone_data_cluster_parameters(n.parameters, allocator)
+		return r
 	case ^Bit_Stmt:
 		r := clone_shallow(n, allocator)
 		r.position = clone(n.position, allocator)
@@ -1325,6 +1335,31 @@ clone_describe_entries :: proc(list: [dynamic]Describe_Entry_Clause, allocator: 
 			source = clone(clause.source, allocator),
 			target = clone(clause.target, allocator),
 			table  = clause.table,
+		})
+	}
+	return res
+}
+
+clone_data_cluster_medium :: proc(
+	medium: Data_Cluster_Medium_Clause,
+	allocator: mem.Allocator,
+) -> Data_Cluster_Medium_Clause {
+	return Data_Cluster_Medium_Clause {
+		kind = medium.kind,
+		id   = clone(medium.id, allocator),
+	}
+}
+
+clone_data_cluster_parameters :: proc(
+	list: [dynamic]Data_Cluster_Parameter_Clause,
+	allocator: mem.Allocator,
+) -> [dynamic]Data_Cluster_Parameter_Clause {
+	res := make([dynamic]Data_Cluster_Parameter_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Data_Cluster_Parameter_Clause {
+			name       = clause.name,
+			name_range = clause.name_range,
+			value      = clone(clause.value, allocator),
 		})
 	}
 	return res

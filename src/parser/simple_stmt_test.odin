@@ -926,6 +926,29 @@ DATA lv_typed TYPE sy-datum.`
 }
 
 @(test)
+memory_transfer_statements_model_entries :: proc(t: ^testing.T) {
+	source := `IMPORT variscreens = lt_variscreens FROM MEMORY ID '%_SCRNR_%'.
+EXPORT variscreens = lt_variscreens TO MEMORY ID '%_SCRNR_%'.`
+	parsed := parse(source, "import_memory.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	import_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Import_Stmt)
+	export_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Export_Stmt)
+	value := import_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
+	memory_id := import_stmt.medium.id.derived_expr.(^ast.Literal_Expr)
+
+	testing.expect_value(t, len(import_stmt.parameters), 1)
+	testing.expect_value(t, import_stmt.parameters[0].name, "variscreens")
+	testing.expect_value(t, import_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
+	testing.expect_value(t, len(export_stmt.parameters), 1)
+	testing.expect_value(t, export_stmt.parameters[0].name, "variscreens")
+	testing.expect_value(t, export_stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Memory_ID)
+	testing.expect_value(t, value.name, "lt_variscreens")
+	testing.expect_value(t, memory_id.value, "'%_SCRNR_%'")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 create_object_models_target_and_type_clause :: proc(t: ^testing.T) {
 	source := `CREATE OBJECT ri_html TYPE zcl_abapgit_html.
 CREATE OBJECT ri_dyn TYPE (lv_class).`

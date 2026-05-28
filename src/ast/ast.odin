@@ -1432,11 +1432,28 @@ Runtime_Subject :: enum {
 	Update_Task_Local,
 }
 
+Data_Cluster_Medium_Kind :: enum {
+	Memory_ID,
+}
+
+// ABAP syntax: data cluster medium currently modeled as `MEMORY ID id`.
+Data_Cluster_Medium_Clause :: struct {
+	kind: Data_Cluster_Medium_Kind,
+	id:   ^Expr,
+}
+
+// ABAP syntax: one data cluster parameter, for example `name = value`.
+Data_Cluster_Parameter_Clause :: struct {
+	name:       string,
+	name_range: tokenizer.Range,
+	value:      ^Expr,
+}
+
 // ABAP syntax consumed here:
 // `GET RUN TIME FIELD`, `GET TIME STAMP FIELD`, `GET PARAMETER ID`,
 // `GET CURSOR`, `GET REFERENCE OF`, `GET BADI`, `SET PARAMETER ID`,
 // `SET PF-STATUS`, `SET TITLEBAR`, `SET SCREEN`, `SET USER-COMMAND`,
-// `SET UPDATE TASK LOCAL`, `SET HANDLER`, `LOG-POINT`, `EXPORT`, `IMPORT`,
+// `SET UPDATE TASK LOCAL`, `SET HANDLER`, `LOG-POINT`,
 // and generic fallback forms for unmodeled `GET`/`SET`/`EXPORT`/`IMPORT`/`RECEIVE`.
 Runtime_Stmt :: struct {
 	using node: Stmt,
@@ -1450,6 +1467,20 @@ Runtime_Stmt :: struct {
 	offset:     ^Expr,
 	excluding:  [dynamic]^Expr,
 	operands:   [dynamic]^Expr,
+}
+
+// ABAP syntax: `IMPORT parameter_list FROM medium`.
+Import_Stmt :: struct {
+	using node: Stmt,
+	parameters: [dynamic]Data_Cluster_Parameter_Clause,
+	medium:     Data_Cluster_Medium_Clause,
+}
+
+// ABAP syntax: `EXPORT parameter_list TO medium`.
+Export_Stmt :: struct {
+	using node: Stmt,
+	parameters: [dynamic]Data_Cluster_Parameter_Clause,
+	medium:     Data_Cluster_Medium_Clause,
 }
 
 Bit_Kind :: enum {
@@ -2501,6 +2532,8 @@ Any_Node :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Import_Stmt,
+	^Export_Stmt,
 	^Bit_Stmt,
 	^Locale_Stmt,
 	^Set_Cursor_Stmt,
@@ -2657,6 +2690,8 @@ Any_Stmt :: union {
 	^Transaction_Stmt,
 	^Describe_Stmt,
 	^Runtime_Stmt,
+	^Import_Stmt,
+	^Export_Stmt,
 	^Bit_Stmt,
 	^Locale_Stmt,
 	^Set_Cursor_Stmt,

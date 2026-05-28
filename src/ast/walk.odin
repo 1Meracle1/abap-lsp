@@ -383,6 +383,16 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.offset)
 		walk_expr_list(next, n.excluding)
 		walk_expr_list(next, n.operands)
+	case ^Import_Stmt:
+		walk(next, n.medium.id)
+		for clause in n.parameters {
+			walk(next, clause.value)
+		}
+	case ^Export_Stmt:
+		walk(next, n.medium.id)
+		for clause in n.parameters {
+			walk(next, clause.value)
+		}
 	case ^Bit_Stmt:
 		walk(next, n.position)
 		walk(next, n.source)
