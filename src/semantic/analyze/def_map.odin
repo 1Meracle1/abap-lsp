@@ -653,6 +653,7 @@ Named_Argument_Target :: struct {
 	report_name:         string,
 	routine_name:        string,
 	method_name:         string,
+	method_range:        tokenizer.Range,
 	base_namespace:      Namespace,
 	base_name:           string,
 	interface_qualified: bool,

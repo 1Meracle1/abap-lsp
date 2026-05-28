@@ -340,12 +340,72 @@ collect_call_expr_refs :: proc(c: ^Collector, expr: ^ast.Call_Expr, scope: Scope
 			add_reference(c, scope, name, .Routine, .Routine_Call, expr.callee.range)
 		}
 	} else {
-		collect_expr_refs(c, expr.callee, scope)
+		collect_call_method_target_refs(c, expr.callee, scope)
 	}
 	if args, ok := expr.args.derived_expr.(^ast.Call_Arg_List_Expr); ok {
 		collect_call_arg_list_refs(c, args, scope, target, expr.range)
 	}
 	add_expression_fact(c, scope, expr.range, .Call_Result, unknown_type_fact())
+}
+
+collect_call_method_target_refs :: proc(c: ^Collector, target: ^ast.Expr, scope: Scope_Id) {
+	if target == nil {
+		return
+	}
+	if dyn, ok := target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr); ok {
+		collect_dynamic_call_method_target_refs(c, dyn, scope)
+		return
+	}
+	if raw, ok := target.derived_expr.(^ast.Type_Ref_Expr); ok && raw.raw_operand {
+		for ref in raw.raw_refs {
+			if ref.name == "" {
+				continue
+			}
+			namespace := Namespace.Routine
+			kind := Reference_Kind.Routine_Call
+			if len(ref.path) > 0 {
+				namespace = .Value
+				kind = .Identifier
+				if ref.type_base {
+					namespace = .Type
+					kind = .Static_Target
+				}
+			}
+			add_reference(c, scope, ref.name, namespace, kind, ref.range)
+		}
+		return
+	}
+	if collect_call_method_selector_target_refs(c, target, scope) {
+		return
+	}
+	if name, range, ok := expr_name(target); ok {
+		add_reference(c, scope, name, .Routine, .Routine_Call, range)
+		return
+	}
+	collect_expr_refs(c, target, scope)
+}
+
+collect_call_method_selector_target_refs :: proc(
+	c: ^Collector,
+	target: ^ast.Expr,
+	scope: Scope_Id,
+) -> bool {
+	sel, ok := target.derived_expr.(^ast.Selector_Expr)
+	if !ok {
+		return false
+	}
+	if id, id_ok := sel.base.derived_expr.(^ast.Ident_Expr); id_ok {
+		namespace := Namespace.Value
+		kind := Reference_Kind.Identifier
+		if sel.op == .Fat_Arrow || sel.op == .Tilde {
+			namespace = .Type
+			kind = .Static_Target
+		}
+		add_reference(c, scope, id.name, namespace, kind, id.range)
+	} else {
+		collect_expr_refs(c, sel.base, scope)
+	}
+	return true
 }
 
 call_target_from_callee :: proc(
@@ -361,18 +421,22 @@ call_target_from_callee :: proc(
 		if builtin_routine_spec(name) != nil {
 			return Named_Argument_Target{kind = .Routine, routine_name = name}
 		}
-		return Named_Argument_Target{kind = .Implicit_Method, method_name = name}
+		return Named_Argument_Target{kind = .Implicit_Method, method_name = name, method_range = id.range}
 	}
 	if access, ok := selector_access_from_expr(c, callee, scope, false); ok {
 		method_name := ""
+		method_range := tokenizer.Range{}
 		if len(access.field_path) > 0 {
-			method_name = access.field_path[len(access.field_path) - 1].name
+			method := access.field_path[len(access.field_path) - 1]
+			method_name = method.name
+			method_range = method.range
 		}
 		return Named_Argument_Target {
 			kind = .Method,
 			base_namespace = access.base_namespace,
 			base_name = access.base_name,
 			method_name = method_name,
+			method_range = method_range,
 			interface_qualified = access.base_namespace == .Type,
 		}
 	}
@@ -1224,7 +1288,7 @@ collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scop
 		collect_raw_call_stmt_args(c, stmt, scope, target)
 	case .Method:
 		target := call_stmt_method_target(c, stmt, scope)
-		collect_expr_refs(c, stmt.target, scope)
+		collect_call_method_target_refs(c, stmt.target, scope)
 		collect_raw_call_stmt_args(c, stmt, scope, target)
 	case .Transaction:
 		add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
@@ -1278,20 +1342,32 @@ call_stmt_method_target :: proc(
 				base_name = canonical_name(name, c.allocator)
 			}
 		}
+		method_name := ""
+		method_range := tokenizer.Range{}
+		if !dyn.method_dynamic {
+			if name, range, name_ok := expr_name(dyn.method); name_ok {
+				method_name = canonical_name(name, c.allocator)
+				method_range = range
+			}
+		}
 		return Named_Argument_Target {
 			kind = .Method,
 			base_namespace = namespace,
 			base_name = base_name,
+			method_name = method_name,
+			method_range = method_range,
 			interface_qualified = namespace == .Type,
 		}
 	}
 	if access, ok := selector_access_from_expr(c, stmt.target, scope, false);
 	   ok && len(access.field_path) > 0 {
+		method := access.field_path[len(access.field_path) - 1]
 		return Named_Argument_Target {
 			kind = .Method,
 			base_namespace = access.base_namespace,
 			base_name = access.base_name,
-			method_name = access.field_path[len(access.field_path) - 1].name,
+			method_name = method.name,
+			method_range = method.range,
 			interface_qualified = access.base_namespace == .Type,
 		}
 	}
@@ -1309,6 +1385,7 @@ call_stmt_method_target :: proc(
 				base_namespace = namespace,
 				base_name = canonical_name(ref.name, c.allocator),
 				method_name = canonical_name(ref.path[len(ref.path) - 1].name, c.allocator),
+				method_range = ref.path[len(ref.path) - 1].range,
 				interface_qualified = namespace == .Type,
 			}
 		}
@@ -1317,6 +1394,7 @@ call_stmt_method_target :: proc(
 		return Named_Argument_Target {
 			kind = .Implicit_Method,
 			method_name = canonical_name(name, c.allocator),
+			method_range = stmt.target.range,
 		}
 	}
 	return Named_Argument_Target{kind = .Implicit_Method}

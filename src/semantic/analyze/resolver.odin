@@ -210,6 +210,27 @@ enclosing_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> 
 	return INVALID_SYMBOL_ID, false
 }
 
+enclosing_instance_method_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> (Symbol_Id, bool) {
+	current := scope_id
+	for current != INVALID_SCOPE_ID {
+		s := scope(unit, current)
+		if s == nil {
+			break
+		}
+		if s.kind == .Method && s.owner != INVALID_SYMBOL_ID {
+			class_symbol, class_ok := enclosing_class_owner_unit(unit, current)
+			method := symbol(unit, s.owner)
+			if !class_ok || method == nil {
+				return INVALID_SYMBOL_ID, false
+			}
+			member := unit_class_member(unit, class_symbol, method_member_name(method.name))
+			return class_symbol, member == nil || !(.Is_Static in member.flags)
+		}
+		current = s.parent
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
 resolve_current_class_member :: proc(
 	unit: ^Unit_Analysis,
 	index: ^Scope_Index,
@@ -343,7 +364,7 @@ resolve_super_reference :: proc(
 	Symbol_Id,
 	bool,
 ) {
-	class_symbol, ok := enclosing_class_owner_unit(unit, scope_id)
+	class_symbol, ok := enclosing_instance_method_class_owner_unit(unit, scope_id)
 	if !ok {
 		return INVALID_SYMBOL_ID, false
 	}
@@ -1002,7 +1023,7 @@ resolve_project_super :: proc(
 	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
 ) -> (Symbol_Handle, bool) {
-	class_symbol, ok := enclosing_class_owner_unit(&units[unit_index], scope_id)
+	class_symbol, ok := enclosing_instance_method_class_owner_unit(&units[unit_index], scope_id)
 	if !ok {
 		return {}, false
 	}

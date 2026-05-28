@@ -459,11 +459,14 @@ validate_call_sites :: proc(
 			false,
 		)
 		if !member_ok {
+			if implicit_super_constructor_call(site) {
+				continue
+			}
 			append_diag(
 				out,
 				seen,
 				.Unknown_Field,
-				site.range,
+				method_target_range(site),
 				diagnostic_message("unknown method ", site.target.method_name, allocator),
 			)
 			continue
@@ -473,11 +476,22 @@ validate_call_sites :: proc(
 				out,
 				seen,
 				.Unknown_Field,
-				site.range,
+				method_target_range(site),
 				diagnostic_message("member is not a method: ", site.target.method_name, allocator),
 			)
 		}
 	}
+}
+
+implicit_super_constructor_call :: proc(site: Call_Site_Data) -> bool {
+	return site.target.base_name == "super" && site.target.method_name == "constructor"
+}
+
+method_target_range :: proc(site: Call_Site_Data) -> tokenizer.Range {
+	if site.target.method_range.start < site.target.method_range.end {
+		return site.target.method_range
+	}
+	return site.range
 }
 
 validate_open_sql :: proc(
@@ -578,6 +592,17 @@ class_handle_for_call_target :: proc(
 ) -> (Symbol_Handle, bool) {
 	if site.target.base_namespace == .Type {
 		return resolve_type_name_in_project_lookup(project, lookup, unit_index, site.target.base_name)
+	}
+	if site.target.base_name == "super" {
+		class_symbol, ok := enclosing_instance_method_class_owner_unit(&project.units[unit_index], site.scope)
+		if !ok {
+			return {}, false
+		}
+		return direct_superclass_handle_lookup(
+			project,
+			lookup,
+			Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol},
+		)
 	}
 	handle, ok := value_handle_for_name(
 		project,
@@ -742,6 +767,24 @@ resolve_field_access_tail :: proc(
 			return {}, false
 		}
 		return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:])
+	}
+	if access.base_name == "super" {
+		class_symbol, class_ok := enclosing_instance_method_class_owner_unit(
+			&project.units[unit_index],
+			access.scope,
+		)
+		if !class_ok {
+			return {}, false
+		}
+		super_handle, super_ok := direct_superclass_handle_lookup(
+			project,
+			lookup,
+			Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol},
+		)
+		if !super_ok {
+			return {}, false
+		}
+		return type_fact_from_class_member_path(project, lookup, super_handle, access.field_path[:])
 	}
 	base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
 	if !ok {

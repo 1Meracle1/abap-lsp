@@ -1563,6 +1563,24 @@ reference_count :: proc(
 	return count
 }
 
+unresolved_reference_count :: proc(
+	unit: ^analyze.Unit_Analysis,
+	name: string,
+	namespace: analyze.Namespace,
+	kind: analyze.Reference_Kind,
+) -> int {
+	count := 0
+	for reference in unit.references {
+		if reference.name == name &&
+		   reference.namespace == namespace &&
+		   reference.kind == kind &&
+		   !reference.has_resolution {
+			count += 1
+		}
+	}
+	return count
+}
+
 has_reference :: proc(
 	unit: ^analyze.Unit_Analysis,
 	name: string,
@@ -3471,7 +3489,138 @@ ENDFORM.
 			selector_accesses += 1
 		}
 	}
-	testing.expect_value(t, selector_accesses, 1)
+	testing.expect_value(t, selector_accesses, 0)
+}
+
+@(test)
+super_constructor_calls_are_not_field_accesses :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///super_constructor.abap",
+		`
+CLASS lcl_parent DEFINITION.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    METHODS constructor IMPORTING previous TYPE i OPTIONAL.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD constructor.
+    CALL METHOD super->constructor.
+    super->constructor( previous = previous ).
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	constructor_calls := 0
+	for site in unit.call_sites {
+		if site.target.kind == .Method &&
+		   site.target.base_name == "super" &&
+		   site.target.method_name == "constructor" &&
+		   site.target.method_range.start < site.target.method_range.end {
+			constructor_calls += 1
+		}
+	}
+	testing.expect_value(t, constructor_calls, 2)
+}
+
+@(test)
+me_and_super_method_receivers_resolve_in_instance_methods :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///me_super_receivers.abap",
+		`
+CLASS lcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS base.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    METHODS own.
+ENDCLASS.
+
+CLASS lcl_parent IMPLEMENTATION.
+  METHOD base.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD own.
+    me->own( ).
+    CALL METHOD me->own.
+    super->base( ).
+    CALL METHOD super->base.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	me_calls, super_calls := 0, 0
+	for site in unit.call_sites {
+		if site.target.kind != .Method {
+			continue
+		}
+		if site.target.base_name == "me" && site.target.method_name == "own" {
+			me_calls += 1
+		}
+		if site.target.base_name == "super" && site.target.method_name == "base" {
+			super_calls += 1
+		}
+	}
+	testing.expect_value(t, me_calls, 2)
+	testing.expect_value(t, super_calls, 2)
+}
+
+@(test)
+me_and_super_are_not_valid_outside_instance_methods :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///me_super_scope.abap",
+		`
+CLASS lcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS base.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    METHODS own.
+    CLASS-METHODS stat.
+ENDCLASS.
+
+CLASS lcl_parent IMPLEMENTATION.
+  METHOD base.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD own.
+  ENDMETHOD.
+
+  METHOD stat.
+    me->stat( ).
+    super->base( ).
+    CALL METHOD super->base.
+  ENDMETHOD.
+ENDCLASS.
+
+FORM run.
+  me->own( ).
+  super->base( ).
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect_value(t, unresolved_reference_count(&unit, "me", .Value, .Identifier), 2)
+	testing.expect_value(t, unresolved_reference_count(&unit, "super", .Value, .Identifier), 3)
 }
 
 @(test)
