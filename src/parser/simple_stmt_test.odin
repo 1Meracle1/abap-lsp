@@ -657,6 +657,31 @@ ENDINTERFACE.`
 }
 
 @(test)
+oop_signature_type_components_can_use_addition_keywords :: proc(t: ^testing.T) {
+	source := `INTERFACE lif.
+  METHODS run
+    IMPORTING
+      !IV_LENGTH TYPE IF_FDT_ELEMENT=>LENGTH OPTIONAL
+      !IV_DECIMALS TYPE IF_FDT_ELEMENT=>DECIMALS OPTIONAL.
+ENDINTERFACE.`
+	parsed := parse(source, "oop_keyword_type_components.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
+	importing := methods.members[0].signatures[0]
+	testing.expect_value(t, len(importing.parameters), 2)
+	length_ref := importing.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	decimals_ref := importing.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, length_ref.base_name, "IF_FDT_ELEMENT")
+	testing.expect_value(t, length_ref.path[0].name, "LENGTH")
+	testing.expect_value(t, length_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
+	testing.expect_value(t, decimals_ref.base_name, "IF_FDT_ELEMENT")
+	testing.expect_value(t, decimals_ref.path[0].name, "DECIMALS")
+	testing.expect(t, importing.parameters[0].optional)
+	testing.expect(t, importing.parameters[1].optional)
+}
+
+@(test)
 oop_section_visibility_is_ast_field :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

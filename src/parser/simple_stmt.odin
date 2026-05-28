@@ -2122,13 +2122,14 @@ oop_type_ref_done :: proc(p: ^Parser, start: int, in_key: bool) -> bool {
 	if tok.kind == .Period || tok.kind == .Comma || tok.kind == .Eof {
 		return true
 	}
-	if simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) ||
-	   at_length_keyword(p) ||
-	   (at_keyword(p, "WITH") && !type_ref_key_clause_starts(p, p.index)) ||
-	   at_keyword_phrase(p, "READ-ONLY") ||
-	   at_keyword(p, "OPTIONAL") ||
-	   at_keyword(p, "PREFERRED") ||
-	   (!in_key && at_keyword(p, "DEFAULT")) {
+	if !type_ref_selector_field(p) &&
+	   (simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) ||
+	    at_length_keyword(p) ||
+	    (at_keyword(p, "WITH") && !type_ref_key_clause_starts(p, p.index)) ||
+	    at_keyword_phrase(p, "READ-ONLY") ||
+	    at_keyword(p, "OPTIONAL") ||
+	    at_keyword(p, "PREFERRED") ||
+	    (!in_key && at_keyword(p, "DEFAULT"))) {
 		return true
 	}
 	return p.index > start && oop_parameter_starts(p, p.index)

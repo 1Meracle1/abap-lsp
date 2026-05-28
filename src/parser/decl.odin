@@ -1232,10 +1232,16 @@ parse_with_header_line_addition :: proc(p: ^Parser, flags: ^ast.Decl_Clause_Flag
 }
 
 type_ref_selector_field :: proc(p: ^Parser) -> bool {
+	prev := previous_token(p)
+	if current_token(p).kind != .Ident {
+		return false
+	}
+	if prev.kind == .Arrow || prev.kind == .FatArrow || prev.kind == .Tilde {
+		return true
+	}
 	return(
-		current_token(p).kind == .Ident &&
-		previous_token(p).kind == .Minus &&
-		tokens_touch(previous_token(p), current_token(p)) \
+		prev.kind == .Minus &&
+		tokens_touch(prev, current_token(p)) \
 	)
 }
 
