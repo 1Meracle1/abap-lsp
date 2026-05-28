@@ -290,6 +290,24 @@ DELETE ADJACENT DUPLICATES FROM itab COMPARING ALL FIELDS.`
 }
 
 @(test)
+read_table_table_key_components_keeps_key_name :: proc(t: ^testing.T) {
+	source := `READ TABLE gt_lxe_lang_cache INTO ls_lang WITH TABLE KEY iso2 COMPONENTS langshort = iv_src.`
+	parsed := parse(source, "read_table_key_components.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+
+	testing.expect_value(t, len(read.entries), 1)
+	entry := read.entries[0]
+	testing.expect_value(t, entry.key_kind, ast.Read_Table_Key_Kind.Table_Key)
+	testing.expect_value(t, entry.key_name, "iso2")
+	testing.expect_value(t, len(entry.key_values), 1)
+	testing.expect_value(t, entry.key_values[0].name, "langshort")
+	testing.expect_value(t, source[entry.key_values[0].name_range.start:entry.key_values[0].name_range.end], "langshort")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 read_table_binary_search_stores_range :: proc(t: ^testing.T) {
 	source := `READ TABLE itab INTO wa WITH KEY id = lv_id BINARY SEARCH.`
 	parsed := parse(source, "read_table_binary_search_clause.abap", context.allocator)

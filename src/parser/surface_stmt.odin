@@ -1166,6 +1166,9 @@ parse_read_table_key_values :: proc(
 				    "REFERENCE",
 			    },
 		    ) {
+		if allow_keyword(p, "COMPONENTS") {
+			continue
+		}
 		if current_token(p).kind == .Ident && read_table_key_name_end(p) >= 0 {
 			name_start := current_token(p).range.start
 			name_end := read_table_key_name_end(p)
@@ -1228,6 +1231,7 @@ read_table_key_name_end :: proc(p: ^Parser) -> int {
 			   p,
 			   i,
 			   []string {
+				   "COMPONENTS",
 				   "INTO",
 				   "ASSIGNING",
 				   "INDEX",

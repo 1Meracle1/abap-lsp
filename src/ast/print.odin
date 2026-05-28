@@ -2659,6 +2659,9 @@ emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 				emit_space(p)
 				emit(p, entry.key_name)
 			}
+			if entry.key_name != "" && len(entry.key_values) > 0 {
+				emit(p, " COMPONENTS")
+			}
 			for key in entry.key_values {
 				emit_space(p)
 				emit(p, key.name)
