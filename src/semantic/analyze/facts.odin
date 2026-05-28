@@ -2328,22 +2328,35 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 		collect_expr_refs(c, e.using_key, scope)
 		collect_expr_list_refs(c, e.comparing[:], scope)
 		for key in e.key_values {
+			collect_expr_refs(c, key.dynamic_name, scope)
 			collect_expr_refs(c, key.value, scope)
-			if key.table_line {
+			if key.is_dynamic || key.table_line {
 				continue
 			}
-			key_name := canonical_name(key.name, c.allocator)
+			if len(key.path) == 0 {
+				continue
+			}
 			if e.table != nil {
 				access, ok := value_access_from_expr(c, e.table, scope)
 				if ok {
-					segments := make([dynamic]Field_Access_Segment, 0, 1, c.allocator)
-					append(
-						&segments,
-						Field_Access_Segment {
-							name = key_name,
-							range = key.name_range,
-						},
+					segments := make(
+						[dynamic]Field_Access_Segment,
+						0,
+						len(access.field_path) + len(key.path),
+						c.allocator,
 					)
+					for segment in access.field_path {
+						append(&segments, segment)
+					}
+					for segment in key.path {
+						append(
+							&segments,
+							Field_Access_Segment {
+								name = canonical_name(segment.name, c.allocator),
+								range = segment.range,
+							},
+						)
+					}
 					append(
 						&c.field_accesses,
 						Field_Access {

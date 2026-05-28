@@ -612,6 +612,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 			walk(next, clause.assigning)
 			walk(next, clause.reference_into)
 			for key_value in clause.key_values {
+				walk(next, key_value.dynamic_name)
 				walk(next, key_value.value)
 			}
 			walk(next, clause.index)

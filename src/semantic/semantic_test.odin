@@ -4802,6 +4802,99 @@ ENDCLASS.
 }
 
 @(test)
+read_table_nested_key_components_resolve_against_table_line :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_defs.
+  TYPES: BEGIN OF ty_item,
+           obj_type TYPE string,
+           obj_name TYPE string,
+         END OF ty_item.
+  TYPES: BEGIN OF ty_status,
+           item TYPE ty_item,
+         END OF ty_status.
+  TYPES ty_statuses TYPE SORTED TABLE OF ty_status WITH UNIQUE KEY item-obj_type item-obj_name.
+ENDINTERFACE.
+CLASS lcl_table DEFINITION.
+  PRIVATE SECTION.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_table IMPLEMENTATION.
+  METHOD run.
+    DATA rt_item_status TYPE lif_defs=>ty_statuses.
+    DATA ls_item_status TYPE lif_defs=>ty_status.
+    DATA lr_item_status TYPE REF TO lif_defs=>ty_status.
+    READ TABLE rt_item_status REFERENCE INTO lr_item_status
+      WITH KEY item-obj_type = ls_item_status-item-obj_type
+               item-obj_name = ls_item_status-item-obj_name.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///read_table_nested_key.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	obj_name_seen := false
+	for access in unit.field_accesses {
+		if access.base_name == "rt_item_status" &&
+		   len(access.field_path) == 2 &&
+		   access.field_path[0].name == "item" &&
+		   access.field_path[1].name == "obj_name" {
+			obj_name_seen = true
+		}
+	}
+	testing.expect(t, obj_name_seen)
+}
+
+@(test)
+read_table_nested_key_on_table_component_keeps_source_path :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_defs.
+  TYPES: BEGIN OF ty_item,
+           obj_type TYPE string,
+           obj_name TYPE string,
+         END OF ty_item.
+  TYPES: BEGIN OF ty_file,
+           filename TYPE string,
+         END OF ty_file.
+  TYPES: BEGIN OF ty_file_item,
+           item TYPE ty_item,
+           file TYPE ty_file,
+         END OF ty_file_item.
+  TYPES ty_file_items TYPE STANDARD TABLE OF ty_file_item WITH DEFAULT KEY.
+  TYPES: BEGIN OF ty_stage,
+           local TYPE ty_file_items,
+         END OF ty_stage.
+ENDINTERFACE.
+CLASS lcl_table DEFINITION.
+  PRIVATE SECTION.
+    METHODS run IMPORTING is_stage TYPE lif_defs=>ty_stage.
+ENDCLASS.
+CLASS lcl_table IMPLEMENTATION.
+  METHOD run.
+    DATA ls_local TYPE lif_defs=>ty_file_item.
+    DATA lv_name TYPE string.
+    READ TABLE is_stage-local INTO ls_local
+      WITH KEY item-obj_name = lv_name
+               file-filename = lv_name.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///read_table_nested_key_on_component.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	obj_name_seen := false
+	for access in unit.field_accesses {
+		if access.base_name == "is_stage" &&
+		   len(access.field_path) == 3 &&
+		   access.field_path[0].name == "local" &&
+		   access.field_path[1].name == "item" &&
+		   access.field_path[2].name == "obj_name" {
+			obj_name_seen = true
+		}
+	}
+	testing.expect(t, obj_name_seen)
+}
+
+@(test)
 delete_adjacent_duplicates_comparing_all_fields_is_clause :: proc(t: ^testing.T) {
 	source := `
 CLASS lcl_table DEFINITION.

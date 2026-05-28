@@ -2241,12 +2241,21 @@ Read_Table_Key_Kind :: enum {
 	Table_Key,
 }
 
+// ABAP syntax: one component-name segment inside a READ TABLE key clause.
+Read_Table_Key_Name_Segment :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
 // ABAP syntax: one `name = value` component inside a READ TABLE key clause.
 Read_Table_Key_Value_Clause :: struct {
-	name:       string,
-	name_range: tokenizer.Range,
-	table_line: bool,
-	value:      ^Expr,
+	name:         string,
+	name_range:   tokenizer.Range,
+	path:         [dynamic]Read_Table_Key_Name_Segment,
+	dynamic_name: ^Expr,
+	is_dynamic:   bool,
+	table_line:   bool,
+	value:        ^Expr,
 }
 
 // ABAP syntax: one READ TABLE entry, including chained entries after `READ TABLE:`.

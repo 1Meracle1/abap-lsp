@@ -1324,7 +1324,11 @@ clone_delete_comparing_clauses :: proc(list: [dynamic]Delete_Comparing_Clause, a
 clone_read_table_key_values :: proc(list: [dynamic]Read_Table_Key_Value_Clause, allocator: mem.Allocator) -> [dynamic]Read_Table_Key_Value_Clause {
 	res := make([dynamic]Read_Table_Key_Value_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Read_Table_Key_Value_Clause{name = clause.name, name_range = clause.name_range, table_line = clause.table_line, value = clone(clause.value, allocator)})
+		path := make([dynamic]Read_Table_Key_Name_Segment, 0, len(clause.path), allocator)
+		for segment in clause.path {
+			append(&path, segment)
+		}
+		append(&res, Read_Table_Key_Value_Clause{name = clause.name, name_range = clause.name_range, path = path, dynamic_name = clone(clause.dynamic_name, allocator), is_dynamic = clause.is_dynamic, table_line = clause.table_line, value = clone(clause.value, allocator)})
 	}
 	return res
 }

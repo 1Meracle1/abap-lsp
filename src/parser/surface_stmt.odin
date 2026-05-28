@@ -1169,12 +1169,58 @@ parse_read_table_key_values :: proc(
 		if allow_keyword(p, "COMPONENTS") {
 			continue
 		}
-		if current_token(p).kind == .Ident && read_table_key_name_end(p) >= 0 {
+		if name_end := read_table_dynamic_key_name_end(p); name_end >= 0 {
 			name_start := current_token(p).range.start
-			name_end := read_table_key_name_end(p)
-			name_end_byte := p.tokens[name_end - 1].range.end
-			for p.index < name_end {
+			name_end_byte := p.tokens[name_end].range.end
+			dynamic_name := parse_complete_logical_expr(p, p.index + 1, name_end)
+			for p.index <= name_end {
 				bump_token(p)
+			}
+			expect_token(p, .Eq)
+			name := p.source[name_start:name_end_byte]
+			value := data_expr(
+				p,
+				body_start,
+				[]string {
+					"INTO",
+					"ASSIGNING",
+					"INDEX",
+					"USING",
+					"TRANSPORTING",
+					"COMPARING",
+					"BINARY",
+					"REFERENCE",
+				},
+			)
+			append(
+				&entry.key_values,
+				ast.Read_Table_Key_Value_Clause {
+					name         = name,
+					name_range   = tokenizer.text_range(name_start, name_end_byte),
+					dynamic_name = dynamic_name,
+					is_dynamic   = true,
+					value        = value,
+				},
+			)
+			continue
+		}
+		if name_end := read_table_key_name_eq_index(p); name_end >= 0 {
+			name_start := current_token(p).range.start
+			name_end_byte := p.tokens[name_end - 1].range.end
+			path := make([dynamic]ast.Read_Table_Key_Name_Segment, 0, 2, p.allocator)
+			for p.index < name_end {
+				if current_token(p).kind == .Ident {
+					tok := bump_token(p)
+					append(
+						&path,
+						ast.Read_Table_Key_Name_Segment {
+							name = tokenizer.token_lexeme(tok, p.source),
+							range = tok.range,
+						},
+					)
+					continue
+				}
+				expect_token(p, .Minus)
 			}
 			expect_token(p, .Eq)
 			name := p.source[name_start:name_end_byte]
@@ -1197,10 +1243,16 @@ parse_read_table_key_values :: proc(
 				ast.Read_Table_Key_Value_Clause {
 					name       = name,
 					name_range = tokenizer.text_range(name_start, name_end_byte),
-					table_line = strings.equal_fold(name, "table_line"),
+					path       = path,
+					table_line = len(path) == 1 && strings.equal_fold(path[0].name, "table_line"),
 					value      = value,
 				},
 			)
+			continue
+		}
+		if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Minus {
+			error(p, current_token(p).range, "syntax error: expected READ TABLE key component path")
+			bump_token(p)
 			continue
 		}
 		if entry.key_name == "" && current_token(p).kind == .Ident {
@@ -1211,70 +1263,33 @@ parse_read_table_key_values :: proc(
 	}
 }
 
-read_table_key_name_end :: proc(p: ^Parser) -> int {
-	paren := 0
-	bracket := 0
-	brace := 0
-	for i in p.index ..< len(p.tokens) {
-		tok := p.tokens[i]
-		top := paren == 0 && bracket == 0 && brace == 0
-		if top && tok.kind == .Eq {
-			return i
-		}
-		if top && (tok.kind == .Period || tok.kind == .Comma || tok.kind == .Eof) {
-			return -1
-		}
-		if top &&
-		   i > p.index &&
-		   tok.kind == .Ident &&
-		   data_current_keyword_in_at(
-			   p,
-			   i,
-			   []string {
-				   "COMPONENTS",
-				   "INTO",
-				   "ASSIGNING",
-				   "INDEX",
-				   "USING",
-				   "TRANSPORTING",
-				   "COMPARING",
-				   "BINARY",
-				   "REFERENCE",
-			   },
-		   ) {
-			return -1
-		}
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren > 0 {
-				paren -= 1
-			}
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket > 0 {
-				bracket -= 1
-			}
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace > 0 {
-				brace -= 1
-			}
-		}
+read_table_dynamic_key_name_end :: proc(p: ^Parser) -> int {
+	if current_token(p).kind != .LParen {
+		return -1
+	}
+	end := matching_group_index(p, p.index, .LParen, .RParen)
+	if end > p.index && end + 1 < len(p.tokens) && p.tokens[end + 1].kind == .Eq {
+		return end
 	}
 	return -1
 }
 
-data_current_keyword_in_at :: proc(p: ^Parser, index: int, keywords: []string) -> bool {
-	for keyword in keywords {
-		if keyword_phrase_at(p, index, keyword) {
-			return true
-		}
+read_table_key_name_eq_index :: proc(p: ^Parser) -> int {
+	if current_token(p).kind != .Ident {
+		return -1
 	}
-	return false
+	i := p.index + 1
+	for i + 1 < len(p.tokens) &&
+	    p.tokens[i].kind == .Minus &&
+	    p.tokens[i + 1].kind == .Ident &&
+	    tokens_touch(p.tokens[i - 1], p.tokens[i]) &&
+	    tokens_touch(p.tokens[i], p.tokens[i + 1]) {
+		i += 2
+	}
+	if i < len(p.tokens) && p.tokens[i].kind == .Eq {
+		return i
+	}
+	return -1
 }
 
 dml_range_valid :: #force_inline proc(range: tokenizer.Range) -> bool {

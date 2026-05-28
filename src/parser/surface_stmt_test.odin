@@ -308,6 +308,53 @@ read_table_table_key_components_keeps_key_name :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_key_keeps_nested_component_path :: proc(t: ^testing.T) {
+	source := `READ TABLE rt_item_status REFERENCE INTO lr_item_status WITH KEY item-obj_type = ls_item_status-item-obj_type item-obj_name = ls_item_status-item-obj_name.`
+	parsed := parse(source, "read_table_nested_key.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	entry := read.entries[0]
+
+	testing.expect_value(t, len(entry.key_values), 2)
+	key := entry.key_values[1]
+	testing.expect_value(t, key.name, "item-obj_name")
+	testing.expect_value(t, len(key.path), 2)
+	testing.expect_value(t, key.path[0].name, "item")
+	testing.expect_value(t, key.path[1].name, "obj_name")
+	testing.expect_value(t, source[key.path[1].range.start:key.path[1].range.end], "obj_name")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+read_table_key_keeps_dynamic_component_name :: proc(t: ^testing.T) {
+	source := `READ TABLE <lt_tree> WITH KEY ('NODENAME') = ms_item-obj_name ASSIGNING <ls_tree>.`
+	parsed := parse(source, "read_table_dynamic_key.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	key := read.entries[0].key_values[0]
+
+	testing.expect(t, key.is_dynamic)
+	testing.expect_value(t, key.name, "('NODENAME')")
+	testing.expect(t, key.dynamic_name != nil)
+	testing.expect_value(
+		t,
+		ast.print_node(parsed.root, context.allocator),
+		`READ TABLE <lt_tree> ASSIGNING <ls_tree> WITH KEY ('NODENAME') = ms_item-obj_name.`,
+	)
+}
+
+@(test)
+read_table_rejects_spaced_key_component_selector :: proc(t: ^testing.T) {
+	source := `READ TABLE itab WITH KEY item - obj_name = value.`
+	parsed := parse(source, "read_table_bad_key_path.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+	testing.expect_value(t, parsed.errors[0].message, "syntax error: expected READ TABLE key component path")
+}
+
+@(test)
 read_table_binary_search_stores_range :: proc(t: ^testing.T) {
 	source := `READ TABLE itab INTO wa WITH KEY id = lv_id BINARY SEARCH.`
 	parsed := parse(source, "read_table_binary_search_clause.abap", context.allocator)
