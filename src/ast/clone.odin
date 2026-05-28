@@ -747,7 +747,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.index = clone(n.index, allocator)
 		r.where_cond = clone(n.where_cond, allocator)
 		r.using_key = clone(n.using_key, allocator)
-		r.comparing = clone_expr_list(n.comparing, allocator)
+		r.comparing = clone_delete_comparing_clauses(n.comparing, allocator)
 		return r
 	case ^Read_Table_Stmt:
 		r := clone_shallow(n, allocator)
@@ -1275,6 +1275,14 @@ clone_read_table_entries :: proc(list: [dynamic]Read_Table_Entry_Clause, allocat
 			binary_search_clause   = clause.binary_search_clause,
 			comparing              = clone_expr_list(clause.comparing, allocator),
 		})
+	}
+	return res
+}
+
+clone_delete_comparing_clauses :: proc(list: [dynamic]Delete_Comparing_Clause, allocator: mem.Allocator) -> [dynamic]Delete_Comparing_Clause {
+	res := make([dynamic]Delete_Comparing_Clause, 0, len(list), allocator)
+	for clause in list {
+		append(&res, Delete_Comparing_Clause{expr = clone(clause.expr, allocator), name = clause.name, range = clause.range})
 	}
 	return res
 }

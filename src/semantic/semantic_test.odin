@@ -3847,6 +3847,66 @@ ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO FIELD-SYMBOL(<fs_raw>).
 }
 
 @(test)
+delete_adjacent_duplicates_comparing_uses_table_line_fields :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_table DEFINITION.
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_nested,
+             part TYPE string,
+           END OF ty_nested.
+    TYPES: BEGIN OF ty_row,
+             tobj_name TYPE string,
+             tobjkey TYPE string,
+             nested TYPE ty_nested,
+           END OF ty_row.
+    DATA mt_object_table TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.
+    METHODS run.
+ENDCLASS.
+CLASS lcl_table IMPLEMENTATION.
+  METHOD run.
+    FIELD-SYMBOLS <row> LIKE LINE OF mt_object_table.
+    DELETE ADJACENT DUPLICATES FROM mt_object_table COMPARING tobj_name tobjkey nested-part.
+    LOOP AT mt_object_table ASSIGNING <row>.
+      DATA lv_name TYPE string.
+      lv_name = <row>-tobj_name.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///delete_adjacent_duplicates_comparing.abap", source)
+
+	testing.expect(t, has_reference(&unit, "mt_object_table", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "tobj_name", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "tobjkey", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "nested", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+
+	tobj_name_seen := false
+	tobjkey_seen := false
+	nested_seen := false
+	for access in unit.field_accesses {
+		if access.base_name != "mt_object_table" {
+			continue
+		}
+		if len(access.field_path) == 1 && access.field_path[0].name == "tobj_name" {
+			tobj_name_seen = true
+		}
+		if len(access.field_path) == 1 && access.field_path[0].name == "tobjkey" {
+			tobjkey_seen = true
+		}
+		if len(access.field_path) == 2 &&
+		   access.field_path[0].name == "nested" &&
+		   access.field_path[1].name == "part" {
+			nested_seen = true
+		}
+	}
+	testing.expect(t, tobj_name_seen)
+	testing.expect(t, tobjkey_seen)
+	testing.expect(t, nested_seen)
+}
+
+@(test)
 data_cluster_media_collect_refs_without_keyword_refs :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

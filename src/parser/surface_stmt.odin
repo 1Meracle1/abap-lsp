@@ -1958,7 +1958,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "DELETE")
 	body_start := p.index
 	stmt := ast.new(ast.Delete_Stmt, start.range, p.allocator)
-	stmt.comparing = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+	stmt.comparing = make([dynamic]ast.Delete_Comparing_Clause, 0, 2, p.allocator)
 	if allow_keyword(p, "ADJACENT") {
 		stmt.form = .Adjacent_Duplicates
 		allow_keyword(p, "DUPLICATES")
@@ -2036,7 +2036,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		}
 		if allow_keyword(p, "COMPARING") {
 			more := data_exprs_until(p, body_start, []string{})
-			for value in more {append(&stmt.comparing, value)}
+			for value in more {append(&stmt.comparing, delete_comparing_clause(value))}
 			continue
 		}
 		if allow_keyword(p, "CLIENT") {
@@ -2061,6 +2061,15 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
+}
+
+delete_comparing_clause :: proc(expr: ^ast.Expr) -> ast.Delete_Comparing_Clause {
+	clause := ast.Delete_Comparing_Clause{expr = expr}
+	if id, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
+		clause.name = id.name
+		clause.range = id.range
+	}
+	return clause
 }
 
 parse_dataset_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

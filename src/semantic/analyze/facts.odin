@@ -2387,8 +2387,43 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.index, scope)
 	collect_expr_refs(c, stmt.using_key, scope)
-	collect_expr_list_refs(c, stmt.comparing[:], scope)
+	collect_delete_comparing_refs(c, stmt, scope)
 	add_routine_site(c, scope, stmt.range, .Delete)
+}
+
+collect_delete_comparing_refs :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
+	target, has_target := value_access_from_expr(c, stmt.target, scope)
+	for clause in stmt.comparing {
+		if has_target {
+			if operand, ok := value_access_from_expr(c, clause.expr, scope); ok {
+				path := make(
+					[dynamic]Field_Access_Segment,
+					0,
+					len(target.field_path) + 1 + len(operand.field_path),
+					c.allocator,
+				)
+				for segment in target.field_path {
+					append(&path, segment)
+				}
+				append(&path, Field_Access_Segment{name = operand.base_name, range = operand.base_range})
+				for segment in operand.field_path {
+					append(&path, segment)
+				}
+				append(
+					&c.field_accesses,
+					Field_Access {
+						scope = scope,
+						base_namespace = target.base_namespace,
+						base_name = target.base_name,
+						base_range = target.base_range,
+						field_path = path,
+					},
+				)
+				continue
+			}
+		}
+		collect_expr_refs(c, clause.expr, scope)
+	}
 }
 
 collect_dataset_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Dataset_Stmt, scope: Scope_Id) {

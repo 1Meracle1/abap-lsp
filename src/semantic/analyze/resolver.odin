@@ -1587,26 +1587,50 @@ local_structure_for_type_ref :: proc(
 		if !ok {
 			continue
 		}
-		s := symbol(unit, symbol_id)
-		path := type_ref.field_path[:]
-		if s != nil && (s.kind == .Class || s.kind == .Interface) {
-			if len(path) == 0 {
-				return INVALID_STRUCTURE_ID, false
-			}
-			nested, nested_ok := class_type_symbol_handle_in_unit(unit, symbol_id, path[0])
-			if !nested_ok {
-				return INVALID_STRUCTURE_ID, false
-			}
-			symbol_id = nested
-			s = symbol(unit, symbol_id)
-			path = path[1:]
+		if structure_id, structure_ok := local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:]);
+		   structure_ok {
+			return structure_id, true
 		}
-		if s == nil || s.structure == INVALID_STRUCTURE_ID {
-			continue
+	}
+	if type_ref.namespace == .Value {
+		if class_symbol, ok := enclosing_class_owner_unit(unit, scope_id); ok {
+			if symbol_id, symbol_ok := class_scope_symbol(
+				&unit.scope_index,
+				class_symbol,
+				.Value,
+				type_ref.base_name,
+			); symbol_ok {
+				return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])
+			}
 		}
-		return resolve_unit_structure_path(unit, s.structure, path)
 	}
 	return INVALID_STRUCTURE_ID, false
+}
+
+local_structure_for_symbol_path :: proc(
+	unit: ^Unit_Analysis,
+	symbol_id: Symbol_Id,
+	path: []string,
+) -> (Structure_Id, bool) {
+	current_symbol_id := symbol_id
+	current_path := path
+	s := symbol(unit, current_symbol_id)
+	if s != nil && (s.kind == .Class || s.kind == .Interface) {
+		if len(current_path) == 0 {
+			return INVALID_STRUCTURE_ID, false
+		}
+		nested, nested_ok := class_type_symbol_handle_in_unit(unit, current_symbol_id, current_path[0])
+		if !nested_ok {
+			return INVALID_STRUCTURE_ID, false
+		}
+		current_symbol_id = nested
+		s = symbol(unit, current_symbol_id)
+		current_path = current_path[1:]
+	}
+	if s == nil || s.structure == INVALID_STRUCTURE_ID {
+		return INVALID_STRUCTURE_ID, false
+	}
+	return resolve_unit_structure_path(unit, s.structure, current_path)
 }
 
 resolve_unit_structure_path :: proc(

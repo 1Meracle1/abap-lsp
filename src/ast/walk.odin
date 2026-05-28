@@ -576,7 +576,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.index)
 		walk(next, n.where_cond)
 		walk(next, n.using_key)
-		walk_expr_list(next, n.comparing)
+		for clause in n.comparing {
+			walk(next, clause.expr)
+		}
 	case ^Read_Table_Stmt:
 		for clause in n.entries {
 			walk(next, clause.table)

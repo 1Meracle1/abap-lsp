@@ -2322,6 +2322,12 @@ Delete_Form :: enum {
 	Adjacent_Duplicates,
 }
 
+Delete_Comparing_Clause :: struct {
+	expr:  ^Expr,
+	name:  string,
+	range: tokenizer.Range,
+}
+
 // ABAP syntax: `DELETE itab ...`, `DELETE FROM dbtab ...`, or `DELETE ADJACENT DUPLICATES FROM itab`.
 Delete_Stmt :: struct {
 	using node: Stmt,
@@ -2332,7 +2338,7 @@ Delete_Stmt :: struct {
 	where_cond: ^Expr,
 	where_clause: tokenizer.Range,
 	using_key:  ^Expr,
-	comparing:  [dynamic]^Expr,
+	comparing:  [dynamic]Delete_Comparing_Clause,
 	from_table: bool,
 	explicit_from: bool,
 	dynamic_source: bool,

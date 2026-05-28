@@ -2825,7 +2825,12 @@ emit_delete_stmt :: proc(p: ^Printer, stmt: ^Delete_Stmt) {
 	}
 	if len(stmt.comparing) > 0 {
 		emit(p, " COMPARING ")
-		emit_expr_list(p, stmt.comparing, " ")
+		for clause, i in stmt.comparing {
+			if i > 0 {
+				emit(p, " ")
+			}
+			emit_node(p, clause.expr)
+		}
 	}
 	emit(p, ".")
 }

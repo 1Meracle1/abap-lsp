@@ -764,6 +764,9 @@ value_handle_for_name :: proc(
 	); ok {
 		return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
 	}
+	if symbol_id, ok := current_class_value_symbol(project, unit_index, scope_id, name); ok {
+		return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
+	}
 	if handle, ok := value_alias_handle_for_name(project, lookup, unit_index, scope_id, name); ok {
 		return handle, true
 	}
@@ -775,6 +778,19 @@ value_handle_for_name :: proc(
 		return handle, true
 	}
 	return global_visible_root_symbol_lookup(lookup, .Value, name)
+}
+
+current_class_value_symbol :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	name: string,
+) -> (Symbol_Id, bool) {
+	class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], scope_id)
+	if !ok {
+		return INVALID_SYMBOL_ID, false
+	}
+	return class_scope_symbol(&project.units[unit_index].scope_index, class_symbol, .Value, name)
 }
 
 value_alias_handle_for_name :: proc(
