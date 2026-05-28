@@ -2959,6 +2959,29 @@ ENDFORM.
 }
 
 @(test)
+string_section_does_not_reference_section_keyword :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///find_section.abap",
+		`
+FORM run.
+  DATA lc_null TYPE string.
+  DATA lv_cursor TYPE i.
+  DATA iv_data TYPE string.
+
+  FIND FIRST OCCURRENCE OF lc_null IN SECTION OFFSET lv_cursor OF iv_data.
+  REPLACE SECTION OFFSET lv_cursor LENGTH 1 OF iv_data WITH lc_null.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_reference(&unit, "section", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_cursor", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "iv_data", .Value, .Identifier))
+}
+
+@(test)
 validates_unresolved_and_wrong_namespace_references :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

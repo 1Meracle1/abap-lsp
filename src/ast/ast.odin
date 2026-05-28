@@ -1130,15 +1130,18 @@ Replace_Occurrence :: enum {
 	All,
 }
 
-// ABAP syntax: `REPLACE [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN [TABLE] target WITH replacement.`
+// ABAP syntax: `REPLACE [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN [TABLE] target WITH replacement`
+// or `REPLACE SECTION OFFSET off [LENGTH len] OF target WITH replacement`.
 Replace_Stmt :: struct {
-	using node:  Stmt,
-	occurrence:  Replace_Occurrence,
-	regex:       bool,
-	pattern:     ^Expr,
-	target:      ^Expr,
-	replacement: ^Expr,
-	in_table:    bool,
+	using node:     Stmt,
+	occurrence:     Replace_Occurrence,
+	regex:          bool,
+	pattern:        ^Expr,
+	target:         ^Expr,
+	replacement:    ^Expr,
+	in_table:       bool,
+	section_offset: ^Expr,
+	section_length: ^Expr,
 }
 
 Translate_Form :: enum {
@@ -1188,19 +1191,21 @@ Find_Occurrence :: enum {
 	All,
 }
 
-// ABAP syntax: `FIND [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN [TABLE] target ...`.
+// ABAP syntax: `FIND [FIRST|ALL OCCURRENCES OF] [REGEX] pattern IN [SECTION OFFSET off [LENGTH len] OF|TABLE] target ...`.
 Find_Stmt :: struct {
-	using node:   Stmt,
-	occurrence:   Find_Occurrence,
-	regex:        bool,
-	pattern:      ^Expr,
-	target:       ^Expr,
-	in_table:     bool,
-	match_offset: ^Expr,
-	match_length: ^Expr,
-	match_count:  ^Expr,
-	results:      ^Expr,
-	submatches:   [dynamic]^Expr,
+	using node:     Stmt,
+	occurrence:     Find_Occurrence,
+	regex:          bool,
+	pattern:        ^Expr,
+	target:         ^Expr,
+	in_table:       bool,
+	section_offset: ^Expr,
+	section_length: ^Expr,
+	match_offset:   ^Expr,
+	match_length:   ^Expr,
+	match_count:    ^Expr,
+	results:        ^Expr,
+	submatches:     [dynamic]^Expr,
 }
 
 // ABAP syntax: `SEARCH text FOR pattern [STARTING AT pos] [ENDING AT pos] [ABBREVIATED].`

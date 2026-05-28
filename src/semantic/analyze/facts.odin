@@ -1222,6 +1222,8 @@ collect_replace_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Replace_Stmt, scope
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.replacement, scope)
+	collect_expr_refs(c, stmt.section_offset, scope)
+	collect_expr_refs(c, stmt.section_length, scope)
 }
 
 collect_translate_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Translate_Stmt, scope: Scope_Id) {
@@ -1242,15 +1244,19 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 	add_system_field_update(c, scope, stmt.range, .Find, "fdpos")
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.target, scope)
+	collect_expr_refs(c, stmt.section_offset, scope)
+	collect_expr_refs(c, stmt.section_length, scope)
 	collect_expr_refs(c, stmt.match_offset, scope)
 	collect_expr_refs(c, stmt.match_length, scope)
 	collect_expr_refs(c, stmt.match_count, scope)
 	collect_expr_refs(c, stmt.results, scope)
 	collect_expr_list_refs(c, stmt.submatches[:], scope)
-	read_ranges := make([dynamic]tokenizer.Range, 0, 2, c.allocator)
+	read_ranges := make([dynamic]tokenizer.Range, 0, 4, c.allocator)
 	write_targets := make([dynamic]Find_Write_Target_Data, 0, 5, c.allocator)
 	if stmt.pattern != nil {append(&read_ranges, stmt.pattern.range)}
 	if stmt.target != nil {append(&read_ranges, stmt.target.range)}
+	if stmt.section_offset != nil {append(&read_ranges, stmt.section_offset.range)}
+	if stmt.section_length != nil {append(&read_ranges, stmt.section_length.range)}
 	if stmt.match_offset != nil {
 		append(
 			&write_targets,

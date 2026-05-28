@@ -1608,13 +1608,29 @@ emit_replace_stmt :: proc(p: ^Printer, stmt: ^Replace_Stmt) {
 	if stmt.regex {
 		emit(p, "REGEX ")
 	}
-	emit_node(p, stmt.pattern)
-	if stmt.target != nil {
-		emit(p, " IN ")
-		if stmt.in_table {
-			emit(p, "TABLE ")
+	if stmt.section_offset != nil || stmt.section_length != nil {
+		emit(p, "SECTION ")
+		if stmt.section_offset != nil {
+			emit(p, "OFFSET ")
+			emit_node(p, stmt.section_offset)
+			emit_space(p)
 		}
+		if stmt.section_length != nil {
+			emit(p, "LENGTH ")
+			emit_node(p, stmt.section_length)
+			emit_space(p)
+		}
+		emit(p, "OF ")
 		emit_node(p, stmt.target)
+	} else {
+		emit_node(p, stmt.pattern)
+		if stmt.target != nil {
+			emit(p, " IN ")
+			if stmt.in_table {
+				emit(p, "TABLE ")
+			}
+			emit_node(p, stmt.target)
+		}
 	}
 	if stmt.replacement != nil {
 		emit(p, " WITH ")
@@ -1691,6 +1707,19 @@ emit_find_stmt :: proc(p: ^Printer, stmt: ^Find_Stmt) {
 		emit(p, " IN ")
 		if stmt.in_table {
 			emit(p, "TABLE ")
+		} else if stmt.section_offset != nil || stmt.section_length != nil {
+			emit(p, "SECTION ")
+			if stmt.section_offset != nil {
+				emit(p, "OFFSET ")
+				emit_node(p, stmt.section_offset)
+				emit_space(p)
+			}
+			if stmt.section_length != nil {
+				emit(p, "LENGTH ")
+				emit_node(p, stmt.section_length)
+				emit_space(p)
+			}
+			emit(p, "OF ")
 		}
 		emit_node(p, stmt.target)
 	}

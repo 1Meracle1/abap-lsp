@@ -312,6 +312,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.pattern)
 		walk(next, n.target)
 		walk(next, n.replacement)
+		walk(next, n.section_offset)
+		walk(next, n.section_length)
 	case ^Translate_Stmt:
 		walk(next, n.target)
 		walk(next, n.operand)
@@ -322,6 +324,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Find_Stmt:
 		walk(next, n.pattern)
 		walk(next, n.target)
+		walk(next, n.section_offset)
+		walk(next, n.section_length)
 		walk(next, n.match_offset)
 		walk(next, n.match_length)
 		walk(next, n.match_count)

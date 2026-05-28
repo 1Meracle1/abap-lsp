@@ -273,6 +273,30 @@ WRITE /10(5) text.`
 }
 
 @(test)
+replace_section_keeps_bounds_and_target :: proc(t: ^testing.T) {
+	source := `REPLACE SECTION OFFSET 0 LENGTH 1 OF lv_value WITH space.`
+	parsed := parse(source, "replace_section.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	replace := parsed.root.stmts[0].derived_stmt.(^ast.Replace_Stmt)
+	target := replace.target.derived_expr.(^ast.Ident_Expr)
+	length := replace.section_length.derived_expr.(^ast.Literal_Expr)
+
+	testing.expect(t, replace.pattern == nil)
+	testing.expect(t, replace.section_offset != nil)
+	testing.expect_value(t, length.value, "1")
+	testing.expect_value(t, target.name, "lv_value")
+	testing.expect_value(t, ast.print_node(replace, context.allocator), source)
+}
+
+@(test)
+replace_section_requires_of :: proc(t: ^testing.T) {
+	parsed := parse(`REPLACE SECTION OFFSET 0 lv_value WITH space.`, "replace_bad_section.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected OF after REPLACE SECTION")
+}
+
+@(test)
 write_to_operands_keep_targets :: proc(t: ^testing.T) {
 	source := `WRITE: lv_date TO lv_date_string,
        lv_time TO lv_time_string.`
@@ -310,6 +334,31 @@ FIND ALL OCCURRENCES OF 'A' IN lv_text RESULTS lv_result.`
 	testing.expect_value(t, find.occurrence, ast.Find_Occurrence.All)
 	testing.expect(t, find.results != nil)
 	testing.expect_value(t, ast.print_node(concat, context.allocator), "CONCATENATE LINES OF lt_source INTO lv_text IN BYTE MODE.")
+}
+
+@(test)
+find_in_section_keeps_bounds_and_target :: proc(t: ^testing.T) {
+	source := `FIND FIRST OCCURRENCE OF lc_null IN SECTION OFFSET lv_cursor LENGTH lv_len OF iv_data MATCH OFFSET lv_match.`
+	parsed := parse(source, "find_in_section.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	find := parsed.root.stmts[0].derived_stmt.(^ast.Find_Stmt)
+	target := find.target.derived_expr.(^ast.Ident_Expr)
+	offset := find.section_offset.derived_expr.(^ast.Ident_Expr)
+	length := find.section_length.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect_value(t, target.name, "iv_data")
+	testing.expect_value(t, offset.name, "lv_cursor")
+	testing.expect_value(t, length.name, "lv_len")
+	testing.expect(t, find.match_offset != nil)
+	testing.expect_value(t, ast.print_node(find, context.allocator), source)
+}
+
+@(test)
+find_in_section_requires_of :: proc(t: ^testing.T) {
+	parsed := parse(`FIND 'x' IN SECTION OFFSET off text.`, "find_bad_section.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected OF after FIND IN SECTION")
 }
 
 @(test)

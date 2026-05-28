@@ -393,6 +393,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.pattern = clone(n.pattern, allocator)
 		r.target = clone(n.target, allocator)
 		r.replacement = clone(n.replacement, allocator)
+		r.section_offset = clone(n.section_offset, allocator)
+		r.section_length = clone(n.section_length, allocator)
 		return r
 	case ^Translate_Stmt:
 		r := clone_shallow(n, allocator)
@@ -409,6 +411,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.pattern = clone(n.pattern, allocator)
 		r.target = clone(n.target, allocator)
+		r.section_offset = clone(n.section_offset, allocator)
+		r.section_length = clone(n.section_length, allocator)
 		r.match_offset = clone(n.match_offset, allocator)
 		r.match_length = clone(n.match_length, allocator)
 		r.match_count = clone(n.match_count, allocator)

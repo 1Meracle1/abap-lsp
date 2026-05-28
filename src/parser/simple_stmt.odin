@@ -2885,6 +2885,32 @@ parse_condense_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+section_clause_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword(p, "SECTION") &&
+	       (at_keyword_index(p, p.index + 1, "OFFSET") || at_keyword_index(p, p.index + 1, "LENGTH"))
+}
+
+parse_replace_section :: proc(p: ^Parser, stmt: ^ast.Replace_Stmt, body_start: int) {
+	expect_keyword(p, "SECTION")
+	has_bound := false
+	if allow_keyword(p, "OFFSET") {
+		has_bound = true
+		stmt.section_offset = required_simple_expr(p, body_start, []string{"LENGTH", "OF"})
+	}
+	if allow_keyword(p, "LENGTH") {
+		has_bound = true
+		stmt.section_length = required_simple_expr(p, body_start, []string{"OF"})
+	}
+	if !has_bound {
+		error_current(p, "syntax error: expected OFFSET or LENGTH after REPLACE SECTION")
+	}
+	if allow_keyword(p, "OF") {
+		stmt.target = required_simple_expr(p, body_start, []string{"WITH", "IN"})
+	} else {
+		error_current(p, "syntax error: expected OF after REPLACE SECTION")
+	}
+}
+
 parse_replace_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "REPLACE")
 	body_start := p.index
@@ -2900,7 +2926,11 @@ parse_replace_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	allow_keyword(p, "OF")
 	stmt.regex = allow_keyword(p, "REGEX")
-	stmt.pattern = required_simple_expr(p, body_start, []string{"IN", "WITH"})
+	if section_clause_starts(p) {
+		parse_replace_section(p, stmt, body_start)
+	} else {
+		stmt.pattern = required_simple_expr(p, body_start, []string{"IN", "WITH"})
+	}
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "IN") {
 			if (allow_keyword(p, "CHARACTER") || allow_keyword(p, "BYTE")) &&
@@ -3005,6 +3035,29 @@ parse_shift_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
+FIND_TAIL_STOP_KEYWORDS :: []string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"}
+
+parse_find_section :: proc(p: ^Parser, stmt: ^ast.Find_Stmt, body_start: int) {
+	expect_keyword(p, "SECTION")
+	has_bound := false
+	if allow_keyword(p, "OFFSET") {
+		has_bound = true
+		stmt.section_offset = required_simple_expr(p, body_start, []string{"LENGTH", "OF"})
+	}
+	if allow_keyword(p, "LENGTH") {
+		has_bound = true
+		stmt.section_length = required_simple_expr(p, body_start, []string{"OF"})
+	}
+	if !has_bound {
+		error_current(p, "syntax error: expected OFFSET or LENGTH after FIND IN SECTION")
+	}
+	if allow_keyword(p, "OF") {
+		stmt.target = required_simple_expr(p, body_start, FIND_TAIL_STOP_KEYWORDS)
+	} else {
+		error_current(p, "syntax error: expected OF after FIND IN SECTION")
+	}
+}
+
 parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "FIND")
 	body_start := p.index
@@ -3024,11 +3077,11 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.pattern = required_simple_expr(p, body_start, []string{"IN"})
 	if allow_keyword(p, "IN") {
 		stmt.in_table = allow_keyword(p, "TABLE")
-		stmt.target = required_simple_expr(
-			p,
-			body_start,
-			[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
-		)
+		if !stmt.in_table && section_clause_starts(p) {
+			parse_find_section(p, stmt, body_start)
+		} else {
+			stmt.target = required_simple_expr(p, body_start, FIND_TAIL_STOP_KEYWORDS)
+		}
 	}
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "MATCH") {
@@ -3036,25 +3089,25 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				stmt.match_offset = required_simple_expr(
 					p,
 					body_start,
-					[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
+					FIND_TAIL_STOP_KEYWORDS,
 				)
 			} else if allow_keyword(p, "LENGTH") {
 				stmt.match_length = required_simple_expr(
 					p,
 					body_start,
-					[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
+					FIND_TAIL_STOP_KEYWORDS,
 				)
 			} else if allow_keyword(p, "COUNT") {
 				stmt.match_count = required_simple_expr(
 					p,
 					body_start,
-					[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
+					FIND_TAIL_STOP_KEYWORDS,
 				)
 			} else {
 				stmt.match_offset = required_simple_expr(
 					p,
 					body_start,
-					[]string{"MATCH", "SUBMATCHES", "RESULTS", "IGNORING", "RESPECTING"},
+					FIND_TAIL_STOP_KEYWORDS,
 				)
 			}
 			continue
