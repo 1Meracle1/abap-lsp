@@ -47,7 +47,8 @@ table_expression_keeps_table_and_selector_shape :: proc(t: ^testing.T) {
 substring_offset_length_keeps_length_out_of_offset :: proc(t: ^testing.T) {
 	source := `lv_a = lv_val+0(1).
 lv_b = lv_val+lv_last(1).
-lv_c = im_response_string+ls_match-offset(ls_match-length).`
+lv_c = im_response_string+ls_match-offset(ls_match-length).
+lv_d = lv_val+4(*).`
 	parsed := parse(source, "substring_offsets.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -69,6 +70,13 @@ lv_c = im_response_string+ls_match-offset(ls_match-length).`
 	_, third_length := third.length.derived_expr.(^ast.Selector_Expr)
 	testing.expect(t, third_offset)
 	testing.expect(t, third_length)
+
+	fourth := parsed.root.stmts[3].derived_stmt.(^ast.Assign_Stmt).rhs.derived_expr.(^ast.Substring_Expr)
+	_, fourth_offset := fourth.offset.derived_expr.(^ast.Literal_Expr)
+	fourth_length, fourth_length_ok := fourth.length.derived_expr.(^ast.Literal_Expr)
+	testing.expect(t, fourth_offset)
+	testing.expect(t, fourth_length_ok)
+	testing.expect_value(t, fourth_length.value, "*")
 }
 
 @(test)

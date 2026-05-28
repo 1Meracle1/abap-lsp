@@ -711,8 +711,8 @@ parse_constructor_expr :: proc(p: ^Parser) -> ^ast.Expr {
 parse_substring_length_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if current_token(p).kind == .Star {
 		tok := bump_token(p)
-		expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-		expr.name = tokenizer.token_lexeme(tok, p.source)
+		expr := ast.new(ast.Literal_Expr, tok.range, p.allocator)
+		expr.value = tokenizer.token_lexeme(tok, p.source)
 		return expr
 	}
 	return parse_concat_expr(p)
