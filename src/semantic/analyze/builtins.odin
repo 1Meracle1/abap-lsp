@@ -118,10 +118,22 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				description = "Current system date.",
 			},
 			{
+				name = "datlo",
+				type_name = "d",
+				structure_name = "",
+				description = "Local date of the current user.",
+			},
+			{
 				name = "dbcnt",
 				type_name = "i",
 				structure_name = "",
 				description = "Number of database rows processed by the last SQL statement that documents it.",
+			},
+			{
+				name = "dynnr",
+				type_name = "c",
+				structure_name = "",
+				description = "Current dynpro number.",
 			},
 			{
 				name = "fdpos",
@@ -140,6 +152,12 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				type_name = "c",
 				structure_name = "",
 				description = "Single-character locale language key for the current internal session.",
+			},
+			{
+				name = "mandt",
+				type_name = "c",
+				structure_name = "",
+				description = "Client ID of the current user.",
 			},
 			{
 				name = "msgid",
@@ -184,16 +202,40 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				description = "Fourth MESSAGE placeholder value captured by the last MESSAGE statement.",
 			},
 			{
+				name = "pfkey",
+				type_name = "c",
+				structure_name = "",
+				description = "Current GUI status.",
+			},
+			{
 				name = "repid",
 				type_name = "c",
 				structure_name = "",
 				description = "Program name exposed through sy-repid and syst-repid; SAP documents this as a predefined constant and type, not a real SYST component.",
 			},
 			{
+				name = "scols",
+				type_name = "i",
+				structure_name = "",
+				description = "Number of columns on the screen.",
+			},
+			{
+				name = "srows",
+				type_name = "i",
+				structure_name = "",
+				description = "Number of screen rows.",
+			},
+			{
 				name = "subrc",
 				type_name = "i",
 				structure_name = "",
 				description = "Return code set by many ABAP statements; 0 usually indicates success for the documented statement.",
+			},
+			{
+				name = "sysid",
+				type_name = "c",
+				structure_name = "",
+				description = "SAP system ID.",
 			},
 			{
 				name = "tabix",

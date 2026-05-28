@@ -3392,6 +3392,20 @@ resolves_builtin_screen_and_syst_fields :: proc(t: ^testing.T) {
 		`
 IF sy-subrc = 0.
 ENDIF.
+IF sy-pfkey = 'SAVE'.
+ENDIF.
+IF sy-dynnr = '1001'.
+ENDIF.
+IF sy-datlo = sy-datum.
+ENDIF.
+IF sy-sysid = 'ABC'.
+ENDIF.
+IF sy-mandt = '100'.
+ENDIF.
+IF sy-scols > 0.
+ENDIF.
+IF sy-srows > 0.
+ENDIF.
 
 LOOP AT SCREEN.
   IF screen-name = 'P_FOO'.
@@ -3419,6 +3433,7 @@ ENDLOOP.
 	testing.expect(t, screen_ok)
 	testing.expect_value(t, subrc.type_ref.base_name, "i")
 	testing.expect_value(t, screen_name.type_ref.base_name, "c")
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
 }
 
 @(test)
