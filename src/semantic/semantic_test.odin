@@ -1,6 +1,7 @@
 package abap_frontend_semantic
 
 import "src:adt"
+import "src:ast"
 import dep_store "src:dependency_store"
 import ddic_xml "src:ddic_xml"
 import "src:parser"
@@ -3108,6 +3109,36 @@ ENDCLASS.`
 	testing.expect_value(t, method.parameters[4].name, "iv_text")
 	testing.expect_value(t, method.parameters[5].section, analyze.Method_Parameter_Section.Returning)
 	testing.expect_value(t, method.parameters[5].name, "rv_ok")
+}
+
+@(test)
+bare_table_method_parameters_are_generic :: proc(t: ^testing.T) {
+	source := `INTERFACE if_swf_exp_expression.
+  METHODS value_to_html
+    EXPORTING
+      !HTML_TABLE TYPE TABLE
+      !EXCEPTION_RETURN TYPE REF TO cx_swf_exp_expression.
+ENDINTERFACE.`
+	unit := collect_test_unit(t, "file:///bare_table_method_parameter.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Parameter_Type))
+	html_table := analyze.find_symbol(&unit, "html_table", .Parameter)
+	testing.expect(t, html_table != nil)
+	if html_table != nil {
+		testing.expect_value(t, html_table.type_clause_form, ast.Data_Type_Form.Table)
+		testing.expect(t, !html_table.type_clause_table_has_of)
+		testing.expect(t, !html_table.has_declared_type)
+	}
+}
+
+@(test)
+inline_table_of_method_parameters_are_invalid :: proc(t: ^testing.T) {
+	source := `INTERFACE lif.
+  METHODS run EXPORTING !ROWS TYPE TABLE OF string.
+ENDINTERFACE.`
+	unit := collect_test_unit(t, "file:///inline_table_method_parameter.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Invalid_Parameter_Type))
 }
 
 @(test)

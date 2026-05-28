@@ -303,6 +303,7 @@ declare_collected_symbol :: proc(
 	value_clause_display := "",
 	type_clause_form := ast.Data_Type_Form{},
 	has_type_clause_form := false,
+	type_clause_table_has_of := false,
 ) -> Symbol_Id {
 	canonical := canonical_name(name, c.allocator)
 	check_duplicate_or_shadow(c, scope, canonical, kind, decl_range)
@@ -323,6 +324,7 @@ declare_collected_symbol :: proc(
 			value_clause_display = strings.clone(value_clause_display, c.allocator) if value_clause_display != "" else "",
 			type_clause_form = type_clause_form,
 			has_type_clause_form = has_type_clause_form,
+			type_clause_table_has_of = type_clause_table_has_of,
 		},
 	)
 	append(&c.scopes[scope_id_index(scope)].declarations, id)
@@ -1078,6 +1080,7 @@ declare_info_symbol :: proc(
 	}
 	type_display := type_clause_display(c, info.type_clause)
 	type_form, has_type_form := type_clause_form_from_ast(info.type_clause)
+	type_table_has_of := type_clause_table_has_of_from_ast(info.type_clause)
 	value_display := value_clause_display(c, info.value_clause)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
@@ -1101,6 +1104,7 @@ declare_info_symbol :: proc(
 		value_display,
 		type_clause_form = type_form,
 		has_type_clause_form = has_type_form,
+		type_clause_table_has_of = type_table_has_of,
 	)
 }
 
@@ -1119,6 +1123,7 @@ declare_typed_symbol :: proc(
 	declared_type, has_type := type_ref_from_clause(c, type_clause)
 	type_display := type_clause_display(c, type_clause)
 	type_form, has_type_form := type_clause_form_from_ast(type_clause)
+	type_table_has_of := type_clause_table_has_of_from_ast(type_clause)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
 		if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
@@ -1139,6 +1144,7 @@ declare_typed_symbol :: proc(
 		value_display,
 		type_clause_form = type_form,
 		has_type_clause_form = has_type_form,
+		type_clause_table_has_of = type_table_has_of,
 	)
 }
 
@@ -1147,6 +1153,27 @@ type_clause_form_from_ast :: proc(clause: ^ast.Data_Type_Clause) -> (ast.Data_Ty
 		return {}, false
 	}
 	return clause.form, true
+}
+
+type_clause_table_has_of_from_ast :: #force_inline proc "contextless" (clause: ^ast.Data_Type_Clause) -> bool {
+	return clause != nil && clause.table_has_of
+}
+
+type_form_is_table_category :: proc "contextless" (form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Any_Table,
+	     .Table,
+	     .Like_Table,
+	     .Index_Table,
+	     .Standard_Table,
+	     .Sorted_Table,
+	     .Hashed_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return true
+	}
+	return false
 }
 
 declare_tables_clause :: proc(
@@ -1651,17 +1678,17 @@ type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> str
 	case .Like_Line_Of, .Type_Line_Of:
 		return concat2(c, "LINE OF ", ref)
 	case .Any_Table:
-		return strings.clone("ANY TABLE", c.allocator) if clause.type_ref == nil else concat2(c, "ANY TABLE OF ", ref)
+		return strings.clone("ANY TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "ANY TABLE OF ", ref)
 	case .Table, .Like_Table:
-		return concat2(c, "TABLE OF ", ref)
+		return strings.clone("TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "TABLE OF ", ref)
 	case .Index_Table:
-		return strings.clone("INDEX TABLE", c.allocator) if clause.type_ref == nil else concat2(c, "INDEX TABLE OF ", ref)
+		return strings.clone("INDEX TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "INDEX TABLE OF ", ref)
 	case .Standard_Table, .Like_Standard_Table:
-		return concat2(c, "STANDARD TABLE OF ", ref)
+		return strings.clone("STANDARD TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "STANDARD TABLE OF ", ref)
 	case .Sorted_Table, .Like_Sorted_Table:
-		return concat2(c, "SORTED TABLE OF ", ref)
+		return strings.clone("SORTED TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "SORTED TABLE OF ", ref)
 	case .Hashed_Table, .Like_Hashed_Table:
-		return concat2(c, "HASHED TABLE OF ", ref)
+		return strings.clone("HASHED TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "HASHED TABLE OF ", ref)
 	case .Range_Of:
 		return concat2(c, "RANGE OF ", ref)
 	case:
@@ -2440,6 +2467,7 @@ declare_signature_scope_params :: proc(
 			param.type_clause_display,
 			type_clause_form = param.type_clause_form,
 			has_type_clause_form = param.has_type_clause_form,
+			type_clause_table_has_of = param.type_clause_table_has_of,
 		)
 	}
 	c.current_scope = sig_scope
@@ -2550,6 +2578,7 @@ class_member_parameter_from_oop :: proc(
 			param.type_clause_form = type_form
 			param.has_type_clause_form = true
 		}
+		param.type_clause_table_has_of = type_clause_table_has_of_from_ast(clause.type_clause)
 	}
 	if clause.optional {
 		param.flags += {.Is_Optional}
@@ -2592,9 +2621,10 @@ form_parameters_from_ast :: proc(
 		declared_type, has_type := type_ref_from_clause(c, clause.type_clause)
 		display := type_clause_display(c, clause.type_clause)
 		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
+		type_table_has_of := type_clause_table_has_of_from_ast(clause.type_clause)
 		if clause.section == .Tables &&
 		   display != "" &&
-		   !ascii_contains_ignore_case(display, "TABLE OF") {
+		   !(has_type_form && type_form_is_table_category(type_form)) {
 			display = concat2(c, "STANDARD TABLE OF ", display)
 		}
 		structure_id := INVALID_STRUCTURE_ID
@@ -2617,6 +2647,7 @@ form_parameters_from_ast :: proc(
 			display,
 			type_clause_form = type_form,
 			has_type_clause_form = has_type_form,
+			type_clause_table_has_of = type_table_has_of,
 		)
 		append(
 			&parameters,
@@ -2654,6 +2685,7 @@ function_parameters_from_ast :: proc(
 			add_type_reference(c, scope, type_ref, param.range)
 		}
 		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
+		type_table_has_of := type_clause_table_has_of_from_ast(clause.type_clause)
 		if .Is_Optional in clause.flags {
 			param.flags += {.Is_Optional}
 		}
@@ -2672,6 +2704,7 @@ function_parameters_from_ast :: proc(
 			param.type_clause_display,
 			type_clause_form = type_form,
 			has_type_clause_form = has_type_form,
+			type_clause_table_has_of = type_table_has_of,
 		)
 		append(&parameters, param)
 	}
@@ -2846,6 +2879,7 @@ declare_method_scope_params :: proc(
 			param.type_clause_display,
 			type_clause_form = param.type_clause_form,
 			has_type_clause_form = param.has_type_clause_form,
+			type_clause_table_has_of = param.type_clause_table_has_of,
 		)
 	}
 	for exception in member.exceptions {
@@ -2935,19 +2969,4 @@ uri_file_stem :: proc(uri: string) -> string {
 
 canonical_name :: #force_inline proc(name: string, allocator: mem.Allocator) -> string {
 	return strings.to_lower(name, allocator)
-}
-
-ascii_contains_ignore_case :: proc(haystack, needle: string) -> bool {
-	if needle == "" {
-		return true
-	}
-	if len(needle) > len(haystack) {
-		return false
-	}
-	for i in 0 ..= len(haystack) - len(needle) {
-		if strings.equal_fold(haystack[i:i + len(needle)], needle) {
-			return true
-		}
-	}
-	return false
 }

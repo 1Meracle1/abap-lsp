@@ -1559,27 +1559,27 @@ parse_create_type_clause_tail :: proc(
 	} else if space2_at(p, p.index, "ANY", "TABLE") {
 		bump_token(p)
 		bump_token(p)
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Any_Table
 	} else if space2_at(p, p.index, "INDEX", "TABLE") {
 		bump_token(p)
 		bump_token(p)
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Index_Table
 	} else if allow_keyword(p, "STANDARD") {
 		allow_keyword(p, "TABLE")
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Standard_Table
 	} else if allow_keyword(p, "SORTED") {
 		allow_keyword(p, "TABLE")
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Sorted_Table
 	} else if allow_keyword(p, "HASHED") {
 		allow_keyword(p, "TABLE")
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Hashed_Table
 	} else if allow_keyword(p, "TABLE") {
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Table
 	}
 	dynamic_expr := create_dynamic_type_expr_at(p, p.index)
@@ -2196,26 +2196,32 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		bump_token(p)
 		bump_token(p)
 		table_has_of = allow_keyword(p, "OF")
+		clause.table_has_of = table_has_of
 		clause.form = .Any_Table
 	} else if !is_like && space2_at(p, p.index, "INDEX", "TABLE") {
 		bump_token(p)
 		bump_token(p)
 		table_has_of = allow_keyword(p, "OF")
+		clause.table_has_of = table_has_of
 		clause.form = .Index_Table
 	} else if allow_keyword(p, "STANDARD") {
 		allow_keyword(p, "TABLE")
 		table_has_of = allow_keyword(p, "OF")
+		clause.table_has_of = table_has_of
 		clause.form = .Like_Standard_Table if is_like else .Standard_Table
 	} else if allow_keyword(p, "SORTED") {
 		allow_keyword(p, "TABLE")
 		table_has_of = allow_keyword(p, "OF")
+		clause.table_has_of = table_has_of
 		clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
 	} else if allow_keyword(p, "HASHED") {
 		allow_keyword(p, "TABLE")
 		table_has_of = allow_keyword(p, "OF")
+		clause.table_has_of = table_has_of
 		clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
 	} else if allow_keyword(p, "TABLE") {
 		table_has_of = allow_keyword(p, "OF")
+		clause.table_has_of = table_has_of
 		clause.form = .Like_Table if is_like else .Table
 	}
 	if !table_has_of {

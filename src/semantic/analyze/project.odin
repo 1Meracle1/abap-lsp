@@ -1098,6 +1098,7 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 					param.declared_type,
 					.Has_Declared_Type in param.flags,
 					param.type_clause_display,
+					type_clause_table_has_of = param.type_clause_table_has_of,
 				)
 				changed = true
 			}

@@ -1016,36 +1016,36 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 	} else if !is_like && space2_at(p, p.index, "ANY", "TABLE") {
 		bump_token(p)
 		bump_token(p)
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Any_Table
 	} else if !is_like && space2_at(p, p.index, "INDEX", "TABLE") {
 		bump_token(p)
 		bump_token(p)
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Index_Table
 	} else if allow_keyword(p, "STANDARD") {
 		if !allow_keyword(p, "TABLE") {
 			error_current(p, "syntax error: expected keyword")
 			return nil
 		}
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Standard_Table if is_like else .Standard_Table
 	} else if allow_keyword(p, "SORTED") {
 		if !allow_keyword(p, "TABLE") {
 			error_current(p, "syntax error: expected keyword")
 			return nil
 		}
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
 	} else if allow_keyword(p, "HASHED") {
 		if !allow_keyword(p, "TABLE") {
 			error_current(p, "syntax error: expected keyword")
 			return nil
 		}
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
 	} else if allow_keyword(p, "TABLE") {
-		allow_keyword(p, "OF")
+		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Like_Table if is_like else .Table
 	}
 

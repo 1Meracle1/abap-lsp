@@ -308,6 +308,7 @@ Symbol_Data :: struct {
 	value_clause_display: string,
 	type_clause_form:     ast.Data_Type_Form,
 	has_type_clause_form: bool,
+	type_clause_table_has_of: bool,
 }
 
 Reference_Data :: struct {
@@ -525,6 +526,7 @@ Class_Member_Parameter_Data :: struct {
 	type_clause_display: string,
 	type_clause_form:    ast.Data_Type_Form,
 	has_type_clause_form: bool,
+	type_clause_table_has_of: bool,
 	flags:               Class_Member_Parameter_Flags,
 }
 
@@ -1080,6 +1082,7 @@ declare_symbol :: proc(
 	value_clause_display := "",
 	type_clause_form := ast.Data_Type_Form{},
 	has_type_clause_form := false,
+	type_clause_table_has_of := false,
 ) -> Symbol_Id {
 	id := Symbol_Id(u32(len(unit.symbols)))
 	append(
@@ -1097,6 +1100,7 @@ declare_symbol :: proc(
 			value_clause_display = value_clause_display,
 			type_clause_form = type_clause_form,
 			has_type_clause_form = has_type_clause_form,
+			type_clause_table_has_of = type_clause_table_has_of,
 		},
 	)
 	append(&unit.scopes[scope_id_index(scope)].declarations, id)

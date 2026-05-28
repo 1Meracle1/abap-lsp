@@ -573,7 +573,7 @@ validate_parameter_types :: proc(
 ) {
 	unit := &project.units[unit_index]
 	for s in unit.symbols {
-		if s.kind == .Parameter && parameter_type_uses_inline_table_type(s.type_clause_form) {
+		if s.kind == .Parameter && parameter_type_uses_inline_table_type(s) {
 			append_diag(
 				out,
 				seen,
@@ -585,8 +585,8 @@ validate_parameter_types :: proc(
 	}
 }
 
-parameter_type_uses_inline_table_type :: #force_inline proc "contextless" (form: ast.Data_Type_Form) -> bool {
-	return form == .Table || form == .Like_Table
+parameter_type_uses_inline_table_type :: #force_inline proc "contextless" (s: Symbol_Data) -> bool {
+	return s.type_clause_table_has_of && (s.type_clause_form == .Table || s.type_clause_form == .Like_Table)
 }
 
 validate_field_accesses :: proc(

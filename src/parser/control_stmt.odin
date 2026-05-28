@@ -1106,25 +1106,31 @@ parse_header_type_clause :: proc(
 		} else if !is_like && i + 1 < period_index && space2_at(p, i, "ANY", "TABLE") {
 			i += 2
 			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.table_has_of = table_has_of
 			clause.form = .Any_Table
 		} else if !is_like && i + 1 < period_index && space2_at(p, i, "INDEX", "TABLE") {
 			i += 2
 			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.table_has_of = table_has_of
 			clause.form = .Index_Table
 		} else if header_allow_keyword(p, &i, period_index, "STANDARD") {
 			header_allow_keyword(p, &i, period_index, "TABLE")
 			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.table_has_of = table_has_of
 			clause.form = .Like_Standard_Table if is_like else .Standard_Table
 		} else if header_allow_keyword(p, &i, period_index, "SORTED") {
 			header_allow_keyword(p, &i, period_index, "TABLE")
 			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.table_has_of = table_has_of
 			clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
 		} else if header_allow_keyword(p, &i, period_index, "HASHED") {
 			header_allow_keyword(p, &i, period_index, "TABLE")
 			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.table_has_of = table_has_of
 			clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
 		} else if header_allow_keyword(p, &i, period_index, "TABLE") {
 			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.table_has_of = table_has_of
 			clause.form = .Like_Table if is_like else .Table
 		}
 	}

@@ -763,6 +763,29 @@ ENDCLASS.`
 }
 
 @(test)
+oop_signature_distinguishes_bare_table_from_table_of :: proc(t: ^testing.T) {
+	source := `INTERFACE lif.
+  METHODS run
+    EXPORTING
+      !HTML_TABLE TYPE TABLE
+      !ROWS TYPE TABLE OF string.
+ENDINTERFACE.`
+	parsed := parse(source, "oop_table_parameter_shapes.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
+	exporting := methods.members[0].signatures[0]
+	testing.expect_value(t, len(exporting.parameters), 2)
+	testing.expect_value(t, exporting.parameters[0].type_clause.form, ast.Data_Type_Form.Table)
+	testing.expect(t, !exporting.parameters[0].type_clause.table_has_of)
+	testing.expect(t, exporting.parameters[0].type_clause.type_ref == nil)
+	testing.expect_value(t, exporting.parameters[1].type_clause.form, ast.Data_Type_Form.Table)
+	testing.expect(t, exporting.parameters[1].type_clause.table_has_of)
+	row_ref := exporting.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, row_ref.base_name, "string")
+}
+
+@(test)
 oop_signature_accepts_escaped_keyword_parameters :: proc(t: ^testing.T) {
 	source := `INTERFACE lif.
   METHODS set_option

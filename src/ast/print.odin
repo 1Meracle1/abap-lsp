@@ -1219,7 +1219,7 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 	case .Range_Of:
 		emit(p, "TYPE RANGE OF")
 	}
-	if clause.type_ref != nil {
+	if clause.type_ref != nil || clause.table_has_of {
 		if clause.form == .Any_Table ||
 		   clause.form == .Table ||
 		   clause.form == .Like_Table ||
@@ -1232,6 +1232,8 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 		   clause.form == .Like_Hashed_Table {
 			emit(p, " OF")
 		}
+	}
+	if clause.type_ref != nil {
 		emit_space(p)
 		emit_node(p, clause.type_ref)
 	}

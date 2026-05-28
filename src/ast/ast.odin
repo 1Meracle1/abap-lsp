@@ -594,8 +594,9 @@ Data_Type_Form :: enum {
 
 // ABAP syntax: typed declaration addition such as `TYPE ty_line`, `LIKE other`, or `LIKE LINE OF itab`.
 Data_Type_Clause :: struct {
-	form:     Data_Type_Form,
-	type_ref: ^Expr,
+	form:         Data_Type_Form,
+	table_has_of: bool,
+	type_ref:     ^Expr,
 }
 
 // ABAP syntax: TYPES statement, for example `TYPES ty TYPE i.`
