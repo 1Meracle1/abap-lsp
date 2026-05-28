@@ -164,7 +164,10 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Template_Expr:
 		collect_expr_refs(c, n.expr, scope)
 	case ^ast.Template_Format_Spec_Expr:
-		collect_expr_refs(c, n.value, scope)
+		if option, ok := n.option.?; ok &&
+		   (option == .Width || option == .Decimals) {
+			collect_expr_refs(c, n.value, scope)
+		}
 	}
 }
 

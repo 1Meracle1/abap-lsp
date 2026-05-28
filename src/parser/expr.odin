@@ -1565,6 +1565,7 @@ parse_template_format_spec_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		p.allocator,
 	)
 	spec.name = tokenizer.token_lexeme(name, p.source)
+	spec.option = template_format_option(p, name)
 	spec.value = value
 	return spec
 }
@@ -1574,10 +1575,11 @@ template_format_spec_starts :: proc(p: ^Parser) -> bool {
 		return false
 	}
 	next := next_significant_index(p.index + 1)
+	_, has_option := template_format_option(p, current_token(p)).?
 	return(
 		next < len(p.tokens) &&
 		p.tokens[next].kind == .Eq &&
-		template_format_name(p, current_token(p)) \
+		has_option \
 	)
 }
 
@@ -1851,14 +1853,27 @@ call_argument_section_kind :: proc(p: ^Parser, tok: Token) -> ast.Call_Arg_Secti
 	return .Unknown
 }
 
-template_format_name :: proc(p: ^Parser, tok: Token) -> bool {
-	return(
-		token_is_keyword(p, tok, "WIDTH") ||
-		token_is_keyword(p, tok, "ALIGN") ||
-		token_is_keyword(p, tok, "DECIMALS") ||
-		token_is_keyword(p, tok, "ALPHA") ||
-		token_is_keyword(p, tok, "TIMESTAMP") ||
-		token_is_keyword(p, tok, "DATE") ||
-		token_is_keyword(p, tok, "TIME") \
-	)
+template_format_option :: proc(p: ^Parser, tok: Token) -> Maybe(ast.Template_Format_Option) {
+	if token_is_keyword(p, tok, "WIDTH") {
+		return .Width
+	}
+	if token_is_keyword(p, tok, "ALIGN") {
+		return .Align
+	}
+	if token_is_keyword(p, tok, "DECIMALS") {
+		return .Decimals
+	}
+	if token_is_keyword(p, tok, "ALPHA") {
+		return .Alpha
+	}
+	if token_is_keyword(p, tok, "TIMESTAMP") {
+		return .Timestamp
+	}
+	if token_is_keyword(p, tok, "DATE") {
+		return .Date
+	}
+	if token_is_keyword(p, tok, "TIME") {
+		return .Time
+	}
+	return nil
 }

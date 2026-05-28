@@ -177,8 +177,12 @@ print_node_reconstructs_string_template_nodes :: proc(t: ^testing.T) {
 	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt)
 	template := assign.rhs.derived_expr.(^ast.Char_String_Template_Expr)
 	interpolation := template.parts[1].derived_expr.(^ast.Template_Interpolation_Expr)
+	format_spec := interpolation.format_specs[0].derived_expr.(^ast.Template_Format_Spec_Expr)
+	option, has_option := format_spec.option.?
 	testing.expect_value(t, ast.print_node(template, context.allocator), `|Amount { lv_amount DECIMALS = 2 }|`)
 	testing.expect_value(t, ast.print_node(interpolation, context.allocator), `{ lv_amount DECIMALS = 2 }`)
+	testing.expect(t, has_option)
+	testing.expect_value(t, option, ast.Template_Format_Option.Decimals)
 }
 
 @(test)
