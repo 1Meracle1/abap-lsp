@@ -2411,34 +2411,51 @@ collect_class_oop_stmt :: proc(
 			add_reference(c, scope, name, .Type, .Interface_Use, member.range)
 		}
 	case .Aliases:
-		for member in stmt.members {
-			target_ref := Field_Type_Ref_Data{}
-			for sig in member.signatures {
-				if sig.kind == .For && len(sig.values) > 0 {
-					target_ref, _ = type_ref_from_expr(c, sig.values[0], .Type)
-					break
+		if len(stmt.aliases) > 0 {
+			for alias in stmt.aliases {
+				collect_member_alias(c, alias.name, alias.target, stmt.range, scope, class_symbol)
+			}
+		} else {
+			for member in stmt.members {
+				for sig in member.signatures {
+					if sig.kind == .For && len(sig.values) > 0 {
+						collect_member_alias(c, member.name, sig.values[0], stmt.range, scope, class_symbol)
+						break
+					}
 				}
 			}
-			if target_ref.base_name == "" {
-				continue
-			}
-			target_member := ""
-			if len(target_ref.field_path) > 0 {
-				target_member = target_ref.field_path[0]
-			}
-			append(
-				&c.member_aliases,
-				Member_Alias_Data {
-					owner_symbol = class_symbol,
-					alias_name = canonical_name(member.name, c.allocator),
-					target_interface_name = target_ref.base_name,
-					target_member_name = target_member,
-					range = stmt.range,
-				},
-			)
 		}
 	case:
 	}
+}
+
+collect_member_alias :: proc(
+	c: ^Collector,
+	name: string,
+	target: ^ast.Expr,
+	range: tokenizer.Range,
+	scope: Scope_Id,
+	class_symbol: Symbol_Id,
+) {
+	target_ref, ok := type_ref_from_expr(c, target, .Type)
+	if !ok || target_ref.base_name == "" {
+		return
+	}
+	add_type_reference(c, scope, target_ref, range)
+	target_member := ""
+	if len(target_ref.field_path) > 0 {
+		target_member = target_ref.field_path[0]
+	}
+	append(
+		&c.member_aliases,
+		Member_Alias_Data {
+			owner_symbol = class_symbol,
+			alias_name = canonical_name(name, c.allocator),
+			target_interface_name = target_ref.base_name,
+			target_member_name = target_member,
+			range = range,
+		},
+	)
 }
 
 declare_signature_scope_params :: proc(

@@ -203,6 +203,7 @@ project_index_collect_unit :: proc(
 				continue
 			}
 			key := Project_Class_Member_Key {
+				class_unit = unit.unit_id,
 				class_symbol = scope_data.owner,
 				namespace = namespace,
 				name = symbol.name,
@@ -212,7 +213,7 @@ project_index_collect_unit :: proc(
 				Project_Class_Scope_Index_Entry {
 					unit = unit.unit_id,
 					key = key,
-					entry = Project_Class_Member_Entry{symbol = symbol.id},
+					entry = Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
 				},
 			)
 			project_index_add_class_scope_candidate(index, data.class_scope_entries[len(data.class_scope_entries) - 1])
@@ -278,6 +279,7 @@ project_index_update_include_graph :: proc(
 	if rebuild {
 		project_index_rebuild_include_graph(index, units)
 	}
+	project_index_rebuild_class_scope_index(index, units)
 }
 
 project_index_include_targets_changed :: proc(data: ^Project_Index_Unit, unit: ^Unit_Analysis) -> bool {
@@ -321,6 +323,114 @@ project_index_destroy_include_graph :: proc(index: ^Project_Index) {
 	}
 	index.visible = nil
 	index.predecessors = nil
+}
+
+project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []Unit_Analysis) {
+	delete(index.class_scope_entries)
+	delete(index.class_scope_candidates)
+	index.class_scope_entries = make(map[Project_Class_Member_Key]Project_Class_Member_Entry, 16, index.allocator)
+	index.class_scope_candidates = make(map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry, 16, index.allocator)
+	for i in 0 ..< len(units) {
+		clear(&index.unit_entries[i].class_scope_entries)
+	}
+	for &unit in units {
+		for symbol in unit.symbols {
+			scope_data := scope(&unit, symbol.scope)
+			if scope_data == nil ||
+			   !(scope_data.kind == .Class || scope_data.kind == .Interface) ||
+			   scope_data.owner == INVALID_SYMBOL_ID {
+				continue
+			}
+			namespaces := [?]Namespace{.Value, .Type, .Routine}
+			for namespace in namespaces {
+				if symbol_kind_occupies(symbol.kind, namespace) {
+					project_index_record_class_scope_entry(
+						index,
+						unit.unit_id,
+						Project_Class_Member_Key {
+							class_unit   = unit.unit_id,
+							class_symbol = scope_data.owner,
+							namespace    = namespace,
+							name         = symbol.name,
+						},
+						Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
+					)
+				}
+			}
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for unit, unit_index in units {
+			if unit_index >= len(index.visible) {
+				continue
+			}
+			for alias in unit.member_aliases {
+				if alias.alias_name == "" || alias.target_interface_name == "" {
+					continue
+				}
+				target, ok := resolve_type_name_in_project(
+					units,
+					unit_index,
+					alias.target_interface_name,
+					&index.root_lookup,
+					index.visible[unit_index],
+				)
+				if !ok {
+					continue
+				}
+				target_name := alias.target_member_name
+				if target_name == "" {
+					target_name = alias.alias_name
+				}
+				namespaces := [?]Namespace{.Value, .Type, .Routine}
+				for namespace in namespaces {
+					target_key := Project_Class_Member_Key {
+						class_unit   = target.unit,
+						class_symbol = target.symbol,
+						namespace    = namespace,
+						name         = target_name,
+					}
+					alias_key := Project_Class_Member_Key {
+						class_unit   = unit.unit_id,
+						class_symbol = alias.owner_symbol,
+						namespace    = namespace,
+						name         = alias.alias_name,
+					}
+					if alias_key in index.class_scope_entries {
+						continue
+					}
+					if target_entry, target_ok := index.class_scope_entries[target_key]; target_ok {
+						project_index_record_class_scope_entry(index, unit.unit_id, alias_key, target_entry)
+						changed = true
+					}
+				}
+			}
+		}
+	}
+}
+
+project_index_record_class_scope_entry :: proc(
+	index: ^Project_Index,
+	owner_unit: Unit_Id,
+	key: Project_Class_Member_Key,
+	entry: Project_Class_Member_Entry,
+) {
+	unit_index := unit_id_index(owner_unit)
+	if unit_index < 0 || unit_index >= len(index.unit_entries) {
+		return
+	}
+	data := &index.unit_entries[unit_index]
+	append(
+		&data.class_scope_entries,
+		Project_Class_Scope_Index_Entry {
+			unit = owner_unit,
+			key = key,
+			entry = entry,
+		},
+	)
+	project_index_add_class_scope_candidate(index, data.class_scope_entries[len(data.class_scope_entries) - 1])
 }
 
 validation_lookup_from_project_index :: proc(index: ^Project_Index) -> Validation_Lookup {

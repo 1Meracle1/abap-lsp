@@ -620,6 +620,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Oop_Simple_Stmt:
 		r := clone_shallow(n, allocator)
 		r.members = clone_oop_members(n.members, allocator)
+		r.aliases = clone_oop_aliases(n.aliases, allocator)
 		return r
 	case ^Oop_Load_Stmt:
 		return clone_shallow(n, allocator)
@@ -1057,7 +1058,19 @@ clone_function_exceptions :: proc(list: [dynamic]Function_Exception_Clause, allo
 clone_oop_members :: proc(list: [dynamic]Oop_Member_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Member_Clause {
 	res := make([dynamic]Oop_Member_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Oop_Member_Clause{name = clause.name, signatures = clone_oop_signatures(clause.signatures, allocator)})
+		next := clause
+		next.signatures = clone_oop_signatures(clause.signatures, allocator)
+		append(&res, next)
+	}
+	return res
+}
+
+clone_oop_aliases :: proc(list: [dynamic]Oop_Alias_Clause, allocator: mem.Allocator) -> [dynamic]Oop_Alias_Clause {
+	res := make([dynamic]Oop_Alias_Clause, 0, len(list), allocator)
+	for clause in list {
+		next := clause
+		next.target = clone(clause.target, allocator)
+		append(&res, next)
 	}
 	return res
 }

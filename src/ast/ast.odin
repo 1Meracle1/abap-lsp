@@ -1827,6 +1827,16 @@ Oop_Member_Clause :: struct {
 	signatures:      [dynamic]Oop_Signature_Clause,
 }
 
+Oop_Alias_Clause :: struct {
+	name:                   string,
+	range:                  tokenizer.Range,
+	target:                 ^Expr,
+	target_interface_name:  string,
+	target_interface_range: tokenizer.Range,
+	target_member_name:     string,
+	target_member_range:    tokenizer.Range,
+}
+
 // ABAP syntax: class/interface member declarations handled as simple OOP statements.
 Oop_Simple_Stmt :: struct {
 	using node: Stmt,
@@ -1834,6 +1844,7 @@ Oop_Simple_Stmt :: struct {
 	visibility: Oop_Visibility,
 	text:       string,
 	members:    [dynamic]Oop_Member_Clause,
+	aliases:    [dynamic]Oop_Alias_Clause,
 }
 
 Oop_Load_Kind :: enum {

@@ -486,6 +486,9 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk_expr_list(next, n.args)
 	case ^Selection_Screen_Stmt:
 	case ^Oop_Simple_Stmt:
+		for alias in n.aliases {
+			walk(next, alias.target)
+		}
 		for member in n.members {
 			for clause in member.signatures {
 				walk_expr_list(next, clause.values)

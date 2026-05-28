@@ -690,6 +690,10 @@ ENDCLASS.`
 	class_methods := class_decl.body[6].derived_stmt.(^ast.Oop_Simple_Stmt)
 	testing.expect_value(t, interfaces.members[0].name, "if_demo")
 	testing.expect_value(t, aliases.members[0].name, "set")
+	testing.expect_value(t, len(aliases.aliases), 1)
+	testing.expect_value(t, aliases.aliases[0].name, "set")
+	testing.expect_value(t, aliases.aliases[0].target_interface_name, "if_demo")
+	testing.expect_value(t, aliases.aliases[0].target_member_name, "set")
 	testing.expect_value(t, aliases.members[0].signatures[0].kind, ast.Oop_Signature_Kind.For)
 	alias_target := aliases.members[0].signatures[0].values[0].derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, alias_target.base_name, "if_demo")
@@ -705,6 +709,16 @@ ENDCLASS.`
 	testing.expect_value(t, class_methods.members[0].name, "create")
 	testing.expect_value(t, class_methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Returning)
 	testing.expect_value(t, class_methods.members[0].signatures[0].parameters[0].name, "ro_obj")
+}
+
+@(test)
+oop_alias_target_must_be_interface_member :: proc(t: ^testing.T) {
+	source := `INTERFACE lif.
+  ALIASES bad FOR if_demo=>set.
+ENDINTERFACE.`
+	parsed := parse(source, "oop_alias_invalid.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "ALIASES target must be interface~member")
 }
 
 @(test)

@@ -212,6 +212,17 @@ type_decl_after_reference :: proc(
 	if s := symbol(target_unit, target.symbol); s != nil && root_symbol_visible_by_default(target_unit, s) {
 		return false
 	}
+	if s := symbol(target_unit, target.symbol); s != nil {
+		if owner_scope := scope(target_unit, s.scope);
+		   owner_scope != nil &&
+		   (owner_scope.kind == .Class || owner_scope.kind == .Interface) &&
+		   owner_scope.owner != INVALID_SYMBOL_ID {
+			if owner := symbol(target_unit, owner_scope.owner);
+			   owner != nil && root_symbol_visible_by_default(target_unit, owner) {
+				return false
+			}
+		}
+	}
 	if unit_list_contains(lookup.predecessors[unit_index][:], target.unit) {
 		return false
 	}

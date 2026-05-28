@@ -2017,6 +2017,14 @@ parse_oop_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		case .Class_Load:
 		case .Interface_Load:
 		}
+		if stmt.kind == .Aliases {
+			if !parse_oop_aliases(p, stmt) {
+				return nil
+			}
+			stmt.range = simple_stmt_range(p, start)
+			stmt.text = source_range_text(p, stmt.range)
+			return stmt
+		}
 		stmt.members = make([dynamic]ast.Oop_Member_Clause, 0, 2, p.allocator)
 		parse_oop_members(p, stmt)
 		stmt.range = simple_stmt_range(p, start)
@@ -2031,6 +2039,108 @@ parse_oop_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.text = source_range_text(p, stmt.range)
 	return stmt
+}
+
+parse_oop_aliases :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) -> bool {
+	stmt.aliases = make([dynamic]ast.Oop_Alias_Clause, 0, 2, p.allocator)
+	stmt.members = make([dynamic]ast.Oop_Member_Clause, 0, 2, p.allocator)
+	allow_token(p, .Colon)
+	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
+		if allow_token(p, .Comma) {
+			continue
+		}
+		alias, ok := parse_oop_alias_clause(p)
+		if !ok {
+			return false
+		}
+		append(&stmt.aliases, alias)
+		append(&stmt.members, oop_member_from_alias(alias, p.allocator))
+	}
+	return true
+}
+
+parse_oop_alias_clause :: proc(p: ^Parser) -> (ast.Oop_Alias_Clause, bool) {
+	name := current_token(p)
+	if name.kind != .Ident {
+		error_current(p, "syntax error: expected alias name")
+		return {}, false
+	}
+	bump_token(p)
+	if !allow_keyword(p, "FOR") {
+		error_current(p, "syntax error: expected FOR in ALIASES statement")
+		return {}, false
+	}
+	target_start := p.index
+	consume_oop_alias_target(p)
+	target := type_ref_expr_from_tokens(p, target_start, p.index)
+	if target == nil ||
+	   target.base_name == "" ||
+	   len(target.path) != 1 ||
+	   target.path[0].selector != .Tilde ||
+	   target.path[0].name == "" {
+		error(p, name.range, "syntax error: ALIASES target must be interface~member")
+		return {}, false
+	}
+	return ast.Oop_Alias_Clause {
+			name                   = tokenizer.token_lexeme(name, p.source),
+			range                  = name.range,
+			target                 = target,
+			target_interface_name  = target.base_name,
+			target_interface_range = target.base_range,
+			target_member_name     = target.path[0].name,
+			target_member_range    = target.path[0].range,
+		},
+		true
+}
+
+consume_oop_alias_target :: proc(p: ^Parser) {
+	paren, bracket, brace := 0, 0, 0
+	for {
+		tok := current_token(p)
+		if tok.kind == .Eof {
+			return
+		}
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && (tok.kind == .Period || tok.kind == .Comma) {
+			return
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren == 0 {
+				return
+			}
+			paren -= 1
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket == 0 {
+				return
+			}
+			bracket -= 1
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace == 0 {
+				return
+			}
+			brace -= 1
+		}
+		bump_token(p)
+	}
+}
+
+oop_member_from_alias :: proc(alias: ast.Oop_Alias_Clause, allocator: mem.Allocator) -> ast.Oop_Member_Clause {
+	values := make([dynamic]^ast.Expr, 0, 1, allocator)
+	append(&values, alias.target)
+	signatures := make([dynamic]ast.Oop_Signature_Clause, 0, 1, allocator)
+	append(&signatures, ast.Oop_Signature_Clause{kind = .For, values = values})
+	return ast.Oop_Member_Clause {
+		name       = alias.name,
+		range      = alias.range,
+		signatures = signatures,
+	}
 }
 
 parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {

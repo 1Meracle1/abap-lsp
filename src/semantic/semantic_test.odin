@@ -274,6 +274,31 @@ ENDCLASS.`,
 }
 
 @(test)
+interface_type_alias_resolves_method_parameter_type :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://alias_type.abap",
+		source = `INTERFACE if_query.
+  INTERFACES if_range.
+  ALIASES t_name_range FOR if_range~t_name_range.
+  METHODS get
+    IMPORTING !name_range TYPE t_name_range.
+ENDINTERFACE.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-interface/if_range.abap",
+			source = `INTERFACE if_range.
+  TYPES t_name_range TYPE RANGE OF string.
+ENDINTERFACE.`,
+			mode = .Dependency_Interface,
+		},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 dependency_interface_mode_keeps_declarations_and_drops_bodies :: proc(t: ^testing.T) {
 	source := `REPORT zdep.
 DATA gv_dep TYPE zglobal_type.

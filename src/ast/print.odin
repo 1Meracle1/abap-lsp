@@ -2343,6 +2343,23 @@ emit_macro_def_stmt :: proc(p: ^Printer, stmt: ^Macro_Def_Stmt) {
 }
 
 emit_oop_simple_stmt :: proc(p: ^Printer, stmt: ^Oop_Simple_Stmt) {
+	if stmt.kind == .Aliases && len(stmt.aliases) > 0 {
+		emit(p, "ALIASES")
+		if len(stmt.aliases) > 1 {
+			emit(p, ":")
+		}
+		for alias, i in stmt.aliases {
+			if i > 0 {
+				emit(p, ",")
+			}
+			emit_space(p)
+			emit(p, alias.name)
+			emit(p, " FOR ")
+			emit_node(p, alias.target)
+		}
+		emit(p, ".")
+		return
+	}
 	if len(stmt.members) == 0 {
 		if stmt.text != "" {
 			emit(p, stmt.text)

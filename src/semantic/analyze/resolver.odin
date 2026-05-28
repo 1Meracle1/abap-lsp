@@ -441,12 +441,14 @@ Project_Root_Lookup :: struct {
 }
 
 Project_Class_Member_Key :: struct {
+	class_unit:   Unit_Id,
 	class_symbol: Symbol_Id,
 	namespace:    Namespace,
 	name:         string,
 }
 
 Project_Class_Member_Entry :: struct {
+	unit:   Unit_Id,
 	symbol: Symbol_Id,
 }
 
@@ -456,9 +458,9 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 	}
 	roots := build_project_root_index(units, allocator)
 	root_lookup := build_project_root_lookup(units, roots[:], allocator)
-	class_entries := build_project_class_scope_index(units, allocator)
 	visible := include_visible_units_for_units(units, allocator)
 	predecessors := include_predecessor_units_for_units(units, allocator)
+	class_entries := build_project_class_scope_index(units, &root_lookup, visible, allocator)
 
 	for unit, unit_index in units {
 		for ref_index in 0 ..< len(unit.references) {
@@ -970,6 +972,8 @@ build_project_root_lookup :: proc(
 
 build_project_class_scope_index :: proc(
 	units: []Unit_Analysis,
+	roots: ^Project_Root_Lookup,
+	visible: [][dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> map[Project_Class_Member_Key]Project_Class_Member_Entry {
 	symbol_hint := 0
@@ -989,6 +993,7 @@ build_project_class_scope_index :: proc(
 			for namespace in namespaces {
 				if symbol_kind_occupies(symbol.kind, namespace) {
 					key := Project_Class_Member_Key {
+						class_unit   = unit.unit_id,
 						class_symbol = scope_data.owner,
 						namespace    = namespace,
 						name         = symbol.name,
@@ -997,7 +1002,58 @@ build_project_class_scope_index :: proc(
 						continue
 					}
 					out[key] = Project_Class_Member_Entry {
+						unit   = unit.unit_id,
 						symbol = symbol.id,
+					}
+				}
+			}
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for unit, unit_index in units {
+			if unit_index >= len(visible) {
+				continue
+			}
+			for alias in unit.member_aliases {
+				if alias.alias_name == "" || alias.target_interface_name == "" {
+					continue
+				}
+				target, ok := resolve_type_name_in_project(
+					units,
+					unit_index,
+					alias.target_interface_name,
+					roots,
+					visible[unit_index],
+				)
+				if !ok {
+					continue
+				}
+				target_name := alias.target_member_name
+				if target_name == "" {
+					target_name = alias.alias_name
+				}
+				namespaces := [?]Namespace{.Value, .Type, .Routine}
+				for namespace in namespaces {
+					target_key := Project_Class_Member_Key {
+						class_unit   = target.unit,
+						class_symbol = target.symbol,
+						namespace    = namespace,
+						name         = target_name,
+					}
+					alias_key := Project_Class_Member_Key {
+						class_unit   = unit.unit_id,
+						class_symbol = alias.owner_symbol,
+						namespace    = namespace,
+						name         = alias.alias_name,
+					}
+					if alias_key in out {
+						continue
+					}
+					if target_entry, target_ok := out[target_key]; target_ok {
+						out[alias_key] = target_entry
+						changed = true
 					}
 				}
 			}
@@ -1259,7 +1315,14 @@ class_member_symbol_in_unit_by_class_name :: proc(
 	bool,
 ) {
 	class_handle, ok := root_symbol_in_unit(roots, unit_id, .Type, class_name)
-	if !ok || !unit_has_class_definition(&units[unit_id_index(unit_id)], class_handle.symbol) {
+	unit_index := unit_id_index(unit_id)
+	if !ok || unit_index < 0 || unit_index >= len(units) {
+		return {}, false
+	}
+	owner := symbol(&units[unit_index], class_handle.symbol)
+	if owner == nil ||
+	   !(owner.kind == .Class || owner.kind == .Interface) ||
+	   (owner.kind == .Class && !unit_has_class_definition(&units[unit_index], class_handle.symbol)) {
 		return {}, false
 	}
 	return class_member_symbol_by_handle(
@@ -1288,6 +1351,7 @@ class_member_symbol_by_handle :: proc(
 		return {}, false
 	}
 	key := Project_Class_Member_Key {
+		class_unit   = class_handle.unit,
 		class_symbol = class_handle.symbol,
 		namespace    = namespace,
 		name         = name,
@@ -1299,7 +1363,7 @@ class_member_symbol_by_handle :: proc(
 				return {}, false
 			}
 		}
-		return Symbol_Handle{unit = class_handle.unit, symbol = entry.symbol}, true
+		return Symbol_Handle{unit = entry.unit, symbol = entry.symbol}, true
 	}
 	return {}, false
 }
