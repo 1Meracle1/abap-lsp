@@ -44,6 +44,34 @@ table_expression_keeps_table_and_selector_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+substring_offset_length_keeps_length_out_of_offset :: proc(t: ^testing.T) {
+	source := `lv_a = lv_val+0(1).
+lv_b = lv_val+lv_last(1).
+lv_c = im_response_string+ls_match-offset(ls_match-length).`
+	parsed := parse(source, "substring_offsets.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt).rhs.derived_expr.(^ast.Substring_Expr)
+	_, first_offset := first.offset.derived_expr.(^ast.Literal_Expr)
+	_, first_length := first.length.derived_expr.(^ast.Literal_Expr)
+	testing.expect(t, first_offset)
+	testing.expect(t, first_length)
+
+	second := parsed.root.stmts[1].derived_stmt.(^ast.Assign_Stmt).rhs.derived_expr.(^ast.Substring_Expr)
+	_, second_offset := second.offset.derived_expr.(^ast.Ident_Expr)
+	_, second_length := second.length.derived_expr.(^ast.Literal_Expr)
+	testing.expect(t, second_offset)
+	testing.expect(t, second_length)
+
+	third := parsed.root.stmts[2].derived_stmt.(^ast.Assign_Stmt).rhs.derived_expr.(^ast.Substring_Expr)
+	_, third_offset := third.offset.derived_expr.(^ast.Selector_Expr)
+	_, third_length := third.length.derived_expr.(^ast.Selector_Expr)
+	testing.expect(t, third_offset)
+	testing.expect(t, third_length)
+}
+
+@(test)
 call_argument_sections_carry_parser_kinds :: proc(t: ^testing.T) {
 	parsed := parse(
 		`rv = foo( EXPORTING iv_in = lv_in IMPORTING ev_out = lv_out CHANGING cv_any = lv_any TABLES ct_rows = lt_rows RECEIVING rv_result = lv_result EXCEPTIONS failed = 1 ).`,

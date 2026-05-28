@@ -509,14 +509,21 @@ parse_substring_with_offset_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Ex
 	save_index := p.index
 	save_prev := p.previous_index
 	bump_token(p)
-	offset := parse_concat_expr(p)
-	if offset == nil ||
-	   current_token(p).kind != .LParen ||
-	   !tokens_touch(previous_token(p), current_token(p)) {
+	offset_start := p.index
+	lparen := find_tight_lparen_for_substring(p, offset_start)
+	if lparen < 0 {
 		p.index = save_index
 		p.previous_index = save_prev
 		return nil
 	}
+	offset := parse_complete_concat_expr(p, offset_start, lparen)
+	if offset == nil {
+		p.index = save_index
+		p.previous_index = save_prev
+		return nil
+	}
+	p.index = lparen
+	p.previous_index = lparen - 1
 	bump_token(p)
 	length := parse_substring_length_expr(p)
 	if length == nil {
@@ -867,6 +874,35 @@ parse_constructor_value_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		)
 		opt.value = expr
 		return opt
+	}
+	return expr
+}
+
+parse_complete_concat_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
+	if start >= end {
+		return nil
+	}
+	count := end - start
+	tokens := make([]tokenizer.Token, count + 1, context.temp_allocator)
+	for i in 0 ..< count {
+		tokens[i] = p.tokens[start + i]
+	}
+	tokens[count] = tokenizer.Token{kind = .Eof, range = p.tokens[end].range}
+
+	nested := Parser {
+		source = p.source,
+		path = p.path,
+		tokens = tokens,
+		previous_index = -1,
+		expr_stop_keywords = p.expr_stop_keywords,
+		expr_extra_stop_keywords = p.expr_extra_stop_keywords,
+		open_sql_expr = p.open_sql_expr,
+		errors = make([dynamic]Parse_Error, 0, 1, context.temp_allocator),
+		allocator = p.allocator,
+	}
+	expr := parse_concat_expr(&nested)
+	if expr == nil || current_token(&nested).kind != .Eof || len(nested.errors) > 0 {
+		return nil
 	}
 	return expr
 }
@@ -1674,6 +1710,23 @@ matching_group_index :: proc(p: ^Parser, start: int, open, close: tokenizer.Toke
 			if depth == 0 {
 				return i
 			}
+		}
+	}
+	return -1
+}
+
+find_tight_lparen_for_substring :: proc(p: ^Parser, start: int) -> int {
+	for i in start ..< len(p.tokens) {
+		tok := p.tokens[i]
+		if tok.kind == .LParen && i > start && tokens_touch(p.tokens[i - 1], tok) {
+			return i
+		}
+		if tok.kind == .Period ||
+		   tok.kind == .Comma ||
+		   tok.kind == .Eq ||
+		   tok.kind == .QuestionEq ||
+		   tok.kind == .RParen {
+			return -1
 		}
 	}
 	return -1
