@@ -517,7 +517,7 @@ ENDCLASS.`
 oop_signature_parameters_are_concrete_ast_clauses :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
-    METHODS run IMPORTING it_source TYPE STANDARD TABLE iv_state TYPE i OPTIONAL iv_date LIKE sy-datum iv_text TYPE string
+    METHODS run IMPORTING it_source TYPE STANDARD TABLE it_any TYPE ANY TABLE it_index TYPE INDEX TABLE iv_state TYPE i OPTIONAL iv_date LIKE sy-datum iv_text TYPE string
       RETURNING VALUE(rv_ok) TYPE abap_bool.
 ENDCLASS.`
 	parsed := parse(source, "oop_parameters.abap", context.allocator)
@@ -526,19 +526,25 @@ ENDCLASS.`
 	methods := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
 	importing := methods.members[0].signatures[0]
 	returning := methods.members[0].signatures[1]
-	testing.expect_value(t, len(importing.parameters), 4)
+	testing.expect_value(t, len(importing.parameters), 6)
 	testing.expect_value(t, importing.parameters[0].name, "it_source")
 	testing.expect_value(t, importing.parameters[0].type_clause.form, ast.Data_Type_Form.Standard_Table)
 	testing.expect(t, importing.parameters[0].type_clause.type_ref == nil)
-	testing.expect_value(t, importing.parameters[1].name, "iv_state")
-	testing.expect_value(t, importing.parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
-	testing.expect(t, importing.parameters[1].optional)
-	testing.expect_value(t, importing.parameters[2].name, "iv_date")
-	date_ref := importing.parameters[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, importing.parameters[1].name, "it_any")
+	testing.expect_value(t, importing.parameters[1].type_clause.form, ast.Data_Type_Form.Any_Table)
+	testing.expect(t, importing.parameters[1].type_clause.type_ref == nil)
+	testing.expect_value(t, importing.parameters[2].name, "it_index")
+	testing.expect_value(t, importing.parameters[2].type_clause.form, ast.Data_Type_Form.Index_Table)
+	testing.expect(t, importing.parameters[2].type_clause.type_ref == nil)
+	testing.expect_value(t, importing.parameters[3].name, "iv_state")
+	testing.expect_value(t, importing.parameters[3].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect(t, importing.parameters[3].optional)
+	testing.expect_value(t, importing.parameters[4].name, "iv_date")
+	date_ref := importing.parameters[4].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, date_ref.base_name, "sy")
 	testing.expect_value(t, date_ref.path[0].name, "datum")
-	testing.expect_value(t, importing.parameters[3].name, "iv_text")
-	testing.expect(t, importing.parameters[3].type_clause != nil)
+	testing.expect_value(t, importing.parameters[5].name, "iv_text")
+	testing.expect(t, importing.parameters[5].type_clause != nil)
 	testing.expect_value(t, returning.parameters[0].name, "rv_ok")
 	testing.expect_value(t, returning.parameters[0].passing, ast.Parameter_Passing_Kind.Value)
 }

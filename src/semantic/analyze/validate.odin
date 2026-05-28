@@ -2,6 +2,7 @@
 package abap_frontend_semantic_analyze
 
 import "../../tokenizer"
+import "../../ast"
 
 import "core:mem"
 
@@ -114,6 +115,7 @@ validate_unit_diagnostics :: proc(
 	validate_unresolved_references(project, lookup, unit_index, &out, &seen, allocator)
 	validate_object_type_refs(project, lookup, unit_index, &out, &seen, allocator)
 	validate_missing_method_implementations(project, unit_index, &out, &seen, allocator)
+	validate_generic_table_types(project, unit_index, &out, &seen, allocator)
 	validate_parameter_types(project, unit_index, &out, &seen, allocator)
 	validate_field_accesses(project, lookup, unit_index, &out, &seen, allocator)
 	validate_call_sites(project, lookup, unit_index, &out, &seen, allocator)
@@ -368,6 +370,35 @@ validate_missing_method_implementations :: proc(
 	}
 }
 
+validate_generic_table_types :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+	allocator: mem.Allocator,
+) {
+	unit := &project.units[unit_index]
+	for s in unit.symbols {
+		if !generic_table_category_type(s) ||
+		   s.kind == .Parameter ||
+		   s.kind == .Field_Symbol {
+			continue
+		}
+		append_diag(
+			out,
+			seen,
+			.Invalid_Generic_Table_Type,
+			s.decl_range,
+			diagnostic_message("generic table type only allowed for parameters and field symbols: ", s.name, allocator),
+		)
+	}
+}
+
+generic_table_category_type :: #force_inline proc "contextless" (s: Symbol_Data) -> bool {
+	return s.has_type_clause_form &&
+	       (s.type_clause_form == .Any_Table || s.type_clause_form == .Index_Table)
+}
+
 validate_parameter_types :: proc(
 	project: ^Project_Analysis,
 	unit_index: int,
@@ -376,40 +407,21 @@ validate_parameter_types :: proc(
 	allocator: mem.Allocator,
 ) {
 	unit := &project.units[unit_index]
-	for member in unit.class_members {
-		for param in member.parameters {
-			if parameter_type_uses_inline_table_type(param.type_clause_display) {
-				append_diag(
-					out,
-					seen,
-					.Invalid_Parameter_Type,
-					param.range,
-					diagnostic_message("invalid inline table parameter type: ", param.name, allocator),
-				)
-			}
-		}
-	}
-	for routine in unit.form_routines {
-		for param in routine.parameters {
-			s := symbol(unit, param.symbol)
-			if s != nil && parameter_type_uses_inline_table_type(s.type_clause_display) {
-				append_diag(
-					out,
-					seen,
-					.Invalid_Parameter_Type,
-					s.decl_range,
-					diagnostic_message("invalid inline table parameter type: ", s.name, allocator),
-				)
-			}
+	for s in unit.symbols {
+		if s.kind == .Parameter && parameter_type_uses_inline_table_type(s.type_clause_form) {
+			append_diag(
+				out,
+				seen,
+				.Invalid_Parameter_Type,
+				s.decl_range,
+				diagnostic_message("invalid inline table parameter type: ", s.name, allocator),
+			)
 		}
 	}
 }
 
-parameter_type_uses_inline_table_type :: proc(display: string) -> bool {
-	return ascii_contains_ignore_case(display, "table of") &&
-	       !ascii_contains_ignore_case(display, "standard table of") &&
-	       !ascii_contains_ignore_case(display, "sorted table of") &&
-	       !ascii_contains_ignore_case(display, "hashed table of")
+parameter_type_uses_inline_table_type :: #force_inline proc "contextless" (form: ast.Data_Type_Form) -> bool {
+	return form == .Table || form == .Like_Table
 }
 
 validate_field_accesses :: proc(

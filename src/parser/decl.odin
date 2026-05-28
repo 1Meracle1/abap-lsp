@@ -1013,6 +1013,16 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 			return nil
 		}
 		clause.form = .Range_Of
+	} else if !is_like && space2_at(p, p.index, "ANY", "TABLE") {
+		bump_token(p)
+		bump_token(p)
+		allow_keyword(p, "OF")
+		clause.form = .Any_Table
+	} else if !is_like && space2_at(p, p.index, "INDEX", "TABLE") {
+		bump_token(p)
+		bump_token(p)
+		allow_keyword(p, "OF")
+		clause.form = .Index_Table
 	} else if allow_keyword(p, "STANDARD") {
 		if !allow_keyword(p, "TABLE") {
 			error_current(p, "syntax error: expected keyword")
@@ -1061,8 +1071,10 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 
 type_clause_form_allows_missing_ref :: proc(form: ast.Data_Type_Form) -> bool {
 	#partial switch form {
-	case .Table,
+	case .Any_Table,
+	     .Table,
 	     .Like_Table,
+	     .Index_Table,
 	     .Standard_Table,
 	     .Sorted_Table,
 	     .Hashed_Table,

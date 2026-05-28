@@ -283,6 +283,8 @@ declare_collected_symbol :: proc(
 	has_declared_type := false,
 	type_clause_display := "",
 	value_clause_display := "",
+	type_clause_form := ast.Data_Type_Form{},
+	has_type_clause_form := false,
 ) -> Symbol_Id {
 	canonical := canonical_name(name, c.allocator)
 	check_duplicate_or_shadow(c, scope, canonical, kind, decl_range)
@@ -301,6 +303,8 @@ declare_collected_symbol :: proc(
 			has_declared_type = has_declared_type,
 			type_clause_display = strings.clone(type_clause_display, c.allocator) if type_clause_display != "" else "",
 			value_clause_display = strings.clone(value_clause_display, c.allocator) if value_clause_display != "" else "",
+			type_clause_form = type_clause_form,
+			has_type_clause_form = has_type_clause_form,
 		},
 	)
 	append(&c.scopes[scope_id_index(scope)].declarations, id)
@@ -1031,6 +1035,7 @@ declare_info_symbol :: proc(
 		has_type = true
 	}
 	type_display := type_clause_display(c, info.type_clause)
+	type_form, has_type_form := type_clause_form_from_ast(info.type_clause)
 	value_display := value_clause_display(c, info.value_clause)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
@@ -1052,6 +1057,8 @@ declare_info_symbol :: proc(
 		has_type,
 		type_display,
 		value_display,
+		type_clause_form = type_form,
+		has_type_clause_form = has_type_form,
 	)
 }
 
@@ -1069,6 +1076,7 @@ declare_typed_symbol :: proc(
 	}
 	declared_type, has_type := type_ref_from_clause(c, type_clause)
 	type_display := type_clause_display(c, type_clause)
+	type_form, has_type_form := type_clause_form_from_ast(type_clause)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
 		if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
@@ -1087,7 +1095,16 @@ declare_typed_symbol :: proc(
 		has_type,
 		type_display,
 		value_display,
+		type_clause_form = type_form,
+		has_type_clause_form = has_type_form,
 	)
+}
+
+type_clause_form_from_ast :: proc(clause: ^ast.Data_Type_Clause) -> (ast.Data_Type_Form, bool) {
+	if clause == nil {
+		return {}, false
+	}
+	return clause.form, true
 }
 
 declare_tables_clause :: proc(
@@ -1553,8 +1570,12 @@ type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> str
 		return concat2(c, "REF TO ", ref)
 	case .Like_Line_Of, .Type_Line_Of:
 		return concat2(c, "LINE OF ", ref)
+	case .Any_Table:
+		return strings.clone("ANY TABLE", c.allocator) if clause.type_ref == nil else concat2(c, "ANY TABLE OF ", ref)
 	case .Table, .Like_Table:
 		return concat2(c, "TABLE OF ", ref)
+	case .Index_Table:
+		return strings.clone("INDEX TABLE", c.allocator) if clause.type_ref == nil else concat2(c, "INDEX TABLE OF ", ref)
 	case .Standard_Table, .Like_Standard_Table:
 		return concat2(c, "STANDARD TABLE OF ", ref)
 	case .Sorted_Table, .Like_Sorted_Table:
@@ -2325,6 +2346,8 @@ declare_signature_scope_params :: proc(
 			param.declared_type,
 			has_type,
 			param.type_clause_display,
+			type_clause_form = param.type_clause_form,
+			has_type_clause_form = param.has_type_clause_form,
 		)
 	}
 	c.current_scope = sig_scope
@@ -2431,6 +2454,10 @@ class_member_parameter_from_oop :: proc(
 			param.flags += {.Has_Declared_Type}
 		}
 		param.type_clause_display = type_clause_display(c, clause.type_clause)
+		if type_form, ok := type_clause_form_from_ast(clause.type_clause); ok {
+			param.type_clause_form = type_form
+			param.has_type_clause_form = true
+		}
 	}
 	if clause.optional {
 		param.flags += {.Is_Optional}
@@ -2472,6 +2499,7 @@ form_parameters_from_ast :: proc(
 	for clause in clauses {
 		declared_type, has_type := type_ref_from_clause(c, clause.type_clause)
 		display := type_clause_display(c, clause.type_clause)
+		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
 		if clause.section == .Tables &&
 		   display != "" &&
 		   !ascii_contains_ignore_case(display, "TABLE OF") {
@@ -2495,6 +2523,8 @@ form_parameters_from_ast :: proc(
 			declared_type,
 			has_type,
 			display,
+			type_clause_form = type_form,
+			has_type_clause_form = has_type_form,
 		)
 		append(
 			&parameters,
@@ -2525,12 +2555,13 @@ function_parameters_from_ast :: proc(
 			range   = clause.range,
 			passing = parameter_passing_from_ast(clause.passing),
 		}
+		param.type_clause_display = type_clause_display(c, clause.type_clause)
 		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
 			param.declared_type = type_ref
 			param.flags += {.Has_Declared_Type}
-			param.type_clause_display = type_clause_display(c, clause.type_clause)
 			add_type_reference(c, scope, type_ref, param.range)
 		}
+		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
 		if .Is_Optional in clause.flags {
 			param.flags += {.Is_Optional}
 		}
@@ -2547,6 +2578,8 @@ function_parameters_from_ast :: proc(
 			param.declared_type,
 			.Has_Declared_Type in param.flags,
 			param.type_clause_display,
+			type_clause_form = type_form,
+			has_type_clause_form = has_type_form,
 		)
 		append(&parameters, param)
 	}

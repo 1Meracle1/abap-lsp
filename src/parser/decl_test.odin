@@ -209,6 +209,8 @@ table_and_range_type_references_are_retained :: proc(t: ^testing.T) {
 	source := `TYPES ty_range TYPE RANGE OF sy-datum.
 TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.
 FIELD-SYMBOLS <lt> LIKE SORTED TABLE OF <ls> WITH UNIQUE KEY id key.
+FIELD-SYMBOLS <any> TYPE ANY TABLE.
+DATA it_index TYPE INDEX TABLE.
 DATA mv_text TYPE string READ-ONLY.`
 	parsed := parse(source, "type_refs.abap", context.allocator)
 
@@ -216,7 +218,9 @@ DATA mv_text TYPE string READ-ONLY.`
 	range_decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	table_decl := parsed.root.stmts[1].derived_stmt.(^ast.Types_Decl)
 	field_decl := parsed.root.stmts[2].derived_stmt.(^ast.Field_Symbols_Decl)
-	data_decl := parsed.root.stmts[3].derived_stmt.(^ast.Data_Decl)
+	any_decl := parsed.root.stmts[3].derived_stmt.(^ast.Field_Symbols_Decl)
+	index_decl := parsed.root.stmts[4].derived_stmt.(^ast.Data_Decl)
+	data_decl := parsed.root.stmts[5].derived_stmt.(^ast.Data_Decl)
 
 	testing.expect_value(t, range_decl.types[0].type_clause.form, ast.Data_Type_Form.Range_Of)
 	testing.expect_value(t, table_decl.types[0].type_clause.form, ast.Data_Type_Form.Hashed_Table)
@@ -229,6 +233,10 @@ DATA mv_text TYPE string READ-ONLY.`
 	field_ref := field_decl.field_symbols[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, field_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, len(field_ref.key.components), 2)
+	testing.expect_value(t, any_decl.field_symbols[0].type_clause.form, ast.Data_Type_Form.Any_Table)
+	testing.expect(t, any_decl.field_symbols[0].type_clause.type_ref == nil)
+	testing.expect_value(t, index_decl.type_clause.form, ast.Data_Type_Form.Index_Table)
+	testing.expect(t, index_decl.type_clause.type_ref == nil)
 	testing.expect(t, data_decl.read_only)
 	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, source)

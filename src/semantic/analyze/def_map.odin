@@ -1,5 +1,6 @@
 package abap_frontend_semantic_analyze
 
+import "../../ast"
 import "../../tokenizer"
 
 import "core:mem"
@@ -297,6 +298,8 @@ Symbol_Data :: struct {
 	has_declared_type:    bool,
 	type_clause_display:  string,
 	value_clause_display: string,
+	type_clause_form:     ast.Data_Type_Form,
+	has_type_clause_form: bool,
 }
 
 Reference_Data :: struct {
@@ -355,6 +358,7 @@ Diagnostic_Kind :: enum {
 	Missing_Super_Constructor_Call,
 	Invalid_Object_Type_Reference,
 	Invalid_Parameter_Type,
+	Invalid_Generic_Table_Type,
 	Incompatible_Assignment_Type,
 	Incompatible_Argument_Type,
 	Invalid_Concatenate_Source,
@@ -505,6 +509,8 @@ Class_Member_Parameter_Data :: struct {
 	passing:             Parameter_Passing_Kind,
 	declared_type:       Field_Type_Ref_Data,
 	type_clause_display: string,
+	type_clause_form:    ast.Data_Type_Form,
+	has_type_clause_form: bool,
 	flags:               Class_Member_Parameter_Flags,
 }
 
@@ -1048,6 +1054,8 @@ declare_symbol :: proc(
 	has_declared_type := false,
 	type_clause_display := "",
 	value_clause_display := "",
+	type_clause_form := ast.Data_Type_Form{},
+	has_type_clause_form := false,
 ) -> Symbol_Id {
 	id := Symbol_Id(u32(len(unit.symbols)))
 	append(
@@ -1063,6 +1071,8 @@ declare_symbol :: proc(
 			has_declared_type = has_declared_type,
 			type_clause_display = type_clause_display,
 			value_clause_display = value_clause_display,
+			type_clause_form = type_clause_form,
+			has_type_clause_form = has_type_clause_form,
 		},
 	)
 	append(&unit.scopes[scope_id_index(scope)].declarations, id)

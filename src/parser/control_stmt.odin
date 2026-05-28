@@ -995,6 +995,7 @@ parse_header_type_clause :: proc(
 	is_like := token_is_keyword(p, keyword, "LIKE")
 	is_structure := token_is_keyword(p, keyword, "STRUCTURE")
 	clause.form = .Structure if is_structure else (.Like if is_like else .Type)
+	table_has_of := true
 	if !is_structure {
 		if header_allow_keyword(p, &i, period_index, "LINE") {
 			header_allow_keyword(p, &i, period_index, "OF")
@@ -1005,22 +1006,33 @@ parse_header_type_clause :: proc(
 		} else if !is_like && header_allow_keyword(p, &i, period_index, "RANGE") {
 			header_allow_keyword(p, &i, period_index, "OF")
 			clause.form = .Range_Of
+		} else if !is_like && i + 1 < period_index && space2_at(p, i, "ANY", "TABLE") {
+			i += 2
+			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Any_Table
+		} else if !is_like && i + 1 < period_index && space2_at(p, i, "INDEX", "TABLE") {
+			i += 2
+			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+			clause.form = .Index_Table
 		} else if header_allow_keyword(p, &i, period_index, "STANDARD") {
 			header_allow_keyword(p, &i, period_index, "TABLE")
-			header_allow_keyword(p, &i, period_index, "OF")
+			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
 			clause.form = .Like_Standard_Table if is_like else .Standard_Table
 		} else if header_allow_keyword(p, &i, period_index, "SORTED") {
 			header_allow_keyword(p, &i, period_index, "TABLE")
-			header_allow_keyword(p, &i, period_index, "OF")
+			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
 			clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
 		} else if header_allow_keyword(p, &i, period_index, "HASHED") {
 			header_allow_keyword(p, &i, period_index, "TABLE")
-			header_allow_keyword(p, &i, period_index, "OF")
+			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
 			clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
 		} else if header_allow_keyword(p, &i, period_index, "TABLE") {
-			header_allow_keyword(p, &i, period_index, "OF")
+			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
 			clause.form = .Like_Table if is_like else .Table
 		}
+	}
+	if !table_has_of {
+		return clause, i
 	}
 	clause.type_ref, i = parse_header_type_ref_expr(p, i, period_index, stop_keywords)
 	return clause, i

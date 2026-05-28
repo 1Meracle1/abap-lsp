@@ -1110,6 +1110,16 @@ parse_create_type_clause_tail :: proc(
 	} else if allow_keyword(p, "RANGE") {
 		allow_keyword(p, "OF")
 		clause.form = .Range_Of
+	} else if space2_at(p, p.index, "ANY", "TABLE") {
+		bump_token(p)
+		bump_token(p)
+		allow_keyword(p, "OF")
+		clause.form = .Any_Table
+	} else if space2_at(p, p.index, "INDEX", "TABLE") {
+		bump_token(p)
+		bump_token(p)
+		allow_keyword(p, "OF")
+		clause.form = .Index_Table
 	} else if allow_keyword(p, "STANDARD") {
 		allow_keyword(p, "TABLE")
 		allow_keyword(p, "OF")
@@ -1674,6 +1684,16 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 	} else if !is_like && allow_keyword(p, "RANGE") {
 		allow_keyword(p, "OF")
 		clause.form = .Range_Of
+	} else if !is_like && space2_at(p, p.index, "ANY", "TABLE") {
+		bump_token(p)
+		bump_token(p)
+		table_has_of = allow_keyword(p, "OF")
+		clause.form = .Any_Table
+	} else if !is_like && space2_at(p, p.index, "INDEX", "TABLE") {
+		bump_token(p)
+		bump_token(p)
+		table_has_of = allow_keyword(p, "OF")
+		clause.form = .Index_Table
 	} else if allow_keyword(p, "STANDARD") {
 		allow_keyword(p, "TABLE")
 		table_has_of = allow_keyword(p, "OF")

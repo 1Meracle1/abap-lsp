@@ -2500,7 +2500,7 @@ DATA(lv_second) = REDUCE i( INIT x = 0 FOR i = 0 UNTIL i > 1 NEXT x = x + i ).`
 collects_multiple_method_parameters_from_oop_ast :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
-    METHODS run IMPORTING it_source TYPE STANDARD TABLE iv_state TYPE i OPTIONAL iv_text TYPE string
+    METHODS run IMPORTING it_source TYPE STANDARD TABLE it_any TYPE ANY TABLE it_index TYPE INDEX TABLE iv_state TYPE i OPTIONAL iv_text TYPE string
       RETURNING VALUE(rv_ok) TYPE abap_bool.
 ENDCLASS.
 CLASS lcl IMPLEMENTATION.
@@ -2512,17 +2512,42 @@ ENDCLASS.`
 	unit := collect_test_unit(t, "file:///oop_params.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Parameter_Type))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Generic_Table_Type))
 	class := analyze.find_symbol(&unit, "lcl", .Class)
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
-	testing.expect_value(t, len(method.parameters), 4)
+	testing.expect_value(t, len(method.parameters), 6)
 	testing.expect_value(t, method.parameters[0].name, "it_source")
-	testing.expect_value(t, method.parameters[1].name, "iv_state")
-	testing.expect(t, .Is_Optional in method.parameters[1].flags)
-	testing.expect_value(t, method.parameters[2].name, "iv_text")
-	testing.expect_value(t, method.parameters[3].section, analyze.Method_Parameter_Section.Returning)
-	testing.expect_value(t, method.parameters[3].name, "rv_ok")
+	testing.expect_value(t, method.parameters[1].name, "it_any")
+	testing.expect_value(t, method.parameters[2].name, "it_index")
+	testing.expect_value(t, method.parameters[3].name, "iv_state")
+	testing.expect(t, .Is_Optional in method.parameters[3].flags)
+	testing.expect_value(t, method.parameters[4].name, "iv_text")
+	testing.expect_value(t, method.parameters[5].section, analyze.Method_Parameter_Section.Returning)
+	testing.expect_value(t, method.parameters[5].name, "rv_ok")
+}
+
+@(test)
+generic_table_categories_are_context_checked :: proc(t: ^testing.T) {
+	valid := `FIELD-SYMBOLS <any> TYPE ANY TABLE.
+FIELD-SYMBOLS <index> TYPE INDEX TABLE.
+FORM demo USING it_any TYPE ANY TABLE it_any_rows TYPE ANY TABLE OF string CHANGING ct_index TYPE INDEX TABLE.
+ENDFORM.`
+	valid_unit := collect_test_unit(t, "file:///generic_tables_valid.abap", valid)
+
+	testing.expect(t, !has_diagnostic(&valid_unit, .Invalid_Generic_Table_Type))
+	testing.expect(t, !has_diagnostic(&valid_unit, .Invalid_Parameter_Type))
+	testing.expect(t, !has_diagnostic(&valid_unit, .Unresolved_Reference))
+
+	invalid := `DATA lt_index TYPE INDEX TABLE.
+DATA lt_index_rows TYPE INDEX TABLE OF string.
+TYPES ty_any TYPE ANY TABLE.
+TYPES ty_any_rows TYPE ANY TABLE OF string.`
+	invalid_unit := collect_test_unit(t, "file:///generic_tables_invalid.abap", invalid)
+
+	testing.expect(t, has_diagnostic(&invalid_unit, .Invalid_Generic_Table_Type))
 }
 
 @(test)

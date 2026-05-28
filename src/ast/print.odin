@@ -1137,10 +1137,14 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 		emit(p, "LIKE LINE OF")
 	case .Type_Line_Of:
 		emit(p, "TYPE LINE OF")
+	case .Any_Table:
+		emit(p, "TYPE ANY TABLE")
 	case .Table:
 		emit(p, "TYPE TABLE")
 	case .Like_Table:
 		emit(p, "LIKE TABLE")
+	case .Index_Table:
+		emit(p, "TYPE INDEX TABLE")
 	case .Standard_Table:
 		emit(p, "TYPE STANDARD TABLE")
 	case .Sorted_Table:
@@ -1157,8 +1161,10 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 		emit(p, "TYPE RANGE OF")
 	}
 	if clause.type_ref != nil {
-		if clause.form == .Table ||
+		if clause.form == .Any_Table ||
+		   clause.form == .Table ||
 		   clause.form == .Like_Table ||
+		   clause.form == .Index_Table ||
 		   clause.form == .Standard_Table ||
 		   clause.form == .Sorted_Table ||
 		   clause.form == .Hashed_Table ||
