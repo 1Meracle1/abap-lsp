@@ -381,6 +381,31 @@ set_field lv_a lv_b.`
 }
 
 @(test)
+convert_time_stamp_uses_dedicated_stmt :: proc(t: ^testing.T) {
+	source := `CONVERT TIME STAMP iv_ts TIME ZONE lc_utc INTO DATE lv_date TIME lv_time.
+CONVERT DATE lv_date TIME lv_time INTO TIME STAMP lv_ts TIME ZONE lc_utc.`
+	parsed := parse(source, "convert_time_stamp.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, counts.convert_time_stamp, 2)
+	testing.expect_value(t, counts.text_transform, 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	inverse := parsed.root.stmts[1].derived_stmt.(^ast.Convert_Time_Stamp_Stmt)
+	testing.expect_value(t, stmt.kind, ast.Convert_Time_Stamp_Kind.Time_Stamp_To_Date_Time)
+	testing.expect_value(t, inverse.kind, ast.Convert_Time_Stamp_Kind.Date_Time_To_Time_Stamp)
+	testing.expect(t, stmt.time_stamp != nil)
+	testing.expect(t, stmt.time_zone != nil)
+	testing.expect(t, stmt.date != nil)
+	testing.expect(t, stmt.time != nil)
+	testing.expect(t, inverse.time_stamp != nil)
+	testing.expect(t, inverse.time_zone != nil)
+	testing.expect(t, inverse.date != nil)
+	testing.expect(t, inverse.time != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 runtime_get_set_variants_keep_detailed_fields :: proc(t: ^testing.T) {
 	source := `GET PARAMETER ID 'ABC' FIELD lv_value.
 SET PARAMETER ID 'ABC' FIELD lv_value.

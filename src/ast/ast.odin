@@ -1553,6 +1553,21 @@ Text_Transform_Stmt :: struct {
 	operands:   [dynamic]^Expr,
 }
 
+Convert_Time_Stamp_Kind :: enum {
+	Time_Stamp_To_Date_Time,
+	Date_Time_To_Time_Stamp,
+}
+
+// ABAP syntax: `CONVERT TIME STAMP ...` or `CONVERT DATE ... TIME ... INTO TIME STAMP ...`.
+Convert_Time_Stamp_Stmt :: struct {
+	using node: Stmt,
+	kind:       Convert_Time_Stamp_Kind,
+	time_stamp: ^Expr,
+	time_zone:  ^Expr,
+	date:       ^Expr,
+	time:       ^Expr,
+}
+
 List_Control_Kind :: enum {
 	Skip,
 	Uline,
@@ -2461,6 +2476,7 @@ Any_Node :: union {
 	^Create_Object_Stmt,
 	^Create_Data_Stmt,
 	^Text_Transform_Stmt,
+	^Convert_Time_Stamp_Stmt,
 	^List_Control_Stmt,
 	^Line_Stmt,
 	^Macro_Def_Stmt,
@@ -2614,6 +2630,7 @@ Any_Stmt :: union {
 	^Create_Object_Stmt,
 	^Create_Data_Stmt,
 	^Text_Transform_Stmt,
+	^Convert_Time_Stamp_Stmt,
 	^List_Control_Stmt,
 	^Line_Stmt,
 	^Macro_Def_Stmt,

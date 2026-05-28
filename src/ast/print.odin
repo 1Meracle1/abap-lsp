@@ -447,6 +447,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 			emit_expr_list(p, n.operands, " ")
 		}
 		emit(p, ".")
+	case ^Convert_Time_Stamp_Stmt:
+		emit_convert_time_stamp_stmt(p, n)
 	case ^List_Control_Stmt:
 		emit(p, list_control_kind_text(n.kind))
 		if len(n.operands) > 0 {
@@ -2986,6 +2988,30 @@ runtime_kind_text :: proc(kind: Runtime_Kind) -> string {
 	case .Receive: return "RECEIVE"
 	}
 	return "?"
+}
+
+emit_convert_time_stamp_stmt :: proc(p: ^Printer, stmt: ^Convert_Time_Stamp_Stmt) {
+	switch stmt.kind {
+	case .Time_Stamp_To_Date_Time:
+		emit(p, "CONVERT TIME STAMP ")
+		emit_node(p, stmt.time_stamp)
+		emit(p, " TIME ZONE ")
+		emit_node(p, stmt.time_zone)
+		emit(p, " INTO DATE ")
+		emit_node(p, stmt.date)
+		emit(p, " TIME ")
+		emit_node(p, stmt.time)
+	case .Date_Time_To_Time_Stamp:
+		emit(p, "CONVERT DATE ")
+		emit_node(p, stmt.date)
+		emit(p, " TIME ")
+		emit_node(p, stmt.time)
+		emit(p, " INTO TIME STAMP ")
+		emit_node(p, stmt.time_stamp)
+		emit(p, " TIME ZONE ")
+		emit_node(p, stmt.time_zone)
+	}
+	emit(p, ".")
 }
 
 text_transform_kind_text :: proc(kind: Text_Transform_Kind) -> string {

@@ -543,6 +543,13 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)
 		return r
+	case ^Convert_Time_Stamp_Stmt:
+		r := clone_shallow(n, allocator)
+		r.time_stamp = clone(n.time_stamp, allocator)
+		r.time_zone = clone(n.time_zone, allocator)
+		r.date = clone(n.date, allocator)
+		r.time = clone(n.time, allocator)
+		return r
 	case ^List_Control_Stmt:
 		r := clone_shallow(n, allocator)
 		r.operands = clone_expr_list(n.operands, allocator)

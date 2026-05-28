@@ -1593,6 +1593,24 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
+collect_convert_time_stamp_stmt_facts :: proc(
+	c: ^Collector,
+	stmt: ^ast.Convert_Time_Stamp_Stmt,
+	scope: Scope_Id,
+) {
+	collect_expr_refs(c, stmt.time_zone, scope)
+	if stmt.kind == .Time_Stamp_To_Date_Time {
+		collect_expr_refs(c, stmt.time_stamp, scope)
+		collect_write_target_expr(c, scope, stmt.range, stmt.date, expr_range(stmt.time_stamp))
+		collect_write_target_expr(c, scope, stmt.range, stmt.time, expr_range(stmt.time_stamp))
+	} else {
+		collect_expr_refs(c, stmt.date, scope)
+		collect_expr_refs(c, stmt.time, scope)
+		collect_write_target_expr(c, scope, stmt.range, stmt.time_stamp, expr_range(stmt.date))
+	}
+	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
+}
+
 collect_receive_results_stmt_facts :: proc(
 	c: ^Collector,
 	stmt: ^ast.Receive_Results_Stmt,

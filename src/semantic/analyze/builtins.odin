@@ -210,6 +210,12 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				description = "System time-zone offset from UTC in seconds.",
 			},
 			{
+				name = "zonlo",
+				type_name = "c",
+				structure_name = "",
+				description = "Current user's time zone.",
+			},
+			{
 				name = "ucomm",
 				type_name = "c",
 				structure_name = "",

@@ -422,6 +422,11 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk_expr_list(next, n.operands)
 	case ^Text_Transform_Stmt:
 		walk_expr_list(next, n.operands)
+	case ^Convert_Time_Stamp_Stmt:
+		walk(next, n.time_stamp)
+		walk(next, n.time_zone)
+		walk(next, n.date)
+		walk(next, n.time)
 	case ^List_Control_Stmt:
 		walk_expr_list(next, n.operands)
 	case ^Line_Stmt:

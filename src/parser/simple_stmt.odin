@@ -193,6 +193,9 @@ parse_simple_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_keyword(p, "CREATE") {
 		return parse_create_stmt(p)
 	}
+	if at_keyword(p, "CONVERT") {
+		return parse_convert_stmt(p)
+	}
 	if text_transform_stmt_starts(p) {
 		return parse_text_transform_stmt(p)
 	}
@@ -1279,6 +1282,55 @@ create_type_ref_use_dynamic_facts :: proc(
 	for raw_ref in dynamic_ref.raw_refs {
 		append(&ref.raw_refs, raw_ref)
 	}
+}
+
+convert_time_stamp_stmt_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword(p, "CONVERT") &&
+	       ((at_keyword_index(p, p.index + 1, "TIME") &&
+	         at_keyword_index(p, p.index + 2, "STAMP")) ||
+	        at_keyword_index(p, p.index + 1, "DATE"))
+}
+
+parse_convert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	if convert_time_stamp_stmt_starts(p) {
+		return parse_convert_time_stamp_stmt(p)
+	}
+	return parse_text_transform_stmt(p)
+}
+
+parse_convert_time_stamp_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "CONVERT")
+	stmt := ast.new(ast.Convert_Time_Stamp_Stmt, start.range, p.allocator)
+	if allow_keyword(p, "TIME") {
+		expect_keyword(p, "STAMP")
+		body_start := p.index
+		stmt.kind = .Time_Stamp_To_Date_Time
+		stmt.time_stamp = required_simple_expr(p, body_start, []string{"TIME"})
+		expect_keyword(p, "TIME")
+		expect_keyword(p, "ZONE")
+		stmt.time_zone = required_simple_expr(p, body_start, []string{"INTO"})
+		expect_keyword(p, "INTO")
+		expect_keyword(p, "DATE")
+		stmt.date = required_simple_expr(p, body_start, []string{"TIME"})
+		expect_keyword(p, "TIME")
+		stmt.time = required_simple_expr(p, body_start, []string{})
+	} else {
+		expect_keyword(p, "DATE")
+		body_start := p.index
+		stmt.kind = .Date_Time_To_Time_Stamp
+		stmt.date = required_simple_expr(p, body_start, []string{"TIME"})
+		expect_keyword(p, "TIME")
+		stmt.time = required_simple_expr(p, body_start, []string{"INTO"})
+		expect_keyword(p, "INTO")
+		expect_keyword(p, "TIME")
+		expect_keyword(p, "STAMP")
+		stmt.time_stamp = required_simple_expr(p, body_start, []string{"TIME"})
+		expect_keyword(p, "TIME")
+		expect_keyword(p, "ZONE")
+		stmt.time_zone = required_simple_expr(p, body_start, []string{})
+	}
+	stmt.range = simple_stmt_range(p, start)
+	return stmt
 }
 
 text_transform_stmt_starts :: proc(p: ^Parser) -> bool {
