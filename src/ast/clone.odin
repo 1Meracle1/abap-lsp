@@ -1345,8 +1345,15 @@ clone_data_cluster_medium :: proc(
 	allocator: mem.Allocator,
 ) -> Data_Cluster_Medium_Clause {
 	return Data_Cluster_Medium_Clause {
-		kind = medium.kind,
-		id   = clone(medium.id, allocator),
+		kind        = medium.kind,
+		object      = clone(medium.object, allocator),
+		dbtab       = medium.dbtab,
+		dbtab_range = medium.dbtab_range,
+		area        = medium.area,
+		area_range  = medium.area_range,
+		work_area   = clone(medium.work_area, allocator),
+		client      = clone(medium.client, allocator),
+		id          = clone(medium.id, allocator),
 	}
 }
 

@@ -949,6 +949,71 @@ EXPORT variscreens = lt_variscreens TO MEMORY ID '%_SCRNR_%'.`
 }
 
 @(test)
+data_cluster_medium_variants_model_entries :: proc(t: ^testing.T) {
+	source := `IMPORT row = ls_row FROM DATA BUFFER lv_xstr.
+EXPORT row = ls_row TO DATA BUFFER lv_xstr.
+IMPORT row = ls_row FROM INTERNAL TABLE lt_cluster.
+EXPORT row = ls_row TO INTERNAL TABLE lt_cluster.
+IMPORT row = ls_row FROM DATABASE demo_indx_blob(sc) TO ls_indx CLIENT lv_client ID lv_id.
+EXPORT row = ls_row TO DATABASE demo_indx_blob(sc) FROM ls_indx CLIENT lv_client ID lv_id.
+IMPORT row = ls_row FROM SHARED MEMORY demo_indx_blob(sc) TO ls_indx CLIENT lv_client ID lv_id.
+EXPORT row = ls_row TO SHARED BUFFER demo_indx_blob(sc) FROM ls_indx CLIENT lv_client ID lv_id.`
+	parsed := parse(source, "data_cluster_media.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	import_buffer := parsed.root.stmts[0].derived_stmt.(^ast.Import_Stmt)
+	export_buffer := parsed.root.stmts[1].derived_stmt.(^ast.Export_Stmt)
+	import_table := parsed.root.stmts[2].derived_stmt.(^ast.Import_Stmt)
+	export_table := parsed.root.stmts[3].derived_stmt.(^ast.Export_Stmt)
+	import_database := parsed.root.stmts[4].derived_stmt.(^ast.Import_Stmt)
+	export_database := parsed.root.stmts[5].derived_stmt.(^ast.Export_Stmt)
+	import_shared := parsed.root.stmts[6].derived_stmt.(^ast.Import_Stmt)
+	export_shared := parsed.root.stmts[7].derived_stmt.(^ast.Export_Stmt)
+
+	testing.expect_value(t, import_buffer.medium.kind, ast.Data_Cluster_Medium_Kind.Data_Buffer)
+	testing.expect_value(t, export_buffer.medium.kind, ast.Data_Cluster_Medium_Kind.Data_Buffer)
+	testing.expect_value(t, import_table.medium.kind, ast.Data_Cluster_Medium_Kind.Internal_Table)
+	testing.expect_value(t, export_table.medium.kind, ast.Data_Cluster_Medium_Kind.Internal_Table)
+	testing.expect_value(t, import_database.medium.kind, ast.Data_Cluster_Medium_Kind.Database)
+	testing.expect_value(t, export_database.medium.kind, ast.Data_Cluster_Medium_Kind.Database)
+	testing.expect_value(t, import_shared.medium.kind, ast.Data_Cluster_Medium_Kind.Shared_Memory)
+	testing.expect_value(t, export_shared.medium.kind, ast.Data_Cluster_Medium_Kind.Shared_Buffer)
+	testing.expect_value(t, import_database.medium.dbtab, "demo_indx_blob")
+	testing.expect_value(t, import_database.medium.area, "sc")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+data_cluster_parameter_keyword_forms_model_entries :: proc(t: ^testing.T) {
+	source := `IMPORT row TO ls_row FROM MEMORY ID lv_id.
+EXPORT row FROM ls_row TO MEMORY ID lv_id.`
+	parsed := parse(source, "data_cluster_parameter_keywords.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	import_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Import_Stmt)
+	export_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Export_Stmt)
+	import_value := import_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
+	export_value := export_stmt.parameters[0].value.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect_value(t, import_stmt.parameters[0].name, "row")
+	testing.expect_value(t, export_stmt.parameters[0].name, "row")
+	testing.expect_value(t, import_value.name, "ls_row")
+	testing.expect_value(t, export_value.name, "ls_row")
+}
+
+@(test)
+data_cluster_database_medium_accepts_doc_example_order :: proc(t: ^testing.T) {
+	source := `IMPORT row = ls_row FROM DATABASE demo_indx_blob(sc) ID lv_id TO ls_indx.`
+	parsed := parse(source, "data_cluster_database_order.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Import_Stmt)
+	testing.expect_value(t, stmt.medium.kind, ast.Data_Cluster_Medium_Kind.Database)
+	testing.expect(t, stmt.medium.id != nil)
+	testing.expect(t, stmt.medium.work_area != nil)
+}
+
+@(test)
 create_object_models_target_and_type_clause :: proc(t: ^testing.T) {
 	source := `CREATE OBJECT ri_html TYPE zcl_abapgit_html.
 CREATE OBJECT ri_dyn TYPE (lv_class).`

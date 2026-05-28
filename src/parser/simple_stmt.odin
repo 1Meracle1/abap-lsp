@@ -893,15 +893,35 @@ export_stmt_starts :: proc(p: ^Parser) -> bool {
 }
 
 data_cluster_medium_tail_present :: proc(p: ^Parser, keyword: string) -> bool {
-	for i := p.index; i + 2 < len(p.tokens); i += 1 {
+	for i := p.index; i + 1 < len(p.tokens); i += 1 {
 		tok := p.tokens[i]
 		if tok.kind == .Period || tok.kind == .Eof {
 			break
 		}
-		if token_is_keyword(p, tok, keyword) &&
-		   token_is_keyword(p, p.tokens[i + 1], "MEMORY") &&
-		   token_is_keyword(p, p.tokens[i + 2], "ID") {
+		if !token_is_keyword(p, tok, keyword) {
+			continue
+		}
+		if token_is_keyword(p, p.tokens[i + 1], "DATABASE") {
 			return true
+		}
+		if i + 2 < len(p.tokens) {
+			if token_is_keyword(p, p.tokens[i + 1], "DATA") &&
+			   token_is_keyword(p, p.tokens[i + 2], "BUFFER") {
+				return true
+			}
+			if token_is_keyword(p, p.tokens[i + 1], "INTERNAL") &&
+			   token_is_keyword(p, p.tokens[i + 2], "TABLE") {
+				return true
+			}
+			if token_is_keyword(p, p.tokens[i + 1], "MEMORY") &&
+			   token_is_keyword(p, p.tokens[i + 2], "ID") {
+				return true
+			}
+			if token_is_keyword(p, p.tokens[i + 1], "SHARED") &&
+			   (token_is_keyword(p, p.tokens[i + 2], "MEMORY") ||
+			    token_is_keyword(p, p.tokens[i + 2], "BUFFER")) {
+				return true
+			}
 		}
 	}
 	return false
@@ -911,9 +931,9 @@ parse_import_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "IMPORT")
 	body_start := p.index
 	stmt := ast.new(ast.Import_Stmt, start.range, p.allocator)
-	stmt.parameters = parse_data_cluster_parameters(p, body_start, "FROM")
+	stmt.parameters = parse_data_cluster_parameters(p, body_start, "FROM", "TO")
 	expect_keyword(p, "FROM")
-	stmt.medium = parse_data_cluster_medium(p, body_start)
+	stmt.medium = parse_data_cluster_medium(p, body_start, "TO")
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -922,9 +942,9 @@ parse_export_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "EXPORT")
 	body_start := p.index
 	stmt := ast.new(ast.Export_Stmt, start.range, p.allocator)
-	stmt.parameters = parse_data_cluster_parameters(p, body_start, "TO")
+	stmt.parameters = parse_data_cluster_parameters(p, body_start, "TO", "FROM")
 	expect_keyword(p, "TO")
-	stmt.medium = parse_data_cluster_medium(p, body_start)
+	stmt.medium = parse_data_cluster_medium(p, body_start, "FROM")
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
 }
@@ -933,6 +953,7 @@ parse_data_cluster_parameters :: proc(
 	p: ^Parser,
 	body_start: int,
 	stop_keyword: string,
+	parameter_keyword: string,
 ) -> [dynamic]ast.Data_Cluster_Parameter_Clause {
 	parameters := make([dynamic]ast.Data_Cluster_Parameter_Clause, 0, 2, p.allocator)
 	allow_token(p, .Colon)
@@ -941,7 +962,7 @@ parse_data_cluster_parameters :: proc(
 			continue
 		}
 		start := p.index
-		parameter, ok := parse_data_cluster_parameter(p, body_start, stop_keyword)
+		parameter, ok := parse_data_cluster_parameter(p, body_start, stop_keyword, parameter_keyword)
 		if ok {
 			append(&parameters, parameter)
 		}
@@ -953,21 +974,71 @@ parse_data_cluster_parameters :: proc(
 parse_data_cluster_medium :: proc(
 	p: ^Parser,
 	body_start: int,
+	work_area_keyword: string,
 ) -> ast.Data_Cluster_Medium_Clause {
-	expect_keyword(p, "MEMORY")
-	expect_keyword(p, "ID")
-	medium := ast.Data_Cluster_Medium_Clause {
-		kind = .Memory_ID,
-		id   = required_simple_expr(p, body_start, []string{}),
+	medium: ast.Data_Cluster_Medium_Clause
+	if allow_keyword(p, "DATA") {
+		expect_keyword(p, "BUFFER")
+		medium.kind = .Data_Buffer
+		medium.object = required_simple_expr(p, body_start, []string{})
+	} else if allow_keyword(p, "INTERNAL") {
+		expect_keyword(p, "TABLE")
+		medium.kind = .Internal_Table
+		medium.object = required_simple_expr(p, body_start, []string{})
+	} else if allow_keyword(p, "MEMORY") {
+		expect_keyword(p, "ID")
+		medium.kind = .Memory_ID
+		medium.id = required_simple_expr(p, body_start, []string{})
+	} else {
+		if allow_keyword(p, "SHARED") {
+			medium.kind = .Shared_Memory
+			if allow_keyword(p, "BUFFER") {
+				medium.kind = .Shared_Buffer
+			} else {
+				expect_keyword(p, "MEMORY")
+			}
+		} else {
+			expect_keyword(p, "DATABASE")
+			medium.kind = .Database
+		}
+		parse_data_cluster_database_medium(p, body_start, work_area_keyword, &medium)
 	}
 	consume_simple_entry_tail(p, body_start)
 	return medium
+}
+
+parse_data_cluster_database_medium :: proc(
+	p: ^Parser,
+	body_start: int,
+	work_area_keyword: string,
+	medium: ^ast.Data_Cluster_Medium_Clause,
+) {
+	dbtab := expect_token(p, .Ident)
+	medium.dbtab = tokenizer.token_lexeme(dbtab, p.source)
+	medium.dbtab_range = dbtab.range
+	expect_token(p, .LParen)
+	area := expect_token(p, .Ident)
+	medium.area = tokenizer.token_lexeme(area, p.source)
+	medium.area_range = area.range
+	expect_token(p, .RParen)
+	for !simple_stmt_done(p, body_start) {
+		if allow_keyword(p, work_area_keyword) {
+			medium.work_area = required_simple_expr(p, body_start, []string{"CLIENT", "ID"})
+		} else if allow_keyword(p, "CLIENT") {
+			medium.client = required_simple_expr(p, body_start, []string{work_area_keyword, "ID"})
+		} else if allow_keyword(p, "ID") {
+			medium.id = required_simple_expr(p, body_start, []string{work_area_keyword, "CLIENT"})
+		} else {
+			break
+		}
+	}
 }
 
 parse_data_cluster_parameter :: proc(
 	p: ^Parser,
 	body_start: int,
 	stop_keyword: string,
+	parameter_keyword: string,
 ) -> (ast.Data_Cluster_Parameter_Clause, bool) {
 	if simple_stmt_done(p, body_start) || at_keyword(p, stop_keyword) {
 		return {}, false
@@ -977,6 +1048,14 @@ parse_data_cluster_parameter :: proc(
 	if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
 		name := bump_token(p)
 		expect_token(p, .Eq)
+		parameter.name = tokenizer.token_lexeme(name, p.source)
+		parameter.name_range = name.range
+		parameter.value = required_simple_expr(p, body_start, stop)
+		return parameter, true
+	}
+	if current_token(p).kind == .Ident && at_keyword_index(p, p.index + 1, parameter_keyword) {
+		name := bump_token(p)
+		expect_keyword(p, parameter_keyword)
 		parameter.name = tokenizer.token_lexeme(name, p.source)
 		parameter.name_range = name.range
 		parameter.value = required_simple_expr(p, body_start, stop)

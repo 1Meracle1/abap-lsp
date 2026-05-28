@@ -384,12 +384,12 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk_expr_list(next, n.excluding)
 		walk_expr_list(next, n.operands)
 	case ^Import_Stmt:
-		walk(next, n.medium.id)
+		walk_data_cluster_medium(next, n.medium)
 		for clause in n.parameters {
 			walk(next, clause.value)
 		}
 	case ^Export_Stmt:
-		walk(next, n.medium.id)
+		walk_data_cluster_medium(next, n.medium)
 		for clause in n.parameters {
 			walk(next, clause.value)
 		}
@@ -629,6 +629,13 @@ walk_expr_list :: proc(v: ^Visitor, list: [dynamic]^Expr) {
 	for x in list {
 		walk(v, x)
 	}
+}
+
+walk_data_cluster_medium :: proc(v: ^Visitor, medium: Data_Cluster_Medium_Clause) {
+	walk(v, medium.object)
+	walk(v, medium.work_area)
+	walk(v, medium.client)
+	walk(v, medium.id)
 }
 
 walk_stmt_list :: proc(v: ^Visitor, list: [dynamic]^Stmt) {

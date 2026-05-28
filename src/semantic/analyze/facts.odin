@@ -1631,7 +1631,7 @@ collect_import_stmt_facts :: proc(
 	for parameter in stmt.parameters {
 		collect_write_target_expr(c, scope, stmt.range, parameter.value)
 	}
-	collect_data_cluster_medium_refs(c, stmt.medium, scope)
+	collect_data_cluster_medium_refs(c, stmt.medium, scope, stmt.range, false)
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
@@ -1643,7 +1643,7 @@ collect_export_stmt_facts :: proc(
 	for parameter in stmt.parameters {
 		collect_expr_refs(c, parameter.value, scope)
 	}
-	collect_data_cluster_medium_refs(c, stmt.medium, scope)
+	collect_data_cluster_medium_refs(c, stmt.medium, scope, stmt.range, true)
 	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
@@ -1651,9 +1651,25 @@ collect_data_cluster_medium_refs :: proc(
 	c: ^Collector,
 	medium: ast.Data_Cluster_Medium_Clause,
 	scope: Scope_Id,
+	stmt_range: tokenizer.Range,
+	exporting: bool,
 ) {
 	switch medium.kind {
+	case .Data_Buffer, .Internal_Table:
+		if exporting {
+			collect_write_target_expr(c, scope, stmt_range, medium.object)
+		} else {
+			collect_expr_refs(c, medium.object, scope)
+		}
 	case .Memory_ID:
+		collect_expr_refs(c, medium.id, scope)
+	case .Database, .Shared_Memory, .Shared_Buffer:
+		if exporting {
+			collect_expr_refs(c, medium.work_area, scope)
+		} else {
+			collect_write_target_expr(c, scope, stmt_range, medium.work_area)
+		}
+		collect_expr_refs(c, medium.client, scope)
 		collect_expr_refs(c, medium.id, scope)
 	}
 }

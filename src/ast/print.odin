@@ -2005,7 +2005,7 @@ emit_import_stmt :: proc(p: ^Printer, stmt: ^Import_Stmt) {
 		emit_data_cluster_parameters(p, stmt.parameters)
 	}
 	emit(p, " FROM ")
-	emit_data_cluster_medium(p, stmt.medium)
+	emit_data_cluster_medium(p, stmt.medium, "TO")
 	emit(p, ".")
 }
 
@@ -2016,14 +2016,54 @@ emit_export_stmt :: proc(p: ^Printer, stmt: ^Export_Stmt) {
 		emit_data_cluster_parameters(p, stmt.parameters)
 	}
 	emit(p, " TO ")
-	emit_data_cluster_medium(p, stmt.medium)
+	emit_data_cluster_medium(p, stmt.medium, "FROM")
 	emit(p, ".")
 }
 
-emit_data_cluster_medium :: proc(p: ^Printer, medium: Data_Cluster_Medium_Clause) {
+emit_data_cluster_medium :: proc(p: ^Printer, medium: Data_Cluster_Medium_Clause, work_area_keyword: string) {
 	switch medium.kind {
+	case .Data_Buffer:
+		emit(p, "DATA BUFFER ")
+		emit_node(p, medium.object)
+	case .Internal_Table:
+		emit(p, "INTERNAL TABLE ")
+		emit_node(p, medium.object)
 	case .Memory_ID:
 		emit(p, "MEMORY ID ")
+		emit_node(p, medium.id)
+	case .Database:
+		emit(p, "DATABASE ")
+		emit_data_cluster_database_medium(p, medium, work_area_keyword)
+	case .Shared_Memory:
+		emit(p, "SHARED MEMORY ")
+		emit_data_cluster_database_medium(p, medium, work_area_keyword)
+	case .Shared_Buffer:
+		emit(p, "SHARED BUFFER ")
+		emit_data_cluster_database_medium(p, medium, work_area_keyword)
+	}
+}
+
+emit_data_cluster_database_medium :: proc(
+	p: ^Printer,
+	medium: Data_Cluster_Medium_Clause,
+	work_area_keyword: string,
+) {
+	emit(p, medium.dbtab)
+	emit(p, "(")
+	emit(p, medium.area)
+	emit(p, ")")
+	if medium.work_area != nil {
+		emit_space(p)
+		emit(p, work_area_keyword)
+		emit(p, " ")
+		emit_node(p, medium.work_area)
+	}
+	if medium.client != nil {
+		emit(p, " CLIENT ")
+		emit_node(p, medium.client)
+	}
+	if medium.id != nil {
+		emit(p, " ID ")
 		emit_node(p, medium.id)
 	}
 }

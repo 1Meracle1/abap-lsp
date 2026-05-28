@@ -3847,6 +3847,44 @@ ASSIGN COMPONENT lv_name OF STRUCTURE ls_row TO FIELD-SYMBOL(<fs_raw>).
 }
 
 @(test)
+data_cluster_media_collect_refs_without_keyword_refs :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///data_cluster_media.abap",
+		`
+REPORT zmain.
+DATA lv_xstr TYPE xstring.
+DATA lt_cluster TYPE TABLE OF string.
+DATA lv_id TYPE string.
+DATA lv_client TYPE string.
+DATA ls_payload TYPE string.
+DATA ls_indx TYPE string.
+IMPORT payload TO ls_payload FROM MEMORY ID lv_id.
+EXPORT payload FROM ls_payload TO MEMORY ID lv_id.
+IMPORT payload = ls_payload FROM DATA BUFFER lv_xstr.
+EXPORT payload = ls_payload TO DATA BUFFER lv_xstr.
+IMPORT payload = ls_payload FROM INTERNAL TABLE lt_cluster.
+EXPORT payload = ls_payload TO INTERNAL TABLE lt_cluster.
+IMPORT payload = ls_payload FROM DATABASE demo_indx_blob(sc) TO ls_indx CLIENT lv_client ID lv_id.
+EXPORT payload = ls_payload TO DATABASE demo_indx_blob(sc) FROM ls_indx CLIENT lv_client ID lv_id.
+IMPORT payload = ls_payload FROM SHARED MEMORY demo_indx_blob(sc) TO ls_indx CLIENT lv_client ID lv_id.
+EXPORT payload = ls_payload TO SHARED BUFFER demo_indx_blob(sc) FROM ls_indx CLIENT lv_client ID lv_id.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, has_reference(&unit, "lv_xstr", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lt_cluster", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_id", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_client", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "ls_indx", .Value, .Identifier))
+	keywords := [?]string{"from", "to", "data", "buffer", "internal", "table", "memory", "id", "database", "shared", "client"}
+	for keyword in keywords {
+		testing.expect(t, !has_reference(&unit, keyword, .Value, .Identifier))
+	}
+}
+
+@(test)
 collects_message_default_and_message_use_facts :: proc(t: ^testing.T) {
 	source := `
 REPORT zmain MESSAGE-ID zmsg.

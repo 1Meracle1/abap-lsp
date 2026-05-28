@@ -1433,13 +1433,25 @@ Runtime_Subject :: enum {
 }
 
 Data_Cluster_Medium_Kind :: enum {
+	Data_Buffer,
+	Internal_Table,
 	Memory_ID,
+	Database,
+	Shared_Memory,
+	Shared_Buffer,
 }
 
-// ABAP syntax: data cluster medium currently modeled as `MEMORY ID id`.
+// ABAP syntax: data cluster medium such as `MEMORY ID id` or `DATABASE dbtab(ar) ID id`.
 Data_Cluster_Medium_Clause :: struct {
-	kind: Data_Cluster_Medium_Kind,
-	id:   ^Expr,
+	kind:        Data_Cluster_Medium_Kind,
+	object:      ^Expr,
+	dbtab:       string,
+	dbtab_range: tokenizer.Range,
+	area:        string,
+	area_range:  tokenizer.Range,
+	work_area:   ^Expr,
+	client:      ^Expr,
+	id:          ^Expr,
 }
 
 // ABAP syntax: one data cluster parameter, for example `name = value`.
