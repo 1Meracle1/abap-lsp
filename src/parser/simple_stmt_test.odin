@@ -276,6 +276,27 @@ WRITE /10(5) text.`
 }
 
 @(test)
+submit_statement_target_shape_is_modeled_and_validated :: proc(t: ^testing.T) {
+	parsed := parse(
+		`SUBMIT scpr3 AND RETURN.
+SUBMIT (lv_report) VIA SELECTION-SCREEN.`,
+		"submit_shape.abap",
+		context.allocator,
+	)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	static_submit := parsed.root.stmts[0].derived_stmt.(^ast.Submit_Stmt)
+	dynamic_submit := parsed.root.stmts[1].derived_stmt.(^ast.Submit_Stmt)
+	testing.expect_value(t, static_submit.target_kind, ast.Submit_Target_Kind.Static)
+	testing.expect_value(t, dynamic_submit.target_kind, ast.Submit_Target_Kind.Dynamic)
+	testing.expect(t, static_submit.and_return)
+	testing.expect(t, dynamic_submit.via_selection_screen)
+
+	invalid := parse("SUBMIT 1 + 2.", "bad_submit_shape.abap", context.allocator)
+	testing.expect(t, len(invalid.errors) > 0)
+}
+
+@(test)
 perform_statement_shape_is_modeled_and_validated :: proc(t: ^testing.T) {
 	source := `PERFORM (lv_form) IN PROGRAM ('RDDU0001') IF FOUND.
 PERFORM local_form IN PROGRAM.`

@@ -3314,6 +3314,22 @@ perform_expr_is_dynamic :: proc(expr: ^ast.Expr) -> bool {
 	return ok
 }
 
+submit_static_target_is_valid :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	_, ok := expr.derived_expr.(^ast.Ident_Expr)
+	return ok
+}
+
+submit_target_is_dynamic :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	_, ok := expr.derived_expr.(^ast.Paren_Expr)
+	return ok
+}
+
 parse_perform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "PERFORM")
 	body_start := p.index
@@ -3928,9 +3944,18 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			"AND",
 		},
 	)
+	if stmt.target == nil {
+		error_current(p, "syntax error: expected SUBMIT target")
+	} else if submit_target_is_dynamic(stmt.target) {
+		stmt.target_kind = .Dynamic
+	} else if !submit_static_target_is_valid(stmt.target) {
+		error(p, stmt.target.range, "syntax error: expected report name or parenthesized program name after SUBMIT")
+	}
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "AND") {
-			stmt.and_return = allow_keyword(p, "RETURN")
+			if allow_keyword(p, "RETURN") {
+				stmt.and_return = true
+			}
 			continue
 		}
 		if allow_keyword(p, "VIA") {

@@ -1737,11 +1737,62 @@ collect_raw_call_args :: proc(
 }
 
 collect_submit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Submit_Stmt, scope: Scope_Id) {
-	collect_expr_refs(c, stmt.target, scope)
+	has_report_target := false
+	if report_name, ok := submit_report_name(c, stmt); ok {
+		has_report_target = true
+		append(
+			&c.call_sites,
+			Call_Site_Data {
+				scope = scope,
+				range = stmt.range,
+				target = Named_Argument_Target {
+					kind        = .Report,
+					report_name = report_name,
+				},
+			},
+		)
+	}
+	if stmt.target_kind == .Dynamic || !has_report_target {
+		collect_expr_refs(c, stmt.target, scope)
+	}
 	for option in stmt.options {
 		collect_expr_refs(c, option.value, scope)
 		collect_expr_refs(c, option.high_value, scope)
 	}
+}
+
+submit_report_name :: proc(
+	c: ^Collector,
+	stmt: ^ast.Submit_Stmt,
+) -> (string, bool) {
+	if stmt.target == nil {
+		return "", false
+	}
+	if stmt.target_kind == .Static {
+		if ident, ok := stmt.target.derived_expr.(^ast.Ident_Expr); ok {
+			return canonical_name(ident.name, c.allocator), true
+		}
+		return "", false
+	}
+	paren, ok := stmt.target.derived_expr.(^ast.Paren_Expr)
+	if !ok || paren.expr == nil {
+		return "", false
+	}
+	if lit, lit_ok := paren.expr.derived_expr.(^ast.Literal_Expr); lit_ok {
+		return submit_literal_report_name(c, lit.value)
+	}
+	return "", false
+}
+
+submit_literal_report_name :: proc(c: ^Collector, value: string) -> (string, bool) {
+	if len(value) < 2 {
+		return "", false
+	}
+	if !((value[0] == '\'' && value[len(value) - 1] == '\'') ||
+	     (value[0] == '`' && value[len(value) - 1] == '`')) {
+		return "", false
+	}
+	return canonical_name(value[1:len(value) - 1], c.allocator), true
 }
 
 collect_message_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Message_Stmt, scope: Scope_Id) {

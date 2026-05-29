@@ -626,6 +626,77 @@ PERFORM logdelete IN PROGRAM rddu0001 USING lv_protname.
 }
 
 @(test)
+submit_static_report_queues_report_dependency :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = `
+REPORT zmain.
+SUBMIT scpr3 AND RETURN.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	unit := &project.units[0]
+	_, report_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
+	report_found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "scpr3" && candidate.kind == .Report {
+			report_found = true
+		}
+	}
+
+	testing.expect(t, report_pending)
+	testing.expect(t, report_found)
+	testing.expect(t, !has_reference(unit, "scpr3", .Value, .Identifier))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, unit.call_sites[0].target.kind, analyze.Named_Argument_Target_Kind.Report)
+	testing.expect_value(t, unit.call_sites[0].target.report_name, "scpr3")
+}
+
+@(test)
+submit_dynamic_literal_queues_report_dependency :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = `
+REPORT zmain.
+SUBMIT ('SCPR3') AND RETURN.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, report_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
+
+	testing.expect(t, report_pending)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 standard_type_pool_symbols_are_installed :: proc(t: ^testing.T) {
 	unit := analyze.unit_analysis_make(
 		analyze.Unit_Id(0),

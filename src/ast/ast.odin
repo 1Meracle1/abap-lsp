@@ -1344,6 +1344,11 @@ Submit_Option_Operator :: enum {
 	Other,
 }
 
+Submit_Target_Kind :: enum {
+	Static,
+	Dynamic,
+}
+
 // ABAP syntax: one SUBMIT option with a compact operand, for example `WITH p = v` or `LINE-SIZE n`.
 Submit_Option_Clause :: struct {
 	kind:       Submit_Option_Kind,
@@ -1357,6 +1362,7 @@ Submit_Option_Clause :: struct {
 Submit_Stmt :: struct {
 	using node:               Stmt,
 	target:                   ^Expr,
+	target_kind:              Submit_Target_Kind,
 	options:                  [dynamic]Submit_Option_Clause,
 	via_selection_screen:     bool,
 	exporting_list_to_memory: bool,
