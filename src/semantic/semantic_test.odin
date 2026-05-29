@@ -3971,6 +3971,67 @@ ENDCLASS.
 }
 
 @(test)
+resolves_multi_level_redefined_method_parameters_in_call_args :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///multi_level_redefined_method_params.abap",
+		`
+CLASS lcl_helper DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS show_object
+      IMPORTING
+        im_obj_type TYPE string
+        im_name     TYPE string.
+ENDCLASS.
+
+CLASS lcl_root DEFINITION.
+  PUBLIC SECTION.
+    METHODS download
+      IMPORTING
+        im_object_type TYPE string
+        im_object_name TYPE string.
+ENDCLASS.
+
+CLASS lcl_mid DEFINITION INHERITING FROM lcl_root.
+  PUBLIC SECTION.
+    METHODS download REDEFINITION.
+ENDCLASS.
+
+CLASS lcl_leaf DEFINITION INHERITING FROM lcl_mid.
+  PUBLIC SECTION.
+    METHODS download REDEFINITION.
+ENDCLASS.
+
+CLASS lcl_root IMPLEMENTATION.
+  METHOD download.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_mid IMPLEMENTATION.
+  METHOD download.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_leaf IMPLEMENTATION.
+  METHOD download.
+    DATA lv_type TYPE string.
+    lv_type = im_object_type.
+    lcl_helper=>show_object(
+      EXPORTING
+        im_obj_type = im_object_type
+        im_name     = im_object_name ).
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect_value(t, reference_count(&unit, "im_object_type", .Value, .Identifier), 2)
+	testing.expect_value(t, reference_count(&unit, "im_object_name", .Value, .Identifier), 1)
+	testing.expect(t, !has_reference(&unit, "im_obj_type", .Value, .Identifier))
+}
+
+@(test)
 resolves_qualified_interface_method_parameters :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

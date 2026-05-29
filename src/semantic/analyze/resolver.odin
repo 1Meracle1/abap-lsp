@@ -786,10 +786,12 @@ inherited_project_class_member :: proc(
 	int,
 ) {
 	current := class_handle
+	fallback: ^Class_Member_Data
+	fallback_index := -1
 	for _ in 0 ..< len(units) + 8 {
 		next, ok := direct_superclass_handle(units, current, roots, visible)
 		if !ok {
-			return nil, -1
+			return fallback, fallback_index
 		}
 		if _, member_ok := class_member_symbol_by_handle(
 			units,
@@ -803,13 +805,21 @@ inherited_project_class_member :: proc(
 			if next_index >= 0 && next_index < len(units) {
 				if member := unit_class_member(&units[next_index], next.symbol, name);
 				   member != nil {
+					if fallback == nil {
+						fallback = member
+						fallback_index = next_index
+					}
+					if len(member.parameters) == 0 && .Is_Redefinition in member.flags {
+						current = next
+						continue
+					}
 					return member, next_index
 				}
 			}
 		}
 		current = next
 	}
-	return nil, -1
+	return fallback, fallback_index
 }
 
 seeded_method_parameter_structure :: proc(
