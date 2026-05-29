@@ -4426,6 +4426,7 @@ IF sy-scols > 0.
 ENDIF.
 IF sy-srows > 0.
 ENDIF.
+sy-tcode = 'SE41' ##WRITE_OK.
 
 LOOP AT SCREEN.
   IF screen-name = 'P_FOO'.
@@ -4448,10 +4449,13 @@ ENDLOOP.
 	testing.expect(t, syst != nil)
 	testing.expect(t, screen != nil)
 	subrc, subrc_ok := analyze.structure_field_info(&unit, syst.id, "subrc")
+	tcode, tcode_ok := analyze.structure_field_info(&unit, syst.id, "tcode")
 	screen_name, screen_ok := analyze.structure_field_info(&unit, screen.id, "name")
 	testing.expect(t, subrc_ok)
+	testing.expect(t, tcode_ok)
 	testing.expect(t, screen_ok)
 	testing.expect_value(t, subrc.type_ref.base_name, "i")
+	testing.expect_value(t, tcode.type_ref.base_name, "c")
 	testing.expect_value(t, screen_name.type_ref.base_name, "c")
 	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
 }

@@ -275,6 +275,12 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				description = "Current internal-table index from READ TABLE or LOOP AT on indexed access paths.",
 			},
 			{
+				name = "tcode",
+				type_name = "c",
+				structure_name = "",
+				description = "Current transaction code.",
+			},
+			{
 				name = "tfill",
 				type_name = "i",
 				structure_name = "",

@@ -58,6 +58,25 @@ method(2) = value.`
 }
 
 @(test)
+assignment_with_trailing_pragma_keeps_lhs_rhs_shape :: proc(t: ^testing.T) {
+	parsed := parse(`sy-tcode = 'SE41' ##WRITE_OK.`, "assignment_pragma.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
+	assign, ok := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt)
+	testing.expect(t, ok)
+	lhs, lhs_ok := assign.lhs.derived_expr.(^ast.Selector_Expr)
+	testing.expect(t, lhs_ok)
+	base := lhs.base.derived_expr.(^ast.Ident_Expr)
+	field := lhs.field.derived_expr.(^ast.Ident_Expr)
+	rhs := assign.rhs.derived_expr.(^ast.Literal_Expr)
+	testing.expect_value(t, base.name, "sy")
+	testing.expect_value(t, lhs.op, ast.Selector_Op.Dash)
+	testing.expect_value(t, field.name, "tcode")
+	testing.expect_value(t, rhs.value, "'SE41'")
+}
+
+@(test)
 selection_screen_statements_are_not_macro_calls :: proc(t: ^testing.T) {
 	source := `SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
 SELECTION-SCREEN COMMENT 1(18) sc_url FOR FIELD p_url.
