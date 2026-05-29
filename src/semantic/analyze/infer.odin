@@ -1,6 +1,7 @@
 #+private
 package abap_frontend_semantic_analyze
 
+import "src:ast"
 import "src:tokenizer"
 
 import "core:mem"
@@ -303,6 +304,11 @@ field_type_refs_equal :: proc(a, b: Field_Type_Ref_Data) -> bool {
 		a_deref := i < len(a.field_derefs) && a.field_derefs[i]
 		b_deref := i < len(b.field_derefs) && b.field_derefs[i]
 		if a_deref != b_deref {
+			return false
+		}
+		a_selector := a.field_selectors[i] if i < len(a.field_selectors) else ast.Selector_Op.Dash
+		b_selector := b.field_selectors[i] if i < len(b.field_selectors) else ast.Selector_Op.Dash
+		if a_selector != b_selector {
 			return false
 		}
 	}

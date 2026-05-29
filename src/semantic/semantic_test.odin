@@ -5468,6 +5468,56 @@ ENDFORM.
 }
 
 @(test)
+like_line_of_object_table_attribute_keeps_line_structure :: proc(t: ^testing.T) {
+	valid_source := `
+CLASS lcl_map DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_entry,
+             k TYPE string,
+             v TYPE string,
+           END OF ty_entry.
+    TYPES ty_entries TYPE SORTED TABLE OF ty_entry WITH UNIQUE KEY k.
+    DATA mt_entries TYPE ty_entries.
+ENDCLASS.
+
+DATA lo_map TYPE REF TO lcl_map.
+FIELD-SYMBOLS <entry> LIKE LINE OF lo_map->mt_entries.
+<entry>-k = 'x'.
+`
+	valid := collect_test_unit(t, "file:///like_line_of_object_table_attr.abap", valid_source)
+	invalid := collect_test_unit(
+		t,
+		"file:///like_line_of_object_table_attr_dash.abap",
+		`
+CLASS lcl_map DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_entry,
+             k TYPE string,
+           END OF ty_entry.
+    TYPES ty_entries TYPE STANDARD TABLE OF ty_entry WITH DEFAULT KEY.
+    DATA mt_entries TYPE ty_entries.
+ENDCLASS.
+
+DATA lo_map TYPE REF TO lcl_map.
+FIELD-SYMBOLS <entry> LIKE LINE OF lo_map-mt_entries.
+<entry>-k = 'x'.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&valid, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid, .Unknown_Field))
+
+	fact_query := sem_query.facts(sem_query.semantic(&valid))
+	field_offset := find_text(valid_source, "<entry>-k")
+	testing.expect(t, field_offset >= 0)
+	field_fact := sem_query.fact_expression_fact_at_offset(fact_query, field_offset + len("<entry>-"))
+	testing.expect(t, field_fact != nil)
+	testing.expect_value(t, field_fact.kind, analyze.Expression_Fact_Kind.Selector)
+	testing.expect(t, field_fact.type_fact.has_declared_type)
+	testing.expect_value(t, field_fact.type_fact.declared_type.base_name, "string")
+}
+
+@(test)
 unknown_receiver_type_suppresses_field_cascade :: proc(t: ^testing.T) {
 	missing := collect_test_unit(
 		t,

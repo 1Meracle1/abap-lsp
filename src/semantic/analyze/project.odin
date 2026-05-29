@@ -1,5 +1,6 @@
 package abap_frontend_semantic_analyze
 
+import "src:ast"
 import execution "src:execution"
 import "src:parser"
 import uri_key "src:uri_key"
@@ -1690,6 +1691,7 @@ write_signature_type_ref :: proc(out: ^strings.Builder, ref: Field_Type_Ref_Data
 	for field, i in ref.field_path {
 		write_signature_string(out, field)
 		write_signature_int(out, 1 if i < len(ref.field_derefs) && ref.field_derefs[i] else 0)
+		write_signature_int(out, int(ref.field_selectors[i]) if i < len(ref.field_selectors) else int(ast.Selector_Op.Dash))
 	}
 	strings.write_byte(out, '\n')
 }

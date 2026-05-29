@@ -1620,10 +1620,12 @@ type_ref_from_ast_expr :: proc(
 			type_ref.field_path = make([dynamic]string, 0, 2, c.allocator)
 			type_ref.field_ranges = make([dynamic]tokenizer.Range, 0, 2, c.allocator)
 			type_ref.field_derefs = make([dynamic]bool, 0, 2, c.allocator)
+			type_ref.field_selectors = make([dynamic]ast.Selector_Op, 0, 2, c.allocator)
 		}
 		append(&type_ref.field_path, canonical_name(name, c.allocator))
 		append(&type_ref.field_ranges, range)
 		append(&type_ref.field_derefs, n.op == .Arrow && name == "*")
+		append(&type_ref.field_selectors, n.op)
 		return type_ref, true
 	}
 	return {}, false
@@ -1655,10 +1657,12 @@ type_ref_from_type_ref_expr :: proc(
 	field_path := make([dynamic]string, 0, len(expr.path), c.allocator)
 	field_ranges := make([dynamic]tokenizer.Range, 0, len(expr.path), c.allocator)
 	field_derefs := make([dynamic]bool, 0, len(expr.path), c.allocator)
+	field_selectors := make([dynamic]ast.Selector_Op, 0, len(expr.path), c.allocator)
 	for segment in expr.path {
 		append(&field_path, canonical_name(segment.name, c.allocator))
 		append(&field_ranges, segment.range)
 		append(&field_derefs, segment.selector == .Arrow && segment.name == "*")
+		append(&field_selectors, segment.selector)
 	}
 	return Field_Type_Ref_Data {
 			namespace = ns,
@@ -1668,6 +1672,7 @@ type_ref_from_type_ref_expr :: proc(
 			field_path = field_path,
 			field_ranges = field_ranges,
 			field_derefs = field_derefs,
+			field_selectors = field_selectors,
 		},
 		true
 }
@@ -1787,6 +1792,7 @@ add_type_reference :: proc(
 				Field_Access_Segment {
 					name = name,
 					range = segment_range,
+					selector = type_ref_path_selector(type_ref, i),
 					deref = i < len(type_ref.field_derefs) && type_ref.field_derefs[i],
 				},
 			)
@@ -1827,13 +1833,31 @@ resolve_field_type_ref :: proc(
 	if s.structure == INVALID_STRUCTURE_ID {
 		return INVALID_STRUCTURE_ID, false
 	}
-	return resolve_structure_path(c, s.structure, type_ref.field_path[:], type_ref.field_derefs[:])
+	return resolve_structure_path(
+		c,
+		s.structure,
+		type_ref.field_path[:],
+		type_ref.field_selectors[:],
+		type_ref.field_derefs[:],
+	)
+}
+
+type_ref_path_selector :: #force_inline proc(
+	type_ref: Field_Type_Ref_Data,
+	index: int,
+) -> ast.Selector_Op {
+	return type_ref.field_selectors[index] if index < len(type_ref.field_selectors) else .Dash
+}
+
+type_ref_selector_at :: #force_inline proc(selectors: []ast.Selector_Op, index: int) -> ast.Selector_Op {
+	return selectors[index] if index < len(selectors) else .Dash
 }
 
 resolve_structure_path :: proc(
 	c: ^Collector,
 	id: Structure_Id,
 	path: []string,
+	selectors: []ast.Selector_Op,
 	derefs: []bool,
 ) -> (
 	Structure_Id,
@@ -1843,6 +1867,9 @@ resolve_structure_path :: proc(
 	for segment, i in path {
 		if i < len(derefs) && derefs[i] {
 			continue
+		}
+		if type_ref_selector_at(selectors, i) != .Dash {
+			return INVALID_STRUCTURE_ID, false
 		}
 		st := find_collected_structure(c, current)
 		if st == nil {

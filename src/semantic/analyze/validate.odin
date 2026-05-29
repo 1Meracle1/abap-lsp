@@ -1300,9 +1300,12 @@ resolve_field_access_tail :: proc(
 		)
 	}
 	if base_symbol.has_declared_type {
-		if class_handle, class_ok := class_handle_from_symbol(project, lookup, unit_index, base);
-		   class_ok {
-			return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:], unit_index, access.scope)
+		if len(access.field_path) > 0 &&
+		   access.field_path[0].selector == .Arrow {
+			if class_handle, class_ok := class_handle_from_symbol(project, lookup, unit_index, base);
+			   class_ok {
+				return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:], unit_index, access.scope)
+			}
 		}
 		base_unit_index := unit_id_index(base.unit)
 		if base_unit_index >= 0 &&
@@ -1332,7 +1335,7 @@ type_fact_from_structure_path :: proc(
 	current_structure := start_structure
 	fact := Type_Fact_Data{structure = current_structure}
 	unknown_after_deref := false
-	for segment in path {
+	for segment, i in path {
 		if segment.deref {
 			if fact.has_declared_type &&
 			   !fact.declared_type.is_ref &&
@@ -1350,6 +1353,30 @@ type_fact_from_structure_path :: proc(
 			current_structure = fact.structure
 			unknown_after_deref = current_structure == INVALID_STRUCTURE_ID
 			continue
+		}
+		if segment.selector != .Dash {
+			if segment.selector == .Arrow &&
+			   current_structure == INVALID_STRUCTURE_ID &&
+			   fact.has_declared_type &&
+			   fact.declared_type.is_ref {
+				if class_handle, class_ok := class_handle_from_declared_type(
+					project,
+					lookup,
+					unit_index,
+					fact.declared_type,
+					false,
+					0,
+				); class_ok {
+					return type_fact_from_class_member_path(
+						project,
+						lookup,
+						class_handle,
+						path[i:],
+						unit_index,
+					)
+				}
+			}
+			return {}, false
 		}
 		if current_structure == INVALID_STRUCTURE_ID {
 			if unknown_after_deref {

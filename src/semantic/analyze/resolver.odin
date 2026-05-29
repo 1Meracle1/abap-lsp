@@ -1,5 +1,6 @@
 package abap_frontend_semantic_analyze
 
+import "src:ast"
 import execution "src:execution"
 import "src:parser"
 
@@ -1763,6 +1764,7 @@ import_structure_for_type_ref :: proc(
 	}
 	path := type_ref.field_path[:]
 	derefs := type_ref.field_derefs[:]
+	selectors := type_ref.field_selectors[:]
 	source_unit_index := unit_id_index(handle.unit)
 	if source_unit_index < 0 || source_unit_index >= len(units) {
 		return INVALID_STRUCTURE_ID, false
@@ -1780,6 +1782,9 @@ import_structure_for_type_ref :: proc(
 		path = path[1:]
 		if len(derefs) > 0 {
 			derefs = derefs[1:]
+		}
+		if len(selectors) > 0 {
+			selectors = selectors[1:]
 		}
 		source_unit_index = unit_id_index(handle.unit)
 		if source_unit_index < 0 || source_unit_index >= len(units) {
@@ -1800,6 +1805,9 @@ import_structure_for_type_ref :: proc(
 	for field_name, i in path {
 		if i < len(derefs) && derefs[i] {
 			continue
+		}
+		if selector_at(selectors, i) != .Dash {
+			return INVALID_STRUCTURE_ID, false
 		}
 		field := structure_field(&units[unit_index], current, field_name)
 		if field == nil || field.structure == INVALID_STRUCTURE_ID {
@@ -1838,6 +1846,7 @@ local_structure_for_type_ref :: proc(
 			unit,
 			symbol_id,
 			type_ref.field_path[:],
+			type_ref.field_selectors[:],
 			type_ref.field_derefs[:],
 		); structure_ok {
 			return structure_id, true
@@ -1851,7 +1860,7 @@ local_structure_for_type_ref :: proc(
 				type_ref.namespace,
 				type_ref.base_name,
 			); symbol_ok {
-				return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_derefs[:])
+				return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_selectors[:], type_ref.field_derefs[:])
 			}
 		}
 	}
@@ -1863,7 +1872,7 @@ local_structure_for_type_ref :: proc(
 			.Type,
 			type_ref.base_name,
 		); symbol_ok {
-			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_derefs[:])
+			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_selectors[:], type_ref.field_derefs[:])
 		}
 	}
 	if type_ref.namespace == .Value {
@@ -1872,7 +1881,7 @@ local_structure_for_type_ref :: proc(
 			scope_id,
 			type_ref.base_name,
 		); symbol_ok {
-			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_derefs[:])
+			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_selectors[:], type_ref.field_derefs[:])
 		}
 	}
 	return INVALID_STRUCTURE_ID, false
@@ -1918,6 +1927,7 @@ local_structure_for_symbol_path :: proc(
 	unit: ^Unit_Analysis,
 	symbol_id: Symbol_Id,
 	path: []string,
+	selectors: []ast.Selector_Op,
 	derefs: []bool,
 ) -> (
 	Structure_Id,
@@ -1942,20 +1952,104 @@ local_structure_for_symbol_path :: proc(
 		s = symbol(unit, current_symbol_id)
 		current_path = current_path[1:]
 	}
-	if s == nil || s.structure == INVALID_STRUCTURE_ID {
-		return INVALID_STRUCTURE_ID, false
-	}
 	current_derefs := derefs
 	if len(derefs) > 0 {
 		current_derefs = derefs[len(path) - len(current_path):]
 	}
-	return resolve_unit_structure_path(unit, s.structure, current_path, current_derefs)
+	current_selectors := selectors
+	if len(selectors) > 0 {
+		current_selectors = selectors[len(path) - len(current_path):]
+	}
+	if s != nil &&
+	   s.structure == INVALID_STRUCTURE_ID &&
+	   len(current_path) > 0 &&
+	   selector_at(current_selectors, 0) == .Arrow &&
+	   s.has_declared_type &&
+	   s.declared_type.is_ref {
+		if class_symbol, class_ok := local_class_symbol_for_type_ref(unit, s.scope, s.declared_type);
+		   class_ok {
+			return local_structure_for_class_member_path(
+				unit,
+				class_symbol,
+				current_path,
+				current_selectors,
+				current_derefs,
+			)
+		}
+	}
+	if s == nil || s.structure == INVALID_STRUCTURE_ID {
+		return INVALID_STRUCTURE_ID, false
+	}
+	return resolve_unit_structure_path(unit, s.structure, current_path, current_selectors, current_derefs)
+}
+
+local_class_symbol_for_type_ref :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	if type_ref.base_name == "" {
+		return INVALID_SYMBOL_ID, false
+	}
+	symbol_id, ok := lookup_scope_chain(
+		unit,
+		&unit.scope_index,
+		scope_id,
+		type_ref.namespace,
+		type_ref.base_name,
+	)
+	if !ok && type_ref.namespace == .Type {
+		symbol_id, ok = lookup_scope_chain(unit, &unit.scope_index, scope_id, .Value, type_ref.base_name)
+	}
+	if !ok {
+		return INVALID_SYMBOL_ID, false
+	}
+	s := symbol(unit, symbol_id)
+	if s == nil || !(s.kind == .Class || s.kind == .Interface) {
+		return INVALID_SYMBOL_ID, false
+	}
+	return symbol_id, true
+}
+
+local_structure_for_class_member_path :: proc(
+	unit: ^Unit_Analysis,
+	class_symbol: Symbol_Id,
+	path: []string,
+	selectors: []ast.Selector_Op,
+	derefs: []bool,
+) -> (
+	Structure_Id,
+	bool,
+) {
+	if len(path) == 0 || selector_at(selectors, 0) != .Arrow {
+		return INVALID_STRUCTURE_ID, false
+	}
+	member := unit_class_member(unit, class_symbol, path[0])
+	if member == nil || member.kind != .Attribute || member.structure == INVALID_STRUCTURE_ID {
+		return INVALID_STRUCTURE_ID, false
+	}
+	if len(path) == 1 {
+		return member.structure, true
+	}
+	next_selectors := selectors
+	next_derefs := derefs
+	if len(selectors) > 0 {
+		next_selectors = selectors[1:]
+	}
+	if len(derefs) > 0 {
+		next_derefs = derefs[1:]
+	}
+	return resolve_unit_structure_path(unit, member.structure, path[1:], next_selectors, next_derefs)
 }
 
 resolve_unit_structure_path :: proc(
 	unit: ^Unit_Analysis,
 	start: Structure_Id,
 	path: []string,
+	selectors: []ast.Selector_Op,
 	derefs: []bool,
 ) -> (
 	Structure_Id,
@@ -1966,6 +2060,9 @@ resolve_unit_structure_path :: proc(
 		if i < len(derefs) && derefs[i] {
 			continue
 		}
+		if selector_at(selectors, i) != .Dash {
+			return INVALID_STRUCTURE_ID, false
+		}
 		field := structure_field(unit, current, field_name)
 		if field == nil || field.structure == INVALID_STRUCTURE_ID {
 			return INVALID_STRUCTURE_ID, false
@@ -1973,6 +2070,10 @@ resolve_unit_structure_path :: proc(
 		current = field.structure
 	}
 	return current, true
+}
+
+selector_at :: #force_inline proc(selectors: []ast.Selector_Op, index: int) -> ast.Selector_Op {
+	return selectors[index] if index < len(selectors) else .Dash
 }
 
 class_type_symbol_handle :: proc(

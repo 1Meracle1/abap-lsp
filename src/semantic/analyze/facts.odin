@@ -357,6 +357,7 @@ selector_access_from_expr :: proc(
 		Field_Access_Segment {
 			name = canonical_name(name, c.allocator),
 			range = range,
+			selector = sel.op,
 			deref = sel.op == .Arrow && name == "*",
 		},
 	)
@@ -389,6 +390,7 @@ interface_qualified_selector_access_from_expr :: proc(
 		Field_Access_Segment {
 			name = canonical_name(member_name, c.allocator),
 			range = member_range,
+			selector = expr.receiver_op,
 			interface_name = canonical_name(interface_name, c.allocator),
 			interface_range = interface_range,
 			interface_qualified = true,
@@ -911,6 +913,7 @@ collect_raw_operand_fact_refs :: proc(
 					Field_Access_Segment {
 						name = canonical_name(segment.name, c.allocator),
 						range = segment.range,
+						selector = segment.selector,
 						deref = segment.selector == .Arrow && segment.name == "*",
 					},
 				)
@@ -1692,6 +1695,7 @@ call_stmt_method_target :: proc(
 					Field_Access_Segment {
 						name = canonical_name(ref.path[i].name, c.allocator),
 						range = ref.path[i].range,
+						selector = ref.path[i].selector,
 					},
 				)
 			}

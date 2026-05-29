@@ -273,6 +273,7 @@ Field_Type_Ref_Data :: struct {
 	field_path:   [dynamic]string,
 	field_ranges: [dynamic]tokenizer.Range,
 	field_derefs: [dynamic]bool,
+	field_selectors: [dynamic]ast.Selector_Op,
 }
 
 Type_Fact_Data :: struct {
@@ -417,6 +418,7 @@ Table_Work_Area_Data :: struct {
 Field_Access_Segment :: struct {
 	name:                string,
 	range:               tokenizer.Range,
+	selector:            ast.Selector_Op,
 	deref:               bool,
 	interface_name:      string,
 	interface_range:     tokenizer.Range,
