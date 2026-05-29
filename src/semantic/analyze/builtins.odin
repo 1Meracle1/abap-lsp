@@ -449,6 +449,15 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 		},
 	},
 	{
+		name = "textpool",
+		fields = []Builtin_Field_Spec {
+			{name = "id", type_name = "c"},
+			{name = "key", type_name = "c"},
+			{name = "entry", type_name = "c"},
+			{name = "length", type_name = "i"},
+		},
+	},
+	{
 		name = "cntl_simple_event",
 		fields = []Builtin_Field_Spec {
 			{
@@ -699,6 +708,8 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "cursor", kind = .Type, structure_name = ""},
 	{name = "match_result", kind = .Type, structure_name = "match_result"},
 	{name = "match_result_tab", kind = .Type, structure_name = "match_result"},
+	{name = "textpool", kind = .Type, structure_name = "textpool"},
+	{name = "textpool_table", kind = .Type, structure_name = "textpool"},
 	{name = "syst_short", kind = .Type, structure_name = ""},
 	{name = "syst_byte", kind = .Type, structure_name = ""},
 	{name = "syst_long", kind = .Type, structure_name = ""},
@@ -1075,6 +1086,8 @@ builtin_type_metadata :: proc(name: string) -> (Builtin_Type_Metadata, bool) {
 		return {type_name = "c", type_clause_display = "c LENGTH abap_max_class_name_ln"}, true
 	case "abap_intfname":
 		return {type_name = "c", type_clause_display = "c LENGTH abap_max_intf_name_ln"}, true
+	case "textpool_table":
+		return {type_name = "textpool", type_clause_display = "STANDARD TABLE OF textpool WITH DEFAULT KEY"}, true
 	case "abap_compdescr_tab":
 		return {
 				type_name = "abap_compdescr",

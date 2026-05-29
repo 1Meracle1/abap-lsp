@@ -4457,6 +4457,45 @@ ENDLOOP.
 }
 
 @(test)
+textpool_builtin_type_validates_known_fields :: proc(t: ^testing.T) {
+	valid := collect_test_unit(
+		t,
+		"file:///textpool_builtin_valid.abap",
+		`
+TYPES:
+  BEGIN OF ty_tpool.
+    INCLUDE TYPE textpool.
+TYPES: split TYPE c LENGTH 8,
+  END OF ty_tpool,
+  ty_tpool_tt TYPE STANDARD TABLE OF ty_tpool WITH DEFAULT KEY.
+DATA lt_raw TYPE textpool_table.
+DATA rt_tpool TYPE ty_tpool_tt.
+FIELD-SYMBOLS <ls_raw> LIKE LINE OF lt_raw.
+FIELD-SYMBOLS <ls_tpool_out> LIKE LINE OF rt_tpool.
+<ls_tpool_out>-split = <ls_tpool_out>-entry.
+<ls_tpool_out>-entry = <ls_tpool_out>-entry+8.
+IF <ls_tpool_out>-id = 'S'.
+ENDIF.
+<ls_raw>-entry = <ls_tpool_out>-entry.
+`,
+	)
+	invalid := collect_test_unit(
+		t,
+		"file:///textpool_builtin_invalid.abap",
+		`
+DATA lt_raw TYPE textpool_table.
+FIELD-SYMBOLS <ls_raw> LIKE LINE OF lt_raw.
+<ls_raw>-missing = 'x'.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&valid, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&valid, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid, .Unknown_Field))
+	expect_structure_fields(t, &valid, "textpool", "id", "key", "entry", "length")
+}
+
+@(test)
 resolves_known_cl_abap_char_utilities_attributes :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/main.abap",
