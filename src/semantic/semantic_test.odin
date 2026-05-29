@@ -1312,6 +1312,75 @@ ENDCLASS.`,
 }
 
 @(test)
+project_state_dependency_nested_structure_update_revalidates_dependents :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "mem://main.abap",
+		source = `TYPES: BEGIN OF ty_dummy,
+         value TYPE string,
+       END OF ty_dummy.
+TYPES: BEGIN OF ty_other,
+         value TYPE string,
+       END OF ty_other.
+DATA ls_outer TYPE zouter.
+ls_outer-inner-leaf = 'x'.`,
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, 0, 2, context.allocator)
+	append(
+		&dependencies,
+		analyze.Source_Input {
+			uri = "abapls-cache:/ddic-structure/zouter.abap",
+			source = `TYPES: BEGIN OF zouter,
+         inner TYPE zinner,
+       END OF zouter.`,
+			mode = .Dependency_Interface,
+		},
+	)
+
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+
+	append(
+		&dependencies,
+		analyze.Source_Input {
+			uri = "abapls-cache:/ddic-structure/zinner.abap",
+			source = `TYPES: BEGIN OF zinner,
+         leaf TYPE string,
+       END OF zinner.`,
+			mode = .Dependency_Interface,
+		},
+	)
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect_value(t, len(project.units), 3)
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 project_state_dependency_private_change_keeps_interface_signature :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)

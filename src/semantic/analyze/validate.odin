@@ -1382,11 +1382,11 @@ type_fact_from_structure_path :: proc(
 		}
 		unknown_after_deref = false
 		current_structure = field.structure
-		next_unit_index := unit_id_index(field.decl_unit)
-		if next_unit_index >= 0 && next_unit_index < len(project.units) {
-			current_unit = &project.units[next_unit_index]
-		}
 		if field.structure == INVALID_STRUCTURE_ID {
+			next_unit_index := unit_id_index(field.decl_unit)
+			if next_unit_index >= 0 && next_unit_index < len(project.units) {
+				current_unit = &project.units[next_unit_index]
+			}
 			continue
 		}
 	}
