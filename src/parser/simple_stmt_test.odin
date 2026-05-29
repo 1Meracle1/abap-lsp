@@ -256,6 +256,9 @@ WRITE /10(5) text.`
 	testing.expect(t, search.ending_at != nil)
 	testing.expect(t, search.abbreviated)
 	testing.expect(t, perform.program != nil)
+	testing.expect(t, perform.has_program_clause)
+	testing.expect_value(t, perform.form_kind, ast.Perform_Form_Kind.Static)
+	testing.expect_value(t, perform.program_kind, ast.Perform_Program_Kind.Static)
 	testing.expect_value(t, len(perform.using_args), 1)
 	testing.expect_value(t, len(perform.changing), 1)
 	testing.expect(t, perform.if_found)
@@ -270,6 +273,31 @@ WRITE /10(5) text.`
 	testing.expect(t, write.operands[0].line_break)
 	testing.expect(t, write.operands[0].position != nil)
 	testing.expect(t, write.operands[0].length != nil)
+}
+
+@(test)
+perform_statement_shape_is_modeled_and_validated :: proc(t: ^testing.T) {
+	source := `PERFORM (lv_form) IN PROGRAM ('RDDU0001') IF FOUND.
+PERFORM local_form IN PROGRAM.`
+	parsed := parse(source, "perform_shape.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	dynamic_perform := parsed.root.stmts[0].derived_stmt.(^ast.Perform_Stmt)
+	omitted := parsed.root.stmts[1].derived_stmt.(^ast.Perform_Stmt)
+	testing.expect_value(t, dynamic_perform.form_kind, ast.Perform_Form_Kind.Dynamic)
+	testing.expect_value(t, dynamic_perform.program_kind, ast.Perform_Program_Kind.Dynamic)
+	testing.expect(t, dynamic_perform.has_program_clause)
+	testing.expect(t, dynamic_perform.if_found)
+	testing.expect_value(t, omitted.program_kind, ast.Perform_Program_Kind.Omitted)
+	testing.expect(t, omitted.has_program_clause)
+	testing.expect_value(t, ast.print_node(omitted, context.allocator), "PERFORM local_form IN PROGRAM.")
+}
+
+@(test)
+perform_in_program_requires_program_before_additions :: proc(t: ^testing.T) {
+	parsed := parse("PERFORM local_form IN PROGRAM USING value.", "perform_bad_program.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
 }
 
 @(test)

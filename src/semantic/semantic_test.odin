@@ -580,6 +580,52 @@ CALL FUNCTION 'Z_REMOTE_FM'.
 }
 
 @(test)
+external_perform_in_program_queues_report_dependency :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/main.abap",
+			source = `
+REPORT zmain.
+DATA lv_protname TYPE string.
+PERFORM logdelete IN PROGRAM rddu0001 USING lv_protname.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	unit := &project.units[0]
+	_, report_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "rddu0001", kind = .Report}]
+	report_found := false
+	logdelete_found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "rddu0001" && candidate.kind == .Report {
+			report_found = true
+		}
+		if candidate.name == "logdelete" {
+			logdelete_found = true
+		}
+	}
+
+	testing.expect(t, report_pending)
+	testing.expect(t, report_found)
+	testing.expect(t, !logdelete_found)
+	testing.expect(t, !has_reference(unit, "logdelete", .Routine, .Routine_Call))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, unit.perform_calls[0].program.name, "rddu0001")
+}
+
+@(test)
 standard_type_pool_symbols_are_installed :: proc(t: ^testing.T) {
 	unit := analyze.unit_analysis_make(
 		analyze.Unit_Id(0),

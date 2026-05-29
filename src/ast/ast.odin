@@ -1219,15 +1219,30 @@ Search_Stmt :: struct {
 	abbreviated: bool,
 }
 
-// ABAP syntax: `PERFORM form [IN PROGRAM prog] [TABLES ...] [USING ...] [CHANGING ...] [IF FOUND].`
+Perform_Form_Kind :: enum {
+	Static,
+	Dynamic,
+}
+
+Perform_Program_Kind :: enum {
+	None,
+	Omitted,
+	Static,
+	Dynamic,
+}
+
+// ABAP syntax: `PERFORM form [IN PROGRAM [prog|(pname)]] [TABLES ...] [USING ...] [CHANGING ...] [IF FOUND].`
 Perform_Stmt :: struct {
-	using node: Stmt,
-	form:       ^Expr,
-	program:    ^Expr,
-	tables:     [dynamic]^Expr,
-	using_args: [dynamic]^Expr,
-	changing:   [dynamic]^Expr,
-	if_found:   bool,
+	using node:         Stmt,
+	form:               ^Expr,
+	form_kind:          Perform_Form_Kind,
+	program:            ^Expr,
+	program_kind:       Perform_Program_Kind,
+	has_program_clause: bool,
+	tables:             [dynamic]^Expr,
+	using_args:         [dynamic]^Expr,
+	changing:           [dynamic]^Expr,
+	if_found:           bool,
 }
 
 Call_Kind :: enum {

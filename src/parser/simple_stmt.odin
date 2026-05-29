@@ -3306,6 +3306,14 @@ parse_perform_args :: proc(p: ^Parser, body_start: int, list: ^[dynamic]^ast.Exp
 	}
 }
 
+perform_expr_is_dynamic :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	_, ok := expr.derived_expr.(^ast.Paren_Expr)
+	return ok
+}
+
 parse_perform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "PERFORM")
 	body_start := p.index
@@ -3319,6 +3327,9 @@ parse_perform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		body_start,
 		[]string{"IN", "TABLES", "USING", "CHANGING", "IF"},
 	)
+	if perform_expr_is_dynamic(stmt.form) {
+		stmt.form_kind = .Dynamic
+	}
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "IN") {
 			if !allow_keyword(
@@ -3328,11 +3339,24 @@ parse_perform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				error_current(p, "syntax error: expected keyword")
 				break
 			}
+			stmt.has_program_clause = true
+			if simple_stmt_done(p, body_start) {
+				stmt.program_kind = .Omitted
+				continue
+			}
+			if simple_current_keyword_in(p, []string{"TABLES", "USING", "CHANGING", "IF"}) {
+				error_current(p, "syntax error: expected program after IN PROGRAM")
+				continue
+			}
 			stmt.program = required_simple_expr(
 				p,
 				body_start,
 				[]string{"TABLES", "USING", "CHANGING", "IF"},
 			)
+			stmt.program_kind = .Static
+			if perform_expr_is_dynamic(stmt.program) {
+				stmt.program_kind = .Dynamic
+			}
 			continue
 		}
 		if allow_keyword(p, "TABLES") {
@@ -3348,7 +3372,11 @@ parse_perform_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "IF") {
-			stmt.if_found = allow_keyword(p, "FOUND")
+			if !allow_keyword(p, "FOUND") {
+				error_current(p, "syntax error: expected FOUND after IF")
+				continue
+			}
+			stmt.if_found = true
 			continue
 		}
 		bump_token(p)

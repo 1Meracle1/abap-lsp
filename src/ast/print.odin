@@ -1774,9 +1774,12 @@ emit_search_stmt :: proc(p: ^Printer, stmt: ^Search_Stmt) {
 emit_perform_stmt :: proc(p: ^Printer, stmt: ^Perform_Stmt) {
 	emit(p, "PERFORM ")
 	emit_node(p, stmt.form)
-	if stmt.program != nil {
-		emit(p, " IN PROGRAM ")
-		emit_node(p, stmt.program)
+	if stmt.has_program_clause || stmt.program != nil {
+		emit(p, " IN PROGRAM")
+		if stmt.program != nil {
+			emit(p, " ")
+			emit_node(p, stmt.program)
+		}
 	}
 	if len(stmt.tables) > 0 {
 		emit(p, " TABLES ")

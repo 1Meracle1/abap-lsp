@@ -1315,32 +1315,31 @@ collect_search_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Search_Stmt, scope: 
 collect_perform_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Perform_Stmt, scope: Scope_Id) {
 	routine_name := ""
 	routine_range := tokenizer.Range{}
-	is_dynamic := true
-	if name, range, ok := expr_name(stmt.form); ok {
+	is_dynamic := stmt.form_kind == .Dynamic
+	external_program := perform_has_external_program(stmt)
+	if name, range, ok := expr_name(stmt.form); ok && stmt.form_kind == .Static {
 		routine_name = canonical_name(name, c.allocator)
 		routine_range = range
-		is_dynamic = false
-		if _, id_ok := stmt.form.derived_expr.(^ast.Ident_Expr); id_ok {
+		if !external_program {
 			add_reference(c, scope, routine_name, .Routine, .Routine_Call, range)
-		} else {
-			collect_expr_refs(c, stmt.form, scope)
 		}
+	} else {
+		collect_expr_refs(c, stmt.form, scope)
 	}
 	program := Perform_Program_Data{}
+	program_static := false
 	flags := Perform_Call_Flags{}
 	if is_dynamic {
 		flags += {.Is_Dynamic}
 	}
 	if stmt.program != nil {
 		flags += {.Has_Program}
-		if name, range, ok := expr_name(stmt.program); ok {
+		if name, range, ok := static_perform_program_name(c, stmt); ok {
+			program_static = true
 			program = Perform_Program_Data {
-				name  = canonical_name(name, c.allocator),
-				range = range,
-			}
-			if _, id_ok := stmt.program.derived_expr.(^ast.Ident_Expr); !id_ok {
-				program.is_dynamic = true
-				collect_expr_refs(c, stmt.program, scope)
+				name       = name,
+				range      = range,
+				is_dynamic = stmt.program_kind == .Dynamic,
 			}
 		} else {
 			program = Perform_Program_Data {
@@ -1350,6 +1349,8 @@ collect_perform_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Perform_Stmt, scope
 			}
 			collect_expr_refs(c, stmt.program, scope)
 		}
+	} else if stmt.program_kind == .Omitted {
+		flags += {.Has_Program}
 	}
 	if stmt.if_found {
 		flags += {.Has_If_Found}
@@ -1377,6 +1378,48 @@ collect_perform_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Perform_Stmt, scope
 			flags = flags,
 		},
 	)
+	if program_static {
+		append(
+			&c.call_sites,
+			Call_Site_Data {
+				scope = scope,
+				range = stmt.range,
+				target = Named_Argument_Target {
+					kind        = .Report,
+					report_name = program.name,
+				},
+			},
+		)
+	}
+}
+
+perform_has_external_program :: proc(stmt: ^ast.Perform_Stmt) -> bool {
+	return stmt.has_program_clause && stmt.program_kind != .Omitted
+}
+
+static_perform_program_name :: proc(
+	c: ^Collector,
+	stmt: ^ast.Perform_Stmt,
+) -> (string, tokenizer.Range, bool) {
+	if stmt.program == nil {
+		return "", tokenizer.Range{}, false
+	}
+	if stmt.program_kind == .Static {
+		if name, range, ok := expr_name(stmt.program); ok {
+			return canonical_name(strip_quotes(name), c.allocator), range, true
+		}
+		return "", tokenizer.Range{}, false
+	}
+	if stmt.program_kind == .Dynamic {
+		if paren, ok := stmt.program.derived_expr.(^ast.Paren_Expr); ok {
+			if name, range, name_ok := expr_name(paren.expr); name_ok {
+				if _, lit_ok := paren.expr.derived_expr.(^ast.Literal_Expr); lit_ok {
+					return canonical_name(strip_quotes(name), c.allocator), range, true
+				}
+			}
+		}
+	}
+	return "", tokenizer.Range{}, false
 }
 
 append_perform_args :: proc(
