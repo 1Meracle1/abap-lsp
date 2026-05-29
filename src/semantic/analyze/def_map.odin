@@ -156,6 +156,7 @@ Sql_Query_Data :: struct {
 	order_by_clause:        tokenizer.Range,
 	order_by_fields:        [dynamic]string,
 	for_all_entries_clause: tokenizer.Range,
+	for_all_entries_name:   string,
 	for_update_clause:      tokenizer.Range,
 	up_to_clause:           tokenizer.Range,
 	package_size_clause:    tokenizer.Range,

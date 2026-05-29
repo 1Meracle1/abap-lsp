@@ -218,6 +218,11 @@ collect_select_query_facts :: proc(
 	query_range := select_query_range(query, fallback)
 	collect_select_query_parts(c, query_id, query, scope, cte_names)
 	order_by_fields := select_order_by_fields(c, query)
+	for_all_entries_name := ""
+	if access, ok := value_access_from_expr(c, sql_unwrap_host(query.for_all_entries), scope);
+	   ok && len(access.field_path) == 0 {
+		for_all_entries_name = access.base_name
+	}
 
 	flags := Sql_Query_Flags{}
 	if range_valid(query.projection_clause) ||
@@ -275,6 +280,7 @@ collect_select_query_facts :: proc(
 			order_by_clause = query.order_by_clause,
 			order_by_fields = order_by_fields,
 			for_all_entries_clause = query.for_all_entries_clause if range_valid(query.for_all_entries_clause) else expr_range(query.for_all_entries),
+			for_all_entries_name = for_all_entries_name,
 			for_update_clause = query.for_update_clause,
 			up_to_clause = query.up_to_clause if range_valid(query.up_to_clause) else expr_range(query.up_to_rows),
 			package_size_clause = query.package_size_clause if range_valid(query.package_size_clause) else expr_range(query.package_size),

@@ -664,6 +664,64 @@ validate_field_accesses :: proc(
 			continue
 		}
 		if _, ok := resolve_field_access_tail(project, lookup, unit_index, access); !ok {
+			skip_table_line_diag := false
+			if access.base_namespace == .Value &&
+			   len(access.field_path) == 1 &&
+			   access.field_path[0].selector == .Dash &&
+			   access.field_path[0].name == "table_line" {
+				for query in project.units[unit_index].sql_queries {
+					if !(.Has_For_All_Entries in query.flags) ||
+					   query.for_all_entries_name != access.base_name ||
+					   !range_valid(query.where_clause) ||
+					   access.base_range.start < query.where_clause.start ||
+					   access.field_path[0].range.end > query.where_clause.end {
+						continue
+					}
+					handle, handle_ok := value_handle_for_name(
+						project,
+						lookup,
+						unit_index,
+						access.scope,
+						access.base_name,
+					)
+					if !handle_ok {
+						break
+					}
+					for depth := 0; depth <= len(project.units) + 16; depth += 1 {
+						handle_unit_index := unit_id_index(handle.unit)
+						assert(handle_unit_index >= 0 && handle_unit_index < len(project.units))
+						s := symbol(&project.units[handle_unit_index], handle.symbol)
+						assert(s != nil)
+						if s.has_type_clause_form && type_form_is_table(s.type_clause_form) {
+							skip_table_line_diag =
+								s.type_clause_table_has_of &&
+								(s.structure == INVALID_STRUCTURE_ID ||
+								 len(s.declared_type.field_path) > 0 ||
+								 (s.has_declared_type && is_builtin_type_name(s.declared_type.base_name)))
+							break
+						}
+						if !s.has_declared_type {
+							break
+						}
+						next, next_ok := type_ref_leaf_handle(
+							project,
+							lookup,
+							handle_unit_index,
+							s.scope,
+							s.declared_type,
+						)
+						if !next_ok {
+							skip_table_line_diag = s.structure == INVALID_STRUCTURE_ID
+							break
+						}
+						handle = next
+					}
+					break
+				}
+			}
+			if skip_table_line_diag {
+				continue
+			}
 			if !field_access_base_resolves(project, lookup, unit_index, access) {
 				continue
 			}

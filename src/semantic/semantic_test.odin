@@ -6491,6 +6491,79 @@ SELECT DISTINCT carrid
 }
 
 @(test)
+open_sql_for_all_entries_table_line_is_scalar_driver_pseudo_component :: proc(t: ^testing.T) {
+	valid := `
+TYPES: BEGIN OF dokil,
+         id TYPE string,
+         object TYPE string,
+       END OF dokil.
+DATA c_longtext_id_wc TYPE string.
+TYPES ty_object_tt TYPE STANDARD TABLE OF dokil-object WITH DEFAULT KEY.
+DATA lt_object TYPE STANDARD TABLE OF dokil-object WITH DEFAULT KEY.
+DATA lt_alias TYPE ty_object_tt.
+DATA rt_list TYPE STANDARD TABLE OF dokil-object WITH DEFAULT KEY.
+DATA lt_list LIKE rt_list.
+DATA lt_dokil TYPE STANDARD TABLE OF dokil WITH DEFAULT KEY.
+SELECT * FROM dokil INTO TABLE lt_dokil
+  FOR ALL ENTRIES IN lt_object
+  WHERE id = c_longtext_id_wc AND object = lt_object-table_line.
+SELECT * FROM dokil INTO TABLE lt_dokil
+  FOR ALL ENTRIES IN lt_alias
+  WHERE object = lt_alias-table_line.
+SELECT * FROM dokil INTO TABLE lt_dokil
+  FOR ALL ENTRIES IN lt_list
+  WHERE object = lt_list-table_line.
+`
+	invalid := `
+TYPES: BEGIN OF dokil,
+         id TYPE string,
+         object TYPE string,
+       END OF dokil.
+DATA c_longtext_id_wc TYPE string.
+DATA lt_object TYPE STANDARD TABLE OF dokil-object WITH DEFAULT KEY.
+DATA lt_other TYPE STANDARD TABLE OF dokil-object WITH DEFAULT KEY.
+DATA lt_dokil TYPE STANDARD TABLE OF dokil WITH DEFAULT KEY.
+SELECT * FROM dokil INTO TABLE lt_dokil
+  FOR ALL ENTRIES IN lt_object
+  WHERE object = lt_other-table_line.
+SELECT * FROM dokil INTO TABLE lt_dokil
+  WHERE object = lt_object-table_line.
+`
+	interface_like_driver := `
+TYPES: BEGIN OF dokil,
+         id TYPE string,
+         object TYPE string,
+       END OF dokil.
+INTERFACE lif_package.
+  TYPES ty_object_tt TYPE STANDARD TABLE OF dokil-object WITH DEFAULT KEY.
+  METHODS list RETURNING VALUE(rt_list) TYPE ty_object_tt.
+ENDINTERFACE.
+CLASS lcl_package DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_package.
+ENDCLASS.
+CLASS lcl_package IMPLEMENTATION.
+  METHOD lif_package~list.
+    DATA lt_list LIKE rt_list.
+    DATA lt_dokil TYPE STANDARD TABLE OF dokil WITH DEFAULT KEY.
+    SELECT * FROM dokil INTO TABLE lt_dokil
+      FOR ALL ENTRIES IN lt_list
+      WHERE object = lt_list-table_line.
+  ENDMETHOD.
+ENDCLASS.
+`
+
+	valid_unit := collect_test_unit(t, "file:///sql_fae_table_line.abap", valid)
+	invalid_unit := collect_test_unit(t, "file:///sql_bad_fae_table_line.abap", invalid)
+	interface_like_driver_unit := collect_test_unit(t, "file:///sql_fae_interface_like_table_line.abap", interface_like_driver)
+
+	testing.expect(t, !has_reference(&valid_unit, "table_line", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&valid_unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&interface_like_driver_unit, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid_unit, .Unknown_Field))
+}
+
+@(test)
 open_sql_delete_where_classic_host_attribute_is_not_column :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "mem://ZMAIN.abap",
