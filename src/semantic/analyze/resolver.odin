@@ -1831,7 +1831,7 @@ import_structure_for_type_ref :: proc(
 		}
 		field := structure_field(&units[unit_index], current, field_name)
 		if field == nil || field.structure == INVALID_STRUCTURE_ID {
-			return current, true
+			return INVALID_STRUCTURE_ID, false
 		}
 		current = field.structure
 	}

@@ -9262,6 +9262,60 @@ TYPES: BEGIN OF dd03p,
 }
 
 @(test)
+like_line_of_parameter_typed_as_class_structure_component_keeps_row_structure :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = `
+INTERFACE lif_descr.
+  TYPES ty_texts TYPE STANDARD TABLE OF ztext WITH DEFAULT KEY.
+ENDINTERFACE.
+
+CLASS lcl_obj DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_data,
+             texts TYPE lif_descr=>ty_texts,
+           END OF ty_data.
+ENDCLASS.
+
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS fill
+      EXPORTING et_texts TYPE lcl_obj=>ty_data-texts.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD fill.
+    DATA ls_text LIKE LINE OF et_texts.
+    ls_text-clsname = 'X'.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-structure/ztext.abap",
+			source = `
+TYPES: BEGIN OF ztext,
+         clsname TYPE string,
+       END OF ztext.
+`,
+		},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+	ls_text := analyze.find_symbol(root, "ls_text", .Variable)
+	testing.expect(t, ls_text != nil && ls_text.structure != analyze.INVALID_STRUCTURE_ID)
+	_, has_clsname := analyze.structure_field_info(root, ls_text.structure, "clsname")
+	_, has_parent_field := analyze.structure_field_info(root, ls_text.structure, "texts")
+	testing.expect(t, has_clsname)
+	testing.expect(t, !has_parent_field)
+}
+
+@(test)
 analyze_target_reclassifies_open_sql_predicate_globals_from_prior_include :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
