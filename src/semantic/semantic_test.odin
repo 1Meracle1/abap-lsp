@@ -5772,6 +5772,23 @@ FIELD-SYMBOLS <file> LIKE LINE OF lo_zip->files.
 
 @(test)
 unknown_receiver_type_suppresses_field_cascade :: proc(t: ^testing.T) {
+	missing_base := collect_test_unit(
+		t,
+		"file:///unknown_receiver_base.abap",
+		`
+FORM run.
+  zmissing_node-path = 'x'.
+ENDFORM.
+`,
+	)
+	missing_type_pool_constant := collect_test_unit(
+		t,
+		"file:///unknown_type_pool_constant.abap",
+		`
+DATA lv_version TYPE c.
+lv_version = sews_c_vif_version-all.
+`,
+	)
 	missing := collect_test_unit(
 		t,
 		"file:///unknown_receiver_type.abap",
@@ -5793,6 +5810,10 @@ ENDFORM.
 `,
 	)
 
+	testing.expect(t, has_diagnostic(&missing_base, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&missing_base, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&missing_type_pool_constant, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&missing_type_pool_constant, .Unknown_Field))
 	testing.expect(t, has_diagnostic(&missing, .Unresolved_Reference))
 	testing.expect(t, !has_diagnostic(&missing, .Unknown_Field))
 	testing.expect(t, !has_diagnostic(&generic, .Unknown_Field))

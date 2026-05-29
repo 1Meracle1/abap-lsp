@@ -664,6 +664,9 @@ validate_field_accesses :: proc(
 			continue
 		}
 		if _, ok := resolve_field_access_tail(project, lookup, unit_index, access); !ok {
+			if !field_access_base_resolves(project, lookup, unit_index, access) {
+				continue
+			}
 			field := access.field_path[len(access.field_path) - 1]
 			append_diag(
 				out,
@@ -674,6 +677,24 @@ validate_field_accesses :: proc(
 			)
 		}
 	}
+}
+
+field_access_base_resolves :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	access: Field_Access,
+) -> bool {
+	if access.base_namespace == .Type {
+		_, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, access.base_name)
+		return ok
+	}
+	if access.base_name == "super" {
+		_, ok := enclosing_instance_method_class_owner_unit(&project.units[unit_index], access.scope)
+		return ok
+	}
+	_, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
+	return ok
 }
 
 validate_call_sites :: proc(
