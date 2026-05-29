@@ -1952,10 +1952,9 @@ analyze_standalone_path_test_with_options :: proc(
 manifest_workspace_path :: proc(name: string) -> string {
 	package_dir := filepath.dir(#file)
 	root, _ := filepath.join(
-		{package_dir, "..", "..", "bin", "test-data", "manifest", name},
+		{package_dir, "..", "..", "bin", "test-data", "manifest", semantic_test_workspace_name(name)},
 		context.allocator,
 	)
-	os.remove_all(root)
 	os.make_directory_all(root)
 	return root
 }
@@ -1963,12 +1962,21 @@ manifest_workspace_path :: proc(name: string) -> string {
 external_export_workspace_path :: proc(name: string) -> string {
 	package_dir := filepath.dir(#file)
 	root, _ := filepath.join(
-		{package_dir, "..", "..", "bin", "test-data", "local-export", name},
+		{package_dir, "..", "..", "bin", "test-data", "local-export", semantic_test_workspace_name(name)},
 		context.allocator,
 	)
-	os.remove_all(root)
 	os.make_directory_all(root)
 	return root
+}
+
+semantic_test_workspace_name :: proc(name: string) -> string {
+	out := strings.builder_make(context.allocator)
+	strings.write_string(&out, name)
+	strings.write_byte(&out, '-')
+	strings.write_int(&out, os.get_pid())
+	strings.write_byte(&out, '-')
+	strings.write_i64(&out, time.time_to_unix_nano(time.now()))
+	return strings.to_string(out)
 }
 
 manifest_test_file :: proc(t: ^testing.T, root, relative, source: string) -> string {
