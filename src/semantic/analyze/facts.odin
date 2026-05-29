@@ -2606,7 +2606,7 @@ collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: 
 
 collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
 	is_sql := false
-	if stmt.form != .Adjacent_Duplicates {
+	if stmt.form == .Db_Table {
 		_, is_sql = collect_db_table_sql_source(
 			c,
 			stmt.range,
@@ -2626,12 +2626,124 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 	)
 	if !is_sql {
 		collect_expr_refs(c, stmt.target, scope)
+		collect_internal_table_where_refs(c, stmt.target, stmt.where_cond, scope)
 	}
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.index, scope)
 	collect_expr_refs(c, stmt.using_key, scope)
 	collect_delete_comparing_refs(c, stmt, scope)
 	add_routine_site(c, scope, stmt.range, .Delete)
+}
+
+collect_internal_table_where_refs :: proc(
+	c: ^Collector,
+	target, expr: ^ast.Expr,
+	scope: Scope_Id,
+) {
+	if expr == nil {
+		return
+	}
+	if access, ok := value_access_from_expr(c, expr, scope);
+	   ok && !internal_table_where_value_exists(c, scope, access.base_name) {
+		if target_access, target_ok := value_access_from_expr(c, target, scope); target_ok {
+			if !internal_table_where_target_has_shape(c, scope, target_access) {
+				return
+			}
+			path := make(
+				[dynamic]Field_Access_Segment,
+				0,
+				len(target_access.field_path) + 1 + len(access.field_path),
+				c.allocator,
+			)
+			for segment in target_access.field_path {append(&path, segment)}
+			append(&path, Field_Access_Segment{name = access.base_name, range = access.base_range})
+			for segment in access.field_path {append(&path, segment)}
+			append(
+				&c.field_accesses,
+				Field_Access {
+					scope = scope,
+					base_namespace = target_access.base_namespace,
+					base_name = target_access.base_name,
+					base_range = target_access.base_range,
+					field_path = path,
+				},
+			)
+			return
+		}
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Binary_Expr:
+		collect_internal_table_where_refs(c, target, n.left, scope)
+		collect_internal_table_where_refs(c, target, n.right, scope)
+	case ^ast.Unary_Expr:
+		collect_internal_table_where_refs(c, target, n.expr, scope)
+	case ^ast.Paren_Expr:
+		collect_internal_table_where_refs(c, target, n.expr, scope)
+	case ^ast.Between_Expr:
+		collect_internal_table_where_refs(c, target, n.subject, scope)
+		collect_internal_table_where_refs(c, target, n.low, scope)
+		collect_internal_table_where_refs(c, target, n.high, scope)
+	case ^ast.Is_Predicate_Expr:
+		collect_internal_table_where_refs(c, target, n.subject, scope)
+	case:
+		collect_expr_refs(c, expr, scope)
+	}
+}
+
+internal_table_where_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: string) -> bool {
+	if sql_local_value_exists(c, scope, name) {
+		return true
+	}
+	class_symbol, ok := enclosing_owner(c, scope, .Class)
+	for ok {
+		if class_scope_value_exists(c, class_symbol, name) {
+			return true
+		}
+		super_name, has_super := collector_superclass_name(c, class_symbol)
+		if !has_super {
+			break
+		}
+		class_symbol, ok = lookup_symbol_in_scope_chain(c, scope, super_name, .Type)
+	}
+	return false
+}
+
+internal_table_where_target_has_shape :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	target: Field_Access,
+) -> bool {
+	if target.base_namespace != .Value {
+		return false
+	}
+	symbol_id, ok := lookup_symbol_in_scope_chain(c, scope, target.base_name, .Value)
+	if !ok {
+		return false
+	}
+	s := c.symbols[symbol_id_index(symbol_id)]
+	return s.structure != INVALID_STRUCTURE_ID
+}
+
+class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> bool {
+	for s in c.scopes {
+		if !(s.kind == .Class || s.kind == .Interface) || s.owner != class_symbol {
+			continue
+		}
+		key := Scope_Index_Key{scope = s.id, namespace = .Value, name = name}
+		if key in c.scope_symbols {
+			return true
+		}
+	}
+	return false
+}
+
+collector_superclass_name :: proc(c: ^Collector, class_symbol: Symbol_Id) -> (string, bool) {
+	for inheritance in c.class_inheritance {
+		if inheritance.class_symbol == class_symbol {
+			return inheritance.superclass_name, true
+		}
+	}
+	return "", false
 }
 
 collect_delete_comparing_refs :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {

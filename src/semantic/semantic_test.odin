@@ -2811,6 +2811,60 @@ ENDCLASS.
 }
 
 @(test)
+inherited_structured_class_type_resolves_in_redefinition_body :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_parent DEFINITION.
+  PROTECTED SECTION.
+    TYPES: BEGIN OF ty_row,
+             id TYPE string,
+           END OF ty_row.
+    TYPES ty_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+    METHODS prune CHANGING ct_rows TYPE ty_rows.
+ENDCLASS.
+
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PROTECTED SECTION.
+    CONSTANTS: BEGIN OF c_token,
+                 id TYPE string VALUE 'A',
+               END OF c_token.
+    METHODS prune REDEFINITION.
+ENDCLASS.
+
+CLASS lcl_child IMPLEMENTATION.
+  METHOD prune.
+    FIELD-SYMBOLS <row> TYPE ty_row.
+    LOOP AT ct_rows ASSIGNING <row>.
+      DELETE ct_rows WHERE id = <row>-id AND id = c_token-id.
+      <row>-id = 'A'.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///inherited_redefinition_type.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&unit, .Unverified_Open_Sql_Source))
+}
+
+@(test)
+internal_delete_where_validates_row_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           id TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  DATA lv_id TYPE string.
+  DELETE lt_rows WHERE missing = lv_id.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///internal_delete_where.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&unit, .Unverified_Open_Sql_Source))
+}
+
+@(test)
 selection_ranges_collect_range_structure :: proc(t: ^testing.T) {
 	source := `
 TYPES zattp_gln TYPE string.

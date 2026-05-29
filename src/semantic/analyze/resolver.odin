@@ -1828,6 +1828,17 @@ local_structure_for_type_ref :: proc(
 			}
 		}
 	}
+	if type_ref.namespace == .Type {
+		if symbol_id, symbol_ok := resolve_inherited_class_member(
+			unit,
+			&unit.scope_index,
+			scope_id,
+			.Type,
+			type_ref.base_name,
+		); symbol_ok {
+			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])
+		}
+	}
 	if type_ref.namespace == .Value {
 		if symbol_id, symbol_ok := inherited_class_attribute_symbol_for_type_ref(
 			unit,
