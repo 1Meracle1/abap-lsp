@@ -5709,6 +5709,45 @@ SELECT DISTINCT carrid
 }
 
 @(test)
+open_sql_delete_where_classic_host_attribute_is_not_column :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+CLASS lcl_repo DEFINITION.
+  PRIVATE SECTION.
+    DATA mv_object TYPE string.
+    METHODS delete_object.
+ENDCLASS.
+
+CLASS lcl_repo IMPLEMENTATION.
+  METHOD delete_object.
+    DELETE FROM tcdobs WHERE object = mv_object.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/tcdobs.abap",
+			source = `TYPES: BEGIN OF tcdobs,
+         object TYPE string,
+       END OF tcdobs.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !sql_name_ref_present(root, "mv_object", .Column))
+		testing.expect(t, has_reference(root, "mv_object", .Value, .Identifier))
+		testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+		testing.expect(t, !has_diagnostic(root, .Unresolved_Reference))
+	}
+}
+
+@(test)
 validates_open_sql_source_and_field_diagnostics :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

@@ -203,7 +203,95 @@ sql_logical_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -
 	if expr == nil && (data_stmt_done(p, body_start) || data_current_keyword_in(p, stop_keywords)) {
 		error_current(p, "syntax error: expected expression")
 	}
+	if expr != nil {
+		sql_mark_implicit_hosts(p, expr)
+	}
 	return expr
+}
+
+sql_mark_implicit_hosts :: proc(p: ^Parser, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Binary_Expr:
+		if n.op == .And || n.op == .Or {
+			sql_mark_implicit_hosts(p, n.left)
+			sql_mark_implicit_hosts(p, n.right)
+		} else if sql_host_value_binary_op(n.op) {
+			n.right = sql_implicit_host_expr(p, n.right)
+		}
+	case ^ast.Unary_Expr:
+		if n.op == .Not {
+			sql_mark_implicit_hosts(p, n.expr)
+		}
+	case ^ast.Paren_Expr:
+		if !sql_dynamic_where_operand(n.expr) {
+			sql_mark_implicit_hosts(p, n.expr)
+		}
+	case ^ast.Between_Expr:
+		n.low = sql_implicit_host_expr(p, n.low)
+		n.high = sql_implicit_host_expr(p, n.high)
+	case ^ast.Sql_Case_When_Expr:
+		sql_mark_implicit_hosts(p, n.condition)
+	case ^ast.Sql_Case_Expr:
+		for when_expr in n.whens {
+			sql_mark_implicit_hosts(p, when_expr)
+		}
+	}
+}
+
+sql_host_value_binary_op :: proc(op: ast.Binary_Op) -> bool {
+	return(
+		op == .Equal ||
+		op == .Not_Equal ||
+		op == .Less ||
+		op == .Less_Equal ||
+		op == .Greater ||
+		op == .Greater_Equal ||
+		op == .In ||
+		op == .Not_In ||
+		op == .Like ||
+		op == .Not_Like \
+	)
+}
+
+sql_implicit_host_expr :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	if _, ok := expr.derived_expr.(^ast.Host_Expr); ok {
+		return expr
+	}
+	if !sql_implicit_host_operand(expr) {
+		sql_mark_implicit_hosts(p, expr)
+		return expr
+	}
+	host := ast.new(ast.Host_Expr, expr.range, p.allocator)
+	host.value = expr
+	host.implicit = true
+	return host
+}
+
+sql_implicit_host_operand :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name != ""
+	case ^ast.Selector_Expr:
+		return n.op != .Tilde && sql_implicit_host_operand(n.base)
+	case ^ast.Table_Expr:
+		return sql_implicit_host_operand(n.table)
+	case ^ast.Substring_Expr:
+		return sql_implicit_host_operand(n.base)
+	case ^ast.Unary_Expr:
+		return sql_implicit_host_operand(n.expr)
+	case ^ast.Paren_Expr:
+		return sql_implicit_host_operand(n.expr)
+	}
+	return false
 }
 
 required_data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {

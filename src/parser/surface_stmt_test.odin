@@ -658,6 +658,33 @@ open_sql_parenthesized_static_where_keeps_alias_refs :: proc(t: ^testing.T) {
 }
 
 @(test)
+open_sql_where_value_side_marks_classic_hosts :: proc(t: ^testing.T) {
+	source := `DELETE FROM tcdobs WHERE object = mv_object.
+SELECT a~matnr FROM mara AS a JOIN makt AS b ON b~matnr = a~matnr INTO TABLE lt_rows WHERE type = zcl_repo=>c_type.`
+	parsed := parse(source, "sql_classic_hosts.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	delete_stmt := parsed.root.stmts[0].derived_stmt.(^ast.Delete_Stmt)
+	delete_cond := delete_stmt.where_cond.derived_expr.(^ast.Binary_Expr)
+	_, delete_left_host := delete_cond.left.derived_expr.(^ast.Host_Expr)
+	delete_right_host, delete_right_host_ok := delete_cond.right.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, !delete_left_host)
+	testing.expect(t, delete_right_host_ok && delete_right_host.implicit)
+	if delete_right_host_ok {
+		delete_right_name := delete_right_host.value.derived_expr.(^ast.Ident_Expr)
+		testing.expect_value(t, delete_right_name.name, "mv_object")
+	}
+
+	select_stmt := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	join_cond := select_stmt.query.source_clause.joins[0].on.derived_expr.(^ast.Binary_Expr)
+	_, join_right_host := join_cond.right.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, !join_right_host)
+	where_cond := select_stmt.query.where_cond.derived_expr.(^ast.Binary_Expr)
+	where_right_host, where_right_host_ok := where_cond.right.derived_expr.(^ast.Host_Expr)
+	testing.expect(t, where_right_host_ok && where_right_host.implicit)
+}
+
+@(test)
 open_sql_invalid_aliases_and_partial_joins_are_diagnosed :: proc(t: ^testing.T) {
 	source := `SELECT carrid AS FROM mara AS WHERE carrid = @lv_carrid INTO TABLE @lt_rows.
 SELECT * FROM mara INNER WHERE matnr = @lv_matnr INTO TABLE @lt_rows.`

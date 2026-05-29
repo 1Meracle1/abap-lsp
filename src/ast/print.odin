@@ -100,7 +100,9 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Dynamic_Call_Method_Target_Expr:
 		emit_dynamic_call_method_target_expr(p, n)
 	case ^Host_Expr:
-		emit(p, "@")
+		if !n.implicit {
+			emit(p, "@")
+		}
 		emit_node(p, n.value)
 	case ^Table_Expr:
 		emit_node(p, n.table)

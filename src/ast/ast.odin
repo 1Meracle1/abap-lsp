@@ -243,6 +243,7 @@ Dynamic_Call_Method_Target_Expr :: struct {
 Host_Expr :: struct {
 	using node: Expr,
 	value:      ^Expr,
+	implicit:   bool,
 }
 
 // ABAP syntax: table expression such as `itab[ 1 ]` or `itab[ key = value ]`.
