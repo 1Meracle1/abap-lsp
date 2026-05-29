@@ -296,6 +296,39 @@ DELETE ADJACENT DUPLICATES FROM itab COMPARING matnr.`
 }
 
 @(test)
+using_key_selectors_keep_static_names_and_dynamic_exprs :: proc(t: ^testing.T) {
+	source := `READ TABLE lt_rows INTO ls_row INDEX lv_idx USING KEY array_index.
+READ TABLE lt_rows INTO ls_row INDEX lv_idx USING KEY (lv_key).
+DELETE lt_rows USING KEY sec_from WHERE id = lv_id.`
+	parsed := parse(source, "using_key_selectors.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	static_read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	dynamic_read := parsed.root.stmts[1].derived_stmt.(^ast.Read_Table_Stmt)
+	delete_stmt := parsed.root.stmts[2].derived_stmt.(^ast.Delete_Stmt)
+
+	testing.expect_value(t, static_read.entries[0].using_key.name, "array_index")
+	testing.expect_value(
+		t,
+		source[static_read.entries[0].using_key.name_range.start:static_read.entries[0].using_key.name_range.end],
+		"array_index",
+	)
+	testing.expect(t, static_read.entries[0].using_key.dynamic_name == nil)
+	testing.expect_value(t, dynamic_read.entries[0].using_key.name, "")
+	testing.expect(t, dynamic_read.entries[0].using_key.dynamic_name != nil)
+	testing.expect_value(t, delete_stmt.using_key.name, "sec_from")
+}
+
+@(test)
+using_key_requires_key_and_selector :: proc(t: ^testing.T) {
+	source := `READ TABLE lt_rows USING array_index.
+DELETE lt_rows USING KEY WHERE id = lv_id.`
+	parsed := parse(source, "using_key_invalid.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) >= 2)
+}
+
+@(test)
 read_table_and_delete_model_pseudo_components :: proc(t: ^testing.T) {
 	source := `READ TABLE itab WITH KEY table_line = '*' TRANSPORTING NO FIELDS.
 DELETE ADJACENT DUPLICATES FROM itab COMPARING ALL FIELDS.`

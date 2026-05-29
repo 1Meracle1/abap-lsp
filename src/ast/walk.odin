@@ -607,7 +607,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.source)
 		walk(next, n.index)
 		walk(next, n.where_cond)
-		walk(next, n.using_key)
+		walk(next, n.using_key.dynamic_name)
 		for clause in n.comparing {
 			if !clause.all_fields {
 				walk(next, clause.expr)
@@ -624,7 +624,7 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 				walk(next, key_value.value)
 			}
 			walk(next, clause.index)
-			walk(next, clause.using_key)
+			walk(next, clause.using_key.dynamic_name)
 			walk_expr_list(next, clause.comparing)
 		}
 	case ^Dataset_Stmt:

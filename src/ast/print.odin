@@ -2744,6 +2744,16 @@ emit_fetch_stmt :: proc(p: ^Printer, stmt: ^Fetch_Stmt) {
 	emit(p, ".")
 }
 
+emit_table_key_selector :: proc(p: ^Printer, selector: Table_Key_Selector) {
+	if selector.dynamic_name != nil {
+		emit(p, "(")
+		emit_node(p, selector.dynamic_name)
+		emit(p, ")")
+	} else {
+		emit(p, selector.name)
+	}
+}
+
 emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 	emit(p, "READ TABLE")
 	for entry, i in stmt.entries {
@@ -2788,9 +2798,9 @@ emit_read_table_stmt :: proc(p: ^Printer, stmt: ^Read_Table_Stmt) {
 			emit(p, " INDEX ")
 			emit_node(p, entry.index)
 		}
-		if entry.using_key != nil {
+		if entry.using_key.name != "" || entry.using_key.dynamic_name != nil {
 			emit(p, " USING KEY ")
-			emit_node(p, entry.using_key)
+			emit_table_key_selector(p, entry.using_key)
 		}
 		if entry.transporting_no_fields {
 			emit(p, " TRANSPORTING NO FIELDS")
@@ -2995,9 +3005,9 @@ emit_delete_stmt :: proc(p: ^Printer, stmt: ^Delete_Stmt) {
 		emit(p, " WHERE ")
 		emit_node(p, stmt.where_cond)
 	}
-	if stmt.using_key != nil {
+	if stmt.using_key.name != "" || stmt.using_key.dynamic_name != nil {
 		emit(p, " USING KEY ")
-		emit_node(p, stmt.using_key)
+		emit_table_key_selector(p, stmt.using_key)
 	}
 	if len(stmt.comparing) > 0 {
 		emit(p, " COMPARING ")

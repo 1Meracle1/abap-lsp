@@ -2545,7 +2545,7 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 		collect_expr_refs(c, e.assigning, scope)
 		collect_expr_refs(c, e.reference_into, scope)
 		collect_expr_refs(c, e.index, scope)
-		collect_expr_refs(c, e.using_key, scope)
+		collect_expr_refs(c, e.using_key.dynamic_name, scope)
 		collect_expr_list_refs(c, e.comparing[:], scope)
 		for key in e.key_values {
 			collect_expr_refs(c, key.dynamic_name, scope)
@@ -2876,7 +2876,7 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 	}
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.index, scope)
-	collect_expr_refs(c, stmt.using_key, scope)
+	collect_expr_refs(c, stmt.using_key.dynamic_name, scope)
 	collect_delete_comparing_refs(c, stmt, scope)
 	add_routine_site(c, scope, stmt.range, .Delete)
 }

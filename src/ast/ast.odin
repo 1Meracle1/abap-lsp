@@ -2316,6 +2316,13 @@ Read_Table_Key_Value_Clause :: struct {
 	value:        ^Expr,
 }
 
+// ABAP syntax: table key selector after `USING KEY`, either `key` or `(expr)`.
+Table_Key_Selector :: struct {
+	name:         string,
+	name_range:   tokenizer.Range,
+	dynamic_name: ^Expr,
+}
+
 // ABAP syntax: one READ TABLE entry, including chained entries after `READ TABLE:`.
 Read_Table_Entry_Clause :: struct {
 	table:                  ^Expr,
@@ -2326,7 +2333,7 @@ Read_Table_Entry_Clause :: struct {
 	key_name:               string,
 	key_values:             [dynamic]Read_Table_Key_Value_Clause,
 	index:                  ^Expr,
-	using_key:              ^Expr,
+	using_key:              Table_Key_Selector,
 	transporting_no_fields: bool,
 	binary_search:          bool,
 	binary_search_clause:   tokenizer.Range,
@@ -2482,7 +2489,7 @@ Delete_Stmt :: struct {
 	index:      ^Expr,
 	where_cond: ^Expr,
 	where_clause: tokenizer.Range,
-	using_key:  ^Expr,
+	using_key:  Table_Key_Selector,
 	comparing:  [dynamic]Delete_Comparing_Clause,
 	from_table: bool,
 	explicit_from: bool,

@@ -781,7 +781,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.source = clone(n.source, allocator)
 		r.index = clone(n.index, allocator)
 		r.where_cond = clone(n.where_cond, allocator)
-		r.using_key = clone(n.using_key, allocator)
+		r.using_key = clone_table_key_selector(n.using_key, allocator)
 		r.comparing = clone_delete_comparing_clauses(n.comparing, allocator)
 		return r
 	case ^Read_Table_Stmt:
@@ -1337,13 +1337,19 @@ clone_read_table_entries :: proc(list: [dynamic]Read_Table_Entry_Clause, allocat
 			key_name               = clause.key_name,
 			key_values             = clone_read_table_key_values(clause.key_values, allocator),
 			index                  = clone(clause.index, allocator),
-			using_key              = clone(clause.using_key, allocator),
+			using_key              = clone_table_key_selector(clause.using_key, allocator),
 			transporting_no_fields = clause.transporting_no_fields,
 			binary_search          = clause.binary_search,
 			binary_search_clause   = clause.binary_search_clause,
 			comparing              = clone_expr_list(clause.comparing, allocator),
 		})
 	}
+	return res
+}
+
+clone_table_key_selector :: proc(selector: Table_Key_Selector, allocator: mem.Allocator) -> Table_Key_Selector {
+	res := selector
+	res.dynamic_name = clone(selector.dynamic_name, allocator)
 	return res
 }
 

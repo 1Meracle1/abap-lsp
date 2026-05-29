@@ -178,6 +178,47 @@ data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.
 	return value
 }
 
+parse_table_key_selector :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+) -> ast.Table_Key_Selector {
+	selector := ast.Table_Key_Selector{}
+	if !allow_keyword(p, "KEY") {
+		error_current(p, "syntax error: expected KEY after USING")
+		return selector
+	}
+	if data_stmt_done(p, body_start) ||
+	   current_token(p).kind == .Comma ||
+	   data_current_keyword_in(p, stop_keywords) {
+		error_current(p, "syntax error: expected table key name")
+		return selector
+	}
+	if current_token(p).kind == .Ident {
+		key := bump_token(p)
+		selector.name = tokenizer.token_lexeme(key, p.source)
+		selector.name_range = key.range
+		return selector
+	}
+	if current_token(p).kind == .LParen {
+		open := p.index
+		close := matching_group_index(p, open, .LParen, .RParen)
+		if close > open {
+			selector.dynamic_name = parse_complete_logical_expr(p, open + 1, close)
+			range := tokenizer.text_range(p.tokens[open].range.start, p.tokens[close].range.end)
+			for p.index <= close {
+				bump_token(p)
+			}
+			if selector.dynamic_name == nil {
+				error(p, range, "syntax error: expected dynamic table key expression")
+			}
+			return selector
+		}
+	}
+	error_current(p, "syntax error: expected table key name")
+	return selector
+}
+
 sql_data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
 	old_stops := p.expr_stop_keywords
 	old_open_sql := p.open_sql_expr
@@ -1182,11 +1223,10 @@ parse_read_table_entry :: proc(p: ^Parser, body_start: int) -> ast.Read_Table_En
 			continue
 		}
 		if allow_keyword(p, "USING") {
-			allow_keyword(p, "KEY")
-			entry.using_key = data_expr(
+			entry.using_key = parse_table_key_selector(
 				p,
 				body_start,
-				[]string{"ASSIGNING", "INTO", "TRANSPORTING", "COMPARING", "BINARY"},
+				[]string{"ASSIGNING", "INTO", "TRANSPORTING", "COMPARING", "BINARY", "REFERENCE"},
 			)
 			continue
 		}
@@ -2320,8 +2360,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "USING") {
-			allow_keyword(p, "KEY")
-			stmt.using_key = data_expr(p, body_start, []string{"COMPARING"})
+			stmt.using_key = parse_table_key_selector(p, body_start, []string{"WHERE", "COMPARING"})
 			continue
 		}
 		if allow_keyword(p, "COMPARING") {
