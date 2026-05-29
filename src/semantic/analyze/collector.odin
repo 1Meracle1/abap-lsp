@@ -370,6 +370,8 @@ add_reference :: proc(
 	kind: Reference_Kind,
 	range: tokenizer.Range,
 	type_is_ref := false,
+	type_has_path := false,
+	type_first_selector := ast.Selector_Op.Dash,
 ) {
 	id := Reference_Id(u32(len(c.references)))
 	append(
@@ -382,6 +384,8 @@ add_reference :: proc(
 			scope = scope,
 			range = range,
 			type_is_ref = type_is_ref,
+			type_has_path = type_has_path,
+			type_first_selector = type_first_selector,
 		},
 	)
 }
@@ -1779,7 +1783,17 @@ add_type_reference :: proc(
 	if base_range.start >= base_range.end {
 		base_range = range
 	}
-	add_reference(c, scope, type_ref.base_name, type_ref.namespace, .Type_Ref, base_range, type_ref.is_ref)
+	add_reference(
+		c,
+		scope,
+		type_ref.base_name,
+		type_ref.namespace,
+		.Type_Ref,
+		base_range,
+		type_ref.is_ref,
+		len(type_ref.field_path) > 0,
+		type_ref_path_selector(type_ref, 0),
+	)
 	if len(type_ref.field_path) > 0 {
 		segments := make([dynamic]Field_Access_Segment, 0, len(type_ref.field_path), c.allocator)
 		for name, i in type_ref.field_path {

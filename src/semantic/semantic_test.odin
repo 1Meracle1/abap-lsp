@@ -488,6 +488,64 @@ ENDCLASS.
 }
 
 @(test)
+remote_dependency_candidates_include_unresolved_like_field_type_bases :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/dd_get_nametab_header.abap",
+			source = `TYPES: BEGIN OF ty_local,
+         modeflag TYPE c,
+       END OF ty_local.
+FUNCTION DD_GET_NAMETAB_HEADER
+  IMPORTING
+    VALUE(STATUS) LIKE DDXTT-MODEFLAG DEFAULT 'A'
+    VALUE(UNAME) LIKE SY-UNAME
+    VALUE(LOCAL_STATUS) LIKE TY_LOCAL-MODEFLAG
+  EXPORTING
+    VALUE(R_STATUS) LIKE DDXTT-MODEFLAG.
+ENDFUNCTION.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, ddxtt_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "ddxtt", kind = .Type}]
+	_, sy_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "sy", kind = .Type}]
+	_, local_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "ty_local", kind = .Type}]
+	ddxtt_found := false
+	sy_found := false
+	local_found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "ddxtt" && candidate.kind == .Type {
+			ddxtt_found = true
+		}
+		if candidate.name == "sy" {
+			sy_found = true
+		}
+		if candidate.name == "ty_local" {
+			local_found = true
+		}
+	}
+
+	testing.expect(t, ddxtt_pending)
+	testing.expect(t, ddxtt_found)
+	testing.expect(t, !sy_pending)
+	testing.expect(t, !sy_found)
+	testing.expect(t, !local_pending)
+	testing.expect(t, !local_found)
+}
+
+@(test)
 remote_dependency_candidates_include_unresolved_static_targets :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)

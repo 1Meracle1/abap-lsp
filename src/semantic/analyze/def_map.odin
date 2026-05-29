@@ -315,15 +315,17 @@ Symbol_Data :: struct {
 }
 
 Reference_Data :: struct {
-	id:             Reference_Id,
-	name:           string,
-	namespace:      Namespace,
-	kind:           Reference_Kind,
-	scope:          Scope_Id,
-	range:          tokenizer.Range,
-	resolution:     Resolution,
-	has_resolution: bool,
-	type_is_ref:    bool,
+	id:                  Reference_Id,
+	name:                string,
+	namespace:           Namespace,
+	kind:                Reference_Kind,
+	scope:               Scope_Id,
+	range:               tokenizer.Range,
+	resolution:          Resolution,
+	has_resolution:      bool,
+	type_is_ref:         bool,
+	type_has_path:       bool,
+	type_first_selector: ast.Selector_Op,
 }
 
 Message_Class_Use_Data :: struct {

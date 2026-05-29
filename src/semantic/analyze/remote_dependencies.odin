@@ -489,12 +489,15 @@ remote_dependency_candidate_for_reference :: proc(
 		}
 		kind = .Static
 	case .Type_Ref:
-		if ref.namespace != .Type {
-			return {}, false
-		}
 		kind = .Type
-		if ref.type_is_ref {
-			hint = .Object_Type
+		if ref.namespace == .Type {
+			if ref.type_is_ref {
+				hint = .Object_Type
+			}
+		} else if !(ref.namespace == .Value &&
+		            ref.type_has_path &&
+		            ref.type_first_selector == .Dash) {
+			return {}, false
 		}
 	case .Interface_Use:
 		if ref.namespace != .Type {
