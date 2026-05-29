@@ -573,6 +573,25 @@ type_ref_symbol_handle :: proc(
 				return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
 			}
 		}
+		if type_ref.namespace == .Value {
+			if symbol_id, ok := current_class_value_symbol(
+				project,
+				unit_index,
+				scope_id,
+				type_ref.base_name,
+			); ok {
+				return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
+			}
+			if handle, ok := inherited_value_handle_for_name(
+				project,
+				lookup,
+				unit_index,
+				scope_id,
+				type_ref.base_name,
+			); ok {
+				return handle, true
+			}
+		}
 	}
 	return resolve_type_ref_handle_project_lookup(project, lookup, unit_index, type_ref)
 }
@@ -1187,6 +1206,177 @@ class_handle_from_declared_type :: proc(
 	)
 }
 
+line_of_type_fact_from_symbol :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+) -> (Type_Fact_Data, int, bool) {
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return {}, -1, false
+	}
+	s := symbol(&project.units[unit_index], handle.symbol)
+	if s == nil ||
+	   !s.has_declared_type ||
+	   !(s.has_type_clause_form && type_form_is_line_of(s.type_clause_form)) {
+		return {}, -1, false
+	}
+	return line_of_type_fact_from_declared_type(project, lookup, unit_index, s.scope, s.declared_type, 0)
+}
+
+like_type_fact_from_symbol :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	depth := 0,
+) -> (Type_Fact_Data, int, bool) {
+	if depth > len(project.units) + 16 {
+		return {}, -1, false
+	}
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return {}, -1, false
+	}
+	s := symbol(&project.units[unit_index], handle.symbol)
+	if s == nil ||
+	   !s.has_declared_type ||
+	   !(s.has_type_clause_form && s.type_clause_form == .Like) {
+		return {}, -1, false
+	}
+	next, ok := type_ref_leaf_handle(project, lookup, unit_index, s.scope, s.declared_type)
+	if !ok {
+		if declared_type_has_unknown_shape(project, lookup, unit_index, s.scope, s.declared_type) {
+			return unknown_type_fact(), unit_index, true
+		}
+		return {}, -1, false
+	}
+	next_unit_index := unit_id_index(next.unit)
+	if next_unit_index < 0 || next_unit_index >= len(project.units) {
+		return {}, -1, false
+	}
+	next_symbol := symbol(&project.units[next_unit_index], next.symbol)
+	if next_symbol == nil {
+		return {}, -1, false
+	}
+	if next_symbol.has_type_clause_form && next_symbol.type_clause_form == .Like {
+		return like_type_fact_from_symbol(project, lookup, next, depth + 1)
+	}
+	return Type_Fact_Data {
+		structure = next_symbol.structure,
+		declared_type = next_symbol.declared_type,
+		has_declared_type = next_symbol.has_declared_type,
+		type_clause_display = next_symbol.type_clause_display,
+	}, next_unit_index, true
+}
+
+line_of_type_fact_from_declared_type :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+	depth: int,
+) -> (Type_Fact_Data, int, bool) {
+	if depth > len(project.units) + 16 {
+		return {}, -1, false
+	}
+	handle, ok := type_ref_leaf_handle(project, lookup, unit_index, scope_id, type_ref)
+	if !ok {
+		if declared_type_has_unknown_shape(project, lookup, unit_index, scope_id, type_ref) {
+			return unknown_type_fact(), unit_index, true
+		}
+		return {}, -1, false
+	}
+	handle_unit_index := unit_id_index(handle.unit)
+	if handle_unit_index < 0 || handle_unit_index >= len(project.units) {
+		return {}, -1, false
+	}
+	s := symbol(&project.units[handle_unit_index], handle.symbol)
+	if s == nil {
+		return {}, -1, false
+	}
+	if s.has_type_clause_form && type_form_is_table(s.type_clause_form) {
+		return table_line_type_fact_from_symbol(project, lookup, handle_unit_index, s)
+	}
+	if !s.has_declared_type {
+		return {}, -1, false
+	}
+	return line_of_type_fact_from_declared_type(
+		project,
+		lookup,
+		handle_unit_index,
+		s.scope,
+		s.declared_type,
+		depth + 1,
+	)
+}
+
+table_line_type_fact_from_symbol :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	s: ^Symbol_Data,
+) -> (Type_Fact_Data, int, bool) {
+	if s == nil || !s.has_declared_type {
+		return unknown_type_fact(), unit_index, true
+	}
+	fact := Type_Fact_Data {
+		structure = s.structure,
+		declared_type = s.declared_type,
+		has_declared_type = true,
+		type_clause_display = s.type_clause_display,
+	}
+	if fact.structure == INVALID_STRUCTURE_ID {
+		if handle, ok := type_ref_leaf_handle(project, lookup, unit_index, s.scope, s.declared_type);
+		   ok {
+			handle_unit_index := unit_id_index(handle.unit)
+			if handle_unit_index >= 0 && handle_unit_index < len(project.units) {
+				if target := symbol(&project.units[handle_unit_index], handle.symbol);
+				   target != nil && target.structure != INVALID_STRUCTURE_ID {
+					fact.structure = target.structure
+					return fact, handle_unit_index, true
+				}
+			}
+		}
+	}
+	return fact, unit_index, true
+}
+
+type_fact_from_data_ref_path :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	fact: Type_Fact_Data,
+	path: []Field_Access_Segment,
+) -> (Type_Fact_Data, bool) {
+	if !fact.has_declared_type ||
+	   !fact.declared_type.is_ref ||
+	   type_ref_is_object_ref(project, lookup, unit_index, fact.declared_type) {
+		return {}, false
+	}
+	if fact.structure == INVALID_STRUCTURE_ID {
+		if declared_type_has_unknown_shape(
+			project,
+			lookup,
+			unit_index,
+			INVALID_SCOPE_ID,
+			fact.declared_type,
+		) {
+			return unknown_type_fact(), true
+		}
+		return {}, false
+	}
+	return type_fact_from_structure_path(
+		project,
+		lookup,
+		unit_index,
+		&project.units[unit_index],
+		fact.structure,
+		path,
+		fact,
+	)
+}
+
 type_ref_leaf_handle :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
@@ -1502,6 +1692,40 @@ resolve_field_access_tail :: proc(
 			access.field_path[1:],
 			fact,
 		)
+	}
+	if base_symbol.has_declared_type &&
+	   len(access.field_path) > 0 &&
+	   access.field_path[0].selector == .Arrow {
+		if fact, fact_unit_index, fact_ok := like_type_fact_from_symbol(
+			project,
+			lookup,
+			base,
+		); fact_ok {
+			if resolved, resolved_ok := type_fact_from_data_ref_path(
+				project,
+				lookup,
+				fact_unit_index,
+				fact,
+				access.field_path[:],
+			); resolved_ok {
+				return resolved, true
+			}
+		}
+		if fact, fact_unit_index, fact_ok := line_of_type_fact_from_symbol(
+			project,
+			lookup,
+			base,
+		); fact_ok {
+			if resolved, resolved_ok := type_fact_from_data_ref_path(
+				project,
+				lookup,
+				fact_unit_index,
+				fact,
+				access.field_path[:],
+			); resolved_ok {
+				return resolved, true
+			}
+		}
 	}
 	if base_symbol.structure != INVALID_STRUCTURE_ID {
 		fact := Type_Fact_Data {

@@ -2444,6 +2444,19 @@ collect_class_oop_stmt :: proc(
 			if .Redefinition in member.flags {
 				flags += {.Is_Redefinition}
 			}
+			event_name := ""
+			event_range := tokenizer.Range{}
+			event_source_type := Field_Type_Ref_Data{}
+			if member.event_handler.source_type != nil {
+				if type_ref, type_ok := type_ref_from_expr(c, member.event_handler.source_type, .Type);
+				   type_ok {
+					event_name = canonical_name(member.event_handler.event_name, c.allocator)
+					event_range = member.event_handler.event_range
+					event_source_type = type_ref
+					flags += {.For_Event}
+					add_type_reference(c, scope, type_ref, member.event_handler.source_type.range)
+				}
+			}
 			append(
 				&c.class_members,
 				Class_Member_Data {
@@ -2455,6 +2468,9 @@ collect_class_oop_stmt :: proc(
 					signature = strings.clone(stmt.text, c.allocator),
 					parameters = parameters,
 					exceptions = exceptions,
+					event_name = event_name,
+					event_range = event_range,
+					event_source_type = event_source_type,
 					structure = INVALID_STRUCTURE_ID,
 					flags = flags,
 				},

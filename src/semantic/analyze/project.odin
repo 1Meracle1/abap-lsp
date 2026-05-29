@@ -1076,6 +1076,21 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 			if member == nil {
 				continue
 			}
+			if .For_Event in member.flags {
+				changed =
+					seed_event_handler_method_parameter_types(
+						units,
+						unit_index,
+						method_scope,
+						member_unit_index,
+						member,
+						roots,
+						class_entries,
+						visible,
+						allocator,
+					) ||
+					changed
+			}
 			for param in member.parameters {
 				if method_scope_has_value_symbol(unit, method_scope, param.name) {
 					continue
@@ -1647,6 +1662,9 @@ unit_interface_signature :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 		write_signature_int(&out, int(member.visibility))
 		write_signature_string(&out, member.name)
 		write_signature_string(&out, member.signature)
+		write_signature_int(&out, 1 if .For_Event in member.flags else 0)
+		write_signature_string(&out, member.event_name)
+		write_signature_type_ref(&out, member.event_source_type)
 		for param in member.parameters {
 			write_signature_int(&out, int(param.section))
 			write_signature_int(&out, int(param.passing))

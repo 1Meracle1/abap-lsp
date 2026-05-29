@@ -576,6 +576,21 @@ seed_inherited_method_scope_parameters :: proc(
 			if member == nil {
 				continue
 			}
+			if .For_Event in member.flags {
+				changed =
+					seed_event_handler_method_parameter_types(
+						units,
+						unit_index,
+						method_scope,
+						member_unit_index,
+						member,
+						roots,
+						class_entries,
+						visible,
+						allocator,
+					) ||
+					changed
+			}
 			for param in member.parameters {
 				if method_scope_has_value_symbol(unit, method_scope, param.name) {
 					continue
@@ -608,6 +623,160 @@ seed_inherited_method_scope_parameters :: proc(
 		}
 	}
 	return changed
+}
+
+seed_event_handler_method_parameter_types :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	method_scope: Scope_Id,
+	member_unit_index: int,
+	member: ^Class_Member_Data,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [][dynamic]Unit_Id,
+	allocator: mem.Allocator,
+) -> bool {
+	if member_unit_index < 0 ||
+	   member_unit_index >= len(units) ||
+	   member.event_name == "" ||
+	   member.event_source_type.base_name == "" {
+		return false
+	}
+	source_handle, source_ok := resolve_type_ref_handle_project(
+		units,
+		member_unit_index,
+		member.event_source_type,
+		roots,
+		visible[member_unit_index],
+	)
+	if !source_ok {
+		return false
+	}
+	event_member, event_unit_index := event_member_for_handler_source(
+		units,
+		source_handle,
+		member.event_name,
+		class_entries,
+	)
+	if event_member == nil {
+		return false
+	}
+	changed := false
+	for &param in member.parameters {
+		if .Has_Declared_Type in param.flags {
+			continue
+		}
+		event_param := class_member_parameter(event_member, param.name)
+		if event_param == nil || !(.Has_Declared_Type in event_param.flags) {
+			continue
+		}
+		param.declared_type = event_param.declared_type
+		param.type_clause_display = event_param.type_clause_display
+		param.type_clause_form = event_param.type_clause_form
+		param.has_type_clause_form = event_param.has_type_clause_form
+		param.type_clause_table_has_of = event_param.type_clause_table_has_of
+		param.flags += {.Has_Declared_Type}
+		structure_id := seeded_method_parameter_structure(
+			units,
+			unit_index,
+			event_unit_index,
+			event_member,
+			event_param^,
+			roots,
+			class_entries,
+			visible,
+			allocator,
+		)
+		changed =
+			update_method_scope_parameter_symbol(
+				&units[unit_index],
+				method_scope,
+				param.name,
+				event_param^,
+				structure_id,
+			) ||
+			changed
+	}
+	return changed
+}
+
+event_member_for_handler_source :: proc(
+	units: []Unit_Analysis,
+	source_handle: Symbol_Handle,
+	event_name: string,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+) -> (
+	^Class_Member_Data,
+	int,
+) {
+	event_handle, event_ok := class_member_symbol_by_handle(
+		units,
+		source_handle,
+		.Routine,
+		event_name,
+		class_entries,
+		false,
+	)
+	if !event_ok {
+		return nil, -1
+	}
+	event_unit_index := unit_id_index(event_handle.unit)
+	if event_unit_index < 0 || event_unit_index >= len(units) {
+		return nil, -1
+	}
+	event_symbol := symbol(&units[event_unit_index], event_handle.symbol)
+	if event_symbol == nil {
+		return nil, -1
+	}
+	event_owner, owner_ok := enclosing_class_owner_unit(&units[event_unit_index], event_symbol.scope)
+	if !owner_ok {
+		return nil, -1
+	}
+	event_member := unit_class_member(&units[event_unit_index], event_owner, event_symbol.name)
+	if event_member == nil || event_member.kind != .Event {
+		return nil, -1
+	}
+	return event_member, event_unit_index
+}
+
+class_member_parameter :: proc(
+	member: ^Class_Member_Data,
+	name: string,
+) -> ^Class_Member_Parameter_Data {
+	for &param in member.parameters {
+		if param.name == name {
+			return &param
+		}
+	}
+	return nil
+}
+
+update_method_scope_parameter_symbol :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	name: string,
+	param: Class_Member_Parameter_Data,
+	structure_id: Structure_Id,
+) -> bool {
+	s := scope(unit, scope_id)
+	if s == nil {
+		return false
+	}
+	for symbol_id in s.declarations {
+		item := symbol(unit, symbol_id)
+		if item == nil || item.name != name || !symbol_kind_occupies(item.kind, .Value) {
+			continue
+		}
+		item.structure = structure_id
+		item.declared_type = param.declared_type
+		item.has_declared_type = true
+		item.type_clause_display = param.type_clause_display
+		item.type_clause_form = param.type_clause_form
+		item.has_type_clause_form = param.has_type_clause_form
+		item.type_clause_table_has_of = param.type_clause_table_has_of
+		return true
+	}
+	return false
 }
 
 method_signature_member_for_scope :: proc(

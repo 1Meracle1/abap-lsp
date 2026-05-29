@@ -606,6 +606,7 @@ Class_Member_Implementation_Data :: struct {
 Class_Member_Flag :: enum {
 	Is_Static,
 	Is_Redefinition,
+	For_Event,
 	Has_Implementation_Range,
 	Has_Implementation,
 }
@@ -622,6 +623,9 @@ Class_Member_Data :: struct {
 	signature:            string,
 	parameters:           [dynamic]Class_Member_Parameter_Data,
 	exceptions:           [dynamic]Function_Module_Exception_Data,
+	event_name:           string,
+	event_range:          tokenizer.Range,
+	event_source_type:    Field_Type_Ref_Data,
 	structure:            Structure_Id,
 	flags:                Class_Member_Flags,
 }

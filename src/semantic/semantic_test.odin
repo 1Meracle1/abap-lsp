@@ -3190,6 +3190,49 @@ ENDCLASS.
 }
 
 @(test)
+event_handler_importing_parameter_uses_event_type :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///event_handler_parameter_type.abap",
+		`
+CLASS lcl_source DEFINITION.
+  PUBLIC SECTION.
+    DATA object_type TYPE string.
+    EVENTS saved EXPORTING VALUE(ex_object) TYPE REF TO lcl_source.
+ENDCLASS.
+
+CLASS lcl_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_saved FOR EVENT saved OF lcl_source IMPORTING ex_object.
+ENDCLASS.
+
+CLASS lcl_handler IMPLEMENTATION.
+  METHOD on_saved.
+    DATA lv_type TYPE string.
+    lv_type = ex_object->object_type.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	param: ^analyze.Symbol_Data
+	for &s in unit.symbols {
+		if s.kind != .Parameter || s.name != "ex_object" {
+			continue
+		}
+		if scope := analyze.scope(&unit, s.scope); scope != nil && scope.kind == .Method {
+			param = &s
+			break
+		}
+	}
+	testing.expect(t, param != nil)
+	testing.expect(t, param.has_declared_type)
+	testing.expect_value(t, param.declared_type.base_name, "lcl_source")
+	testing.expect(t, param.declared_type.is_ref)
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 interface_method_implementation_resolves_me :: proc(t: ^testing.T) {
 	source := `INTERFACE lif_log.
   METHODS merge RETURNING VALUE(ro_log) TYPE REF TO lif_log.
@@ -5681,6 +5724,110 @@ FORM run.
     ls_renamed_node-name = <item>-name.
   ENDLOOP.
 ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+like_line_of_table_ref_line_keeps_reference_structure :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///like_line_of_table_ref_line.abap",
+		`
+INTERFACE lif_types.
+  TYPES: BEGIN OF ty_node,
+           type TYPE string,
+           children TYPE i,
+         END OF ty_node.
+  TYPES ty_stack_tt TYPE STANDARD TABLE OF REF TO ty_node WITH DEFAULT KEY.
+ENDINTERFACE.
+
+DATA mt_stack TYPE lif_types=>ty_stack_tt.
+
+FORM run.
+  DATA lr_stack_top LIKE LINE OF mt_stack.
+  lr_stack_top->children = lr_stack_top->children + 1.
+  IF lr_stack_top->type = 'array'.
+  ENDIF.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+like_line_of_attribute_table_ref_line_keeps_reference_structure :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///like_line_of_attribute_table_ref_line.abap",
+		`
+INTERFACE lif_types.
+  TYPES: BEGIN OF ty_node,
+           type TYPE string,
+           children TYPE i,
+         END OF ty_node.
+ENDINTERFACE.
+
+CLASS lcl_parser DEFINITION.
+  PRIVATE SECTION.
+    TYPES ty_stack_tt TYPE STANDARD TABLE OF REF TO lif_types=>ty_node WITH DEFAULT KEY.
+    DATA mt_stack TYPE ty_stack_tt.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_parser IMPLEMENTATION.
+  METHOD run.
+    DATA lr_stack_top LIKE LINE OF mt_stack.
+    lr_stack_top->children = lr_stack_top->children + 1.
+    IF lr_stack_top->type = 'array'.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+like_data_reference_parameter_keeps_reference_structure :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///like_data_reference_parameter.abap",
+		`
+INTERFACE lif_types.
+  TYPES: BEGIN OF ty_node,
+           type TYPE string,
+           children TYPE i,
+         END OF ty_node.
+ENDINTERFACE.
+
+CLASS lcl_json DEFINITION.
+  PRIVATE SECTION.
+    METHODS delete_subtree
+      IMPORTING ir_parent TYPE REF TO lif_types=>ty_node OPTIONAL.
+    METHODS prove_path_exists
+      RETURNING VALUE(rr_end_node) TYPE REF TO lif_types=>ty_node.
+ENDCLASS.
+
+CLASS lcl_json IMPLEMENTATION.
+  METHOD delete_subtree.
+    DATA lr_parent LIKE ir_parent.
+    ir_parent->children = ir_parent->children - 1.
+    lr_parent = ir_parent.
+    lr_parent->children = lr_parent->children - 1.
+  ENDMETHOD.
+  METHOD prove_path_exists.
+    DATA lr_node_parent LIKE rr_end_node.
+    lr_node_parent = rr_end_node.
+    lr_node_parent->children = lr_node_parent->children + 1.
+    IF lr_node_parent->type = 'array'.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
 `,
 	)
 

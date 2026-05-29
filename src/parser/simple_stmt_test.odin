@@ -809,6 +809,42 @@ ENDCLASS.`
 }
 
 @(test)
+oop_event_handler_keeps_for_event_shape :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_changed FOR EVENT changed OF lcl_source IMPORTING ev_object.
+ENDCLASS.`
+	parsed := parse(source, "oop_event_handler.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	class_decl := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl)
+	methods := class_decl.body[1].derived_stmt.(^ast.Oop_Simple_Stmt)
+	handler := methods.members[0].event_handler
+
+	testing.expect_value(t, handler.event_name, "changed")
+	testing.expect(t, handler.source_type != nil)
+	source_ref := handler.source_type.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, source_ref.base_name, "lcl_source")
+	testing.expect_value(t, len(methods.members[0].signatures), 1)
+	testing.expect_value(t, methods.members[0].signatures[0].kind, ast.Oop_Signature_Kind.Importing)
+	testing.expect_value(t, methods.members[0].signatures[0].parameters[0].name, "ev_object")
+}
+
+@(test)
+oop_event_handler_requires_of_source_type :: proc(t: ^testing.T) {
+	parsed := parse(
+		`CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_changed FOR EVENT changed IMPORTING ev_object.
+ENDCLASS.`,
+		"oop_event_handler_invalid.abap",
+		context.allocator,
+	)
+
+	expect_error_contains(t, parsed, "expected OF in FOR EVENT method declaration")
+}
+
+@(test)
 oop_alias_target_must_be_interface_member :: proc(t: ^testing.T) {
 	source := `INTERFACE lif.
   ALIASES bad FOR if_demo=>set.

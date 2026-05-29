@@ -1843,6 +1843,12 @@ Oop_Signature_Clause :: struct {
 	parameters: [dynamic]Oop_Parameter_Clause,
 }
 
+Oop_Event_Handler_Clause :: struct {
+	event_name:  string,
+	event_range: tokenizer.Range,
+	source_type: ^Expr,
+}
+
 Oop_Member_Flag :: enum {
 	Redefinition,
 }
@@ -1857,6 +1863,7 @@ Oop_Member_Clause :: struct {
 	member_range:    tokenizer.Range,
 	flags:           Oop_Member_Flags,
 	signatures:      [dynamic]Oop_Signature_Clause,
+	event_handler:   Oop_Event_Handler_Clause,
 }
 
 Oop_Alias_Clause :: struct {

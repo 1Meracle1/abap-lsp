@@ -2189,6 +2189,18 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 					break
 				}
 				bump_token(p)
+				if kind == .For &&
+				   (stmt.kind == .Methods || stmt.kind == .Class_Methods) &&
+				   at_keyword(p, "EVENT") {
+					event_handler, event_ok := parse_oop_event_handler_clause(p)
+					if event_ok {
+						member.event_handler = event_handler
+					} else {
+						consume_oop_member_tail(p)
+						break
+					}
+					continue
+				}
 				append(&member.signatures, parse_oop_signature_clause(p, kind))
 				continue
 			}
@@ -2222,6 +2234,31 @@ parse_oop_signature_clause :: proc(p: ^Parser, kind: ast.Oop_Signature_Kind) -> 
 		clause.values = parse_oop_signature_values(p)
 	}
 	return clause
+}
+
+parse_oop_event_handler_clause :: proc(p: ^Parser) -> (ast.Oop_Event_Handler_Clause, bool) {
+	expect_keyword(p, "EVENT")
+	event := current_token(p)
+	if event.kind != .Ident {
+		error_current(p, "syntax error: expected event name after FOR EVENT")
+		return {}, false
+	}
+	bump_token(p)
+	if !allow_keyword(p, "OF") {
+		error_current(p, "syntax error: expected OF in FOR EVENT method declaration")
+		return {}, false
+	}
+	source_type := parse_oop_type_ref_expr(p)
+	if source_type == nil {
+		error_current(p, "syntax error: expected event source type after FOR EVENT")
+		return {}, false
+	}
+	return ast.Oop_Event_Handler_Clause {
+			event_name = tokenizer.token_lexeme(event, p.source),
+			event_range = event.range,
+			source_type = source_type,
+		},
+		true
 }
 
 oop_signature_has_parameters :: proc(kind: ast.Oop_Signature_Kind) -> bool {
