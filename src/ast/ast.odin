@@ -1946,13 +1946,27 @@ Do_Stmt :: struct {
 	body:       [dynamic]^Stmt,
 }
 
-// ABAP syntax: `LOOP AT source ... ENDLOOP.`
+Loop_Target_Kind :: enum {
+	None,
+	Into,
+	Assigning,
+	Reference_Into,
+}
+
+// ABAP syntax: `LOOP AT source [INTO|ASSIGNING|REFERENCE INTO target] ... ENDLOOP.`
 Loop_Stmt :: struct {
-	using node:   Stmt,
-	source:       ^Expr,
-	body:         [dynamic]^Stmt,
-	header_range: tokenizer.Range,
-	header_text:  string,
+	using node:             Stmt,
+	source:                 ^Expr,
+	target:                 ^Expr,
+	target_kind:            Loop_Target_Kind,
+	from:                   ^Expr,
+	to:                     ^Expr,
+	where_cond:             ^Expr,
+	using_key:              Table_Key_Selector,
+	transporting_no_fields: bool,
+	body:                   [dynamic]^Stmt,
+	header_range:           tokenizer.Range,
+	header_text:            string,
 }
 
 At_Stmt_Kind :: enum {

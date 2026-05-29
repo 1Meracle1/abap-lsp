@@ -425,7 +425,11 @@ declared_type_has_unknown_shape :: proc(
 	unit_index: int,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
+	depth := 0,
 ) -> bool {
+	if depth > len(project.units) + 16 {
+		return false
+	}
 	if type_ref.base_name == "" {
 		return false
 	}
@@ -435,8 +439,115 @@ declared_type_has_unknown_shape :: proc(
 	if is_builtin_type_name(type_ref.base_name) {
 		return false
 	}
-	_, ok := type_ref_symbol_handle(project, lookup, unit_index, scope_id, type_ref)
-	return !ok
+	handle, ok := type_ref_symbol_handle(project, lookup, unit_index, scope_id, type_ref)
+	if !ok {
+		return true
+	}
+	if len(type_ref.field_path) == 0 {
+		return type_ref_handle_has_unknown_shape(project, lookup, handle, depth + 1)
+	}
+	return type_ref_path_has_unknown_shape(
+		project,
+		lookup,
+		handle,
+		type_ref.field_path[:],
+		type_ref.field_selectors[:],
+		type_ref.field_derefs[:],
+		depth + 1,
+	)
+}
+
+type_ref_handle_has_unknown_shape :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	depth: int,
+) -> bool {
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return true
+	}
+	s := symbol(&project.units[unit_index], handle.symbol)
+	if s == nil {
+		return true
+	}
+	if s.structure != INVALID_STRUCTURE_ID || s.kind == .Class || s.kind == .Interface {
+		return false
+	}
+	if s.has_declared_type {
+		return declared_type_has_unknown_shape(project, lookup, unit_index, s.scope, s.declared_type, depth + 1)
+	}
+	return s.kind == .Field_Symbol
+}
+
+type_ref_path_has_unknown_shape :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	path: []string,
+	selectors: []ast.Selector_Op,
+	derefs: []bool,
+	depth: int,
+) -> bool {
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return true
+	}
+	unit := &project.units[unit_index]
+	s := symbol(unit, handle.symbol)
+	if s == nil {
+		return true
+	}
+	if s.kind == .Class || s.kind == .Interface {
+		current := handle
+		for name in path {
+			next, ok := class_type_symbol_handle(project.units[:], current, name)
+			if !ok {
+				return true
+			}
+			current = next
+		}
+		return false
+	}
+	if s.structure == INVALID_STRUCTURE_ID {
+		return type_ref_handle_has_unknown_shape(project, lookup, handle, depth + 1)
+	}
+	current_unit := unit
+	current_structure := s.structure
+	for name, i in path {
+		if i < len(derefs) && derefs[i] {
+			continue
+		}
+		if selector_at(selectors, i) != .Dash {
+			return false
+		}
+		field := structure_field(current_unit, current_structure, name)
+		if field == nil {
+			return true
+		}
+		if field.structure == INVALID_STRUCTURE_ID {
+			next_unit_index := unit_id_index(field.decl_unit)
+			if .Has_Type_Ref in field.flags &&
+			   next_unit_index >= 0 &&
+			   next_unit_index < len(project.units) &&
+			   declared_type_has_unknown_shape(
+				   project,
+				   lookup,
+				   next_unit_index,
+				   INVALID_SCOPE_ID,
+				   field.type_ref,
+				   depth + 1,
+			   ) {
+				return true
+			}
+		}
+		next_unit_index := unit_id_index(field.decl_unit)
+		if next_unit_index >= 0 && next_unit_index < len(project.units) {
+			current_unit = &project.units[next_unit_index]
+		}
+		current_structure = field.structure
+	}
+	return false
 }
 
 type_ref_symbol_handle :: proc(
@@ -1345,6 +1456,9 @@ resolve_field_access_tail :: proc(
 	base_symbol := symbol(base_unit, base.symbol)
 	if base_symbol == nil {
 		return {}, false
+	}
+	if base_symbol.kind == .Field_Symbol && !base_symbol.has_declared_type {
+		return unknown_type_fact(), true
 	}
 	if len(access.field_path) > 0 && access.field_path[0].deref {
 		if base_symbol.has_declared_type &&

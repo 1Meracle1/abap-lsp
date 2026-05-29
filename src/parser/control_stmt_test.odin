@@ -450,6 +450,40 @@ ENDLOOP.`
 }
 
 @(test)
+loop_header_keeps_target_key_bounds_and_where :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<row>) FROM lv_from TO lv_to USING KEY (lv_key) WHERE id = lv_id.
+ENDLOOP.`
+	parsed := parse(source, "loop_header_shape.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect_value(t, loop.target_kind, ast.Loop_Target_Kind.Assigning)
+	testing.expect(t, loop.target != nil)
+	testing.expect(t, loop.from != nil)
+	testing.expect(t, loop.to != nil)
+	testing.expect(t, loop.using_key.dynamic_name != nil)
+	testing.expect(t, loop.where_cond != nil)
+}
+
+@(test)
+loop_header_requires_assignment_target :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_rows ASSIGNING.
+ENDLOOP.`
+	parsed := parse(source, "loop_header_missing_target.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected target after ASSIGNING")
+}
+
+@(test)
+loop_header_allows_where_pragmas_with_arguments :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_rows ASSIGNING <row> WHERE id IS INITIAL ##PRIMKEY[SEC_KEY].
+ENDLOOP.`
+	parsed := parse(source, "loop_header_pragma.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+}
+
+@(test)
 amdp_method_body_is_retained_as_sqlscript_island :: proc(t: ^testing.T) {
 	source := `CLASS lcl IMPLEMENTATION.
   METHOD select_rows BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara.

@@ -2166,7 +2166,29 @@ collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scop
 	add_system_field_update(c, scope, stmt.range, .Loop_At, "tfill")
 	add_system_field_update(c, scope, stmt.range, .Loop_At, "tleng")
 	collect_expr_refs(c, stmt.source, scope)
+	collect_expr_refs(c, stmt.from, scope)
+	collect_expr_refs(c, stmt.to, scope)
+	collect_expr_refs(c, stmt.using_key.dynamic_name, scope)
+	if stmt.target != nil {
+		collect_expr_refs(c, stmt.target, scope)
+		if stmt.target_kind == .Into || stmt.target_kind == .Assigning {
+			target_access, has_target := value_access_from_expr(c, stmt.target, scope)
+			add_assignment_site(
+				c,
+				scope,
+				stmt.range,
+				stmt.target.range,
+				stmt.source.range if stmt.source != nil else tokenizer.Range{},
+				target_access,
+				has_target,
+				type_fact_from_expr(c, stmt.target, scope),
+				type_fact_from_expr(c, stmt.source, scope),
+			)
+		}
+	}
+	collect_internal_table_where_refs(c, stmt.source, stmt.where_cond, scope)
 	source_access, has_source := value_access_from_expr(c, stmt.source, scope)
+	target_access, has_target := value_access_from_expr(c, stmt.target, scope)
 	previous := c.current_scope
 	c.current_scope = scope
 	loop_scope := push_scope(c, .Loop_Block, stmt.range)
@@ -2189,8 +2211,8 @@ collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scop
 		loop_scope,
 		source_access,
 		has_source,
-		Field_Access{},
-		false,
+		target_access,
+		has_target,
 	)
 }
 

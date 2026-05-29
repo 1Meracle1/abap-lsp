@@ -557,6 +557,37 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		} else {
 			emit(p, "LOOP AT ")
 			emit_node(p, n.source)
+			switch n.target_kind {
+			case .Into:
+				emit(p, " INTO ")
+				emit_node(p, n.target)
+			case .Assigning:
+				emit(p, " ASSIGNING ")
+				emit_node(p, n.target)
+			case .Reference_Into:
+				emit(p, " REFERENCE INTO ")
+				emit_node(p, n.target)
+			case .None:
+			}
+			if n.from != nil {
+				emit(p, " FROM ")
+				emit_node(p, n.from)
+			}
+			if n.to != nil {
+				emit(p, " TO ")
+				emit_node(p, n.to)
+			}
+			if n.using_key.name != "" || n.using_key.dynamic_name != nil {
+				emit(p, " USING KEY ")
+				emit_table_key_selector(p, n.using_key)
+			}
+			if n.transporting_no_fields {
+				emit(p, " TRANSPORTING NO FIELDS")
+			}
+			if n.where_cond != nil {
+				emit(p, " WHERE ")
+				emit_node(p, n.where_cond)
+			}
 		}
 		emit_block(p, n.body, "ENDLOOP")
 	case ^At_Stmt:

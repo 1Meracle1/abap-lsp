@@ -214,14 +214,53 @@ when_dash_is_selector :: proc(p: ^Parser, index, start, end: int) -> bool {
 	)
 }
 
-validate_loop_header_tail :: proc(p: ^Parser) -> bool {
+parse_loop_header_tail :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int) -> bool {
+	stops := []string{"INTO", "ASSIGNING", "REFERENCE", "FROM", "TO", "USING", "WHERE", "TRANSPORTING"}
 	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
 		if allow_keyword(p, "INTO") {
-			if !expr_lead_token(current_token(p)) {
-				error_current(p, "syntax error: expected target after INTO")
+			if !parse_loop_target(p, stmt, body_start, .Into, "syntax error: expected target after INTO", stops) {
 				return false
 			}
-			parse_expr(p)
+			continue
+		}
+		if allow_keyword(p, "ASSIGNING") {
+			if !parse_loop_target(p, stmt, body_start, .Assigning, "syntax error: expected target after ASSIGNING", stops) {
+				return false
+			}
+			if allow_keyword(p, "CASTING") {
+				_ = allow_keyword(p, "TYPE")
+				_ = data_expr(p, body_start, stops)
+			}
+			continue
+		}
+		if allow_keyword(p, "REFERENCE") {
+			if !allow_keyword(p, "INTO") {
+				error_current(p, "syntax error: expected INTO after REFERENCE")
+				return false
+			}
+			if !parse_loop_target(p, stmt, body_start, .Reference_Into, "syntax error: expected target after REFERENCE INTO", stops) {
+				return false
+			}
+			continue
+		}
+		if allow_keyword(p, "FROM") {
+			stmt.from = data_expr(p, body_start, stops)
+			if stmt.from == nil {
+				error_current(p, "syntax error: expected expression after FROM")
+				return false
+			}
+			continue
+		}
+		if allow_keyword(p, "TO") {
+			stmt.to = data_expr(p, body_start, stops)
+			if stmt.to == nil {
+				error_current(p, "syntax error: expected expression after TO")
+				return false
+			}
+			continue
+		}
+		if allow_keyword(p, "USING") {
+			stmt.using_key = parse_table_key_selector(p, body_start, stops)
 			continue
 		}
 		if allow_keyword(p, "WHERE") {
@@ -229,11 +268,65 @@ validate_loop_header_tail :: proc(p: ^Parser) -> bool {
 				error_current(p, "syntax error: expected expression after WHERE")
 				return false
 			}
-			parse_logical_expr(p)
+			stmt.where_cond = parse_logical_expr(p)
+			if stmt.where_cond == nil {
+				return false
+			}
 			continue
 		}
+		if allow_keyword(p, "TRANSPORTING") {
+			if allow_keyword(p, "NO") {
+				if !allow_keyword(p, "FIELDS") {
+					error_current(p, "syntax error: expected FIELDS after TRANSPORTING NO")
+					return false
+				}
+				stmt.transporting_no_fields = true
+			} else {
+				_ = data_exprs_until(p, body_start, stops)
+			}
+			continue
+		}
+		if skip_loop_header_pragma_arg(p) {
+			continue
+		}
+		error_current(p, "syntax error: expected LOOP AT addition")
+		return false
+	}
+	return true
+}
+
+skip_loop_header_pragma_arg :: proc(p: ^Parser) -> bool {
+	if current_token(p).kind != .LBracket {
+		return false
+	}
+	end := matching_group_index(p, p.index, .LBracket, .RBracket)
+	if end < 0 {
+		return false
+	}
+	for p.index <= end {
 		bump_token(p)
 	}
+	return true
+}
+
+parse_loop_target :: proc(
+	p: ^Parser,
+	stmt: ^ast.Loop_Stmt,
+	body_start: int,
+	kind: ast.Loop_Target_Kind,
+	message: string,
+	stop_keywords: []string,
+) -> bool {
+	if stmt.target != nil || stmt.transporting_no_fields {
+		error_current(p, "syntax error: duplicate LOOP target")
+		return false
+	}
+	stmt.target = data_expr(p, body_start, stop_keywords)
+	if stmt.target == nil {
+		error_current(p, message)
+		return false
+	}
+	stmt.target_kind = kind
 	return true
 }
 
@@ -471,6 +564,7 @@ parse_do_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 
 parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "LOOP")
+	body_start := p.index
 	if !allow_keyword(p, "AT") {
 		error_current(p, "syntax error: expected keyword")
 		return nil
@@ -479,17 +573,16 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if source == nil {
 		return nil
 	}
-	if !validate_loop_header_tail(p) {
+	stmt := ast.new(ast.Loop_Stmt, start.range, p.allocator)
+	stmt.source = source
+	if !parse_loop_header_tail(p, stmt, body_start) {
 		return nil
 	}
 	header_start := start.range.start
-	consume_raw_until_period(p)
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
 		return nil
 	}
-	stmt := ast.new(ast.Loop_Stmt, start.range, p.allocator)
-	stmt.source = source
 	stmt.header_range = tokenizer.text_range(header_start, period.range.end)
 	stmt.header_text = strings.clone(p.source[header_start:period.range.start], p.allocator)
 	stmt.body = parse_stmt_list_until(p, []string{"ENDLOOP"})

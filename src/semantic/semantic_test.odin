@@ -1354,7 +1354,8 @@ ENDCLASS.`,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
 	testing.expect(t, root != nil)
-	testing.expect(t, root != nil && has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
 
 	append(
 		&dependencies,
@@ -5819,6 +5820,30 @@ FORM run.
 ENDFORM.
 `,
 	)
+	unknown_line_type := collect_test_unit(
+		t,
+		"file:///unknown_line_type_component.abap",
+		`
+FORM run.
+  DATA ls_data TYPE zmissing_db_data.
+  FIELD-SYMBOLS <row> LIKE LINE OF ls_data-sproxhdr.
+  CLEAR <row>-created_by.
+ENDFORM.
+`,
+	)
+	unknown_table_line_type := collect_test_unit(
+		t,
+		"file:///unknown_table_line_type.abap",
+		`
+FORM run.
+  DATA lt_messages TYPE zmissing_message_tab.
+  DATA ls_message LIKE LINE OF lt_messages.
+  FIELD-SYMBOLS <message> LIKE LINE OF lt_messages.
+  CLEAR ls_message-mtext.
+  CLEAR <message>-mtext.
+ENDFORM.
+`,
+	)
 
 	testing.expect(t, has_diagnostic(&missing_base, .Unresolved_Reference))
 	testing.expect(t, !has_diagnostic(&missing_base, .Unknown_Field))
@@ -5827,6 +5852,29 @@ ENDFORM.
 	testing.expect(t, has_diagnostic(&missing, .Unresolved_Reference))
 	testing.expect(t, !has_diagnostic(&missing, .Unknown_Field))
 	testing.expect(t, !has_diagnostic(&generic, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&unknown_line_type, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unknown_line_type, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&unknown_table_line_type, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unknown_table_line_type, .Unknown_Field))
+}
+
+@(test)
+loop_assigning_inline_field_symbol_infers_line_shape :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           created_by TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  LOOP AT lt_rows ASSIGNING FIELD-SYMBOL(<row>) WHERE created_by IS NOT INITIAL.
+    CLEAR <row>-created_by.
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///loop_inline_field_symbol.abap", source)
+
+	testing.expect(t, has_symbol(&unit, .Field_Symbol, "<row>"))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
 }
 
 @(test)
