@@ -4075,6 +4075,67 @@ ENDCLASS.
 }
 
 @(test)
+redefined_alias_method_uses_inherited_interface_signature :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///alias_redefinition_target.abap",
+		source = `
+CLASS zcx_base DEFINITION INHERITING FROM cx_static_check.
+ENDCLASS.
+
+CLASS zcx_child DEFINITION INHERITING FROM zcx_base.
+  PUBLIC SECTION.
+    METHODS get_text REDEFINITION.
+ENDCLASS.
+
+CLASS zcx_child IMPLEMENTATION.
+  METHOD get_text.
+    result = 'x'.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/cx_static_check.abap",
+			source = `
+CLASS cx_static_check DEFINITION INHERITING FROM cx_root.
+ENDCLASS.
+`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/global-class/cx_root.abap",
+			source = `
+CLASS cx_root DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES if_message.
+    ALIASES get_text FOR if_message~get_text.
+ENDCLASS.
+`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/global-interface/if_message.abap",
+			source = `
+INTERFACE if_message.
+  METHODS get_text RETURNING VALUE(result) TYPE string.
+ENDINTERFACE.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unresolved_Reference))
+	if root != nil {
+		testing.expect(t, has_reference(root, "result", .Value, .Identifier))
+	}
+}
+
+@(test)
 resolves_qualified_interface_method_table_line_fields :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/page.abap",

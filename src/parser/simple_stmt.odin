@@ -2167,10 +2167,27 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 		}
 		for current_token(p).kind != .Period && current_token(p).kind != .Eof && current_token(p).kind != .Comma {
 			if allow_keyword(p, "REDEFINITION") {
+				if len(member.signatures) > 0 {
+					error(p, previous_token(p).range, "syntax error: REDEFINITION method cannot declare a signature")
+				}
 				member.flags += {.Redefinition}
+				if !oop_member_tail_done(p) {
+					if _, signature_ok := oop_signature_kind(p); signature_ok {
+						error_current(p, "syntax error: REDEFINITION method cannot declare a signature")
+					} else {
+						error_current(p, "syntax error: unexpected token after REDEFINITION")
+					}
+					consume_oop_member_tail(p)
+					break
+				}
 				continue
 			}
 			if kind, ok := oop_signature_kind(p); ok {
+				if .Redefinition in member.flags {
+					error_current(p, "syntax error: REDEFINITION method cannot declare a signature")
+					consume_oop_member_tail(p)
+					break
+				}
 				bump_token(p)
 				append(&member.signatures, parse_oop_signature_clause(p, kind))
 				continue
@@ -2178,6 +2195,18 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			bump_token(p)
 		}
 		append(&stmt.members, member)
+	}
+}
+
+oop_member_tail_done :: proc(p: ^Parser) -> bool {
+	return current_token(p).kind == .Period ||
+	       current_token(p).kind == .Eof ||
+	       current_token(p).kind == .Comma
+}
+
+consume_oop_member_tail :: proc(p: ^Parser) {
+	for !oop_member_tail_done(p) {
+		bump_token(p)
 	}
 }
 

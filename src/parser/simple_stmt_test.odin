@@ -819,6 +819,17 @@ ENDCLASS.`
 }
 
 @(test)
+oop_redefinition_rejects_redeclared_signature :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_text REDEFINITION RETURNING VALUE(result) TYPE string.
+ENDCLASS.`
+	parsed := parse(source, "oop_redefinition_signature.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "REDEFINITION method cannot declare a signature")
+}
+
+@(test)
 oop_signature_parameters_are_concrete_ast_clauses :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

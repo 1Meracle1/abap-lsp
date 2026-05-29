@@ -793,7 +793,7 @@ inherited_project_class_member :: proc(
 		if !ok {
 			return fallback, fallback_index
 		}
-		if _, member_ok := class_member_symbol_by_handle(
+		if member_handle, member_ok := class_member_symbol_by_handle(
 			units,
 			next,
 			.Routine,
@@ -801,19 +801,28 @@ inherited_project_class_member :: proc(
 			class_entries,
 			true,
 		); member_ok {
-			next_index := unit_id_index(next.unit)
-			if next_index >= 0 && next_index < len(units) {
-				if member := unit_class_member(&units[next_index], next.symbol, name);
-				   member != nil {
-					if fallback == nil {
-						fallback = member
-						fallback_index = next_index
+			member_unit_index := unit_id_index(member_handle.unit)
+			if member_unit_index >= 0 && member_unit_index < len(units) {
+				member_unit := &units[member_unit_index]
+				if s := symbol(member_unit, member_handle.symbol); s != nil {
+					if class_symbol, class_ok := enclosing_class_owner_unit(member_unit, s.scope);
+					   class_ok {
+						if member := unit_class_member(
+							member_unit,
+							class_symbol,
+							method_member_name(s.name),
+						); member != nil {
+							if fallback == nil {
+								fallback = member
+								fallback_index = member_unit_index
+							}
+							if len(member.parameters) == 0 && .Is_Redefinition in member.flags {
+								current = Symbol_Handle{unit = member_handle.unit, symbol = class_symbol}
+								continue
+							}
+							return member, member_unit_index
+						}
 					}
-					if len(member.parameters) == 0 && .Is_Redefinition in member.flags {
-						current = next
-						continue
-					}
-					return member, next_index
 				}
 			}
 		}
