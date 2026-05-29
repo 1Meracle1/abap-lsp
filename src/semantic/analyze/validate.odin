@@ -929,7 +929,7 @@ class_handle_from_symbol :: proc(
 		return {}, false
 	}
 	line_of := s.has_type_clause_form && type_form_is_line_of(s.type_clause_form)
-	return class_handle_from_declared_type(project, lookup, site_unit_index, s.declared_type, line_of, 0)
+	return class_handle_from_declared_type(project, lookup, site_unit_index, s.declared_type, line_of, 0, s.scope)
 }
 
 class_handle_from_type_fact :: proc(
@@ -951,11 +951,12 @@ class_handle_from_declared_type :: proc(
 	type_ref: Field_Type_Ref_Data,
 	line_of: bool,
 	depth: int,
+	scope_id := INVALID_SCOPE_ID,
 ) -> (Symbol_Handle, bool) {
 	if depth > len(project.units) + 16 {
 		return {}, false
 	}
-	handle, ok := resolve_type_ref_leaf_handle_project_lookup(project, lookup, unit_index, type_ref)
+	handle, ok := type_ref_leaf_handle(project, lookup, unit_index, scope_id, type_ref)
 	if !ok {
 		return {}, false
 	}
@@ -975,6 +976,7 @@ class_handle_from_declared_type :: proc(
 			s.declared_type,
 			next_line_of,
 			depth + 1,
+			s.scope,
 		)
 	}
 	if s.kind == .Class || s.kind == .Interface {
@@ -991,16 +993,18 @@ class_handle_from_declared_type :: proc(
 		s.declared_type,
 		next_line_of,
 		depth + 1,
+		s.scope,
 	)
 }
 
-resolve_type_ref_leaf_handle_project_lookup :: proc(
+type_ref_leaf_handle :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
 	unit_index: int,
+	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
 ) -> (Symbol_Handle, bool) {
-	handle, ok := resolve_type_ref_handle_project_lookup(project, lookup, unit_index, type_ref)
+	handle, ok := type_ref_symbol_handle(project, lookup, unit_index, scope_id, type_ref)
 	if !ok {
 		return {}, false
 	}
@@ -1012,6 +1016,15 @@ resolve_type_ref_leaf_handle_project_lookup :: proc(
 		handle = next
 	}
 	return handle, true
+}
+
+resolve_type_ref_leaf_handle_project_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	type_ref: Field_Type_Ref_Data,
+) -> (Symbol_Handle, bool) {
+	return type_ref_leaf_handle(project, lookup, unit_index, INVALID_SCOPE_ID, type_ref)
 }
 
 type_form_is_line_of :: proc(form: ast.Data_Type_Form) -> bool {
@@ -1486,6 +1499,9 @@ class_member_for_path_segment :: proc(
 	access_unit_index := -1,
 	access_scope := INVALID_SCOPE_ID,
 ) -> (^Class_Member_Data, int, bool) {
+	if segment.selector == .Dash {
+		return nil, -1, false
+	}
 	if segment.interface_qualified {
 		if !type_exposes_interface(project, lookup, class_handle, segment.interface_name, 0) {
 			return nil, -1, false

@@ -5066,6 +5066,82 @@ START-OF-SELECTION.
 }
 
 @(test)
+method_argument_can_be_object_attribute_structure_component :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_user.
+  METHODS is_favorite_repo
+    IMPORTING iv_repo_key TYPE string
+    RETURNING VALUE(rv_favorite) TYPE abap_bool.
+ENDINTERFACE.
+
+INTERFACE lif_repo.
+  TYPES: BEGIN OF ty_repo,
+           key TYPE string,
+         END OF ty_repo.
+  DATA ms_data TYPE ty_repo READ-ONLY.
+ENDINTERFACE.
+
+CLASS lcl_factory DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_user RETURNING VALUE(ro_user) TYPE REF TO lif_user.
+ENDCLASS.
+
+TYPES ty_repo_list TYPE STANDARD TABLE OF REF TO lif_repo WITH DEFAULT KEY.
+
+FORM run.
+  DATA lt_repo_obj_list TYPE ty_repo_list.
+  DATA lv_favorite TYPE abap_bool.
+  FIELD-SYMBOLS <ls_repo> LIKE LINE OF lt_repo_obj_list.
+
+  LOOP AT lt_repo_obj_list ASSIGNING <ls_repo>.
+    lv_favorite = lcl_factory=>get_user( )->is_favorite_repo( <ls_repo>->ms_data-key ).
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///method_arg_object_attr_component.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+method_argument_rejects_object_attribute_with_dash_selector :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_user.
+  METHODS is_favorite_repo
+    IMPORTING iv_repo_key TYPE string
+    RETURNING VALUE(rv_favorite) TYPE abap_bool.
+ENDINTERFACE.
+
+INTERFACE lif_repo.
+  TYPES: BEGIN OF ty_repo,
+           key TYPE string,
+         END OF ty_repo.
+  DATA ms_data TYPE ty_repo READ-ONLY.
+ENDINTERFACE.
+
+CLASS lcl_factory DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_user RETURNING VALUE(ro_user) TYPE REF TO lif_user.
+ENDCLASS.
+
+TYPES ty_repo_list TYPE STANDARD TABLE OF REF TO lif_repo WITH DEFAULT KEY.
+
+FORM run.
+  DATA lt_repo_obj_list TYPE ty_repo_list.
+  DATA lv_favorite TYPE abap_bool.
+  FIELD-SYMBOLS <ls_repo> LIKE LINE OF lt_repo_obj_list.
+
+  LOOP AT lt_repo_obj_list ASSIGNING <ls_repo>.
+    lv_favorite = lcl_factory=>get_user( )->is_favorite_repo( <ls_repo>-ms_data-key ).
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///method_arg_object_attr_bad_selector.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 method_receiver_can_be_line_of_nested_table_ref_type :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
