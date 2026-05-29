@@ -248,7 +248,8 @@ type_reference_base_and_path_are_ast_fields :: proc(t: ^testing.T) {
 DATA lr_item TYPE REF TO lif_demo=>ty_item.
 DATA lv_phase LIKE lif_demo=>scriptcallphase_enum.
 TYPES ty_field TYPE zstruc-field.
-TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line.`
+TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line.
+FIELD-SYMBOLS <item> LIKE LINE OF mr_source_tree->*.`
 	parsed := parse(source, "type_ref_paths.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
@@ -257,6 +258,7 @@ TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line
 	phase_decl := parsed.root.stmts[2].derived_stmt.(^ast.Data_Decl)
 	field_decl := parsed.root.stmts[3].derived_stmt.(^ast.Types_Decl)
 	table_decl := parsed.root.stmts[4].derived_stmt.(^ast.Types_Decl)
+	deref_decl := parsed.root.stmts[5].derived_stmt.(^ast.Field_Symbols_Decl)
 
 	date_ref := date_decl.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, date_ref.base_name, "sy")
@@ -287,6 +289,11 @@ TYPES ty_tab TYPE STANDARD TABLE OF REF TO lif_demo=>ty_item WITH KEY table_line
 	testing.expect_value(t, table_ref.base_name, "lif_demo")
 	testing.expect_value(t, table_ref.path[0].name, "ty_item")
 	testing.expect_value(t, table_ref.path[0].selector, ast.Selector_Op.Fat_Arrow)
+
+	deref_ref := deref_decl.field_symbols[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, deref_ref.base_name, "mr_source_tree")
+	testing.expect_value(t, deref_ref.path[0].name, "*")
+	testing.expect_value(t, deref_ref.path[0].selector, ast.Selector_Op.Arrow)
 }
 
 @(test)

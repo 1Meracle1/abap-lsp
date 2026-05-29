@@ -300,6 +300,11 @@ field_type_refs_equal :: proc(a, b: Field_Type_Ref_Data) -> bool {
 		if a.field_path[i] != b.field_path[i] {
 			return false
 		}
+		a_deref := i < len(a.field_derefs) && a.field_derefs[i]
+		b_deref := i < len(b.field_derefs) && b.field_derefs[i]
+		if a_deref != b_deref {
+			return false
+		}
 	}
 	return true
 }

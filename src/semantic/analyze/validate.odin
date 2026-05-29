@@ -419,6 +419,57 @@ symbol_for_project_handle :: proc(project: ^Project_Analysis, handle: Symbol_Han
 	return symbol(&project.units[unit_index], handle.symbol)
 }
 
+declared_type_has_unknown_shape :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+) -> bool {
+	if type_ref.base_name == "" {
+		return false
+	}
+	if is_generic_builtin_type_name(type_ref.base_name) {
+		return true
+	}
+	if is_builtin_type_name(type_ref.base_name) {
+		return false
+	}
+	_, ok := type_ref_symbol_handle(project, lookup, unit_index, scope_id, type_ref)
+	return !ok
+}
+
+type_ref_symbol_handle :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+) -> (Symbol_Handle, bool) {
+	if scope_id != INVALID_SCOPE_ID {
+		namespaces := [?]Namespace{.Value, .Type, .Routine}
+		for namespace in namespaces {
+			if !type_ref_namespace_matches(type_ref.namespace, namespace) {
+				continue
+			}
+			if symbol_id, ok := lookup_scope_chain(
+				&project.units[unit_index],
+				&project.units[unit_index].scope_index,
+				scope_id,
+				namespace,
+				type_ref.base_name,
+			); ok {
+				return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
+			}
+		}
+	}
+	return resolve_type_ref_handle_project_lookup(project, lookup, unit_index, type_ref)
+}
+
+type_ref_namespace_matches :: #force_inline proc "contextless" (want, got: Namespace) -> bool {
+	return want == got || (want == .Value && got == .Type) || (want == .Type && got == .Value)
+}
+
 validate_object_type_refs :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
@@ -1250,6 +1301,18 @@ resolve_field_access_tail :: proc(
 		   class_ok {
 			return type_fact_from_class_member_path(project, lookup, class_handle, access.field_path[:], unit_index, access.scope)
 		}
+		base_unit_index := unit_id_index(base.unit)
+		if base_unit_index >= 0 &&
+		   base_unit_index < len(project.units) &&
+		   declared_type_has_unknown_shape(
+			   project,
+			   lookup,
+			   base_unit_index,
+			   base_symbol.scope,
+			   base_symbol.declared_type,
+		   ) {
+			return unknown_type_fact(), true
+		}
 	}
 	return {}, false
 }
@@ -1289,6 +1352,19 @@ type_fact_from_structure_path :: proc(
 			if unknown_after_deref {
 				return unknown_type_fact(), true
 			}
+			current_unit_index := unit_id_index(current_unit.unit_id)
+			if fact.has_declared_type &&
+			   current_unit_index >= 0 &&
+			   current_unit_index < len(project.units) &&
+			   declared_type_has_unknown_shape(
+				   project,
+				   lookup,
+				   current_unit_index,
+				   INVALID_SCOPE_ID,
+				   fact.declared_type,
+			   ) {
+				return unknown_type_fact(), true
+			}
 			return {}, false
 		}
 		field := structure_field(current_unit, current_structure, segment.name)
@@ -1303,12 +1379,12 @@ type_fact_from_structure_path :: proc(
 		}
 		unknown_after_deref = false
 		current_structure = field.structure
-		if field.structure == INVALID_STRUCTURE_ID {
-			continue
-		}
 		next_unit_index := unit_id_index(field.decl_unit)
 		if next_unit_index >= 0 && next_unit_index < len(project.units) {
 			current_unit = &project.units[next_unit_index]
+		}
+		if field.structure == INVALID_STRUCTURE_ID {
+			continue
 		}
 	}
 	return fact, true

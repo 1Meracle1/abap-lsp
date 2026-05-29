@@ -5025,6 +5025,66 @@ ASSIGN lr_data->* TO <fs>.
 }
 
 @(test)
+like_line_of_dereferenced_ref_table_keeps_line_structure :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///like_line_of_ref_table.abap",
+		`
+INTERFACE lif_types.
+  TYPES: BEGIN OF ty_node,
+           path TYPE string,
+           name TYPE string,
+         END OF ty_node.
+  TYPES ty_nodes_ts TYPE STANDARD TABLE OF ty_node WITH DEFAULT KEY.
+ENDINTERFACE.
+
+DATA mr_source_tree TYPE REF TO lif_types=>ty_nodes_ts.
+
+FORM run.
+  FIELD-SYMBOLS <item> LIKE LINE OF mr_source_tree->*.
+  DATA ls_renamed_node LIKE <item>.
+
+  LOOP AT mr_source_tree->* ASSIGNING <item> WHERE path = 'x'.
+    ls_renamed_node = <item>.
+    ls_renamed_node-path = 'y'.
+    ls_renamed_node-name = <item>-name.
+  ENDLOOP.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+unknown_receiver_type_suppresses_field_cascade :: proc(t: ^testing.T) {
+	missing := collect_test_unit(
+		t,
+		"file:///unknown_receiver_type.abap",
+		`
+FORM run.
+  DATA ls_node TYPE zmissing_node.
+  ls_node-path = 'x'.
+ENDFORM.
+`,
+	)
+	generic := collect_test_unit(
+		t,
+		"file:///generic_receiver_type.abap",
+		`
+FORM run.
+  FIELD-SYMBOLS <node> TYPE any.
+  <node>-path = 'x'.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, has_diagnostic(&missing, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&missing, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&generic, .Unknown_Field))
+}
+
+@(test)
 dereference_operator_requires_data_reference :: proc(t: ^testing.T) {
 	generic_any := collect_test_unit(
 		t,

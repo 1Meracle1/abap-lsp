@@ -272,6 +272,7 @@ Field_Type_Ref_Data :: struct {
 	base_range:   tokenizer.Range,
 	field_path:   [dynamic]string,
 	field_ranges: [dynamic]tokenizer.Range,
+	field_derefs: [dynamic]bool,
 }
 
 Type_Fact_Data :: struct {

@@ -1687,8 +1687,9 @@ write_signature_type_ref :: proc(out: ^strings.Builder, ref: Field_Type_Ref_Data
 	write_signature_int(out, int(ref.namespace))
 	write_signature_int(out, 1 if ref.is_ref else 0)
 	write_signature_string(out, ref.base_name)
-	for field in ref.field_path {
+	for field, i in ref.field_path {
 		write_signature_string(out, field)
+		write_signature_int(out, 1 if i < len(ref.field_derefs) && ref.field_derefs[i] else 0)
 	}
 	strings.write_byte(out, '\n')
 }

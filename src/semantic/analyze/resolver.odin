@@ -1743,6 +1743,7 @@ import_structure_for_type_ref :: proc(
 		return INVALID_STRUCTURE_ID, false
 	}
 	path := type_ref.field_path[:]
+	derefs := type_ref.field_derefs[:]
 	source_unit_index := unit_id_index(handle.unit)
 	if source_unit_index < 0 || source_unit_index >= len(units) {
 		return INVALID_STRUCTURE_ID, false
@@ -1758,6 +1759,9 @@ import_structure_for_type_ref :: proc(
 		}
 		handle = nested
 		path = path[1:]
+		if len(derefs) > 0 {
+			derefs = derefs[1:]
+		}
 		source_unit_index = unit_id_index(handle.unit)
 		if source_unit_index < 0 || source_unit_index >= len(units) {
 			return INVALID_STRUCTURE_ID, false
@@ -1774,7 +1778,10 @@ import_structure_for_type_ref :: proc(
 		allocator,
 	)
 	current := imported
-	for field_name in path {
+	for field_name, i in path {
+		if i < len(derefs) && derefs[i] {
+			continue
+		}
 		field := structure_field(&units[unit_index], current, field_name)
 		if field == nil || field.structure == INVALID_STRUCTURE_ID {
 			return current, true
@@ -1812,6 +1819,7 @@ local_structure_for_type_ref :: proc(
 			unit,
 			symbol_id,
 			type_ref.field_path[:],
+			type_ref.field_derefs[:],
 		); structure_ok {
 			return structure_id, true
 		}
@@ -1824,7 +1832,7 @@ local_structure_for_type_ref :: proc(
 				type_ref.namespace,
 				type_ref.base_name,
 			); symbol_ok {
-				return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])
+				return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_derefs[:])
 			}
 		}
 	}
@@ -1836,7 +1844,7 @@ local_structure_for_type_ref :: proc(
 			.Type,
 			type_ref.base_name,
 		); symbol_ok {
-			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])
+			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_derefs[:])
 		}
 	}
 	if type_ref.namespace == .Value {
@@ -1845,7 +1853,7 @@ local_structure_for_type_ref :: proc(
 			scope_id,
 			type_ref.base_name,
 		); symbol_ok {
-			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:])
+			return local_structure_for_symbol_path(unit, symbol_id, type_ref.field_path[:], type_ref.field_derefs[:])
 		}
 	}
 	return INVALID_STRUCTURE_ID, false
@@ -1891,6 +1899,7 @@ local_structure_for_symbol_path :: proc(
 	unit: ^Unit_Analysis,
 	symbol_id: Symbol_Id,
 	path: []string,
+	derefs: []bool,
 ) -> (
 	Structure_Id,
 	bool,
@@ -1917,19 +1926,27 @@ local_structure_for_symbol_path :: proc(
 	if s == nil || s.structure == INVALID_STRUCTURE_ID {
 		return INVALID_STRUCTURE_ID, false
 	}
-	return resolve_unit_structure_path(unit, s.structure, current_path)
+	current_derefs := derefs
+	if len(derefs) > 0 {
+		current_derefs = derefs[len(path) - len(current_path):]
+	}
+	return resolve_unit_structure_path(unit, s.structure, current_path, current_derefs)
 }
 
 resolve_unit_structure_path :: proc(
 	unit: ^Unit_Analysis,
 	start: Structure_Id,
 	path: []string,
+	derefs: []bool,
 ) -> (
 	Structure_Id,
 	bool,
 ) {
 	current := start
-	for field_name in path {
+	for field_name, i in path {
+		if i < len(derefs) && derefs[i] {
+			continue
+		}
 		field := structure_field(unit, current, field_name)
 		if field == nil || field.structure == INVALID_STRUCTURE_ID {
 			return INVALID_STRUCTURE_ID, false
