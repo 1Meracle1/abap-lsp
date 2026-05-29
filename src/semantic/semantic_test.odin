@@ -5805,6 +5805,53 @@ ENDCLASS.
 }
 
 @(test)
+insert_into_table_data_ref_component_resolves_struct_field :: proc(t: ^testing.T) {
+	valid_source := `
+INTERFACE lif_log.
+  TYPES: BEGIN OF ty_msg,
+           text TYPE string,
+         END OF ty_msg.
+  TYPES ty_msgs TYPE STANDARD TABLE OF ty_msg WITH DEFAULT KEY.
+  TYPES: BEGIN OF ty_status,
+           messages TYPE ty_msgs,
+         END OF ty_status.
+ENDINTERFACE.
+DATA ls_msg TYPE lif_log=>ty_msg.
+DATA lr_status TYPE REF TO lif_log=>ty_status.
+INSERT ls_msg INTO TABLE lr_status->messages.
+`
+	invalid_source := `
+INTERFACE lif_log.
+  TYPES: BEGIN OF ty_msg,
+           text TYPE string,
+         END OF ty_msg.
+  TYPES ty_msgs TYPE STANDARD TABLE OF ty_msg WITH DEFAULT KEY.
+  TYPES: BEGIN OF ty_status,
+           messages TYPE ty_msgs,
+         END OF ty_status.
+ENDINTERFACE.
+DATA ls_msg TYPE lif_log=>ty_msg.
+DATA lr_status TYPE REF TO lif_log=>ty_status.
+INSERT ls_msg INTO TABLE lr_status->missing.
+`
+	valid := collect_test_unit(t, "file:///insert_data_ref_component.abap", valid_source)
+	invalid := collect_test_unit(t, "file:///insert_data_ref_component_invalid.abap", invalid_source)
+
+	testing.expect(t, !has_diagnostic(&valid, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&invalid, .Unknown_Field))
+	messages_seen := false
+	for access in valid.field_accesses {
+		if access.base_name == "lr_status" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "messages" &&
+		   access.field_path[0].selector == .Arrow {
+			messages_seen = true
+		}
+	}
+	testing.expect(t, messages_seen)
+}
+
+@(test)
 read_table_nested_key_on_table_component_keeps_source_path :: proc(t: ^testing.T) {
 	source := `
 INTERFACE lif_defs.
