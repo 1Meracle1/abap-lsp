@@ -1331,6 +1331,7 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 	collect_expr_refs(c, stmt.section_length, scope)
 	collect_expr_refs(c, stmt.match_offset, scope)
 	collect_expr_refs(c, stmt.match_length, scope)
+	collect_expr_refs(c, stmt.match_line, scope)
 	collect_expr_refs(c, stmt.match_count, scope)
 	collect_expr_refs(c, stmt.results, scope)
 	collect_expr_list_refs(c, stmt.submatches[:], scope)
@@ -1350,6 +1351,12 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 		append(
 			&write_targets,
 			Find_Write_Target_Data{range = stmt.match_length.range, definitely_assigned = true},
+		)
+	}
+	if stmt.match_line != nil {
+		append(
+			&write_targets,
+			Find_Write_Target_Data{range = stmt.match_line.range, definitely_assigned = true},
 		)
 	}
 	if stmt.match_count != nil {

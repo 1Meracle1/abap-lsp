@@ -3213,6 +3213,15 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 					body_start,
 					FIND_TAIL_STOP_KEYWORDS,
 				)
+			} else if allow_keyword(p, "LINE") {
+				if !stmt.in_table {
+					error_current(p, "syntax error: MATCH LINE requires FIND IN TABLE")
+				}
+				stmt.match_line = required_simple_expr(
+					p,
+					body_start,
+					FIND_TAIL_STOP_KEYWORDS,
+				)
 			} else if allow_keyword(p, "COUNT") {
 				stmt.match_count = required_simple_expr(
 					p,
@@ -3220,11 +3229,7 @@ parse_find_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 					FIND_TAIL_STOP_KEYWORDS,
 				)
 			} else {
-				stmt.match_offset = required_simple_expr(
-					p,
-					body_start,
-					FIND_TAIL_STOP_KEYWORDS,
-				)
+				error_current(p, "syntax error: expected OFFSET, LENGTH, LINE, or COUNT after FIND MATCH")
 			}
 			continue
 		}

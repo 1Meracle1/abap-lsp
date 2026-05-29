@@ -425,6 +425,35 @@ find_in_table_keeps_target_after_table_keyword :: proc(t: ^testing.T) {
 }
 
 @(test)
+find_in_table_match_line_keeps_line_target :: proc(t: ^testing.T) {
+	source := `FIND REGEX 'x' IN TABLE ct_source MATCH LINE lv_tabix.`
+	parsed := parse(source, "find_match_line.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	find := parsed.root.stmts[0].derived_stmt.(^ast.Find_Stmt)
+	line := find.match_line.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect(t, find.in_table)
+	testing.expect(t, find.match_offset == nil)
+	testing.expect_value(t, line.name, "lv_tabix")
+	testing.expect_value(t, ast.print_node(find, context.allocator), source)
+}
+
+@(test)
+find_match_requires_known_addition :: proc(t: ^testing.T) {
+	parsed := parse(`FIND 'x' IN text MATCH WORD lv_word.`, "find_bad_match.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected OFFSET, LENGTH, LINE, or COUNT after FIND MATCH")
+}
+
+@(test)
+find_match_line_requires_table :: proc(t: ^testing.T) {
+	parsed := parse(`FIND 'x' IN text MATCH LINE lv_line.`, "find_bad_match_line.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "MATCH LINE requires FIND IN TABLE")
+}
+
+@(test)
 message_heads_keep_compact_class_fact :: proc(t: ^testing.T) {
 	source := `MESSAGE e001(zmsg) WITH lv_text DISPLAY LIKE lv_like RAISING cx_msg.
 MESSAGE ID zmsg TYPE lv_type NUMBER lv_no.

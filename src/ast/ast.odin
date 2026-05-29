@@ -1214,6 +1214,7 @@ Find_Stmt :: struct {
 	section_length: ^Expr,
 	match_offset:   ^Expr,
 	match_length:   ^Expr,
+	match_line:     ^Expr,
 	match_count:    ^Expr,
 	results:        ^Expr,
 	submatches:     [dynamic]^Expr,

@@ -1743,6 +1743,10 @@ emit_find_stmt :: proc(p: ^Printer, stmt: ^Find_Stmt) {
 		emit(p, " MATCH LENGTH ")
 		emit_node(p, stmt.match_length)
 	}
+	if stmt.match_line != nil {
+		emit(p, " MATCH LINE ")
+		emit_node(p, stmt.match_line)
+	}
 	if stmt.match_count != nil {
 		emit(p, " MATCH COUNT ")
 		emit_node(p, stmt.match_count)

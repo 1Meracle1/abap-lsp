@@ -3590,6 +3590,28 @@ ENDFORM.
 }
 
 @(test)
+find_in_table_match_line_does_not_reference_line_keyword :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///find_match_line.abap",
+		`
+FORM run.
+  DATA ct_source TYPE STANDARD TABLE OF string.
+  DATA iv_from_interface TYPE string.
+  DATA lv_tabix TYPE i.
+
+  FIND REGEX '^\s*INTERFACES(:| )\s*' && iv_from_interface && '\s*.' IN TABLE ct_source MATCH LINE lv_tabix ##REGEX_POSIX.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_reference(&unit, "line", .Value, .Identifier))
+	testing.expect_value(t, len(unit.find_sites), 1)
+	testing.expect_value(t, len(unit.find_sites[0].write_targets), 1)
+}
+
+@(test)
 validates_unresolved_and_wrong_namespace_references :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
