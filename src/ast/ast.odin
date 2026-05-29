@@ -261,6 +261,15 @@ Selector_Expr :: struct {
 	field:      ^Expr,
 }
 
+// ABAP syntax: interface-qualified selector such as `ref->iface~member` or `class=>iface~member`.
+Interface_Qualified_Selector_Expr :: struct {
+	using node: Expr,
+	receiver:    ^Expr,
+	receiver_op: Selector_Op,
+	interface:   ^Expr,
+	member:      ^Expr,
+}
+
 // ABAP syntax: offset/length access such as `text+off` or `text+off(len)`.
 Substring_Expr :: struct {
 	using node: Expr,
@@ -2588,6 +2597,7 @@ Any_Node :: union {
 	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,
+	^Interface_Qualified_Selector_Expr,
 	^Substring_Expr,
 	^Call_Expr,
 	^Call_Arg_List_Expr,
@@ -2746,6 +2756,7 @@ Any_Expr :: union {
 	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,
+	^Interface_Qualified_Selector_Expr,
 	^Substring_Expr,
 	^Call_Expr,
 	^Call_Arg_List_Expr,

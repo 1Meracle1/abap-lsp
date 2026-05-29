@@ -56,6 +56,8 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 		collect_expr_list_refs(c, n.selectors[:], scope)
 	case ^ast.Selector_Expr:
 		collect_selector_expr_refs(c, n, scope, false)
+	case ^ast.Interface_Qualified_Selector_Expr:
+		collect_interface_qualified_selector_expr_refs(c, n, scope, false)
 	case ^ast.Substring_Expr:
 		collect_expr_refs(c, n.base, scope)
 		collect_expr_refs(c, n.offset, scope)
@@ -265,9 +267,45 @@ collect_selector_expr_refs :: proc(
 		kind = .Static_Target
 	}
 	add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
+	add_interface_qualified_segment_references(c, scope, access.field_path[:])
 	if len(access.field_path) > 0 {
 		append(&c.field_accesses, access)
 		add_expression_fact(c, scope, expr.range, .Selector, type_fact_from_expr(c, expr, scope))
+	}
+}
+
+collect_interface_qualified_selector_expr_refs :: proc(
+	c: ^Collector,
+	expr: ^ast.Interface_Qualified_Selector_Expr,
+	scope: Scope_Id,
+	in_type_position: bool,
+) {
+	access, ok := selector_access_from_expr(c, expr, scope, in_type_position)
+	if !ok {
+		collect_expr_refs(c, expr.receiver, scope)
+		return
+	}
+	kind := Reference_Kind.Identifier
+	if access.base_namespace == .Type {
+		kind = .Static_Target
+	}
+	add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
+	add_interface_qualified_segment_references(c, scope, access.field_path[:])
+	if len(access.field_path) > 0 {
+		append(&c.field_accesses, access)
+		add_expression_fact(c, scope, expr.range, .Selector, type_fact_from_expr(c, expr, scope))
+	}
+}
+
+add_interface_qualified_segment_references :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	path: []Field_Access_Segment,
+) {
+	for segment in path {
+		if segment.interface_qualified {
+			add_reference(c, scope, segment.interface_name, .Type, .Type_Ref, segment.interface_range)
+		}
 	}
 }
 
@@ -296,6 +334,9 @@ selector_access_from_expr :: proc(
 	}
 	sel, ok := expr.derived_expr.(^ast.Selector_Expr)
 	if !ok {
+		if q, q_ok := expr.derived_expr.(^ast.Interface_Qualified_Selector_Expr); q_ok {
+			return interface_qualified_selector_access_from_expr(c, q, scope, in_type_position)
+		}
 		return {}, false
 	}
 	access, access_ok := selector_access_from_expr(c, sel.base, scope, in_type_position)
@@ -317,6 +358,40 @@ selector_access_from_expr :: proc(
 			name = canonical_name(name, c.allocator),
 			range = range,
 			deref = sel.op == .Arrow && name == "*",
+		},
+	)
+	return access, true
+}
+
+interface_qualified_selector_access_from_expr :: proc(
+	c: ^Collector,
+	expr: ^ast.Interface_Qualified_Selector_Expr,
+	scope: Scope_Id,
+	in_type_position: bool,
+) -> (
+	Field_Access,
+	bool,
+) {
+	access, access_ok := selector_access_from_expr(c, expr.receiver, scope, in_type_position)
+	if !access_ok {
+		return {}, false
+	}
+	if len(access.field_path) == 0 && expr.receiver_op == .Fat_Arrow {
+		access.base_namespace = .Type
+	}
+	interface_name, interface_range, interface_ok := expr_name(expr.interface)
+	member_name, member_range, member_ok := expr_name(expr.member)
+	if !interface_ok || !member_ok {
+		return {}, false
+	}
+	append(
+		&access.field_path,
+		Field_Access_Segment {
+			name = canonical_name(member_name, c.allocator),
+			range = member_range,
+			interface_name = canonical_name(interface_name, c.allocator),
+			interface_range = interface_range,
+			interface_qualified = true,
 		},
 	)
 	return access, true
@@ -398,10 +473,6 @@ collect_call_method_selector_target_refs :: proc(
 	target: ^ast.Expr,
 	scope: Scope_Id,
 ) -> bool {
-	sel, ok := target.derived_expr.(^ast.Selector_Expr)
-	if !ok {
-		return false
-	}
 	if receiver, receiver_op, interface_name, interface_range, _, _, qualified :=
 		interface_qualified_method_parts(target);
 	   qualified {
@@ -413,6 +484,10 @@ collect_call_method_selector_target_refs :: proc(
 		}
 		add_reference(c, scope, interface_name, .Type, .Type_Ref, interface_range)
 		return true
+	}
+	sel, ok := target.derived_expr.(^ast.Selector_Expr)
+	if !ok {
+		return false
 	}
 	if id, id_ok := sel.base.derived_expr.(^ast.Ident_Expr); id_ok {
 		namespace := Namespace.Value
@@ -505,6 +580,14 @@ interface_qualified_method_parts :: proc(
 	method_range: tokenizer.Range,
 	ok: bool,
 ) {
+	if q, q_ok := expr.derived_expr.(^ast.Interface_Qualified_Selector_Expr); q_ok {
+		iface_name, iface_range, interface_ok := expr_name(q.interface)
+		meth_name, meth_range, method_ok := expr_name(q.member)
+		if !interface_ok || !method_ok {
+			return
+		}
+		return q.receiver, q.receiver_op, iface_name, iface_range, meth_name, meth_range, true
+	}
 	sel, sel_ok := expr.derived_expr.(^ast.Selector_Expr)
 	if !sel_ok || sel.op != .Tilde {
 		return

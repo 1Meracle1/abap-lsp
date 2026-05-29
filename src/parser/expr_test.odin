@@ -27,7 +27,34 @@ selector_chains_build_nested_selector_nodes :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	counts := count_nodes(parsed.root)
-	testing.expect_value(t, counts.selector, 4)
+	testing.expect_value(t, counts.selector, 2)
+	testing.expect_value(t, counts.interface_qualified_selector, 1)
+}
+
+@(test)
+interface_qualified_selectors_keep_receiver_interface_and_member :: proc(t: ^testing.T) {
+	parsed := parse("lv = ix_error->if_t100_message~t100key-msgid.", "test.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt)
+	msgid := assign.rhs.derived_expr.(^ast.Selector_Expr)
+	t100key := msgid.base.derived_expr.(^ast.Interface_Qualified_Selector_Expr)
+	receiver := t100key.receiver.derived_expr.(^ast.Ident_Expr)
+	iface := t100key.interface.derived_expr.(^ast.Ident_Expr)
+	member := t100key.member.derived_expr.(^ast.Ident_Expr)
+
+	testing.expect_value(t, receiver.name, "ix_error")
+	testing.expect_value(t, t100key.receiver_op, ast.Selector_Op.Arrow)
+	testing.expect_value(t, iface.name, "if_t100_message")
+	testing.expect_value(t, member.name, "t100key")
+	testing.expect_value(t, ast.print_node(assign.rhs, context.allocator), "ix_error->if_t100_message~t100key-msgid")
+}
+
+@(test)
+interface_qualified_selector_requires_identifier_shape :: proc(t: ^testing.T) {
+	parsed := parse("lv = ix_error->if_t100_message~*.", "test.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "interface-qualified selector must be receiver->interface~member")
 }
 
 @(test)

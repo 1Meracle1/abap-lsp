@@ -1404,12 +1404,11 @@ type_fact_from_class_member_path :: proc(
 	if len(path) == 0 {
 		return unknown_type_fact(), true
 	}
-	member, ok := class_member_in_hierarchy(
+	member, member_unit_index, ok := class_member_for_path_segment(
 		project,
 		lookup,
 		class_handle,
-		path[0].name,
-		true,
+		path[0],
 		access_unit_index,
 		access_scope,
 	)
@@ -1438,17 +1437,52 @@ type_fact_from_class_member_path :: proc(
 	if len(path) == 1 {
 		return fact, true
 	}
-	member_unit := &project.units[unit_id_index(class_handle.unit)]
+	member_unit := &project.units[member_unit_index]
 	if fact.structure == INVALID_STRUCTURE_ID {
 		return {}, false
 	}
 	return type_fact_from_structure_path(
 		project,
 		lookup,
-		unit_id_index(class_handle.unit),
+		member_unit_index,
 		member_unit,
 		fact.structure,
 		path[1:],
+	)
+}
+
+class_member_for_path_segment :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	class_handle: Symbol_Handle,
+	segment: Field_Access_Segment,
+	access_unit_index := -1,
+	access_scope := INVALID_SCOPE_ID,
+) -> (^Class_Member_Data, int, bool) {
+	if segment.interface_qualified {
+		if !type_exposes_interface(project, lookup, class_handle, segment.interface_name, 0) {
+			return nil, -1, false
+		}
+		unit_index := unit_id_index(class_handle.unit)
+		if unit_index < 0 || unit_index >= len(project.units) {
+			return nil, -1, false
+		}
+		return interface_member_by_name_with_unit(
+			project,
+			lookup,
+			unit_index,
+			segment.interface_name,
+			segment.name,
+		)
+	}
+	return class_member_in_hierarchy_with_unit(
+		project,
+		lookup,
+		class_handle,
+		segment.name,
+		true,
+		access_unit_index,
+		access_scope,
 	)
 }
 
@@ -1461,21 +1495,55 @@ class_member_in_hierarchy :: proc(
 	access_unit_index := -1,
 	access_scope := INVALID_SCOPE_ID,
 ) -> (^Class_Member_Data, bool) {
+	member, _, ok := class_member_in_hierarchy_with_unit(
+		project,
+		lookup,
+		class_handle,
+		name,
+		inherited,
+		access_unit_index,
+		access_scope,
+	)
+	return member, ok
+}
+
+class_member_in_hierarchy_with_unit :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	class_handle: Symbol_Handle,
+	name: string,
+	inherited: bool,
+	access_unit_index := -1,
+	access_scope := INVALID_SCOPE_ID,
+) -> (^Class_Member_Data, int, bool) {
+	unit_index := unit_id_index(class_handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return nil, -1, false
+	}
 	if member := unit_class_member_lookup(project, lookup, class_handle, name); member != nil {
 		if inherited && member.visibility == .Private &&
 		   !class_private_member_visible(project, class_handle, access_unit_index, access_scope) {
-			return nil, false
+			return nil, -1, false
 		}
-		return member, true
+		return member, unit_index, true
 	}
-	if member, ok := interface_member_in_class(project, lookup, class_handle, name); ok {
-		return member, true
+	if member, member_unit_index, ok := interface_member_in_class_with_unit(project, lookup, class_handle, name);
+	   ok {
+		return member, member_unit_index, true
 	}
 	next, ok := direct_superclass_handle_lookup(project, lookup, class_handle)
 	if !ok {
-		return nil, false
+		return nil, -1, false
 	}
-	return class_member_in_hierarchy(project, lookup, next, name, true, access_unit_index, access_scope)
+	return class_member_in_hierarchy_with_unit(
+		project,
+		lookup,
+		next,
+		name,
+		true,
+		access_unit_index,
+		access_scope,
+	)
 }
 
 class_private_member_visible :: proc(
@@ -1519,46 +1587,100 @@ class_has_friend :: proc(
 	return false
 }
 
+type_exposes_interface :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	interface_name: string,
+	depth: int,
+) -> bool {
+	if depth > len(project.units) + 8 {
+		return false
+	}
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return false
+	}
+	unit := &project.units[unit_index]
+	s := symbol(unit, handle.symbol)
+	if s != nil && s.kind == .Interface && s.name == interface_name {
+		return true
+	}
+	for implemented in unit.implemented_interfaces {
+		if implemented.owner_symbol != handle.symbol {
+			continue
+		}
+		if implemented.interface_name == interface_name {
+			return true
+		}
+		next, ok := resolve_type_name_in_project_lookup(
+			project,
+			lookup,
+			unit_index,
+			implemented.interface_name,
+		)
+		if ok && type_exposes_interface(project, lookup, next, interface_name, depth + 1) {
+			return true
+		}
+	}
+	if s != nil && s.kind == .Class {
+		if next, ok := direct_superclass_handle_lookup(project, lookup, handle); ok {
+			return type_exposes_interface(project, lookup, next, interface_name, depth + 1)
+		}
+	}
+	return false
+}
+
 interface_member_in_class :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Validation_Lookup,
 	class_handle: Symbol_Handle,
 	name: string,
 ) -> (^Class_Member_Data, bool) {
+	member, _, ok := interface_member_in_class_with_unit(project, lookup, class_handle, name)
+	return member, ok
+}
+
+interface_member_in_class_with_unit :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	class_handle: Symbol_Handle,
+	name: string,
+) -> (^Class_Member_Data, int, bool) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
-		return nil, false
+		return nil, -1, false
 	}
 	unit := &project.units[unit_index]
 	for alias in unit.member_aliases {
 		if alias.owner_symbol != class_handle.symbol || alias.alias_name != name {
 			continue
 		}
-		if member, ok := interface_member_by_name(
+		if member, member_unit_index, ok := interface_member_by_name_with_unit(
 			project,
 			lookup,
 			unit_index,
 			alias.target_interface_name,
 			alias.target_member_name,
 		); ok {
-			return member, true
+			return member, member_unit_index, true
 		}
 	}
 	for implemented in unit.implemented_interfaces {
 		if implemented.owner_symbol != class_handle.symbol {
 			continue
 		}
-		if member, ok := interface_member_by_name(
+		if member, member_unit_index, ok := interface_member_by_name_with_unit(
 			project,
 			lookup,
 			unit_index,
 			implemented.interface_name,
 			name,
 		); ok {
-			return member, true
+			return member, member_unit_index, true
 		}
 	}
-	return nil, false
+	return nil, -1, false
 }
 
 interface_member_by_name :: proc(
@@ -1567,11 +1689,27 @@ interface_member_by_name :: proc(
 	unit_index: int,
 	interface_name, member_name: string,
 ) -> (^Class_Member_Data, bool) {
+	member, _, ok := interface_member_by_name_with_unit(
+		project,
+		lookup,
+		unit_index,
+		interface_name,
+		member_name,
+	)
+	return member, ok
+}
+
+interface_member_by_name_with_unit :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	unit_index: int,
+	interface_name, member_name: string,
+) -> (^Class_Member_Data, int, bool) {
 	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, interface_name)
 	if !ok {
-		return nil, false
+		return nil, -1, false
 	}
-	return interface_member_by_handle(project, lookup, handle, member_name, 0)
+	return interface_member_by_handle_with_unit(project, lookup, handle, member_name, 0)
 }
 
 interface_member_by_handle :: proc(
@@ -1581,15 +1719,32 @@ interface_member_by_handle :: proc(
 	member_name: string,
 	depth: int,
 ) -> (^Class_Member_Data, bool) {
+	member, _, ok := interface_member_by_handle_with_unit(
+		project,
+		lookup,
+		handle,
+		member_name,
+		depth,
+	)
+	return member, ok
+}
+
+interface_member_by_handle_with_unit :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	member_name: string,
+	depth: int,
+) -> (^Class_Member_Data, int, bool) {
 	if depth > len(project.units) + 8 {
-		return nil, false
-	}
-	if member := unit_class_member_lookup(project, lookup, handle, member_name); member != nil {
-		return member, true
+		return nil, -1, false
 	}
 	unit_index := unit_id_index(handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
-		return nil, false
+		return nil, -1, false
+	}
+	if member := unit_class_member_lookup(project, lookup, handle, member_name); member != nil {
+		return member, unit_index, true
 	}
 	unit := &project.units[unit_index]
 	for alias in unit.member_aliases {
@@ -1605,14 +1760,14 @@ interface_member_by_handle :: proc(
 		if !ok {
 			continue
 		}
-		if aliased, aliased_ok := interface_member_by_handle(
+		if aliased, aliased_unit_index, aliased_ok := interface_member_by_handle_with_unit(
 			project,
 			lookup,
 			target,
 			alias.target_member_name,
 			depth + 1,
 		); aliased_ok {
-			return aliased, true
+			return aliased, aliased_unit_index, true
 		}
 	}
 	for implemented in unit.implemented_interfaces {
@@ -1628,17 +1783,17 @@ interface_member_by_handle :: proc(
 		if !ok {
 			continue
 		}
-		if inherited, inherited_ok := interface_member_by_handle(
+		if inherited, inherited_unit_index, inherited_ok := interface_member_by_handle_with_unit(
 			project,
 			lookup,
 			next,
 			member_name,
 			depth + 1,
 		); inherited_ok {
-			return inherited, true
+			return inherited, inherited_unit_index, true
 		}
 	}
-	return nil, false
+	return nil, -1, false
 }
 
 resolve_type_name_in_project_lookup :: proc(

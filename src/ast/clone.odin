@@ -116,6 +116,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.base = clone(n.base, allocator)
 		r.field = clone(n.field, allocator)
 		return r
+	case ^Interface_Qualified_Selector_Expr:
+		r := clone_shallow(n, allocator)
+		r.receiver = clone(n.receiver, allocator)
+		r.interface = clone(n.interface, allocator)
+		r.member = clone(n.member, allocator)
+		return r
 	case ^Substring_Expr:
 		r := clone_shallow(n, allocator)
 		r.base = clone(n.base, allocator)

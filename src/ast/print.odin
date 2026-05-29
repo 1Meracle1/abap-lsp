@@ -117,6 +117,12 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_node(p, n.base)
 		emit(p, selector_op_text(n.op))
 		emit_node(p, n.field)
+	case ^Interface_Qualified_Selector_Expr:
+		emit_node(p, n.receiver)
+		emit(p, selector_op_text(n.receiver_op))
+		emit_node(p, n.interface)
+		emit(p, "~")
+		emit_node(p, n.member)
 	case ^Substring_Expr:
 		emit_node(p, n.base)
 		if n.offset != nil {

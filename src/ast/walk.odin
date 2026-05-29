@@ -62,6 +62,10 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Selector_Expr:
 		walk(next, n.base)
 		walk(next, n.field)
+	case ^Interface_Qualified_Selector_Expr:
+		walk(next, n.receiver)
+		walk(next, n.interface)
+		walk(next, n.member)
 	case ^Substring_Expr:
 		walk(next, n.base)
 		walk(next, n.offset)

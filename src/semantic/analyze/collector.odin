@@ -1715,6 +1715,8 @@ type_ref_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
 		return strings.clone(n.name, c.allocator)
 	case ^ast.Selector_Expr:
 		return ast.print_node(n, c.allocator)
+	case ^ast.Interface_Qualified_Selector_Expr:
+		return ast.print_node(n, c.allocator)
 	}
 	return expr_display(c, expr)
 }

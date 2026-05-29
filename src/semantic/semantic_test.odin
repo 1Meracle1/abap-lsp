@@ -4992,6 +4992,90 @@ li_attr->if_node~set_value( value = 'x' ).
 }
 
 @(test)
+interface_qualified_attribute_access_resolves_member_structure :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///qualified_attribute_access.abap",
+		source = `
+CLASS lcl_exception DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_t100_message.
+ENDCLASS.
+
+DATA lx_error TYPE REF TO lcl_exception.
+DATA lv_msgid TYPE string.
+lv_msgid = lx_error->lif_t100_message~t100key-msgid.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "file:///lif_t100_message.abap",
+			source = `
+INTERFACE lif_t100_message.
+  DATA t100key TYPE scx_t100key.
+ENDINTERFACE.
+`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "file:///scx_t100key.abap",
+			source = `
+TYPES: BEGIN OF scx_t100key,
+         msgid TYPE string,
+         msgno TYPE string,
+       END OF scx_t100key.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unresolved_Reference))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
+interface_qualified_attribute_access_requires_exposed_interface :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///qualified_attribute_access_invalid.abap",
+		source = `
+CLASS lcl_exception DEFINITION.
+ENDCLASS.
+
+DATA lx_error TYPE REF TO lcl_exception.
+DATA lv_msgid TYPE string.
+lv_msgid = lx_error->lif_t100_message~t100key-msgid.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "file:///lif_t100_message.abap",
+			source = `
+INTERFACE lif_t100_message.
+  DATA t100key TYPE scx_t100key.
+ENDINTERFACE.
+`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "file:///scx_t100key.abap",
+			source = `
+TYPES: BEGIN OF scx_t100key,
+         msgid TYPE string,
+       END OF scx_t100key.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, root != nil && has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 call_transaction_collects_parser_operand_facts_without_keyword_refs :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

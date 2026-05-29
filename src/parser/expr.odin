@@ -495,6 +495,28 @@ parse_selector_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Expr {
 		field = name
 	}
 
+	if op_tok.kind == .Tilde {
+		if receiver_sel, receiver_ok := base.derived_expr.(^ast.Selector_Expr);
+		   receiver_ok && (receiver_sel.op == .Arrow || receiver_sel.op == .Fat_Arrow) {
+			_, interface_ok := receiver_sel.field.derived_expr.(^ast.Ident_Expr)
+			_, member_ok := field.derived_expr.(^ast.Ident_Expr)
+			if !interface_ok || !member_ok {
+				error(p, tokenizer.text_range(receiver_sel.field.range.start, field.range.end), "syntax error: interface-qualified selector must be receiver->interface~member")
+				return nil
+			}
+			expr := ast.new(
+				ast.Interface_Qualified_Selector_Expr,
+				tokenizer.text_range(receiver_sel.base.range.start, field.range.end),
+				p.allocator,
+			)
+			expr.receiver = receiver_sel.base
+			expr.receiver_op = receiver_sel.op
+			expr.interface = receiver_sel.field
+			expr.member = field
+			return expr
+		}
+	}
+
 	expr := ast.new(
 		ast.Selector_Expr,
 		tokenizer.text_range(base.range.start, field.range.end),
@@ -1777,6 +1799,8 @@ node_can_start_substring :: proc(node: ^ast.Expr) -> bool {
 	case ^ast.Ident_Expr:
 		return true
 	case ^ast.Selector_Expr:
+		return true
+	case ^ast.Interface_Qualified_Selector_Expr:
 		return true
 	case ^ast.Table_Expr:
 		return true

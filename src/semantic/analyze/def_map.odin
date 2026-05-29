@@ -415,9 +415,12 @@ Table_Work_Area_Data :: struct {
 }
 
 Field_Access_Segment :: struct {
-	name:  string,
-	range: tokenizer.Range,
-	deref: bool,
+	name:                string,
+	range:               tokenizer.Range,
+	deref:               bool,
+	interface_name:      string,
+	interface_range:     tokenizer.Range,
+	interface_qualified: bool,
 }
 
 Field_Access :: struct {

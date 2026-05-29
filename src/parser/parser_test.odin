@@ -9,6 +9,7 @@ import "core:testing"
 Node_Counts :: struct {
 	binary:        int,
 	selector:      int,
+	interface_qualified_selector: int,
 	table:         int,
 	template:      int,
 	interpolation: int,
@@ -147,6 +148,8 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.binary += 1
 	case ^ast.Selector_Expr:
 		counts.selector += 1
+	case ^ast.Interface_Qualified_Selector_Expr:
+		counts.interface_qualified_selector += 1
 	case ^ast.Table_Expr:
 		counts.table += 1
 	case ^ast.Char_String_Template_Expr:
