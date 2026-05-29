@@ -2765,6 +2765,41 @@ TYPES: BEGIN OF ty_wrap,
 }
 
 @(test)
+method_local_include_type_expands_private_class_type :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_version DEFINITION.
+  PRIVATE SECTION.
+    TYPES: BEGIN OF ty_requirement_status,
+             met TYPE abap_bool,
+           END OF ty_requirement_status.
+    CLASS-METHODS show.
+ENDCLASS.
+
+CLASS lcl_version IMPLEMENTATION.
+  METHOD show.
+    TYPES: BEGIN OF ty_color_line,
+             color TYPE string.
+             INCLUDE TYPE ty_requirement_status.
+    TYPES: END OF ty_color_line.
+
+    FIELD-SYMBOLS <ls_line> TYPE ty_color_line.
+    IF <ls_line>-met = abap_false.
+      <ls_line>-color = 'x'.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.
+`
+	unit := collect_test_unit(t, "file:///method_local_include_private_type.abap", source)
+
+	color_line := analyze.find_symbol(&unit, "ty_color_line", .Type_Def)
+	testing.expect(t, color_line != nil)
+	st := analyze.structure(&unit, color_line.structure)
+	fields := [?]string{"color", "met"}
+	testing.expect(t, field_names_match(st, fields[:]))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 structured_component_named_include_resolves_as_field :: proc(t: ^testing.T) {
 	source := `
 TYPES: BEGIN OF ty_src_info,

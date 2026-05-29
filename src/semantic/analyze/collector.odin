@@ -1826,6 +1826,11 @@ resolve_field_type_ref :: proc(
 	if !ok && type_ref.namespace == .Type {
 		symbol_id, ok = lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, .Value)
 	}
+	if !ok && type_ref.namespace == .Type {
+		if class_symbol, class_ok := enclosing_owner(c, scope, .Class); class_ok {
+			symbol_id, ok = class_type_symbol(c, class_symbol, type_ref.base_name)
+		}
+	}
 	if !ok {
 		return INVALID_STRUCTURE_ID, false
 	}
