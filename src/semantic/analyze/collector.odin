@@ -1830,6 +1830,9 @@ resolve_field_type_ref :: proc(
 		return INVALID_STRUCTURE_ID, false
 	}
 	s := c.symbols[symbol_id_index(symbol_id)]
+	if (s.kind == .Class || s.kind == .Interface) && len(type_ref.field_path) > 0 {
+		return resolve_class_type_ref(c, symbol_id, type_ref.field_path[:], type_ref.field_selectors[:], type_ref.field_derefs[:])
+	}
 	if s.structure == INVALID_STRUCTURE_ID {
 		return INVALID_STRUCTURE_ID, false
 	}
@@ -1840,6 +1843,46 @@ resolve_field_type_ref :: proc(
 		type_ref.field_selectors[:],
 		type_ref.field_derefs[:],
 	)
+}
+
+resolve_class_type_ref :: proc(
+	c: ^Collector,
+	class_symbol: Symbol_Id,
+	path: []string,
+	selectors: []ast.Selector_Op,
+	derefs: []bool,
+) -> (
+	Structure_Id,
+	bool,
+) {
+	nested, ok := class_type_symbol(c, class_symbol, path[0])
+	if !ok {
+		return INVALID_STRUCTURE_ID, false
+	}
+	s := c.symbols[symbol_id_index(nested)]
+	if s.structure == INVALID_STRUCTURE_ID {
+		return INVALID_STRUCTURE_ID, false
+	}
+	if len(path) == 1 {
+		return s.structure, true
+	}
+	next_selectors := selectors
+	next_derefs := derefs
+	if len(next_selectors) > 0 {next_selectors = next_selectors[1:]}
+	if len(next_derefs) > 0 {next_derefs = next_derefs[1:]}
+	return resolve_structure_path(c, s.structure, path[1:], next_selectors, next_derefs)
+}
+
+class_type_symbol :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> (Symbol_Id, bool) {
+	for scope in c.scopes {
+		if scope.owner != class_symbol {
+			continue
+		}
+		if id, ok := c.scope_symbols[Scope_Index_Key{scope = scope.id, namespace = .Type, name = name}]; ok {
+			return id, true
+		}
+	}
+	return INVALID_SYMBOL_ID, false
 }
 
 type_ref_path_selector :: #force_inline proc(

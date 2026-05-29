@@ -2882,6 +2882,61 @@ ls_repo-url = 'https://example.invalid'.
 }
 
 @(test)
+structured_include_from_interface_component_type_expands_fields :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///interface_component_include.abap",
+		source = `
+INTERFACE lif_asset_manager.
+  TYPES: BEGIN OF ty_web_asset,
+           url          TYPE string,
+           content      TYPE xstring,
+           is_cacheable TYPE abap_bool,
+         END OF ty_web_asset.
+ENDINTERFACE.
+
+CLASS lcl_asset_manager DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_asset_manager.
+  PRIVATE SECTION.
+    TYPES:
+      BEGIN OF ty_asset_entry.
+        INCLUDE TYPE lif_asset_manager~ty_web_asset.
+    TYPES: mime_name TYPE string,
+      END OF ty_asset_entry.
+    TYPES ty_asset_register TYPE STANDARD TABLE OF ty_asset_entry WITH KEY url.
+    DATA mt_asset_register TYPE ty_asset_register.
+    METHODS load_asset
+      IMPORTING is_asset_entry TYPE ty_asset_entry
+                iv_url         TYPE string.
+ENDCLASS.
+
+CLASS lcl_asset_manager IMPLEMENTATION.
+  METHOD load_asset.
+    FIELD-SYMBOLS <ls_asset> LIKE LINE OF mt_asset_register.
+    DATA lv_message TYPE string.
+    lv_message = |failed: { is_asset_entry-url }|.
+    READ TABLE mt_asset_register WITH KEY url = iv_url ASSIGNING <ls_asset>.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+
+	project := analyze_project_test(t, 0, target, nil)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		asset_entry := analyze.find_symbol(root, "ty_asset_entry", .Type_Def)
+		testing.expect(t, asset_entry != nil)
+		testing.expect(t, asset_entry.structure != analyze.INVALID_STRUCTURE_ID)
+		st := analyze.structure(root, asset_entry.structure)
+		fields := [?]string{"url", "content", "is_cacheable", "mime_name"}
+		testing.expect(t, field_names_match(st, fields[:]))
+		testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+	}
+}
+
+@(test)
 inherited_structured_attribute_resolves_in_method_body :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///inherited_structured_attribute.abap",
