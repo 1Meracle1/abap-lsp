@@ -178,6 +178,12 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				description = "Found offset after supported search and comparison operations such as FIND.",
 			},
 			{
+				name = "host",
+				type_name = "c",
+				structure_name = "",
+				description = "Host name of the current application server instance.",
+			},
+			{
 				name = "index",
 				type_name = "i",
 				structure_name = "",
@@ -248,6 +254,12 @@ BUILTIN_STRUCTURES :: []Builtin_Structure_Spec {
 				type_name = "c",
 				structure_name = "",
 				description = "Program name exposed through sy-repid and syst-repid; SAP documents this as a predefined constant and type, not a real SYST component.",
+			},
+			{
+				name = "saprl",
+				type_name = "c",
+				structure_name = "",
+				description = "ABAP release identifier of the current system.",
 			},
 			{
 				name = "scols",

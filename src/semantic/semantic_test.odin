@@ -4418,9 +4418,13 @@ IF sy-dynnr = '1001'.
 ENDIF.
 IF sy-datlo = sy-datum.
 ENDIF.
+IF sy-host <> ''.
+ENDIF.
 IF sy-sysid = 'ABC'.
 ENDIF.
 IF sy-mandt = '100'.
+ENDIF.
+IF sy-saprl = '757'.
 ENDIF.
 IF sy-scols > 0.
 ENDIF.
@@ -4448,13 +4452,19 @@ ENDLOOP.
 	screen := analyze.find_structure(&unit, "screen")
 	testing.expect(t, syst != nil)
 	testing.expect(t, screen != nil)
+	host, host_ok := analyze.structure_field_info(&unit, syst.id, "host")
 	subrc, subrc_ok := analyze.structure_field_info(&unit, syst.id, "subrc")
+	saprl, saprl_ok := analyze.structure_field_info(&unit, syst.id, "saprl")
 	tcode, tcode_ok := analyze.structure_field_info(&unit, syst.id, "tcode")
 	screen_name, screen_ok := analyze.structure_field_info(&unit, screen.id, "name")
+	testing.expect(t, host_ok)
 	testing.expect(t, subrc_ok)
+	testing.expect(t, saprl_ok)
 	testing.expect(t, tcode_ok)
 	testing.expect(t, screen_ok)
+	testing.expect_value(t, host.type_ref.base_name, "c")
 	testing.expect_value(t, subrc.type_ref.base_name, "i")
+	testing.expect_value(t, saprl.type_ref.base_name, "c")
 	testing.expect_value(t, tcode.type_ref.base_name, "c")
 	testing.expect_value(t, screen_name.type_ref.base_name, "c")
 	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
