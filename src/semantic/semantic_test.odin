@@ -4901,6 +4901,49 @@ ENDFORM.
 }
 
 @(test)
+dynamic_call_method_component_receivers_resolve_base_only :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///dynamic_call_method_component_receiver.abap",
+		`
+CLASS lcl_mapper DEFINITION.
+ENDCLASS.
+
+TYPES: BEGIN OF ty_pair,
+         file_name_mapper TYPE REF TO lcl_mapper,
+       END OF ty_pair.
+
+FORM run.
+  FIELD-SYMBOLS <ls_extension_mapper_pair> TYPE ty_pair.
+  DATA lv_object TYPE string.
+  CALL METHOD <ls_extension_mapper_pair>-file_name_mapper->('IF_AFF_FILE_NAME_MAPPER~GET_FILE_NAME_FROM_OBJECT')
+    EXPORTING iv_object = lv_object.
+ENDFORM.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect_value(t, reference_count(&unit, "<ls_extension_mapper_pair>", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lv_object", .Value, .Identifier), 1)
+	testing.expect(t, !has_reference(&unit, "<ls_extension_mapper_pair>-file_name_mapper", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "file_name_mapper", .Value, .Identifier))
+
+	found_target := false
+	for arg in unit.named_arguments {
+		if arg.name == "iv_object" &&
+		   arg.target.kind == .Method &&
+		   arg.target.base_name == "<ls_extension_mapper_pair>" &&
+		   arg.target.method_name == "" &&
+		   len(arg.target.receiver_path) == 1 &&
+		   arg.target.receiver_path[0].name == "file_name_mapper" {
+			found_target = true
+		}
+	}
+	testing.expect(t, found_target)
+}
+
+@(test)
 super_constructor_calls_are_not_field_accesses :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

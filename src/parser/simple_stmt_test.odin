@@ -1078,6 +1078,7 @@ raw_call_method_targets_carry_parser_reference_facts :: proc(t: ^testing.T) {
 	source := `CALL METHOD lo_client->run EXPORTING iv_value = lv_value.
 CALL METHOD lcl_demo=>class_run.
 CALL METHOD lo_client->('RUN') EXPORTING iv_value = lv_value.
+CALL METHOD <ls_extension_mapper_pair>-file_name_mapper->('IF_AFF_FILE_NAME_MAPPER~GET_FILE_NAME_FROM_OBJECT').
 CALL METHOD ('CL_ABAP_CONV_CODEPAGE')=>create_in.
 CALL METHOD (lv_class)=>create.
 CALL METHOD (lv_class)=>if_demo~create_instance.`
@@ -1087,12 +1088,14 @@ CALL METHOD (lv_class)=>if_demo~create_instance.`
 	instance := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
 	static := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
 	dynamic_call := parsed.root.stmts[2].derived_stmt.(^ast.Call_Stmt)
-	dynamic_static_literal := parsed.root.stmts[3].derived_stmt.(^ast.Call_Stmt)
-	dynamic_static_variable := parsed.root.stmts[4].derived_stmt.(^ast.Call_Stmt)
-	dynamic_static_qualified := parsed.root.stmts[5].derived_stmt.(^ast.Call_Stmt)
+	dynamic_component_call := parsed.root.stmts[3].derived_stmt.(^ast.Call_Stmt)
+	dynamic_static_literal := parsed.root.stmts[4].derived_stmt.(^ast.Call_Stmt)
+	dynamic_static_variable := parsed.root.stmts[5].derived_stmt.(^ast.Call_Stmt)
+	dynamic_static_qualified := parsed.root.stmts[6].derived_stmt.(^ast.Call_Stmt)
 	instance_target := instance.target.derived_expr.(^ast.Type_Ref_Expr)
 	static_target := static.target.derived_expr.(^ast.Type_Ref_Expr)
 	dynamic_target := dynamic_call.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
+	dynamic_component_target := dynamic_component_call.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
 	dynamic_static_literal_target := dynamic_static_literal.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
 	dynamic_static_variable_target := dynamic_static_variable.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
 	dynamic_static_qualified_target := dynamic_static_qualified.target.derived_expr.(^ast.Dynamic_Call_Method_Target_Expr)
@@ -1106,6 +1109,11 @@ CALL METHOD (lv_class)=>if_demo~create_instance.`
 	testing.expect(t, !dynamic_target.base_dynamic)
 	testing.expect(t, dynamic_target.method_dynamic)
 	testing.expect_value(t, ast.print_node(dynamic_target, context.allocator), "lo_client->('RUN')")
+	_, component_receiver_ok := dynamic_component_target.base.derived_expr.(^ast.Selector_Expr)
+	testing.expect(t, component_receiver_ok)
+	testing.expect(t, !dynamic_component_target.base_dynamic)
+	testing.expect(t, dynamic_component_target.method_dynamic)
+	testing.expect_value(t, ast.print_node(dynamic_component_target, context.allocator), "<ls_extension_mapper_pair>-file_name_mapper->('IF_AFF_FILE_NAME_MAPPER~GET_FILE_NAME_FROM_OBJECT')")
 	testing.expect(t, dynamic_static_literal_target.base_dynamic)
 	testing.expect(t, !dynamic_static_literal_target.method_dynamic)
 	testing.expect_value(t, ast.print_node(dynamic_static_literal_target, context.allocator), "('CL_ABAP_CONV_CODEPAGE')=>create_in")

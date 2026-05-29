@@ -229,7 +229,7 @@ Type_Ref_Expr :: struct {
 	raw_refs:  [dynamic]Raw_Operand_Ref,
 }
 
-// ABAP syntax: dynamic `CALL METHOD` target such as `(lv_class)=>create` or `lo->(lv_method)`.
+// ABAP syntax: dynamic `CALL METHOD` target such as `(lv_class)=>create` or `<row>-ref->(lv_method)`.
 Dynamic_Call_Method_Target_Expr :: struct {
 	using node: Expr,
 	base:           ^Expr,

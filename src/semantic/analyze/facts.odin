@@ -827,6 +827,17 @@ collect_dynamic_call_method_target_refs :: proc(
 	if expr.base != nil {
 		if expr.base_dynamic {
 			collect_expr_refs(c, expr.base, scope)
+		} else if access, access_ok := call_method_receiver_access_from_expr(c, expr.base, scope, expr.selector);
+		   access_ok {
+			kind := Reference_Kind.Identifier
+			if access.base_namespace == .Type {
+				kind = .Static_Target
+			}
+			add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
+			add_interface_qualified_segment_references(c, scope, access.field_path[:])
+			if len(access.field_path) > 0 {
+				append(&c.field_accesses, access)
+			}
 		} else if name, range, ok := expr_name(expr.base); ok {
 			namespace := Namespace.Value
 			kind := Reference_Kind.Identifier
@@ -835,11 +846,29 @@ collect_dynamic_call_method_target_refs :: proc(
 				kind = .Static_Target
 			}
 			add_reference(c, scope, name, namespace, kind, range)
+		} else {
+			collect_expr_refs(c, expr.base, scope)
 		}
 	}
 	if expr.method_dynamic {
 		collect_expr_refs(c, expr.method, scope)
 	}
+}
+
+call_method_receiver_access_from_expr :: proc(
+	c: ^Collector,
+	expr: ^ast.Expr,
+	scope: Scope_Id,
+	selector: ast.Selector_Op,
+) -> (Field_Access, bool) {
+	access, ok := selector_access_from_expr(c, expr, scope, false)
+	if !ok {
+		return {}, false
+	}
+	if len(access.field_path) == 0 && (selector == .Fat_Arrow || selector == .Tilde) {
+		access.base_namespace = .Type
+	}
+	return access, true
 }
 
 collect_raw_operand_fact_refs :: proc(
@@ -1597,8 +1626,14 @@ call_stmt_method_target :: proc(
 			namespace = .Type
 		}
 		base_name := ""
+		receiver_path: [dynamic]Field_Access_Segment
 		if !dyn.base_dynamic {
-			if name, _, name_ok := expr_name(dyn.base); name_ok {
+			if access, access_ok := call_method_receiver_access_from_expr(c, dyn.base, scope, dyn.selector);
+			   access_ok {
+				namespace = access.base_namespace
+				base_name = access.base_name
+				receiver_path = access.field_path
+			} else if name, _, name_ok := expr_name(dyn.base); name_ok {
 				base_name = canonical_name(name, c.allocator)
 			}
 		}
@@ -1616,6 +1651,7 @@ call_stmt_method_target :: proc(
 			base_name = base_name,
 			method_name = method_name,
 			method_range = method_range,
+			receiver_path = receiver_path,
 			interface_qualified = namespace == .Type,
 		}
 	}
