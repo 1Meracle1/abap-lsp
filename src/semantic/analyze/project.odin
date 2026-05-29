@@ -1002,6 +1002,7 @@ resolve_project_cross_unit_for_units :: proc(
 						units,
 						unit_index,
 						&index.root_lookup,
+						index.class_scope_entries,
 						index.visible[unit_index],
 						allocator,
 					) ||
@@ -1086,6 +1087,7 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 					member,
 					param,
 					roots,
+					class_entries,
 					visible,
 					allocator,
 				)

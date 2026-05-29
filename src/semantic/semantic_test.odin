@@ -5594,6 +5594,50 @@ FIELD-SYMBOLS <entry> LIKE LINE OF lo_map-mt_entries.
 }
 
 @(test)
+like_line_of_dependency_object_table_attribute_keeps_line_structure :: proc(t: ^testing.T) {
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/cl_abap_zip.abap",
+			mode = .Dependency_Interface,
+			source = `
+CLASS cl_abap_zip DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF t_file,
+             name TYPE string,
+           END OF t_file.
+    TYPES t_files TYPE STANDARD TABLE OF t_file WITH DEFAULT KEY.
+    DATA files TYPE t_files READ-ONLY.
+ENDCLASS.
+`,
+		},
+	}
+	valid_target := analyze.Source_Input {
+		uri = "file:///zip_line_valid.abap",
+		source = `
+DATA lo_zip TYPE REF TO cl_abap_zip.
+FIELD-SYMBOLS <file> LIKE LINE OF lo_zip->files.
+<file>-name = 'x'.
+`,
+	}
+	invalid_target := analyze.Source_Input {
+		uri = "file:///zip_line_invalid.abap",
+		source = `
+DATA lo_zip TYPE REF TO cl_abap_zip.
+FIELD-SYMBOLS <file> LIKE LINE OF lo_zip->files.
+<file>-missing = 'x'.
+`,
+	}
+
+	valid_project := analyze_project_dependencies_test(t, valid_target, dependencies[:])
+	invalid_project := analyze_project_dependencies_test(t, invalid_target, dependencies[:])
+	valid := analyze.project_unit_by_uri(&valid_project, valid_target.uri)
+	invalid := analyze.project_unit_by_uri(&invalid_project, invalid_target.uri)
+
+	testing.expect(t, valid != nil && !has_diagnostic(valid, .Unknown_Field))
+	testing.expect(t, invalid != nil && has_diagnostic(invalid, .Unknown_Field))
+}
+
+@(test)
 unknown_receiver_type_suppresses_field_cascade :: proc(t: ^testing.T) {
 	missing := collect_test_unit(
 		t,

@@ -507,6 +507,7 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 					units,
 					unit_index,
 					&root_lookup,
+					class_entries,
 					visible[unit_index],
 					allocator,
 				) ||
@@ -586,6 +587,7 @@ seed_inherited_method_scope_parameters :: proc(
 					member,
 					param,
 					roots,
+					class_entries,
 					visible,
 					allocator,
 				)
@@ -838,6 +840,7 @@ seeded_method_parameter_structure :: proc(
 	member: ^Class_Member_Data,
 	param: Class_Member_Parameter_Data,
 	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [][dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> Structure_Id {
@@ -854,6 +857,7 @@ seeded_method_parameter_structure :: proc(
 		source_scope,
 		param.declared_type,
 		roots,
+		class_entries,
 		visible[member_unit_index],
 		allocator,
 	)
@@ -1628,6 +1632,7 @@ import_project_structures_for_unit :: proc(
 	units: []Unit_Analysis,
 	unit_index: int,
 	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> bool {
@@ -1661,6 +1666,7 @@ import_project_structures_for_unit :: proc(
 				s.scope,
 				s.declared_type,
 				roots,
+				class_entries,
 				visible,
 				allocator,
 			); ok {
@@ -1704,6 +1710,7 @@ import_project_structures_for_unit :: proc(
 					owner_scope,
 					field.type_ref,
 					roots,
+					class_entries,
 					visible,
 					allocator,
 				); ok {
@@ -1745,6 +1752,7 @@ import_structure_for_type_ref :: proc(
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
 	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [dynamic]Unit_Id,
 	allocator: mem.Allocator,
 ) -> (
@@ -1756,6 +1764,18 @@ import_structure_for_type_ref :: proc(
 	}
 	if structure_id, ok := local_structure_for_type_ref(&units[unit_index], scope_id, type_ref);
 	   ok {
+		return structure_id, true
+	}
+	if structure_id, ok := project_structure_for_type_ref(
+		units,
+		unit_index,
+		scope_id,
+		type_ref,
+		roots,
+		class_entries,
+		visible,
+		allocator,
+	); ok {
 		return structure_id, true
 	}
 	handle, ok := resolve_type_ref_handle_project(units, unit_index, type_ref, roots, visible)
@@ -1816,6 +1836,119 @@ import_structure_for_type_ref :: proc(
 		current = field.structure
 	}
 	return current, true
+}
+
+project_structure_for_type_ref :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [dynamic]Unit_Id,
+	allocator: mem.Allocator,
+) -> (
+	Structure_Id,
+	bool,
+) {
+	if len(type_ref.field_path) == 0 || selector_at(type_ref.field_selectors[:], 0) != .Arrow {
+		return INVALID_STRUCTURE_ID, false
+	}
+	namespaces := [?]Namespace{.Type, .Value, .Routine}
+	for namespace in namespaces {
+		if !type_ref_namespace_matches(type_ref.namespace, namespace) {
+			continue
+		}
+		symbol_id, ok := lookup_scope_chain(
+			&units[unit_index],
+			&units[unit_index].scope_index,
+			scope_id,
+			namespace,
+			type_ref.base_name,
+		)
+		if !ok {
+			continue
+		}
+		s := symbol(&units[unit_index], symbol_id)
+		if s == nil || !s.has_declared_type || !s.declared_type.is_ref {
+			continue
+		}
+		class_handle, class_ok := resolve_type_ref_handle_project(units, unit_index, s.declared_type, roots, visible)
+		if !class_ok {
+			continue
+		}
+		path_ok := true
+		for name in s.declared_type.field_path {
+			next, next_ok := class_type_symbol_handle(units, class_handle, name)
+			if !next_ok {
+				path_ok = false
+				break
+			}
+			class_handle = next
+		}
+		if !path_ok {
+			continue
+		}
+		class_unit_index := unit_id_index(class_handle.unit)
+		if class_unit_index < 0 || class_unit_index >= len(units) {
+			continue
+		}
+		class_symbol := symbol(&units[class_unit_index], class_handle.symbol)
+		if class_symbol == nil || !(class_symbol.kind == .Class || class_symbol.kind == .Interface) {
+			continue
+		}
+		member_handle, member_ok := class_member_symbol_by_handle(
+			units,
+			class_handle,
+			.Value,
+			type_ref.field_path[0],
+			class_entries,
+			true,
+		)
+		if !member_ok {
+			continue
+		}
+		member_unit_index := unit_id_index(member_handle.unit)
+		if member_unit_index < 0 || member_unit_index >= len(units) {
+			continue
+		}
+		member_unit := &units[member_unit_index]
+		member_symbol := symbol(member_unit, member_handle.symbol)
+		if member_symbol == nil {
+			continue
+		}
+		member_owner, owner_ok := enclosing_class_owner_unit(member_unit, member_symbol.scope)
+		if !owner_ok {
+			continue
+		}
+		member := unit_class_member(member_unit, member_owner, member_symbol.name)
+		if member == nil || member.kind != .Attribute || member.structure == INVALID_STRUCTURE_ID {
+			continue
+		}
+		structure_id := member.structure
+		if len(type_ref.field_path) > 1 {
+			next_selectors := type_ref.field_selectors[:]
+			next_derefs := type_ref.field_derefs[:]
+			if len(next_selectors) > 0 {next_selectors = next_selectors[1:]}
+			if len(next_derefs) > 0 {next_derefs = next_derefs[1:]}
+			nested, nested_ok := resolve_unit_structure_path(
+				member_unit,
+				member.structure,
+				type_ref.field_path[1:],
+				next_selectors,
+				next_derefs,
+			)
+			if !nested_ok {
+				continue
+			}
+			structure_id = nested
+		}
+		if member_unit_index == unit_index {
+			return structure_id, true
+		}
+		return import_structure_to_unit(&units[unit_index], member_unit, structure_id, allocator), true
+	}
+	return INVALID_STRUCTURE_ID, false
 }
 
 local_structure_for_type_ref :: proc(
