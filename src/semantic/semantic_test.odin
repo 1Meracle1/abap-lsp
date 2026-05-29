@@ -6454,6 +6454,78 @@ ENDFORM.
 }
 
 @(test)
+delete_db_table_from_table_uses_sql_source_namespace :: proc(t: ^testing.T) {
+	source := `
+TYPES zdelete_tab TYPE string.
+FORM run.
+  DATA lt_rows TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+  DELETE zdelete_tab FROM TABLE lt_rows ##SUBRC_OK.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///delete_db_from_table.abap", source)
+
+	testing.expect(t, sql_source_present(&unit, "zdelete_tab", .External))
+	testing.expect(t, sql_name_ref_present(&unit, "zdelete_tab", .Source))
+	testing.expect(t, has_reference(&unit, "lt_rows", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "zdelete_tab", .Value, .Identifier))
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+}
+
+@(test)
+modify_transporting_and_where_are_table_fields :: proc(t: ^testing.T) {
+	source := `
+TYPES dokstate TYPE string.
+FORM run.
+  TYPES: BEGIN OF ty_dokil,
+           dokstate TYPE string,
+         END OF ty_dokil.
+  DATA lt_dokil TYPE STANDARD TABLE OF ty_dokil WITH EMPTY KEY.
+  DATA ls_dokil TYPE ty_dokil.
+
+  MODIFY lt_dokil FROM ls_dokil TRANSPORTING dokstate WHERE dokstate IS NOT INITIAL.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///modify_transporting_fields.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, has_reference(&unit, "lt_dokil", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "ls_dokil", .Value, .Identifier))
+	testing.expect(t, !has_reference(&unit, "dokstate", .Value, .Identifier))
+
+	field_seen := false
+	for access in unit.field_accesses {
+		if access.base_name == "lt_dokil" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "dokstate" {
+			field_seen = true
+		}
+	}
+	testing.expect(t, field_seen)
+}
+
+@(test)
+modify_transporting_validates_table_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           id TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  DATA ls_row TYPE ty_row.
+
+  MODIFY lt_rows FROM ls_row TRANSPORTING missing.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///modify_transporting_missing.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+}
+
+@(test)
 collects_surface_source_maintenance_and_string_operation_facts :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

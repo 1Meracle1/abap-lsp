@@ -2645,7 +2645,8 @@ collect_append_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Append_Stmt, scope: 
 
 collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
 	is_sql := false
-	if !stmt.table_keyword {
+	has_internal_table_clause := stmt.table_keyword || stmt.index != nil || len(stmt.transporting) > 0
+	if !has_internal_table_clause {
 		_, is_sql = collect_db_table_sql_source(
 			c,
 			stmt.range,
@@ -2665,11 +2666,79 @@ collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: 
 	)
 	if !is_sql {
 		collect_expr_refs(c, stmt.target, scope)
-		collect_expr_refs(c, stmt.where_cond, scope)
+		collect_internal_table_where_refs(c, stmt.target, stmt.where_cond, scope)
+		collect_modify_where_context(c, stmt, scope)
 	}
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.index, scope)
-	collect_expr_list_refs(c, stmt.transporting[:], scope)
+	collect_modify_transporting_refs(c, stmt, scope)
+}
+
+collect_modify_transporting_refs :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
+	base, ok := value_access_from_expr(c, stmt.target, scope)
+	if !ok {
+		base, ok = value_access_from_expr(c, stmt.source, scope)
+	}
+	if !ok {
+		return
+	}
+	for field in stmt.transporting {
+		if len(field.path) == 0 {
+			continue
+		}
+		path := make(
+			[dynamic]Field_Access_Segment,
+			0,
+			len(base.field_path) + len(field.path),
+			c.allocator,
+		)
+		for segment in base.field_path {
+			append(&path, segment)
+		}
+		for segment in field.path {
+			append(
+				&path,
+				Field_Access_Segment {
+					name = canonical_name(segment.name, c.allocator),
+					range = segment.range,
+				},
+			)
+		}
+		append(
+			&c.field_accesses,
+			Field_Access {
+				scope = scope,
+				base_namespace = base.base_namespace,
+				base_name = base.base_name,
+				base_range = base.base_range,
+				field_path = path,
+			},
+		)
+	}
+}
+
+collect_modify_where_context :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
+	if stmt.where_cond == nil {
+		return
+	}
+	source, has_source := value_access_from_expr(c, stmt.target, scope)
+	if !has_source {
+		source, has_source = value_access_from_expr(c, stmt.source, scope)
+	}
+	if !has_source {
+		return
+	}
+	target, has_target := value_access_from_expr(c, stmt.source, scope)
+	append(
+		&c.loop_where_field_contexts,
+		Loop_Where_Field_Context {
+			scope = scope,
+			range = stmt.where_clause if range_valid(stmt.where_clause) else stmt.where_cond.range,
+			source_access = source,
+			target_access = target,
+			has_target = has_target,
+		},
+	)
 }
 
 collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scope_Id) {

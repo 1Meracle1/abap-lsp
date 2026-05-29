@@ -2900,7 +2900,12 @@ emit_modify_stmt :: proc(p: ^Printer, stmt: ^Modify_Stmt) {
 	}
 	if len(stmt.transporting) > 0 {
 		emit(p, " TRANSPORTING ")
-		emit_expr_list(p, stmt.transporting, " ")
+		for field, i in stmt.transporting {
+			if i > 0 {
+				emit(p, " ")
+			}
+			emit(p, field.name)
+		}
 	}
 	if stmt.where_cond != nil {
 		emit(p, " WHERE ")

@@ -1832,7 +1832,7 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "MODIFY")
 	body_start := p.index
 	stmt := ast.new(ast.Modify_Stmt, start.range, p.allocator)
-	stmt.transporting = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+	stmt.transporting = make([dynamic]ast.Modify_Transporting_Field_Clause, 0, 2, p.allocator)
 	stmt.table_keyword = allow_keyword(p, "TABLE")
 	stmt.target = data_expr(
 		p,
@@ -1873,8 +1873,7 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "TRANSPORTING") {
-			values := data_exprs_until(p, body_start, []string{"WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"})
-			for value in values {append(&stmt.transporting, value)}
+			parse_modify_transporting_fields(p, body_start, stmt)
 			continue
 		}
 		if allow_keyword(p, "WHERE") {
@@ -1922,6 +1921,68 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = data_stmt_range(p, start)
 	return stmt
+}
+
+parse_modify_transporting_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast.Modify_Stmt) {
+	stop_keywords := []string{"WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"}
+	for !data_stmt_done(p, body_start) && !data_current_keyword_in(p, stop_keywords) {
+		if allow_token(p, .Comma) || allow_token(p, .Colon) {
+			continue
+		}
+		start := p.index
+		if field, ok := parse_modify_transporting_field(p); ok {
+			append(&stmt.transporting, field)
+		} else {
+			error_current(p, "syntax error: expected MODIFY TRANSPORTING component path")
+			bump_token(p)
+		}
+		ensure_forward_progress(p, start)
+	}
+}
+
+parse_modify_transporting_field :: proc(p: ^Parser) -> (ast.Modify_Transporting_Field_Clause, bool) {
+	if !modify_transporting_segment_token(current_token(p)) {
+		return {}, false
+	}
+	start := current_token(p).range.start
+	path := make([dynamic]ast.Modify_Transporting_Field_Segment, 0, 2, p.allocator)
+	for {
+		tok := current_token(p)
+		if !modify_transporting_segment_token(tok) {
+			break
+		}
+		append(
+			&path,
+			ast.Modify_Transporting_Field_Segment {
+				name = tokenizer.token_lexeme(tok, p.source),
+				range = tok.range,
+			},
+		)
+		bump_token(p)
+		if p.index + 1 >= len(p.tokens) {
+			break
+		}
+		dash := current_token(p)
+		next := p.tokens[p.index + 1]
+		if dash.kind != .Minus ||
+		   !tokens_touch(tok, dash) ||
+		   !modify_transporting_segment_token(next) ||
+		   !tokens_touch(dash, next) {
+			break
+		}
+		bump_token(p)
+	}
+	end := path[len(path) - 1].range.end
+	return ast.Modify_Transporting_Field_Clause {
+			name = p.source[start:end],
+			range = tokenizer.text_range(start, end),
+			path = path,
+		},
+		true
+}
+
+modify_transporting_segment_token :: proc(tok: Token) -> bool {
+	return tok.kind == .Ident || tok.kind == .Number
 }
 
 parse_sort_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
@@ -2217,10 +2278,17 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				continue
 			}
 			stmt.from_table = allow_keyword(p, "TABLE")
+			if stmt.from_table && stmt.form == .Internal_Table {
+				stmt.form = .Db_Table
+				if stmt.target != nil {
+					stmt.db_source_range = stmt.target.range
+					stmt.dynamic_source = dml_dynamic_source(stmt.target)
+				}
+			}
 			stmt.source = data_expr(
 				p,
 				body_start,
-				[]string{"WHERE", "INDEX", "USING", "COMPARING"},
+				[]string{"WHERE", "INDEX", "USING", "COMPARING", "CLIENT", "CONNECTION"},
 			)
 			continue
 		}

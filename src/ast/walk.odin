@@ -591,7 +591,6 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.source)
 		walk(next, n.index)
 		walk(next, n.where_cond)
-		walk_expr_list(next, n.transporting)
 	case ^Sort_Stmt:
 		walk(next, n.target)
 		for field in n.fields {

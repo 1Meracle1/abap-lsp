@@ -170,6 +170,20 @@ SORT lt_table BY name DESCENDING.`
 	testing.expect_value(t, counts.append_stmt, 2)
 	testing.expect_value(t, counts.modify_stmt, 2)
 	testing.expect_value(t, counts.sort_stmt, 1)
+	modify := parsed.root.stmts[3].derived_stmt.(^ast.Modify_Stmt)
+	testing.expect_value(t, len(modify.transporting), 1)
+	testing.expect_value(t, modify.transporting[0].name, "value")
+	testing.expect_value(t, len(modify.transporting[0].path), 1)
+	testing.expect_value(t, modify.transporting[0].path[0].name, "value")
+}
+
+@(test)
+modify_transporting_rejects_spaced_component_selector :: proc(t: ^testing.T) {
+	source := `MODIFY lt_table FROM ls_line TRANSPORTING nested - value.`
+	parsed := parse(source, "modify_transporting_invalid.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+	testing.expect_value(t, parsed.errors[0].message, "syntax error: expected MODIFY TRANSPORTING component path")
 }
 
 @(test)
@@ -205,6 +219,19 @@ sort_by_keeps_nested_component_exprs_and_modifiers :: proc(t: ^testing.T) {
 	testing.expect(t, stmt.fields[0].ascending)
 	testing.expect(t, stmt.fields[1].ascending)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+delete_db_table_from_table_is_parser_modeled :: proc(t: ^testing.T) {
+	source := `DELETE zdelete_tab FROM TABLE lt_rows ##SUBRC_OK.`
+	parsed := parse(source, "delete_db_from_table.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Delete_Stmt)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, stmt.form, ast.Delete_Form.Db_Table)
+	testing.expect(t, stmt.from_table)
+	testing.expect(t, stmt.source != nil)
+	testing.expect_value(t, source[stmt.db_source_range.start:stmt.db_source_range.end], "zdelete_tab")
 }
 
 @(test)
@@ -431,6 +458,8 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 	testing.expect_value(t, source[db_modify.client_clause.start:db_modify.client_clause.end], "CLIENT SPECIFIED")
 	testing.expect(t, itab_modify.table_keyword)
 	testing.expect_value(t, len(itab_modify.transporting), 1)
+	testing.expect_value(t, itab_modify.transporting[0].name, "col")
+	testing.expect_value(t, len(itab_modify.transporting[0].path), 1)
 	testing.expect_value(t, bare_insert.form, ast.Insert_Form.Db_Table)
 	testing.expect(t, bare_insert.target != nil)
 	testing.expect_value(t, source[bare_insert.db_source_range.start:bare_insert.db_source_range.end], "zinsert_tab")

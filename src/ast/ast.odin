@@ -2392,6 +2392,19 @@ Append_Stmt :: struct {
 	sorted:         bool,
 }
 
+// ABAP syntax: one component-name segment after `MODIFY ... TRANSPORTING`.
+Modify_Transporting_Field_Segment :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
+// ABAP syntax: one component path after `MODIFY ... TRANSPORTING`.
+Modify_Transporting_Field_Clause :: struct {
+	name:  string,
+	range: tokenizer.Range,
+	path:  [dynamic]Modify_Transporting_Field_Segment,
+}
+
 // ABAP syntax: `MODIFY itab FROM wa ...` or database `MODIFY dbtab FROM wa`.
 Modify_Stmt :: struct {
 	using node:  Stmt,
@@ -2400,7 +2413,7 @@ Modify_Stmt :: struct {
 	index:       ^Expr,
 	where_cond:  ^Expr,
 	where_clause: tokenizer.Range,
-	transporting: [dynamic]^Expr,
+	transporting: [dynamic]Modify_Transporting_Field_Clause,
 	from_table:  bool,
 	table_keyword: bool,
 	dynamic_source: bool,

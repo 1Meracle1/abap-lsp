@@ -760,7 +760,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.source = clone(n.source, allocator)
 		r.index = clone(n.index, allocator)
 		r.where_cond = clone(n.where_cond, allocator)
-		r.transporting = clone_expr_list(n.transporting, allocator)
+		r.transporting = clone_modify_transporting_fields(n.transporting, allocator)
 		return r
 	case ^Sort_Stmt:
 		r := clone_shallow(n, allocator)
@@ -982,6 +982,18 @@ clone_sort_fields :: proc(list: [dynamic]Sort_Field_Clause, allocator: mem.Alloc
 		next := clause
 		next.expr = clone(clause.expr, allocator)
 		append(&res, next)
+	}
+	return res
+}
+
+clone_modify_transporting_fields :: proc(list: [dynamic]Modify_Transporting_Field_Clause, allocator: mem.Allocator) -> [dynamic]Modify_Transporting_Field_Clause {
+	res := make([dynamic]Modify_Transporting_Field_Clause, 0, len(list), allocator)
+	for clause in list {
+		path := make([dynamic]Modify_Transporting_Field_Segment, 0, len(clause.path), allocator)
+		for segment in clause.path {
+			append(&path, segment)
+		}
+		append(&res, Modify_Transporting_Field_Clause{name = clause.name, range = clause.range, path = path})
 	}
 	return res
 }
