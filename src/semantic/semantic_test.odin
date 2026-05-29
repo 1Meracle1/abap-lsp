@@ -5728,6 +5728,67 @@ SELECT carrid FROM zmissing INTO TABLE @DATA(lt_missing).
 }
 
 @(test)
+validates_open_sql_fields_against_query_local_source :: proc(t: ^testing.T) {
+	xml := `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="wdy_config_data" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="config_id">
+    <abapsource:properties><abapsource:entry abapsource:key="ddicDataType">CHAR</abapsource:entry></abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="config_type">
+    <abapsource:properties><abapsource:entry abapsource:key="ddicDataType">NUMC</abapsource:entry></abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="config_var">
+    <abapsource:properties><abapsource:entry abapsource:key="ddicDataType">CHAR</abapsource:entry></abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="author">
+    <abapsource:properties><abapsource:entry abapsource:key="ddicDataType">CHAR</abapsource:entry></abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="createdon">
+    <abapsource:properties><abapsource:entry abapsource:key="ddicDataType">DATS</abapsource:entry></abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	wdy_source := ddic_xml.dependency_source("WDY_CONFIG_DATA", "ddic-table", xml, context.allocator)
+	defer delete(wdy_source, context.allocator)
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+REPORT zmain.
+DATA lv_id TYPE string.
+DATA lv_author TYPE string.
+DATA lv_createdon TYPE string.
+DATA lv_config_id TYPE string.
+DATA lv_config_type TYPE string.
+DATA lv_config_var TYPE string.
+
+SELECT id FROM zfirst INTO lv_id.
+SELECT SINGLE author createdon FROM wdy_config_data INTO (lv_author, lv_createdon)
+  WHERE config_id = lv_config_id
+    AND config_type = lv_config_type
+    AND config_var = lv_config_var.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zfirst.abap",
+			source = `TYPES: BEGIN OF zfirst,
+         id TYPE string,
+       END OF zfirst.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table/wdy_config_data.abap",
+			source = wdy_source,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(root, .Unverified_Open_Sql_Source))
+}
+
+@(test)
 collects_sort_order_and_read_table_binary_search_facts :: proc(t: ^testing.T) {
 	source := `
 FORM run.

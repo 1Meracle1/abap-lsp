@@ -792,6 +792,9 @@ sql_source_for_name_ref :: proc(
 	ref: Sql_Name_Ref_Data,
 ) -> (^Sql_Source_Data, bool) {
 	for &source_data in unit.sql_sources {
+		if source_data.query_id != ref.query_id {
+			continue
+		}
 		if ref.qualifier != "" {
 			if source_data.alias == ref.qualifier || source_data.name == ref.qualifier {
 				return &source_data, true
