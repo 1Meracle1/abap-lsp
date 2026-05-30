@@ -603,6 +603,41 @@ ENDFUNCTION.
 }
 
 @(test)
+remote_dependency_candidates_include_like_occurs_table_type_bases :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/rsdbrunt.abap",
+			source = `TYPES: BEGIN OF ldb_stack_line,
+         dyns_fields LIKE rsdsfields OCCURS 0,
+       END OF ldb_stack_line.`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "rsdsfields", kind = .Type}]
+	found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "rsdsfields" && candidate.kind == .Type {
+			found = true
+		}
+	}
+
+	testing.expect(t, pending)
+	testing.expect(t, found)
+}
+
+@(test)
 remote_dependency_candidates_include_unresolved_tables_structure_type :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)

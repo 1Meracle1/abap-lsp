@@ -828,12 +828,14 @@ finish_cell :: proc(cell: ^Task_Cell) {
 	}
 
 	if sync.atomic_sub_explicit(&graph.remaining, 1, .Release) == 1 {
-		sync.atomic_store_explicit(&graph.completed, true, .Release)
-		sync.sema_post(&graph.available)
 		if graph.detached && graph.owned {
 			allocator := graph.object_allocator
+			sync.atomic_store_explicit(&graph.completed, true, .Release)
 			graph_destroy(graph)
 			free(graph, allocator)
+		} else {
+			sync.atomic_store_explicit(&graph.completed, true, .Release)
+			sync.sema_post(&graph.available)
 		}
 	}
 }

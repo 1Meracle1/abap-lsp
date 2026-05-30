@@ -1,5 +1,7 @@
 package abap_frontend_semantic_analyze
 
+import "src:ast"
+
 import "core:mem"
 import base_runtime "base:runtime"
 
@@ -499,7 +501,7 @@ remote_dependency_candidate_for_reference :: proc(
 		            ref.type_first_selector == .Dash) &&
 		          !(ref.namespace == .Value &&
 		            ref.has_type_clause_form &&
-		            (ref.type_clause_form == .Structure || ref.type_clause_form == .Like)) {
+		            like_value_type_ref_can_fetch_type(ref.type_clause_form)) {
 			return {}, false
 		}
 	case .Interface_Use:
@@ -519,6 +521,20 @@ remote_dependency_candidate_for_reference :: proc(
 		kind = .Symbol
 	}
 	return Remote_Dependency_Candidate{name = ref.name, kind = kind, hint = hint}, true
+}
+
+@(private)
+like_value_type_ref_can_fetch_type :: proc(form: ast.Data_Type_Form) -> bool {
+	#partial switch form {
+	case .Structure,
+	     .Like,
+	     .Like_Table,
+	     .Like_Standard_Table,
+	     .Like_Sorted_Table,
+	     .Like_Hashed_Table:
+		return true
+	}
+	return false
 }
 
 @(private)

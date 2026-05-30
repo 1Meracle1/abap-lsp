@@ -387,6 +387,34 @@ PARAMETERS p_count TYPE i DEFAULT 1.`
 }
 
 @(test)
+structure_component_like_occurs_keeps_bounded_type_ref :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ldb_stack_line,
+         dyns_fields LIKE rsdsfields OCCURS 0,
+       END OF ldb_stack_line.`
+	parsed := parse(source, "structure_like_occurs.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	field := decl.types[1]
+	ref := field.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, field.name, "dyns_fields")
+	testing.expect_value(t, ref.name, "rsdsfields")
+	testing.expect_value(t, source[ref.range.start:ref.range.end], "rsdsfields")
+	testing.expect(t, field.occurs != nil)
+	if field.occurs != nil {
+		testing.expect_value(t, source[field.occurs.range.start:field.occurs.range.end], "0")
+	}
+}
+
+@(test)
+occurs_requires_count_before_header_line :: proc(t: ^testing.T) {
+	parsed := parse("DATA rows LIKE row OCCURS WITH HEADER LINE.", "bad_occurs.abap", context.allocator)
+
+	testing.expect(t, len(parsed.errors) > 0)
+}
+
+@(test)
 table_key_clauses_stay_inside_type_refs_but_header_line_does_not :: proc(t: ^testing.T) {
 	source := `TYPES ty_def TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
 TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.

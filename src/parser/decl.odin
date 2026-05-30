@@ -1354,6 +1354,13 @@ parse_group_or_include_addition :: proc(
 	renaming_suffix: ^string,
 ) -> bool {
 	if allow_keyword(p, "OCCURS") {
+		if decl_clause_boundary(p) ||
+		   at_keyword(p, "WITH") ||
+		   at_keyword(p, "AS") ||
+		   at_keyword(p, "RENAMING") {
+			error_current(p, "syntax error: expected OCCURS count")
+			return true
+		}
 		occurs^ = parse_expr(p)
 		return true
 	}
