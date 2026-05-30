@@ -827,7 +827,8 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.member_range = member_range
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
 	stmt.header_text = strings.clone(p.source[start.range.start:period.range.start], p.allocator)
-	if method_header_is_amdp(p, start_index, p.previous_index) {
+	stmt.kernel_modules, stmt.is_kernel = method_header_kernel_modules(p, start_index, p.previous_index, name_range)
+	if !stmt.is_kernel && method_header_is_amdp(p, start_index, p.previous_index) {
 		stmt.is_amdp = true
 		stmt.body = make([dynamic]^ast.Stmt, 0, 0, p.allocator)
 		for !at_eof(p) && !at_keyword_phrase(p, "ENDMETHOD") {
@@ -849,6 +850,9 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return stmt
 	}
 	stmt.body = parse_stmt_list_until(p, []string{"ENDMETHOD"})
+	if stmt.is_kernel && len(stmt.body) > 0 {
+		error(p, stmt.body[0].range, "syntax error: kernel method implementation must be empty")
+	}
 	end := expect_keyword_phrase(p, "ENDMETHOD")
 	if end.kind == .Eof {
 		return nil
@@ -859,6 +863,45 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	return stmt
+}
+
+method_header_kernel_modules :: proc(
+	p: ^Parser,
+	start_index, period_index: int,
+	name_range: tokenizer.Range,
+) -> (
+	[dynamic]string,
+	bool,
+) {
+	modules := make([dynamic]string, 0, 0, p.allocator)
+	i := start_index + 1
+	for i < period_index && p.tokens[i].range.end <= name_range.end {
+		i += 1
+	}
+	if i + 1 >= period_index ||
+	   !token_is_keyword(p, p.tokens[i], "BY") ||
+	   !token_is_keyword(p, p.tokens[i + 1], "KERNEL") {
+		return modules, false
+	}
+	if i + 2 >= period_index || !token_is_keyword(p, p.tokens[i + 2], "MODULE") {
+		error(p, p.tokens[i + 1].range, "syntax error: expected MODULE after BY KERNEL")
+		return modules, true
+	}
+	i += 3
+	if i >= period_index {
+		error(p, p.tokens[period_index].range, "syntax error: expected kernel module name")
+		return modules, true
+	}
+	modules = make([dynamic]string, 0, period_index - i, p.allocator)
+	for ; i < period_index; i += 1 {
+		tok := p.tokens[i]
+		if tok.kind != .Ident {
+			error(p, tok.range, "syntax error: expected kernel module name")
+			continue
+		}
+		append(&modules, tokenizer.token_lexeme(tok, p.source))
+	}
+	return modules, true
 }
 
 method_header_is_amdp :: proc(p: ^Parser, start_index, period_index: int) -> bool {

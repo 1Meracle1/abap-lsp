@@ -142,6 +142,7 @@ creates_root_file_scope_and_builtins :: proc(t: ^testing.T) {
 	testing.expect_value(t, root.range, tokenizer.text_range(0, 10))
 
 	testing.expect(t, analyze.find_symbol(&unit, "i", .Builtin_Type) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "%_c_pointer", .Builtin_Type) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "simple", .Builtin_Type) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "numeric", .Builtin_Type) != nil)
 	testing.expect(t, analyze.find_symbol(&unit, "abap_bool", .Builtin_Type) != nil)
@@ -203,6 +204,22 @@ field_symbol_type_simple_resolves_as_builtin :: proc(t: ^testing.T) {
 	)
 
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
+kernel_pointer_type_resolves_as_builtin :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"mem://kernel_pointer.abap",
+		`CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    DATA pointer TYPE %_C_POINTER.
+    METHODS get RETURNING VALUE(result) TYPE %_C_POINTER.
+ENDCLASS.`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Generic_Builtin_Type))
 }
 
 @(test)

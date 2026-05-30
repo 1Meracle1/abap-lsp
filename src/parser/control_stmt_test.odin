@@ -647,6 +647,34 @@ ENDCLASS.`
 }
 
 @(test)
+kernel_method_header_retains_modules_and_requires_empty_body :: proc(t: ^testing.T) {
+	source := `CLASS lcl IMPLEMENTATION.
+  METHOD run BY KERNEL MODULE abkm_Run IGNORE.
+  ENDMETHOD.
+ENDCLASS.`
+	parsed := parse(source, "kernel_method.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	method := parsed.root.stmts[0].derived_stmt.(^ast.Class_Decl).body[0].derived_stmt.(^ast.Method_Decl)
+	testing.expect(t, method.is_kernel)
+	testing.expect_value(t, len(method.kernel_modules), 2)
+	testing.expect_value(t, method.kernel_modules[0], "abkm_Run")
+	testing.expect_value(t, method.kernel_modules[1], "IGNORE")
+
+	with_body := parse(
+		`CLASS lcl IMPLEMENTATION.
+  METHOD run BY KERNEL MODULE abkm_Run.
+    DATA lv_value TYPE i.
+  ENDMETHOD.
+ENDCLASS.`,
+		"kernel_method_body.abap",
+		context.allocator,
+	)
+	testing.expect_value(t, len(with_body.errors), 1)
+	testing.expect_value(t, with_body.errors[0].message, "syntax error: kernel method implementation must be empty")
+}
+
+@(test)
 method_block_keeps_interface_qualified_name :: proc(t: ^testing.T) {
 	source := `CLASS lcl IMPLEMENTATION.
   METHOD if_demo~run.

@@ -2062,6 +2062,8 @@ Method_Decl :: struct {
 	header_text:     string,
 	is_amdp:         bool,
 	amdp_body:       string,
+	is_kernel:       bool,
+	kernel_modules:  [dynamic]string,
 }
 
 Parameter_Passing_Kind :: enum {

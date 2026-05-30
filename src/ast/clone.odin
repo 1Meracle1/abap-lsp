@@ -687,6 +687,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 	case ^Method_Decl:
 		r := clone_shallow(n, allocator)
 		r.body = clone_stmt_list(n.body, allocator)
+		r.kernel_modules = clone_string_list(n.kernel_modules, allocator)
 		return r
 	case ^Form_Decl:
 		r := clone_shallow(n, allocator)

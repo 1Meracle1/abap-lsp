@@ -76,6 +76,7 @@ BUILTIN_PRIMITIVE_TYPES :: []string {
 	"t",
 	"x",
 	"xstring",
+	"%_c_pointer",
 }
 
 BUILTIN_GENERIC_PRIMITIVE_TYPES :: []string {
