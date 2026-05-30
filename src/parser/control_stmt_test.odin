@@ -437,7 +437,7 @@ case_bad_when_header_does_not_scan_case_body :: proc(t: ^testing.T) {
 }
 
 @(test)
-case_when_missing_period_uses_local_invalid_statement :: proc(t: ^testing.T) {
+case_when_missing_period_keeps_clause :: proc(t: ^testing.T) {
 	source := `CASE lv_kind.
   WHEN 'A'
     lv_a = 1.
@@ -453,10 +453,61 @@ DATA lv_after TYPE i.`
 	expect_no_error_contains(t, parsed, "unexpected WHEN without matching CASE")
 	expect_no_error_contains(t, parsed, "unexpected ENDCASE without matching CASE")
 	testing.expect_value(t, counts.case_stmt, 1)
-	testing.expect_value(t, len(case_stmt.whens), 1)
+	testing.expect_value(t, len(case_stmt.whens), 2)
 	testing.expect_value(t, counts.assign, 2)
 	testing.expect_value(t, counts.data_decl, 1)
-	testing.expect(t, counts.invalid_stmt >= 1)
+}
+
+@(test)
+missing_control_header_periods_keep_matching_boundaries :: proc(t: ^testing.T) {
+	source := `IF flag = abap_true
+  RETURN.
+ELSE
+  RETURN.
+ENDIF.
+CASE kind
+  WHEN 'A'
+    value = 1.
+  WHEN OTHERS
+ENDCASE.
+WHILE flag = abap_true
+ENDWHILE.
+DO
+ENDDO.
+DO 2 TIMES
+ENDDO.
+LOOP AT itab INTO wa
+  AT FIRST
+  ENDAT.
+ENDLOOP.
+TRY
+  RETURN.
+CATCH cx_root
+  RETURN.
+CLEANUP
+ENDTRY.`
+	parsed := parse(source, "missing_control_periods.abap", context.allocator)
+	counts := count_nodes(parsed.root)
+
+	expect_error_contains(t, parsed, "expected '.' after IF condition")
+	expect_error_contains(t, parsed, "expected '.' after ELSE")
+	expect_error_contains(t, parsed, "expected '.' after CASE")
+	expect_error_contains(t, parsed, "expected '.' after WHEN")
+	expect_error_contains(t, parsed, "expected '.' after WHILE condition")
+	expect_error_contains(t, parsed, "expected '.' after DO")
+	expect_error_contains(t, parsed, "expected '.' after LOOP")
+	expect_error_contains(t, parsed, "expected '.' after AT")
+	expect_error_contains(t, parsed, "expected '.' after TRY")
+	expect_error_contains(t, parsed, "expected '.' after CATCH clause")
+	expect_error_contains(t, parsed, "expected '.' after CLEANUP")
+	expect_no_error_contains(t, parsed, "unexpected")
+	testing.expect_value(t, counts.if_stmt, 1)
+	testing.expect_value(t, counts.case_stmt, 1)
+	testing.expect_value(t, counts.while_stmt, 1)
+	testing.expect_value(t, counts.do_stmt, 2)
+	testing.expect_value(t, counts.loop_stmt, 1)
+	testing.expect_value(t, counts.at_stmt, 1)
+	testing.expect_value(t, counts.try_stmt, 1)
 }
 
 @(test)

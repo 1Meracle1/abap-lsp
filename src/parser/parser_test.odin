@@ -480,6 +480,7 @@ IF lv_val = 1
     RETURN.
 ENDIF.`
 	parsed := parse(source, "missing_periods.abap", context.allocator)
+	counts := count_nodes(parsed.root)
 	data_pos := strings.index(source, "\nIF")
 	if_pos := strings.index(source, "\n    RETURN")
 	found_data := false
@@ -499,6 +500,8 @@ ENDIF.`
 	}
 	testing.expect(t, found_data)
 	testing.expect(t, found_if)
+	expect_no_error_contains(t, parsed, "unexpected ENDIF without matching IF")
+	testing.expect_value(t, counts.if_stmt, 1)
 }
 
 @(test)

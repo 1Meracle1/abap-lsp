@@ -136,6 +136,21 @@ parse_control_condition :: proc(p: ^Parser, message: string) -> ^ast.Expr {
 	return parse_logical_expr(p)
 }
 
+block_header_boundary_at :: proc(p: ^Parser, stop_keywords: []string) -> bool {
+	tok := current_token(p)
+	return(
+		at_any_keyword(p, stop_keywords) ||
+		at_outer_boundary_for_stops(p, stop_keywords) ||
+		(.Has_Newline_Before in tok.flags &&
+		 statement_lead_starts(p, p.index) &&
+		 !line_continuation_starts(p, p.index)) \
+	)
+}
+
+block_header_period_ok :: proc(p: ^Parser, period: Token, stop_keywords: []string) -> bool {
+	return period.kind == .Period || block_header_boundary_at(p, stop_keywords)
+}
+
 parse_when_operand :: proc(p: ^Parser) -> ^ast.Expr {
 	if !expr_lead_token(current_token(p)) {
 		error_current(p, "syntax error: expected expression after WHEN")
@@ -216,7 +231,9 @@ when_dash_is_selector :: proc(p: ^Parser, index, start, end: int) -> bool {
 
 parse_loop_header_tail :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int) -> bool {
 	stops := []string{"INTO", "ASSIGNING", "REFERENCE", "FROM", "TO", "USING", "WHERE", "TRANSPORTING"}
-	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
+	for current_token(p).kind != .Period &&
+	    current_token(p).kind != .Eof &&
+	    !block_header_boundary_at(p, []string{"ENDLOOP"}) {
 		if allow_keyword(p, "INTO") {
 			if !parse_loop_target(p, stmt, body_start, .Into, "syntax error: expected target after INTO", stops) {
 				return false
@@ -337,7 +354,7 @@ parse_if_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	period := expect_token_message(p, .Period, "syntax error: expected '.' after IF condition")
-	if period.kind != .Period {
+	if !block_header_period_ok(p, period, []string{"ELSEIF", "ELSE", "ENDIF"}) {
 		return nil
 	}
 
@@ -384,7 +401,7 @@ parse_elseif_clause :: proc(p: ^Parser) -> ^ast.Elseif_Clause {
 		.Period,
 		"syntax error: expected '.' after ELSEIF condition",
 	)
-	if period.kind != .Period {
+	if !block_header_period_ok(p, period, []string{"ELSEIF", "ELSE", "ENDIF"}) {
 		return nil
 	}
 	clause, _ := mem.new(ast.Elseif_Clause, p.allocator)
@@ -399,8 +416,8 @@ parse_elseif_clause :: proc(p: ^Parser) -> ^ast.Elseif_Clause {
 
 parse_else_clause :: proc(p: ^Parser) -> ^ast.Else_Clause {
 	start := expect_keyword(p, "ELSE")
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after ELSE")
+	if !block_header_period_ok(p, period, []string{"ENDIF"}) {
 		return nil
 	}
 	clause, _ := mem.new(ast.Else_Clause, p.allocator)
@@ -426,8 +443,8 @@ parse_case_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if expr == nil {
 		return nil
 	}
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after CASE")
+	if !block_header_period_ok(p, period, []string{"WHEN", "ENDCASE"}) {
 		return nil
 	}
 	stmt := ast.new(ast.Case_Stmt, start.range, p.allocator)
@@ -492,7 +509,7 @@ parse_when_clause :: proc(p: ^Parser, is_type_of: bool) -> ^ast.When_Clause {
 		}
 	}
 	period := expect_token_message(p, .Period, "syntax error: expected '.' after WHEN")
-	if period.kind != .Period {
+	if !block_header_period_ok(p, period, []string{"WHEN", "ENDCASE"}) {
 		return nil
 	}
 	clause.body = parse_stmt_list_until(p, []string{"WHEN", "ENDCASE"})
@@ -514,7 +531,7 @@ parse_while_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		.Period,
 		"syntax error: expected '.' after WHILE condition",
 	)
-	if period.kind != .Period {
+	if !block_header_period_ok(p, period, []string{"ENDWHILE"}) {
 		return nil
 	}
 	stmt := ast.new(ast.While_Stmt, start.range, p.allocator)
@@ -535,7 +552,7 @@ parse_while_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_do_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "DO")
 	stmt := ast.new(ast.Do_Stmt, start.range, p.allocator)
-	if current_token(p).kind != .Period {
+	if current_token(p).kind != .Period && !block_header_boundary_at(p, []string{"ENDDO"}) {
 		stmt.count = parse_expr(p)
 		if stmt.count == nil {
 			return nil
@@ -545,8 +562,8 @@ parse_do_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 	}
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after DO")
+	if !block_header_period_ok(p, period, []string{"ENDDO"}) {
 		return nil
 	}
 	stmt.body = parse_stmt_list_until(p, []string{"ENDDO"})
@@ -579,12 +596,14 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	header_start := start.range.start
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after LOOP")
+	if !block_header_period_ok(p, period, []string{"ENDLOOP"}) {
 		return nil
 	}
-	stmt.header_range = tokenizer.text_range(header_start, period.range.end)
-	stmt.header_text = strings.clone(p.source[header_start:period.range.start], p.allocator)
+	header_end := period.range.end if period.kind == .Period else statement_end(p, period)
+	header_text_end := period.range.start if period.kind == .Period else header_end
+	stmt.header_range = tokenizer.text_range(header_start, header_end)
+	stmt.header_text = strings.clone(p.source[header_start:header_text_end], p.allocator)
 	stmt.body = parse_stmt_list_until(p, []string{"ENDLOOP"})
 	end := expect_keyword_message(p, "ENDLOOP", "syntax error: expected ENDLOOP")
 	if !token_is_keyword(p, end, "ENDLOOP") {
@@ -620,8 +639,8 @@ parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 	}
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after AT")
+	if !block_header_period_ok(p, period, []string{"ENDAT"}) {
 		return nil
 	}
 	stmt.body = parse_stmt_list_until(p, []string{"ENDAT"})
@@ -649,8 +668,8 @@ parse_at_group_field :: proc(p: ^Parser, stmt: ^ast.At_Stmt) -> bool {
 
 parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "TRY")
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after TRY")
+	if !block_header_period_ok(p, period, []string{"CATCH", "CLEANUP", "ENDTRY"}) {
 		return nil
 	}
 	stmt := ast.new(ast.Try_Stmt, start.range, p.allocator)
@@ -685,7 +704,9 @@ parse_catch_clause :: proc(p: ^Parser) -> ^ast.Catch_Clause {
 	start := expect_keyword(p, "CATCH")
 	clause, _ := mem.new(ast.Catch_Clause, p.allocator)
 	clause.exceptions = make([dynamic]^ast.Expr, 0, 2, p.allocator)
-	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
+	for current_token(p).kind != .Period &&
+	    current_token(p).kind != .Eof &&
+	    !block_header_boundary_at(p, []string{"CATCH", "CLEANUP", "ENDTRY"}) {
 		if allow_keyword(p, "INTO") {
 			clause.into = parse_expr(p)
 			if clause.into == nil {
@@ -709,7 +730,7 @@ parse_catch_clause :: proc(p: ^Parser) -> ^ast.Catch_Clause {
 		return nil
 	}
 	period := expect_token_message(p, .Period, "syntax error: expected '.' after CATCH clause")
-	if period.kind != .Period {
+	if !block_header_period_ok(p, period, []string{"CATCH", "CLEANUP", "ENDTRY"}) {
 		return nil
 	}
 	clause.body = parse_stmt_list_until(p, []string{"CATCH", "CLEANUP", "ENDTRY"})
@@ -722,8 +743,8 @@ parse_catch_clause :: proc(p: ^Parser) -> ^ast.Catch_Clause {
 
 parse_cleanup_clause :: proc(p: ^Parser) -> ^ast.Cleanup_Clause {
 	start := expect_keyword(p, "CLEANUP")
-	period := expect_token(p, .Period)
-	if period.kind != .Period {
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after CLEANUP")
+	if !block_header_period_ok(p, period, []string{"ENDTRY"}) {
 		return nil
 	}
 	clause, _ := mem.new(ast.Cleanup_Clause, p.allocator)
