@@ -1284,48 +1284,112 @@ parse_header_type_ref_expr :: proc(
 	if header_type_ref_done(p, i, start, period_index, stop_keywords, false) {
 		return nil, i
 	}
-	paren, bracket, brace := 0, 0, 0
-	name_end := -1
-	in_key := false
-	for !header_type_ref_done(p, i, start, period_index, stop_keywords, in_key) {
-		tok := p.tokens[i]
-		top := paren == 0 && bracket == 0 && brace == 0
-		if top && at_keyword_index(p, i, "WITH") {
-			if !type_ref_key_clause_starts(p, i) {
-				break
-			}
-			if name_end < 0 && i > start {
-				name_end = p.tokens[i - 1].range.end
-			}
-			in_key = true
+
+	if at_keyword_index(p, i, "REF") {
+		if i + 1 >= period_index || !at_keyword_index(p, i + 1, "TO") {
+			return nil, i
 		}
-		#partial switch tok.kind {
-		case .LParen:
-			paren += 1
-		case .RParen:
-			if paren == 0 {break}
-			paren -= 1
-		case .LBracket:
-			bracket += 1
-		case .RBracket:
-			if bracket == 0 {break}
-			bracket -= 1
-		case .LBrace:
-			brace += 1
-		case .RBrace:
-			if brace == 0 {break}
-			brace -= 1
-		}
-		i += 1
+		i += 2
 	}
-	if i <= start {
+	if i >= period_index || !type_ref_path_token(p.tokens[i]) {
 		return nil, i
 	}
-	if name_end < 0 {
-		name_end = p.tokens[i - 1].range.end
+	i += 1
+	for i + 1 < period_index &&
+	    type_ref_selector_token(p.tokens[i].kind) &&
+	    type_ref_path_token(p.tokens[i + 1]) {
+		i += 2
+	}
+	name_end := p.tokens[i - 1].range.end
+	for type_ref_key_clause_starts(p, i) {
+		next := skip_header_type_ref_key_clause(p, i, period_index, stop_keywords)
+		if next <= i {
+			break
+		}
+		i = next
 	}
 	expr := type_ref_expr_from_tokens(p, start, i, name_end)
 	return expr, i
+}
+
+skip_header_type_ref_key_clause :: proc(
+	p: ^Parser,
+	index, period_index: int,
+	stop_keywords: []string,
+) -> int {
+	i := index
+	if !at_keyword_index(p, i, "WITH") {
+		return i
+	}
+	i += 1
+	if i >= period_index {
+		return i
+	}
+	if at_keyword_index(p, i, "DEFAULT") || at_keyword_index(p, i, "EMPTY") {
+		i += 1
+		if i < period_index && at_keyword_index(p, i, "KEY") {
+			i += 1
+		}
+		return i
+	}
+	if at_keyword_index(p, i, "UNIQUE") {
+		i += 1
+	} else if keyword_phrase_at(p, i, "NON-UNIQUE") {
+		i += 2
+	}
+	if i < period_index && at_keyword_index(p, i, "DEFAULT") {
+		i += 1
+		if i < period_index && at_keyword_index(p, i, "KEY") {
+			i += 1
+		}
+		return i
+	}
+	if i < period_index && (at_keyword_index(p, i, "SORTED") || at_keyword_index(p, i, "HASHED")) {
+		i += 1
+	}
+	if i < period_index && at_keyword_index(p, i, "KEY") {
+		i += 1
+	}
+	for i < period_index {
+		if header_type_ref_key_done(p, i, period_index, stop_keywords) {
+			break
+		}
+		if p.tokens[i].kind == .Comma || at_keyword_index(p, i, "COMPONENTS") {
+			i += 1
+			continue
+		}
+		if !type_ref_path_token(p.tokens[i]) {
+			break
+		}
+		i += 1
+		for i + 1 < period_index &&
+		    type_ref_selector_token(p.tokens[i].kind) &&
+		    type_ref_path_token(p.tokens[i + 1]) {
+			i += 2
+		}
+	}
+	return i
+}
+
+header_type_ref_key_done :: proc(
+	p: ^Parser,
+	index, period_index: int,
+	stop_keywords: []string,
+) -> bool {
+	if index >= period_index {
+		return true
+	}
+	for keyword in stop_keywords {
+		if at_keyword_index(p, index, keyword) {
+			return true
+		}
+	}
+	return(
+		(at_keyword_index(p, index, "WITH") && type_ref_key_clause_starts(p, index)) ||
+		at_keyword_index(p, index, "OPTIONAL") ||
+		at_keyword_index(p, index, "DEFAULT") ||
+		header_parameter_starts(p, index, period_index) \
+	)
 }
 
 header_type_ref_done :: proc(

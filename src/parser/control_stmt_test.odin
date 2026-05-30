@@ -191,6 +191,22 @@ ENDFORM.`
 }
 
 @(test)
+form_typed_parameter_keeps_following_untyped_parameter :: proc(t: ^testing.T) {
+	source := `FORM masdel_exec USING testdel protocol cnt TYPE i prid.
+ENDFORM.`
+	parsed := parse(source, "form_typed_then_untyped.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
+	testing.expect_value(t, len(form.form_parameters), 4)
+	testing.expect_value(t, form.form_parameters[2].name, "cnt")
+	cnt_ref := form.form_parameters[2].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, cnt_ref.base_name, "i")
+	testing.expect_value(t, form.form_parameters[3].name, "prid")
+	testing.expect(t, form.form_parameters[3].type_clause == nil)
+}
+
+@(test)
 form_tables_structure_requires_name :: proc(t: ^testing.T) {
 	source := `FORM bad TABLES rows STRUCTURE USING par1.
 ENDFORM.`
