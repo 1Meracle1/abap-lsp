@@ -8795,6 +8795,68 @@ TYPES tpak_permission_to_use_list TYPE STANDARD TABLE OF tpak_permission_to_use 
 }
 
 @(test)
+cached_typepool_resolves_from_dependency_store_symbol :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("typepool-resolver-symbol-cache")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	pool_source := `TYPE-POOL gfw.
+TYPES gfw_boolean TYPE c LENGTH 1.
+CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.`
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "GFW", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("200 OK", pool_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{uri = "mem://FETCH.abap", source = "REPORT zmain. DATA flag TYPE gfw_boolean."},
+	}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 1)
+
+	targets = [?]analyze.Source_Input {
+		{uri = "mem://CACHE.abap", source = "REPORT zmain. DATA flag TYPE c LENGTH 1. flag = gfw_false."},
+	}
+	project = session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 1)
+}
+
+@(test)
 typepool_dependency_revalidates_waiting_units :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)

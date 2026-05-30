@@ -245,6 +245,9 @@ dependency_record_uri :: proc(
 	record: ^dep_store.Stored_Artifact_Record,
 	allocator: mem.Allocator,
 ) -> string {
+	if strings.equal_fold(record.object_kind, TYPEPOOL_OBJECT_KIND) {
+		return typepool_dependency_uri(record.object_name, allocator)
+	}
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, "abapls-cache:/")
 	strings.write_string(&out, record.object_kind)

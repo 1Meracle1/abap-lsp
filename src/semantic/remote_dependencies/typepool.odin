@@ -292,6 +292,7 @@ store_typepool_source :: proc(
 		return
 	}
 	fetched_at, _ := time.time_to_rfc3339(time.now(), allocator = allocator)
+	symbols := typepool_source_symbols(source, allocator)
 	artifact := dep_store.Stored_Artifact_Input {
 		package_name   = pool,
 		object_kind    = TYPEPOOL_OBJECT_KIND,
@@ -302,8 +303,57 @@ store_typepool_source :: proc(
 		file_extension = "abap",
 		source_text    = source,
 		fetched_at     = fetched_at,
+		symbols        = symbols[:],
 	}
 	_, _ = dep_store.put_artifact(store, profile, &artifact, allocator)
+}
+
+typepool_source_symbols :: proc(
+	source: string,
+	allocator: mem.Allocator,
+) -> [dynamic]dep_store.Stored_Symbol_Input {
+	symbols := make([dynamic]dep_store.Stored_Symbol_Input, 0, 8, allocator)
+	parsed := parser.parse(source, "abapls-typepool-symbols", context.temp_allocator)
+	if parsed.root == nil {
+		return symbols
+	}
+	for stmt in parsed.root.stmts {
+		#partial switch n in stmt.derived_stmt {
+		case ^ast.Types_Decl:
+			for clause in n.types {
+				if clause.kind == .Begin_Group || clause.kind == .Normal {
+					append_typepool_symbol(&symbols, clause.name, "typedef", stmt.range.start, stmt.range.end)
+				}
+			}
+		case ^ast.Constants_Decl:
+			for clause in n.constants {
+				if clause.kind == .Begin_Group || clause.kind == .Normal {
+					append_typepool_symbol(&symbols, clause.name, "constant", stmt.range.start, stmt.range.end)
+				}
+			}
+		}
+	}
+	return symbols
+}
+
+append_typepool_symbol :: proc(
+	symbols: ^[dynamic]dep_store.Stored_Symbol_Input,
+	name, kind: string,
+	range_start, range_end: int,
+) {
+	if name == "" {
+		return
+	}
+	append(
+		symbols,
+		dep_store.Stored_Symbol_Input {
+			symbol_name = name,
+			symbol_kind = kind,
+			range_start = range_start,
+			range_end   = range_end,
+			priority    = 100,
+		},
+	)
 }
 
 add_typepool_source_input :: proc(

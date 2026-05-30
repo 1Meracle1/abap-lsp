@@ -159,6 +159,67 @@ finds_artifact_by_kind_and_name :: proc(t: ^testing.T) {
 }
 
 @(test)
+candidate_lookup_uses_typepool_symbol_index :: proc(t: ^testing.T) {
+	path := workspace_store_path("candidate_lookup_typepool_symbol.sqlite3")
+	store, err := dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	profile := sample_profile()
+	symbols := [?]Stored_Symbol_Input {
+		{
+			symbol_name = "GFW_BOOLEAN",
+			symbol_kind = "typedef",
+			range_start = 6,
+			range_end   = 17,
+			priority    = 100,
+		},
+		{
+			symbol_name = "GFW_FALSE",
+			symbol_kind = "constant",
+			range_start = 47,
+			range_end   = 56,
+			priority    = 100,
+		},
+	}
+	artifact := Stored_Artifact_Input {
+		package_name   = "GFW",
+		object_kind    = "type-pool",
+		object_name    = "GFW",
+		object_uri     = "type-pool:GFW",
+		object_type    = "TYPEPOOL",
+		description    = "Type-pool",
+		file_extension = "abap",
+		source_text    = "TYPES gfw_boolean TYPE c LENGTH 1. CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.",
+		fetched_at     = "2026-05-30T00:00:00Z",
+		symbols        = symbols[:],
+	}
+
+	_, err = put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+
+	status: Candidate_Cache_Status
+	status, err = find_cached_candidate(
+		&store,
+		&profile,
+		"https://sap.example|100|demo",
+		"gfw_boolean",
+		.Type,
+		context.allocator,
+	)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect_value(t, status, Candidate_Cache_Status.Artifact)
+
+	record, ok, lookup_err := find_artifact_for_candidate_any_profile(
+		&store,
+		"gfw_false",
+		.Symbol,
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.object_name, "gfw")
+}
+
+@(test)
 candidate_lookup_returns_highest_priority_artifact_kind :: proc(t: ^testing.T) {
 	path := workspace_store_path("candidate_lookup_kind_priority.sqlite3")
 	store, err := dependency_store_from_override_path(path, context.allocator)
