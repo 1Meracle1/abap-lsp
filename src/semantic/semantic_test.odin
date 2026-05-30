@@ -8078,7 +8078,7 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 }
 
 @(test)
-dependency_store_ddic_lchr_data_element_resolves_transitive_table_field :: proc(t: ^testing.T) {
+dependency_store_ddic_data_elements_resolve_transitive_table_fields :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("dependency-store-ddic-lchr")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
 	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
@@ -8122,6 +8122,40 @@ dependency_store_ddic_lchr_data_element_resolves_transitive_table_field :: proc(
 </blue:wbobj>`,
 			fetched_at     = "2026-05-21T00:00:00Z",
 		},
+		{
+			package_name   = "SWWW",
+			object_kind    = "ddic-structure",
+			object_name    = "W3TEMPATTR",
+			object_uri     = "/sap/bc/adt/vit/wb/object_type/tablds/object_name/W3TEMPATTR",
+			object_type    = "TABL/DS",
+			description    = "WWW temporary attributes",
+			file_extension = "xml",
+			source_text    = `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="W3TEMPATTR" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="CLUSTD">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">INDX_CLUST</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">LRAW</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+		{
+			package_name   = "SWWW",
+			object_kind    = "ddic-data-element",
+			object_name    = "INDX_CLUST",
+			object_uri     = "/sap/bc/adt/vit/wb/object_type/dtelde/object_name/INDX_CLUST",
+			object_type    = "DTEL/DE",
+			description    = "Cluster data",
+			file_extension = "xml",
+			source_text    = `<blue:wbobj adtcore:name="INDX_CLUST" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>domain</dtel:typeKind>
+    <dtel:dataType>LRAW</dtel:dataType>
+  </dtel:dataElement>
+</blue:wbobj>`,
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
 	}
 	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
 	testing.expect_value(t, err, dep_store.Store_Error.None)
@@ -8131,7 +8165,7 @@ dependency_store_ddic_lchr_data_element_resolves_transitive_table_field :: proc(
 	targets := [?]analyze.Source_Input {
 		{
 			uri    = "mem://ZMAIN.abap",
-			source = "REPORT zmain. DATA ls_user TYPE usr12.",
+			source = "REPORT zmain. DATA ls_user TYPE usr12. DATA ls_cluster TYPE w3tempattr.",
 		},
 	}
 	project := session.analysis_session_analyze_once(
@@ -8144,7 +8178,7 @@ dependency_store_ddic_lchr_data_element_resolves_transitive_table_field :: proc(
 	)
 	execution.pool_destroy(&pool)
 
-	testing.expect_value(t, len(project.units), 3)
+	testing.expect_value(t, len(project.units), 5)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 

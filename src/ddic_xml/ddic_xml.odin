@@ -383,6 +383,7 @@ ddic_builtin_type :: proc(raw: string) -> string {
 	case strings.equal_fold(raw, "RAW") || strings.equal_fold(raw, "X"):
 		return "x"
 	case strings.equal_fold(raw, "RAWSTRING") ||
+	     strings.equal_fold(raw, "LRAW") ||
 	     strings.equal_fold(raw, "XSTRING") ||
 	     strings.equal_fold(raw, "XSTR") ||
 	     strings.equal_fold(raw, "Y"):
