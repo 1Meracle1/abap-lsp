@@ -1538,12 +1538,22 @@ absolute_url :: proc(
 		normalized = path_or_url[len("/sap/bc/adt"):]
 	}
 
+	base_url := config.base_url
+	if !ascii_starts_with_ignore_case(normalized, "http://") &&
+	   !ascii_starts_with_ignore_case(normalized, "https://") &&
+	   ascii_starts_with_ignore_case(normalized, "/sap/") {
+		root_end := ascii_index_ignore_case(config.base_url, "/sap/bc/adt")
+		if root_end >= 0 {
+			base_url = config.base_url[:root_end]
+		}
+	}
+
 	out := strings.builder_make(allocator)
 	if ascii_starts_with_ignore_case(normalized, "http://") ||
 	   ascii_starts_with_ignore_case(normalized, "https://") {
 		strings.write_string(&out, normalized)
 	} else {
-		strings.write_string(&out, config.base_url)
+		strings.write_string(&out, base_url)
 		if !strings.has_prefix(normalized, "/") {
 			strings.write_byte(&out, '/')
 		}

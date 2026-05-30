@@ -205,6 +205,9 @@ type_decl_after_reference :: proc(
 ) -> bool {
 	target_index := unit_id_index(target.unit)
 	if target_index == unit_index {
+		if typepool_dependency_unit(project.units[unit_index].uri) {
+			return false
+		}
 		s := symbol(&project.units[target_index], target.symbol)
 		return s != nil && s.decl_range.start > ref_start
 	}

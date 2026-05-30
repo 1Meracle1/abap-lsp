@@ -29,11 +29,17 @@ contains_fold :: proc(source, needle: string) -> bool {
 	return strings.contains(lower, needle)
 }
 
+Semantic_Adt_Test_Route :: struct {
+	request_contains: string,
+	response:         string,
+}
+
 Semantic_Adt_Test_Server :: struct {
 	listener:         net.TCP_Socket,
 	session_response: string,
 	search_response:  string,
 	missing_response: string,
+	fetch_routes:     []Semantic_Adt_Test_Route,
 	typepool_owner_response:  string,
 	typepool_source_response: string,
 	request_buf:      [4096]u8,
@@ -71,6 +77,12 @@ semantic_adt_test_server_run :: proc(t: ^thread.Thread) {
 				response = server.search_response
 			} else {
 				server.fetch_count += 1
+				for route in server.fetch_routes {
+					if strings.contains(request, route.request_contains) {
+						response = route.response
+						break
+					}
+				}
 			}
 		}
 		_, _ = net.send_tcp(client, transmute([]u8)response)
@@ -8530,6 +8542,131 @@ TYPES tpak_permission_to_use_list TYPE STANDARD TABLE OF tpak_permission_to_use 
 }
 
 @(test)
+typepool_dependency_revalidates_waiting_units :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA proxy TYPE sprx_s_proxy.",
+	}
+	if_proxy := analyze.Source_Input {
+		uri = "abapls-cache:/global-interface/if_proxy_name_proposal.abap",
+		source = `INTERFACE if_proxy_name_proposal.
+  CONSTANTS co_enum_value TYPE string VALUE sprx_const_enumval_wsdl.
+ENDINTERFACE.`,
+		mode = .Dependency_Interface,
+	}
+	typepool := analyze.Source_Input {
+		uri = "abapls-typepool:/sprx.abap",
+		source = `CONSTANTS sprx_const_enumval_wsdl TYPE string VALUE 'enumerationvalue'.
+TYPES: BEGIN OF sprx_s_proxy,
+         actor1 TYPE sprx_s_contract_actor,
+       END OF sprx_s_proxy.
+TYPES sprx_s_contract_actor TYPE string.`,
+		mode = .Dependency_Interface,
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, 0, 2, context.allocator)
+	append(&dependencies, if_proxy)
+
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, project_units_have_diagnostic(&project, .Unresolved_Reference))
+
+	append(&dependencies, typepool)
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+typepool_resolver_expands_pool_macros :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("typepool-resolver-macro")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	pool_source := `TYPE-POOL trsel.
+DEFINE trsel_def_range_tab.
+  TYPES: BEGIN OF trsel_trs_&1,
+           sign TYPE c LENGTH 1,
+           option TYPE c LENGTH 2,
+           low TYPE &2,
+           high TYPE &2,
+         END OF trsel_trs_&1.
+END-OF-DEFINITION.
+
+trsel_def_range_tab trkorr c.
+
+TYPES: BEGIN OF trsel_ts_ranges,
+         trkorr TYPE trsel_trs_trkorr OCCURS 0,
+       END OF trsel_ts_ranges.`
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "TRSEL", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("200 OK", pool_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA ranges TYPE trsel_ts_ranges.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	record, ok, lookup_err := dep_store.find_artifact_by_kind_name(
+		&store,
+		&profile,
+		"type-pool",
+		"trsel",
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect(t, strings.contains(record.source_text, "trsel_trs_trkorr"))
+	testing.expect(t, !strings.contains(record.source_text, "trsel_def_range_tab trkorr"))
+}
+
+@(test)
 typepool_resolver_fetches_one_pool_for_multiple_symbols :: proc(t: ^testing.T) {
 	pool_source := `TYPE-POOL gfw.
 TYPES gfw_boolean TYPE c LENGTH 1.
@@ -8571,6 +8708,60 @@ lv_flag = gfw_false.`,
 
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 	testing.expect_value(t, server.typepool_source_count, 1)
+}
+
+@(test)
+typepool_resolver_submits_owner_and_source_tasks :: proc(t: ^testing.T) {
+	pool_source := `TYPE-POOL gfw.
+TYPES gfw_boolean TYPE c LENGTH 1.
+CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.`
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "GFW", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("200 OK", pool_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 2, task_capacity = 8}, context.allocator)
+	if pool.options.worker_count > 0 {
+		execution.pool_start(&pool)
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	remote := [?]analyze.Remote_Dependency_Candidate {
+		{name = "gfw_boolean", kind = .Type},
+		{name = "gfw_false", kind = .Symbol},
+	}
+	before := execution.pool_stats(&pool)
+	added := remote_deps.add_typepool_resolver_matches(
+		&candidates,
+		&dependencies,
+		remote[:],
+		nil,
+		nil,
+		&client,
+		&pool,
+		"mem://ZMAIN.abap",
+	)
+	after := execution.pool_stats(&pool)
+	if pool.options.worker_count > 0 {
+		execution.pool_join(&pool)
+	}
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, added)
+	testing.expect_value(t, len(dependencies), 1)
+	testing.expect_value(t, server.typepool_owner_count, 2)
+	testing.expect_value(t, server.typepool_source_count, 1)
+	testing.expect(t, after.submitted >= before.submitted + 3)
 }
 
 @(test)
@@ -8631,6 +8822,171 @@ cached_typepool_source_skips_source_endpoint :: proc(t: ^testing.T) {
 
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 	testing.expect_value(t, server.typepool_source_count, 0)
+}
+
+@(test)
+cached_typepool_like_dependency_is_fetched :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("typepool-resolver-like-dependency")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifacts := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "RSD",
+			object_kind    = "type-pool",
+			object_name    = "RSD",
+			object_uri     = "type-pool:RSD",
+			object_type    = "TYPEPOOL",
+			description    = "Cached type-pool",
+			file_extension = "abap",
+			source_text    = "TYPES rsd_s_area LIKE rsdareav.",
+			fetched_at     = "2026-05-30T00:00:00Z",
+		},
+		{
+			package_name   = "RSD",
+			object_kind    = "ddic-view",
+			object_name    = "RSDAREAV",
+			object_uri     = "/sap/bc/adt/vit/wb/object_type/viewdv/object_name/RSDAREAV",
+			object_type    = "VIEW/DV",
+			description    = "InfoArea view",
+			file_extension = "abap",
+			source_text    = "TYPES: BEGIN OF rsdareav, area TYPE string, END OF rsdareav.",
+			fetched_at     = "2026-05-30T00:00:00Z",
+		},
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "RSD", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("500 Internal Server Error", "unexpected", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA ls_area TYPE rsd_s_area.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 0)
+}
+
+@(test)
+cached_typepool_include_source_is_refetched_and_expanded :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("typepool-resolver-cache-include")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "SVRS2",
+		object_kind    = "type-pool",
+		object_name    = "SVRS2",
+		object_uri     = "type-pool:SVRS2",
+		object_type    = "TYPEPOOL",
+		description    = "Cached type-pool",
+		file_extension = "abap",
+		source_text    = "INCLUDE LSVRXPIN.",
+		fetched_at     = "2026-05-30T00:00:00Z",
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool_source := `TYPE-POOL svrs2.
+INCLUDE LSVRXPIN.`
+	include_source := `INCLUDE DDIC_LSVRXPIN.`
+	nested_include_source := `TYPES svrs2_versionable_object TYPE c LENGTH 1.`
+	include_response := semantic_test_http_response("200 OK", include_source, "", context.allocator)
+	nested_include_response := semantic_test_http_response(
+		"200 OK",
+		nested_include_source,
+		"",
+		context.allocator,
+	)
+	fetch_routes := [?]Semantic_Adt_Test_Route {
+		{request_contains = "/programs/includes/LSVRXPIN", response = include_response},
+		{request_contains = "/programs/includes/DDIC_LSVRXPIN", response = nested_include_response},
+	}
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		fetch_routes     = fetch_routes[:],
+		typepool_owner_response = semantic_test_http_response("200 OK", "SVRS2", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("200 OK", pool_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(include_response, context.allocator)
+	defer delete(nested_include_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA ls_obj TYPE svrs2_versionable_object.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 1)
+	testing.expect_value(t, server.fetch_count, 2)
+	record, ok, lookup_err := dep_store.find_artifact_by_kind_name(
+		&store,
+		&profile,
+		"type-pool",
+		"svrs2",
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect(t, strings.contains(record.source_text, "svrs2_versionable_object"))
+	testing.expect(t, !strings.contains(record.source_text, "INCLUDE LSVRXPIN"))
+	testing.expect(t, !strings.contains(record.source_text, "INCLUDE DDIC_LSVRXPIN"))
 }
 
 @(test)

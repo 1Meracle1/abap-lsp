@@ -808,6 +808,16 @@ unit_provides_name :: proc(unit: ^Unit_Analysis, name: string) -> bool {
 			return true
 		}
 	}
+	if !typepool_dependency_unit(unit.uri) {
+		return false
+	}
+	for &s in unit.symbols {
+		if s.scope == unit.root_scope &&
+		   s.kind == .Constant &&
+		   strings.equal_fold(s.name, name) {
+			return true
+		}
+	}
 	return false
 }
 

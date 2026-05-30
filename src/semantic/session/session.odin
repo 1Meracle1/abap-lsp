@@ -522,8 +522,8 @@ analysis_session_resolve_new_dependencies :: proc(
 				session.config.cache if has_cache && has_profile else nil,
 				session.config.profile if has_cache && has_profile else nil,
 				session.config.adt_client,
+				session.options.pool,
 				session.targets[0].uri if len(session.targets) > 0 else "",
-				context.temp_allocator,
 			) {
 				added += analysis_session_record_appended_inputs(
 					session,

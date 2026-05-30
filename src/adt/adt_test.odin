@@ -93,7 +93,7 @@ typepool_resolver_url_uses_configured_endpoint_and_client :: proc(t: ^testing.T)
 		&client,
 		Connection_Config {
 			base_url = "http://host/sap/bc/adt",
-			typepool_resolver_url = "http://host/sap/bc/zabapls/typepool",
+			typepool_resolver_url = "/sap/bc/zabapls/typepool",
 			sap_client = "100",
 		},
 		context.allocator,

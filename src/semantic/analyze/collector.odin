@@ -987,7 +987,7 @@ collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, k
 		case .Include_Type, .Include_Structure:
 			if type_ref, ok := type_ref_from_expr(c, info.include_ref, .Type if info.kind == .Include_Type else .Value);
 			   ok {
-				add_type_reference(c, scope, type_ref, info.range)
+				add_type_reference(c, scope, type_ref, info.range, .Structure, info.kind == .Include_Structure)
 			}
 		case .End_Group:
 		}
@@ -1100,7 +1100,7 @@ declare_info_symbol :: proc(
 		} else if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
 			structure_id = resolved
 		}
-		add_type_reference(c, scope, declared_type, info.range)
+		add_type_reference(c, scope, declared_type, info.range, type_form, has_type_form)
 	}
 	return declare_collected_symbol(
 		c,
@@ -1140,7 +1140,7 @@ declare_typed_symbol :: proc(
 		if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
 			structure_id = resolved
 		}
-		add_type_reference(c, scope, declared_type, range)
+		add_type_reference(c, scope, declared_type, range, type_form, has_type_form)
 	}
 	return declare_collected_symbol(
 		c,
@@ -1347,12 +1347,13 @@ structure_field_from_info :: proc(
 		return {}, false
 	}
 	type_ref, has_type := type_ref_from_clause(c, info.type_clause)
+	type_form, has_type_form := type_clause_form_from_ast(info.type_clause)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
 		if resolved, ok := resolve_field_type_ref(c, scope, type_ref); ok {
 			structure_id = resolved
 		}
-		add_type_reference(c, scope, type_ref, info.range)
+		add_type_reference(c, scope, type_ref, info.range, type_form, has_type_form)
 	}
 	flags := Structure_Field_Flags{.Has_Decl_Range}
 	if has_type {
@@ -1384,7 +1385,7 @@ extend_structure_from_include :: proc(
 	if !ok {
 		return
 	}
-	add_type_reference(c, scope, type_ref, info.range)
+	add_type_reference(c, scope, type_ref, info.range, .Structure, info.kind == .Include_Structure)
 	if field, field_ok := include_type_component_field(c, scope, info, type_ref); field_ok {
 		append(fields, field)
 		return
@@ -2453,7 +2454,7 @@ collect_class_oop_stmt :: proc(
 			exceptions := method_exceptions_from_signatures(c, member.signatures[:])
 			for param in parameters {
 				if .Has_Declared_Type in param.flags {
-					add_type_reference(c, scope, param.declared_type, param.range)
+					add_type_reference(c, scope, param.declared_type, param.range, param.type_clause_form, param.has_type_clause_form)
 				}
 			}
 			flags := Class_Member_Flags{}
@@ -2503,7 +2504,7 @@ collect_class_oop_stmt :: proc(
 			parameters := event_parameters_from_signatures(c, member.signatures[:])
 			for param in parameters {
 				if .Has_Declared_Type in param.flags {
-					add_type_reference(c, scope, param.declared_type, param.range)
+					add_type_reference(c, scope, param.declared_type, param.range, param.type_clause_form, param.has_type_clause_form)
 				}
 			}
 			flags := Class_Member_Flags{}
