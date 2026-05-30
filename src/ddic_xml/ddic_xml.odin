@@ -258,6 +258,12 @@ ddic_xml_data_element_type :: proc(doc: ^xml_doc.Document) -> Ddic_Xml_Type_Ref 
 			is_ref = true,
 		}
 	}
+	if strings.equal_fold(type_kind, "refToDictionaryType") {
+		return Ddic_Xml_Type_Ref {
+			name = ddic_xml_direct_child_text(doc, data_element_id, "typeName"),
+			is_ref = true,
+		}
+	}
 	return Ddic_Xml_Type_Ref {
 		name = ddic_builtin_type(ddic_xml_direct_child_text(doc, data_element_id, "dataType")),
 	}

@@ -9685,6 +9685,54 @@ ddic_reference_data_element_generates_ref_to_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+ddic_structure_field_resolves_dictionary_reference_data_element :: proc(t: ^testing.T) {
+	structure_xml := `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="zrow" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="VALUE">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">ZDE_DATAREF</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType"></abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	data_element_xml := `<blue:wbobj adtcore:name="ZDE_DATAREF" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>refToDictionaryType</dtel:typeKind>
+    <dtel:typeName>DATA</dtel:typeName>
+    <dtel:dataType/>
+  </dtel:dataElement>
+</blue:wbobj>`
+	structure_source := ddic_xml.dependency_source("ZROW", "ddic-structure", structure_xml, context.allocator)
+	defer delete(structure_source, context.allocator)
+	data_element_source := ddic_xml.dependency_source("ZDE_DATAREF", "ddic-data-element", data_element_xml, context.allocator)
+	defer delete(data_element_source, context.allocator)
+	testing.expect(t, contains_fold(structure_source, "value type zde_dataref"))
+	testing.expect(t, contains_fold(data_element_source, "type ref to data"))
+
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA ls_row TYPE zrow.",
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-structure/zrow.abap",
+			source = structure_source,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-data-element/zde_dataref.abap",
+			source = data_element_source,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	structure_unit := analyze.project_unit_by_uri(&project, dependencies[0].uri)
+
+	testing.expect(t, structure_unit != nil)
+	testing.expect(t, reference_resolves_to_uri(&project, structure_unit, "zde_dataref", .Type, .Type_Ref, dependencies[1].uri))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 dependency_xml_detection_prefers_metadata :: proc(t: ^testing.T) {
 	testing.expect(t, remote_deps.dependency_source_is_xml("ddic-table-type", "xml", "not xml"))
 	testing.expect(t, remote_deps.dependency_source_is_xml("ddic-table-type", "abap", "<ttyp/>"))

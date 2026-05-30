@@ -148,6 +148,21 @@ data_element_dependency_source_uses_clif_reference_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+data_element_dependency_source_uses_dictionary_reference_type :: proc(t: ^testing.T) {
+	xml := `<blue:wbobj adtcore:name="sxsltdref" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>refToDictionaryType</dtel:typeKind>
+    <dtel:typeName>DATA</dtel:typeName>
+    <dtel:dataType/>
+  </dtel:dataElement>
+</blue:wbobj>`
+	source := dependency_source("SXSLTDREF", "ddic-data-element", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "types sxsltdref type ref to data")
+}
+
+@(test)
 table_type_dependency_source_uses_named_row_type :: proc(t: ^testing.T) {
 	xml := `<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="zrows" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:properties>
@@ -200,7 +215,7 @@ data_element_dependency_source_does_not_invent_empty_data_type :: proc(t: ^testi
 	xml := `<blue:wbobj adtcore:name="zde_ref" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
   <dtel:dataElement>
     <dtel:typeKind>refToDictionaryType</dtel:typeKind>
-    <dtel:typeName>SYUNAME</dtel:typeName>
+    <dtel:typeName></dtel:typeName>
     <dtel:dataType></dtel:dataType>
   </dtel:dataElement>
 </blue:wbobj>`
