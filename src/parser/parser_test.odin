@@ -474,6 +474,34 @@ DATA second.`, "test.abap", context.allocator)
 }
 
 @(test)
+missing_period_diagnostics_point_after_previous_token :: proc(t: ^testing.T) {
+	source := `DATA(lv_val) = 1
+IF lv_val = 1
+    RETURN.
+ENDIF.`
+	parsed := parse(source, "missing_periods.abap", context.allocator)
+	data_pos := strings.index(source, "\nIF")
+	if_pos := strings.index(source, "\n    RETURN")
+	found_data := false
+	found_if := false
+
+	for e in parsed.errors {
+		if strings.contains(e.message, "expected '.' after inline DATA declaration") {
+			testing.expect_value(t, e.range.start, data_pos)
+			testing.expect_value(t, e.range.end, data_pos)
+			found_data = true
+		}
+		if strings.contains(e.message, "expected '.' after IF condition") {
+			testing.expect_value(t, e.range.start, if_pos)
+			testing.expect_value(t, e.range.end, if_pos)
+			found_if = true
+		}
+	}
+	testing.expect(t, found_data)
+	testing.expect(t, found_if)
+}
+
+@(test)
 statement_list_stop_keywords_are_not_consumed :: proc(t: ^testing.T) {
 	p := test_parser(`DATA lv.
 ENDIF.`)

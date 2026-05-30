@@ -540,7 +540,7 @@ expect_token_message :: proc(p: ^Parser, kind: tokenizer.Token_Kind, message: st
 	if tok.kind == kind {
 		return bump_token(p)
 	}
-	error(p, tok.range, message)
+	error(p, expected_token_range(p, tok), message)
 	return tok
 }
 
@@ -553,8 +553,16 @@ expect_keyword_message :: proc(p: ^Parser, keyword: string, message: string) -> 
 	if at_keyword(p, keyword) {
 		return bump_token(p)
 	}
-	error(p, tok.range, message)
+	error(p, expected_token_range(p, tok), message)
 	return tok
+}
+
+expected_token_range :: proc(p: ^Parser, fallback: Token) -> Range {
+	if p.previous_index >= 0 {
+		end := previous_token(p).range.end
+		return tokenizer.text_range(end, end)
+	}
+	return fallback.range
 }
 
 statement_end :: proc(p: ^Parser, token: Token) -> int {
