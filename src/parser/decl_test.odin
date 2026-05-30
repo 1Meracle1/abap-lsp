@@ -162,6 +162,41 @@ CONSTANTS: BEGIN OF c_pair, a TYPE c VALUE IS INITIAL, END OF c_pair.`
 }
 
 @(test)
+structured_type_components_allow_begin_and_end_names :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_code_range,
+  begin TYPE i,
+  end TYPE i,
+END OF ty_code_range.
+TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.`
+	parsed := parse(source, "keyword_components.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	range_decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	table_decl := parsed.root.stmts[1].derived_stmt.(^ast.Types_Decl)
+
+	testing.expect_value(t, len(range_decl.types), 4)
+	testing.expect_value(t, range_decl.types[1].kind, ast.Decl_Clause_Kind.Normal)
+	testing.expect_value(t, range_decl.types[1].name, "begin")
+	testing.expect_value(t, range_decl.types[1].type_clause.form, ast.Data_Type_Form.Type)
+	testing.expect_value(t, range_decl.types[2].kind, ast.Decl_Clause_Kind.Normal)
+	testing.expect_value(t, range_decl.types[2].name, "end")
+	testing.expect_value(t, range_decl.types[3].kind, ast.Decl_Clause_Kind.End_Group)
+
+	table_ref := table_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, table_ref.name, "ty_code_range")
+	testing.expect(t, table_ref.key != nil)
+	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
+	testing.expect_value(t, table_ref.key.components[0], "begin")
+}
+
+@(test)
+structured_type_keyword_head_requires_of_when_not_component :: proc(t: ^testing.T) {
+	parsed := parse("TYPES: BEGIN ty_code_range, field TYPE i.", "bad_keyword_group.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "expected OF after BEGIN")
+}
+
+@(test)
 types_structured_declaration_allows_end_without_component_comma :: proc(t: ^testing.T) {
 	source := `TYPES: BEGIN OF dd03p,
   decimals TYPE decimals,

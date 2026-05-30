@@ -2785,6 +2785,23 @@ TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.`
 }
 
 @(test)
+structured_type_components_named_begin_and_end_resolve :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_code_range,
+  begin TYPE i,
+  end TYPE i,
+END OF ty_code_range.
+TYPES ty_code_ranges TYPE SORTED TABLE OF ty_code_range WITH UNIQUE KEY begin.
+DATA ls_range TYPE ty_code_range.
+DATA lt_ranges TYPE ty_code_ranges.`
+	unit := collect_test_unit(t, "file:///keyword_component_type_refs.abap", source)
+
+	testing.expect(t, analyze.find_symbol(&unit, "ty_code_range", .Type_Def) != nil)
+	testing.expect(t, analyze.find_symbol(&unit, "ty_code_ranges", .Type_Def) != nil)
+	expect_structure_fields(t, &unit, "ty_code_range", "begin", "end")
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 declaration_type_refs_use_ast_base_paths_and_ranges :: proc(t: ^testing.T) {
 	source := `
 INTERFACE lif_demo.

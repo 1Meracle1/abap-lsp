@@ -532,11 +532,20 @@ parse_decl_clause_head :: proc(
 	bool,
 ) {
 	index := p.index
-	if allow_keyword(p, "BEGIN") {
-		if !allow_keyword(p, "OF") {
-			error_current(p, "syntax error: expected keyword")
+	if at_keyword(p, "BEGIN") {
+		if !at_keyword_index(p, p.index + 1, "OF") {
+			if decl_keyword_name_tail_starts(p, p.index + 1) {
+				name, name_index, ok := parse_decl_name(p)
+				if !ok {
+					return .Normal, false, "", nil, index, false
+				}
+				return .Normal, false, tokenizer.token_lexeme(name, p.source), nil, name_index, true
+			}
+			error_current(p, "syntax error: expected OF after BEGIN")
 			return .Normal, false, "", nil, index, false
 		}
+		expect_keyword(p, "BEGIN")
+		expect_keyword(p, "OF")
 		if name, ok := parse_common_part_delimiter_tail(p); ok {
 			return .Begin_Group, true, name, nil, index, true
 		}
@@ -546,11 +555,20 @@ parse_decl_clause_head :: proc(
 		}
 		return .Begin_Group, false, tokenizer.token_lexeme(name, p.source), nil, index, true
 	}
-	if allow_keyword(p, "END") {
-		if !allow_keyword(p, "OF") {
-			error_current(p, "syntax error: expected keyword")
+	if at_keyword(p, "END") {
+		if !at_keyword_index(p, p.index + 1, "OF") {
+			if decl_keyword_name_tail_starts(p, p.index + 1) {
+				name, name_index, ok := parse_decl_name(p)
+				if !ok {
+					return .Normal, false, "", nil, index, false
+				}
+				return .Normal, false, tokenizer.token_lexeme(name, p.source), nil, name_index, true
+			}
+			error_current(p, "syntax error: expected OF after END")
 			return .Normal, false, "", nil, index, false
 		}
+		expect_keyword(p, "END")
+		expect_keyword(p, "OF")
 		if name, ok := parse_common_part_delimiter_tail(p); ok {
 			return .End_Group, true, name, nil, index, true
 		}
@@ -581,6 +599,29 @@ parse_decl_clause_head :: proc(
 		return .Normal, false, "", nil, index, false
 	}
 	return .Normal, false, tokenizer.token_lexeme(name, p.source), nil, name_index, true
+}
+
+decl_keyword_name_tail_starts :: proc(p: ^Parser, index: int) -> bool {
+	if index >= len(p.tokens) {
+		return false
+	}
+	tok := p.tokens[index]
+	return(
+		tok.kind == .LParen ||
+		tok.kind == .Comma ||
+		tok.kind == .Period ||
+		tok.kind == .Eof ||
+		at_keyword_index(p, index, "TYPE") ||
+		at_keyword_index(p, index, "LIKE") ||
+		at_keyword_index(p, index, "LENGTH") ||
+		at_keyword_index(p, index, "DECIMALS") ||
+		at_keyword_index(p, index, "OCCURS") ||
+		at_keyword_index(p, index, "VALUE") ||
+		at_keyword_index(p, index, "WITH") ||
+		at_keyword_index(p, index, "AS") ||
+		at_keyword_index(p, index, "RENAMING") ||
+		keyword_phrase_at(p, index, "READ-ONLY") \
+	)
 }
 
 parse_common_part_delimiter_tail :: proc(p: ^Parser) -> (string, bool) {
