@@ -359,6 +359,23 @@ scan_pragma :: proc(lexer: ^Lexer) {
 	for is_pragma_char(lexer.ch) {
 		advance_rune(lexer)
 	}
+	if lexer.ch == '[' {
+		depth := 0
+		for {
+			if lexer.ch == utf8.RUNE_EOF || lexer.ch == '\n' {
+				return
+			}
+			if lexer.ch == '[' {
+				depth += 1
+			} else if lexer.ch == ']' {
+				depth -= 1
+			}
+			advance_rune(lexer)
+			if depth == 0 {
+				return
+			}
+		}
+	}
 }
 
 scan_number :: proc(lexer: ^Lexer) {

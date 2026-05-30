@@ -612,6 +612,22 @@ ENDLOOP.`
 }
 
 @(test)
+loop_header_pragma_argument_does_not_extend_where_expr :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_rows ASSIGNING <row> WHERE path = lv_path AND ( filename CP lv_a OR filename CP lv_b ) ##PRIMKEY[FILE_PATH].
+ENDLOOP.`
+	parsed := parse(source, "loop_header_pragma_arg_bounds.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	and_expr, and_ok := loop.where_cond.derived_expr.(^ast.Binary_Expr)
+	testing.expect(t, and_ok)
+	if and_ok {
+		_, pragma_arg_as_table_expr := and_expr.right.derived_expr.(^ast.Table_Expr)
+		testing.expect(t, !pragma_arg_as_table_expr)
+	}
+}
+
+@(test)
 amdp_method_body_is_retained_as_sqlscript_island :: proc(t: ^testing.T) {
 	source := `CLASS lcl IMPLEMENTATION.
   METHOD select_rows BY DATABASE PROCEDURE FOR HDB LANGUAGE SQLSCRIPT OPTIONS READ-ONLY USING mara.

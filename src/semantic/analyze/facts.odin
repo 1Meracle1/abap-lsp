@@ -2951,6 +2951,10 @@ collect_internal_table_where_refs :: proc(
 		collect_internal_table_where_refs(c, target, n.expr, scope)
 	case ^ast.Paren_Expr:
 		collect_internal_table_where_refs(c, target, n.expr, scope)
+	case ^ast.Substring_Expr:
+		collect_internal_table_where_refs(c, target, n.base, scope)
+		collect_expr_refs(c, n.offset, scope)
+		collect_expr_refs(c, n.length, scope)
 	case ^ast.Between_Expr:
 		collect_internal_table_where_refs(c, target, n.subject, scope)
 		collect_internal_table_where_refs(c, target, n.low, scope)
