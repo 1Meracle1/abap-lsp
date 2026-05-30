@@ -326,6 +326,8 @@ Reference_Data :: struct {
 	type_is_ref:         bool,
 	type_has_path:       bool,
 	type_first_selector: ast.Selector_Op,
+	type_clause_form:    ast.Data_Type_Form,
+	has_type_clause_form: bool,
 }
 
 Message_Class_Use_Data :: struct {

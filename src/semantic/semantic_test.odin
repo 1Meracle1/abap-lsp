@@ -546,6 +546,46 @@ ENDFUNCTION.
 }
 
 @(test)
+remote_dependency_candidates_include_unresolved_tables_structure_type :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/radmasdl.abap",
+			source = `FORM get_non_deleted_objects TABLES resulttab STRUCTURE ddsymtab
+                                    rangetab
+                             USING par1 par2.
+ENDFORM.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "ddsymtab", kind = .Type}]
+	found := false
+	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
+		if candidate.name == "ddsymtab" && candidate.kind == .Type {
+			found = true
+		}
+		if candidate.name == "rangetab" {
+			testing.expect(t, false)
+		}
+	}
+
+	testing.expect(t, pending)
+	testing.expect(t, found)
+}
+
+@(test)
 remote_dependency_candidates_include_unresolved_static_targets :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
@@ -3714,6 +3754,38 @@ ENDFUNCTION.
 	testing.expect(t, has_reference(&unit, "string", .Type, .Type_Ref))
 	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
 	testing.expect(t, has_reference(&unit, "bapiret2", .Value, .Type_Ref))
+}
+
+@(test)
+form_tables_structure_resolves_loaded_ddic_type_dependency :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///radmasdl.abap",
+		source = `FORM get_non_deleted_objects TABLES resulttab STRUCTURE ddsymtab
+                                    rangetab
+                             USING par1 par2.
+ENDFORM.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "file:///ddsymtab.abap",
+			source = `TYPES: BEGIN OF ddsymtab,
+         name TYPE string,
+       END OF ddsymtab.
+`,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !has_diagnostic(root, .Unresolved_Reference))
+		testing.expect(t, reference_resolves_to_uri(&project, root, "ddsymtab", .Value, .Type_Ref, dependencies[0].uri))
+		form := root.form_routines[0]
+		testing.expect_value(t, len(form.parameters), 4)
+		resulttab := root.symbols[analyze.symbol_id_index(form.parameters[0].symbol)]
+		testing.expect_value(t, resulttab.type_clause_display, "STANDARD TABLE OF ddsymtab")
+	}
 }
 
 @(test)

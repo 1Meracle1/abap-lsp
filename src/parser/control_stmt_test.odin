@@ -168,6 +168,43 @@ ENDFUNCTION.`
 }
 
 @(test)
+form_tables_structure_keeps_following_untyped_parameter :: proc(t: ^testing.T) {
+	source := `FORM get_non_deleted_objects TABLES resulttab STRUCTURE ddsymtab
+                                    rangetab
+                             USING par1 par2.
+ENDFORM.`
+	parsed := parse(source, "form_tables_structure.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
+	testing.expect_value(t, len(form.form_parameters), 4)
+	testing.expect_value(t, form.form_parameters[0].name, "resulttab")
+	testing.expect_value(t, form.form_parameters[0].section, ast.Form_Parameter_Section.Tables)
+	testing.expect_value(t, form.form_parameters[0].type_clause.form, ast.Data_Type_Form.Structure)
+	ref := form.form_parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, ref.base_name, "ddsymtab")
+	testing.expect_value(t, form.form_parameters[1].name, "rangetab")
+	testing.expect_value(t, form.form_parameters[1].section, ast.Form_Parameter_Section.Tables)
+	testing.expect(t, form.form_parameters[1].type_clause == nil)
+	testing.expect_value(t, form.form_parameters[2].section, ast.Form_Parameter_Section.Using)
+	testing.expect_value(t, form.form_parameters[3].name, "par2")
+}
+
+@(test)
+form_tables_structure_requires_name :: proc(t: ^testing.T) {
+	source := `FORM bad TABLES rows STRUCTURE USING par1.
+ENDFORM.`
+	parsed := parse(source, "form_tables_structure_missing.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, "syntax error: expected structure name")
+	form := parsed.root.stmts[0].derived_stmt.(^ast.Form_Decl)
+	testing.expect_value(t, len(form.form_parameters), 2)
+	testing.expect_value(t, form.form_parameters[1].section, ast.Form_Parameter_Section.Using)
+	testing.expect_value(t, form.form_parameters[1].name, "par1")
+}
+
+@(test)
 routine_headers_accept_escaped_keyword_parameters :: proc(t: ^testing.T) {
 	source := `FUNCTION z_keywords
   IMPORTING !VALUE TYPE i !REFERENCE TYPE string.

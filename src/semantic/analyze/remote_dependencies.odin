@@ -496,7 +496,10 @@ remote_dependency_candidate_for_reference :: proc(
 			}
 		} else if !(ref.namespace == .Value &&
 		            ref.type_has_path &&
-		            ref.type_first_selector == .Dash) {
+		            ref.type_first_selector == .Dash) &&
+		          !(ref.namespace == .Value &&
+		            ref.has_type_clause_form &&
+		            ref.type_clause_form == .Structure) {
 			return {}, false
 		}
 	case .Interface_Use:

@@ -1185,53 +1185,81 @@ parse_header_type_clause :: proc(
 	is_like := token_is_keyword(p, keyword, "LIKE")
 	is_structure := token_is_keyword(p, keyword, "STRUCTURE")
 	clause.form = .Structure if is_structure else (.Like if is_like else .Type)
-	table_has_of := true
-	if !is_structure {
-		if header_allow_keyword(p, &i, period_index, "LINE") {
-			header_allow_keyword(p, &i, period_index, "OF")
-			clause.form = .Like_Line_Of if is_like else .Type_Line_Of
-		} else if !is_like && header_allow_keyword(p, &i, period_index, "REF") {
-			header_allow_keyword(p, &i, period_index, "TO")
-			clause.form = .Ref_To
-		} else if !is_like && header_allow_keyword(p, &i, period_index, "RANGE") {
-			header_allow_keyword(p, &i, period_index, "OF")
-			clause.form = .Range_Of
-		} else if !is_like && i + 1 < period_index && space2_at(p, i, "ANY", "TABLE") {
-			i += 2
-			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
-			clause.table_has_of = table_has_of
-			clause.form = .Any_Table
-		} else if !is_like && i + 1 < period_index && space2_at(p, i, "INDEX", "TABLE") {
-			i += 2
-			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
-			clause.table_has_of = table_has_of
-			clause.form = .Index_Table
-		} else if header_allow_keyword(p, &i, period_index, "STANDARD") {
-			header_allow_keyword(p, &i, period_index, "TABLE")
-			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
-			clause.table_has_of = table_has_of
-			clause.form = .Like_Standard_Table if is_like else .Standard_Table
-		} else if header_allow_keyword(p, &i, period_index, "SORTED") {
-			header_allow_keyword(p, &i, period_index, "TABLE")
-			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
-			clause.table_has_of = table_has_of
-			clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
-		} else if header_allow_keyword(p, &i, period_index, "HASHED") {
-			header_allow_keyword(p, &i, period_index, "TABLE")
-			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
-			clause.table_has_of = table_has_of
-			clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
-		} else if header_allow_keyword(p, &i, period_index, "TABLE") {
-			table_has_of = header_allow_keyword(p, &i, period_index, "OF")
-			clause.table_has_of = table_has_of
-			clause.form = .Like_Table if is_like else .Table
+	if is_structure {
+		clause.type_ref, i = parse_header_structure_ref_expr(p, i, period_index, stop_keywords)
+		if clause.type_ref == nil {
+			err_range := keyword.range
+			if i < period_index {
+				err_range = p.tokens[i].range
+			}
+			error(p, err_range, "syntax error: expected structure name")
 		}
+		return clause, i
+	}
+	table_has_of := true
+	if header_allow_keyword(p, &i, period_index, "LINE") {
+		header_allow_keyword(p, &i, period_index, "OF")
+		clause.form = .Like_Line_Of if is_like else .Type_Line_Of
+	} else if !is_like && header_allow_keyword(p, &i, period_index, "REF") {
+		header_allow_keyword(p, &i, period_index, "TO")
+		clause.form = .Ref_To
+	} else if !is_like && header_allow_keyword(p, &i, period_index, "RANGE") {
+		header_allow_keyword(p, &i, period_index, "OF")
+		clause.form = .Range_Of
+	} else if !is_like && i + 1 < period_index && space2_at(p, i, "ANY", "TABLE") {
+		i += 2
+		table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+		clause.table_has_of = table_has_of
+		clause.form = .Any_Table
+	} else if !is_like && i + 1 < period_index && space2_at(p, i, "INDEX", "TABLE") {
+		i += 2
+		table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+		clause.table_has_of = table_has_of
+		clause.form = .Index_Table
+	} else if header_allow_keyword(p, &i, period_index, "STANDARD") {
+		header_allow_keyword(p, &i, period_index, "TABLE")
+		table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+		clause.table_has_of = table_has_of
+		clause.form = .Like_Standard_Table if is_like else .Standard_Table
+	} else if header_allow_keyword(p, &i, period_index, "SORTED") {
+		header_allow_keyword(p, &i, period_index, "TABLE")
+		table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+		clause.table_has_of = table_has_of
+		clause.form = .Like_Sorted_Table if is_like else .Sorted_Table
+	} else if header_allow_keyword(p, &i, period_index, "HASHED") {
+		header_allow_keyword(p, &i, period_index, "TABLE")
+		table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+		clause.table_has_of = table_has_of
+		clause.form = .Like_Hashed_Table if is_like else .Hashed_Table
+	} else if header_allow_keyword(p, &i, period_index, "TABLE") {
+		table_has_of = header_allow_keyword(p, &i, period_index, "OF")
+		clause.table_has_of = table_has_of
+		clause.form = .Like_Table if is_like else .Table
 	}
 	if !table_has_of {
 		return clause, i
 	}
 	clause.type_ref, i = parse_header_type_ref_expr(p, i, period_index, stop_keywords)
 	return clause, i
+}
+
+parse_header_structure_ref_expr :: proc(
+	p: ^Parser,
+	start, period_index: int,
+	stop_keywords: []string,
+) -> (^ast.Expr, int) {
+	i := start
+	if header_type_ref_done(p, i, start, period_index, stop_keywords, false) ||
+	   !type_ref_path_token(p.tokens[i]) {
+		return nil, i
+	}
+	i += 1
+	for i + 1 < period_index &&
+	    type_ref_selector_token(p.tokens[i].kind) &&
+	    type_ref_path_token(p.tokens[i + 1]) {
+		i += 2
+	}
+	return type_ref_expr_from_tokens(p, start, i), i
 }
 
 header_allow_keyword :: proc(

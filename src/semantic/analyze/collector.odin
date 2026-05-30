@@ -372,6 +372,8 @@ add_reference :: proc(
 	type_is_ref := false,
 	type_has_path := false,
 	type_first_selector := ast.Selector_Op.Dash,
+	type_clause_form := ast.Data_Type_Form{},
+	has_type_clause_form := false,
 ) {
 	id := Reference_Id(u32(len(c.references)))
 	append(
@@ -386,6 +388,8 @@ add_reference :: proc(
 			type_is_ref = type_is_ref,
 			type_has_path = type_has_path,
 			type_first_selector = type_first_selector,
+			type_clause_form = type_clause_form,
+			has_type_clause_form = has_type_clause_form,
 		},
 	)
 }
@@ -1775,6 +1779,8 @@ add_type_reference :: proc(
 	scope: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
 	range: tokenizer.Range,
+	type_clause_form := ast.Data_Type_Form{},
+	has_type_clause_form := false,
 ) {
 	if type_ref.base_name == "" {
 		return
@@ -1793,6 +1799,8 @@ add_type_reference :: proc(
 		type_ref.is_ref,
 		len(type_ref.field_path) > 0,
 		type_ref_path_selector(type_ref, 0),
+		type_clause_form,
+		has_type_clause_form,
 	)
 	if len(type_ref.field_path) > 0 {
 		segments := make([dynamic]Field_Access_Segment, 0, len(type_ref.field_path), c.allocator)
@@ -2773,7 +2781,7 @@ form_parameters_from_ast :: proc(
 			   resolved_ok {
 				structure_id = resolved
 			}
-			add_type_reference(c, scope, declared_type, clause.range)
+			add_type_reference(c, scope, declared_type, clause.range, type_form, has_type_form)
 		}
 		symbol_id := declare_collected_symbol(
 			c,
@@ -2819,13 +2827,13 @@ function_parameters_from_ast :: proc(
 			passing = parameter_passing_from_ast(clause.passing),
 		}
 		param.type_clause_display = type_clause_display(c, clause.type_clause)
+		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
+		type_table_has_of := type_clause_table_has_of_from_ast(clause.type_clause)
 		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
 			param.declared_type = type_ref
 			param.flags += {.Has_Declared_Type}
-			add_type_reference(c, scope, type_ref, param.range)
+			add_type_reference(c, scope, type_ref, param.range, type_form, has_type_form)
 		}
-		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
-		type_table_has_of := type_clause_table_has_of_from_ast(clause.type_clause)
 		if .Is_Optional in clause.flags {
 			param.flags += {.Is_Optional}
 		}
