@@ -975,8 +975,7 @@ resolve_project_cross_unit_for_units :: proc(
 				index.visible[unit_index],
 				index.predecessors[unit_index],
 			); ok {
-				ref.resolution = resolution
-				ref.has_resolution = true
+				set_project_reference_resolution(units, ref, resolution)
 			}
 		}
 	}

@@ -6,6 +6,8 @@ import "src:tokenizer"
 import "core:mem"
 import "core:strings"
 
+// Pointer-returning query procedures borrow storage from the queried Unit_Analysis.
+// The returned pointers are invalid after the unit is analyzed or mutated again.
 Semantic_Queries :: struct {
 	unit: ^analyze.Unit_Analysis,
 }
@@ -53,6 +55,34 @@ decl_symbol_at_offset :: proc(q: Decl_Queries, offset: int) -> ^analyze.Symbol_D
 	}
 	sem := q.unit.semantic_index.symbols[analyze.sem_symbol_index(id)]
 	return analyze.symbol(q.unit, sem.symbol_id)
+}
+
+decl_symbol_handle_at_offset :: proc(
+	q: Decl_Queries,
+	offset: int,
+) -> (
+	analyze.Symbol_Handle,
+	bool,
+) {
+	s := decl_symbol_at_offset(q, offset)
+	if s == nil {
+		return {}, false
+	}
+	return analyze.Symbol_Handle{unit = q.unit.unit_id, symbol = s.id}, true
+}
+
+decl_symbol_copy_at_offset :: proc(
+	q: Decl_Queries,
+	offset: int,
+) -> (
+	analyze.Symbol_Data,
+	bool,
+) {
+	s := decl_symbol_at_offset(q, offset)
+	if s == nil {
+		return {}, false
+	}
+	return s^, true
 }
 
 decl_symbol_with_kind_and_decl_range :: proc(
@@ -187,6 +217,34 @@ ref_reference_at_offset :: proc(q: Ref_Queries, offset: int) -> ^analyze.Referen
 	return &q.unit.references[analyze.reference_id_index(sem.reference_id)]
 }
 
+ref_reference_id_at_offset :: proc(
+	q: Ref_Queries,
+	offset: int,
+) -> (
+	analyze.Reference_Id,
+	bool,
+) {
+	ref := ref_reference_at_offset(q, offset)
+	if ref == nil {
+		return analyze.INVALID_REFERENCE_ID, false
+	}
+	return ref.id, true
+}
+
+ref_reference_copy_at_offset :: proc(
+	q: Ref_Queries,
+	offset: int,
+) -> (
+	analyze.Reference_Data,
+	bool,
+) {
+	ref := ref_reference_at_offset(q, offset)
+	if ref == nil {
+		return {}, false
+	}
+	return ref^, true
+}
+
 ref_reference_at_range :: proc(q: Ref_Queries, range: tokenizer.Range) -> ^analyze.Reference_Data {
 	id, ok := analyze.semantic_index_reference_at_range(&q.unit.semantic_index, range)
 	if !ok {
@@ -197,6 +255,20 @@ ref_reference_at_range :: proc(q: Ref_Queries, range: tokenizer.Range) -> ^analy
 		return nil
 	}
 	return &q.unit.references[analyze.reference_id_index(sem.reference_id)]
+}
+
+ref_reference_copy_at_range :: proc(
+	q: Ref_Queries,
+	range: tokenizer.Range,
+) -> (
+	analyze.Reference_Data,
+	bool,
+) {
+	ref := ref_reference_at_range(q, range)
+	if ref == nil {
+		return {}, false
+	}
+	return ref^, true
 }
 
 ref_type_reference_at_offset :: proc(q: Ref_Queries, offset: int) -> ^analyze.Reference_Data {
@@ -309,6 +381,20 @@ fact_expression_fact_at_offset :: proc(q: Fact_Queries, offset: int) -> ^analyze
 		return nil
 	}
 	return &q.unit.expression_facts[best]
+}
+
+fact_expression_fact_copy_at_offset :: proc(
+	q: Fact_Queries,
+	offset: int,
+) -> (
+	analyze.Expression_Fact_Data,
+	bool,
+) {
+	fact := fact_expression_fact_at_offset(q, offset)
+	if fact == nil {
+		return {}, false
+	}
+	return fact^, true
 }
 
 fact_value_flow_edges_touching_offset :: proc(

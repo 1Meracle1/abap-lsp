@@ -2188,6 +2188,48 @@ project_state_retained_provided_name_removal_keeps_other_owner :: proc(t: ^testi
 }
 
 @(test)
+project_state_root_namespace_change_revalidates_type_reference :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{uri = "file:///workspace/zfoo.abap", source = "REPORT zfoo."},
+		{uri = "file:///workspace/zconsumer.abap", source = "DATA lo_foo TYPE REF TO zfoo."},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	consumer := analyze.project_unit_by_uri(&project, targets[1].uri)
+	testing.expect(t, consumer != nil)
+	if consumer != nil {
+		testing.expect(t, has_diagnostic(consumer, .Wrong_Namespace))
+	}
+
+	targets[0].source = "CLASS zfoo DEFINITION. ENDCLASS."
+	project = analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	consumer = analyze.project_unit_by_uri(&project, targets[1].uri)
+	testing.expect(t, consumer != nil)
+	if consumer != nil {
+		testing.expect(t, reference_resolves_to_uri(&project, consumer, "zfoo", .Type, .Type_Ref, targets[0].uri))
+		testing.expect(t, !has_diagnostic(consumer, .Wrong_Namespace))
+	}
+}
+
+@(test)
 project_state_public_interface_change_revalidates_reverse_dependents :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
@@ -5043,6 +5085,15 @@ SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).`
 	testing.expect(t, sym != nil)
 	testing.expect_value(t, sym.name, "lv_value")
 
+	handle, handle_ok := sem_query.decl_symbol_handle_at_offset(decl_query, decl_offset)
+	testing.expect(t, handle_ok)
+	testing.expect_value(t, handle.unit, unit.unit_id)
+	testing.expect_value(t, handle.symbol, sym.id)
+
+	sym_copy, sym_copy_ok := sem_query.decl_symbol_copy_at_offset(decl_query, decl_offset)
+	testing.expect(t, sym_copy_ok)
+	testing.expect_value(t, sym_copy.name, "lv_value")
+
 	by_range := sem_query.decl_symbol_with_kind_and_decl_range(decl_query, .Variable, sym.decl_range)
 	testing.expect(t, by_range != nil)
 	testing.expect_value(t, by_range.id, sym.id)
@@ -5052,9 +5103,21 @@ SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).`
 	testing.expect_value(t, ref.name, "lv_value")
 	testing.expect(t, ref.has_resolution)
 
+	ref_id, ref_id_ok := sem_query.ref_reference_id_at_offset(ref_query, use_offset)
+	testing.expect(t, ref_id_ok)
+	testing.expect_value(t, ref_id, ref.id)
+
+	ref_copy, ref_copy_ok := sem_query.ref_reference_copy_at_offset(ref_query, use_offset)
+	testing.expect(t, ref_copy_ok)
+	testing.expect_value(t, ref_copy.id, ref.id)
+
 	exact_ref := sem_query.ref_reference_at_range(ref_query, ref.range)
 	testing.expect(t, exact_ref != nil)
 	testing.expect_value(t, exact_ref.id, ref.id)
+
+	exact_ref_copy, exact_ref_copy_ok := sem_query.ref_reference_copy_at_range(ref_query, ref.range)
+	testing.expect(t, exact_ref_copy_ok)
+	testing.expect_value(t, exact_ref_copy.id, ref.id)
 
 	resolved := sem_query.ref_resolving_to(
 		ref_query,
@@ -5074,6 +5137,10 @@ SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).`
 	fact := sem_query.fact_expression_fact_at_offset(fact_query, use_offset)
 	testing.expect(t, fact != nil)
 	testing.expect_value(t, fact.kind, analyze.Expression_Fact_Kind.Reference)
+
+	fact_copy, fact_copy_ok := sem_query.fact_expression_fact_copy_at_offset(fact_query, use_offset)
+	testing.expect(t, fact_copy_ok)
+	testing.expect_value(t, fact_copy.kind, analyze.Expression_Fact_Kind.Reference)
 }
 
 @(test)
@@ -5643,6 +5710,93 @@ START-OF-SELECTION.
 			found = true
 		}
 	}
+	testing.expect(t, found)
+}
+
+@(test)
+inline_selector_assignment_infers_field_type_same_pass :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///inline_selector_assignment.abap",
+		`
+TYPES: BEGIN OF ty_row,
+         field TYPE string,
+       END OF ty_row.
+
+DATA ls_row TYPE ty_row.
+DATA(lv_field) = ls_row-field.
+`,
+	)
+
+	lv_field := analyze.find_symbol(&unit, "lv_field", .Variable)
+	testing.expect(t, lv_field != nil)
+	if lv_field != nil {
+		testing.expect(t, lv_field.has_declared_type)
+		testing.expect_value(t, lv_field.declared_type.base_name, "string")
+	}
+}
+
+@(test)
+inline_method_result_assignment_infers_return_type_same_pass :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///inline_method_result_assignment.abap",
+		`
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_text RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD get_text.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_dep TYPE REF TO lcl_dep.
+DATA(lv_text) = lo_dep->get_text( ).
+`,
+	)
+
+	lv_text := analyze.find_symbol(&unit, "lv_text", .Variable)
+	testing.expect(t, lv_text != nil)
+	if lv_text != nil {
+		testing.expect(t, lv_text.has_declared_type)
+		testing.expect_value(t, lv_text.declared_type.base_name, "string")
+	}
+}
+
+@(test)
+method_result_call_argument_value_flow_uses_same_pass_return_type :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_text RETURNING VALUE(rv_text) TYPE string.
+    METHODS consume IMPORTING iv_text TYPE string.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD get_text.
+  ENDMETHOD.
+  METHOD consume.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_dep TYPE REF TO lcl_dep.
+lo_dep->consume( iv_text = lo_dep->get_text( ) ).
+`
+	unit := collect_test_unit(t, "file:///method_result_call_arg_flow.abap", source)
+	arg_offset := find_text_last(source, "lo_dep->get_text")
+	found := false
+	for edge in unit.value_flow_edges {
+		if edge.kind == .Call_Argument &&
+		   analyze.range_contains_offset(edge.source_range, arg_offset) &&
+		   edge.source_type.has_declared_type &&
+		   edge.source_type.declared_type.base_name == "string" {
+			found = true
+		}
+	}
+
+	testing.expect(t, arg_offset >= 0)
 	testing.expect(t, found)
 }
 
@@ -10339,6 +10493,52 @@ analyze_target_ignores_sibling_candidate_without_include_edge :: proc(t: ^testin
 	testing.expect_value(t, len(project.units), 1)
 	testing.expect(t, analyze.project_unit_by_uri(&project, candidates[0].uri) == nil)
 	testing.expect(t, len(project.units[0].include_edges) == 0)
+}
+
+@(test)
+project_visible_value_root_does_not_satisfy_type_reference :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zfoo.abap",
+			source = "REPORT zfoo.",
+		},
+		{
+			uri = "file:///workspace/zconsumer.abap",
+			source = "DATA lo_foo TYPE REF TO zfoo.",
+		},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	consumer := analyze.project_unit_by_uri(&project, sources[1].uri)
+
+		testing.expect(t, consumer != nil)
+	if consumer != nil {
+		testing.expect(t, !reference_resolves_to_uri(&project, consumer, "zfoo", .Type, .Type_Ref, sources[0].uri))
+		testing.expect(t, has_diagnostic(consumer, .Wrong_Namespace))
+	}
+}
+
+@(test)
+project_visible_type_root_does_not_satisfy_routine_reference :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zfoo.abap",
+			source = "TYPES zfoo TYPE i.",
+		},
+		{
+			uri = "file:///workspace/zconsumer.abap",
+			source = "PERFORM zfoo.",
+		},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	consumer := analyze.project_unit_by_uri(&project, sources[1].uri)
+
+	testing.expect(t, consumer != nil)
+	if consumer != nil {
+		testing.expect(t, !reference_resolves_to_uri(&project, consumer, "zfoo", .Routine, .Routine_Call, sources[0].uri))
+		testing.expect(t, has_diagnostic(consumer, .Wrong_Namespace))
+	}
 }
 
 @(test)

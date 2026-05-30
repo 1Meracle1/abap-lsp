@@ -27,6 +27,7 @@ Inferred_Concatenate_Update :: struct {
 Range_Type_Fact :: struct {
 	range:     tokenizer.Range,
 	type_fact: Type_Fact_Data,
+	rank:      int,
 }
 
 Range_Type_Fact_Index :: struct {
@@ -98,7 +99,6 @@ infer_unit_semantic_facts :: proc(
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	range_facts := range_type_fact_index_make(project, unit_index, context.temp_allocator)
 	inline_symbols := inline_symbol_index_make(unit, context.temp_allocator)
 
 	for ref in unit.references {
@@ -125,8 +125,22 @@ infer_unit_semantic_facts :: proc(
 	for site in unit.call_sites {
 		fact := call_result_type_fact(project, lookup, unit_index, site)
 		push_expression_fact(&out.expression_facts, site.scope, site.range, .Call_Result, fact)
+	}
+
+	range_facts := range_type_fact_index_make(
+		project,
+		unit_index,
+		out.expression_facts[:],
+		context.temp_allocator,
+	)
+
+	for site in unit.call_sites {
 		for arg in site.arguments {
-			if !type_fact_known(arg.type_fact) {
+			source := arg.type_fact
+			if fact, ok := type_fact_for_range_indexed(&range_facts, arg.range); ok {
+				source = fact
+			}
+			if !type_fact_known(source) {
 				continue
 			}
 			target := Value_Flow_Target_Data {
@@ -142,7 +156,7 @@ infer_unit_semantic_facts :: proc(
 					scope = site.scope,
 					kind = .Call_Argument,
 					source_range = arg.range,
-					source_type = arg.type_fact,
+					source_type = source,
 					target = target,
 					target_type = unknown_type_fact(),
 				},
@@ -325,6 +339,7 @@ type_fact_known :: proc(fact: Type_Fact_Data) -> bool {
 range_type_fact_index_make :: proc(
 	project: ^Project_Analysis,
 	unit_index: int,
+	expression_facts: []Expression_Fact_Data,
 	allocator: mem.Allocator,
 ) -> Range_Type_Fact_Index {
 	unit := &project.units[unit_index]
@@ -332,7 +347,7 @@ range_type_fact_index_make :: proc(
 		facts = make(
 			[dynamic]Range_Type_Fact,
 			0,
-			len(unit.references) + len(unit.expression_facts),
+			len(unit.references) + len(unit.expression_facts) + len(expression_facts),
 			allocator,
 		),
 	}
@@ -347,10 +362,12 @@ range_type_fact_index_make :: proc(
 	}
 	for fact in unit.expression_facts {
 		if type_fact_known(fact.type_fact) {
-			append(
-				&index.facts,
-				Range_Type_Fact{range = fact.range, type_fact = fact.type_fact},
-			)
+			append(&index.facts, Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = 1})
+		}
+	}
+	for fact in expression_facts {
+		if type_fact_known(fact.type_fact) {
+			append(&index.facts, Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = 2})
 		}
 	}
 	slice.sort_by(index.facts[:], range_type_fact_less)
@@ -360,6 +377,9 @@ range_type_fact_index_make :: proc(
 range_type_fact_less :: proc(a, b: Range_Type_Fact) -> bool {
 	if a.range.start != b.range.start {
 		return a.range.start < b.range.start
+	}
+	if a.range.end == b.range.end {
+		return a.rank > b.rank
 	}
 	return a.range.end > b.range.end
 }

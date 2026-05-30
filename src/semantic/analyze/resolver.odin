@@ -9,9 +9,27 @@ import "core:strings"
 
 build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Scope_Index {
 	index := Scope_Index {
-		scope_count   = len(unit.scopes),
-		symbols       = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2, allocator),
-		class_symbols = make(map[Class_Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
+		scope_count       = len(unit.scopes),
+		symbols           = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2, allocator),
+		class_symbols     = make(map[Class_Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
+		enclosing_classes = make([dynamic]Symbol_Id, len(unit.scopes), len(unit.scopes), allocator),
+		superclasses      = make(map[Symbol_Id]string, len(unit.class_inheritance), allocator),
+	}
+	for scope_data, i in unit.scopes {
+		owner := INVALID_SYMBOL_ID
+		if (scope_data.kind == .Class || scope_data.kind == .Interface) &&
+		   scope_data.owner != INVALID_SYMBOL_ID {
+			owner = scope_data.owner
+		} else {
+			parent_index := scope_id_index(scope_data.parent)
+			if parent_index >= 0 && parent_index < i {
+				owner = index.enclosing_classes[parent_index]
+			}
+		}
+		index.enclosing_classes[i] = owner
+	}
+	for inheritance in unit.class_inheritance {
+		index.superclasses[inheritance.class_symbol] = inheritance.superclass_name
 	}
 	for symbol in unit.symbols {
 		class_symbol := INVALID_SYMBOL_ID
@@ -62,10 +80,83 @@ resolve_unit_with_index :: proc(unit: ^Unit_Analysis, index: ^Scope_Index) {
 	for i in 0 ..< len(unit.references) {
 		ref := &unit.references[i]
 		if resolution, ok := resolve_reference(unit, index, ref^); ok {
-			ref.resolution = resolution
-			ref.has_resolution = true
+			set_reference_resolution(unit, ref, resolution)
 		}
 	}
+}
+
+set_reference_resolution :: proc(
+	unit: ^Unit_Analysis,
+	ref: ^Reference_Data,
+	resolution: Resolution,
+) {
+	assert(reference_resolution_allowed(unit, ref^, resolution))
+	ref.resolution = resolution
+	ref.has_resolution = true
+}
+
+set_project_reference_resolution :: proc(
+	units: []Unit_Analysis,
+	ref: ^Reference_Data,
+	resolution: Resolution,
+) {
+	assert(project_reference_resolution_allowed(units, ref^, resolution))
+	ref.resolution = resolution
+	ref.has_resolution = true
+}
+
+reference_resolution_allowed :: proc(
+	unit: ^Unit_Analysis,
+	ref: Reference_Data,
+	resolution: Resolution,
+) -> bool {
+	if resolution.kind != .Symbol {
+		return true
+	}
+	if resolution.symbol.unit != unit.unit_id {
+		return true
+	}
+	s := symbol(unit, resolution.symbol.symbol)
+	if s == nil {
+		return false
+	}
+	return reference_symbol_kind_allowed(ref, s.kind)
+}
+
+project_reference_resolution_allowed :: proc(
+	units: []Unit_Analysis,
+	ref: Reference_Data,
+	resolution: Resolution,
+) -> bool {
+	if resolution.kind != .Symbol {
+		return true
+	}
+	unit_index := unit_id_index(resolution.symbol.unit)
+	if unit_index < 0 || unit_index >= len(units) {
+		return false
+	}
+	s := symbol(&units[unit_index], resolution.symbol.symbol)
+	if s == nil {
+		return false
+	}
+	return reference_symbol_kind_allowed(ref, s.kind)
+}
+
+reference_symbol_kind_allowed :: proc(ref: Reference_Data, kind: Symbol_Kind) -> bool {
+	if ref.namespace == .Value &&
+	   ref.kind == .Identifier &&
+	   (ref.name == "me" || ref.name == "super") &&
+	   (kind == .Class || kind == .Interface) {
+		return true
+	}
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if symbol_kind_occupies(kind, namespace) &&
+		   reference_namespace_allowed(ref.kind, ref.namespace, namespace) {
+			return true
+		}
+	}
+	return false
 }
 
 resolve_reference :: proc(
@@ -206,6 +297,11 @@ symbol_resolution :: #force_inline proc(unit: ^Unit_Analysis, symbol_id: Symbol_
 }
 
 enclosing_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> (Symbol_Id, bool) {
+	scope_index := scope_id_index(scope_id)
+	if scope_index >= 0 && scope_index < len(unit.scope_index.enclosing_classes) {
+		owner := unit.scope_index.enclosing_classes[scope_index]
+		return owner, owner != INVALID_SYMBOL_ID
+	}
 	current := scope_id
 	for current != INVALID_SCOPE_ID {
 		s := scope(unit, current)
@@ -400,6 +496,11 @@ resolve_super_reference :: proc(
 }
 
 class_superclass_name :: proc(unit: ^Unit_Analysis, class_symbol: Symbol_Id) -> (string, bool) {
+	if unit.scope_index.superclasses != nil {
+		if name, ok := unit.scope_index.superclasses[class_symbol]; ok {
+			return name, name != ""
+		}
+	}
 	for inheritance in unit.class_inheritance {
 		if inheritance.class_symbol == class_symbol {
 			return inheritance.superclass_name, inheritance.superclass_name != ""
@@ -437,7 +538,6 @@ Root_Symbol_Entry :: struct {
 Project_Root_Lookup :: struct {
 	by_unit:        map[Root_Symbol_Key]Symbol_Handle,
 	global:         map[Root_Name_Key]Symbol_Handle,
-	names:          map[string]bool,
 	provided_names: map[string]bool,
 }
 
@@ -478,8 +578,7 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 				visible[unit_index],
 				predecessors[unit_index],
 			); ok {
-				ref.resolution = resolution
-				ref.has_resolution = true
+				set_project_reference_resolution(units, ref, resolution)
 			}
 		}
 	}
@@ -1127,7 +1226,6 @@ build_project_root_lookup :: proc(
 	lookup := Project_Root_Lookup {
 		by_unit        = make(map[Root_Symbol_Key]Symbol_Handle, len(roots), allocator),
 		global         = make(map[Root_Name_Key]Symbol_Handle, len(roots), allocator),
-		names          = make(map[string]bool, len(roots), allocator),
 		provided_names = make(map[string]bool, provided_name_count, allocator),
 	}
 	for i in 0 ..< len(units) {
@@ -1150,7 +1248,6 @@ build_project_root_lookup :: proc(
 			slot^ = handle
 		}
 		if entry.visible_by_default {
-			lookup.names[entry.name] = true
 			global_key := Root_Name_Key {
 				namespace = entry.namespace,
 				name      = entry.name,
@@ -1311,9 +1408,6 @@ resolve_project_reference :: proc(
 		}
 	}
 	if ref.kind == .Message_Class && ref.name in roots.provided_names {
-		return Resolution{kind = .External}, true
-	}
-	if (ref.namespace == .Type || ref.namespace == .Routine) && ref.name in roots.names {
 		return Resolution{kind = .External}, true
 	}
 	return Resolution{}, false

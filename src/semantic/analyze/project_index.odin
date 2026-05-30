@@ -5,7 +5,6 @@ import "core:mem"
 Project_Index :: struct {
 	root_lookup:              Project_Root_Lookup,
 	global_root_candidates:   map[Root_Name_Key][dynamic]Symbol_Handle,
-	root_name_counts:         map[string]int,
 	provided_name_counts:     map[string]int,
 	class_scope_entries:      map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	class_scope_candidates:   map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
@@ -40,10 +39,8 @@ project_index_make :: proc(allocator: mem.Allocator) -> Project_Index {
 		root_lookup = Project_Root_Lookup {
 			by_unit = make(map[Root_Symbol_Key]Symbol_Handle, 16, allocator),
 			global = make(map[Root_Name_Key]Symbol_Handle, 16, allocator),
-			names = make(map[string]bool, 16, allocator),
 			provided_names = make(map[string]bool, 16, allocator),
 		},
-		root_name_counts = make(map[string]int, 16, allocator),
 		global_root_candidates = make(map[Root_Name_Key][dynamic]Symbol_Handle, 16, allocator),
 		provided_name_counts = make(map[string]int, 16, allocator),
 		class_scope_entries = make(map[Project_Class_Member_Key]Project_Class_Member_Entry, 16, allocator),
@@ -102,7 +99,6 @@ project_index_remove_unit :: proc(
 			Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name},
 		)
 		if entry.visible_by_default {
-			project_index_decrement_name_count(&index.root_name_counts, &index.root_lookup.names, entry.name)
 			project_index_remove_global_root_candidate(
 				index,
 				Root_Name_Key{namespace = entry.namespace, name = entry.name},
@@ -186,7 +182,6 @@ project_index_collect_unit :: proc(
 				slot^ = Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
 			}
 			if entry.visible_by_default {
-				project_index_increment_name_count(&index.root_name_counts, &index.root_lookup.names, entry.name)
 				project_index_add_global_root_candidate(
 					index,
 					Root_Name_Key{namespace = entry.namespace, name = entry.name},

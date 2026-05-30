@@ -1100,6 +1100,8 @@ declare_symbol :: proc(
 	has_type_clause_form := false,
 	type_clause_table_has_of := false,
 ) -> Symbol_Id {
+	scope_index := scope_id_index(scope)
+	assert(scope_index >= 0 && scope_index < len(unit.scopes))
 	id := Symbol_Id(u32(len(unit.symbols)))
 	append(
 		&unit.symbols,
@@ -1119,7 +1121,7 @@ declare_symbol :: proc(
 			type_clause_table_has_of = type_clause_table_has_of,
 		},
 	)
-	append(&unit.scopes[scope_id_index(scope)].declarations, id)
+	append(&unit.scopes[scope_index].declarations, id)
 	return id
 }
 
@@ -1216,6 +1218,7 @@ structure_field_info :: proc(
 		return {}, false
 	}
 	owner := structure(unit, structure_id)
+	assert(owner != nil)
 	info := Structure_Field_Info {
 		owner                = structure_id,
 		owner_unit           = owner.origin_unit,
