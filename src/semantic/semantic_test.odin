@@ -8038,6 +8038,77 @@ standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 }
 
 @(test)
+dependency_store_ddic_lchr_data_element_resolves_transitive_table_field :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-ddic-lchr")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifacts := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "SUSR",
+			object_kind    = "ddic-table",
+			object_name    = "USR12",
+			object_uri     = "/sap/bc/adt/vit/wb/object_type/tabldt/object_name/USR12",
+			object_type    = "TABL/DT",
+			description    = "User Master Authorization Values",
+			file_extension = "xml",
+			source_text    = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="USR12" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="VALS">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">XUVALS</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">LCHR</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+		{
+			package_name   = "SUSR",
+			object_kind    = "ddic-data-element",
+			object_name    = "XUVALS",
+			object_uri     = "/sap/bc/adt/vit/wb/object_type/dtelde/object_name/XUVALS",
+			object_type    = "DTEL/DE",
+			description    = "Authorization values",
+			file_extension = "xml",
+			source_text    = `<blue:wbobj adtcore:name="XUVALS" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>domain</dtel:typeKind>
+    <dtel:dataType>LCHR</dtel:dataType>
+  </dtel:dataElement>
+</blue:wbobj>`,
+			fetched_at     = "2026-05-21T00:00:00Z",
+		},
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, artifacts[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri    = "mem://ZMAIN.abap",
+			source = "REPORT zmain. DATA ls_user TYPE usr12.",
+		},
+	}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 3)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 dependency_store_function_hit_clears_remote_candidate :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("dependency-store-function-hit")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)

@@ -347,6 +347,7 @@ ddic_builtin_type :: proc(raw: string) -> string {
 	     strings.equal_fold(raw, "LANG") ||
 	     strings.equal_fold(raw, "CUKY") ||
 	     strings.equal_fold(raw, "UNIT") ||
+	     strings.equal_fold(raw, "LCHR") ||
 	     strings.equal_fold(raw, "C"):
 		return "c"
 	case strings.equal_fold(raw, "NUMC") ||
