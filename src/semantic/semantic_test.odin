@@ -7906,6 +7906,82 @@ root_file = "src/ZMAIN.abap"
 }
 
 @(test)
+dependency_store_resolves_formatted_decfloat_data_element_in_structure :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-ddic-decfloat")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	inputs := [?]dep_store.Stored_Artifact_Input {
+		{
+			package_name   = "ZPKG",
+			object_kind    = "ddic-structure",
+			object_name    = "ZQUANTITY",
+			object_uri     = "/sap/bc/adt/ddic/structures/ZQUANTITY",
+			object_type    = "TABL/DS",
+			description    = "Quantity structure",
+			file_extension = "xml",
+			source_text    = `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="ZQUANTITY" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="NUMBER">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">
+        ZNUMBER_DECFLOAT
+      </abapsource:entry>
+      <abapsource:entry abapsource:key="ddicDataType">
+        DF34_RAW
+      </abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+			fetched_at = "2026-05-21T00:00:00Z",
+		},
+		{
+			package_name   = "ZPKG",
+			object_kind    = "ddic-data-element",
+			object_name    = "ZNUMBER_DECFLOAT",
+			object_uri     = "/sap/bc/adt/ddic/dataelements/ZNUMBER_DECFLOAT",
+			object_type    = "DTEL/DE",
+			description    = "Decimal number",
+			file_extension = "xml",
+			source_text    = `<blue:wbobj adtcore:name="ZNUMBER_DECFLOAT" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>
+      predefinedAbapType
+    </dtel:typeKind>
+    <dtel:dataType>
+      DF34_RAW
+    </dtel:dataType>
+  </dtel:dataElement>
+</blue:wbobj>`,
+			fetched_at = "2026-05-21T00:00:00Z",
+		},
+	}
+	_, err = dep_store.put_artifacts(&store, &profile, inputs[:], context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{uri = "mem://ZMAIN.abap", source = "REPORT zmain. DATA quantity TYPE zquantity."},
+	}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect_value(t, len(project.units), 3)
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 standalone_file_drains_dependency_store :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("standalone-dependency-store-drain")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)

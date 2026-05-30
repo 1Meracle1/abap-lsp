@@ -317,8 +317,9 @@ ddic_xml_element_text :: proc(doc: ^xml_doc.Document, id: xml_doc.Element_ID) ->
 	for value in doc.elements[id].value {
 		switch text in value {
 		case string:
-			if text != "" {
-				return text
+			trimmed := strings.trim_space(text)
+			if trimmed != "" {
+				return trimmed
 			}
 		case xml_doc.Element_ID:
 		}
@@ -390,6 +391,14 @@ ddic_builtin_type :: proc(raw: string) -> string {
 	     strings.equal_fold(raw, "STRG") ||
 	     strings.equal_fold(raw, "G"):
 		return "string"
+	case strings.equal_fold(raw, "DF16_RAW") ||
+	     strings.equal_fold(raw, "DF16_DEC") ||
+	     strings.equal_fold(raw, "DECFLOAT16"):
+		return "decfloat16"
+	case strings.equal_fold(raw, "DF34_RAW") ||
+	     strings.equal_fold(raw, "DF34_DEC") ||
+	     strings.equal_fold(raw, "DECFLOAT34"):
+		return "decfloat34"
 	}
 	return ""
 }

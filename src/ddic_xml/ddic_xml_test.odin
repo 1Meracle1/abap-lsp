@@ -83,6 +83,24 @@ data_element_dependency_source_uses_dtel_data_type :: proc(t: ^testing.T) {
 }
 
 @(test)
+data_element_dependency_source_trims_formatted_decfloat_type :: proc(t: ^testing.T) {
+	xml := `<blue:wbobj adtcore:name="zde_decfloat" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+  <dtel:dataElement>
+    <dtel:typeKind>
+      predefinedAbapType
+    </dtel:typeKind>
+    <dtel:dataType>
+      DF34_RAW
+    </dtel:dataType>
+  </dtel:dataElement>
+</blue:wbobj>`
+	source := dependency_source("ZDE_DECFLOAT", "ddic-data-element", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "types zde_decfloat type decfloat34")
+}
+
+@(test)
 data_element_dependency_source_uses_clif_reference_type :: proc(t: ^testing.T) {
 	xml := `<blue:wbobj adtcore:name="zde_ref" adtcore:type="DTEL/DE" xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
   <dtel:dataElement>
