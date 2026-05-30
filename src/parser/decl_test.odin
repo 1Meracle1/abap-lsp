@@ -243,6 +243,7 @@ DATA: BEGIN OF common, field TYPE i, END OF common.`
 table_and_range_type_references_are_retained :: proc(t: ^testing.T) {
 	source := `TYPES ty_range TYPE RANGE OF sy-datum.
 TYPES ty_tab TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line.
+TYPES ty_any TYPE ANY TABLE OF string.
 FIELD-SYMBOLS <lt> LIKE SORTED TABLE OF <ls> WITH UNIQUE KEY id key.
 FIELD-SYMBOLS <any> TYPE ANY TABLE.
 DATA it_index TYPE INDEX TABLE.
@@ -252,10 +253,11 @@ DATA mv_text TYPE string READ-ONLY.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	range_decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
 	table_decl := parsed.root.stmts[1].derived_stmt.(^ast.Types_Decl)
-	field_decl := parsed.root.stmts[2].derived_stmt.(^ast.Field_Symbols_Decl)
-	any_decl := parsed.root.stmts[3].derived_stmt.(^ast.Field_Symbols_Decl)
-	index_decl := parsed.root.stmts[4].derived_stmt.(^ast.Data_Decl)
-	data_decl := parsed.root.stmts[5].derived_stmt.(^ast.Data_Decl)
+	any_type_decl := parsed.root.stmts[2].derived_stmt.(^ast.Types_Decl)
+	field_decl := parsed.root.stmts[3].derived_stmt.(^ast.Field_Symbols_Decl)
+	any_decl := parsed.root.stmts[4].derived_stmt.(^ast.Field_Symbols_Decl)
+	index_decl := parsed.root.stmts[5].derived_stmt.(^ast.Data_Decl)
+	data_decl := parsed.root.stmts[6].derived_stmt.(^ast.Data_Decl)
 
 	testing.expect_value(t, range_decl.types[0].type_clause.form, ast.Data_Type_Form.Range_Of)
 	testing.expect_value(t, table_decl.types[0].type_clause.form, ast.Data_Type_Form.Hashed_Table)
@@ -264,6 +266,10 @@ DATA mv_text TYPE string READ-ONLY.`
 	testing.expect(t, table_ref.key != nil)
 	testing.expect_value(t, table_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)
 	testing.expect_value(t, table_ref.key.components[0], "table_line")
+	testing.expect_value(t, any_type_decl.types[0].type_clause.form, ast.Data_Type_Form.Any_Table)
+	testing.expect(t, any_type_decl.types[0].type_clause.table_has_of)
+	any_type_ref := any_type_decl.types[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, any_type_ref.name, "string")
 	testing.expect_value(t, field_decl.field_symbols[0].type_clause.form, ast.Data_Type_Form.Like_Sorted_Table)
 	field_ref := field_decl.field_symbols[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, field_ref.key.kind, ast.Type_Ref_Key_Kind.Unique)

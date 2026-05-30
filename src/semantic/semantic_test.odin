@@ -3754,9 +3754,11 @@ ENDINTERFACE.`
 
 @(test)
 generic_table_categories_are_context_checked :: proc(t: ^testing.T) {
-	valid := `FIELD-SYMBOLS <any> TYPE ANY TABLE.
+	valid := `TYPES ty_any_rows TYPE ANY TABLE OF string.
+FIELD-SYMBOLS <typed> TYPE ty_any_rows.
+FIELD-SYMBOLS <any> TYPE ANY TABLE.
 FIELD-SYMBOLS <index> TYPE INDEX TABLE.
-FORM demo USING it_any TYPE ANY TABLE it_any_rows TYPE ANY TABLE OF string CHANGING ct_index TYPE INDEX TABLE.
+FORM demo USING it_typed TYPE ty_any_rows it_any TYPE ANY TABLE it_any_rows TYPE ANY TABLE OF string CHANGING ct_index TYPE INDEX TABLE.
 ENDFORM.`
 	valid_unit := collect_test_unit(t, "file:///generic_tables_valid.abap", valid)
 
@@ -3767,7 +3769,8 @@ ENDFORM.`
 	invalid := `DATA lt_index TYPE INDEX TABLE.
 DATA lt_index_rows TYPE INDEX TABLE OF string.
 TYPES ty_any TYPE ANY TABLE.
-TYPES ty_any_rows TYPE ANY TABLE OF string.`
+TYPES ty_any_rows TYPE ANY TABLE OF string.
+DATA lt_any_rows TYPE ty_any_rows.`
 	invalid_unit := collect_test_unit(t, "file:///generic_tables_invalid.abap", invalid)
 
 	testing.expect(t, has_diagnostic(&invalid_unit, .Invalid_Generic_Table_Type))

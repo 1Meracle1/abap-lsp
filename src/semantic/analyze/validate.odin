@@ -116,7 +116,7 @@ validate_unit_diagnostics :: proc(
 	validate_object_type_refs(project, lookup, unit_index, &out, &seen, allocator)
 	validate_missing_method_implementations(project, unit_index, &out, &seen, allocator)
 	validate_generic_builtin_types(project, unit_index, &out, &seen, allocator)
-	validate_generic_table_types(project, unit_index, &out, &seen, allocator)
+	validate_generic_table_types(project, lookup, unit_index, &out, &seen, allocator)
 	validate_parameter_types(project, unit_index, &out, &seen, allocator)
 	validate_field_accesses(project, lookup, unit_index, &out, &seen, allocator)
 	validate_call_sites(project, lookup, unit_index, &out, &seen, allocator)
@@ -719,6 +719,7 @@ invalid_generic_builtin_type_use :: proc "contextless" (s: Symbol_Data) -> bool 
 
 validate_generic_table_types :: proc(
 	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -726,10 +727,23 @@ validate_generic_table_types :: proc(
 ) {
 	unit := &project.units[unit_index]
 	for s in unit.symbols {
-		if !generic_table_category_type(s) ||
-		   s.kind == .Parameter ||
-		   s.kind == .Field_Symbol {
-			continue
+		if generic_table_category_type(s) {
+			if s.kind == .Parameter ||
+			   s.kind == .Field_Symbol ||
+			   (s.kind == .Type_Def && s.type_clause_table_has_of && s.has_declared_type) {
+				continue
+			}
+		} else {
+			if !s.has_declared_type ||
+			   s.kind == .Parameter ||
+			   s.kind == .Field_Symbol ||
+			   s.kind == .Type_Def {
+				continue
+			}
+			handle, ok := type_ref_leaf_handle(project, lookup, unit_index, s.scope, s.declared_type)
+			if !ok || !symbol_handle_is_generic_table_type(project, lookup, handle, 0) {
+				continue
+			}
 		}
 		append_diag(
 			out,
@@ -739,6 +753,33 @@ validate_generic_table_types :: proc(
 			diagnostic_message("generic table type only allowed for parameters and field symbols: ", s.name, allocator),
 		)
 	}
+}
+
+symbol_handle_is_generic_table_type :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Validation_Lookup,
+	handle: Symbol_Handle,
+	depth: int,
+) -> bool {
+	if depth > len(project.units) + 16 {
+		return false
+	}
+	unit_index := unit_id_index(handle.unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return false
+	}
+	s := symbol(&project.units[unit_index], handle.symbol)
+	if s == nil {
+		return false
+	}
+	if generic_table_category_type(s^) {
+		return true
+	}
+	if s.kind != .Type_Def || !s.has_declared_type {
+		return false
+	}
+	next, ok := type_ref_leaf_handle(project, lookup, unit_index, s.scope, s.declared_type)
+	return ok && symbol_handle_is_generic_table_type(project, lookup, next, depth + 1)
 }
 
 generic_table_category_type :: #force_inline proc "contextless" (s: Symbol_Data) -> bool {
