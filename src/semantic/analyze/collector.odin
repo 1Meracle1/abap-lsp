@@ -2823,10 +2823,19 @@ function_parameters_from_ast :: proc(
 		param.type_clause_display = type_clause_display(c, clause.type_clause)
 		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
 		type_table_has_of := type_clause_table_has_of_from_ast(clause.type_clause)
+		ref_type_form := type_form
+		if clause.section == .Tables &&
+		   param.type_clause_display != "" &&
+		   !(has_type_form && type_form_is_table_category(type_form)) {
+			param.type_clause_display = concat2(c, "STANDARD TABLE OF ", param.type_clause_display)
+			if has_type_form && type_form == .Like {
+				ref_type_form = .Structure
+			}
+		}
 		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
 			param.declared_type = type_ref
 			param.flags += {.Has_Declared_Type}
-			add_type_reference(c, scope, type_ref, param.range, type_form, has_type_form)
+			add_type_reference(c, scope, type_ref, param.range, ref_type_form, has_type_form)
 		}
 		if .Is_Optional in clause.flags {
 			param.flags += {.Is_Optional}

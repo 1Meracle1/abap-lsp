@@ -221,6 +221,30 @@ ENDFUNCTION.`
 }
 
 @(test)
+function_tables_like_parameter_keeps_optional_addition :: proc(t: ^testing.T) {
+	source := `FUNCTION rh_read_object
+  TABLES
+    EXISTENCE LIKE HROEXIST OPTIONAL
+  EXCEPTIONS
+    NOT_FOUND.
+ENDFUNCTION.`
+	parsed := parse(source, "function_tables_like.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	function := parsed.root.stmts[0].derived_stmt.(^ast.Function_Decl)
+	testing.expect_value(t, len(function.function_parameters), 1)
+	param := function.function_parameters[0]
+	testing.expect_value(t, param.section, ast.Function_Parameter_Section.Tables)
+	testing.expect_value(t, param.name, "EXISTENCE")
+	testing.expect_value(t, param.type_clause.form, ast.Data_Type_Form.Like)
+	testing.expect(t, .Is_Optional in param.flags)
+	ref := param.type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, ref.base_name, "HROEXIST")
+	testing.expect_value(t, len(function.exceptions), 1)
+	testing.expect_value(t, function.exceptions[0].name, "NOT_FOUND")
+}
+
+@(test)
 multiline_class_headers_keep_their_create_addition :: proc(t: ^testing.T) {
 	source := `CLASS zcx_error DEFINITION
   INHERITING FROM cx_static_check

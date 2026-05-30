@@ -586,6 +586,49 @@ ENDFORM.
 }
 
 @(test)
+remote_dependency_candidates_include_function_tables_like_row_type :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	targets := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/rh_read_object.abap",
+			source = `FUNCTION rh_read_object
+  TABLES
+    EXISTENCE LIKE HROEXIST OPTIONAL
+  EXCEPTIONS
+    NOT_FOUND.
+ENDFUNCTION.
+`,
+		},
+	}
+	project := analyze.project_state_analyze_targets_with_candidate_inputs(
+		&state,
+		targets[:],
+		nil,
+		nil,
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "hroexist", kind = .Type}]
+	found := false
+	candidates := analyze.collect_project_remote_dependency_candidates(&project, context.allocator)
+	for candidate in candidates {
+		if candidate.name == "hroexist" && candidate.kind == .Type {
+			found = true
+		}
+		testing.expect(t, candidate.name != "existence")
+	}
+
+	testing.expect(t, pending)
+	testing.expect(t, found)
+	fm := project.units[0].function_modules[0]
+	testing.expect_value(t, fm.parameters[0].type_clause_display, "STANDARD TABLE OF HROEXIST")
+}
+
+@(test)
 remote_dependency_candidates_include_unresolved_static_targets :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
