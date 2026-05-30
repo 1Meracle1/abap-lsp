@@ -1740,6 +1740,25 @@ resolve_field_access_tail :: proc(
 	if base_symbol.has_declared_type &&
 	   len(access.field_path) > 0 &&
 	   access.field_path[0].selector == .Arrow {
+		base_unit_index := unit_id_index(base.unit)
+		if fact, fact_unit_index, fact_ok := line_of_type_fact_from_declared_type(
+			project,
+			lookup,
+			base_unit_index,
+			base_symbol.scope,
+			base_symbol.declared_type,
+			0,
+		); fact_ok {
+			if resolved, resolved_ok := type_fact_from_data_ref_path(
+				project,
+				lookup,
+				fact_unit_index,
+				fact,
+				access.field_path[:],
+			); resolved_ok {
+				return resolved, true
+			}
+		}
 		if fact, fact_unit_index, fact_ok := like_type_fact_from_symbol(
 			project,
 			lookup,

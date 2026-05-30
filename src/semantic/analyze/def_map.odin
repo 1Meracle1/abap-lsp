@@ -467,6 +467,7 @@ Structure_Field_Flag :: enum {
 	Has_Decl_Range,
 	Has_Type_Ref,
 	Is_Key,
+	Is_Include,
 }
 Structure_Field_Flags :: bit_set[Structure_Field_Flag]
 

@@ -2598,12 +2598,17 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 					for segment in access.field_path {
 						append(&segments, segment)
 					}
-					for segment in key.path {
+					start := 0
+					if len(key.path) > 0 && strings.equal_fold(key.path[0].name, "table_line") {
+						start = 1
+					}
+					for segment in key.path[start:] {
 						append(
 							&segments,
 							Field_Access_Segment {
 								name = canonical_name(segment.name, c.allocator),
 								range = segment.range,
+								selector = segment.selector,
 							},
 						)
 					}

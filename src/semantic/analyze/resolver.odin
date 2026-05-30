@@ -1902,9 +1902,49 @@ import_project_structures_for_unit :: proc(
 				}
 			}
 		}
+		if expand_resolved_structure_includes(&units[unit_index], allocator) {
+			changed = true
+			any_changed = true
+		}
 	}
 	sync_class_member_structures_for_unit(&units[unit_index])
 	return any_changed
+}
+
+expand_resolved_structure_includes :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> bool {
+	changed := false
+	for structure_index := 0; structure_index < len(unit.structures); structure_index += 1 {
+		old_fields := unit.structures[structure_index].fields
+		has_include := false
+		for field in old_fields {
+			if .Is_Include in field.flags &&
+			   field.structure != INVALID_STRUCTURE_ID &&
+			   field.structure != unit.structures[structure_index].id {
+				has_include = true
+				break
+			}
+		}
+		if !has_include {
+			continue
+		}
+		new_fields := make([dynamic]Structure_Field_Data, 0, len(old_fields), allocator)
+		for field in old_fields {
+			if .Is_Include in field.flags &&
+			   field.structure != INVALID_STRUCTURE_ID &&
+			   field.structure != unit.structures[structure_index].id {
+				if included := structure(unit, field.structure); included != nil {
+					for included_field in included.fields {
+						append(&new_fields, included_field)
+					}
+					changed = true
+					continue
+				}
+			}
+			append(&new_fields, field)
+		}
+		unit.structures[structure_index].fields = new_fields
+	}
+	return changed
 }
 
 sync_class_member_structures_for_unit :: proc(unit: ^Unit_Analysis) {

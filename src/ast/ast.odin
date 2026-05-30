@@ -2325,8 +2325,9 @@ Read_Table_Key_Kind :: enum {
 
 // ABAP syntax: one component-name segment inside a READ TABLE key clause.
 Read_Table_Key_Name_Segment :: struct {
-	name:  string,
-	range: tokenizer.Range,
+	name:     string,
+	range:    tokenizer.Range,
+	selector: Selector_Op,
 }
 
 // ABAP syntax: one `name = value` component inside a READ TABLE key clause.

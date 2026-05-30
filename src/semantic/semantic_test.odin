@@ -6567,6 +6567,33 @@ ENDCLASS.
 }
 
 @(test)
+read_table_table_line_reference_key_resolves_line_attribute :: proc(t: ^testing.T) {
+	source := `
+INTERFACE lif_permission.
+  DATA package_interface_name TYPE string READ-ONLY.
+ENDINTERFACE.
+TYPES ty_permission_ref TYPE REF TO lif_permission.
+TYPES ty_permissions TYPE STANDARD TABLE OF ty_permission_ref WITH DEFAULT KEY.
+DATA lt_permissions TYPE ty_permissions.
+DATA lv_name TYPE string.
+READ TABLE lt_permissions WITH KEY table_line->package_interface_name = lv_name TRANSPORTING NO FIELDS.
+`
+	unit := collect_test_unit(t, "file:///read_table_table_line_ref_key.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	attribute_seen := false
+	for access in unit.field_accesses {
+		if access.base_name == "lt_permissions" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].name == "package_interface_name" &&
+		   access.field_path[0].selector == .Arrow {
+			attribute_seen = true
+		}
+	}
+	testing.expect(t, attribute_seen)
+}
+
+@(test)
 insert_into_table_data_ref_component_resolves_struct_field :: proc(t: ^testing.T) {
 	valid_source := `
 INTERFACE lif_log.
@@ -9885,7 +9912,56 @@ ENDCLASS.`,
 	root := analyze.project_unit_by_uri(&project, target.uri)
 
 	testing.expect(t, root != nil)
-	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+typepool_occurs_table_type_line_of_expands_dependency_include :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `REPORT zmain.
+DATA lt_request_headers TYPE trwbo_request_headers.
+DATA ls_row LIKE LINE OF lt_request_headers.
+ls_row-trkorr = 'A'.
+ls_row-as4user = sy-uname.
+ls_row-as4date = sy-datum.
+ls_row-as4time = sy-uzeit.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-typepool:/trwbo.abap",
+			source = `TYPES: BEGIN OF trwbo_request_header.
+INCLUDE STRUCTURE e070.
+TYPES:    as4text TYPE string,
+       END OF trwbo_request_header.
+TYPES trwbo_request_headers TYPE trwbo_request_header OCCURS 0.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table/e070.abap",
+			source = `TYPES: BEGIN OF e070,
+         trkorr  TYPE string,
+         as4user TYPE string,
+         as4date TYPE d,
+         as4time TYPE t,
+       END OF e070.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	typepool := analyze.project_unit_by_uri(&project, dependencies[0].uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, typepool != nil)
+	if typepool != nil {
+		headers := analyze.find_symbol(typepool, "trwbo_request_headers", .Type_Def)
+		header := analyze.find_symbol(typepool, "trwbo_request_header", .Type_Def)
+		testing.expect(t, headers != nil && headers.type_clause_form == .Standard_Table)
+		testing.expect(t, header != nil && analyze.structure_field(typepool, header.structure, "trkorr") != nil)
+	}
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 

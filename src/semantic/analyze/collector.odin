@@ -1091,6 +1091,7 @@ declare_info_symbol :: proc(
 	}
 	type_display := type_clause_display(c, info.type_clause)
 	type_form, has_type_form := type_clause_form_from_ast(info.type_clause)
+	apply_occurs_table_form(info, &type_form, &has_type_form)
 	type_table_has_of := type_clause_table_has_of_from_ast(info.type_clause)
 	value_display := value_clause_display(c, info.value_clause)
 	structure_id := INVALID_STRUCTURE_ID
@@ -1168,6 +1169,22 @@ type_clause_form_from_ast :: proc(clause: ^ast.Data_Type_Clause) -> (ast.Data_Ty
 
 type_clause_table_has_of_from_ast :: #force_inline proc "contextless" (clause: ^ast.Data_Type_Clause) -> bool {
 	return clause != nil && clause.table_has_of
+}
+
+apply_occurs_table_form :: proc(
+	info: Decl_Info,
+	type_form: ^ast.Data_Type_Form,
+	has_type_form: ^bool,
+) {
+	if info.occurs == nil || !has_type_form^ {
+		return
+	}
+	#partial switch type_form^ {
+	case .Like:
+		type_form^ = .Like_Table
+	case .Type:
+		type_form^ = .Standard_Table
+	}
 }
 
 type_form_is_table_category :: proc "contextless" (form: ast.Data_Type_Form) -> bool {
@@ -1348,6 +1365,7 @@ structure_field_from_info :: proc(
 	}
 	type_ref, has_type := type_ref_from_clause(c, info.type_clause)
 	type_form, has_type_form := type_clause_form_from_ast(info.type_clause)
+	apply_occurs_table_form(info, &type_form, &has_type_form)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
 		if resolved, ok := resolve_field_type_ref(c, scope, type_ref); ok {
@@ -1419,6 +1437,18 @@ extend_structure_from_include :: proc(
 			},
 		)
 	}
+	if resolved == INVALID_STRUCTURE_ID && info.as_name == "" {
+		append(
+			fields,
+			Structure_Field_Data {
+				decl_range = info.range,
+				decl_unit = c.unit_id,
+				structure = INVALID_STRUCTURE_ID,
+				type_ref = type_ref,
+				flags = {.Has_Type_Ref, .Is_Include},
+			},
+		)
+	}
 }
 
 include_type_component_field :: proc(
@@ -1449,6 +1479,7 @@ include_type_component_field :: proc(
 		name = "include",
 		decl_range = info.range,
 		decl_unit = c.unit_id,
+		structure = INVALID_STRUCTURE_ID,
 		type_ref = type_ref,
 		value_clause_display = value_clause_display(c, info.value_clause),
 		flags = flags,

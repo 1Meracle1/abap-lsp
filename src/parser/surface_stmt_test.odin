@@ -387,6 +387,24 @@ read_table_key_keeps_nested_component_path :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_table_key_keeps_table_line_reference_path :: proc(t: ^testing.T) {
+	source := `READ TABLE lt_permissions WITH KEY table_line->package_interface_name = lv_name TRANSPORTING NO FIELDS.`
+	parsed := parse(source, "read_table_table_line_ref_key.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	read := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	key := read.entries[0].key_values[0]
+
+	testing.expect_value(t, key.name, "table_line->package_interface_name")
+	testing.expect_value(t, len(key.path), 2)
+	testing.expect_value(t, key.path[0].name, "table_line")
+	testing.expect_value(t, key.path[0].selector, ast.Selector_Op.Dash)
+	testing.expect_value(t, key.path[1].name, "package_interface_name")
+	testing.expect_value(t, key.path[1].selector, ast.Selector_Op.Arrow)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
 read_table_key_keeps_dynamic_component_name :: proc(t: ^testing.T) {
 	source := `READ TABLE <lt_tree> WITH KEY ('NODENAME') = ms_item-obj_name ASSIGNING <ls_tree>.`
 	parsed := parse(source, "read_table_dynamic_key.abap", context.allocator)

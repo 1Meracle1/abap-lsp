@@ -1336,6 +1336,7 @@ parse_read_table_key_values :: proc(
 			name_start := current_token(p).range.start
 			name_end_byte := p.tokens[name_end - 1].range.end
 			path := make([dynamic]ast.Read_Table_Key_Name_Segment, 0, 2, p.allocator)
+			selector := ast.Selector_Op.Dash
 			for p.index < name_end {
 				if current_token(p).kind == .Ident {
 					tok := bump_token(p)
@@ -1344,11 +1345,19 @@ parse_read_table_key_values :: proc(
 						ast.Read_Table_Key_Name_Segment {
 							name = tokenizer.token_lexeme(tok, p.source),
 							range = tok.range,
+							selector = selector,
 						},
 					)
+					selector = .Dash
 					continue
 				}
-				expect_token(p, .Minus)
+				op := current_token(p)
+				if op.kind == .Minus || op.kind == .Arrow {
+					selector = selector_op(bump_token(p).kind)
+					continue
+				}
+				error_current(p, "syntax error: expected READ TABLE key selector")
+				bump_token(p)
 			}
 			expect_token(p, .Eq)
 			name := p.source[name_start:name_end_byte]
@@ -1408,7 +1417,7 @@ read_table_key_name_eq_index :: proc(p: ^Parser) -> int {
 	}
 	i := p.index + 1
 	for i + 1 < len(p.tokens) &&
-	    p.tokens[i].kind == .Minus &&
+	    (p.tokens[i].kind == .Minus || p.tokens[i].kind == .Arrow) &&
 	    p.tokens[i + 1].kind == .Ident &&
 	    tokens_touch(p.tokens[i - 1], p.tokens[i]) &&
 	    tokens_touch(p.tokens[i], p.tokens[i + 1]) {
