@@ -3846,6 +3846,66 @@ ENDFUNCTION.
 }
 
 @(test)
+function_module_importing_exporting_parameter_name_reuse_is_one_local_symbol :: proc(t: ^testing.T) {
+	source := `FUNCTION read_style
+  IMPORTING VALUE(OLANGUAGE) LIKE SY-LANGU DEFAULT SPACE
+  EXPORTING VALUE(OLANGUAGE) LIKE SY-LANGU.
+  OLANGUAGE = SY-LANGU.
+ENDFUNCTION.`
+	unit := collect_test_unit(t, "file:///read_style.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect_value(t, len(unit.function_modules), 1)
+	fm := unit.function_modules[0]
+	testing.expect_value(t, len(fm.parameters), 2)
+	testing.expect_value(t, fm.parameters[0].section, analyze.Function_Module_Parameter_Section.Importing)
+	testing.expect_value(t, fm.parameters[1].section, analyze.Function_Module_Parameter_Section.Exporting)
+	parameter_symbols := 0
+	for symbol in unit.symbols {
+		if symbol.kind == .Parameter && symbol.name == "olanguage" {
+			parameter_symbols += 1
+		}
+	}
+	testing.expect_value(t, parameter_symbols, 1)
+}
+
+@(test)
+function_module_rejects_non_import_export_duplicate_parameter_names :: proc(t: ^testing.T) {
+	source := `FUNCTION z_bad
+  IMPORTING iv_value TYPE i
+  CHANGING iv_value TYPE i.
+ENDFUNCTION.`
+	unit := collect_test_unit(t, "file:///bad_function_params.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Duplicate_Declaration))
+}
+
+@(test)
+function_module_exception_can_reuse_parameter_name :: proc(t: ^testing.T) {
+	source := `FUNCTION function_include_split
+  EXPORTING VALUE(NO_FUNCTION_INCLUDE) TYPE c
+  EXCEPTIONS NO_FUNCTION_INCLUDE.
+  RAISE NO_FUNCTION_INCLUDE.
+ENDFUNCTION.`
+	unit := collect_test_unit(t, "file:///function_include_split.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect(t, has_symbol(&unit, .Parameter, "no_function_include"))
+	testing.expect(t, has_symbol(&unit, .Exception, "no_function_include"))
+}
+
+@(test)
+function_module_rejects_duplicate_exceptions_after_parameter_name_reuse :: proc(t: ^testing.T) {
+	source := `FUNCTION z_bad
+  EXPORTING ev_failed TYPE c
+  EXCEPTIONS ev_failed ev_failed.
+ENDFUNCTION.`
+	unit := collect_test_unit(t, "file:///bad_function_exceptions.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Duplicate_Declaration))
+}
+
+@(test)
 form_tables_structure_resolves_loaded_ddic_type_dependency :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///radmasdl.abap",

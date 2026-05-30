@@ -304,9 +304,12 @@ declare_collected_symbol :: proc(
 	type_clause_form := ast.Data_Type_Form{},
 	has_type_clause_form := false,
 	type_clause_table_has_of := false,
+	skip_duplicate_check := false,
 ) -> Symbol_Id {
 	canonical := canonical_name(name, c.allocator)
-	check_duplicate_or_shadow(c, scope, canonical, kind, decl_range)
+	if !skip_duplicate_check {
+		check_duplicate_or_shadow(c, scope, canonical, kind, decl_range)
+	}
 
 	id := Symbol_Id(u32(len(c.symbols)))
 	append(
@@ -2813,7 +2816,7 @@ function_parameters_from_ast :: proc(
 ) {
 	parameters := make([dynamic]Function_Module_Parameter_Data, 0, 2, c.allocator)
 	exceptions := make([dynamic]Function_Module_Exception_Data, 0, 1, c.allocator)
-	for clause in stmt.function_parameters {
+	for clause, i in stmt.function_parameters {
 		param := Function_Module_Parameter_Data {
 			section = function_parameter_section_from_ast(clause.section),
 			name    = canonical_name(clause.name, c.allocator),
@@ -2843,23 +2846,25 @@ function_parameters_from_ast :: proc(
 		if .Has_Default_Value in clause.flags {
 			param.flags += {.Has_Default_Value}
 		}
-		_ = declare_collected_symbol(
-			c,
-			scope,
-			param.name,
-			.Parameter,
-			param.range,
-			INVALID_STRUCTURE_ID,
-			param.declared_type,
-			.Has_Declared_Type in param.flags,
-			param.type_clause_display,
-			type_clause_form = type_form,
-			has_type_clause_form = has_type_form,
-			type_clause_table_has_of = type_table_has_of,
-		)
+		if function_parameter_needs_symbol(stmt.function_parameters[:], i, param.name) {
+			_ = declare_collected_symbol(
+				c,
+				scope,
+				param.name,
+				.Parameter,
+				param.range,
+				INVALID_STRUCTURE_ID,
+				param.declared_type,
+				.Has_Declared_Type in param.flags,
+				param.type_clause_display,
+				type_clause_form = type_form,
+				has_type_clause_form = has_type_form,
+				type_clause_table_has_of = type_table_has_of,
+			)
+		}
 		append(&parameters, param)
 	}
-	for exception in stmt.exceptions {
+	for exception, i in stmt.exceptions {
 		name := canonical_name(exception.name, c.allocator)
 		append(
 			&exceptions,
@@ -2868,9 +2873,69 @@ function_parameters_from_ast :: proc(
 				range = exception.range,
 			},
 		)
-		_ = declare_collected_symbol(c, scope, name, .Exception, exception.range)
+		_ = declare_collected_symbol(
+			c,
+			scope,
+			name,
+			.Exception,
+			exception.range,
+			skip_duplicate_check = function_exception_reuses_parameter_name(
+				stmt.function_parameters[:],
+				stmt.exceptions[:],
+				i,
+				name,
+			),
+		)
 	}
 	return parameters, exceptions
+}
+
+function_parameter_needs_symbol :: proc(
+	clauses: []ast.Function_Parameter_Clause,
+	index: int,
+	name: string,
+) -> bool {
+	previous := 0
+	has_import_export_pair := false
+	for i in 0 ..< index {
+		if !strings.equal_fold(clauses[i].name, name) {
+			continue
+		}
+		previous += 1
+		has_import_export_pair = has_import_export_pair ||
+		                          function_parameter_import_export_pair(clauses[i].section, clauses[index].section)
+	}
+	return previous != 1 || !has_import_export_pair
+}
+
+function_parameter_import_export_pair :: #force_inline proc "contextless" (
+	left, right: ast.Function_Parameter_Section,
+) -> bool {
+	return (left == .Importing && right == .Exporting) ||
+	       (left == .Exporting && right == .Importing)
+}
+
+function_exception_reuses_parameter_name :: proc(
+	parameters: []ast.Function_Parameter_Clause,
+	exceptions: []ast.Function_Exception_Clause,
+	index: int,
+	name: string,
+) -> bool {
+	matching_params := 0
+	for param in parameters {
+		if strings.equal_fold(param.name, name) {
+			matching_params += 1
+		}
+	}
+	if matching_params != 1 {
+		return false
+	}
+	for i in 0 ..< index {
+		if strings.equal_fold(exceptions[i].name, name) {
+			return false
+		}
+	}
+	return true
 }
 
 form_parameter_section_from_ast :: proc(section: ast.Form_Parameter_Section) -> Form_Parameter_Section {
