@@ -2206,6 +2206,11 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			}
 			bump_token(p)
 		}
+		if member.qualifier != "" &&
+		   (stmt.kind == .Methods || stmt.kind == .Class_Methods) &&
+		   !(.Redefinition in member.flags) {
+			error(p, member.range, "syntax error: qualified method declaration requires REDEFINITION")
+		}
 		append(&stmt.members, member)
 	}
 }

@@ -2202,9 +2202,9 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 	c.current_scope = scope
 	method_scope := push_scope(c, .Method, stmt.range, owner)
 	if class_owner, ok := enclosing_owner(c, scope, .Class); ok {
-		method_name := stmt.member_name
+		method_name := stmt.name
 		if method_name == "" {
-			method_name = method_member_name(stmt.name)
+			method_name = stmt.member_name
 		}
 		note_method_implementation(c, class_owner, method_name, stmt.header_range)
 		declare_method_scope_params(c, class_owner, method_name, method_scope)
@@ -2317,10 +2317,7 @@ walk_oop_simple_stmt :: proc(c: ^Collector, stmt: ^ast.Oop_Simple_Stmt, scope: S
 	for member in stmt.members {
 		name := member.name
 		if kind == .Method {
-			name = member.member_name
-			if name == "" {
-				name = method_member_name(member.name)
-			}
+			name = oop_method_symbol_name(member)
 		}
 		declare_name_if_present(c, scope, name, kind, stmt.range)
 	}
@@ -2447,10 +2444,7 @@ collect_class_oop_stmt :: proc(
 		is_static := stmt.kind == .Class_Methods
 		for member in stmt.members {
 			add_method_interface_qualifier_reference(c, member.qualifier, scope, member.qualifier_range)
-			name := member.member_name
-			if name == "" {
-				name = method_member_name(member.name)
-			}
+			name := oop_method_symbol_name(member)
 			declare_name_if_present(c, scope, name, .Method, stmt.range)
 			parameters := method_parameters_from_signatures(c, member.signatures[:])
 			exceptions := method_exceptions_from_signatures(c, member.signatures[:])
@@ -2954,6 +2948,16 @@ method_member_name :: proc(name: string) -> string {
 		return member_name
 	}
 	return name
+}
+
+oop_method_symbol_name :: proc(member: ast.Oop_Member_Clause) -> string {
+	if member.qualifier != "" {
+		return member.name
+	}
+	if member.member_name != "" {
+		return member.member_name
+	}
+	return method_member_name(member.name)
 }
 
 qualified_method_parts :: proc(name: string) -> (string, string, bool) {

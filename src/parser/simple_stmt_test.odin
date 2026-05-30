@@ -874,6 +874,17 @@ ENDCLASS.`
 }
 
 @(test)
+oop_qualified_method_requires_redefinition :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS if_demo~run IMPORTING iv_value TYPE i.
+ENDCLASS.`
+	parsed := parse(source, "oop_qualified_method_without_redefinition.abap", context.allocator)
+
+	expect_error_contains(t, parsed, "qualified method declaration requires REDEFINITION")
+}
+
+@(test)
 oop_redefinition_rejects_redeclared_signature :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

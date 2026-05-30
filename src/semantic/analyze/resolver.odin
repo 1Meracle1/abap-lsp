@@ -239,7 +239,7 @@ enclosing_instance_method_class_owner_unit :: proc(
 			if !class_ok || method == nil {
 				return INVALID_SYMBOL_ID, false
 			}
-			member := unit_class_member(unit, class_symbol, method_member_name(method.name))
+			member := unit_class_member(unit, class_symbol, method.name)
 			return class_symbol, member == nil || !(.Is_Static in member.flags)
 		}
 		current = s.parent
@@ -979,11 +979,7 @@ inherited_project_class_member :: proc(
 				if s := symbol(member_unit, member_handle.symbol); s != nil {
 					if class_symbol, class_ok := enclosing_class_owner_unit(member_unit, s.scope);
 					   class_ok {
-						if member := unit_class_member(
-							member_unit,
-							class_symbol,
-							method_member_name(s.name),
-						); member != nil {
+						if member := unit_class_member(member_unit, class_symbol, s.name); member != nil {
 							if fallback == nil {
 								fallback = member
 								fallback_index = member_unit_index

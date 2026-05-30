@@ -3500,7 +3500,7 @@ ENDINTERFACE.`
 }
 
 @(test)
-qualified_method_redefinitions_do_not_duplicate_interface_name :: proc(t: ^testing.T) {
+qualified_method_redefinitions_keep_qualified_symbol_names :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
     METHODS lif_demo~create REDEFINITION.
@@ -3509,8 +3509,54 @@ ENDCLASS.`
 	unit := collect_test_unit(t, "file:///qualified_redefinitions.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
-	testing.expect(t, has_symbol(&unit, .Method, "create"))
-	testing.expect(t, has_symbol(&unit, .Method, "delete"))
+	testing.expect(t, has_symbol(&unit, .Method, "lif_demo~create"))
+	testing.expect(t, has_symbol(&unit, .Method, "lif_demo~delete"))
+}
+
+@(test)
+qualified_interface_redefinition_can_share_local_method_name :: proc(t: ^testing.T) {
+	source := `INTERFACE lif_object.
+  METHODS copy IMPORTING iv_value TYPE i.
+  METHODS rename.
+ENDINTERFACE.
+
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    INTERFACES lif_object.
+    CLASS-METHODS copy.
+    METHODS lif_object~copy REDEFINITION.
+    METHODS lif_object~rename REDEFINITION.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD copy.
+  ENDMETHOD.
+  METHOD lif_object~copy.
+    DATA lv_value TYPE i.
+    lv_value = iv_value.
+  ENDMETHOD.
+  METHOD lif_object~rename.
+  ENDMETHOD.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///qualified_redefinition_local_name_collision.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Method_Implementation))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+
+	class := analyze.find_symbol(&unit, "lcl", .Class)
+	testing.expect(t, class != nil)
+	local_copy := class_member_named(&unit, class.id, "copy", .Method)
+	interface_copy := class_member_named(&unit, class.id, "lif_object~copy", .Method)
+	interface_rename := class_member_named(&unit, class.id, "lif_object~rename", .Method)
+	testing.expect(t, local_copy != nil)
+	testing.expect(t, interface_copy != nil)
+	testing.expect(t, interface_rename != nil)
+	testing.expect(t, .Is_Static in local_copy.flags)
+	testing.expect(t, !(.Is_Static in interface_copy.flags))
+	testing.expect(t, .Has_Implementation in local_copy.flags)
+	testing.expect(t, .Has_Implementation in interface_copy.flags)
+	testing.expect(t, .Has_Implementation in interface_rename.flags)
 }
 
 @(test)
