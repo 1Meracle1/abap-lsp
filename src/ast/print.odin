@@ -1276,6 +1276,10 @@ emit_type_clause :: proc(p: ^Printer, clause: ^Data_Type_Clause) {
 		emit_space(p)
 		emit_node(p, clause.type_ref)
 	}
+	if clause.initial_size != nil {
+		emit(p, " INITIAL SIZE ")
+		emit_node(p, clause.initial_size)
+	}
 }
 
 emit_paren_length :: proc(p: ^Printer, clause: ^Paren_Length_Clause) {

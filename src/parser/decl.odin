@@ -1090,6 +1090,15 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		clause.form = .Like_Table if is_like else .Table
 	}
 
+	if at_keyword(p, "INITIAL") {
+		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
+		if !ok {
+			return nil
+		}
+		clause.initial_size = initial_size
+		return clause
+	}
+
 	if decl_clause_boundary(p) ||
 	   (type_ref_stop_keyword(p) && type_clause_form_allows_missing_ref(clause.form)) {
 		if type_clause_form_allows_missing_ref(clause.form) {
@@ -1107,6 +1116,13 @@ parse_required_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		return nil
 	}
 	clause.type_ref = type_ref
+	if at_keyword(p, "INITIAL") {
+		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
+		if !ok {
+			return nil
+		}
+		clause.initial_size = initial_size
+	}
 	return clause
 }
 
@@ -1125,6 +1141,35 @@ type_clause_form_allows_missing_ref :: proc(form: ast.Data_Type_Form) -> bool {
 		return true
 	}
 	return false
+}
+
+type_clause_form_allows_initial_size :: proc(form: ast.Data_Type_Form) -> bool {
+	return type_clause_form_allows_missing_ref(form)
+}
+
+parse_type_clause_initial_size_addition :: proc(
+	p: ^Parser,
+	form: ast.Data_Type_Form,
+) -> (^ast.Expr, bool) {
+	if !type_clause_form_allows_initial_size(form) {
+		error_current(p, "syntax error: INITIAL SIZE only valid for table types")
+		return nil, false
+	}
+	expect_keyword(p, "INITIAL")
+	if !allow_keyword(p, "SIZE") {
+		error_current(p, "syntax error: expected SIZE after INITIAL")
+		return nil, false
+	}
+	if decl_clause_boundary(p) {
+		error_current(p, "syntax error: expected initial size")
+		return nil, false
+	}
+	value := parse_expr(p)
+	if value == nil {
+		error_current(p, "syntax error: expected initial size")
+		return nil, false
+	}
+	return value, true
 }
 
 parse_type_ref_expr :: proc(p: ^Parser) -> ^ast.Expr {
@@ -1697,6 +1742,7 @@ type_ref_stop_keyword :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "VALUE") ||
 		at_keyword(p, "DEFAULT") ||
 		at_keyword(p, "FOR") ||
+		at_keyword(p, "INITIAL") ||
 		at_keyword(p, "AS") ||
 		at_keyword(p, "LOWER") ||
 		at_keyword(p, "MATCHCODE") ||

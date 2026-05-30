@@ -1758,6 +1758,7 @@ clone_type_clause :: proc(clause: ^Data_Type_Clause, allocator: mem.Allocator) -
 	res.form = clause.form
 	res.table_has_of = clause.table_has_of
 	res.type_ref = clone(clause.type_ref, allocator)
+	res.initial_size = clone(clause.initial_size, allocator)
 	return res
 }
 

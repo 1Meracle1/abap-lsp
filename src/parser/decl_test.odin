@@ -414,3 +414,31 @@ DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.`
 	testing.expect(t, .With_Header_Line in header_decl.flags)
 	testing.expect_value(t, ast.print_node(header_decl, context.allocator), "DATA itab TYPE STANDARD TABLE OF i WITH HEADER LINE.")
 }
+
+@(test)
+table_initial_size_stays_outside_type_ref :: proc(t: ^testing.T) {
+	source := `TYPES tsg_cons_prxs TYPE STANDARD TABLE OF prx_r3name INITIAL SIZE 5.`
+	parsed := parse(source, "table_initial_size.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	decl := parsed.root.stmts[0].derived_stmt.(^ast.Types_Decl)
+	clause := decl.types[0].type_clause
+	ref := clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+
+	testing.expect_value(t, ref.name, "prx_r3name")
+	testing.expect_value(t, source[ref.range.start:ref.range.end], "prx_r3name")
+	testing.expect(t, clause.initial_size != nil)
+	if clause.initial_size != nil {
+		testing.expect_value(t, source[clause.initial_size.range.start:clause.initial_size.range.end], "5")
+	}
+	testing.expect_value(t, ast.print_node(decl, context.allocator), source)
+}
+
+@(test)
+table_initial_size_shape_is_validated :: proc(t: ^testing.T) {
+	missing_size := parse("TYPES ty TYPE STANDARD TABLE OF string INITIAL 5.", "missing_size.abap", context.allocator)
+	non_table := parse("TYPES ty TYPE i INITIAL SIZE 5.", "non_table_initial_size.abap", context.allocator)
+
+	expect_error_contains(t, missing_size, "expected SIZE after INITIAL")
+	expect_error_contains(t, non_table, "INITIAL SIZE only valid for table types")
+}

@@ -723,6 +723,7 @@ walk_cleanup_clause :: proc(v: ^Visitor, clause: ^Cleanup_Clause) {
 walk_data_type_clause :: proc(v: ^Visitor, clause: ^Data_Type_Clause) {
 	if clause != nil {
 		walk(v, clause.type_ref)
+		walk(v, clause.initial_size)
 	}
 }
 

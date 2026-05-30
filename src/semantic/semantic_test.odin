@@ -2818,7 +2818,8 @@ DATA lv_dec TYPE p DECIMALS 2.
 DATA mv_text TYPE string READ-ONLY.
 PARAMETERS p_count TYPE i DEFAULT 1.
 TYPES ty_def TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
-TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.`
+TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.
+TYPES ty_initial TYPE STANDARD TABLE OF string INITIAL SIZE 5.`
 	unit := collect_test_unit(t, "file:///type_ref_display_bounds.abap", source)
 
 	int_eket := analyze.find_symbol(&unit, "int_eket", .Variable)
@@ -2829,8 +2830,9 @@ TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.`
 	p_count := analyze.find_symbol(&unit, "p_count", .Variable)
 	ty_def := analyze.find_symbol(&unit, "ty_def", .Type_Def)
 	ty_unique := analyze.find_symbol(&unit, "ty_unique", .Type_Def)
+	ty_initial := analyze.find_symbol(&unit, "ty_initial", .Type_Def)
 	testing.expect(t, int_eket != nil && lv_value != nil && lv_len != nil && lv_dec != nil)
-	testing.expect(t, mv_text != nil && p_count != nil && ty_def != nil && ty_unique != nil)
+	testing.expect(t, mv_text != nil && p_count != nil && ty_def != nil && ty_unique != nil && ty_initial != nil)
 	testing.expect_value(t, int_eket.type_clause_display, "beket")
 	testing.expect_value(t, lv_value.type_clause_display, "i")
 	testing.expect_value(t, lv_len.type_clause_display, "c")
@@ -2839,6 +2841,7 @@ TYPES ty_unique TYPE SORTED TABLE OF string WITH UNIQUE KEY table_line.`
 	testing.expect_value(t, p_count.type_clause_display, "i")
 	testing.expect_value(t, ty_def.type_clause_display, "STANDARD TABLE OF string WITH DEFAULT KEY")
 	testing.expect_value(t, ty_unique.type_clause_display, "SORTED TABLE OF string WITH UNIQUE KEY table_line")
+	testing.expect_value(t, ty_initial.type_clause_display, "STANDARD TABLE OF string INITIAL SIZE 5")
 }
 
 @(test)

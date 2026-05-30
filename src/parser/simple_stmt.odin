@@ -1582,8 +1582,23 @@ parse_create_type_clause_tail :: proc(
 		clause.table_has_of = allow_keyword(p, "OF")
 		clause.form = .Table
 	}
+	if at_keyword(p, "INITIAL") {
+		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
+		if !ok {
+			return nil, nil
+		}
+		clause.initial_size = initial_size
+		return clause, nil
+	}
 	dynamic_expr := create_dynamic_type_expr_at(p, p.index)
 	clause.type_ref = parse_create_type_ref_expr(p, stop_keywords)
+	if at_keyword(p, "INITIAL") {
+		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
+		if !ok {
+			return nil, dynamic_expr
+		}
+		clause.initial_size = initial_size
+	}
 	return clause, dynamic_expr
 }
 
@@ -2406,9 +2421,23 @@ parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
 		clause.form = .Like_Table if is_like else .Table
 	}
 	if !table_has_of {
+		if at_keyword(p, "INITIAL") {
+			initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
+			if !ok {
+				return nil
+			}
+			clause.initial_size = initial_size
+		}
 		return clause
 	}
 	clause.type_ref = parse_oop_type_ref_expr(p)
+	if at_keyword(p, "INITIAL") {
+		initial_size, ok := parse_type_clause_initial_size_addition(p, clause.form)
+		if !ok {
+			return nil
+		}
+		clause.initial_size = initial_size
+	}
 	return clause
 }
 
@@ -2474,6 +2503,7 @@ oop_type_ref_done :: proc(p: ^Parser, start: int, in_key: bool) -> bool {
 	if !type_ref_selector_field(p) &&
 	   (simple_current_keyword_in(p, OOP_SIGNATURE_STOP_KEYWORDS) ||
 	    at_length_keyword(p) ||
+	    at_keyword(p, "INITIAL") ||
 	    (at_keyword(p, "WITH") && !type_ref_key_clause_starts(p, p.index)) ||
 	    at_keyword_phrase(p, "READ-ONLY") ||
 	    at_keyword(p, "OPTIONAL") ||

@@ -1694,28 +1694,33 @@ type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> str
 		return ""
 	}
 	ref := type_ref_display(c, clause.type_ref)
+	display := ""
 	#partial switch clause.form {
 	case .Ref_To:
-		return concat2(c, "REF TO ", ref)
+		display = concat2(c, "REF TO ", ref)
 	case .Like_Line_Of, .Type_Line_Of:
-		return concat2(c, "LINE OF ", ref)
+		display = concat2(c, "LINE OF ", ref)
 	case .Any_Table:
-		return strings.clone("ANY TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "ANY TABLE OF ", ref)
+		display = strings.clone("ANY TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "ANY TABLE OF ", ref)
 	case .Table, .Like_Table:
-		return strings.clone("TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "TABLE OF ", ref)
+		display = strings.clone("TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "TABLE OF ", ref)
 	case .Index_Table:
-		return strings.clone("INDEX TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "INDEX TABLE OF ", ref)
+		display = strings.clone("INDEX TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "INDEX TABLE OF ", ref)
 	case .Standard_Table, .Like_Standard_Table:
-		return strings.clone("STANDARD TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "STANDARD TABLE OF ", ref)
+		display = strings.clone("STANDARD TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "STANDARD TABLE OF ", ref)
 	case .Sorted_Table, .Like_Sorted_Table:
-		return strings.clone("SORTED TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "SORTED TABLE OF ", ref)
+		display = strings.clone("SORTED TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "SORTED TABLE OF ", ref)
 	case .Hashed_Table, .Like_Hashed_Table:
-		return strings.clone("HASHED TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "HASHED TABLE OF ", ref)
+		display = strings.clone("HASHED TABLE", c.allocator) if !clause.table_has_of && clause.type_ref == nil else concat2(c, "HASHED TABLE OF ", ref)
 	case .Range_Of:
-		return concat2(c, "RANGE OF ", ref)
+		display = concat2(c, "RANGE OF ", ref)
 	case:
-		return ref
+		display = ref
 	}
+	if clause.initial_size != nil {
+		return concat3(c, display, " INITIAL SIZE ", expr_display(c, clause.initial_size))
+	}
+	return display
 }
 
 type_ref_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {

@@ -20,6 +20,9 @@ collect_decl_info_facts :: proc(c: ^Collector, scope: Scope_Id, info: Decl_Info)
 	if info.default_clause != nil {
 		collect_expr_refs(c, info.default_clause.expr, scope)
 	}
+	if info.type_clause != nil {
+		collect_expr_refs(c, info.type_clause.initial_size, scope)
+	}
 	collect_expr_refs(c, info.occurs, scope)
 	if info.include_ref != nil {
 		collect_expr_refs(c, info.include_ref, scope)
@@ -200,6 +203,7 @@ collect_type_clause_ref :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause, sc
 	if clause == nil {
 		return
 	}
+	collect_expr_refs(c, clause.initial_size, scope)
 	if type_ref, ok := type_ref_from_clause(c, clause); ok {
 		range := clause.type_ref.range if clause.type_ref != nil else tokenizer.Range{}
 		add_type_reference(c, scope, type_ref, range)

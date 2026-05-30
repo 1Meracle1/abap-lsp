@@ -607,6 +607,7 @@ Data_Type_Clause :: struct {
 	form:         Data_Type_Form,
 	table_has_of: bool,
 	type_ref:     ^Expr,
+	initial_size: ^Expr,
 }
 
 // ABAP syntax: TYPES statement, for example `TYPES ty TYPE i.`

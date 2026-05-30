@@ -1301,10 +1301,65 @@ parse_header_type_clause :: proc(
 		clause.form = .Like_Table if is_like else .Table
 	}
 	if !table_has_of {
+		if i < period_index && at_keyword_index(p, i, "INITIAL") {
+			initial_size, next, ok := parse_header_initial_size_addition(
+				p,
+				i,
+				period_index,
+				stop_keywords,
+				clause.form,
+			)
+			if ok {
+				clause.initial_size = initial_size
+			}
+			i = next
+		}
 		return clause, i
 	}
 	clause.type_ref, i = parse_header_type_ref_expr(p, i, period_index, stop_keywords)
+	if i < period_index && at_keyword_index(p, i, "INITIAL") {
+		initial_size, next, ok := parse_header_initial_size_addition(
+			p,
+			i,
+			period_index,
+			stop_keywords,
+			clause.form,
+		)
+		if ok {
+			clause.initial_size = initial_size
+		}
+		i = next
+	}
 	return clause, i
+}
+
+parse_header_initial_size_addition :: proc(
+	p: ^Parser,
+	index, period_index: int,
+	stop_keywords: []string,
+	form: ast.Data_Type_Form,
+) -> (^ast.Expr, int, bool) {
+	if !type_clause_form_allows_initial_size(form) {
+		error(p, p.tokens[index].range, "syntax error: INITIAL SIZE only valid for table types")
+		return nil, index + 1, false
+	}
+	i := index + 1
+	if i >= period_index || !at_keyword_index(p, i, "SIZE") {
+		error(p, p.tokens[index].range, "syntax error: expected SIZE after INITIAL")
+		return nil, i, false
+	}
+	value_start := i + 1
+	value_end := skip_header_addition_value(p, value_start, period_index, stop_keywords)
+	if value_start >= value_end {
+		error(p, p.tokens[i].range, "syntax error: expected initial size")
+		return nil, value_start, false
+	}
+	value := parse_complete_concat_expr(p, value_start, value_end)
+	if value == nil {
+		error(p, p.tokens[value_start].range, "syntax error: expected initial size")
+		return nil, value_end, false
+	}
+	return value, value_end, true
 }
 
 parse_header_structure_ref_expr :: proc(
@@ -1452,6 +1507,7 @@ header_type_ref_key_done :: proc(
 		(at_keyword_index(p, index, "WITH") && type_ref_key_clause_starts(p, index)) ||
 		at_keyword_index(p, index, "OPTIONAL") ||
 		at_keyword_index(p, index, "DEFAULT") ||
+		at_keyword_index(p, index, "INITIAL") ||
 		header_parameter_starts(p, index, period_index) \
 	)
 }
@@ -1473,7 +1529,9 @@ header_type_ref_done :: proc(
 	if at_keyword_index(p, index, "WITH") && !type_ref_key_clause_starts(p, index) {
 		return true
 	}
-	if at_keyword_index(p, index, "OPTIONAL") || (!in_key && at_keyword_index(p, index, "DEFAULT")) {
+	if at_keyword_index(p, index, "INITIAL") ||
+	   at_keyword_index(p, index, "OPTIONAL") ||
+	   (!in_key && at_keyword_index(p, index, "DEFAULT")) {
 		return true
 	}
 	return index > start && header_parameter_starts(p, index, period_index)
