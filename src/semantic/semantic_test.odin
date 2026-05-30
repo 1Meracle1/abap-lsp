@@ -1890,7 +1890,7 @@ TYPES: BEGIN OF enlfdir,
 
 	testing.expect(t, !pending)
 	testing.expect(t, root != nil)
-	testing.expect(t, root != nil && !has_diagnostic(root, .Unverified_Open_Sql_Source))
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unresolved_Open_Sql_Source))
 	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
 }
 
@@ -3223,7 +3223,7 @@ ENDCLASS.
 	unit := collect_test_unit(t, "file:///inherited_redefinition_type.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
-	testing.expect(t, !has_diagnostic(&unit, .Unverified_Open_Sql_Source))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Open_Sql_Source))
 }
 
 @(test)
@@ -3241,7 +3241,7 @@ ENDFORM.
 	unit := collect_test_unit(t, "file:///internal_delete_where.abap", source)
 
 	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
-	testing.expect(t, !has_diagnostic(&unit, .Unverified_Open_Sql_Source))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Open_Sql_Source))
 }
 
 @(test)
@@ -7102,7 +7102,7 @@ SELECT carrid FROM zmissing INTO TABLE @DATA(lt_missing).
 	)
 
 	testing.expect(t, has_diagnostic(&unit, .Unknown_Field))
-	testing.expect(t, has_diagnostic(&unit, .Unverified_Open_Sql_Source))
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Open_Sql_Source))
 }
 
 @(test)
@@ -7163,7 +7163,7 @@ SELECT SINGLE author createdon FROM wdy_config_data INTO (lv_author, lv_createdo
 
 	testing.expect(t, root != nil)
 	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
-	testing.expect(t, !has_diagnostic(root, .Unverified_Open_Sql_Source))
+	testing.expect(t, !has_diagnostic(root, .Unresolved_Open_Sql_Source))
 }
 
 @(test)

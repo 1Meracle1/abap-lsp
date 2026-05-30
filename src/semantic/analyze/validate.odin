@@ -961,9 +961,9 @@ validate_open_sql :: proc(
 			append_diag(
 				out,
 				seen,
-				.Unverified_Open_Sql_Source,
+				.Unresolved_Open_Sql_Source,
 				source_data.range,
-				diagnostic_message("unverified Open SQL source ", source_data.name, allocator),
+				diagnostic_message("unresolved Open SQL source ", source_data.name, allocator),
 			)
 		}
 	}

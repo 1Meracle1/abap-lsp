@@ -15,6 +15,8 @@ import "core:mem/virtual"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:terminal"
+import ansi "core:terminal/ansi"
 
 DEPENDENCY_FETCH_TRACE :: #config(ABAP_FRONTEND_TRACE_ADT_FETCH, false)
 
@@ -36,6 +38,10 @@ Allocation_Location_Total :: struct {
 Tree_State :: struct {
 	index: int,
 }
+
+SGR_RESET  :: ansi.CSI + ansi.RESET + ansi.SGR
+SGR_RED    :: ansi.CSI + ansi.FG_RED + ansi.SGR
+SGR_YELLOW :: ansi.CSI + ansi.FG_YELLOW + ansi.SGR
 
 main :: proc() {
 	stack_trace.install_debug_crash_trace()
@@ -75,10 +81,6 @@ main :: proc() {
 	}
 
 	path := args[2]
-	if command == "tokens" || command == "token" {
-		run_tokens(path, allocator)
-		return
-	}
 	if command == "parse" {
 		run_parse(path, false, allocator)
 		return
@@ -95,10 +97,9 @@ main :: proc() {
 print_usage :: proc() {
 	fmt.println("abap_frontend")
 	fmt.println("usage: abap_frontend --help")
-	fmt.println("       abap_frontend tokens <file>")
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
-	fmt.println("       abap_frontend analyze <file-or-folder> [--include <file>...]")
+	fmt.println("       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors]")
 }
 
 read_source :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
@@ -134,18 +135,13 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 	{
 		context.temp_allocator = allocator
 		parsed := parser.parse(source, path, allocator)
-		fmt.printf("file\t%s\n", path)
-		fmt.printf(
-			"root\t%s\t%d\t%d\n",
-			node_type_name(parsed.root),
-			parsed.root.range.start,
-			parsed.root.range.end,
-		)
-		fmt.printf("top_level_stmts\t%d\n", len(parsed.root.stmts))
-		print_parse_errors(parsed.errors)
+		had_errors := print_parse_errors(path, source, parsed.errors)
 		if dump_tree {
 			print_node_counts(parsed.root, allocator)
 			print_tree(parsed.root)
+		}
+		if had_errors {
+			os.exit(1)
 		}
 	}
 }
@@ -154,20 +150,29 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 	defer virtual.arena_temp_end(temp_arena)
 
-	tracker: mem.Tracking_Allocator
-	mem.tracking_allocator_init(&tracker, allocator, allocator)
-	tracked_allocator := mem.tracking_allocator(&tracker)
-	context.allocator = tracked_allocator
+	context.allocator = allocator
+	when DEPENDENCY_FETCH_TRACE {
+		tracker: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&tracker, allocator, allocator)
+		tracked_allocator := mem.tracking_allocator(&tracker)
+		context.allocator = tracked_allocator
+	}
 
 	target_path := args[2]
 
+	warnings_as_errors := false
 	include_paths := make([dynamic]string, 0, 4, context.temp_allocator)
-	for i := 3; i < len(args); i += 2 {
-		if args[i] != "--include" || i + 1 >= len(args) {
+	for i := 3; i < len(args); {
+		if args[i] == "--warnings-as-errors" {
+			warnings_as_errors = true
+			i += 1
+		} else if args[i] == "--include" && i + 1 < len(args) {
+			append(&include_paths, args[i + 1])
+			i += 2
+		} else {
 			print_usage()
 			os.exit(1)
 		}
-		append(&include_paths, args[i + 1])
 	}
 
 	pool: execution.Pool
@@ -178,7 +183,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 			queue_capacity = 128,
 			deque_capacity = 128,
 		},
-		tracked_allocator,
+		context.allocator,
 	)
 	if pool.options.worker_count > 0 {
 		execution.pool_start(&pool)
@@ -188,20 +193,25 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 		target_path,
 		include_paths[:],
 		workspace.Options{pool = &pool, enable_adt = true},
-		tracked_allocator,
+		context.allocator,
 	)
 	if !result.ok {
 		fmt.printf("error\tanalyze\t%s\n", result.error)
 		execution.pool_destroy(&pool)
 		os.exit(1)
 	}
-	print_analyze_counts(&result.project)
-	print_analyze_diagnostics(&result.project)
+	when DEPENDENCY_FETCH_TRACE {
+		print_analyze_counts(&result.project)
+	}
+	had_error := print_analyze_diagnostics(&result.project, warnings_as_errors)
 	execution.pool_destroy(&pool)
 	when DEPENDENCY_FETCH_TRACE {
 		print_analyze_memory_report(&tracker)
+		mem.tracking_allocator_destroy(&tracker)
 	}
-	mem.tracking_allocator_destroy(&tracker)
+	if had_error {
+		os.exit(1)
+	}
 }
 
 analyze_cli_path :: proc(
@@ -392,7 +402,7 @@ display_uri :: proc(uri: string, allocator: mem.Allocator) -> string {
 	return strings.to_string(out)
 }
 
-print_caret_line :: proc(start_column, width: int) {
+print_caret_line :: proc(start_column, width: int, color: string) {
 	fmt.print("    ")
 	spaces := start_column - 1
 	for _ in 0 ..< spaces {
@@ -402,13 +412,24 @@ print_caret_line :: proc(start_column, width: int) {
 	if w < 1 {
 		w = 1
 	}
+	if color != "" {
+		fmt.print(color)
+	}
 	for _ in 0 ..< w {
 		fmt.print("^")
+	}
+	if color != "" {
+		fmt.print(SGR_RESET)
 	}
 	fmt.println()
 }
 
-print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis) {
+print_analyze_diagnostics :: proc(
+	project: ^semantic_analyze.Project_Analysis,
+	warnings_as_errors: bool,
+) -> bool {
+	had_error := false
+	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
 	for unit in project.units {
 		temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 		defer virtual.arena_temp_end(temp_arena)
@@ -416,6 +437,17 @@ print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis) {
 		line_starts := build_line_starts(unit.source, context.temp_allocator)
 		uri := display_uri(unit.uri, context.temp_allocator)
 		for diagnostic in unit.diagnostics {
+			warning := diagnostic_is_warning(diagnostic.kind) && !warnings_as_errors
+			color := ""
+			label := "error"
+			if warning {
+				label = "warning"
+			} else {
+				had_error = true
+			}
+			if use_color {
+				color = SGR_YELLOW if warning else SGR_RED
+			}
 			start := source_position(unit.source, line_starts[:], diagnostic.range.start)
 			end := source_position(unit.source, line_starts[:], diagnostic.range.end)
 			line_text := source_line_text(unit.source, line_starts[:], start.line)
@@ -423,19 +455,35 @@ print_analyze_diagnostics :: proc(project: ^semantic_analyze.Project_Analysis) {
 			if end.line != start.line {
 				width = len(line_text) - start.column + 2
 			}
-			fmt.printf(
-				"%s(%d:%d) %v: %s\n",
-				uri,
-				start.line,
-				start.column,
-				diagnostic.kind,
-				diagnostic.message,
-			)
+			fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
+			if color != "" {
+				fmt.print(color)
+			}
+			fmt.print(label)
+			if color != "" {
+				fmt.print(SGR_RESET)
+			}
+			fmt.printf(" %v: %s\n", diagnostic.kind, diagnostic.message)
 			fmt.printf("    %s\n", line_text)
-			print_caret_line(start.column, width)
+			print_caret_line(start.column, width, color)
 			fmt.println()
 		}
 	}
+	return had_error
+}
+
+diagnostic_is_warning :: proc(kind: semantic_analyze.Diagnostic_Kind) -> bool {
+	#partial switch kind {
+	case .Shadowed_Symbol,
+	     .Unresolved_Open_Sql_Source,
+	     .Unreachable_Code,
+	     .Use_Before_Definite_Assignment,
+	     .Possibly_Unbound_Field_Symbol,
+	     .Dead_Store,
+	     .Unsorted_Read_Table_Binary_Search:
+		return true
+	}
+	return false
 }
 
 print_lex_errors :: proc(errors: []tokenizer.Lex_Error) {
@@ -445,11 +493,45 @@ print_lex_errors :: proc(errors: []tokenizer.Lex_Error) {
 	}
 }
 
-print_parse_errors :: proc(errors: []parser.Parse_Error) {
-	fmt.printf("parse_errors\t%d\n", len(errors))
-	for err, i in errors {
-		fmt.printf("parse_error\t%d\t%d\t%d\t%s\n", i, err.range.start, err.range.end, err.message)
+print_parse_errors :: proc(path, source: string, errors: []parser.Parse_Error) -> bool {
+	if len(errors) == 0 {
+		return false
 	}
+	line_starts := build_line_starts(source, context.temp_allocator)
+	uri := parse_display_uri(path, context.temp_allocator)
+	color := ""
+	if terminal.color_enabled && terminal.is_terminal(os.stdout) {
+		color = SGR_RED
+	}
+	for err in errors {
+		start := source_position(source, line_starts[:], err.range.start)
+		end := source_position(source, line_starts[:], err.range.end)
+		line_text := source_line_text(source, line_starts[:], start.line)
+		width := end.column - start.column
+		if end.line != start.line {
+			width = len(line_text) - start.column + 2
+		}
+		fmt.printf("%s(%d:%d) ", uri, start.line, start.column)
+		if color != "" {
+			fmt.print(color)
+		}
+		fmt.print("error")
+		if color != "" {
+			fmt.print(SGR_RESET)
+		}
+		fmt.printf(" Syntax_Error: %s\n", err.message)
+		fmt.printf("    %s\n", line_text)
+		print_caret_line(start.column, width, color)
+		fmt.println()
+	}
+	return true
+}
+
+parse_display_uri :: proc(path: string, allocator: mem.Allocator) -> string {
+	if abs_path, ok := workspace.absolute_clean_path(path, allocator); ok {
+		return display_uri(abs_path, allocator)
+	}
+	return display_uri(path, allocator)
 }
 
 print_node_counts :: proc(root: ^ast.Node, allocator: runtime.Allocator) {

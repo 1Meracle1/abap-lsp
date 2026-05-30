@@ -386,7 +386,7 @@ Diagnostic_Kind :: enum {
 	Unknown_Function_Module_Exception,
 	Duplicate_Named_Parameter,
 	Missing_Required_Parameter,
-	Unverified_Open_Sql_Source,
+	Unresolved_Open_Sql_Source,
 	Invalid_Open_Sql_Into_Target,
 	Invalid_Open_Sql_Syntax,
 	Invalid_Message,
