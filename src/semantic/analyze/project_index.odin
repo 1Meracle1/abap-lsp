@@ -148,19 +148,24 @@ project_index_collect_unit :: proc(
 			name,
 		)
 	}
+	is_typepool := typepool_dependency_unit(unit.uri)
 	for &symbol in unit.symbols {
 		if symbol.scope != unit.root_scope {
 			continue
 		}
 		visible_by_default := false
-		#partial switch symbol.kind {
-		case .Class, .Interface:
-			visible_by_default = name_is_namespaced(symbol.name) ||
-			                     root_name_matches_unit_stem(unit_stem, symbol.name)
-		case .Type_Def:
-			visible_by_default = root_name_matches_unit_stem(unit_stem, symbol.name)
-		case .Module, .Report:
-			visible_by_default = true
+		if is_typepool {
+			visible_by_default = typepool_root_symbol_visible_by_default(symbol.kind)
+		} else {
+			#partial switch symbol.kind {
+			case .Class, .Interface:
+				visible_by_default = name_is_namespaced(symbol.name) ||
+				                     root_name_matches_unit_stem(unit_stem, symbol.name)
+			case .Type_Def:
+				visible_by_default = root_name_matches_unit_stem(unit_stem, symbol.name)
+			case .Module, .Report:
+				visible_by_default = true
+			}
 		}
 		namespaces := [?]Namespace{.Value, .Type, .Routine}
 		for namespace in namespaces {

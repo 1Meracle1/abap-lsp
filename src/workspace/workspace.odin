@@ -134,6 +134,9 @@ open_standalone_workspace :: proc(
 			workspace.standalone_profile = remote_deps.standalone_dependency_profile()
 		}
 	}
+	if options.enable_adt {
+		init_workspace_adt(&workspace, allocator)
+	}
 	return workspace, true, ""
 }
 

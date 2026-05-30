@@ -475,7 +475,6 @@ print_analyze_diagnostics :: proc(
 diagnostic_is_warning :: proc(kind: semantic_analyze.Diagnostic_Kind) -> bool {
 	#partial switch kind {
 	case .Shadowed_Symbol,
-	     .Unresolved_Open_Sql_Source,
 	     .Unreachable_Code,
 	     .Use_Before_Definite_Assignment,
 	     .Possibly_Unbound_Field_Symbol,

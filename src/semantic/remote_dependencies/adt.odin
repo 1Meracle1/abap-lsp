@@ -43,11 +43,25 @@ add_adt_matches_with_client :: proc(
 	pool: ^execution.Pool,
 	target_uri: string,
 ) -> bool {
+	adt_candidates := make(
+		[dynamic]analyze.Remote_Dependency_Candidate,
+		0,
+		len(remote_candidates),
+		context.temp_allocator,
+	)
+	for candidate in remote_candidates {
+		if candidate.kind != .Symbol {
+			append(&adt_candidates, candidate)
+		}
+	}
+	if len(adt_candidates) == 0 {
+		return false
+	}
 	uri_keys := project_input_uri_keys(
 		target_uri,
 		dependencies^[:],
 		candidates^[:],
-		len(remote_candidates),
+		len(adt_candidates),
 		context.temp_allocator,
 	)
 
@@ -60,17 +74,17 @@ add_adt_matches_with_client :: proc(
 	added := false
 	graph: execution.Graph
 	execution.graph_init(&graph, pool, context.temp_allocator)
-	result_arenas := make([]mem.Dynamic_Arena, len(remote_candidates), context.temp_allocator)
+	result_arenas := make([]mem.Dynamic_Arena, len(adt_candidates), context.temp_allocator)
 	tasks := make(
 		[dynamic]execution.Task(^Adt_Fetch_Task_Result),
 		0,
-		len(remote_candidates),
+		len(adt_candidates),
 		context.temp_allocator,
 	)
 	result_backing := base_runtime.heap_allocator()
 	connection_key :=
 		adt.client_connection_key(client, context.temp_allocator) if store != nil && profile != nil else ""
-	for candidate, i in remote_candidates {
+	for candidate, i in adt_candidates {
 		mem.dynamic_arena_init(&result_arenas[i], result_backing, result_backing, alignment = 64)
 		payload := Adt_Fetch_Task_Payload {
 			client           = client,
@@ -94,7 +108,7 @@ add_adt_matches_with_client :: proc(
 		if add_adt_fetch_task_result(
 			candidates,
 			dependencies,
-			remote_candidates[i],
+			adt_candidates[i],
 			result,
 			&uri_keys,
 			context.temp_allocator,

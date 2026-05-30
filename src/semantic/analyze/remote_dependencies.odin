@@ -513,7 +513,10 @@ remote_dependency_candidate_for_reference :: proc(
 	case .Routine_Call:
 		return {}, false
 	case .Identifier:
-		return {}, false
+		if ref.namespace != .Value {
+			return {}, false
+		}
+		kind = .Symbol
 	}
 	return Remote_Dependency_Candidate{name = ref.name, kind = kind, hint = hint}, true
 }

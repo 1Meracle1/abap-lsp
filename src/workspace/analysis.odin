@@ -445,20 +445,12 @@ default_workspace_manifest :: proc(
 }
 
 init_workspace_adt :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
-	path, err := os.join_path({workspace.root_path, ".env"}, context.temp_allocator)
-	if err != nil {
-		return
-	}
-	info, stat_err := os.stat(path, allocator)
-	if stat_err != nil || info.type != .Regular {
-		return
-	}
-	workspace.has_dotenv = true
-	dotenv, dotenv_err := adt.parse_dotenv_file(path, allocator)
+	dotenv, dotenv_err := adt.load_dotenv_defaults(workspace.root_path, allocator)
 	if dotenv_err != .None {
 		return
 	}
 	defer adt.dotenv_defaults_destroy(&dotenv, allocator)
+	workspace.has_dotenv = len(dotenv.values) > 0
 
 	overrides := adt.Connection_Overrides{}
 	config, config_err := adt.connection_config_from_sources(&overrides, &dotenv, allocator)

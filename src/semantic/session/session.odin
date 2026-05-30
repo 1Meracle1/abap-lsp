@@ -48,9 +48,10 @@ Input_Change :: struct {
 }
 
 Remote_Dependency_State :: struct {
-	seen_artifacts:        map[i64]bool,
-	seen_local_candidates: map[analyze.Remote_Dependency_Key]bool,
-	seen_adt_candidates:   map[analyze.Remote_Dependency_Key]bool,
+	seen_artifacts:           map[i64]bool,
+	seen_local_candidates:    map[analyze.Remote_Dependency_Key]bool,
+	seen_adt_candidates:      map[analyze.Remote_Dependency_Key]bool,
+	seen_typepool_candidates: map[analyze.Remote_Dependency_Key]bool,
 }
 
 Session_Memory :: struct {
@@ -248,9 +249,10 @@ analysis_session_ensure_initialized :: proc(session: ^Analysis_Session) {
 	session.candidates = make([dynamic]analyze.Project_Candidate_Input, 0, 16, allocator)
 	session.dependencies = make([dynamic]analyze.Source_Input, 0, 16, allocator)
 	session.dependency_state = Remote_Dependency_State {
-		seen_artifacts = make(map[i64]bool, 16, dep_allocator),
-		seen_local_candidates = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
-		seen_adt_candidates = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
+		seen_artifacts           = make(map[i64]bool, 16, dep_allocator),
+		seen_local_candidates    = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
+		seen_adt_candidates      = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
+		seen_typepool_candidates = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
 	}
 }
 
@@ -432,7 +434,7 @@ analysis_session_resolve_new_dependencies :: proc(
 		),
 	}
 	if has_cache {
-			cache_candidates := remote_deps.unseen_remote_candidates(
+		cache_candidates := remote_deps.unseen_remote_candidates(
 			remote_candidates[:],
 			nil,
 			context.temp_allocator,
@@ -470,7 +472,7 @@ analysis_session_resolve_new_dependencies :: proc(
 	}
 
 	if session.config.adt_client != nil {
-			adt_candidates := remote_deps.unseen_remote_candidates(
+		adt_candidates := remote_deps.unseen_remote_candidates(
 			cache_result.adt_candidates[:],
 			&session.dependency_state.seen_adt_candidates,
 			context.temp_allocator,
@@ -503,8 +505,43 @@ analysis_session_resolve_new_dependencies :: proc(
 		}
 	}
 
+	if session.config.adt_client != nil &&
+	   adt.typepool_resolver_enabled(session.config.adt_client) {
+		typepool_candidates := remote_deps.unseen_remote_candidates(
+			cache_result.local_candidates[:],
+			&session.dependency_state.seen_typepool_candidates,
+			context.temp_allocator,
+		)
+		if len(typepool_candidates) > 0 {
+			old_candidate_count := len(session.candidates)
+			old_dependency_count := len(session.dependencies)
+			if remote_deps.add_typepool_resolver_matches(
+				&session.candidates,
+				&session.dependencies,
+				typepool_candidates[:],
+				session.config.cache if has_cache && has_profile else nil,
+				session.config.profile if has_cache && has_profile else nil,
+				session.config.adt_client,
+				session.targets[0].uri if len(session.targets) > 0 else "",
+				context.temp_allocator,
+			) {
+				added += analysis_session_record_appended_inputs(
+					session,
+					old_candidate_count,
+					old_dependency_count,
+				)
+				return added
+			}
+			added += analysis_session_record_appended_inputs(
+				session,
+				old_candidate_count,
+				old_dependency_count,
+			)
+		}
+	}
+
 	if len(session.config.local_export_roots) > 0 {
-			local_candidates := remote_deps.unseen_remote_candidates(
+		local_candidates := remote_deps.unseen_remote_candidates(
 			cache_result.local_candidates[:],
 			&session.dependency_state.seen_local_candidates,
 			context.temp_allocator,

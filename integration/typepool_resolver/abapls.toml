@@ -1,0 +1,18 @@
+version = 1
+connection = "default"
+
+[resolution]
+dependency_mode = "remote-on-demand"
+# Total ADT requests per second across all remote dependency fetches. Internal concurrency is derived from this rate.
+remote_requests_per_second = 240
+
+# Configure this block to enable centralized remote dependency storage and SAP-versioned lookups.
+[dependency_store]
+product_version = "SAP NETWEAVER"
+default_package_version = "7.50"
+
+# [local_export]
+# roots = ["D:/dev/abap/d65"]
+
+# [dependencies]
+# source = "local-first"

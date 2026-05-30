@@ -310,6 +310,20 @@ read_artifact_source :: proc(
 	return reader_read_artifact_source(&r, artifact_id, allocator)
 }
 
+find_artifact_by_kind_name :: proc(
+	store: ^Dependency_Store,
+	profile: ^Dependency_Profile,
+	object_kind, object_name: string,
+	allocator: mem.Allocator,
+) -> (Stored_Artifact_Record, bool, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return {}, false, err
+	}
+	defer reader_destroy(&r)
+	return reader_find_artifact_by_kind_name(&r, profile, object_kind, object_name, allocator)
+}
+
 find_artifact_for_candidate :: proc(
 	store: ^Dependency_Store,
 	profile: ^Dependency_Profile,
@@ -668,6 +682,55 @@ WHERE id = ?1
 	}
 	defer sqlite3.finalize(stmt)
 	bind_i64(stmt, 1, artifact_id)
+	return step_artifact_record(stmt, allocator)
+}
+
+reader_find_artifact_by_kind_name :: proc(
+	r: ^Dependency_Store_Reader,
+	profile: ^Dependency_Profile,
+	object_kind, object_name: string,
+	allocator: mem.Allocator,
+) -> (Stored_Artifact_Record, bool, Store_Error) {
+	kind := normalize_name(object_kind, allocator)
+	name := normalize_name(object_name, allocator)
+	if kind == "" || name == "" {
+		return {}, false, .None
+	}
+	package_versions := package_version_set(profile, allocator)
+	sql := strings.builder_make(allocator)
+	defer strings.builder_destroy(&sql)
+	strings.write_string(
+		&sql,
+		`
+SELECT
+    id,
+    package_name,
+    package_version,
+    object_kind,
+    object_name,
+    object_uri,
+    object_type,
+    description,
+    file_extension,
+    source_text
+FROM dependency_artifacts
+WHERE product_version = ?
+  AND object_kind = ?
+  AND object_name = ?
+  AND package_version IN (`,
+	)
+	append_placeholders(&sql, len(package_versions))
+	strings.write_string(&sql, ") ORDER BY package_name ASC LIMIT 1")
+
+	stmt, err := prepare(r.connection, strings.to_string(sql), allocator)
+	if err != .None {
+		return {}, false, err
+	}
+	defer sqlite3.finalize(stmt)
+	bind_text(stmt, 1, normalized_product_version(profile, allocator))
+	bind_text(stmt, 2, kind)
+	bind_text(stmt, 3, name)
+	bind_text_list(stmt, 4, package_versions[:])
 	return step_artifact_record(stmt, allocator)
 }
 

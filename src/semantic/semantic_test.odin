@@ -34,10 +34,14 @@ Semantic_Adt_Test_Server :: struct {
 	session_response: string,
 	search_response:  string,
 	missing_response: string,
+	typepool_owner_response:  string,
+	typepool_source_response: string,
 	request_buf:      [4096]u8,
 	request_count:    int,
 	search_count:     int,
 	fetch_count:      int,
+	typepool_owner_count:  int,
+	typepool_source_count: int,
 }
 
 semantic_adt_test_server_run :: proc(t: ^thread.Thread) {
@@ -54,6 +58,14 @@ semantic_adt_test_server_run :: proc(t: ^thread.Thread) {
 			request := string(server.request_buf[:n])
 			if strings.contains(request, "/runtime/systemmessages") {
 				response = server.session_response
+			} else if strings.contains(request, "/sap/bc/zabapls/typepool") &&
+			          strings.contains(request, "op=owner") {
+				server.typepool_owner_count += 1
+				response = server.typepool_owner_response
+			} else if strings.contains(request, "/sap/bc/zabapls/typepool") &&
+			          strings.contains(request, "op=source") {
+				server.typepool_source_count += 1
+				response = server.typepool_source_response
 			} else if strings.contains(request, "/repository/informationsystem/search") {
 				server.search_count += 1
 				response = server.search_response
@@ -107,6 +119,22 @@ semantic_adt_client_for_test_server :: proc(
 		context.allocator,
 	)
 	client.http.timeout = 2 * time.Second
+	return client, worker
+}
+
+semantic_adt_client_for_typepool_test_server :: proc(
+	t: ^testing.T,
+	server: ^Semantic_Adt_Test_Server,
+) -> (adt.Client, ^thread.Thread) {
+	client, worker := semantic_adt_client_for_test_server(t, server)
+	root := client.connection.base_url
+	if strings.has_suffix(root, "/sap/bc/adt") {
+		root = root[:len(root) - len("/sap/bc/adt")]
+	}
+	out := strings.builder_make(context.allocator)
+	strings.write_string(&out, root)
+	strings.write_string(&out, "/sap/bc/zabapls/typepool")
+	client.connection.typepool_resolver_url = strings.to_string(out)
 	return client, worker
 }
 
@@ -429,7 +457,7 @@ ENDFUNCTION.`
 }
 
 @(test)
-remote_dependency_candidates_ignore_plain_identifiers :: proc(t: ^testing.T) {
+remote_dependency_candidates_include_unresolved_value_identifiers :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///remote_candidates.abap",
 		source = `REPORT zmain.
@@ -437,7 +465,7 @@ TYPES ls_local_type TYPE string.
 DATA lv_ref TYPE REF TO zcl_remote_type.
 DATA ls_local TYPE ls_local_type.
 DATA ls_client TYPE t000.
-unknown_value = 1.
+unknownvalue = 1.
 CALL FUNCTION 'Z_REMOTE_FM'.
 lv_ref->get_url( ).
 CLASS lcl_remote_impl DEFINITION.
@@ -476,7 +504,7 @@ ENDCLASS.
 			has_interface = true
 			has_interface_hint = candidate.hint == .Interface_Type
 		}
-		if candidate.name == "unknown_value" {
+		if candidate.name == "unknownvalue" {
 			has_symbol = true
 		}
 		if candidate.name == "get_url" {
@@ -498,7 +526,7 @@ ENDCLASS.
 	testing.expect(t, has_standard_type)
 	testing.expect(t, has_interface)
 	testing.expect(t, has_interface_hint)
-	testing.expect(t, !has_symbol)
+	testing.expect(t, has_symbol)
 	testing.expect(t, !has_routine)
 	testing.expect(t, !has_local_type)
 	testing.expect(t, !has_builtin_backing_type)
@@ -8440,6 +8468,210 @@ adt_miss_records_negative_cache_lookup :: proc(t: ^testing.T) {
 }
 
 @(test)
+typepool_resolver_fetches_pool_source_after_adt_miss :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("typepool-resolver-fetch")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	pool_source := `TYPE-POOL tpak.
+TYPES: BEGIN OF tpak_permission_to_use,
+         name TYPE string,
+       END OF tpak_permission_to_use.
+TYPES tpak_permission_to_use_list TYPE STANDARD TABLE OF tpak_permission_to_use WITH DEFAULT KEY.`
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "TPAK", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("200 OK", pool_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lt_permissions TYPE tpak_permission_to_use_list.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 1)
+	record, ok, lookup_err := dep_store.find_artifact_by_kind_name(
+		&store,
+		&profile,
+		"type-pool",
+		"tpak",
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, dep_store.Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect(t, !strings.contains(record.source_text, "TYPE-POOL"))
+}
+
+@(test)
+typepool_resolver_fetches_one_pool_for_multiple_symbols :: proc(t: ^testing.T) {
+	pool_source := `TYPE-POOL gfw.
+TYPES gfw_boolean TYPE c LENGTH 1.
+CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.`
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "GFW", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("200 OK", pool_source, "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `REPORT zmain.
+DATA lv_flag TYPE gfw_boolean.
+lv_flag = gfw_false.`,
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 1)
+}
+
+@(test)
+cached_typepool_source_skips_source_endpoint :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("typepool-resolver-cache")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "GFW",
+		object_kind    = "type-pool",
+		object_name    = "GFW",
+		object_uri     = "type-pool:GFW",
+		object_type    = "TYPEPOOL",
+		description    = "Cached type-pool",
+		file_extension = "abap",
+		source_text    = "TYPES gfw_boolean TYPE c LENGTH 1.",
+		fetched_at     = "2026-05-30T00:00:00Z",
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("200 OK", "GFW", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("500 Internal Server Error", "unexpected", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lv_flag TYPE gfw_boolean.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+	testing.expect_value(t, server.typepool_source_count, 0)
+}
+
+@(test)
+typepool_resolver_miss_keeps_unresolved_diagnostic :: proc(t: ^testing.T) {
+	server := Semantic_Adt_Test_Server {
+		session_response = semantic_test_http_response("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		search_response  = semantic_test_http_response("200 OK", `<feed xmlns:adtcore="http://www.sap.com/adt/core"></feed>`, "", context.allocator),
+		missing_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_owner_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+		typepool_source_response = semantic_test_http_response("404 Not Found", "missing", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.search_response, context.allocator)
+	defer delete(server.missing_response, context.allocator)
+	defer delete(server.typepool_owner_response, context.allocator)
+	defer delete(server.typepool_source_response, context.allocator)
+	client, worker := semantic_adt_client_for_typepool_test_server(t, &server)
+	defer adt.client_destroy(&client, context.allocator)
+	defer semantic_adt_test_server_stop(&server, worker)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	target := analyze.Source_Input {
+		uri    = "mem://ZMAIN.abap",
+		source = "REPORT zmain. DATA lt_missing TYPE unknown_typepool_symbol.",
+	}
+	targets := [?]analyze.Source_Input{target}
+	project := session.analysis_session_analyze_once(
+		targets[:],
+		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
+		make([dynamic]analyze.Source_Input, context.allocator)[:],
+		remote_deps.Dependency_Config{adt_client = &client},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	execution.pool_destroy(&pool)
+
+	testing.expect(t, project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 standalone_file_drains_dependency_store_iteratively :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("standalone-dependency-store-iterative")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
@@ -8748,12 +8980,9 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 }
 
 @(test)
-manifest_project_dotenv_gates_adt_dependency_fetch :: proc(t: ^testing.T) {
+manifest_project_loads_dotenv_for_adt_dependency_fetch :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("adt-dotenv-gate")
-	opened, opened_ok, _ := workspace.open_workspace(root, workspace.Options{enable_adt = true}, context.allocator)
-	testing.expect(t, opened_ok)
-	testing.expect(t, !opened.has_dotenv)
-
+	manifest_test_file(t, root, ".git/keep", "")
 	manifest_test_file(
 		t,
 		root,
@@ -8764,9 +8993,34 @@ ABAP_ADT_USER=demo
 ABAP_ADT_PASSWORD=secret
 `,
 	)
-	opened, opened_ok, _ = workspace.open_workspace(root, workspace.Options{enable_adt = true}, context.allocator)
+	opened, opened_ok, _ := workspace.open_workspace(root, workspace.Options{enable_adt = true}, context.allocator)
 	testing.expect(t, opened_ok)
 	testing.expect(t, opened.has_dotenv)
+	testing.expect(t, opened.has_adt)
+	workspace.workspace_destroy(&opened, context.allocator)
+}
+
+@(test)
+standalone_workspace_loads_adt_from_dotenv :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("standalone-adt-dotenv")
+	manifest_test_file(t, root, ".git/keep", "")
+	manifest_test_file(
+		t,
+		root,
+		".env",
+		`
+ABAP_ADT_URL=http://127.0.0.1:1
+ABAP_ADT_USER=demo
+ABAP_ADT_PASSWORD=secret
+`,
+	)
+	opened, opened_ok, _ := workspace.open_standalone_workspace(
+		root,
+		workspace.Options{enable_adt = true},
+		context.allocator,
+	)
+	testing.expect(t, opened_ok)
+	testing.expect(t, opened.has_adt)
 	workspace.workspace_destroy(&opened, context.allocator)
 }
 

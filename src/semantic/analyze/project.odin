@@ -2262,7 +2262,9 @@ validate_task :: proc(payload: Project_Validate_Payload) -> execution.No_Result 
 diagnostic_message :: proc(prefix, name: string, allocator: mem.Allocator) -> string {
 	out := strings.builder_make(allocator)
 	strings.write_string(&out, prefix)
+	strings.write_byte(&out, '\'')
 	strings.write_string(&out, name)
+	strings.write_byte(&out, '\'')
 	return strings.to_string(out)
 }
 

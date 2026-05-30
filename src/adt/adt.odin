@@ -37,17 +37,19 @@ Error :: enum u8 {
 DEPENDENCY_FETCH_TRACE :: #config(ABAP_FRONTEND_TRACE_ADT_FETCH, false)
 
 Connection_Overrides :: struct {
-	base_url:   string,
-	username:   string,
-	password:   string,
-	sap_client: string,
+	base_url:              string,
+	username:              string,
+	password:              string,
+	sap_client:            string,
+	typepool_resolver_url: string,
 }
 
 Connection_Config :: struct {
-	base_url:   string,
-	username:   string,
-	password:   string,
-	sap_client: string,
+	base_url:              string,
+	username:              string,
+	password:              string,
+	sap_client:            string,
+	typepool_resolver_url: string,
 }
 
 Dotenv_Defaults :: struct {
@@ -252,13 +254,20 @@ connection_config_from_sources :: proc(
 		dotenv,
 		allocator,
 	)
+	typepool_resolver_url, _ := first_config_value(
+		{"ABAP_TYPEPOOL_RESOLVER_URL"},
+		overrides.typepool_resolver_url,
+		dotenv,
+		allocator,
+	)
 	normalized := normalize_base_url(base_url, allocator)
 	delete(base_url, allocator)
 	return Connection_Config {
-			base_url = normalized,
-			username = username,
-			password = password,
-			sap_client = sap_client,
+			base_url              = normalized,
+			username              = username,
+			password              = password,
+			sap_client            = sap_client,
+			typepool_resolver_url = typepool_resolver_url,
 		},
 		.None
 }
@@ -268,6 +277,7 @@ connection_config_destroy :: proc(config: ^Connection_Config, allocator: mem.All
 	delete(config.username, allocator)
 	delete(config.password, allocator)
 	delete(config.sap_client, allocator)
+	delete(config.typepool_resolver_url, allocator)
 	config^ = {}
 }
 
@@ -767,6 +777,55 @@ fetch_message_class :: proc(
 		return "", err
 	}
 	return format_ddic_xml(body, allocator), .None
+}
+
+typepool_resolver_enabled :: proc(client: ^Client) -> bool {
+	return strings.trim_space(client.connection.typepool_resolver_url) != ""
+}
+
+resolve_typepool_owner :: proc(
+	client: ^Client,
+	name: string,
+	temp_allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
+	if !typepool_resolver_enabled(client) {
+		return "", .Invalid_Url
+	}
+	url := typepool_resolver_url(client, "owner", "name", name, temp_allocator)
+	body, err := send_text(client, .Get, url, "text/plain", "", "", temp_allocator)
+	if err != .None {
+		return "", err
+	}
+	return strings.trim_space(body), .None
+}
+
+fetch_typepool_source :: proc(
+	client: ^Client,
+	pool: string,
+	temp_allocator: mem.Allocator,
+) -> (
+	string,
+	Error,
+) {
+	if !typepool_resolver_enabled(client) {
+		return "", .Invalid_Url
+	}
+	url := typepool_resolver_url(client, "source", "pool", pool, temp_allocator)
+	return send_text(client, .Get, url, "text/plain", "", "", temp_allocator)
+}
+
+typepool_resolver_url :: proc(
+	client: ^Client,
+	op, key, value: string,
+	allocator: mem.Allocator,
+) -> string {
+	url := strings.trim_right(strings.trim_space(client.connection.typepool_resolver_url), "/")
+	url = append_query_param(url, "op", op, allocator)
+	url = append_query_param(url, key, value, allocator)
+	return absolute_url(&client.connection, url, allocator)
 }
 
 fetch_dependency_object :: proc(

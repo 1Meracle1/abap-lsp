@@ -65,6 +65,7 @@ export ABAP_ADT_URL = https://host.example.com/
 SAPUSER= demo
 SAPPASS='secret'
 ABAP_ADT_CLIENT=100 # inline comment
+ABAP_TYPEPOOL_RESOLVER_URL=/sap/bc/zabapls/typepool
 `,
 		context.allocator,
 	)
@@ -82,6 +83,178 @@ ABAP_ADT_CLIENT=100 # inline comment
 	testing.expect_value(t, config.username, "override_user")
 	testing.expect_value(t, config.password, "secret")
 	testing.expect_value(t, config.sap_client, "100")
+	testing.expect_value(t, config.typepool_resolver_url, "/sap/bc/zabapls/typepool")
+}
+
+@(test)
+typepool_resolver_url_uses_configured_endpoint_and_client :: proc(t: ^testing.T) {
+	client: Client
+	client_init(
+		&client,
+		Connection_Config {
+			base_url = "http://host/sap/bc/adt",
+			typepool_resolver_url = "http://host/sap/bc/zabapls/typepool",
+			sap_client = "100",
+		},
+		context.allocator,
+	)
+	defer client_destroy(&client, context.allocator)
+
+	url := typepool_resolver_url(&client, "owner", "name", "TPAK PERMISSION/TO+USE", context.allocator)
+	defer delete(url, context.allocator)
+	testing.expect_value(
+		t,
+		url,
+		"http://host/sap/bc/zabapls/typepool?op=owner&name=TPAK%20PERMISSION%2FTO%2BUSE&sap-client=100",
+	)
+}
+
+Typepool_Resolver_Test_Server :: struct {
+	listener:        net.TCP_Socket,
+	session_response: string,
+	owner_response:  string,
+	source_response: string,
+	request_buf:     [2048]u8,
+	owner_count:     int,
+	source_count:    int,
+}
+
+typepool_resolver_test_server_run :: proc(t: ^thread.Thread) {
+	server := cast(^Typepool_Resolver_Test_Server)t.data
+	for {
+		client, _, err := net.accept_tcp(server.listener)
+		if err != nil {
+			return
+		}
+		n, recv_err := net.recv_tcp(client, server.request_buf[:])
+		response := server.session_response
+		if recv_err == nil {
+			request := string(server.request_buf[:n])
+			if strings.contains(request, "op=owner") {
+				server.owner_count += 1
+				response = server.owner_response
+			} else if strings.contains(request, "op=source") {
+				server.source_count += 1
+				response = server.source_response
+			}
+		}
+		_, _ = net.send_tcp(client, transmute([]u8)response)
+		net.close(client)
+	}
+}
+
+test_http_response_status :: proc(
+	status, body, extra_headers: string,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "HTTP/1.1 ")
+	strings.write_string(&out, status)
+	strings.write_string(&out, "\r\nContent-Length: ")
+	strings.write_int(&out, len(body))
+	strings.write_string(&out, "\r\nConnection: close\r\n")
+	strings.write_string(&out, extra_headers)
+	strings.write_string(&out, "\r\n")
+	strings.write_string(&out, body)
+	return strings.to_string(out)
+}
+
+typepool_resolver_test_client :: proc(
+	t: ^testing.T,
+	server: ^Typepool_Resolver_Test_Server,
+) -> (Client, ^thread.Thread) {
+	listener, listen_err := net.listen_tcp(net.Endpoint{address = net.IP4_Loopback, port = 0})
+	testing.expect(t, listen_err == nil)
+	_ = net.set_option(listener, .Receive_Timeout, 500 * time.Millisecond)
+	ep, ep_err := net.bound_endpoint(listener)
+	testing.expect(t, ep_err == nil)
+	server.listener = listener
+	worker := thread.create(typepool_resolver_test_server_run)
+	worker.data = server
+	thread.start(worker)
+
+	base_url := strings.builder_make(context.allocator)
+	strings.write_string(&base_url, "http://127.0.0.1:")
+	strings.write_int(&base_url, ep.port)
+	strings.write_string(&base_url, "/sap/bc/adt")
+	resolver_url := strings.builder_make(context.allocator)
+	strings.write_string(&resolver_url, "http://127.0.0.1:")
+	strings.write_int(&resolver_url, ep.port)
+	strings.write_string(&resolver_url, "/sap/bc/zabapls/typepool")
+	client: Client
+	client_init(
+		&client,
+		Connection_Config {
+			base_url = strings.to_string(base_url),
+			typepool_resolver_url = strings.to_string(resolver_url),
+			username = "demo",
+			password = "secret",
+		},
+		context.allocator,
+	)
+	client.http.timeout = 2 * time.Second
+	return client, worker
+}
+
+typepool_resolver_test_server_stop :: proc(
+	server: ^Typepool_Resolver_Test_Server,
+	worker: ^thread.Thread,
+) {
+	net.close(server.listener)
+	thread.join(worker)
+	thread.destroy(worker)
+}
+
+typepool_resolver_test_client_destroy :: proc(client: ^Client, allocator: mem.Allocator) {
+	delete(client.connection.base_url, allocator)
+	delete(client.connection.typepool_resolver_url, allocator)
+	client_destroy(client, allocator)
+}
+
+@(test)
+typepool_resolver_http_fetches_owner_and_source :: proc(t: ^testing.T) {
+	server := Typepool_Resolver_Test_Server {
+		session_response = test_http_response_status("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		owner_response   = test_http_response_status("200 OK", "TPAK", "", context.allocator),
+		source_response  = test_http_response_status("200 OK", "TYPE-POOL tpak.", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.owner_response, context.allocator)
+	defer delete(server.source_response, context.allocator)
+	client, worker := typepool_resolver_test_client(t, &server)
+	defer typepool_resolver_test_client_destroy(&client, context.allocator)
+	defer typepool_resolver_test_server_stop(&server, worker)
+
+	owner, owner_err := resolve_typepool_owner(&client, "tpak_permission_to_use_list", context.allocator)
+	source, source_err := fetch_typepool_source(&client, "TPAK", context.allocator)
+
+	testing.expect_value(t, owner_err, Error.None)
+	testing.expect_value(t, owner, "TPAK")
+	testing.expect_value(t, source_err, Error.None)
+	testing.expect_value(t, source, "TYPE-POOL tpak.")
+	testing.expect_value(t, server.owner_count, 1)
+	testing.expect_value(t, server.source_count, 1)
+}
+
+@(test)
+typepool_resolver_http_misses_return_bad_status :: proc(t: ^testing.T) {
+	server := Typepool_Resolver_Test_Server {
+		session_response = test_http_response_status("200 OK", "ok", "x-csrf-token: token\r\n", context.allocator),
+		owner_response   = test_http_response_status("404 Not Found", "", "", context.allocator),
+		source_response  = test_http_response_status("500 Internal Server Error", "", "", context.allocator),
+	}
+	defer delete(server.session_response, context.allocator)
+	defer delete(server.owner_response, context.allocator)
+	defer delete(server.source_response, context.allocator)
+	client, worker := typepool_resolver_test_client(t, &server)
+	defer typepool_resolver_test_client_destroy(&client, context.allocator)
+	defer typepool_resolver_test_server_stop(&server, worker)
+
+	_, owner_err := resolve_typepool_owner(&client, "unknown_typepool_symbol", context.allocator)
+	_, source_err := fetch_typepool_source(&client, "UNKNOWN", context.allocator)
+
+	testing.expect_value(t, owner_err, Error.Bad_Status)
+	testing.expect_value(t, source_err, Error.Bad_Status)
 }
 
 @(test)

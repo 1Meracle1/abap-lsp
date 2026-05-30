@@ -727,6 +727,7 @@ print_usage :: proc() {
 	fmt.println(`  ABAP_ADT_URL / ABAP_ADT_BASE_URL / SAPBASE_URL`)
 	fmt.println(`  ABAP_ADT_USER / ABAP_ADT_USERNAME / SAPUSER`)
 	fmt.println(`  ABAP_ADT_PASSWORD / SAPPASS`)
+	fmt.println(`  ABAP_TYPEPOOL_RESOLVER_URL`)
 	fmt.println("")
 	fmt.println(`Commands emit JSON by default. Use --raw on get source or get ddic`)
 	fmt.println(`to print only the fetched source/XML.`)

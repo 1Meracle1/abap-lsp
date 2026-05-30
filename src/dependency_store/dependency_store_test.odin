@@ -129,6 +129,36 @@ stores_artifact_with_empty_text_fields :: proc(t: ^testing.T) {
 }
 
 @(test)
+finds_artifact_by_kind_and_name :: proc(t: ^testing.T) {
+	path := workspace_store_path("finds_artifact_by_kind_and_name.sqlite3")
+	store, err := dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	profile := sample_profile()
+	artifact := sample_artifact()
+	artifact.package_name = "SABP"
+	artifact.object_kind = "type-pool"
+	artifact.object_name = "ABAP"
+	artifact.object_uri = "type-pool:ABAP"
+	artifact.object_type = "TYPEPOOL"
+	artifact.source_text = "TYPES abap_bool TYPE c LENGTH 1."
+
+	_, err = put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+
+	record, ok, lookup_err := find_artifact_by_kind_name(
+		&store,
+		&profile,
+		"type-pool",
+		"abap",
+		context.allocator,
+	)
+	testing.expect_value(t, lookup_err, Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, record.object_name, "abap")
+	testing.expect_value(t, record.source_text, "TYPES abap_bool TYPE c LENGTH 1.")
+}
+
+@(test)
 candidate_lookup_returns_highest_priority_artifact_kind :: proc(t: ^testing.T) {
 	path := workspace_store_path("candidate_lookup_kind_priority.sqlite3")
 	store, err := dependency_store_from_override_path(path, context.allocator)
