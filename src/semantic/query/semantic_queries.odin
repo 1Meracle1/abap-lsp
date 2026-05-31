@@ -105,15 +105,24 @@ decl_symbol_with_kind_and_decl_range :: proc(
 	return nil
 }
 
-decl_class_member_at_offset :: proc(q: Decl_Queries, offset: int) -> ^analyze.Class_Member_Data {
+decl_class_member_at_offset :: proc(q: Decl_Queries, offset: int) -> ^analyze.Symbol_Data {
 	best := -1
 	best_width := 0
-	for member, i in q.unit.class_members {
+	for symbol, i in q.unit.symbols {
+		info := analyze.entity_decl_info(q.unit, symbol.id)
+		scope_data := analyze.scope(q.unit, symbol.scope)
+		if info == nil ||
+		   info.owner == analyze.INVALID_SYMBOL_ID ||
+		   scope_data == nil ||
+		   !(scope_data.kind == .Class || scope_data.kind == .Interface) ||
+		   scope_data.owner != info.owner {
+			continue
+		}
 		width := 0
-		if analyze.range_contains_offset(member.decl_range, offset) {
-			width = member.decl_range.end - member.decl_range.start
-		} else if analyze.range_contains_offset(member.implementation_range, offset) {
-			width = member.implementation_range.end - member.implementation_range.start
+		if analyze.range_contains_offset(symbol.decl_range, offset) {
+			width = symbol.decl_range.end - symbol.decl_range.start
+		} else if analyze.range_contains_offset(info.implementation_range, offset) {
+			width = info.implementation_range.end - info.implementation_range.start
 		} else {
 			continue
 		}
@@ -122,20 +131,15 @@ decl_class_member_at_offset :: proc(q: Decl_Queries, offset: int) -> ^analyze.Cl
 			best_width = width
 		}
 	}
-	return &q.unit.class_members[best] if best >= 0 else nil
+	return &q.unit.symbols[best] if best >= 0 else nil
 }
 
 decl_class_member :: proc(
 	q: Decl_Queries,
 	class_symbol: analyze.Symbol_Id,
 	name: string,
-) -> ^analyze.Class_Member_Data {
-	for &member in q.unit.class_members {
-		if member.class_symbol == class_symbol && strings.equal_fold(member.name, name) {
-			return &member
-		}
-	}
-	return nil
+) -> ^analyze.Symbol_Data {
+	return analyze.unit_class_member_symbol(q.unit, class_symbol, name)
 }
 
 decl_structure_field_info :: proc(

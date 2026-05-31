@@ -84,7 +84,7 @@ check_unit_operands :: proc(
 				access.scope,
 				field_access_range(access),
 				.Field,
-				type_id_from_type_fact(unit, access.scope, fact),
+				type_id_from_type_fact(project, unit_index, access.scope, fact),
 				assignable = true,
 			)
 		}
@@ -97,7 +97,7 @@ check_unit_operands :: proc(
 				site.scope,
 				site.range,
 				.Value,
-				type_id_from_type_fact(unit, site.scope, fact),
+				type_id_from_type_fact(project, unit_index, site.scope, fact),
 			)
 		}
 	}
@@ -108,7 +108,7 @@ check_unit_operands :: proc(
 				site.scope,
 				site.lhs_range,
 				.Variable,
-				type_id_from_type_fact(unit, site.scope, site.lhs),
+				type_id_from_type_fact(project, unit_index, site.scope, site.lhs),
 				assignable = true,
 			)
 		}
@@ -118,7 +118,7 @@ check_unit_operands :: proc(
 				site.scope,
 				site.rhs_range,
 				.Value,
-				type_id_from_type_fact(unit, site.scope, site.rhs),
+				type_id_from_type_fact(project, unit_index, site.scope, site.rhs),
 			)
 		}
 	}
@@ -230,14 +230,21 @@ type_id_from_symbol_operand :: proc(
 	handle: Symbol_Handle,
 ) -> Type_Id {
 	fact := type_fact_from_symbol_handle(project, site_unit_index, handle)
-	return type_id_from_type_fact(&project.units[site_unit_index], scope, fact)
+	return type_id_from_type_fact(project, site_unit_index, scope, fact)
 }
 
-type_id_from_type_fact :: proc(unit: ^Unit_Analysis, scope: Scope_Id, fact: Type_Fact_Data) -> Type_Id {
-	if type_id_is_known(fact.type_id) {
+type_id_from_type_fact :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	scope: Scope_Id,
+	fact: Type_Fact_Data,
+) -> Type_Id {
+	unit := &project.units[unit_index]
+	if type_id_is_known(fact.type_id) &&
+	   (fact.type_unit == INVALID_UNIT_ID || fact.type_unit == unit.unit_id) {
 		return fact.type_id
 	}
-	if fact.structure != INVALID_STRUCTURE_ID {
+	if type_fact_local_structure(fact, unit.unit_id) != INVALID_STRUCTURE_ID {
 		return type_structure(unit, fact.structure)
 	}
 	if fact.has_declared_type {

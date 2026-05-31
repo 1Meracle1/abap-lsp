@@ -6,6 +6,8 @@ import "src:ast"
 
 import "core:mem"
 
+max_type_lookup_depth :: 64
+
 validate_unit_diagnostics :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
@@ -354,7 +356,7 @@ declared_type_has_unknown_shape :: proc(
 	type_ref: Field_Type_Ref_Data,
 	depth := 0,
 ) -> bool {
-	if depth > len(project.units) + 16 {
+	if depth > max_type_lookup_depth {
 		return false
 	}
 	if type_ref.base_name == "" {
@@ -453,6 +455,34 @@ type_ref_path_has_unknown_shape :: proc(
 			return true
 		}
 		if field.structure == INVALID_STRUCTURE_ID {
+			if .Has_Type_Ref in field.flags {
+				field_unit_index := unit_id_index(field.decl_unit)
+				if field_unit_index < 0 || field_unit_index >= len(project.units) {
+					field_unit_index = unit_id_index(current_unit.unit_id)
+				}
+				scope_id := current_unit.root_scope
+				if field_unit_index == unit_id_index(current_unit.unit_id) {
+					if owner := structure(current_unit, current_structure);
+					   owner != nil && owner.scope != INVALID_SCOPE_ID {
+						scope_id = owner.scope
+					}
+				}
+				if structure_unit, structure_id, ok := project_structure_for_type_ref_lookup(
+					project,
+					lookup,
+					field_unit_index,
+					scope_id,
+					field.type_ref,
+					depth + 1,
+				); ok {
+					next_unit_index := unit_id_index(structure_unit)
+					if next_unit_index >= 0 && next_unit_index < len(project.units) {
+						current_unit = &project.units[next_unit_index]
+						current_structure = structure_id
+						continue
+					}
+				}
+			}
 			next_unit_index := unit_id_index(field.decl_unit)
 			if .Has_Type_Ref in field.flags &&
 			   next_unit_index >= 0 &&
@@ -486,6 +516,9 @@ type_ref_symbol_handle :: proc(
 ) -> (Symbol_Handle, bool) {
 	if scope_id != INVALID_SCOPE_ID {
 		namespaces := [?]Namespace{.Value, .Type, .Routine}
+		if type_ref.namespace == .Type {
+			namespaces = [?]Namespace{.Type, .Value, .Routine}
+		}
 		for namespace in namespaces {
 			if !type_ref_namespace_matches(type_ref.namespace, namespace) {
 				continue
@@ -524,7 +557,7 @@ type_ref_symbol_handle :: proc(
 }
 
 type_ref_namespace_matches :: #force_inline proc "contextless" (want, got: Namespace) -> bool {
-	return want == got || (want == .Value && got == .Type) || (want == .Type && got == .Value)
+	return want == got || (want == .Value && got == .Type)
 }
 
 validate_object_type_refs :: proc(
@@ -576,10 +609,15 @@ validate_missing_method_implementations :: proc(
 		if class_symbol == nil || class_symbol.kind != .Class || definition.is_abstract {
 			continue
 		}
-		for member in unit.class_members {
-			if member.class_symbol == definition.class_symbol &&
-			   member.kind == .Method &&
-			   !(.Has_Implementation in member.flags) {
+		for member in unit.symbols {
+			info := entity_decl_info(unit, member.id)
+			scope_data := scope(unit, member.scope)
+			if info != nil &&
+			   scope_data != nil &&
+			   scope_data.owner == definition.class_symbol &&
+			   (scope_data.kind == .Class || scope_data.kind == .Interface) &&
+			   info.member_kind == .Method &&
+			   !(.Has_Implementation in info.flags) {
 				append_diag(
 					out,
 					seen,
@@ -688,7 +726,7 @@ symbol_handle_is_generic_table_type :: proc(
 	handle: Symbol_Handle,
 	depth: int,
 ) -> bool {
-	if depth > len(project.units) + 16 {
+	if depth > max_type_lookup_depth {
 		return false
 	}
 	unit_index := unit_id_index(handle.unit)
@@ -785,7 +823,7 @@ validate_field_accesses :: proc(
 					if !handle_ok {
 						break
 					}
-					for depth := 0; depth <= len(project.units) + 16; depth += 1 {
+					for depth := 0; depth <= max_type_lookup_depth; depth += 1 {
 						handle_unit_index := unit_id_index(handle.unit)
 						assert(handle_unit_index >= 0 && handle_unit_index < len(project.units))
 						s := symbol(&project.units[handle_unit_index], handle.symbol)
@@ -889,7 +927,8 @@ validate_call_sites :: proc(
 			)
 			continue
 		}
-		if member.kind != .Method {
+		member_info := entity_decl_info(&project.units[unit_id_index(member.unit)], member.symbol)
+		if member_info == nil || member_info.member_kind != .Method {
 			append_diag(
 				out,
 				seen,
@@ -952,7 +991,12 @@ validate_open_sql :: proc(
 		if source_symbol == nil || source_symbol.structure == INVALID_STRUCTURE_ID {
 			continue
 		}
-		if structure_field(source_unit, source_symbol.structure, name_ref.name) == nil {
+		if _, _, field_ok := project_structure_field_lookup(
+			project,
+			source_handle.unit,
+			source_symbol.structure,
+			name_ref.name,
+		); !field_ok {
 			append_diag(
 				out,
 				seen,
@@ -1094,7 +1138,7 @@ class_handle_from_declared_type :: proc(
 	depth: int,
 	scope_id := INVALID_SCOPE_ID,
 ) -> (Symbol_Handle, bool) {
-	if depth > len(project.units) + 16 {
+	if depth > max_type_lookup_depth {
 		return {}, false
 	}
 	handle, ok := type_ref_leaf_handle(project, lookup, unit_index, scope_id, type_ref)
@@ -1138,6 +1182,291 @@ class_handle_from_declared_type :: proc(
 	)
 }
 
+type_fact_from_declared_type :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+	type_form: ast.Data_Type_Form,
+	has_type_form: bool,
+	depth: int,
+) -> (Type_Fact_Data, int, bool) {
+	if depth > max_type_lookup_depth {
+		return {}, -1, false
+	}
+	if has_type_form && type_form_is_line_of(type_form) {
+		return line_of_type_fact_from_declared_type(project, lookup, unit_index, scope_id, type_ref, depth + 1)
+	}
+	if structure_unit, structure_id, ok := project_structure_for_type_ref_lookup(
+		project,
+		lookup,
+		unit_index,
+		scope_id,
+		type_ref,
+		depth + 1,
+	); ok {
+		structure_unit_index := unit_id_index(structure_unit)
+		return Type_Fact_Data {
+			structure = structure_id,
+			structure_unit = structure_unit,
+			declared_type = type_ref,
+			has_declared_type = true,
+			type_clause_display = type_ref.base_name,
+		}, structure_unit_index, true
+	}
+	if is_builtin_type_name(type_ref.base_name) {
+		return Type_Fact_Data {
+			type_id = type_builtin(&project.units[unit_index], type_ref.base_name),
+			type_unit = project.units[unit_index].unit_id,
+			structure = INVALID_STRUCTURE_ID,
+			structure_unit = INVALID_UNIT_ID,
+			declared_type = type_ref,
+			has_declared_type = true,
+			type_clause_display = type_ref.base_name,
+		}, unit_index, true
+	}
+	if handle, ok := type_ref_leaf_handle(project, lookup, unit_index, scope_id, type_ref);
+	   ok {
+		return type_fact_from_symbol_handle(project, unit_index, handle), unit_id_index(handle.unit), true
+	}
+	return {}, -1, false
+}
+
+project_structure_for_type_ref_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+	depth: int,
+) -> (Unit_Id, Structure_Id, bool) {
+	if depth > max_type_lookup_depth ||
+	   type_ref.base_name == "" ||
+	   is_builtin_type_name(type_ref.base_name) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	if structure_id, ok := local_structure_for_type_ref(&project.units[unit_index], scope_id, type_ref);
+	   ok {
+		return project.units[unit_index].unit_id, structure_id, true
+	}
+	if structure_unit, structure_id, ok := project_attribute_structure_for_type_ref_lookup(
+		project,
+		lookup,
+		unit_index,
+		scope_id,
+		type_ref,
+		depth + 1,
+	); ok {
+		return structure_unit, structure_id, true
+	}
+	handle, ok := type_ref_symbol_handle(project, lookup, unit_index, scope_id, type_ref)
+	if !ok {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	path := type_ref.field_path[:]
+	derefs := type_ref.field_derefs[:]
+	selectors := type_ref.field_selectors[:]
+	handle_unit_index := unit_id_index(handle.unit)
+	if handle_unit_index < 0 || handle_unit_index >= len(project.units) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	source_symbol := symbol(&project.units[handle_unit_index], handle.symbol)
+	if source_symbol != nil &&
+	   (source_symbol.kind == .Class || source_symbol.kind == .Interface) &&
+	   len(path) > 0 &&
+	   selector_at(selectors, 0) != .Dash {
+		nested, nested_ok := class_type_symbol_handle(project.units[:], handle, path[0])
+		if !nested_ok {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		handle = nested
+		path = path[1:]
+		if len(derefs) > 0 {derefs = derefs[1:]}
+		if len(selectors) > 0 {selectors = selectors[1:]}
+		handle_unit_index = unit_id_index(handle.unit)
+		if handle_unit_index < 0 || handle_unit_index >= len(project.units) {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		source_symbol = symbol(&project.units[handle_unit_index], handle.symbol)
+	}
+	if source_symbol == nil {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	if source_symbol.structure == INVALID_STRUCTURE_ID {
+		if source_symbol.has_declared_type {
+			structure_unit, structure_id, structure_ok := project_structure_for_type_ref_lookup(
+				project,
+				lookup,
+				handle_unit_index,
+				source_symbol.scope,
+				source_symbol.declared_type,
+				depth + 1,
+			)
+			if !structure_ok {
+				return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+			}
+			if len(path) == 0 {
+				return structure_unit, structure_id, true
+			}
+			return project_structure_path_lookup(
+				project,
+				lookup,
+				structure_unit,
+				structure_id,
+				path,
+				selectors,
+				derefs,
+				depth + 1,
+			)
+		}
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	return project_structure_path_lookup(
+		project,
+		lookup,
+		handle.unit,
+		source_symbol.structure,
+		path,
+		selectors,
+		derefs,
+		depth + 1,
+	)
+}
+
+project_attribute_structure_for_type_ref_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	scope_id: Scope_Id,
+	type_ref: Field_Type_Ref_Data,
+	depth: int,
+) -> (Unit_Id, Structure_Id, bool) {
+	if depth > max_type_lookup_depth ||
+	   len(type_ref.field_path) == 0 ||
+	   selector_at(type_ref.field_selectors[:], 0) != .Arrow {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	base, ok := value_handle_for_name(project, lookup, unit_index, scope_id, type_ref.base_name)
+	if !ok {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	class_handle, class_ok := class_handle_from_symbol(project, lookup, unit_index, base)
+	if !class_ok {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	member, member_unit_index, member_ok := class_member_for_path_segment(
+		project,
+		lookup,
+		class_handle,
+		Field_Access_Segment{name = type_ref.field_path[0], selector = .Arrow},
+		unit_index,
+		scope_id,
+	)
+	member_symbol := symbol(&project.units[member_unit_index], member.symbol) if member_ok else nil
+	member_info := entity_decl_info(&project.units[member_unit_index], member.symbol) if member_ok else nil
+	if !member_ok ||
+	   member_symbol == nil ||
+	   member_info == nil ||
+	   member_info.member_kind != .Attribute ||
+	   member_symbol.structure == INVALID_STRUCTURE_ID {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	next_selectors := type_ref.field_selectors[:]
+	next_derefs := type_ref.field_derefs[:]
+	if len(next_selectors) > 0 {next_selectors = next_selectors[1:]}
+	if len(next_derefs) > 0 {next_derefs = next_derefs[1:]}
+	return project_structure_path_lookup(
+		project,
+		lookup,
+		project.units[member_unit_index].unit_id,
+		member_symbol.structure,
+		type_ref.field_path[1:],
+		next_selectors,
+		next_derefs,
+		depth + 1,
+	)
+}
+
+project_structure_path_lookup :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	start_unit: Unit_Id,
+	start_structure: Structure_Id,
+	path: []string,
+	selectors: []ast.Selector_Op,
+	derefs: []bool,
+	depth: int,
+) -> (Unit_Id, Structure_Id, bool) {
+	if depth > max_type_lookup_depth {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+	}
+	current_unit := start_unit
+	current_structure := start_structure
+	for field_name, i in path {
+		if i < len(derefs) && derefs[i] {
+			continue
+		}
+		if selector_at(selectors, i) != .Dash {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		unit_index := unit_id_index(current_unit)
+		if unit_index < 0 || unit_index >= len(project.units) {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		unit := &project.units[unit_index]
+		field := structure_field(unit, current_structure, field_name)
+		if field == nil {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		if field.structure != INVALID_STRUCTURE_ID {
+			current_structure = field.structure
+			continue
+		}
+		if !(.Has_Type_Ref in field.flags) {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		field_unit_index := unit_id_index(field.decl_unit)
+		if field_unit_index < 0 || field_unit_index >= len(project.units) {
+			field_unit_index = unit_index
+		}
+		scope_id := unit.root_scope
+		if field_unit_index == unit_index {
+			if owner := structure(unit, current_structure); owner != nil && owner.scope != INVALID_SCOPE_ID {
+				scope_id = owner.scope
+			}
+		}
+		next_unit, next_structure, next_ok := project_structure_for_type_ref_lookup(
+			project,
+			lookup,
+			field_unit_index,
+			scope_id,
+			field.type_ref,
+			depth + 1,
+		)
+		if !next_ok {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false
+		}
+		current_unit = next_unit
+		current_structure = next_structure
+	}
+	return current_unit, current_structure, true
+}
+
+project_structure_field_lookup :: proc(
+	project: ^Project_Analysis,
+	structure_unit: Unit_Id,
+	structure_id: Structure_Id,
+	field_name: string,
+) -> (^Structure_Field_Data, int, bool) {
+	unit_index := unit_id_index(structure_unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return nil, -1, false
+	}
+	field := structure_field(&project.units[unit_index], structure_id, field_name)
+	return field, unit_index, field != nil
+}
+
 line_of_type_fact_from_symbol :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
@@ -1162,7 +1491,7 @@ like_type_fact_from_symbol :: proc(
 	handle: Symbol_Handle,
 	depth := 0,
 ) -> (Type_Fact_Data, int, bool) {
-	if depth > len(project.units) + 16 {
+	if depth > max_type_lookup_depth {
 		return {}, -1, false
 	}
 	unit_index := unit_id_index(handle.unit)
@@ -1195,6 +1524,7 @@ like_type_fact_from_symbol :: proc(
 	}
 	return Type_Fact_Data {
 		structure = next_symbol.structure,
+		structure_unit = next.unit if next_symbol.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 		declared_type = next_symbol.declared_type,
 		has_declared_type = next_symbol.has_declared_type,
 		type_clause_display = next_symbol.type_clause_display,
@@ -1209,11 +1539,28 @@ line_of_type_fact_from_declared_type :: proc(
 	type_ref: Field_Type_Ref_Data,
 	depth: int,
 ) -> (Type_Fact_Data, int, bool) {
-	if depth > len(project.units) + 16 {
+	if depth > max_type_lookup_depth {
 		return {}, -1, false
 	}
 	handle, ok := type_ref_leaf_handle(project, lookup, unit_index, scope_id, type_ref)
 	if !ok {
+		if structure_unit, structure_id, structure_ok := project_structure_for_type_ref_lookup(
+			project,
+			lookup,
+			unit_index,
+			scope_id,
+			type_ref,
+			depth + 1,
+		); structure_ok {
+			structure_unit_index := unit_id_index(structure_unit)
+			return Type_Fact_Data {
+				structure = structure_id,
+				structure_unit = structure_unit,
+				declared_type = type_ref,
+				has_declared_type = true,
+				type_clause_display = type_ref.base_name,
+			}, structure_unit_index, true
+		}
 		if declared_type_has_unknown_shape(project, lookup, unit_index, scope_id, type_ref) {
 			return unknown_type_fact(), unit_index, true
 		}
@@ -1254,6 +1601,7 @@ table_line_type_fact_from_symbol :: proc(
 	}
 	fact := Type_Fact_Data {
 		structure = s.structure,
+		structure_unit = project.units[unit_index].unit_id if s.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 		declared_type = s.declared_type,
 		has_declared_type = true,
 		type_clause_display = s.type_clause_display,
@@ -1266,6 +1614,7 @@ table_line_type_fact_from_symbol :: proc(
 				if target := symbol(&project.units[handle_unit_index], handle.symbol);
 				   target != nil && target.structure != INVALID_STRUCTURE_ID {
 					fact.structure = target.structure
+					fact.structure_unit = handle.unit
 					return fact, handle_unit_index, true
 				}
 			}
@@ -1298,11 +1647,18 @@ type_fact_from_data_ref_path :: proc(
 		}
 		return {}, false
 	}
+	structure_unit_index := unit_index
+	if fact.structure_unit != INVALID_UNIT_ID {
+		structure_unit_index = unit_id_index(fact.structure_unit)
+		if structure_unit_index < 0 || structure_unit_index >= len(project.units) {
+			return {}, false
+		}
+	}
 	return type_fact_from_structure_path(
 		project,
 		lookup,
 		unit_index,
-		&project.units[unit_index],
+		&project.units[structure_unit_index],
 		fact.structure,
 		path,
 		fact,
@@ -1475,8 +1831,9 @@ inherited_value_handle_for_name :: proc(
 		if next_unit_index < 0 || next_unit_index >= len(project.units) {
 			return {}, false
 		}
-		member := unit_class_member_lookup(project, lookup, next, name)
-		if member != nil && member.kind == .Attribute && member.visibility != .Private {
+		member, member_ok := class_member_handle_lookup(project, lookup, next, name)
+		info := entity_decl_info(&project.units[next_unit_index], member.symbol) if member_ok else nil
+		if member_ok && info != nil && info.member_kind == .Attribute && info.visibility != .Private {
 			if symbol_id, symbol_ok := class_scope_symbol(
 				&project.units[next_unit_index].scope_index,
 				next.symbol,
@@ -1642,6 +1999,7 @@ resolve_field_access_tail :: proc(
 		if len(access.field_path) == 1 {
 			fact := Type_Fact_Data {
 				structure = base_symbol.structure,
+				structure_unit = base.unit if base_symbol.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 				declared_type = base_symbol.declared_type,
 				has_declared_type = true,
 				type_clause_display = base_symbol.type_clause_display,
@@ -1654,6 +2012,7 @@ resolve_field_access_tail :: proc(
 		}
 		fact := Type_Fact_Data {
 			structure = base_symbol.structure,
+			structure_unit = base.unit if base_symbol.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 			declared_type = base_symbol.declared_type,
 			has_declared_type = true,
 			type_clause_display = base_symbol.type_clause_display,
@@ -1725,6 +2084,7 @@ resolve_field_access_tail :: proc(
 	if base_symbol.structure != INVALID_STRUCTURE_ID {
 		fact := Type_Fact_Data {
 			structure = base_symbol.structure,
+			structure_unit = base.unit if base_symbol.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 			declared_type = base_symbol.declared_type,
 			has_declared_type = base_symbol.has_declared_type,
 			type_clause_display = base_symbol.type_clause_display,
@@ -1748,6 +2108,45 @@ resolve_field_access_tail :: proc(
 			}
 		}
 		base_unit_index := unit_id_index(base.unit)
+		if base_unit_index >= 0 && base_unit_index < len(project.units) {
+			line_fact_found := false
+			if fact, fact_unit_index, fact_ok := type_fact_from_declared_type(
+				project,
+				lookup,
+				base_unit_index,
+				base_symbol.scope,
+				base_symbol.declared_type,
+				base_symbol.type_clause_form,
+				base_symbol.has_type_clause_form,
+				0,
+			); fact_ok {
+				line_fact_found = true
+				if fact.structure != INVALID_STRUCTURE_ID {
+					return type_fact_from_structure_path(
+						project,
+						lookup,
+						unit_index,
+						&project.units[fact_unit_index],
+						fact.structure,
+						access.field_path[:],
+						fact,
+					)
+				}
+				if base_symbol.has_type_clause_form &&
+				   type_form_is_line_of(base_symbol.type_clause_form) &&
+				   !(fact.has_declared_type &&
+				     fact.declared_type.is_ref &&
+				     type_ref_is_object_ref(project, lookup, unit_index, fact.declared_type)) {
+					return unknown_type_fact(), true
+				}
+			}
+			if !line_fact_found &&
+			   base_symbol.has_type_clause_form &&
+			   type_form_is_line_of(base_symbol.type_clause_form) &&
+			   len(base_symbol.declared_type.field_path) == 0 {
+				return unknown_type_fact(), true
+			}
+		}
 		if base_unit_index >= 0 &&
 		   base_unit_index < len(project.units) &&
 		   declared_type_has_unknown_shape(
@@ -1775,10 +2174,21 @@ type_fact_from_structure_path :: proc(
 	current_unit := start_unit
 	current_structure := start_structure
 	fact := start_fact
+	if fact.structure != INVALID_STRUCTURE_ID && fact.structure_unit != INVALID_UNIT_ID {
+		if fact_unit_index := unit_id_index(fact.structure_unit);
+		   fact_unit_index >= 0 && fact_unit_index < len(project.units) {
+			current_unit = &project.units[fact_unit_index]
+			current_structure = fact.structure
+		}
+	}
 	if !type_fact_is_known(fact) {
-		fact = Type_Fact_Data{structure = current_structure}
+		fact = Type_Fact_Data {
+			structure = current_structure,
+			structure_unit = current_unit.unit_id if current_structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
+		}
 	} else if fact.structure == INVALID_STRUCTURE_ID {
 		fact.structure = current_structure
+		fact.structure_unit = current_unit.unit_id if current_structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID
 	}
 	unknown_after_deref := false
 	for segment, i in path {
@@ -1797,6 +2207,12 @@ type_fact_from_structure_path :: proc(
 			}
 			fact.declared_type.is_ref = false
 			current_structure = fact.structure
+			if fact.structure_unit != INVALID_UNIT_ID {
+				if fact_unit_index := unit_id_index(fact.structure_unit);
+				   fact_unit_index >= 0 && fact_unit_index < len(project.units) {
+					current_unit = &project.units[fact_unit_index]
+				}
+			}
 			unknown_after_deref = current_structure == INVALID_STRUCTURE_ID
 			continue
 		}
@@ -1861,18 +2277,90 @@ type_fact_from_structure_path :: proc(
 			return {}, false
 		}
 		field := structure_field(current_unit, current_structure, segment.name)
+		field_unit := current_unit
+		field_owner_structure := current_structure
 		if field == nil {
-			return {}, false
+			if owner := structure(current_unit, current_structure); owner != nil {
+				for include in owner.fields {
+					if !(.Is_Include in include.flags) || !(.Has_Type_Ref in include.flags) {
+						continue
+					}
+					include_unit_index := unit_id_index(include.decl_unit)
+					if include_unit_index < 0 || include_unit_index >= len(project.units) {
+						include_unit_index = unit_id_index(current_unit.unit_id)
+					}
+					scope_id := current_unit.root_scope
+					if include_unit_index == unit_id_index(current_unit.unit_id) &&
+					   owner.scope != INVALID_SCOPE_ID {
+						scope_id = owner.scope
+					}
+					include_unit, include_structure, include_ok := project_structure_for_type_ref_lookup(
+						project,
+						lookup,
+						include_unit_index,
+						scope_id,
+						include.type_ref,
+						0,
+					)
+					if !include_ok {
+						continue
+					}
+					resolved_unit_index := unit_id_index(include_unit)
+					if resolved_unit_index < 0 || resolved_unit_index >= len(project.units) {
+						continue
+					}
+					resolved_unit := &project.units[resolved_unit_index]
+					if resolved_field := structure_field(resolved_unit, include_structure, segment.name);
+					   resolved_field != nil {
+						field = resolved_field
+						field_unit = resolved_unit
+						field_owner_structure = include_structure
+						break
+					}
+				}
+			}
+			if field == nil {
+				return {}, false
+			}
+		}
+		field_scope := field_unit.root_scope
+		if owner := structure(field_unit, field_owner_structure); owner != nil && owner.scope != INVALID_SCOPE_ID {
+			field_scope = owner.scope
 		}
 		fact = Type_Fact_Data {
 			structure = field.structure,
+			structure_unit = field_unit.unit_id if field.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 			declared_type = field.type_ref,
 			has_declared_type = .Has_Type_Ref in field.flags,
 			type_clause_display = field.type_ref.base_name,
 		}
 		unknown_after_deref = false
+		current_unit = field_unit
 		current_structure = field.structure
 		if field.structure == INVALID_STRUCTURE_ID {
+			if .Has_Type_Ref in field.flags {
+				field_unit_index := unit_id_index(field.decl_unit)
+				if field_unit_index < 0 || field_unit_index >= len(project.units) {
+					field_unit_index = unit_id_index(current_unit.unit_id)
+				}
+				scope_id := field_scope if project.units[field_unit_index].unit_id == current_unit.unit_id else INVALID_SCOPE_ID
+				if resolved, resolved_unit_index, resolved_ok := type_fact_from_declared_type(
+					project,
+					lookup,
+					field_unit_index,
+					scope_id,
+					field.type_ref,
+					field.type_clause_form,
+					field.has_type_clause_form,
+					0,
+				); resolved_ok && resolved.structure != INVALID_STRUCTURE_ID {
+					fact.structure = resolved.structure
+					fact.structure_unit = resolved.structure_unit
+					current_unit = &project.units[resolved_unit_index]
+					current_structure = resolved.structure
+					continue
+				}
+			}
 			next_unit_index := unit_id_index(field.decl_unit)
 			if next_unit_index >= 0 && next_unit_index < len(project.units) {
 				current_unit = &project.units[next_unit_index]
@@ -1924,13 +2412,57 @@ type_fact_from_class_member_path :: proc(
 		}
 		return {}, false
 	}
-	fact := class_member_type_fact(member)
+	fact := class_member_type_fact(project, member, member_unit_index)
 	if len(path) == 1 {
 		return fact, true
 	}
 	member_unit := &project.units[member_unit_index]
 	if fact.structure == INVALID_STRUCTURE_ID {
-		return {}, false
+		member_symbol := symbol(member_unit, member.symbol)
+		member_info := entity_decl_info(member_unit, member.symbol)
+		scope_id := member_symbol.scope if member_symbol != nil else member_unit.root_scope
+		if member_info != nil && member_info.signature_scope != INVALID_SCOPE_ID {
+			scope_id = member_info.signature_scope
+		}
+		type_form := ast.Data_Type_Form{}
+		has_type_form := false
+		if member_info != nil && member_info.member_kind == .Attribute {
+			type_form = member_symbol.type_clause_form if member_symbol != nil else ast.Data_Type_Form{}
+			has_type_form = member_symbol.has_type_clause_form if member_symbol != nil else false
+		} else if member_info != nil {
+			for param in member_info.signature_parameters {
+				if param.section == .Method_Returning || param.section == .Method_Receiving {
+					type_form = param.type_clause_form
+					has_type_form = param.has_type_clause_form
+					break
+				}
+			}
+		}
+		if fact.has_declared_type {
+			if resolved, resolved_unit_index, resolved_ok := type_fact_from_declared_type(
+				project,
+				lookup,
+				member_unit_index,
+				scope_id,
+				fact.declared_type,
+				type_form,
+				has_type_form,
+				0,
+			); resolved_ok && resolved.structure != INVALID_STRUCTURE_ID {
+				fact = resolved
+				member_unit = &project.units[resolved_unit_index]
+			} else {
+				if access_unit_index >= 0 && member_unit_index != access_unit_index {
+					return unknown_type_fact(), true
+				}
+				return {}, false
+			}
+		} else {
+			if access_unit_index >= 0 && member_unit_index != access_unit_index {
+				return unknown_type_fact(), true
+			}
+			return {}, false
+		}
 	}
 	return type_fact_from_structure_path(
 		project,
@@ -1950,17 +2482,17 @@ class_member_for_path_segment :: proc(
 	segment: Field_Access_Segment,
 	access_unit_index := -1,
 	access_scope := INVALID_SCOPE_ID,
-) -> (^Class_Member_Data, int, bool) {
+) -> (Symbol_Handle, int, bool) {
 	if segment.selector == .Dash {
-		return nil, -1, false
+		return {}, -1, false
 	}
 	if segment.interface_qualified {
 		if !type_exposes_interface(project, lookup, class_handle, segment.interface_name, 0) {
-			return nil, -1, false
+			return {}, -1, false
 		}
 		unit_index := unit_id_index(class_handle.unit)
 		if unit_index < 0 || unit_index >= len(project.units) {
-			return nil, -1, false
+			return {}, -1, false
 		}
 		return interface_member_by_name_with_unit(
 			project,
@@ -1989,7 +2521,7 @@ class_member_in_hierarchy :: proc(
 	inherited: bool,
 	access_unit_index := -1,
 	access_scope := INVALID_SCOPE_ID,
-) -> (^Class_Member_Data, bool) {
+) -> (Symbol_Handle, bool) {
 	member, _, ok := class_member_in_hierarchy_with_unit(
 		project,
 		lookup,
@@ -2010,15 +2542,16 @@ class_member_in_hierarchy_with_unit :: proc(
 	inherited: bool,
 	access_unit_index := -1,
 	access_scope := INVALID_SCOPE_ID,
-) -> (^Class_Member_Data, int, bool) {
+) -> (Symbol_Handle, int, bool) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
-		return nil, -1, false
+		return {}, -1, false
 	}
-	if member := unit_class_member_lookup(project, lookup, class_handle, name); member != nil {
-		if inherited && member.visibility == .Private &&
+	if member, member_ok := class_member_handle_lookup(project, lookup, class_handle, name); member_ok {
+		info := entity_decl_info(&project.units[unit_id_index(member.unit)], member.symbol)
+		if inherited && info != nil && info.visibility == .Private &&
 		   !class_private_member_visible(project, class_handle, access_unit_index, access_scope) {
-			return nil, -1, false
+			return {}, -1, false
 		}
 		return member, unit_index, true
 	}
@@ -2028,7 +2561,7 @@ class_member_in_hierarchy_with_unit :: proc(
 	}
 	next, ok := direct_superclass_handle_lookup(project, lookup, class_handle)
 	if !ok {
-		return nil, -1, false
+		return {}, -1, false
 	}
 	return class_member_in_hierarchy_with_unit(
 		project,
@@ -2131,7 +2664,7 @@ interface_member_in_class :: proc(
 	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
-) -> (^Class_Member_Data, bool) {
+) -> (Symbol_Handle, bool) {
 	member, _, ok := interface_member_in_class_with_unit(project, lookup, class_handle, name)
 	return member, ok
 }
@@ -2141,10 +2674,10 @@ interface_member_in_class_with_unit :: proc(
 	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
-) -> (^Class_Member_Data, int, bool) {
+) -> (Symbol_Handle, int, bool) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
-		return nil, -1, false
+		return {}, -1, false
 	}
 	unit := &project.units[unit_index]
 	for alias in unit.member_aliases {
@@ -2175,7 +2708,7 @@ interface_member_in_class_with_unit :: proc(
 			return member, member_unit_index, true
 		}
 	}
-	return nil, -1, false
+	return {}, -1, false
 }
 
 interface_member_by_name :: proc(
@@ -2183,7 +2716,7 @@ interface_member_by_name :: proc(
 	lookup: ^Project_Index,
 	unit_index: int,
 	interface_name, member_name: string,
-) -> (^Class_Member_Data, bool) {
+) -> (Symbol_Handle, bool) {
 	member, _, ok := interface_member_by_name_with_unit(
 		project,
 		lookup,
@@ -2199,10 +2732,10 @@ interface_member_by_name_with_unit :: proc(
 	lookup: ^Project_Index,
 	unit_index: int,
 	interface_name, member_name: string,
-) -> (^Class_Member_Data, int, bool) {
+) -> (Symbol_Handle, int, bool) {
 	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, interface_name)
 	if !ok {
-		return nil, -1, false
+		return {}, -1, false
 	}
 	return interface_member_by_handle_with_unit(project, lookup, handle, member_name, 0)
 }
@@ -2213,7 +2746,7 @@ interface_member_by_handle :: proc(
 	handle: Symbol_Handle,
 	member_name: string,
 	depth: int,
-) -> (^Class_Member_Data, bool) {
+) -> (Symbol_Handle, bool) {
 	member, _, ok := interface_member_by_handle_with_unit(
 		project,
 		lookup,
@@ -2230,15 +2763,15 @@ interface_member_by_handle_with_unit :: proc(
 	handle: Symbol_Handle,
 	member_name: string,
 	depth: int,
-) -> (^Class_Member_Data, int, bool) {
+) -> (Symbol_Handle, int, bool) {
 	if depth > len(project.units) + 8 {
-		return nil, -1, false
+		return {}, -1, false
 	}
 	unit_index := unit_id_index(handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
-		return nil, -1, false
+		return {}, -1, false
 	}
-	if member := unit_class_member_lookup(project, lookup, handle, member_name); member != nil {
+	if member, member_ok := class_member_handle_lookup(project, lookup, handle, member_name); member_ok {
 		return member, unit_index, true
 	}
 	unit := &project.units[unit_index]
@@ -2288,7 +2821,7 @@ interface_member_by_handle_with_unit :: proc(
 			return inherited, inherited_unit_index, true
 		}
 	}
-	return nil, -1, false
+	return {}, -1, false
 }
 
 resolve_type_name_in_project_lookup :: proc(
@@ -2425,25 +2958,29 @@ global_visible_root_symbol_lookup :: #force_inline proc(
 	return {}, false
 }
 
-unit_class_member_lookup :: proc(
+class_member_handle_lookup :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
-) -> ^Class_Member_Data {
+) -> (Symbol_Handle, bool) {
 	unit_index := unit_id_index(class_handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
-		return nil
+		return {}, false
 	}
-	key := Class_Member_Lookup_Key {
-		unit = class_handle.unit,
-		class_symbol = class_handle.symbol,
-		name = name,
+	namespaces := [?]Namespace{.Value, .Routine, .Type}
+	for namespace in namespaces {
+		key := Project_Class_Member_Key {
+			class_unit = class_handle.unit,
+			class_symbol = class_handle.symbol,
+			namespace = namespace,
+			name = name,
+		}
+		if entry, ok := lookup.class_scope_entries[key]; ok {
+			return Symbol_Handle{unit = entry.unit, symbol = entry.symbol}, true
+		}
 	}
-	if member_index, ok := lookup.class_member_lookup[key]; ok {
-		return &project.units[unit_index].class_members[member_index]
-	}
-	return nil
+	return {}, false
 }
 
 builtin_class_member_type_fact :: proc(
@@ -2462,17 +2999,41 @@ builtin_class_member_type_fact :: proc(
 	return builtin_class_attribute_type_fact(s.name, member_name)
 }
 
-class_member_type_fact :: proc(member: ^Class_Member_Data) -> Type_Fact_Data {
-	if member == nil {
+class_member_type_fact :: proc(
+	project: ^Project_Analysis,
+	member: Symbol_Handle,
+	member_unit_index: int,
+) -> Type_Fact_Data {
+	if member.symbol == INVALID_SYMBOL_ID ||
+	   member_unit_index < 0 ||
+	   member_unit_index >= len(project.units) {
 		return unknown_type_fact()
 	}
-	if member.kind == .Attribute {
-		return Type_Fact_Data{structure = member.structure}
+	unit := &project.units[member_unit_index]
+	info := entity_decl_info(unit, member.symbol)
+	s := symbol(unit, member.symbol)
+	if info == nil || s == nil {
+		return unknown_type_fact()
 	}
-	for param in member.parameters {
-		if param.section == .Returning || param.section == .Receiving {
+	if info.member_kind == .Attribute {
+		unit_id := unit.unit_id
+		return Type_Fact_Data {
+			type_id = s.type_id,
+			type_unit = unit_id if type_id_is_known(s.type_id) else INVALID_UNIT_ID,
+			structure = s.structure,
+			structure_unit = unit_id if s.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
+			declared_type = s.declared_type,
+			has_declared_type = s.has_declared_type,
+			type_clause_display = s.type_clause_display,
+		}
+	}
+	for param in info.signature_parameters {
+		if param.section == .Method_Returning || param.section == .Method_Receiving {
 			return Type_Fact_Data {
+				type_id = param.type_id,
+				type_unit = unit.unit_id if type_id_is_known(param.type_id) else INVALID_UNIT_ID,
 				structure = INVALID_STRUCTURE_ID,
+				structure_unit = INVALID_UNIT_ID,
 				declared_type = param.declared_type,
 				has_declared_type = .Has_Declared_Type in param.flags,
 				type_clause_display = param.type_clause_display,

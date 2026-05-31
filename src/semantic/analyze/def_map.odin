@@ -135,6 +135,7 @@ Decl_Info_Flag :: enum {
 	For_Event,
 	Has_Implementation,
 	Is_Abstract,
+	Has_Declared_Type,
 	Is_Optional,
 	Is_Untyped,
 	Has_Default_Value,
@@ -164,6 +165,26 @@ Decl_Parameter_Passing :: enum {
 	Reference,
 }
 
+Decl_Signature_Parameter_Data :: struct {
+	symbol:                   Entity_Id,
+	name:                     string,
+	range:                    tokenizer.Range,
+	section:                  Decl_Parameter_Section,
+	passing:                  Decl_Parameter_Passing,
+	type_id:                  Type_Id,
+	declared_type:            Field_Type_Ref_Data,
+	type_clause_display:      string,
+	type_clause_form:         ast.Data_Type_Form,
+	has_type_clause_form:     bool,
+	type_clause_table_has_of: bool,
+	flags:                    Decl_Info_Flags,
+}
+
+Decl_Signature_Exception_Data :: struct {
+	name:  string,
+	range: tokenizer.Range,
+}
+
 Decl_Info_Data :: struct {
 	id:                          Decl_Info_Id,
 	entity:                      Entity_Id,
@@ -185,8 +206,14 @@ Decl_Info_Data :: struct {
 	member_kind:                 Class_Member_Kind,
 	implementation_unit:         Unit_Id,
 	implementation_range:        tokenizer.Range,
+	event_name:                  string,
+	event_range:                 tokenizer.Range,
+	event_source_type:           Field_Type_Ref_Data,
+	event_source_type_id:        Type_Id,
 	alias_target_interface_name: string,
 	alias_target_member_name:    string,
+	signature_parameters:        [dynamic]Decl_Signature_Parameter_Data,
+	signature_exceptions:        [dynamic]Decl_Signature_Exception_Data,
 	parameter_section:           Decl_Parameter_Section,
 	parameter_passing:           Decl_Parameter_Passing,
 	flags:                       Decl_Info_Flags,
@@ -374,7 +401,9 @@ Field_Type_Ref_Data :: struct {
 
 Type_Fact_Data :: struct {
 	type_id:             Type_Id,
+	type_unit:           Unit_Id,
 	structure:           Structure_Id,
+	structure_unit:      Unit_Id,
 	declared_type:       Field_Type_Ref_Data,
 	has_declared_type:   bool,
 	type_clause_display: string,
@@ -382,7 +411,12 @@ Type_Fact_Data :: struct {
 }
 
 unknown_type_fact :: #force_inline proc() -> Type_Fact_Data {
-	return Type_Fact_Data{type_id = UNKNOWN_TYPE_ID, structure = INVALID_STRUCTURE_ID}
+	return Type_Fact_Data {
+		type_id = UNKNOWN_TYPE_ID,
+		type_unit = INVALID_UNIT_ID,
+		structure = INVALID_STRUCTURE_ID,
+		structure_unit = INVALID_UNIT_ID,
+	}
 }
 
 type_fact_is_known :: #force_inline proc(fact: Type_Fact_Data) -> bool {
@@ -647,30 +681,6 @@ Class_Member_Parameter_Data :: struct {
 	flags:               Class_Member_Parameter_Flags,
 }
 
-Form_Parameter_Section :: enum {
-	Tables,
-	Using,
-	Changing,
-}
-
-Form_Parameter_Passing_Kind :: enum {
-	Direct,
-	Value,
-	Reference,
-}
-
-Form_Parameter_Data :: struct {
-	symbol:  Symbol_Id,
-	section: Form_Parameter_Section,
-	passing: Form_Parameter_Passing_Kind,
-}
-
-Form_Routine_Data :: struct {
-	symbol:     Symbol_Id,
-	signature:  string,
-	parameters: [dynamic]Form_Parameter_Data,
-}
-
 Function_Module_Parameter_Section :: enum {
 	Importing,
 	Exporting,
@@ -678,73 +688,9 @@ Function_Module_Parameter_Section :: enum {
 	Tables,
 }
 
-Function_Module_Parameter_Flag :: enum {
-	Has_Declared_Type,
-	Is_Untyped,
-	Is_Optional,
-	Has_Default_Value,
-}
-Function_Module_Parameter_Flags :: bit_set[Function_Module_Parameter_Flag]
-
-Function_Module_Parameter_Data :: struct {
-	symbol:              Symbol_Id,
-	section:             Function_Module_Parameter_Section,
-	name:                string,
-	range:               tokenizer.Range,
-	passing:             Parameter_Passing_Kind,
-	type_id:             Type_Id,
-	declared_type:       Field_Type_Ref_Data,
-	type_clause_display: string,
-	type_clause_form:    ast.Data_Type_Form,
-	has_type_clause_form: bool,
-	flags:               Function_Module_Parameter_Flags,
-}
-
 Function_Module_Exception_Data :: struct {
 	name:  string,
 	range: tokenizer.Range,
-}
-
-Function_Module_Data :: struct {
-	symbol:     Symbol_Id,
-	signature:  string,
-	parameters: [dynamic]Function_Module_Parameter_Data,
-	exceptions: [dynamic]Function_Module_Exception_Data,
-}
-
-Class_Member_Implementation_Data :: struct {
-	unit:  Unit_Id,
-	range: tokenizer.Range,
-}
-
-Class_Member_Flag :: enum {
-	Is_Static,
-	Is_Redefinition,
-	For_Event,
-	Has_Implementation_Range,
-	Has_Implementation,
-}
-Class_Member_Flags :: bit_set[Class_Member_Flag]
-
-Class_Member_Data :: struct {
-	symbol:               Symbol_Id,
-	class_symbol:         Symbol_Id,
-	name:                 string,
-	kind:                 Class_Member_Kind,
-	visibility:           Visibility,
-	decl_range:           tokenizer.Range,
-	implementation_range: tokenizer.Range,
-	implementation:       Class_Member_Implementation_Data,
-	signature:            string,
-	parameters:           [dynamic]Class_Member_Parameter_Data,
-	exceptions:           [dynamic]Function_Module_Exception_Data,
-	event_name:           string,
-	event_range:          tokenizer.Range,
-	type_id:              Type_Id,
-	event_source_type:    Field_Type_Ref_Data,
-	event_source_type_id: Type_Id,
-	structure:            Structure_Id,
-	flags:                Class_Member_Flags,
 }
 
 Class_Inheritance_Data :: struct {
@@ -930,14 +876,11 @@ Unit_Analysis :: struct {
 	loop_where_field_contexts:              [dynamic]Loop_Where_Field_Context,
 	loop_at_field_contexts:                 [dynamic]Loop_At_Field_Context,
 	constructor_for_bindings:               [dynamic]Constructor_For_Binding_Data,
-	class_members:                          [dynamic]Class_Member_Data,
 	class_definitions:                      [dynamic]Class_Definition_Data,
 	class_inheritance:                      [dynamic]Class_Inheritance_Data,
 	class_friends:                          [dynamic]Class_Friend_Data,
 	implemented_interfaces:                 [dynamic]Implemented_Interface_Data,
 	member_aliases:                         [dynamic]Member_Alias_Data,
-	form_routines:                          [dynamic]Form_Routine_Data,
-	function_modules:                       [dynamic]Function_Module_Data,
 	named_arguments:                        [dynamic]Named_Argument_Access,
 	call_sites:                             [dynamic]Call_Site_Data,
 	assignment_sites:                       [dynamic]Assignment_Site_Data,
@@ -1251,7 +1194,7 @@ type_id_from_type_ref_path :: proc(
 		if selector == .Arrow {
 			target := type_ref_target(unit, current, depth + 1)
 			if class_symbol, ok := type_class_symbol_from_type(unit, target, depth + 1); ok {
-				if member := unit_class_member(unit, class_symbol, name); member != nil {
+				if member := unit_class_member_symbol(unit, class_symbol, name); member != nil {
 					current = member.type_id
 					continue
 				}
@@ -1583,6 +1526,23 @@ entity_decl_info :: proc(unit: ^Unit_Analysis, id: Entity_Id) -> ^Decl_Info_Data
 	return decl_info(unit, s.decl_info)
 }
 
+entity_signature_parameter :: proc(
+	unit: ^Unit_Analysis,
+	owner: Entity_Id,
+	name: string,
+) -> ^Decl_Signature_Parameter_Data {
+	info := entity_decl_info(unit, owner)
+	if info == nil {
+		return nil
+	}
+	for &param in info.signature_parameters {
+		if strings.equal_fold(param.name, name) {
+			return &param
+		}
+	}
+	return nil
+}
+
 symbol :: proc(unit: ^Unit_Analysis, id: Symbol_Id) -> ^Symbol_Data {
 	if id == INVALID_SYMBOL_ID || symbol_id_index(id) >= len(unit.symbols) {
 		return nil
@@ -1607,6 +1567,21 @@ scope :: proc(unit: ^Unit_Analysis, id: Scope_Id) -> ^Scope_Data {
 find_symbol :: proc(unit: ^Unit_Analysis, name: string, kind: Symbol_Kind) -> ^Symbol_Data {
 	for &s in unit.symbols {
 		if s.kind == kind && strings.equal_fold(s.name, name) {
+			return &s
+		}
+	}
+	return nil
+}
+
+unit_class_member_symbol :: proc(unit: ^Unit_Analysis, class_symbol: Symbol_Id, name: string) -> ^Symbol_Data {
+	for &s in unit.symbols {
+		if s.owner != class_symbol || !strings.equal_fold(s.name, name) {
+			continue
+		}
+		scope_data := scope(unit, s.scope)
+		if scope_data != nil &&
+		   (scope_data.kind == .Class || scope_data.kind == .Interface) &&
+		   scope_data.owner == class_symbol {
 			return &s
 		}
 	}
@@ -1696,37 +1671,14 @@ refresh_unit_type_ids :: proc(unit: ^Unit_Analysis) {
 			field.type_id = type_id_from_structure_field(unit, scope_id, field^)
 		}
 	}
-	for i in 0 ..< len(unit.class_members) {
-		member := &unit.class_members[i]
-		scope_id := member_scope(unit, member^)
-		if s := symbol(unit, member.symbol); s != nil {
-			member.structure = s.structure
-			member.type_id = s.type_id
+	for i in 0 ..< len(unit.decl_infos) {
+		info := &unit.decl_infos[i]
+		scope_id := info.signature_scope if info.signature_scope != INVALID_SCOPE_ID else info.scope
+		if info.event_source_type.base_name != "" {
+			info.event_source_type_id = type_id_from_declared_type(unit, scope_id, info.event_source_type)
 		}
-		if member.event_source_type.base_name != "" {
-			member.event_source_type_id = type_id_from_declared_type(unit, scope_id, member.event_source_type)
-		}
-		for j in 0 ..< len(member.parameters) {
-			param := &member.parameters[j]
-			param.type_id = type_id_from_parameter_symbol_or_ref(
-				unit,
-				param.symbol,
-				scope_id,
-				param.declared_type,
-				param.type_clause_form,
-				param.has_type_clause_form,
-				.Has_Declared_Type in param.flags,
-			)
-		}
-	}
-	for i in 0 ..< len(unit.function_modules) {
-		module := &unit.function_modules[i]
-		scope_id := unit.root_scope
-		if s := symbol(unit, module.symbol); s != nil {
-			scope_id = s.scope
-		}
-		for j in 0 ..< len(module.parameters) {
-			param := &module.parameters[j]
+		for j in 0 ..< len(info.signature_parameters) {
+			param := &info.signature_parameters[j]
 			param.type_id = type_id_from_parameter_symbol_or_ref(
 				unit,
 				param.symbol,
@@ -1776,13 +1728,6 @@ type_id_from_parameter_symbol_or_ref :: proc(
 		return type_id_from_declared_type(unit, scope_id, type_ref, type_form, has_type_form)
 	}
 	return UNKNOWN_TYPE_ID
-}
-
-member_scope :: proc(unit: ^Unit_Analysis, member: Class_Member_Data) -> Scope_Id {
-	if s := symbol(unit, member.symbol); s != nil {
-		return s.scope
-	}
-	return unit.root_scope
 }
 
 builtin_type_ref :: #force_inline proc(name: string) -> Field_Type_Ref_Data {

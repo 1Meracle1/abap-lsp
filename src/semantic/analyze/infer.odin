@@ -183,11 +183,12 @@ apply_inferred_project_facts :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				rerun = rerun || s.structure != update.type_fact.structure ||
+				update_structure := type_fact_local_structure(update.type_fact, unit.unit_id)
+				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
-				if update.type_fact.structure != INVALID_STRUCTURE_ID {
-					s.structure = update.type_fact.structure
+				if update_structure != INVALID_STRUCTURE_ID {
+					s.structure = update_structure
 				}
 				if update.type_fact.has_declared_type {
 					s.declared_type = update.type_fact.declared_type
@@ -227,11 +228,12 @@ apply_inferred_project_facts_for_indices :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				rerun = rerun || s.structure != update.type_fact.structure ||
+				update_structure := type_fact_local_structure(update.type_fact, unit.unit_id)
+				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
-				if update.type_fact.structure != INVALID_STRUCTURE_ID {
-					s.structure = update.type_fact.structure
+				if update_structure != INVALID_STRUCTURE_ID {
+					s.structure = update_structure
 				}
 				if update.type_fact.has_declared_type {
 					s.declared_type = update.type_fact.declared_type
@@ -285,6 +287,16 @@ type_fact_known :: proc(fact: Type_Fact_Data) -> bool {
 	       fact.has_declared_type ||
 	       fact.type_clause_display != "" ||
 	       fact.table_line != nil
+}
+
+type_fact_local_structure :: proc(fact: Type_Fact_Data, unit_id: Unit_Id) -> Structure_Id {
+	if fact.structure == INVALID_STRUCTURE_ID {
+		return INVALID_STRUCTURE_ID
+	}
+	if fact.structure_unit == INVALID_UNIT_ID || fact.structure_unit == unit_id {
+		return fact.structure
+	}
+	return INVALID_STRUCTURE_ID
 }
 
 range_type_fact_index_make :: proc(
@@ -363,6 +375,7 @@ type_fact_from_symbol_handle :: proc(
 	site_unit_index: int,
 	handle: Symbol_Handle,
 ) -> Type_Fact_Data {
+	_ = site_unit_index
 	unit_index := unit_id_index(handle.unit)
 	if unit_index < 0 || unit_index >= len(project.units) {
 		return unknown_type_fact()
@@ -372,8 +385,10 @@ type_fact_from_symbol_handle :: proc(
 		return unknown_type_fact()
 	}
 	return Type_Fact_Data {
-		type_id = s.type_id if unit_index == site_unit_index else UNKNOWN_TYPE_ID,
-		structure = s.structure if unit_index == site_unit_index else INVALID_STRUCTURE_ID,
+		type_id = s.type_id,
+		type_unit = handle.unit if type_id_is_known(s.type_id) else INVALID_UNIT_ID,
+		structure = s.structure,
+		structure_unit = handle.unit if s.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 		declared_type = s.declared_type,
 		has_declared_type = s.has_declared_type,
 		type_clause_display = s.type_clause_display,
@@ -445,11 +460,18 @@ call_result_type_fact :: proc(
 	if !ok {
 		return unknown_type_fact()
 	}
-	member, member_ok := class_member_in_hierarchy(project, lookup, class_handle, site.target.method_name, false)
-	if !member_ok || member.kind != .Method {
+	member, member_unit_index, member_ok := class_member_in_hierarchy_with_unit(
+		project,
+		lookup,
+		class_handle,
+		site.target.method_name,
+		false,
+	)
+	member_info := entity_decl_info(&project.units[member_unit_index], member.symbol) if member_ok else nil
+	if !member_ok || member_info == nil || member_info.member_kind != .Method {
 		return unknown_type_fact()
 	}
-	return class_member_type_fact(member)
+	return class_member_type_fact(project, member, member_unit_index)
 }
 
 inline_symbol_at_range_indexed :: proc(

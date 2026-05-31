@@ -718,8 +718,15 @@ ENDFUNCTION.
 
 	testing.expect(t, pending)
 	testing.expect(t, found)
-	fm := project.units[0].function_modules[0]
-	testing.expect_value(t, fm.parameters[0].type_clause_display, "STANDARD TABLE OF HROEXIST")
+	fm := analyze.find_symbol(&project.units[0], "rh_read_object", .Module)
+	testing.expect(t, fm != nil)
+	if fm != nil {
+		fm_info := analyze.entity_decl_info(&project.units[0], fm.id)
+		testing.expect(t, fm_info != nil)
+		if fm_info != nil {
+			testing.expect_value(t, fm_info.signature_parameters[0].type_clause_display, "STANDARD TABLE OF HROEXIST")
+		}
+	}
 }
 
 @(test)
@@ -2458,6 +2465,18 @@ analyze_units_project_test :: proc(t: ^testing.T, sources: []analyze.Source_Inpu
 		analyze.resolve_unit_locally(&unit, context.allocator)
 		append(&units, unit)
 	}
+	for unit_index in 0 ..< len(units) {
+		for &edge in units[unit_index].include_edges {
+			for &target in units {
+				if target.unit_id != units[unit_index].unit_id &&
+				   provided_name_present(&target, edge.name) {
+					edge.target = target.unit_id
+					edge.has_target = true
+					break
+				}
+			}
+		}
+	}
 	project := analyze.project_analysis_from_units(units, context.allocator)
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
@@ -2484,10 +2503,10 @@ class_member_named :: proc(
 	class_symbol: analyze.Symbol_Id,
 	name: string,
 	kind: analyze.Class_Member_Kind,
-) -> ^analyze.Class_Member_Data {
-	for &member in unit.class_members {
-		if member.class_symbol == class_symbol && member.kind == kind && member.name == name {
-			return &member
+) -> ^analyze.Symbol_Data {
+	if member := analyze.unit_class_member_symbol(unit, class_symbol, name); member != nil {
+		if info := analyze.entity_decl_info(unit, member.id); info != nil && info.member_kind == kind {
+			return member
 		}
 	}
 	return nil
@@ -3608,6 +3627,7 @@ ENDCLASS.
 	alias_info := analyze.entity_decl_info(&unit, unit.member_aliases[0].symbol)
 	testing.expect(t, alias_info != nil)
 	testing.expect_value(t, alias_info.owner, child.id)
+	testing.expect_value(t, alias_info.visibility, analyze.Visibility.Public)
 	testing.expect_value(t, alias_info.alias_target_interface_name, "lif_demo")
 
 	attr := class_member_named(&unit, child.id, "mv_flag", .Attribute)
@@ -3615,34 +3635,38 @@ ENDCLASS.
 	event := class_member_named(&unit, child.id, "changed", .Event)
 	method := class_member_named(&unit, child.id, "run", .Method)
 	testing.expect(t, attr != nil)
-	attr_info := analyze.entity_decl_info(&unit, attr.symbol)
+	attr_info := analyze.entity_decl_info(&unit, attr.id)
 	testing.expect(t, attr_info != nil)
 	testing.expect_value(t, attr_info.owner, child.id)
 	testing.expect_value(t, attr_info.member_kind, analyze.Class_Member_Kind.Attribute)
 	testing.expect(t, static_attr != nil)
-	testing.expect(t, .Is_Static in static_attr.flags)
+	static_attr_info := analyze.entity_decl_info(&unit, static_attr.id)
+	testing.expect(t, static_attr_info != nil && .Is_Static in static_attr_info.flags)
 	testing.expect(t, event != nil)
-	testing.expect_value(t, event.parameters[0].name, "ev_flag")
-	testing.expect_value(t, event.parameters[0].passing, analyze.Parameter_Passing_Kind.Value)
+	event_info := analyze.entity_decl_info(&unit, event.id)
+	testing.expect(t, event_info != nil)
+	testing.expect_value(t, len(event_info.signature_parameters), 1)
+	testing.expect_value(t, event_info.signature_parameters[0].name, "ev_flag")
+	testing.expect_value(t, event_info.signature_parameters[0].section, analyze.Decl_Parameter_Section.Method_Exporting)
+	testing.expect_value(t, event_info.signature_parameters[0].passing, analyze.Decl_Parameter_Passing.Value)
 	testing.expect(t, method != nil)
-	testing.expect(t, .Has_Implementation in method.flags)
-	method_info := analyze.entity_decl_info(&unit, method.symbol)
+	method_info := analyze.entity_decl_info(&unit, method.id)
 	testing.expect(t, method_info != nil)
 	testing.expect_value(t, method_info.owner, child.id)
 	testing.expect_value(t, method_info.member_kind, analyze.Class_Member_Kind.Method)
 	testing.expect(t, method_info.signature_scope != analyze.INVALID_SCOPE_ID)
 	testing.expect(t, .Has_Implementation in method_info.flags)
-	testing.expect_value(t, len(method.parameters), 2)
-	testing.expect_value(t, method.parameters[0].section, analyze.Method_Parameter_Section.Importing)
-	testing.expect_value(t, method.parameters[0].name, "iv_value")
-	testing.expect_value(t, method.parameters[0].passing, analyze.Parameter_Passing_Kind.Direct)
-	param_info := analyze.entity_decl_info(&unit, method.parameters[0].symbol)
+	testing.expect_value(t, len(method_info.signature_parameters), 2)
+	testing.expect_value(t, method_info.signature_parameters[0].name, "iv_value")
+	testing.expect_value(t, method_info.signature_parameters[0].section, analyze.Decl_Parameter_Section.Method_Importing)
+	testing.expect_value(t, method_info.signature_parameters[0].passing, analyze.Decl_Parameter_Passing.Direct)
+	param_info := analyze.entity_decl_info(&unit, method_info.signature_parameters[0].symbol)
 	testing.expect(t, param_info != nil)
-	testing.expect_value(t, param_info.owner, method.symbol)
+	testing.expect_value(t, param_info.owner, method.id)
 	testing.expect_value(t, param_info.parameter_section, analyze.Decl_Parameter_Section.Method_Importing)
-	testing.expect_value(t, method.parameters[1].section, analyze.Method_Parameter_Section.Returning)
-	testing.expect_value(t, method.parameters[1].name, "rv_text")
-	testing.expect_value(t, method.parameters[1].passing, analyze.Parameter_Passing_Kind.Value)
+	testing.expect_value(t, method_info.signature_parameters[1].section, analyze.Decl_Parameter_Section.Method_Returning)
+	testing.expect_value(t, method_info.signature_parameters[1].name, "rv_text")
+	testing.expect_value(t, method_info.signature_parameters[1].passing, analyze.Decl_Parameter_Passing.Value)
 }
 
 @(test)
@@ -3725,13 +3749,15 @@ ENDCLASS.
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
-	testing.expect_value(t, len(method.parameters), 2)
-	date := method.parameters[0]
+	method_info := analyze.entity_decl_info(&unit, method.id)
+	testing.expect(t, method_info != nil)
+	testing.expect_value(t, len(method_info.signature_parameters), 2)
+	date := method_info.signature_parameters[0]
 	testing.expect(t, .Has_Declared_Type in date.flags)
 	testing.expect_value(t, date.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, date.declared_type.base_name, "sy")
 	testing.expect_value(t, date.declared_type.field_path[0], "datum")
-	phase := method.parameters[1]
+	phase := method_info.signature_parameters[1]
 	testing.expect(t, .Has_Declared_Type in phase.flags)
 	testing.expect_value(t, phase.declared_type.namespace, analyze.Namespace.Type)
 	testing.expect_value(t, phase.declared_type.base_name, "lif_demo")
@@ -3770,10 +3796,14 @@ ENDINTERFACE.`
 	testing.expect(t, prot != nil)
 	testing.expect(t, priv != nil)
 	testing.expect(t, if_pub != nil)
-	testing.expect_value(t, pub.visibility, analyze.Visibility.Public)
-	testing.expect_value(t, prot.visibility, analyze.Visibility.Protected)
-	testing.expect_value(t, priv.visibility, analyze.Visibility.Private)
-	testing.expect_value(t, if_pub.visibility, analyze.Visibility.Public)
+	pub_info := analyze.entity_decl_info(&unit, pub.id)
+	prot_info := analyze.entity_decl_info(&unit, prot.id)
+	priv_info := analyze.entity_decl_info(&unit, priv.id)
+	if_pub_info := analyze.entity_decl_info(&unit, if_pub.id)
+	testing.expect_value(t, pub_info.visibility, analyze.Visibility.Public)
+	testing.expect_value(t, prot_info.visibility, analyze.Visibility.Protected)
+	testing.expect_value(t, priv_info.visibility, analyze.Visibility.Private)
+	testing.expect_value(t, if_pub_info.visibility, analyze.Visibility.Public)
 }
 
 @(test)
@@ -3910,11 +3940,14 @@ ENDCLASS.`
 	testing.expect(t, local_copy != nil)
 	testing.expect(t, interface_copy != nil)
 	testing.expect(t, interface_rename != nil)
-	testing.expect(t, .Is_Static in local_copy.flags)
-	testing.expect(t, !(.Is_Static in interface_copy.flags))
-	testing.expect(t, .Has_Implementation in local_copy.flags)
-	testing.expect(t, .Has_Implementation in interface_copy.flags)
-	testing.expect(t, .Has_Implementation in interface_rename.flags)
+	local_copy_info := analyze.entity_decl_info(&unit, local_copy.id)
+	interface_copy_info := analyze.entity_decl_info(&unit, interface_copy.id)
+	interface_rename_info := analyze.entity_decl_info(&unit, interface_rename.id)
+	testing.expect(t, local_copy_info != nil && .Is_Static in local_copy_info.flags)
+	testing.expect(t, interface_copy_info != nil && !(.Is_Static in interface_copy_info.flags))
+	testing.expect(t, local_copy_info != nil && .Has_Implementation in local_copy_info.flags)
+	testing.expect(t, interface_copy_info != nil && .Has_Implementation in interface_copy_info.flags)
+	testing.expect(t, interface_rename_info != nil && .Has_Implementation in interface_rename_info.flags)
 }
 
 @(test)
@@ -4009,15 +4042,17 @@ ENDCLASS.`
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
-	testing.expect_value(t, len(method.parameters), 6)
-	testing.expect_value(t, method.parameters[0].name, "it_source")
-	testing.expect_value(t, method.parameters[1].name, "it_any")
-	testing.expect_value(t, method.parameters[2].name, "it_index")
-	testing.expect_value(t, method.parameters[3].name, "iv_state")
-	testing.expect(t, .Is_Optional in method.parameters[3].flags)
-	testing.expect_value(t, method.parameters[4].name, "iv_text")
-	testing.expect_value(t, method.parameters[5].section, analyze.Method_Parameter_Section.Returning)
-	testing.expect_value(t, method.parameters[5].name, "rv_ok")
+	method_info := analyze.entity_decl_info(&unit, method.id)
+	testing.expect(t, method_info != nil)
+	testing.expect_value(t, len(method_info.signature_parameters), 6)
+	testing.expect_value(t, method_info.signature_parameters[0].name, "it_source")
+	testing.expect_value(t, method_info.signature_parameters[1].name, "it_any")
+	testing.expect_value(t, method_info.signature_parameters[2].name, "it_index")
+	testing.expect_value(t, method_info.signature_parameters[3].name, "iv_state")
+	testing.expect(t, .Is_Optional in method_info.signature_parameters[3].flags)
+	testing.expect_value(t, method_info.signature_parameters[4].name, "iv_text")
+	testing.expect_value(t, method_info.signature_parameters[5].section, analyze.Decl_Parameter_Section.Method_Returning)
+	testing.expect_value(t, method_info.signature_parameters[5].name, "rv_ok")
 }
 
 @(test)
@@ -4095,8 +4130,10 @@ ENDFUNCTION.`
 	testing.expect(t, class != nil)
 	method := class_member_named(&unit, class.id, "run", .Method)
 	testing.expect(t, method != nil)
-	testing.expect_value(t, len(method.exceptions), 1)
-	testing.expect_value(t, method.exceptions[0].name, "failed")
+	method_info := analyze.entity_decl_info(&unit, method.id)
+	testing.expect(t, method_info != nil)
+	testing.expect_value(t, len(method_info.signature_exceptions), 1)
+	testing.expect_value(t, method_info.signature_exceptions[0].name, "failed")
 	testing.expect(t, has_symbol(&unit, .Exception, "failed"))
 	testing.expect(t, has_symbol(&unit, .Exception, "not_found"))
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
@@ -4118,61 +4155,62 @@ ENDFUNCTION.
 `
 	unit := collect_test_unit(t, "file:///signatures.abap", source)
 
-	testing.expect_value(t, len(unit.form_routines), 1)
-	form := unit.form_routines[0]
-	form_info := analyze.entity_decl_info(&unit, form.symbol)
+	form := analyze.find_symbol(&unit, "run", .Form)
+	testing.expect(t, form != nil)
+	form_info := analyze.entity_decl_info(&unit, form.id) if form != nil else nil
 	testing.expect(t, form_info != nil)
 	testing.expect(t, form_info.body_scope != analyze.INVALID_SCOPE_ID)
 	testing.expect_value(t, form_info.signature, "FORM run TABLES !ct_rows STRUCTURE mara USING VALUE(iv_text) TYPE string REFERENCE(iv_ref) LIKE sy-uname CHANGING cv_count TYPE i")
-	testing.expect_value(t, len(form.parameters), 4)
-	ct_rows := unit.symbols[analyze.symbol_id_index(form.parameters[0].symbol)]
-	iv_text := unit.symbols[analyze.symbol_id_index(form.parameters[1].symbol)]
-	iv_ref := unit.symbols[analyze.symbol_id_index(form.parameters[2].symbol)]
-	form_param_info := analyze.entity_decl_info(&unit, form.parameters[0].symbol)
+	testing.expect_value(t, len(form_info.signature_parameters), 4)
+	ct_rows := unit.symbols[analyze.symbol_id_index(form_info.signature_parameters[0].symbol)]
+	iv_text := unit.symbols[analyze.symbol_id_index(form_info.signature_parameters[1].symbol)]
+	iv_ref := unit.symbols[analyze.symbol_id_index(form_info.signature_parameters[2].symbol)]
+	form_param_info := analyze.entity_decl_info(&unit, form_info.signature_parameters[0].symbol)
 	testing.expect(t, form_param_info != nil)
-	testing.expect_value(t, form_param_info.owner, form.symbol)
+	testing.expect_value(t, form_param_info.owner, form.id)
 	testing.expect_value(t, form_param_info.parameter_section, analyze.Decl_Parameter_Section.Form_Tables)
+	testing.expect_value(t, form_info.signature_parameters[0].section, analyze.Decl_Parameter_Section.Form_Tables)
 	testing.expect_value(t, ct_rows.name, "ct_rows")
 	testing.expect_value(t, ct_rows.declared_type.namespace, analyze.Namespace.Value)
-	testing.expect_value(t, form.parameters[0].section, analyze.Form_Parameter_Section.Tables)
-	testing.expect_value(t, form.parameters[1].section, analyze.Form_Parameter_Section.Using)
-	testing.expect_value(t, form.parameters[1].passing, analyze.Form_Parameter_Passing_Kind.Value)
+	testing.expect_value(t, form_info.signature_parameters[1].section, analyze.Decl_Parameter_Section.Form_Using)
+	testing.expect_value(t, form_info.signature_parameters[1].passing, analyze.Decl_Parameter_Passing.Value)
 	testing.expect_value(t, iv_text.name, "iv_text")
-	testing.expect_value(t, form.parameters[2].passing, analyze.Form_Parameter_Passing_Kind.Reference)
+	testing.expect_value(t, form_info.signature_parameters[2].passing, analyze.Decl_Parameter_Passing.Reference)
 	testing.expect_value(t, iv_ref.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, iv_ref.declared_type.base_name, "sy")
 	testing.expect_value(t, iv_ref.declared_type.field_path[0], "uname")
-	testing.expect_value(t, form.parameters[3].section, analyze.Form_Parameter_Section.Changing)
+	testing.expect_value(t, form_info.signature_parameters[3].section, analyze.Decl_Parameter_Section.Form_Changing)
 
-	testing.expect_value(t, len(unit.function_modules), 1)
-	fm := unit.function_modules[0]
-	fm_info := analyze.entity_decl_info(&unit, fm.symbol)
+	fm := analyze.find_symbol(&unit, "z_demo", .Module)
+	testing.expect(t, fm != nil)
+	fm_info := analyze.entity_decl_info(&unit, fm.id) if fm != nil else nil
 	testing.expect(t, fm_info != nil)
 	testing.expect(t, fm_info.body_scope != analyze.INVALID_SCOPE_ID)
-	testing.expect_value(t, len(fm.parameters), 5)
-	testing.expect_value(t, fm.parameters[0].name, "iv_value")
-	fm_param_info := analyze.entity_decl_info(&unit, fm.parameters[0].symbol)
+	testing.expect_value(t, len(fm_info.signature_parameters), 5)
+	testing.expect_value(t, fm_info.signature_parameters[0].name, "iv_value")
+	fm_param_info := analyze.entity_decl_info(&unit, fm_info.signature_parameters[0].symbol)
 	testing.expect(t, fm_param_info != nil)
-	testing.expect_value(t, fm_param_info.owner, fm.symbol)
+	testing.expect_value(t, fm_param_info.owner, fm.id)
 	testing.expect_value(t, fm_param_info.parameter_section, analyze.Decl_Parameter_Section.Function_Importing)
-	testing.expect_value(t, fm.parameters[0].passing, analyze.Parameter_Passing_Kind.Value)
-	testing.expect(t, .Is_Optional in fm.parameters[0].flags)
-	testing.expect_value(t, fm.parameters[1].name, "iv_text")
-	testing.expect_value(t, fm.parameters[1].passing, analyze.Parameter_Passing_Kind.Direct)
-	testing.expect(t, .Has_Default_Value in fm.parameters[1].flags)
-	testing.expect_value(t, fm.parameters[2].section, analyze.Function_Module_Parameter_Section.Exporting)
-	testing.expect_value(t, fm.parameters[2].declared_type.namespace, analyze.Namespace.Value)
-	testing.expect_value(t, fm.parameters[2].declared_type.base_name, "sy")
-	testing.expect_value(t, fm.parameters[2].declared_type.field_path[0], "uname")
-	testing.expect_value(t, fm.parameters[3].section, analyze.Function_Module_Parameter_Section.Changing)
-	testing.expect_value(t, fm.parameters[3].passing, analyze.Parameter_Passing_Kind.Reference)
-	testing.expect_value(t, fm.parameters[3].declared_type.base_name, "object")
-	testing.expect_value(t, fm.parameters[4].section, analyze.Function_Module_Parameter_Section.Tables)
-	testing.expect_value(t, fm.parameters[4].declared_type.namespace, analyze.Namespace.Value)
-	testing.expect_value(t, fm.parameters[4].declared_type.base_name, "bapiret2")
-	testing.expect_value(t, len(fm.exceptions), 2)
-	testing.expect_value(t, fm.exceptions[0].name, "failed")
-	testing.expect_value(t, fm.exceptions[1].name, "not_found")
+	testing.expect_value(t, fm_info.signature_parameters[0].section, analyze.Decl_Parameter_Section.Function_Importing)
+	testing.expect_value(t, fm_info.signature_parameters[0].passing, analyze.Decl_Parameter_Passing.Value)
+	testing.expect(t, .Is_Optional in fm_info.signature_parameters[0].flags)
+	testing.expect_value(t, fm_info.signature_parameters[1].name, "iv_text")
+	testing.expect_value(t, fm_info.signature_parameters[1].passing, analyze.Decl_Parameter_Passing.Direct)
+	testing.expect(t, .Has_Default_Value in fm_info.signature_parameters[1].flags)
+	testing.expect_value(t, fm_info.signature_parameters[2].section, analyze.Decl_Parameter_Section.Function_Exporting)
+	testing.expect_value(t, fm_info.signature_parameters[2].declared_type.namespace, analyze.Namespace.Value)
+	testing.expect_value(t, fm_info.signature_parameters[2].declared_type.base_name, "sy")
+	testing.expect_value(t, fm_info.signature_parameters[2].declared_type.field_path[0], "uname")
+	testing.expect_value(t, fm_info.signature_parameters[3].section, analyze.Decl_Parameter_Section.Function_Changing)
+	testing.expect_value(t, fm_info.signature_parameters[3].passing, analyze.Decl_Parameter_Passing.Reference)
+	testing.expect_value(t, fm_info.signature_parameters[3].declared_type.base_name, "object")
+	testing.expect_value(t, fm_info.signature_parameters[4].section, analyze.Decl_Parameter_Section.Function_Tables)
+	testing.expect_value(t, fm_info.signature_parameters[4].declared_type.namespace, analyze.Namespace.Value)
+	testing.expect_value(t, fm_info.signature_parameters[4].declared_type.base_name, "bapiret2")
+	testing.expect_value(t, len(fm_info.signature_exceptions), 2)
+	testing.expect_value(t, fm_info.signature_exceptions[0].name, "failed")
+	testing.expect_value(t, fm_info.signature_exceptions[1].name, "not_found")
 	testing.expect(t, has_reference(&unit, "string", .Type, .Type_Ref))
 	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
 	testing.expect(t, has_reference(&unit, "bapiret2", .Value, .Type_Ref))
@@ -4188,11 +4226,13 @@ ENDFUNCTION.`
 	unit := collect_test_unit(t, "file:///read_style.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
-	testing.expect_value(t, len(unit.function_modules), 1)
-	fm := unit.function_modules[0]
-	testing.expect_value(t, len(fm.parameters), 2)
-	testing.expect_value(t, fm.parameters[0].section, analyze.Function_Module_Parameter_Section.Importing)
-	testing.expect_value(t, fm.parameters[1].section, analyze.Function_Module_Parameter_Section.Exporting)
+	fm := analyze.find_symbol(&unit, "read_style", .Module)
+	testing.expect(t, fm != nil)
+	fm_info := analyze.entity_decl_info(&unit, fm.id) if fm != nil else nil
+	testing.expect(t, fm_info != nil)
+	testing.expect_value(t, len(fm_info.signature_parameters), 2)
+	testing.expect_value(t, fm_info.signature_parameters[0].section, analyze.Decl_Parameter_Section.Function_Importing)
+	testing.expect_value(t, fm_info.signature_parameters[1].section, analyze.Decl_Parameter_Section.Function_Exporting)
 	parameter_symbols := 0
 	for symbol in unit.symbols {
 		if symbol.kind == .Parameter && symbol.name == "olanguage" {
@@ -4263,9 +4303,12 @@ ENDFORM.
 	if root != nil {
 		testing.expect(t, !has_diagnostic(root, .Unresolved_Reference))
 		testing.expect(t, reference_resolves_to_uri(&project, root, "ddsymtab", .Value, .Type_Ref, dependencies[0].uri))
-		form := root.form_routines[0]
-		testing.expect_value(t, len(form.parameters), 4)
-		resulttab := root.symbols[analyze.symbol_id_index(form.parameters[0].symbol)]
+		form := analyze.find_symbol(root, "get_non_deleted_objects", .Form)
+		testing.expect(t, form != nil)
+		form_info := analyze.entity_decl_info(root, form.id) if form != nil else nil
+		testing.expect(t, form_info != nil)
+		testing.expect_value(t, len(form_info.signature_parameters), 4)
+		resulttab := root.symbols[analyze.symbol_id_index(form_info.signature_parameters[0].symbol)]
 		testing.expect_value(t, resulttab.type_clause_display, "STANDARD TABLE OF ddsymtab")
 	}
 }
@@ -5407,7 +5450,9 @@ TYPES: BEGIN OF ty_demo,
 	method_offset := find_text(source, "run")
 	member := sem_query.decl_class_member_at_offset(decl_query, method_offset)
 	testing.expect(t, member != nil)
-	testing.expect_value(t, member.kind, analyze.Class_Member_Kind.Method)
+	member_info := analyze.entity_decl_info(&unit, member.id)
+	testing.expect(t, member_info != nil)
+	testing.expect_value(t, member_info.member_kind, analyze.Class_Member_Kind.Method)
 	testing.expect_value(t, member.name, "run")
 
 	class_symbol := analyze.find_symbol(&unit, "lcl_demo", .Class)
@@ -10421,7 +10466,7 @@ ENDCLASS.`,
 }
 
 @(test)
-typepool_occurs_table_type_line_of_expands_dependency_include :: proc(t: ^testing.T) {
+typepool_occurs_table_type_line_of_uses_dependency_include_without_copy :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "mem://ZMAIN.abap",
 		source = `REPORT zmain.
@@ -10463,7 +10508,7 @@ TYPES trwbo_request_headers TYPE trwbo_request_header OCCURS 0.`,
 		headers := analyze.find_symbol(typepool, "trwbo_request_headers", .Type_Def)
 		header := analyze.find_symbol(typepool, "trwbo_request_header", .Type_Def)
 		testing.expect(t, headers != nil && headers.type_clause_form == .Standard_Table)
-		testing.expect(t, header != nil && analyze.structure_field(typepool, header.structure, "trkorr") != nil)
+		testing.expect(t, header != nil && analyze.structure_field(typepool, header.structure, "trkorr") == nil)
 	}
 	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
@@ -10925,6 +10970,263 @@ project_program_local_class_without_prefix_stays_unit_local :: proc(t: ^testing.
 }
 
 @(test)
+finish_project_analysis_respects_include_predecessor_order :: proc(t: ^testing.T) {
+	prior := [?]analyze.Source_Input {
+		{uri = "file:///workspace/zmain.abap", source = "REPORT zmain. INCLUDE: ztypes, zdata."},
+		{uri = "file:///workspace/ztypes.abap", source = `
+TYPES: BEGIN OF ts_obj_ids,
+         owner TYPE c LENGTH 12,
+       END OF ts_obj_ids.
+`},
+		{uri = "file:///workspace/zdata.abap", source = "DATA ls_object_src TYPE ts_obj_ids."},
+	}
+	later := [?]analyze.Source_Input {
+		{uri = "file:///workspace/zmain.abap", source = "REPORT zmain. INCLUDE: zdata, ztypes."},
+		{uri = "file:///workspace/zdata.abap", source = "DATA ls_object_src TYPE ts_obj_ids."},
+		{uri = "file:///workspace/ztypes.abap", source = `
+TYPES: BEGIN OF ts_obj_ids,
+         owner TYPE c LENGTH 12,
+       END OF ts_obj_ids.
+`},
+	}
+
+	prior_project := analyze_units_project_test(t, prior[:])
+	prior_data := analyze.project_unit_by_uri(&prior_project, prior[2].uri)
+	later_project := analyze_units_project_test(t, later[:])
+	later_data := analyze.project_unit_by_uri(&later_project, later[1].uri)
+
+	testing.expect(t, prior_data != nil)
+	testing.expect(t, prior_data != nil && !has_diagnostic(prior_data, .Unresolved_Reference))
+	testing.expect(t, prior_data != nil && reference_resolves_to_uri(&prior_project, prior_data, "ts_obj_ids", .Type, .Type_Ref, prior[1].uri))
+	testing.expect(t, later_data != nil)
+	testing.expect(t, later_data != nil && has_diagnostic(later_data, .Unresolved_Reference))
+}
+
+@(test)
+finish_project_analysis_links_class_implementation_across_ordered_includes :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zmain.abap",
+			source = `
+REPORT zmain.
+INCLUDE: ztop, zcls.
+START-OF-SELECTION.
+  CREATE OBJECT gr_demo.
+  CALL METHOD gr_demo->get_data.
+`,
+		},
+		{
+			uri = "file:///workspace/ztop.abap",
+			source = `
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_data.
+ENDCLASS.
+`,
+		},
+		{
+			uri = "file:///workspace/zcls.abap",
+			source = `
+DATA gr_demo TYPE REF TO lcl_demo.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD get_data.
+  ENDMETHOD.
+ENDCLASS.
+`,
+		},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	top := analyze.project_unit_by_uri(&project, sources[1].uri)
+	cls := analyze.project_unit_by_uri(&project, sources[2].uri)
+	class_symbol: ^analyze.Symbol_Data
+	member: ^analyze.Symbol_Data
+	if top != nil {
+		class_symbol = analyze.find_symbol(top, "lcl_demo", .Class)
+		if class_symbol != nil {
+			member = class_member_named(top, class_symbol.id, "get_data", .Method)
+		}
+	}
+
+	testing.expect(t, top != nil)
+	testing.expect(t, cls != nil)
+	testing.expect(t, class_symbol != nil)
+	testing.expect(t, member != nil)
+	member_info := analyze.entity_decl_info(top, member.id) if top != nil && member != nil else nil
+	testing.expect(t, member_info != nil && .Has_Implementation in member_info.flags)
+	testing.expect(t, member_info != nil && member_info.implementation_unit == cls.unit_id)
+	testing.expect(t, top != nil && !has_diagnostic(top, .Missing_Method_Implementation))
+}
+
+@(test)
+finish_project_analysis_seeds_redefined_method_parameters_from_parent_unit :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zcl_parent.abap",
+			source = `
+CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_text TYPE string.
+ENDCLASS.
+CLASS zcl_parent IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+`,
+		},
+		{
+			uri = "file:///workspace/zcl_child.abap",
+			source = `
+CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS run REDEFINITION.
+ENDCLASS.
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    DATA lv_text TYPE string.
+    lv_text = iv_text.
+  ENDMETHOD.
+ENDCLASS.
+`,
+		},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	child := analyze.project_unit_by_uri(&project, sources[1].uri)
+
+	testing.expect(t, child != nil)
+	testing.expect(t, child != nil && !has_diagnostic(child, .Unresolved_Reference))
+	testing.expect(t, child != nil && has_reference(child, "iv_text", .Value, .Identifier))
+}
+
+@(test)
+finish_project_analysis_seeds_event_handler_parameters_from_event_unit :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zcl_source.abap",
+			source = `
+CLASS zcl_source DEFINITION.
+  PUBLIC SECTION.
+    DATA object_type TYPE string.
+    EVENTS saved EXPORTING VALUE(ex_object) TYPE REF TO zcl_source.
+ENDCLASS.
+`,
+		},
+		{
+			uri = "file:///workspace/zhandler.abap",
+			source = `
+CLASS lcl_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_saved FOR EVENT saved OF zcl_source IMPORTING ex_object.
+ENDCLASS.
+CLASS lcl_handler IMPLEMENTATION.
+  METHOD on_saved.
+    DATA lv_type TYPE string.
+    lv_type = ex_object->object_type.
+  ENDMETHOD.
+ENDCLASS.
+`,
+		},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	handler := analyze.project_unit_by_uri(&project, sources[1].uri)
+	param: ^analyze.Symbol_Data
+	if handler != nil {
+		for &s in handler.symbols {
+			if s.kind == .Parameter && s.name == "ex_object" {
+				if scope := analyze.scope(handler, s.scope); scope != nil && scope.kind == .Method {
+					param = &s
+					break
+				}
+			}
+		}
+	}
+
+	testing.expect(t, handler != nil)
+	testing.expect(t, handler != nil && !has_diagnostic(handler, .Unknown_Field))
+	testing.expect(t, param != nil)
+	testing.expect(t, param != nil && param.has_declared_type)
+	testing.expect(t, param != nil && param.declared_type.base_name == "zcl_source")
+	handler_class: ^analyze.Symbol_Data
+	if handler != nil {
+		handler_class = analyze.find_symbol(handler, "lcl_handler", .Class)
+	}
+	handler_member: ^analyze.Symbol_Data
+	if handler_class != nil {
+		handler_member = class_member_named(handler, handler_class.id, "on_saved", .Method)
+	}
+	handler_info: ^analyze.Decl_Info_Data
+	if handler_member != nil {
+		handler_info = analyze.entity_decl_info(handler, handler_member.id)
+	}
+	testing.expect(t, handler_info != nil)
+	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1)
+	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1 && .Has_Declared_Type in handler_info.signature_parameters[0].flags)
+	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1 && handler_info.signature_parameters[0].declared_type.base_name == "zcl_source")
+}
+
+@(test)
+finish_project_analysis_imports_structure_types_across_includes :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{uri = "file:///workspace/zmain.abap", source = "REPORT zmain. INCLUDE: ztop, zf01."},
+		{uri = "file:///workspace/ztop.abap", source = `
+TYPES: BEGIN OF ty_row,
+         comp TYPE string,
+       END OF ty_row.
+DATA gs_row TYPE ty_row.
+`},
+		{uri = "file:///workspace/zf01.abap", source = `
+FORM run.
+  DATA lv_comp TYPE string.
+  lv_comp = gs_row-comp.
+ENDFORM.
+`},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	form := analyze.project_unit_by_uri(&project, sources[2].uri)
+
+	testing.expect(t, form != nil)
+	testing.expect(t, form != nil && reference_resolves_to_uri(&project, form, "gs_row", .Value, .Identifier, sources[1].uri))
+	testing.expect(t, form != nil && !has_diagnostic(form, .Unknown_Field))
+}
+
+@(test)
+finish_project_analysis_reclassifies_open_sql_predicate_globals_from_prior_include :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{uri = "file:///workspace/zmain.abap", source = "REPORT zmain. INCLUDE: ztop, zf01."},
+		{uri = "file:///workspace/ztop.abap", source = `
+DATA p_lgnum TYPE string.
+DATA p_lgtyp TYPE string.
+DATA p_lgpla TYPE string.
+`},
+		{uri = "file:///workspace/zf01.abap", source = `
+FORM run.
+  DATA lw_lgpla TYPE string.
+  DATA lw_skzsi TYPE string.
+  SELECT SINGLE lgpla skzsi
+    FROM lagp
+    INTO (lw_lgpla, lw_skzsi)
+    WHERE lgnum = p_lgnum
+      AND lgtyp = p_lgtyp
+      AND lgpla = p_lgpla.
+ENDFORM.
+`},
+	}
+
+	project := analyze_units_project_test(t, sources[:])
+	form := analyze.project_unit_by_uri(&project, sources[2].uri)
+	names := [?]string{"p_lgnum", "p_lgtyp", "p_lgpla"}
+
+	testing.expect(t, form != nil)
+	for name in names {
+		testing.expect(t, form != nil && !sql_name_ref_present(form, name, .Column))
+		testing.expect(t, form != nil && reference_resolves_to_uri(&project, form, name, .Value, .Identifier, sources[1].uri))
+	}
+}
+
+@(test)
 analyze_target_reports_unresolved_include :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
@@ -11103,7 +11405,7 @@ ENDCLASS.
 	top := analyze.project_unit_by_uri(&project, candidates[0].uri)
 	cls := analyze.project_unit_by_uri(&project, candidates[1].uri)
 	class_symbol: ^analyze.Symbol_Data
-	member: ^analyze.Class_Member_Data
+	member: ^analyze.Symbol_Data
 	if top != nil {
 		class_symbol = analyze.find_symbol(top, "lcl_demo", .Class)
 		if class_symbol != nil {
@@ -11115,13 +11417,14 @@ ENDCLASS.
 	testing.expect(t, cls != nil)
 	testing.expect(t, class_symbol != nil)
 	testing.expect(t, member != nil)
-	testing.expect(t, .Has_Implementation in member.flags)
-	testing.expect_value(t, member.implementation.unit, cls.unit_id)
+	member_info := analyze.entity_decl_info(top, member.id) if top != nil && member != nil else nil
+	testing.expect(t, member_info != nil && .Has_Implementation in member_info.flags)
+	testing.expect_value(t, member_info.implementation_unit, cls.unit_id)
 	testing.expect(t, !has_diagnostic(top, .Missing_Method_Implementation))
 }
 
 @(test)
-analyze_target_imports_structure_types_across_includes :: proc(t: ^testing.T) {
+analyze_target_uses_provider_structure_across_includes_without_copy :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = "REPORT zmain. INCLUDE: ztop, zf01.",
@@ -11147,6 +11450,51 @@ ENDFORM.
 	testing.expect(t, form != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, form, "gs_row", .Value, .Identifier, candidates[0].uri))
 	testing.expect(t, !has_diagnostic(form, .Unknown_Field))
+	testing.expect(t, form != nil && analyze.find_structure(form, "ty_row") == nil)
+}
+
+@(test)
+cross_unit_field_fact_keeps_provider_structure_without_local_copy :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = "REPORT zmain. INCLUDE: ztop, zf01.",
+	}
+	candidates := [?]analyze.Source_Input {
+		{uri = "file:///workspace/ztop.abap", source = `
+TYPES: BEGIN OF ty_child,
+         name TYPE string,
+       END OF ty_child.
+TYPES: BEGIN OF ty_wrap,
+         child TYPE ty_child,
+       END OF ty_wrap.
+DATA gs_wrap TYPE ty_wrap.
+`},
+		{uri = "file:///workspace/zf01.abap", source = `
+FORM run.
+  DATA ls_child TYPE ty_child.
+  ls_child = gs_wrap-child.
+  ls_child-name = gs_wrap-child-name.
+ENDFORM.
+`},
+	}
+
+	project := analyze_project_test(t, 0, target, candidates[:])
+	top := analyze.project_unit_by_uri(&project, candidates[0].uri)
+	form := analyze.project_unit_by_uri(&project, candidates[1].uri)
+	testing.expect(t, top != nil)
+	testing.expect(t, form != nil)
+	testing.expect(t, form != nil && !has_diagnostic(form, .Unknown_Field))
+	if top == nil || form == nil {
+		return
+	}
+
+	field_offset := find_text(candidates[1].source, "gs_wrap-child") + len("gs_wrap-")
+	fact := sem_query.fact_expression_fact_at_offset(sem_query.facts(sem_query.semantic(form)), field_offset)
+	testing.expect(t, fact != nil)
+	if fact != nil {
+		testing.expect_value(t, fact.type_fact.structure_unit, top.unit_id)
+		testing.expect(t, fact.type_fact.structure != analyze.INVALID_STRUCTURE_ID)
+	}
 }
 
 @(test)
@@ -11193,7 +11541,75 @@ TYPES: BEGIN OF dd03p,
 }
 
 @(test)
-like_line_of_parameter_typed_as_class_structure_component_keeps_row_structure :: proc(t: ^testing.T) {
+like_line_of_provider_structure_table_component_keeps_component_path :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = `
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS fill CHANGING cs_data TYPE zcomponent.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD fill.
+    DATA ls_item LIKE LINE OF cs_data-items.
+    ls_item-name = 'x'.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{uri = "abapls-cache:/ddic-structure/zitem.abap", source = `
+TYPES: BEGIN OF zitem,
+         name TYPE string,
+       END OF zitem.
+`},
+		{uri = "abapls-cache:/ddic-table-type/zitem_tab.abap", source = `
+TYPES zitem_tab TYPE STANDARD TABLE OF zitem WITH DEFAULT KEY.
+`},
+		{uri = "abapls-cache:/ddic-structure/zcomponent.abap", source = `
+TYPES: BEGIN OF zcomponent,
+         items TYPE zitem_tab,
+       END OF zcomponent.
+`},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
+tables_work_area_type_ref_prefers_ddic_type_over_value_symbol :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = `
+TABLES sscrfields.
+
+FORM run.
+  sscrfields-ucomm = 'RUN'.
+ENDFORM.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{uri = "abapls-cache:/ddic-structure/sscrfields.abap", source = `
+TYPES: BEGIN OF sscrfields,
+         ucomm TYPE string,
+       END OF sscrfields.
+`},
+	}
+
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
+like_line_of_parameter_typed_as_class_structure_component_uses_provider_structure :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
 		source = `
@@ -11239,11 +11655,7 @@ TYPES: BEGIN OF ztext,
 	testing.expect(t, root != nil)
 	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
 	ls_text := analyze.find_symbol(root, "ls_text", .Variable)
-	testing.expect(t, ls_text != nil && ls_text.structure != analyze.INVALID_STRUCTURE_ID)
-	_, has_clsname := analyze.structure_field_info(root, ls_text.structure, "clsname")
-	_, has_parent_field := analyze.structure_field_info(root, ls_text.structure, "texts")
-	testing.expect(t, has_clsname)
-	testing.expect(t, !has_parent_field)
+	testing.expect(t, ls_text != nil && ls_text.structure == analyze.INVALID_STRUCTURE_ID)
 }
 
 @(test)

@@ -680,7 +680,7 @@ project_state_finish :: proc(
 	project_index_update_include_graph(&state.index, state.units[:], affected[:])
 
 	project := project_state_analysis(state)
-	resolve_project_cross_unit_for_units(project.units[:], affected[:], &state.index, allocator)
+	resolve_project_cross_unit_for_units(project.units[:], affected[:], &state.index)
 	if project_state_linking_needed(project.units[:], affected[:]) {
 		reset_cross_class_member_implementation_links(project.units[:])
 		link_class_member_implementations_with_index(
@@ -917,7 +917,6 @@ resolve_project_cross_unit_for_units :: proc(
 	units: []Unit_Analysis,
 	affected: []Unit_Id,
 	index: ^Project_Index,
-	allocator: mem.Allocator,
 ) {
 	if len(units) == 0 || len(affected) == 0 {
 		return
@@ -954,7 +953,6 @@ resolve_project_cross_unit_for_units :: proc(
 		index.class_scope_entries,
 		index.visible,
 		index.predecessors,
-		allocator,
 	) {
 		for unit_id in affected {
 			unit_index := unit_id_index(unit_id)
@@ -962,26 +960,6 @@ resolve_project_cross_unit_for_units :: proc(
 				continue
 			}
 			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
-		}
-	}
-
-	changed := true
-	for changed {
-		changed = false
-		for unit_id in affected {
-			unit_index := unit_id_index(unit_id)
-			if unit_index >= 0 && unit_index < len(units) {
-				changed =
-					import_project_structures_for_unit(
-						units,
-						unit_index,
-						&index.root_lookup,
-						index.class_scope_entries,
-						index.visible[unit_index],
-						allocator,
-					) ||
-					changed
-			}
 		}
 	}
 }
@@ -994,7 +972,6 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [][dynamic]Unit_Id,
 	predecessors: [][dynamic]Unit_Id,
-	allocator: mem.Allocator,
 ) -> bool {
 	changed := false
 	for unit_id in affected {
@@ -1047,10 +1024,14 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 				visible[unit_index],
 				predecessors[unit_index],
 			)
-			if member == nil {
+			if member.symbol == INVALID_SYMBOL_ID {
 				continue
 			}
-			if .For_Event in member.flags {
+			member_info := entity_decl_info(&units[member_unit_index], member.symbol)
+			if member_info == nil {
+				continue
+			}
+			if .For_Event in member_info.flags {
 				changed =
 					seed_event_handler_method_parameter_types(
 						units,
@@ -1061,42 +1042,34 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 						roots,
 						class_entries,
 						visible,
-						allocator,
 					) ||
 					changed
 			}
-			for param in member.parameters {
+			for param in member_info.signature_parameters {
 				if method_scope_has_value_symbol(unit, method_scope, param.name) {
 					continue
 				}
-				structure_id := seeded_method_parameter_structure(
-					units,
-					unit_index,
-					member_unit_index,
-					member,
-					param,
-					roots,
-					class_entries,
-					visible,
-					allocator,
-				)
+				type_id := param.type_id if member_unit_index == unit_index else UNKNOWN_TYPE_ID
 				symbol_id := declare_symbol(
 					unit,
 					method_scope,
 					param.name,
 					.Parameter,
 					method_symbol.decl_range,
-					structure_id,
+					INVALID_STRUCTURE_ID,
 					param.declared_type,
 					.Has_Declared_Type in param.flags,
 					param.type_clause_display,
 					type_clause_table_has_of = param.type_clause_table_has_of,
-					type_id = param.type_id,
+					type_id = type_id,
 					owner = method_symbol.id,
 				)
 				if info := entity_decl_info(unit, symbol_id); info != nil {
-					info.parameter_section = decl_method_section(param.section)
-					info.parameter_passing = decl_passing(param.passing)
+					info.parameter_section = param.section
+					info.parameter_passing = param.passing
+					if .Has_Declared_Type in param.flags {
+						info.flags += {.Has_Declared_Type}
+					}
 					if .Is_Optional in param.flags {
 						info.flags += {.Is_Optional}
 					}
@@ -1116,7 +1089,7 @@ project_state_linking_needed :: proc(units: []Unit_Analysis, affected: []Unit_Id
 			continue
 		}
 		unit := &units[unit_index]
-		if len(unit.class_members) > 0 || len(unit.class_definitions) > 0 {
+		if len(unit.class_definitions) > 0 {
 			return true
 		}
 		for symbol in unit.symbols {
@@ -1131,19 +1104,14 @@ project_state_linking_needed :: proc(units: []Unit_Analysis, affected: []Unit_Id
 @(private)
 reset_cross_class_member_implementation_links :: proc(units: []Unit_Analysis) {
 	for &unit in units {
-		for &member in unit.class_members {
-			if !(.Has_Implementation in member.flags) ||
-			   member.implementation.unit == unit.unit_id {
+		for &info in unit.decl_infos {
+			if !(.Has_Implementation in info.flags) ||
+			   info.implementation_unit == unit.unit_id {
 				continue
 			}
-			member.flags -= {.Has_Implementation, .Has_Implementation_Range}
-			member.implementation = {}
-			member.implementation_range = {}
-			if info := entity_decl_info(&unit, member.symbol); info != nil {
-				info.flags -= {.Has_Implementation}
-				info.implementation_unit = INVALID_UNIT_ID
-				info.implementation_range = {}
-			}
+			info.flags -= {.Has_Implementation}
+			info.implementation_unit = INVALID_UNIT_ID
+			info.implementation_range = {}
 		}
 	}
 }
@@ -1641,25 +1609,18 @@ unit_interface_signature :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 			write_signature_string(&out, field.value_clause_display)
 		}
 	}
-	for member in unit.class_members {
-		if member.visibility == .Private {
+	for s in unit.symbols {
+		info := decl_info(unit, s.decl_info)
+		scope_data := scope(unit, s.scope)
+		if info == nil ||
+		   info.owner == INVALID_SYMBOL_ID ||
+		   scope_data == nil ||
+		   !(scope_data.kind == .Class || scope_data.kind == .Interface) ||
+		   scope_data.owner != info.owner ||
+		   info.visibility == .Private {
 			continue
 		}
-		write_signature_int(&out, symbol_id_index(member.class_symbol))
-		write_signature_int(&out, int(member.kind))
-		write_signature_int(&out, int(member.visibility))
-		write_signature_string(&out, member.name)
-		write_signature_string(&out, member.signature)
-		write_signature_int(&out, 1 if .For_Event in member.flags else 0)
-		write_signature_string(&out, member.event_name)
-		write_signature_type_ref(&out, member.event_source_type)
-		for param in member.parameters {
-			write_signature_int(&out, int(param.section))
-			write_signature_int(&out, int(param.passing))
-			write_signature_string(&out, param.name)
-			write_signature_type_ref(&out, param.declared_type)
-			write_signature_string(&out, param.type_clause_display)
-		}
+		write_class_member_decl_interface_signature(&out, info)
 	}
 	for s in unit.symbols {
 		if s.kind != .Form {
@@ -1669,18 +1630,119 @@ unit_interface_signature :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 		write_signature_int(&out, symbol_id_index(s.id))
 		write_signature_string(&out, info.signature if info != nil else "")
 	}
-	for module in unit.function_modules {
-		write_signature_int(&out, symbol_id_index(module.symbol))
-		write_signature_string(&out, module.signature)
-		for param in module.parameters {
-			write_signature_int(&out, int(param.section))
-			write_signature_int(&out, int(param.passing))
-			write_signature_string(&out, param.name)
-			write_signature_type_ref(&out, param.declared_type)
-			write_signature_string(&out, param.type_clause_display)
+	for s in unit.symbols {
+		if s.kind != .Module {
+			continue
 		}
+		write_function_decl_interface_signature(&out, unit, s.id)
 	}
 	return strings.to_string(out)
+}
+
+@(private)
+write_class_member_decl_interface_signature :: proc(
+	out: ^strings.Builder,
+	info: ^Decl_Info_Data,
+) {
+	for param in info.signature_parameters {
+		_, section_ok := method_section_from_decl(param.section)
+		_, passing_ok := parameter_passing_from_decl(param.passing)
+		if !section_ok || !passing_ok {
+			return
+		}
+	}
+	write_signature_int(out, symbol_id_index(info.owner))
+	write_signature_int(out, int(info.member_kind))
+	write_signature_int(out, int(info.visibility))
+	write_signature_string(out, info.name)
+	write_signature_string(out, info.signature)
+	write_signature_int(out, 1 if .For_Event in info.flags else 0)
+	write_signature_string(out, info.event_name)
+	write_signature_type_ref(out, info.event_source_type)
+	for param in info.signature_parameters {
+		section, _ := method_section_from_decl(param.section)
+		passing, _ := parameter_passing_from_decl(param.passing)
+		write_signature_int(out, int(section))
+		write_signature_int(out, int(passing))
+		write_signature_string(out, param.name)
+		write_signature_type_ref(out, param.declared_type)
+		write_signature_string(out, param.type_clause_display)
+	}
+}
+
+@(private)
+write_function_decl_interface_signature :: proc(
+	out: ^strings.Builder,
+	unit: ^Unit_Analysis,
+	symbol_id: Symbol_Id,
+) {
+	info := entity_decl_info(unit, symbol_id)
+	if info == nil {
+		return
+	}
+	for param in info.signature_parameters {
+		_, section_ok := function_section_from_decl(param.section)
+		_, passing_ok := parameter_passing_from_decl(param.passing)
+		if !section_ok || !passing_ok {
+			return
+		}
+	}
+	write_signature_int(out, symbol_id_index(symbol_id))
+	write_signature_string(out, info.signature)
+	for param in info.signature_parameters {
+		section, _ := function_section_from_decl(param.section)
+		passing, _ := parameter_passing_from_decl(param.passing)
+		write_signature_int(out, int(section))
+		write_signature_int(out, int(passing))
+		write_signature_string(out, param.name)
+		write_signature_type_ref(out, param.declared_type)
+		write_signature_string(out, param.type_clause_display)
+	}
+}
+
+@(private)
+method_section_from_decl :: proc(section: Decl_Parameter_Section) -> (Method_Parameter_Section, bool) {
+	#partial switch section {
+	case .Method_Importing:
+		return .Importing, true
+	case .Method_Exporting:
+		return .Exporting, true
+	case .Method_Changing:
+		return .Changing, true
+	case .Method_Receiving:
+		return .Receiving, true
+	case .Method_Returning:
+		return .Returning, true
+	}
+	return .Importing, false
+}
+
+@(private)
+function_section_from_decl :: proc(section: Decl_Parameter_Section) -> (Function_Module_Parameter_Section, bool) {
+	#partial switch section {
+	case .Function_Importing:
+		return .Importing, true
+	case .Function_Exporting:
+		return .Exporting, true
+	case .Function_Changing:
+		return .Changing, true
+	case .Function_Tables:
+		return .Tables, true
+	}
+	return .Importing, false
+}
+
+@(private)
+parameter_passing_from_decl :: proc(passing: Decl_Parameter_Passing) -> (Parameter_Passing_Kind, bool) {
+	#partial switch passing {
+	case .Direct:
+		return .Direct, true
+	case .Value:
+		return .Value, true
+	case .Reference:
+		return .Reference, true
+	}
+	return .Direct, false
 }
 
 @(private)
@@ -1738,10 +1800,15 @@ finish_project_analysis :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	resolve_project_cross_unit(project.units[:], allocator)
-	link_class_member_implementations(project.units[:], allocator)
-	reclassify_project_open_sql_predicate_host_variables(project.units[:], allocator)
 	index := project_index_from_units(project.units[:], allocator)
+	unit_ids := make([dynamic]Unit_Id, 0, len(project.units), context.temp_allocator)
+	for unit in project.units {
+		append(&unit_ids, unit.unit_id)
+	}
+	resolve_project_cross_unit_for_units(project.units[:], unit_ids[:], &index)
+	link_class_member_implementations_with_index(project.units[:], &index.root_lookup, index.predecessors)
+	reclassify_project_open_sql_predicate_host_variables_for_units(project.units[:], unit_ids[:], allocator)
+	project_index_update_sql_predicate_columns(&index, project.units[:], unit_ids[:])
 	lookup := &index
 	infer_project_semantic_facts(project, lookup, pool, unit_allocators, allocator)
 	check_project_operands(project, lookup)
@@ -1844,6 +1911,12 @@ build_scope_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Re
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
 	refresh_unit_type_ids(unit)
+	if expand_local_structure_includes(
+		unit,
+		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
+	) {
+		refresh_unit_type_ids(unit)
+	}
 	return execution.No_Result{}
 }
 
@@ -2214,37 +2287,11 @@ diagnostic_message :: proc(prefix, name: string, allocator: mem.Allocator) -> st
 	return strings.to_string(out)
 }
 
-@(private)
-link_class_member_implementations :: proc(units: []Unit_Analysis, allocator: mem.Allocator) {
-	predecessors := include_predecessor_units_for_units(units, allocator)
-	roots := build_project_root_index(units, allocator)
-	root_lookup := build_project_root_lookup(units, roots[:], allocator)
-	link_class_member_implementations_with_index(units, &root_lookup, predecessors)
-}
-
-@(private)
 link_class_member_implementations_with_index :: proc(
 	units: []Unit_Analysis,
 	root_lookup: ^Project_Root_Lookup,
 	predecessors: [][dynamic]Unit_Id,
 ) {
-	for unit_index in 0 ..< len(units) {
-		for member_index in 0 ..< len(units[unit_index].class_members) {
-			member := &units[unit_index].class_members[member_index]
-			if .Has_Implementation_Range in member.flags {
-				member.implementation = Class_Member_Implementation_Data {
-					unit  = units[unit_index].unit_id,
-					range = member.implementation_range,
-				}
-				member.flags += {.Has_Implementation}
-				if info := entity_decl_info(&units[unit_index], member.symbol); info != nil {
-					info.implementation_unit = member.implementation.unit
-					info.implementation_range = member.implementation.range
-					info.flags += {.Has_Implementation}
-				}
-			}
-		}
-	}
 	for impl_unit_index in 0 ..< len(units) {
 		for method_symbol in units[impl_unit_index].symbols {
 			if method_symbol.kind != .Method {
@@ -2273,68 +2320,23 @@ link_class_member_implementations_with_index :: proc(
 					   ) {
 					continue
 				}
-				member := unit_class_member(
+				member := unit_class_member_symbol(
 					&units[unit_id_index(def_unit)],
 					class_handle.symbol,
 					method_symbol.name,
 				)
-				if member != nil &&
-				   member.kind == .Method &&
-				   !(.Has_Implementation in member.flags) {
-					member.implementation = Class_Member_Implementation_Data {
-						unit  = units[impl_unit_index].unit_id,
-						range = method_symbol.decl_range,
-					}
-					member.implementation_range = method_symbol.decl_range
-					member.flags += {.Has_Implementation, .Has_Implementation_Range}
-					def_unit_index := unit_id_index(def_unit)
-					if info := entity_decl_info(&units[def_unit_index], member.symbol); info != nil {
-						info.implementation_unit = member.implementation.unit
-						info.implementation_range = member.implementation.range
+				def_unit_index := unit_id_index(def_unit)
+				if member != nil && member.kind == .Method {
+					if info := entity_decl_info(&units[def_unit_index], member.id); info != nil &&
+					   !(.Has_Implementation in info.flags) {
+						info.implementation_unit = units[impl_unit_index].unit_id
+						info.implementation_range = method_symbol.decl_range
 						info.flags += {.Has_Implementation}
 					}
 					break
 				}
 			}
 		}
-	}
-}
-
-@(private)
-reclassify_project_open_sql_predicate_host_variables :: proc(
-	units: []Unit_Analysis,
-	allocator: mem.Allocator,
-) {
-	roots := make([dynamic]Symbol_Handle, 0, 8, allocator)
-	names := make([dynamic]string, 0, 8, allocator)
-	for unit in units {
-		for s in unit.symbols {
-			if s.scope == unit.root_scope && symbol_kind_occupies(s.kind, .Value) {
-				if !string_list_contains(names[:], s.name) {
-					append(&names, s.name)
-					append(&roots, Symbol_Handle{unit = unit.unit_id, symbol = s.id})
-				}
-			}
-		}
-	}
-	for unit_index in 0 ..< len(units) {
-		next_refs := make(
-			[dynamic]Sql_Name_Ref_Data,
-			0,
-			len(units[unit_index].sql_name_refs),
-			allocator,
-		)
-		for sql_ref in units[unit_index].sql_name_refs {
-			if sql_ref.kind == .Column &&
-			   sql_ref_in_predicate(units[unit_index].sql_predicates[:], sql_ref) {
-				if root_index := string_list_index(names[:], sql_ref.name); root_index >= 0 {
-					add_reclassified_sql_reference(&units[unit_index], sql_ref, roots[root_index])
-					continue
-				}
-			}
-			append(&next_refs, sql_ref)
-		}
-		units[unit_index].sql_name_refs = next_refs
 	}
 }
 

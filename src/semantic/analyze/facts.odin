@@ -980,14 +980,18 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 		if len(lit.value) > 0 && lit.value[0] >= '0' && lit.value[0] <= '9' {
 			return Type_Fact_Data {
 				type_id = type_builtin(c.unit, "i"),
+				type_unit = c.unit.unit_id,
 				structure = INVALID_STRUCTURE_ID,
+				structure_unit = INVALID_UNIT_ID,
 				declared_type = builtin_type_ref("i"),
 				has_declared_type = true,
 			}
 		}
 		return Type_Fact_Data {
 			type_id = type_builtin(c.unit, "string"),
+			type_unit = c.unit.unit_id,
 			structure = INVALID_STRUCTURE_ID,
+			structure_unit = INVALID_UNIT_ID,
 			declared_type = builtin_type_ref("string"),
 			has_declared_type = true,
 		}
@@ -997,7 +1001,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			s := c.unit.symbols[symbol_id_index(id)]
 			return Type_Fact_Data {
 				type_id = s.type_id,
+				type_unit = c.unit.unit_id,
 				structure = s.structure,
+				structure_unit = c.unit.unit_id if s.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 				declared_type = s.declared_type,
 				has_declared_type = s.has_declared_type,
 				type_clause_display = s.type_clause_display,
@@ -1017,7 +1023,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			}
 			return Type_Fact_Data {
 				type_id = type_id,
+				type_unit = c.unit.unit_id if type_id_is_known(type_id) else INVALID_UNIT_ID,
 				structure = INVALID_STRUCTURE_ID,
+				structure_unit = INVALID_UNIT_ID,
 				declared_type = type_ref,
 				has_declared_type = true,
 				type_clause_display = expr_display(c, con.type_ref),

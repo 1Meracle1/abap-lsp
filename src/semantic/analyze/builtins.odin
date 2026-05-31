@@ -1841,6 +1841,7 @@ builtin_class_attribute_type_fact :: proc(
 		   strings.equal_fold(attribute.name, attribute_name) {
 			return Type_Fact_Data {
 					structure = INVALID_STRUCTURE_ID,
+					structure_unit = INVALID_UNIT_ID,
 					declared_type = builtin_type_ref(attribute.type_name),
 					has_declared_type = true,
 					type_clause_display = attribute.type_name,

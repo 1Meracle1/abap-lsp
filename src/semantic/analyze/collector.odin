@@ -738,6 +738,79 @@ set_parameter_decl_info :: proc(
 	}
 }
 
+append_signature_parameter :: proc(
+	c: ^Collector,
+	owner: Entity_Id,
+	symbol: Entity_Id,
+	name: string,
+	range: tokenizer.Range,
+	section: Decl_Parameter_Section,
+	passing: Decl_Parameter_Passing,
+	type_id: Type_Id,
+	declared_type: Field_Type_Ref_Data,
+	has_declared_type: bool,
+	type_clause_display: string,
+	type_clause_form: ast.Data_Type_Form,
+	has_type_clause_form: bool,
+	type_clause_table_has_of: bool,
+	flags := Decl_Info_Flags{},
+) {
+	if info := entity_decl_info(c.unit, owner); info != nil {
+		param_flags := flags
+		if has_declared_type {
+			param_flags += {.Has_Declared_Type}
+		}
+		append(
+			&info.signature_parameters,
+			Decl_Signature_Parameter_Data {
+				symbol = symbol,
+				name = canonical_name(name, c.allocator),
+				range = range,
+				section = section,
+				passing = passing,
+				type_id = type_id,
+				declared_type = declared_type,
+				type_clause_display = strings.clone(type_clause_display, c.allocator) if type_clause_display != "" else "",
+				type_clause_form = type_clause_form,
+				has_type_clause_form = has_type_clause_form,
+				type_clause_table_has_of = type_clause_table_has_of,
+				flags = param_flags,
+			},
+		)
+	}
+}
+
+append_signature_exception :: proc(
+	c: ^Collector,
+	owner: Entity_Id,
+	name: string,
+	range: tokenizer.Range,
+) {
+	if info := entity_decl_info(c.unit, owner); info != nil {
+		append(
+			&info.signature_exceptions,
+			Decl_Signature_Exception_Data {
+				name = canonical_name(name, c.allocator),
+				range = range,
+			},
+		)
+	}
+}
+
+set_entity_event_signature :: proc(
+	c: ^Collector,
+	id: Entity_Id,
+	name: string,
+	range: tokenizer.Range,
+	source_type: Field_Type_Ref_Data,
+) {
+	if info := entity_decl_info(c.unit, id); info != nil {
+		info.event_name = strings.clone(name, c.allocator)
+		info.event_range = range
+		info.event_source_type = source_type
+	}
+}
+
 data_decl_info :: proc(n: ^ast.Data_Decl) -> Decl_Info {
 	return Decl_Info {
 		kind = n.kind,
@@ -2187,8 +2260,8 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 		}
 		note_method_implementation(c, class_owner, method_name, stmt.header_range)
 		declare_method_scope_params(c, class_owner, method_name, method_scope, owner)
-		member := class_member(c, class_owner, method_name)
-		if member == nil || !(.Is_Static in member.flags) {
+		member_info := entity_decl_info(c.unit, class_member_symbol(c, class_owner, method_name))
+		if member_info == nil || !(.Is_Static in member_info.flags) {
 			_ = declare_collected_symbol(
 				c,
 				method_scope,
@@ -2224,15 +2297,7 @@ walk_form_decl :: proc(c: ^Collector, stmt: ^ast.Form_Decl, scope: Scope_Id) {
 	set_entity_signature(c, owner, stmt.header_text)
 	set_entity_signature_scope(c, owner, form_scope)
 	set_entity_body_scope(c, owner, form_scope)
-	parameters := form_parameters_from_ast(c, stmt.form_parameters[:], form_scope, owner)
-	append(
-		&c.unit.form_routines,
-		Form_Routine_Data {
-			symbol = owner,
-			signature = strings.clone(stmt.header_text, c.allocator),
-			parameters = parameters,
-		},
-	)
+	form_parameters_from_ast(c, stmt.form_parameters[:], form_scope, owner)
 	if c.unit.source_mode != .Dependency_Interface {
 		walk_stmt_list(c, stmt.body, form_scope)
 	}
@@ -2249,16 +2314,7 @@ walk_function_decl :: proc(c: ^Collector, stmt: ^ast.Function_Decl, scope: Scope
 	set_entity_signature(c, owner, stmt.header_text)
 	set_entity_signature_scope(c, owner, function_scope)
 	set_entity_body_scope(c, owner, function_scope)
-	parameters, exceptions := function_parameters_from_ast(c, stmt, function_scope, owner)
-	append(
-		&c.unit.function_modules,
-		Function_Module_Data {
-			symbol = owner,
-			signature = strings.clone(stmt.header_text, c.allocator),
-			parameters = parameters,
-			exceptions = exceptions,
-		},
-	)
+	function_parameters_from_ast(c, stmt, function_scope, owner)
 	if c.unit.source_mode != .Dependency_Interface {
 		walk_stmt_list(c, stmt.body, function_scope)
 	}
@@ -2416,30 +2472,16 @@ collect_class_attribute_infos :: proc(
 				type_id = type_structure(c.unit, structure_id) if structure_id != INVALID_STRUCTURE_ID else UNKNOWN_TYPE_ID
 			}
 		}
-		flags := Class_Member_Flags{}
 		decl_flags := Decl_Info_Flags{}
 		if is_static {
-			flags += {.Is_Static}
 			decl_flags += {.Is_Static}
 		}
 		set_member_decl_info(c, member_symbol, class_symbol, visibility, .Attribute, decl_flags)
 		set_entity_signature(c, member_symbol, source_text(c, signature_range))
-		append(
-			&c.unit.class_members,
-			Class_Member_Data {
-				symbol = member_symbol,
-				class_symbol = class_symbol,
-				name = name,
-				kind = .Attribute,
-				visibility = visibility,
-				decl_range = info.range,
-				signature = source_text(c, signature_range),
-				parameters = make([dynamic]Class_Member_Parameter_Data, 0, 0, c.allocator),
-				type_id = type_id,
-				structure = structure_id,
-				flags = flags,
-			},
-		)
+		if s := symbol(c.unit, member_symbol); s != nil {
+			s.structure = structure_id
+			s.type_id = type_id
+		}
 	}
 }
 
@@ -2464,13 +2506,6 @@ collect_class_oop_stmt :: proc(
 					add_type_reference(c, scope, param.declared_type, param.range, param.type_clause_form, param.has_type_clause_form)
 				}
 			}
-			flags := Class_Member_Flags{}
-			if is_static {
-				flags += {.Is_Static}
-			}
-			if .Redefinition in member.flags {
-				flags += {.Is_Redefinition}
-			}
 			decl_flags := Decl_Info_Flags{}
 			if is_static {
 				decl_flags += {.Is_Static}
@@ -2481,42 +2516,26 @@ collect_class_oop_stmt :: proc(
 			event_name := ""
 			event_range := tokenizer.Range{}
 			event_source_type := Field_Type_Ref_Data{}
-			event_source_type_id := UNKNOWN_TYPE_ID
 			if member.event_handler.source_type != nil {
 				if type_ref, type_ok := type_ref_from_expr(c, member.event_handler.source_type, .Type);
 				   type_ok {
 					event_name = canonical_name(member.event_handler.event_name, c.allocator)
 					event_range = member.event_handler.event_range
 					event_source_type = type_ref
-					flags += {.For_Event}
 					decl_flags += {.For_Event}
 					add_type_reference(c, scope, type_ref, member.event_handler.source_type.range)
 				}
 			}
 			set_member_decl_info(c, member_symbol, class_symbol, visibility, .Method, decl_flags)
+			if event_name != "" {
+				set_entity_event_signature(c, member_symbol, event_name, event_range, event_source_type)
+			}
 			set_entity_signature(c, member_symbol, stmt.text)
 			sig_scope := declare_signature_scope_params(c, scope, stmt.range, member_symbol, parameters[:])
 			set_entity_signature_scope(c, member_symbol, sig_scope)
-			append(
-				&c.unit.class_members,
-				Class_Member_Data {
-					symbol = member_symbol,
-					class_symbol = class_symbol,
-					name = canonical_name(name, c.allocator),
-					kind = .Method,
-					visibility = visibility,
-					decl_range = stmt.range,
-					signature = strings.clone(stmt.text, c.allocator),
-					parameters = parameters,
-					exceptions = exceptions,
-					event_name = event_name,
-					event_range = event_range,
-					event_source_type = event_source_type,
-					event_source_type_id = event_source_type_id,
-					structure = INVALID_STRUCTURE_ID,
-					flags = flags,
-				},
-			)
+			for exception in exceptions {
+				append_signature_exception(c, member_symbol, exception.name, exception.range)
+			}
 		}
 	case .Events, .Class_Events:
 		is_static := stmt.kind == .Class_Events
@@ -2528,10 +2547,6 @@ collect_class_oop_stmt :: proc(
 					add_type_reference(c, scope, param.declared_type, param.range, param.type_clause_form, param.has_type_clause_form)
 				}
 			}
-			flags := Class_Member_Flags{}
-			if is_static {
-				flags += {.Is_Static}
-			}
 			decl_flags := Decl_Info_Flags{}
 			if is_static {
 				decl_flags += {.Is_Static}
@@ -2540,21 +2555,6 @@ collect_class_oop_stmt :: proc(
 			set_entity_signature(c, member_symbol, stmt.text)
 			sig_scope := declare_signature_scope_params(c, scope, stmt.range, member_symbol, parameters[:])
 			set_entity_signature_scope(c, member_symbol, sig_scope)
-			append(
-				&c.unit.class_members,
-				Class_Member_Data {
-					symbol = member_symbol,
-					class_symbol = class_symbol,
-					name = canonical_name(member.name, c.allocator),
-					kind = .Event,
-					visibility = visibility,
-					decl_range = stmt.range,
-					signature = strings.clone(stmt.text, c.allocator),
-					parameters = parameters,
-					structure = INVALID_STRUCTURE_ID,
-					flags = flags,
-				},
-			)
 		}
 	case .Interfaces:
 		for member in stmt.members {
@@ -2572,13 +2572,13 @@ collect_class_oop_stmt :: proc(
 	case .Aliases:
 		if len(stmt.aliases) > 0 {
 			for alias in stmt.aliases {
-				collect_member_alias(c, alias.name, alias.target, stmt.range, scope, class_symbol)
+				collect_member_alias(c, alias.name, alias.target, stmt.range, scope, class_symbol, visibility)
 			}
 		} else {
 			for member in stmt.members {
 				for sig in member.signatures {
 					if sig.kind == .For && len(sig.values) > 0 {
-						collect_member_alias(c, member.name, sig.values[0], stmt.range, scope, class_symbol)
+						collect_member_alias(c, member.name, sig.values[0], stmt.range, scope, class_symbol, visibility)
 						break
 					}
 				}
@@ -2595,6 +2595,7 @@ collect_member_alias :: proc(
 	range: tokenizer.Range,
 	scope: Scope_Id,
 	class_symbol: Symbol_Id,
+	visibility: Visibility,
 ) {
 	target_ref, ok := type_ref_from_expr(c, target, .Type)
 	if !ok || target_ref.base_name == "" {
@@ -2616,6 +2617,7 @@ collect_member_alias :: proc(
 	)
 	set_entity_signature(c, alias_symbol, source_text(c, range))
 	if info := entity_decl_info(c.unit, alias_symbol); info != nil {
+		info.visibility = visibility
 		info.alias_target_interface_name = target_ref.base_name
 		info.alias_target_member_name = target_member
 	}
@@ -2665,6 +2667,9 @@ declare_signature_scope_params :: proc(
 			owner = owner,
 		)
 		flags := Decl_Info_Flags{}
+		if has_type {
+			flags += {.Has_Declared_Type}
+		}
 		if .Is_Optional in param.flags {
 			flags += {.Is_Optional}
 		}
@@ -2674,6 +2679,23 @@ declare_signature_scope_params :: proc(
 			owner,
 			decl_method_section(param.section),
 			decl_passing(param.passing),
+			flags,
+		)
+		append_signature_parameter(
+			c,
+			owner,
+			parameters[i].symbol,
+			param.name,
+			param.range,
+			decl_method_section(param.section),
+			decl_passing(param.passing),
+			param.type_id,
+			param.declared_type,
+			has_type,
+			param.type_clause_display,
+			param.type_clause_form,
+			param.has_type_clause_form,
+			param.type_clause_table_has_of,
 			flags,
 		)
 	}
@@ -2828,8 +2850,7 @@ form_parameters_from_ast :: proc(
 	clauses: []ast.Form_Parameter_Clause,
 	scope: Scope_Id,
 	owner: Entity_Id,
-) -> [dynamic]Form_Parameter_Data {
-	parameters := make([dynamic]Form_Parameter_Data, 0, 2, c.allocator)
+) {
 	for clause in clauses {
 		declared_type, has_type := type_ref_from_clause(c, clause.type_clause)
 		display := type_clause_display(c, clause.type_clause)
@@ -2863,19 +2884,28 @@ form_parameters_from_ast :: proc(
 			type_clause_table_has_of = type_table_has_of,
 			owner = owner,
 		)
-		section := form_parameter_section_from_ast(clause.section)
-		passing := form_parameter_passing_from_ast(clause.passing)
-		set_parameter_decl_info(c, symbol_id, owner, decl_form_section(section), decl_form_passing(passing))
-		append(
-			&parameters,
-			Form_Parameter_Data {
-				symbol = symbol_id,
-				section = section,
-				passing = passing,
-			},
+		section := decl_form_section_from_ast(clause.section)
+		passing := decl_passing_from_ast(clause.passing)
+		decl_flags := Decl_Info_Flags{.Has_Declared_Type} if has_type else Decl_Info_Flags{}
+		set_parameter_decl_info(c, symbol_id, owner, section, passing, decl_flags)
+		append_signature_parameter(
+			c,
+			owner,
+			symbol_id,
+			clause.name,
+			clause.range,
+			section,
+			passing,
+			UNKNOWN_TYPE_ID,
+			declared_type,
+			has_type,
+			display,
+			type_form,
+			has_type_form,
+			type_table_has_of,
+			decl_flags,
 		)
 	}
-	return parameters
 }
 
 function_parameters_from_ast :: proc(
@@ -2883,96 +2913,92 @@ function_parameters_from_ast :: proc(
 	stmt: ^ast.Function_Decl,
 	scope: Scope_Id,
 	owner: Entity_Id,
-) -> (
-	[dynamic]Function_Module_Parameter_Data,
-	[dynamic]Function_Module_Exception_Data,
 ) {
-	parameters := make([dynamic]Function_Module_Parameter_Data, 0, 2, c.allocator)
-	exceptions := make([dynamic]Function_Module_Exception_Data, 0, 1, c.allocator)
 	for clause, i in stmt.function_parameters {
-		param := Function_Module_Parameter_Data {
-			symbol  = INVALID_SYMBOL_ID,
-			section = function_parameter_section_from_ast(clause.section),
-			name    = canonical_name(clause.name, c.allocator),
-			range   = clause.range,
-			passing = parameter_passing_from_ast(clause.passing),
-		}
-		param.type_clause_display = type_clause_display(c, clause.type_clause)
+		symbol_id := INVALID_SYMBOL_ID
+		section := function_parameter_section_from_ast(clause.section)
+		name := canonical_name(clause.name, c.allocator)
+		range := clause.range
+		passing := parameter_passing_from_ast(clause.passing)
+		type_clause_display := type_clause_display(c, clause.type_clause)
 		type_form, has_type_form := type_clause_form_from_ast(clause.type_clause)
 		type_table_has_of := type_clause_table_has_of_from_ast(clause.type_clause)
 		ref_type_form := type_form
 		if clause.section == .Tables &&
-		   param.type_clause_display != "" &&
+		   type_clause_display != "" &&
 		   !(has_type_form && type_form_is_table_category(type_form)) {
-			param.type_clause_display = concat2(c, "STANDARD TABLE OF ", param.type_clause_display)
+			type_clause_display = concat2(c, "STANDARD TABLE OF ", type_clause_display)
 			if has_type_form && type_form == .Like {
 				ref_type_form = .Structure
 			}
 		}
+		declared_type := Field_Type_Ref_Data{}
+		has_declared_type := false
 		if type_ref, has_type := type_ref_from_clause(c, clause.type_clause); has_type {
-			param.declared_type = type_ref
-			param.type_clause_form = ref_type_form
-			param.has_type_clause_form = has_type_form
-			param.flags += {.Has_Declared_Type}
-			add_type_reference(c, scope, type_ref, param.range, ref_type_form, has_type_form)
+			declared_type = type_ref
+			has_declared_type = true
+			add_type_reference(c, scope, type_ref, range, ref_type_form, has_type_form)
 		}
-		if .Is_Optional in clause.flags {
-			param.flags += {.Is_Optional}
-		}
-		if .Has_Default_Value in clause.flags {
-			param.flags += {.Has_Default_Value}
-		}
-		if function_parameter_needs_symbol(stmt.function_parameters[:], i, param.name) {
-			param.symbol = declare_collected_symbol(
+		if function_parameter_needs_symbol(stmt.function_parameters[:], i, name) {
+			symbol_id = declare_collected_symbol(
 				c,
 				scope,
-				param.name,
+				name,
 				.Parameter,
-				param.range,
+				range,
 				INVALID_STRUCTURE_ID,
-				param.declared_type,
-				.Has_Declared_Type in param.flags,
-				param.type_clause_display,
+				declared_type,
+				has_declared_type,
+				type_clause_display,
 				type_clause_form = type_form,
 				has_type_clause_form = has_type_form,
 				type_clause_table_has_of = type_table_has_of,
-				type_id = param.type_id,
 				owner = owner,
 			)
-		} else if existing, ok := scope_lookup_declaration(c.unit, scope, .Value, param.name); ok {
-			param.symbol = existing
+		} else if existing, ok := scope_lookup_declaration(c.unit, scope, .Value, name); ok {
+			symbol_id = existing
 		}
-		if param.symbol != INVALID_SYMBOL_ID {
-			flags := Decl_Info_Flags{}
-			if .Is_Optional in param.flags {
-				flags += {.Is_Optional}
+		decl_flags := Decl_Info_Flags{}
+		if symbol_id != INVALID_SYMBOL_ID {
+			if has_declared_type {
+				decl_flags += {.Has_Declared_Type}
 			}
-			if .Is_Untyped in param.flags {
-				flags += {.Is_Untyped}
+			if .Is_Optional in clause.flags {
+				decl_flags += {.Is_Optional}
 			}
-			if .Has_Default_Value in param.flags {
-				flags += {.Has_Default_Value}
+			if .Has_Default_Value in clause.flags {
+				decl_flags += {.Has_Default_Value}
 			}
 			set_parameter_decl_info(
 				c,
-				param.symbol,
+				symbol_id,
 				owner,
-				decl_function_section(param.section),
-				decl_passing(param.passing),
-				flags,
+				decl_function_section(section),
+				decl_passing(passing),
+				decl_flags,
+			)
+			append_signature_parameter(
+				c,
+				owner,
+				symbol_id,
+				name,
+				range,
+				decl_function_section(section),
+				decl_passing(passing),
+				UNKNOWN_TYPE_ID,
+				declared_type,
+				has_declared_type,
+				type_clause_display,
+				ref_type_form,
+				has_type_form,
+				type_table_has_of,
+				decl_flags,
 			)
 		}
-		append(&parameters, param)
 	}
 	for exception, i in stmt.exceptions {
 		name := canonical_name(exception.name, c.allocator)
-		append(
-			&exceptions,
-			Function_Module_Exception_Data {
-				name = name,
-				range = exception.range,
-			},
-		)
+		append_signature_exception(c, owner, name, exception.range)
 		_ = declare_collected_symbol(
 			c,
 			scope,
@@ -2988,7 +3014,6 @@ function_parameters_from_ast :: proc(
 			owner = owner,
 		)
 	}
-	return parameters, exceptions
 }
 
 function_parameter_needs_symbol :: proc(
@@ -3055,7 +3080,7 @@ decl_method_section :: proc(section: Method_Parameter_Section) -> Decl_Parameter
 	return .None
 }
 
-decl_form_section :: proc(section: Form_Parameter_Section) -> Decl_Parameter_Section {
+decl_form_section_from_ast :: proc(section: ast.Form_Parameter_Section) -> Decl_Parameter_Section {
 	switch section {
 	case .Tables:
 		return .Form_Tables
@@ -3093,7 +3118,7 @@ decl_passing :: proc(passing: Parameter_Passing_Kind) -> Decl_Parameter_Passing 
 	return .None
 }
 
-decl_form_passing :: proc(passing: Form_Parameter_Passing_Kind) -> Decl_Parameter_Passing {
+decl_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Decl_Parameter_Passing {
 	switch passing {
 	case .Direct:
 		return .Direct
@@ -3103,30 +3128,6 @@ decl_form_passing :: proc(passing: Form_Parameter_Passing_Kind) -> Decl_Paramete
 		return .Reference
 	}
 	return .None
-}
-
-form_parameter_section_from_ast :: proc(section: ast.Form_Parameter_Section) -> Form_Parameter_Section {
-	switch section {
-	case .Tables:
-		return .Tables
-	case .Using:
-		return .Using
-	case .Changing:
-		return .Changing
-	}
-	return .Using
-}
-
-form_parameter_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Form_Parameter_Passing_Kind {
-	switch passing {
-	case .Direct:
-		return .Direct
-	case .Value:
-		return .Value
-	case .Reference:
-		return .Reference
-	}
-	return .Direct
 }
 
 parameter_passing_from_ast :: proc(passing: ast.Parameter_Passing_Kind) -> Parameter_Passing_Kind {
@@ -3221,13 +3222,16 @@ add_method_interface_qualifier_reference :: proc(
 	}
 }
 
-class_member :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> ^Class_Member_Data {
-	for &member in c.unit.class_members {
-		if member.class_symbol == class_symbol && strings.equal_fold(member.name, name) {
-			return &member
+class_member_symbol :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> Symbol_Id {
+	for symbol in c.unit.symbols {
+		if symbol.owner == class_symbol && strings.equal_fold(symbol.name, name) {
+			info := entity_decl_info(c.unit, symbol.id)
+			if info != nil && info.owner == class_symbol {
+				return symbol.id
+			}
 		}
 	}
-	return nil
+	return INVALID_SYMBOL_ID
 }
 
 note_method_implementation :: proc(
@@ -3236,17 +3240,11 @@ note_method_implementation :: proc(
 	name: string,
 	range: tokenizer.Range,
 ) {
-	member := class_member(c, class_symbol, name)
-	if member == nil {
+	member_symbol := class_member_symbol(c, class_symbol, name)
+	if member_symbol == INVALID_SYMBOL_ID {
 		return
 	}
-	member.implementation_range = range
-	member.implementation = Class_Member_Implementation_Data {
-		unit  = c.unit.unit_id,
-		range = range,
-	}
-	member.flags += {.Has_Implementation_Range, .Has_Implementation}
-	if info := entity_decl_info(c.unit, member.symbol); info != nil {
+	if info := entity_decl_info(c.unit, member_symbol); info != nil {
 		info.implementation_unit = c.unit.unit_id
 		info.implementation_range = range
 		info.flags += {.Has_Implementation}
@@ -3260,11 +3258,12 @@ declare_method_scope_params :: proc(
 	method_scope: Scope_Id,
 	owner: Entity_Id,
 ) {
-	member := class_member(c, class_symbol, name)
-	if member == nil {
+	member_symbol := class_member_symbol(c, class_symbol, name)
+	info := entity_decl_info(c.unit, member_symbol)
+	if info == nil {
 		return
 	}
-	for param in member.parameters {
+	for param in info.signature_parameters {
 		has_type := .Has_Declared_Type in param.flags
 		symbol_id := declare_collected_symbol(
 			c,
@@ -3282,20 +3281,16 @@ declare_method_scope_params :: proc(
 			type_id = param.type_id,
 			owner = owner,
 		)
-		flags := Decl_Info_Flags{}
-		if .Is_Optional in param.flags {
-			flags += {.Is_Optional}
-		}
 		set_parameter_decl_info(
 			c,
 			symbol_id,
 			owner,
-			decl_method_section(param.section),
-			decl_passing(param.passing),
-			flags,
+			param.section,
+			param.passing,
+			param.flags,
 		)
 	}
-	for exception in member.exceptions {
+	for exception in info.signature_exceptions {
 		_ = declare_collected_symbol(c, method_scope, exception.name, .Exception, exception.range, owner = owner)
 	}
 }
