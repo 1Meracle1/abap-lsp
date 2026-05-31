@@ -29,20 +29,25 @@ build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Sco
 	for inheritance in unit.class_inheritance {
 		index.superclasses[inheritance.class_symbol] = inheritance.superclass_name
 	}
-	for symbol in unit.symbols {
-		class_symbol := INVALID_SYMBOL_ID
-		if scope_data := scope(unit, symbol.scope);
-		   scope_data != nil &&
-		   (scope_data.kind == .Class || scope_data.kind == .Interface) &&
-		   scope_data.owner != INVALID_SYMBOL_ID {
-			class_symbol = scope_data.owner
+	for owner in unit.symbols {
+		if !(owner.kind == .Class || owner.kind == .Interface) {
+			continue
 		}
-		namespaces := [?]Namespace{.Value, .Type, .Routine}
-		for namespace in namespaces {
-			if symbol_kind_occupies(symbol.kind, namespace) {
-				if class_symbol != INVALID_SYMBOL_ID {
-					index.class_symbols[Class_Scope_Index_Key{class_symbol = class_symbol, namespace = namespace, name = symbol.name}] =
-						symbol.id
+		scope_id := class_definition_scope(unit, owner.id)
+		scope_data := scope(unit, scope_id)
+		if scope_data == nil {
+			continue
+		}
+		for symbol_id in scope_data.declarations {
+			member := symbol(unit, symbol_id)
+			if member == nil {
+				continue
+			}
+			namespaces := [?]Namespace{.Value, .Type, .Routine}
+			for namespace in namespaces {
+				if symbol_kind_occupies(member.kind, namespace) {
+					index.class_symbols[Class_Scope_Index_Key{class_symbol = owner.id, namespace = namespace, name = member.name}] =
+						member.id
 				}
 			}
 		}
@@ -175,7 +180,14 @@ resolve_reference :: proc(
 		ref.kind,
 		ref.name,
 	); ok {
+		if resolution, effective_ok := resolve_local_effective_method_parameter(unit, ref, symbol_id);
+		   effective_ok {
+			return resolution, true
+		}
 		return resolution_for_symbol(unit, symbol_id), true
+	}
+	if resolution, ok := resolve_local_effective_method_parameter(unit, ref, INVALID_SYMBOL_ID); ok {
+		return resolution, true
 	}
 	if symbol_id, ok := resolve_current_class_member(
 		unit,
@@ -311,6 +323,21 @@ enclosing_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> 
 	return INVALID_SYMBOL_ID, false
 }
 
+enclosing_method_scope :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> (Scope_Id, Symbol_Id, bool) {
+	current := scope_id
+	for current != INVALID_SCOPE_ID {
+		s := scope(unit, current)
+		if s == nil {
+			break
+		}
+		if s.kind == .Method && s.owner != INVALID_SYMBOL_ID {
+			return current, s.owner, true
+		}
+		current = s.parent
+	}
+	return INVALID_SCOPE_ID, INVALID_SYMBOL_ID, false
+}
+
 enclosing_instance_method_class_owner_unit :: proc(
 	unit: ^Unit_Analysis,
 	scope_id: Scope_Id,
@@ -330,8 +357,8 @@ enclosing_instance_method_class_owner_unit :: proc(
 			if !class_ok || method == nil {
 				return INVALID_SYMBOL_ID, false
 			}
-			member := unit_class_member_symbol(unit, class_symbol, method.name)
-			info := entity_decl_info(unit, member.id) if member != nil else nil
+			member, _ := class_definition_member(unit, class_symbol, .Routine, method.name)
+			info := entity_decl_info(unit, member)
 			return class_symbol, info == nil || !(.Is_Static in info.flags)
 		}
 		current = s.parent
@@ -549,10 +576,8 @@ Project_Class_Member_Entry :: struct {
 	symbol: Symbol_Id,
 }
 
-seed_event_handler_method_parameter_types :: proc(
+derive_event_handler_signature_parameter_types :: proc(
 	units: []Unit_Analysis,
-	unit_index: int,
-	method_scope: Scope_Id,
 	member_unit_index: int,
 	member_handle: Symbol_Handle,
 	roots: ^Project_Root_Lookup,
@@ -603,9 +628,6 @@ seed_event_handler_method_parameter_types :: proc(
 			}
 			clear_event_derived_signature_parameter(&units[member_unit_index], &param)
 			changed = true
-			changed =
-				clear_event_derived_method_scope_parameter(&units[unit_index], method_scope, param.name) ||
-				changed
 		}
 		if .Has_Declared_Type in param.flags {
 			continue
@@ -623,16 +645,8 @@ seed_event_handler_method_parameter_types :: proc(
 			decl_param.type_id = UNKNOWN_TYPE_ID
 			decl_param.flags += {.Has_Declared_Type, .Has_Event_Derived_Type}
 			update_parameter_symbol_from_signature(&units[member_unit_index], decl_param.symbol, event_param^)
+			changed = true
 		}
-		changed =
-			update_method_scope_parameter_symbol(
-				&units[unit_index],
-				method_scope,
-				param.name,
-				event_param^,
-				INVALID_STRUCTURE_ID,
-			) ||
-			changed
 	}
 	return changed
 }
@@ -660,25 +674,6 @@ clear_event_derived_signature_parameter :: proc(
 	param.type_id = UNKNOWN_TYPE_ID
 	param.flags -= {.Has_Declared_Type, .Has_Event_Derived_Type}
 	clear_event_derived_parameter_symbol(unit, param.symbol)
-}
-
-clear_event_derived_method_scope_parameter :: proc(
-	unit: ^Unit_Analysis,
-	scope_id: Scope_Id,
-	name: string,
-) -> bool {
-	s := scope(unit, scope_id)
-	if s == nil {
-		return false
-	}
-	for symbol_id in s.declarations {
-		item := symbol(unit, symbol_id)
-		if item == nil || item.name != name || item.kind != .Parameter {
-			continue
-		}
-		return clear_event_derived_parameter_symbol(unit, symbol_id)
-	}
-	return false
 }
 
 clear_event_derived_parameter_symbol :: proc(unit: ^Unit_Analysis, symbol_id: Symbol_Id) -> bool {
@@ -767,38 +762,6 @@ class_member_parameter :: proc(
 		}
 	}
 	return nil
-}
-
-update_method_scope_parameter_symbol :: proc(
-	unit: ^Unit_Analysis,
-	scope_id: Scope_Id,
-	name: string,
-	param: Decl_Signature_Parameter_Data,
-	structure_id: Structure_Id,
-) -> bool {
-	s := scope(unit, scope_id)
-	if s == nil {
-		return false
-	}
-	for symbol_id in s.declarations {
-		item := symbol(unit, symbol_id)
-		if item == nil || item.name != name || !symbol_kind_occupies(item.kind, .Value) {
-			continue
-		}
-		item.structure = structure_id
-		item.declared_type = param.declared_type
-		item.has_declared_type = true
-		item.type_clause_display = param.type_clause_display
-		item.type_clause_form = param.type_clause_form
-		item.has_type_clause_form = param.has_type_clause_form
-		item.type_clause_table_has_of = param.type_clause_table_has_of
-		item.type_id = type_id_from_symbol_data(unit, item)
-		if info := entity_decl_info(unit, item.id); info != nil {
-			info.flags += {.Has_Declared_Type, .Has_Event_Derived_Type}
-		}
-		return true
-	}
-	return false
 }
 
 method_signature_member_for_scope :: proc(
@@ -1019,22 +982,6 @@ inherited_project_class_member :: proc(
 	return fallback, fallback_index
 }
 
-method_scope_has_value_symbol :: proc(
-	unit: ^Unit_Analysis,
-	scope_id: Scope_Id,
-	name: string,
-) -> bool {
-	if s := scope(unit, scope_id); s != nil {
-		for symbol_id in s.declarations {
-			if item := symbol(unit, symbol_id);
-			   item != nil && item.name == name && symbol_kind_occupies(item.kind, .Value) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 resolve_project_reference :: proc(
 	units: []Unit_Analysis,
 	unit_index: int,
@@ -1051,6 +998,17 @@ resolve_project_reference :: proc(
 		if handle, ok := resolve_project_super(units, unit_index, ref.scope, roots, visible); ok {
 			return Resolution{kind = .Symbol, symbol = handle}, true
 		}
+	}
+	if resolution, ok := resolve_project_effective_method_parameter(
+		units,
+		unit_index,
+		ref,
+		roots,
+		class_entries,
+		visible,
+		predecessors,
+	); ok {
+		return resolution, true
 	}
 	all_namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in all_namespaces {
@@ -1093,6 +1051,118 @@ resolve_project_reference :: proc(
 		return Resolution{kind = .External}, true
 	}
 	return Resolution{}, false
+}
+
+resolve_project_effective_method_parameter :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	ref: Reference_Data,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [dynamic]Unit_Id,
+	predecessors: [dynamic]Unit_Id,
+) -> (Resolution, bool) {
+	if ref.namespace != .Value || !(ref.kind == .Identifier || ref.kind == .Type_Ref) {
+		return {}, false
+	}
+	handle, ok := effective_project_method_parameter_handle(
+		units,
+		unit_index,
+		ref.scope,
+		ref.name,
+		roots,
+		class_entries,
+		visible,
+		predecessors,
+	)
+	if !ok {
+		return {}, false
+	}
+	return Resolution{kind = .Symbol, symbol = handle}, true
+}
+
+effective_project_method_parameter_handle :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	name: string,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [dynamic]Unit_Id,
+	predecessors: [dynamic]Unit_Id,
+	found_symbol := INVALID_SYMBOL_ID,
+) -> (Symbol_Handle, bool) {
+	method_scope, method_symbol, ok := enclosing_method_scope(&units[unit_index], scope_id)
+	if !ok {
+		return {}, false
+	}
+	if found_symbol != INVALID_SYMBOL_ID {
+		found := symbol(&units[unit_index], found_symbol)
+		if found == nil || found.kind != .Parameter || found.scope != method_scope {
+			return {}, false
+		}
+	}
+	method := symbol(&units[unit_index], method_symbol)
+	if method == nil {
+		return {}, false
+	}
+	member, member_unit_index := method_signature_member_for_scope(
+		units,
+		unit_index,
+		method_scope,
+		method.name,
+		roots,
+		class_entries,
+		visible,
+		predecessors,
+	)
+	if member.symbol == INVALID_SYMBOL_ID ||
+	   member_unit_index < 0 ||
+	   member_unit_index >= len(units) {
+		return {}, false
+	}
+	param := entity_signature_parameter(&units[member_unit_index], member.symbol, name)
+	if param == nil || param.symbol == INVALID_SYMBOL_ID {
+		return {}, false
+	}
+	return Symbol_Handle{unit = member.unit, symbol = param.symbol}, true
+}
+
+resolve_local_effective_method_parameter :: proc(
+	unit: ^Unit_Analysis,
+	ref: Reference_Data,
+	found_symbol: Symbol_Id,
+) -> (Resolution, bool) {
+	if ref.namespace != .Value || !(ref.kind == .Identifier || ref.kind == .Type_Ref) {
+		return {}, false
+	}
+	method_scope, method_symbol, ok := enclosing_method_scope(unit, ref.scope)
+	if !ok {
+		return {}, false
+	}
+	if found_symbol != INVALID_SYMBOL_ID {
+		found := symbol(unit, found_symbol)
+		if found == nil || found.kind != .Parameter || found.scope != method_scope {
+			return {}, false
+		}
+	}
+	method := symbol(unit, method_symbol)
+	if method == nil {
+		return {}, false
+	}
+	class_symbol, class_ok := enclosing_class_owner_unit(unit, method_scope)
+	if !class_ok {
+		return {}, false
+	}
+	member_symbol, member_ok := class_definition_member(unit, class_symbol, .Routine, method.name)
+	if !member_ok {
+		return {}, false
+	}
+	param := entity_signature_parameter(unit, member_symbol, ref.name)
+	if param == nil || param.symbol == INVALID_SYMBOL_ID {
+		return {}, false
+	}
+	return symbol_resolution(unit, param.symbol), true
 }
 
 reference_namespace_allowed :: proc(

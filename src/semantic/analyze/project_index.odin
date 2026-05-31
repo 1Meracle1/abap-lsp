@@ -266,27 +266,35 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 		clear(&index.unit_entries[i].class_scope_entries)
 	}
 	for &unit in units {
-		for symbol in unit.symbols {
-			scope_data := scope(&unit, symbol.scope)
-			if scope_data == nil ||
-			   !(scope_data.kind == .Class || scope_data.kind == .Interface) ||
-			   scope_data.owner == INVALID_SYMBOL_ID {
+		for owner in unit.symbols {
+			if !(owner.kind == .Class || owner.kind == .Interface) {
 				continue
 			}
-			namespaces := [?]Namespace{.Value, .Type, .Routine}
-			for namespace in namespaces {
-				if symbol_kind_occupies(symbol.kind, namespace) {
-					project_index_record_class_scope_entry(
-						index,
-						unit.unit_id,
-						Project_Class_Member_Key {
-							class_unit   = unit.unit_id,
-							class_symbol = scope_data.owner,
-							namespace    = namespace,
-							name         = strings.clone(symbol.name, index.allocator),
-						},
-						Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
-					)
+			scope_id := class_definition_scope(&unit, owner.id)
+			scope_data := scope(&unit, scope_id)
+			if scope_data == nil {
+				continue
+			}
+			for symbol_id in scope_data.declarations {
+				symbol := symbol(&unit, symbol_id)
+				if symbol == nil {
+					continue
+				}
+				namespaces := [?]Namespace{.Value, .Type, .Routine}
+				for namespace in namespaces {
+					if symbol_kind_occupies(symbol.kind, namespace) {
+						project_index_record_class_scope_entry(
+							index,
+							unit.unit_id,
+							Project_Class_Member_Key {
+								class_unit   = unit.unit_id,
+								class_symbol = owner.id,
+								namespace    = namespace,
+								name         = strings.clone(symbol.name, index.allocator),
+							},
+							Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
+						)
+					}
 				}
 			}
 		}

@@ -1574,16 +1574,39 @@ find_symbol :: proc(unit: ^Unit_Analysis, name: string, kind: Symbol_Kind) -> ^S
 	return nil
 }
 
+class_definition_scope :: proc(unit: ^Unit_Analysis, class_symbol: Symbol_Id) -> Scope_Id {
+	info := entity_decl_info(unit, class_symbol)
+	if info == nil || info.body_scope == INVALID_SCOPE_ID {
+		return INVALID_SCOPE_ID
+	}
+	scope_data := scope(unit, info.body_scope)
+	if scope_data == nil ||
+	   !(scope_data.kind == .Class || scope_data.kind == .Interface) ||
+	   scope_data.owner != class_symbol {
+		return INVALID_SCOPE_ID
+	}
+	return info.body_scope
+}
+
+class_definition_member :: proc(
+	unit: ^Unit_Analysis,
+	class_symbol: Symbol_Id,
+	namespace: Namespace,
+	name: string,
+) -> (Symbol_Id, bool) {
+	scope_id := class_definition_scope(unit, class_symbol)
+	if scope_id == INVALID_SCOPE_ID {
+		return INVALID_SYMBOL_ID, false
+	}
+	canonical := strings.to_lower(name, context.temp_allocator)
+	return scope_lookup_declaration(unit, scope_id, namespace, canonical)
+}
+
 unit_class_member_symbol :: proc(unit: ^Unit_Analysis, class_symbol: Symbol_Id, name: string) -> ^Symbol_Data {
-	for &s in unit.symbols {
-		if s.owner != class_symbol || !strings.equal_fold(s.name, name) {
-			continue
-		}
-		scope_data := scope(unit, s.scope)
-		if scope_data != nil &&
-		   (scope_data.kind == .Class || scope_data.kind == .Interface) &&
-		   scope_data.owner == class_symbol {
-			return &s
+	namespaces := [?]Namespace{.Value, .Routine, .Type}
+	for namespace in namespaces {
+		if id, ok := class_definition_member(unit, class_symbol, namespace, name); ok {
+			return symbol(unit, id)
 		}
 	}
 	return nil

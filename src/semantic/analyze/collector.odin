@@ -2259,9 +2259,10 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 		if method_name == "" {
 			method_name = stmt.member_name
 		}
-		note_method_implementation(c, class_owner, method_name, stmt.header_range)
-		declare_method_scope_params(c, class_owner, method_name, method_scope, owner)
-		member_info := entity_decl_info(c.unit, class_member_symbol(c, class_owner, method_name))
+		member_symbol, _ := class_definition_member(c.unit, class_owner, .Routine, method_name)
+		note_method_implementation(c, member_symbol, stmt.header_range)
+		member_info := entity_decl_info(c.unit, member_symbol)
+		declare_method_scope_params(c, member_info, method_scope, owner)
 		if member_info == nil || !(.Is_Static in member_info.flags) {
 			_ = declare_collected_symbol(
 				c,
@@ -3223,25 +3224,11 @@ add_method_interface_qualifier_reference :: proc(
 	}
 }
 
-class_member_symbol :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> Symbol_Id {
-	for symbol in c.unit.symbols {
-		if symbol.owner == class_symbol && strings.equal_fold(symbol.name, name) {
-			info := entity_decl_info(c.unit, symbol.id)
-			if info != nil && info.owner == class_symbol {
-				return symbol.id
-			}
-		}
-	}
-	return INVALID_SYMBOL_ID
-}
-
 note_method_implementation :: proc(
 	c: ^Collector,
-	class_symbol: Symbol_Id,
-	name: string,
+	member_symbol: Symbol_Id,
 	range: tokenizer.Range,
 ) {
-	member_symbol := class_member_symbol(c, class_symbol, name)
 	if member_symbol == INVALID_SYMBOL_ID {
 		return
 	}
@@ -3254,13 +3241,10 @@ note_method_implementation :: proc(
 
 declare_method_scope_params :: proc(
 	c: ^Collector,
-	class_symbol: Symbol_Id,
-	name: string,
+	info: ^Decl_Info_Data,
 	method_scope: Scope_Id,
 	owner: Entity_Id,
 ) {
-	member_symbol := class_member_symbol(c, class_symbol, name)
-	info := entity_decl_info(c.unit, member_symbol)
 	if info == nil {
 		return
 	}

@@ -2335,7 +2335,7 @@ ENDCLASS.`
 }
 
 @(test)
-project_state_parent_signature_change_removes_seeded_method_parameter :: proc(t: ^testing.T) {
+project_state_parent_signature_change_updates_effective_method_parameter :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	defer execution.pool_destroy(&pool)
@@ -3828,20 +3828,24 @@ ENDCLASS.
 `,
 	)
 
-	param: ^analyze.Symbol_Data
-	for &s in unit.symbols {
-		if s.kind != .Parameter || s.name != "ex_object" {
-			continue
-		}
-		if scope := analyze.scope(&unit, s.scope); scope != nil && scope.kind == .Method {
-			param = &s
-			break
-		}
+	handler_class := analyze.find_symbol(&unit, "lcl_handler", .Class)
+	handler_member: ^analyze.Symbol_Data
+	if handler_class != nil {
+		handler_member = class_member_named(&unit, handler_class.id, "on_saved", .Method)
 	}
-	testing.expect(t, param != nil)
-	testing.expect(t, param.has_declared_type)
-	testing.expect_value(t, param.declared_type.base_name, "lcl_source")
-	testing.expect(t, param.declared_type.is_ref)
+	handler_info := analyze.entity_decl_info(&unit, handler_member.id) if handler_member != nil else nil
+	testing.expect(t, handler_info != nil)
+	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1)
+	if handler_info != nil && len(handler_info.signature_parameters) == 1 {
+		param := handler_info.signature_parameters[0]
+		param_symbol := analyze.symbol(&unit, param.symbol)
+		testing.expect(t, .Has_Declared_Type in param.flags)
+		testing.expect_value(t, param.declared_type.base_name, "lcl_source")
+		testing.expect(t, param.declared_type.is_ref)
+		testing.expect(t, .Has_Event_Derived_Type in param.flags)
+		testing.expect(t, param_symbol != nil && param_symbol.has_declared_type)
+		testing.expect(t, param_symbol != nil && param_symbol.declared_type.is_ref)
+	}
 	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
 }
 
@@ -11192,7 +11196,7 @@ ENDCLASS.
 }
 
 @(test)
-finish_project_analysis_seeds_redefined_method_parameters_from_parent_unit :: proc(t: ^testing.T) {
+finish_project_analysis_resolves_redefined_method_parameters_from_parent_unit :: proc(t: ^testing.T) {
 	sources := [?]analyze.Source_Input {
 		{
 			uri = "file:///workspace/zcl_parent.abap",
@@ -11233,7 +11237,7 @@ ENDCLASS.
 }
 
 @(test)
-finish_project_analysis_seeds_event_handler_parameters_from_event_unit :: proc(t: ^testing.T) {
+finish_project_analysis_derives_event_handler_signature_parameters_from_event_unit :: proc(t: ^testing.T) {
 	sources := [?]analyze.Source_Input {
 		{
 			uri = "file:///workspace/zcl_source.abap",
@@ -11264,23 +11268,8 @@ ENDCLASS.
 
 	project := analyze_units_project_test(t, sources[:])
 	handler := analyze.project_unit_by_uri(&project, sources[1].uri)
-	param: ^analyze.Symbol_Data
-	if handler != nil {
-		for &s in handler.symbols {
-			if s.kind == .Parameter && s.name == "ex_object" {
-				if scope := analyze.scope(handler, s.scope); scope != nil && scope.kind == .Method {
-					param = &s
-					break
-				}
-			}
-		}
-	}
-
 	testing.expect(t, handler != nil)
 	testing.expect(t, handler != nil && !has_diagnostic(handler, .Unknown_Field))
-	testing.expect(t, param != nil)
-	testing.expect(t, param != nil && param.has_declared_type)
-	testing.expect(t, param != nil && param.declared_type.base_name == "zcl_source")
 	handler_class: ^analyze.Symbol_Data
 	if handler != nil {
 		handler_class = analyze.find_symbol(handler, "lcl_handler", .Class)
@@ -11297,6 +11286,7 @@ ENDCLASS.
 	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1)
 	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1 && .Has_Declared_Type in handler_info.signature_parameters[0].flags)
 	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1 && handler_info.signature_parameters[0].declared_type.base_name == "zcl_source")
+	testing.expect(t, handler_info != nil && len(handler_info.signature_parameters) == 1 && .Has_Event_Derived_Type in handler_info.signature_parameters[0].flags)
 }
 
 @(test)

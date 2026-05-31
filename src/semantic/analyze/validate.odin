@@ -530,10 +530,42 @@ type_ref_symbol_handle :: proc(
 				namespace,
 				type_ref.base_name,
 			); ok {
+				if namespace == .Value &&
+				   unit_index < len(lookup.visible) &&
+				   unit_index < len(lookup.predecessors) {
+					if handle, effective_ok := effective_project_method_parameter_handle(
+						project.units[:],
+						unit_index,
+						scope_id,
+						type_ref.base_name,
+						&lookup.root_lookup,
+						lookup.class_scope_entries,
+						lookup.visible[unit_index],
+						lookup.predecessors[unit_index],
+						symbol_id,
+					); effective_ok {
+						return handle, true
+					}
+				}
 				return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
 			}
 		}
 		if type_ref.namespace == .Value {
+			if unit_index < len(lookup.visible) &&
+			   unit_index < len(lookup.predecessors) {
+				if handle, ok := effective_project_method_parameter_handle(
+					project.units[:],
+					unit_index,
+					scope_id,
+					type_ref.base_name,
+					&lookup.root_lookup,
+					lookup.class_scope_entries,
+					lookup.visible[unit_index],
+					lookup.predecessors[unit_index],
+				); ok {
+					return handle, true
+				}
+			}
 			if symbol_id, ok := current_class_value_symbol(
 				project,
 				unit_index,
@@ -1769,7 +1801,38 @@ value_handle_for_name :: proc(
 		.Value,
 		name,
 	); ok {
+		if unit_index < len(lookup.visible) &&
+		   unit_index < len(lookup.predecessors) {
+			if handle, effective_ok := effective_project_method_parameter_handle(
+				project.units[:],
+				unit_index,
+				scope_id,
+				name,
+				&lookup.root_lookup,
+				lookup.class_scope_entries,
+				lookup.visible[unit_index],
+				lookup.predecessors[unit_index],
+				symbol_id,
+			); effective_ok {
+				return handle, true
+			}
+		}
 		return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
+	}
+	if unit_index < len(lookup.visible) &&
+	   unit_index < len(lookup.predecessors) {
+		if handle, ok := effective_project_method_parameter_handle(
+			project.units[:],
+			unit_index,
+			scope_id,
+			name,
+			&lookup.root_lookup,
+			lookup.class_scope_entries,
+			lookup.visible[unit_index],
+			lookup.predecessors[unit_index],
+		); ok {
+			return handle, true
+		}
 	}
 	if symbol_id, ok := current_class_value_symbol(project, unit_index, scope_id, name); ok {
 		return Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = symbol_id}, true
