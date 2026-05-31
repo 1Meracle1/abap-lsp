@@ -42,7 +42,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	#partial switch n in expr.derived_expr {
 	case ^ast.Literal_Expr:
 		fact := type_fact_from_expr(c, expr, scope)
-		add_syntax_operand(c.unit, scope, n.range, .Constant, fact.type_id)
+		add_syntax_operand(c.unit, scope, n.range, .Constant, fact)
 	case ^ast.Ident_Expr:
 		if n.name != "#" {
 			add_reference(c, scope, n.name, .Value, .Identifier, n.range)
@@ -166,6 +166,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 				scope,
 				n.range,
 				.Variable,
+				unknown_type_fact(),
 				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
 				has_symbol = true,
 				assignable = true,
@@ -179,6 +180,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 				scope,
 				n.range,
 				.Variable,
+				unknown_type_fact(),
 				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
 				has_symbol = true,
 				assignable = true,
@@ -244,7 +246,7 @@ collect_constructor_expr_refs :: proc(
 	}
 	fact := type_fact_from_expr(c, expr, scope)
 	add_expression_fact(c, scope, expr.range, .Call_Result, fact)
-	add_syntax_operand(c.unit, scope, expr.range, .Value, fact.type_id)
+	add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
 }
 
 collect_constructor_for_clause_refs :: proc(
@@ -920,6 +922,7 @@ collect_raw_operand_fact_refs :: proc(
 				scope,
 				decl.range,
 				.Variable,
+				unknown_type_fact(),
 				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
 				has_symbol = true,
 				assignable = true,

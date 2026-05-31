@@ -7,7 +7,7 @@ add_syntax_operand :: proc(
 	scope: Scope_Id,
 	range: tokenizer.Range,
 	mode: Operand_Mode,
-	type_id := UNKNOWN_TYPE_ID,
+	type_fact: Type_Fact_Data,
 	symbol := Symbol_Handle{},
 	has_symbol := false,
 	assignable := false,
@@ -22,7 +22,7 @@ add_syntax_operand :: proc(
 			scope = scope,
 			range = range,
 			mode = mode,
-			type_id = type_id,
+			type_fact = type_fact,
 			symbol = symbol,
 			has_symbol = has_symbol,
 			flags = flags,
@@ -62,8 +62,8 @@ check_unit_operands :: proc(
 			continue
 		}
 		if operand.has_symbol && operand.symbol.unit == unit.unit_id {
-			if s := symbol(unit, operand.symbol.symbol); s != nil {
-				operand.type_id = s.type_id
+			if symbol(unit, operand.symbol.symbol) != nil {
+				operand.type_fact = type_fact_from_symbol_handle(project, unit_index, operand.symbol)
 			}
 		}
 		unit.operands[write] = operand
@@ -84,20 +84,20 @@ check_unit_operands :: proc(
 				access.scope,
 				field_access_range(access),
 				.Field,
-				type_id_from_type_fact(project, unit_index, access.scope, fact),
+				fact,
 				assignable = true,
 			)
 		}
 	}
 	for site in unit.call_sites {
 		if fact := call_result_type_fact(project, lookup, unit_index, site);
-		   operand_type_fact_known(fact) {
+		   type_fact_is_known(fact) {
 			append_checked_operand(
 				unit,
 				site.scope,
 				site.range,
 				.Value,
-				type_id_from_type_fact(project, unit_index, site.scope, fact),
+				fact,
 			)
 		}
 	}
@@ -108,7 +108,7 @@ check_unit_operands :: proc(
 				site.scope,
 				site.lhs_range,
 				.Variable,
-				type_id_from_type_fact(project, unit_index, site.scope, site.lhs),
+				site.lhs,
 				assignable = true,
 			)
 		}
@@ -118,14 +118,10 @@ check_unit_operands :: proc(
 				site.scope,
 				site.rhs_range,
 				.Value,
-				type_id_from_type_fact(project, unit_index, site.scope, site.rhs),
+				site.rhs,
 			)
 		}
 	}
-}
-
-operand_type_fact_known :: #force_inline proc(fact: Type_Fact_Data) -> bool {
-	return type_id_is_known(fact.type_id) || type_fact_is_known(fact)
 }
 
 append_checked_operand :: proc(
@@ -133,7 +129,7 @@ append_checked_operand :: proc(
 	scope: Scope_Id,
 	range: tokenizer.Range,
 	mode: Operand_Mode,
-	type_id := UNKNOWN_TYPE_ID,
+	type_fact: Type_Fact_Data,
 	symbol := Symbol_Handle{},
 	has_symbol := false,
 	assignable := false,
@@ -148,7 +144,7 @@ append_checked_operand :: proc(
 			scope = scope,
 			range = range,
 			mode = mode,
-			type_id = type_id,
+			type_fact = type_fact,
 			symbol = symbol,
 			has_symbol = has_symbol,
 			flags = flags,
@@ -159,7 +155,7 @@ append_checked_operand :: proc(
 add_reference_operand :: proc(project: ^Project_Analysis, unit_index: int, ref: Reference_Data) {
 	unit := &project.units[unit_index]
 	mode := Operand_Mode.Unknown
-	type_id := UNKNOWN_TYPE_ID
+	type_fact := unknown_type_fact()
 	symbol_handle := Symbol_Handle{}
 	has_symbol := false
 	assignable := false
@@ -170,10 +166,18 @@ add_reference_operand :: proc(project: ^Project_Analysis, unit_index: int, ref: 
 			symbol_handle = ref.resolution.symbol
 			has_symbol = true
 			mode, assignable = operand_mode_from_symbol(project, symbol_handle)
-			type_id = type_id_from_symbol_operand(project, unit_index, ref.scope, symbol_handle)
+			type_fact = type_fact_from_symbol_handle(project, unit_index, symbol_handle)
 		case .Builtin_Type:
 			mode = .Type
-			type_id = type_builtin(unit, ref.name)
+			type_fact = Type_Fact_Data {
+				type_id = type_builtin(unit, ref.name),
+				type_unit = unit.unit_id,
+				structure = INVALID_STRUCTURE_ID,
+				structure_unit = INVALID_UNIT_ID,
+				declared_type = builtin_type_ref(ref.name),
+				has_declared_type = true,
+				type_clause_display = ref.name,
+			}
 		case .Builtin_Routine:
 			mode = .Routine
 		case .Internal_Table_Line, .External:
@@ -185,7 +189,7 @@ add_reference_operand :: proc(project: ^Project_Analysis, unit_index: int, ref: 
 		ref.scope,
 		ref.range,
 		mode,
-		type_id,
+		type_fact,
 		symbol_handle,
 		has_symbol,
 		assignable,
@@ -221,34 +225,4 @@ operand_mode_from_symbol :: proc(
 		return .Unknown, false
 	}
 	return .Unknown, false
-}
-
-type_id_from_symbol_operand :: proc(
-	project: ^Project_Analysis,
-	site_unit_index: int,
-	scope: Scope_Id,
-	handle: Symbol_Handle,
-) -> Type_Id {
-	fact := type_fact_from_symbol_handle(project, site_unit_index, handle)
-	return type_id_from_type_fact(project, site_unit_index, scope, fact)
-}
-
-type_id_from_type_fact :: proc(
-	project: ^Project_Analysis,
-	unit_index: int,
-	scope: Scope_Id,
-	fact: Type_Fact_Data,
-) -> Type_Id {
-	unit := &project.units[unit_index]
-	if type_id_is_known(fact.type_id) &&
-	   (fact.type_unit == INVALID_UNIT_ID || fact.type_unit == unit.unit_id) {
-		return fact.type_id
-	}
-	if type_fact_local_structure(fact, unit.unit_id) != INVALID_STRUCTURE_ID {
-		return type_structure(unit, fact.structure)
-	}
-	if fact.has_declared_type {
-		return type_id_from_declared_type(unit, scope, fact.declared_type)
-	}
-	return UNKNOWN_TYPE_ID
 }

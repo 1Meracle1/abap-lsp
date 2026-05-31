@@ -846,7 +846,7 @@ Operand_Data :: struct {
 	scope:      Scope_Id,
 	range:      tokenizer.Range,
 	mode:       Operand_Mode,
-	type_id:    Type_Id,
+	type_fact:  Type_Fact_Data,
 	symbol:     Symbol_Handle,
 	has_symbol: bool,
 	flags:      Operand_Flags,

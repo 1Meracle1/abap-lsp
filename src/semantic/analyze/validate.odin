@@ -1523,6 +1523,8 @@ like_type_fact_from_symbol :: proc(
 		return like_type_fact_from_symbol(project, lookup, next, depth + 1)
 	}
 	return Type_Fact_Data {
+		type_id = next_symbol.type_id,
+		type_unit = next.unit if type_id_is_known(next_symbol.type_id) else INVALID_UNIT_ID,
 		structure = next_symbol.structure,
 		structure_unit = next.unit if next_symbol.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 		declared_type = next_symbol.declared_type,
@@ -1615,6 +1617,8 @@ table_line_type_fact_from_symbol :: proc(
 				   target != nil && target.structure != INVALID_STRUCTURE_ID {
 					fact.structure = target.structure
 					fact.structure_unit = handle.unit
+					fact.type_id = target.type_id
+					fact.type_unit = handle.unit if type_id_is_known(target.type_id) else INVALID_UNIT_ID
 					return fact, handle_unit_index, true
 				}
 			}
@@ -2328,6 +2332,8 @@ type_fact_from_structure_path :: proc(
 			field_scope = owner.scope
 		}
 		fact = Type_Fact_Data {
+			type_id = field.type_id,
+			type_unit = field_unit.unit_id if type_id_is_known(field.type_id) else INVALID_UNIT_ID,
 			structure = field.structure,
 			structure_unit = field_unit.unit_id if field.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
 			declared_type = field.type_ref,
@@ -2354,6 +2360,8 @@ type_fact_from_structure_path :: proc(
 					field.has_type_clause_form,
 					0,
 				); resolved_ok && resolved.structure != INVALID_STRUCTURE_ID {
+					fact.type_id = resolved.type_id
+					fact.type_unit = resolved.type_unit
 					fact.structure = resolved.structure
 					fact.structure_unit = resolved.structure_unit
 					current_unit = &project.units[resolved_unit_index]

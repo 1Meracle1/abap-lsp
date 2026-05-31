@@ -387,6 +387,7 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 				scope,
 				n.range,
 				.Variable,
+				unknown_type_fact(),
 				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
 				has_symbol = true,
 				assignable = true,

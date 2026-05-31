@@ -1410,7 +1410,7 @@ expect_operand :: proc(
 		return
 	}
 	testing.expect_value(t, operand.mode, mode)
-	type_data := expect_type_kind(t, unit, operand.type_id, .Builtin)
+	type_data := expect_type_kind(t, unit, operand.type_fact.type_id, .Builtin)
 	if type_data != nil {
 		testing.expect_value(t, type_data.name, builtin_type_name)
 	}
