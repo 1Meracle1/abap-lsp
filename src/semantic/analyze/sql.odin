@@ -664,8 +664,8 @@ collect_sql_name_refs_from_expr :: proc(
 		collect_expr_refs(c, n.value, scope)
 	case ^ast.Ident_Expr:
 		name := canonical_name(n.name, c.allocator)
-		if open_sql_predicate && sql_local_value_exists(c, scope, name) {
-			add_reference(c, scope, name, .Value, .Identifier, n.range)
+		if open_sql_predicate {
+			push_sql_predicate_name(c, query_id, scope, n.range, name)
 		} else {
 			push_sql_name_ref(c, query_id, scope, n.range, name, "", .Column, .Unresolved)
 		}
@@ -804,6 +804,24 @@ collect_sql_dynamic_operand_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: 
 		return
 	}
 	collect_expr_refs(c, expr, scope)
+}
+
+push_sql_predicate_name :: proc(
+	c: ^Collector,
+	query_id: int,
+	scope: Scope_Id,
+	range: tokenizer.Range,
+	name: string,
+) {
+	append(
+		&c.unit.sql_predicate_names,
+		Sql_Predicate_Name_Data {
+			query_id = query_id,
+			scope = scope,
+			range = range,
+			name = canonical_name(name, c.allocator),
+		},
+	)
 }
 
 push_sql_name_ref :: proc(

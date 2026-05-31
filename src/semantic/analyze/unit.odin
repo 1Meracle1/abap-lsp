@@ -54,6 +54,7 @@ unit_analysis_make :: proc(
 	unit.sql_projections = make([dynamic]Sql_Projection_Data, 0, 0, allocator)
 	unit.sql_name_refs = make([dynamic]Sql_Name_Ref_Data, 0, 0, allocator)
 	unit.sql_predicates = make([dynamic]Sql_Predicate_Data, 0, 0, allocator)
+	unit.sql_predicate_names = make([dynamic]Sql_Predicate_Name_Data, 0, 0, allocator)
 	unit.sql_targets = make([dynamic]Sql_Target_Data, 0, 0, allocator)
 	unit.create_data_type_handles = make([dynamic]Create_Data_Type_Handle_Site_Data, 0, 0, allocator)
 	unit.provided_names = make([dynamic]string, 0, 4, allocator)

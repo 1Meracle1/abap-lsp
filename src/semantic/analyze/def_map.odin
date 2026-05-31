@@ -358,6 +358,13 @@ Sql_Predicate_Data :: struct {
 	kind:     Sql_Predicate_Kind,
 }
 
+Sql_Predicate_Name_Data :: struct {
+	query_id: int,
+	scope:    Scope_Id,
+	range:    tokenizer.Range,
+	name:     string,
+}
+
 Sql_Target_Kind :: enum {
 	Into,
 	Appending,
@@ -898,6 +905,7 @@ Unit_Analysis :: struct {
 	sql_projections:                        [dynamic]Sql_Projection_Data,
 	sql_name_refs:                          [dynamic]Sql_Name_Ref_Data,
 	sql_predicates:                         [dynamic]Sql_Predicate_Data,
+	sql_predicate_names:                    [dynamic]Sql_Predicate_Name_Data,
 	sql_targets:                            [dynamic]Sql_Target_Data,
 	create_data_type_handles:               [dynamic]Create_Data_Type_Handle_Site_Data,
 	provided_names:                         [dynamic]string,

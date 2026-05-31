@@ -114,6 +114,13 @@ Temp_Arena_Marker :: struct {
 	active: bool,
 }
 
+Sql_Predicate_Name_Key :: struct {
+	query_id: int,
+	start:    int,
+	end:      int,
+	name:     string,
+}
+
 analyze_target :: proc(
 	target: Source_Input,
 	candidates: []Source_Input,
@@ -175,9 +182,18 @@ project_state_make :: proc(
 		edges = make([dynamic]Project_Dependency_Edge, 0, 16, allocator),
 		reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, 16, allocator),
 		dependency_pair_counts = make(map[Reverse_Dependency_Key]int, 16, allocator),
-		unresolved_candidates = make(map[deps.Remote_Dependency_Key][dynamic]Unit_Id, 16, allocator),
+		unresolved_candidates = make(
+			map[deps.Remote_Dependency_Key][dynamic]Unit_Id,
+			16,
+			allocator,
+		),
 		unit_dependency_edges = make([dynamic][dynamic]Project_Dependency_Edge, 0, 8, allocator),
-		unit_unresolved_candidates = make([dynamic][dynamic]deps.Remote_Dependency_Key, 0, 8, allocator),
+		unit_unresolved_candidates = make(
+			[dynamic][dynamic]deps.Remote_Dependency_Key,
+			0,
+			8,
+			allocator,
+		),
 		diagnostics = make([dynamic]Diagnostic, 0, 8, allocator),
 		index = project_index_make(allocator),
 		candidates = make([dynamic]Project_Candidate_Input, 0, 8, allocator),
@@ -307,9 +323,7 @@ project_state_set_candidates :: proc(
 		if existing, ok := state.uri_to_unit[key]; ok {
 			unit_id = existing
 			unit_index := unit_id_index(unit_id)
-			if unit_index >= 0 &&
-			   unit_index < len(state.unit_candidate_index) &&
-			   state.unit_candidate_index[unit_index] < 0 {
+			if state.unit_candidate_index[unit_index] < 0 {
 				state.unit_candidate_index[unit_index] = i
 			}
 		}
@@ -326,7 +340,8 @@ project_state_mark_active_candidate_changes :: proc(
 	for candidate, i in state.candidates {
 		unit_id := state.candidate_to_unit[i]
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(state.inputs) {
+		// TODO investigate in which cases it can happen
+		if unit_index > len(state.inputs) {
 			continue
 		}
 		if state.inputs[unit_index].source == candidate.input.source &&
@@ -373,7 +388,10 @@ project_state_upsert_input :: proc(
 	append(&state.unit_candidate_index, candidate_index)
 	append(&state.interface_signatures, "")
 	append(&state.unit_dependency_edges, make([dynamic]Project_Dependency_Edge, 0, 8, allocator))
-	append(&state.unit_unresolved_candidates, make([dynamic]deps.Remote_Dependency_Key, 0, 8, allocator))
+	append(
+		&state.unit_unresolved_candidates,
+		make([dynamic]deps.Remote_Dependency_Key, 0, 8, allocator),
+	)
 	if candidate_index >= 0 {
 		state.candidate_to_unit[candidate_index] = unit_id
 	}
@@ -440,9 +458,7 @@ project_state_refresh_candidate_units :: proc(state: ^Project_State, allocator: 
 		}
 		state.candidate_to_unit[i] = unit_id
 		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 &&
-		   unit_index < len(state.unit_candidate_index) &&
-		   state.unit_candidate_index[unit_index] < 0 {
+		if state.unit_candidate_index[unit_index] < 0 {
 			state.unit_candidate_index[unit_index] = i
 		}
 	}
@@ -461,9 +477,7 @@ project_state_parse_units :: proc(
 	indices := make([dynamic]int, 0, len(unit_ids), context.temp_allocator)
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < len(state.units) {
-			append(&indices, unit_index)
-		}
+		append(&indices, unit_index)
 	}
 	if len(indices) == 0 {
 		return
@@ -502,9 +516,6 @@ project_state_resolve_include_edges :: proc(
 ) {
 	for unit_id in roots {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(state.units) {
-			continue
-		}
 		source_dir := state.unit_dirs[unit_index]
 		for &edge in state.units[unit_index].include_edges {
 			if edge.has_target {
@@ -609,9 +620,6 @@ project_state_candidate_has_name :: proc(
 	}
 	unit_id := state.candidate_to_unit[candidate_index]
 	unit_index := unit_id_index(unit_id)
-	if unit_index < 0 || unit_index >= len(state.units) {
-		return false
-	}
 	for provided in state.units[unit_index].provided_names {
 		if strings.equal_fold(provided, name) {
 			return true
@@ -662,9 +670,6 @@ project_state_finish :: proc(
 	for unit_id in parsed_units {
 		push_unique_unit(&affected, unit_id)
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(state.units) {
-			continue
-		}
 		signature := unit_interface_signature(&state.units[unit_index], allocator)
 		if state.interface_signatures[unit_index] != signature {
 			state.interface_signatures[unit_index] = signature
@@ -693,9 +698,7 @@ project_state_finish :: proc(
 	project_state_build_scope_indexes(state, affected[:], pool, allocator)
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < len(state.units) {
-			resolve_unit_with_index(&state.units[unit_index], &state.units[unit_index].scope_index)
-		}
+		resolve_unit_with_index(&state.units[unit_index], &state.units[unit_index].scope_index)
 	}
 	add_unresolved_include_diagnostics_for_units(state.units[:], affected[:], allocator)
 	diagnose_include_cycles_for_units(state.units[:], affected[:], allocator)
@@ -706,17 +709,10 @@ project_state_finish :: proc(
 	resolve_project_cross_unit_for_units(project.units[:], affected[:], &state.index)
 	if project_state_linking_needed(project.units[:], affected[:]) {
 		reset_cross_class_member_implementation_links(project.units[:])
-		link_class_member_implementations_with_index(
-			project.units[:],
-			state.index.predecessors,
-		)
+		link_class_member_implementations_with_index(project.units[:], state.index.predecessors)
 		project_state_add_class_definition_units(project.units[:], &affected)
 	}
-	reclassify_project_open_sql_predicate_host_variables_for_units(
-		project.units[:],
-		affected[:],
-		allocator,
-	)
+	resolve_project_open_sql_predicate_names_for_units(project.units[:], affected[:], &state.index)
 	lookup := &state.index
 	check_project_bodies_for_units(
 		&project,
@@ -742,9 +738,6 @@ project_state_collect_remote_waiters :: proc(
 ) {
 	for provider in providers {
 		unit_index := unit_id_index(provider)
-		if unit_index < 0 || unit_index >= len(state.units) {
-			continue
-		}
 		for key, units in state.unresolved_candidates {
 			if !unit_provides_name(&state.units[unit_index], key.name) {
 				continue
@@ -791,9 +784,7 @@ unit_provides_name :: proc(unit: ^Unit_Analysis, name: string) -> bool {
 		return false
 	}
 	for &s in unit.symbols {
-		if s.scope == unit.root_scope &&
-		   s.kind == .Constant &&
-		   strings.equal_fold(s.name, name) {
+		if s.scope == unit.root_scope && s.kind == .Constant && strings.equal_fold(s.name, name) {
 			return true
 		}
 	}
@@ -804,9 +795,6 @@ unit_provides_name :: proc(unit: ^Unit_Analysis, name: string) -> bool {
 project_state_prepare_affected_units :: proc(state: ^Project_State, affected: []Unit_Id) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(state.units) {
-			continue
-		}
 		unit := &state.units[unit_index]
 		clear_unit_reference_resolutions(unit)
 		write := 0
@@ -862,9 +850,7 @@ unit_ids_to_indices :: proc(
 	indices := make([dynamic]int, 0, len(unit_ids), allocator)
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < unit_count {
-			append(&indices, unit_index)
-		}
+		append(&indices, unit_index)
 	}
 	return indices
 }
@@ -895,9 +881,6 @@ add_unresolved_include_diagnostics_for_units :: proc(
 ) {
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
-			continue
-		}
 		for edge in units[unit_index].include_edges {
 			if !edge.has_target && !edge.if_found {
 				append(
@@ -923,7 +906,7 @@ diagnose_include_cycles_for_units :: proc(
 	done := make([]bool, len(units), allocator)
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 && unit_index < len(units) && !done[unit_index] {
+		if !done[unit_index] {
 			diagnose_include_cycles_from(units, unit_id, &stack, done, allocator)
 		}
 	}
@@ -958,9 +941,6 @@ resolve_project_cross_unit_references_for_units :: proc(
 ) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
-			continue
-		}
 		for ref_index in 0 ..< len(units[unit_index].references) {
 			ref := &units[unit_index].references[ref_index]
 			if ref.has_resolution {
@@ -992,9 +972,6 @@ derive_event_handler_signature_parameters_for_units :: proc(
 ) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
-			continue
-		}
 		unit := &units[unit_index]
 		for &method_symbol in unit.symbols {
 			if method_symbol.kind != .Method {
@@ -1039,9 +1016,6 @@ derive_event_handler_signature_parameters_for_units :: proc(
 project_state_linking_needed :: proc(units: []Unit_Analysis, affected: []Unit_Id) -> bool {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
-			continue
-		}
 		unit := &units[unit_index]
 		if len(unit.class_definitions) > 0 {
 			return true
@@ -1059,8 +1033,7 @@ project_state_linking_needed :: proc(units: []Unit_Analysis, affected: []Unit_Id
 reset_cross_class_member_implementation_links :: proc(units: []Unit_Analysis) {
 	for &unit in units {
 		for &info in unit.decl_infos {
-			if !(.Has_Implementation in info.flags) ||
-			   info.implementation_unit == unit.unit_id {
+			if !(.Has_Implementation in info.flags) || info.implementation_unit == unit.unit_id {
 				continue
 			}
 			info.flags -= {.Has_Implementation}
@@ -1083,45 +1056,181 @@ project_state_add_class_definition_units :: proc(
 }
 
 @(private)
-reclassify_project_open_sql_predicate_host_variables_for_units :: proc(
+resolve_project_open_sql_predicate_names_for_units :: proc(
 	units: []Unit_Analysis,
 	affected: []Unit_Id,
-	allocator: mem.Allocator,
+	index: ^Project_Index,
 ) {
-	roots := make([dynamic]Symbol_Handle, 0, 8, allocator)
-	names := make([dynamic]string, 0, 8, allocator)
-	for unit in units {
-		for s in unit.symbols {
-			if s.scope == unit.root_scope && symbol_kind_occupies(s.kind, .Value) {
-				if !string_list_contains(names[:], s.name) {
-					append(&names, s.name)
-					append(&roots, Symbol_Handle{unit = unit.unit_id, symbol = s.id})
-				}
+	for unit_id in affected {
+		unit_index := unit_id_index(unit_id)
+		unit := &units[unit_index]
+		if len(unit.sql_predicate_names) == 0 {
+			continue
+		}
+
+		remove_materialized_sql_predicate_columns(unit)
+		for predicate_name in unit.sql_predicate_names {
+			if resolution, ok := resolve_open_sql_predicate_name(
+				units,
+				unit_index,
+				predicate_name,
+				index,
+			); ok {
+				add_resolved_sql_predicate_reference(unit, predicate_name, resolution)
+			} else {
+				add_sql_predicate_column(unit, predicate_name)
 			}
 		}
 	}
-	for unit_id in affected {
-		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
+}
+
+@(private)
+remove_materialized_sql_predicate_columns :: proc(unit: ^Unit_Analysis) {
+	names := make(
+		map[Sql_Predicate_Name_Key]bool,
+		len(unit.sql_predicate_names),
+		context.temp_allocator,
+	)
+	for predicate_name in unit.sql_predicate_names {
+		names[sql_predicate_name_key(predicate_name)] = true
+	}
+	write := 0
+	for ref in unit.sql_name_refs {
+		if ref.kind == .Column && sql_name_ref_key(ref) in names {
 			continue
 		}
-		next_refs := make(
-			[dynamic]Sql_Name_Ref_Data,
-			0,
-			len(units[unit_index].sql_name_refs),
-			allocator,
-		)
-		for sql_ref in units[unit_index].sql_name_refs {
-			if sql_ref.kind == .Column &&
-			   sql_ref_in_predicate(units[unit_index].sql_predicates[:], sql_ref) {
-				if root_index := string_list_index(names[:], sql_ref.name); root_index >= 0 {
-					add_reclassified_sql_reference(&units[unit_index], sql_ref, roots[root_index])
-					continue
-				}
-			}
-			append(&next_refs, sql_ref)
+		unit.sql_name_refs[write] = ref
+		write += 1
+	}
+	resize(&unit.sql_name_refs, write)
+}
+
+@(private)
+resolve_open_sql_predicate_name :: proc(
+	units: []Unit_Analysis,
+	unit_index: int,
+	predicate_name: Sql_Predicate_Name_Data,
+	index: ^Project_Index,
+) -> (
+	Resolution,
+	bool,
+) {
+	ref := Reference_Data {
+		name      = predicate_name.name,
+		namespace = .Value,
+		kind      = .Identifier,
+		scope     = predicate_name.scope,
+		range     = predicate_name.range,
+	}
+	if resolution, ok := resolve_reference(
+		&units[unit_index],
+		&units[unit_index].scope_index,
+		ref,
+	); ok && sql_predicate_resolution_is_host_value(units, resolution) {
+		return resolution, true
+	}
+	if resolution, ok := resolve_project_reference(
+		units,
+		unit_index,
+		ref,
+		&index.root_lookup,
+		index.class_scope_entries,
+		index.visible[unit_index],
+		index.predecessors[unit_index],
+	); ok && sql_predicate_resolution_is_host_value(units, resolution) {
+		return resolution, true
+	}
+	return {}, false
+}
+
+@(private)
+sql_predicate_resolution_is_host_value :: proc(
+	units: []Unit_Analysis,
+	resolution: Resolution,
+) -> bool {
+	#partial switch resolution.kind {
+	case .Symbol:
+		unit_index := unit_id_index(resolution.symbol.unit)
+		s := symbol(&units[unit_index], resolution.symbol.symbol)
+		return s != nil && symbol_kind_occupies(s.kind, .Value)
+	case .Internal_Table_Line:
+		return true
+	case:
+		return false
+	}
+}
+
+@(private)
+add_resolved_sql_predicate_reference :: proc(
+	unit: ^Unit_Analysis,
+	predicate_name: Sql_Predicate_Name_Data,
+	resolution: Resolution,
+) {
+	for &ref in unit.references {
+		if ref.namespace == .Value &&
+		   ref.kind == .Identifier &&
+		   ref.range == predicate_name.range &&
+		   ref.name == predicate_name.name {
+			ref.resolution = resolution
+			ref.has_resolution = true
+			return
 		}
-		units[unit_index].sql_name_refs = next_refs
+	}
+	id := Reference_Id(u32(len(unit.references)))
+	append(
+		&unit.references,
+		Reference_Data {
+			id = id,
+			name = predicate_name.name,
+			namespace = .Value,
+			kind = .Identifier,
+			scope = predicate_name.scope,
+			range = predicate_name.range,
+			resolution = resolution,
+			has_resolution = true,
+		},
+	)
+}
+
+@(private)
+add_sql_predicate_column :: proc(unit: ^Unit_Analysis, predicate_name: Sql_Predicate_Name_Data) {
+	for ref in unit.sql_name_refs {
+		if ref.kind == .Column && sql_name_ref_key(ref) == sql_predicate_name_key(predicate_name) {
+			return
+		}
+	}
+	append(
+		&unit.sql_name_refs,
+		Sql_Name_Ref_Data {
+			query_id = predicate_name.query_id,
+			scope = predicate_name.scope,
+			range = predicate_name.range,
+			name = predicate_name.name,
+			kind = .Column,
+			resolution = .Unresolved,
+		},
+	)
+}
+
+@(private)
+sql_predicate_name_key :: #force_inline proc(
+	name: Sql_Predicate_Name_Data,
+) -> Sql_Predicate_Name_Key {
+	return Sql_Predicate_Name_Key {
+		query_id = name.query_id,
+		start = name.range.start,
+		end = name.range.end,
+		name = name.name,
+	}
+}
+
+@(private)
+sql_name_ref_key :: #force_inline proc(ref: Sql_Name_Ref_Data) -> Sql_Predicate_Name_Key {
+	return Sql_Predicate_Name_Key {
+		query_id = ref.query_id,
+		start = ref.range.start,
+		end = ref.range.end,
+		name = ref.name,
 	}
 }
 
@@ -1260,9 +1369,6 @@ project_state_update_dependency_graph_for_units :: proc(
 
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(project.units) {
-			continue
-		}
 		unit_edges := &state.unit_dependency_edges[unit_index]
 		for edge in unit_edges^ {
 			project_state_decrement_dependency_pair(state, edge.from, edge.to)
@@ -1660,7 +1766,12 @@ write_function_decl_interface_signature :: proc(
 }
 
 @(private)
-method_section_from_decl :: proc(section: Decl_Parameter_Section) -> (Method_Parameter_Section, bool) {
+method_section_from_decl :: proc(
+	section: Decl_Parameter_Section,
+) -> (
+	Method_Parameter_Section,
+	bool,
+) {
 	#partial switch section {
 	case .Method_Importing:
 		return .Importing, true
@@ -1677,7 +1788,12 @@ method_section_from_decl :: proc(section: Decl_Parameter_Section) -> (Method_Par
 }
 
 @(private)
-function_section_from_decl :: proc(section: Decl_Parameter_Section) -> (Function_Module_Parameter_Section, bool) {
+function_section_from_decl :: proc(
+	section: Decl_Parameter_Section,
+) -> (
+	Function_Module_Parameter_Section,
+	bool,
+) {
 	#partial switch section {
 	case .Function_Importing:
 		return .Importing, true
@@ -1692,7 +1808,12 @@ function_section_from_decl :: proc(section: Decl_Parameter_Section) -> (Function
 }
 
 @(private)
-parameter_passing_from_decl :: proc(passing: Decl_Parameter_Passing) -> (Parameter_Passing_Kind, bool) {
+parameter_passing_from_decl :: proc(
+	passing: Decl_Parameter_Passing,
+) -> (
+	Parameter_Passing_Kind,
+	bool,
+) {
 	#partial switch passing {
 	case .Direct:
 		return .Direct, true
@@ -1724,7 +1845,10 @@ write_signature_type_ref :: proc(out: ^strings.Builder, ref: Field_Type_Ref_Data
 	for field, i in ref.field_path {
 		write_signature_string(out, field)
 		write_signature_int(out, 1 if i < len(ref.field_derefs) && ref.field_derefs[i] else 0)
-		write_signature_int(out, int(ref.field_selectors[i]) if i < len(ref.field_selectors) else int(ast.Selector_Op.Dash))
+		write_signature_int(
+			out,
+			int(ref.field_selectors[i]) if i < len(ref.field_selectors) else int(ast.Selector_Op.Dash),
+		)
 	}
 	strings.write_byte(out, '\n')
 }
@@ -1766,7 +1890,7 @@ finish_project_analysis :: proc(
 	}
 	resolve_project_cross_unit_for_units(project.units[:], unit_ids[:], &index)
 	link_class_member_implementations_with_index(project.units[:], index.predecessors)
-	reclassify_project_open_sql_predicate_host_variables_for_units(project.units[:], unit_ids[:], allocator)
+	resolve_project_open_sql_predicate_names_for_units(project.units[:], unit_ids[:], &index)
 	lookup := &index
 	check_project_bodies(project, lookup, pool, unit_allocators, allocator)
 	collect_project_diagnostics(project)
@@ -1909,9 +2033,6 @@ diagnose_include_cycles_from :: proc(
 	allocator: mem.Allocator,
 ) {
 	unit_index := unit_id_index(unit_id)
-	if unit_index < 0 || unit_index >= len(units) {
-		return
-	}
 	if done[unit_index] {
 		return
 	}
@@ -1996,7 +2117,14 @@ check_project_bodies_for_units :: proc(
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) {
-	infer_project_semantic_facts_for_units(project, lookup, unit_ids, pool, unit_allocators, allocator)
+	infer_project_semantic_facts_for_units(
+		project,
+		lookup,
+		unit_ids,
+		pool,
+		unit_allocators,
+		allocator,
+	)
 	validate_project_units_for_units(project, lookup, unit_ids, pool, unit_allocators, allocator)
 }
 
@@ -2282,12 +2410,7 @@ link_class_member_implementations_with_index :: proc(
 			class_name := symbol(&units[impl_unit_index], class_symbol).name
 			for i := len(predecessors[impl_unit_index]) - 1; i >= 0; i -= 1 {
 				def_unit := predecessors[impl_unit_index][i]
-				class_handle, class_ok := root_symbol_in_unit(
-					units,
-					def_unit,
-					.Type,
-					class_name,
-				)
+				class_handle, class_ok := root_symbol_in_unit(units, def_unit, .Type, class_name)
 				if !class_ok ||
 				   !unit_has_class_definition(
 						   &units[unit_id_index(def_unit)],
@@ -2302,8 +2425,8 @@ link_class_member_implementations_with_index :: proc(
 				)
 				def_unit_index := unit_id_index(def_unit)
 				if member != nil && member.kind == .Method {
-					if info := entity_decl_info(&units[def_unit_index], member.id); info != nil &&
-					   !(.Has_Implementation in info.flags) {
+					if info := entity_decl_info(&units[def_unit_index], member.id);
+					   info != nil && !(.Has_Implementation in info.flags) {
 						info.implementation_unit = units[impl_unit_index].unit_id
 						info.implementation_range = method_symbol.decl_range
 						info.flags += {.Has_Implementation}
@@ -2313,63 +2436,6 @@ link_class_member_implementations_with_index :: proc(
 			}
 		}
 	}
-}
-
-@(private)
-sql_ref_in_predicate :: proc(predicates: []Sql_Predicate_Data, ref: Sql_Name_Ref_Data) -> bool {
-	for predicate in predicates {
-		if predicate.query_id == ref.query_id &&
-		   predicate.range.start <= ref.range.start &&
-		   ref.range.end <= predicate.range.end {
-			return true
-		}
-	}
-	return false
-}
-
-@(private)
-add_reclassified_sql_reference :: proc(
-	unit: ^Unit_Analysis,
-	sql_ref: Sql_Name_Ref_Data,
-	handle: Symbol_Handle,
-) {
-	for ref in unit.references {
-		if ref.namespace == .Value &&
-		   ref.kind == .Identifier &&
-		   ref.range == sql_ref.range &&
-		   ref.name == sql_ref.name {
-			return
-		}
-	}
-	id := Reference_Id(u32(len(unit.references)))
-	append(
-		&unit.references,
-		Reference_Data {
-			id = id,
-			name = sql_ref.name,
-			namespace = .Value,
-			kind = .Identifier,
-			scope = sql_ref.scope,
-			range = sql_ref.range,
-			resolution = Resolution{kind = .Symbol, symbol = handle},
-			has_resolution = true,
-		},
-	)
-}
-
-@(private)
-string_list_contains :: proc(values: []string, name: string) -> bool {
-	return string_list_index(values, name) >= 0
-}
-
-@(private)
-string_list_index :: proc(values: []string, name: string) -> int {
-	for value, i in values {
-		if value == name {
-			return i
-		}
-	}
-	return -1
 }
 
 @(private)
