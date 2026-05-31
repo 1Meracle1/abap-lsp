@@ -2335,6 +2335,139 @@ ENDCLASS.`
 }
 
 @(test)
+project_state_parent_signature_change_removes_seeded_method_parameter :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zcl_child.abap",
+		source = `CLASS zcl_child DEFINITION INHERITING FROM zcl_parent.
+  PUBLIC SECTION.
+    METHODS run REDEFINITION.
+ENDCLASS.
+CLASS zcl_child IMPLEMENTATION.
+  METHOD run.
+    DATA lv_text TYPE string.
+    lv_text = iv_text.
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zcl_parent.abap",
+			source = `CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_text TYPE string.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	child := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, child != nil && !has_diagnostic(child, .Unresolved_Reference))
+
+	dependencies[0].source = `CLASS zcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_other TYPE string.
+ENDCLASS.`
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	child = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, child != nil && has_diagnostic(child, .Unresolved_Reference))
+	testing.expect(t, child != nil && unresolved_reference_count(child, "iv_text", .Value, .Identifier) == 1)
+}
+
+@(test)
+project_state_event_parameter_type_change_recalculates_handler_type :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zhandler.abap",
+		source = `CLASS lcl_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_saved FOR EVENT saved OF zcl_source IMPORTING ex_object.
+ENDCLASS.
+CLASS lcl_handler IMPLEMENTATION.
+  METHOD on_saved.
+    DATA lv_type TYPE string.
+    lv_type = ex_object->object_type.
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zcl_source.abap",
+			source = `CLASS zcl_source DEFINITION.
+  PUBLIC SECTION.
+    EVENTS saved EXPORTING VALUE(ex_object) TYPE REF TO zcl_object_a.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "file:///workspace/zcl_object_a.abap",
+			source = `CLASS zcl_object_a DEFINITION.
+  PUBLIC SECTION.
+    DATA object_type TYPE string.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "file:///workspace/zcl_object_b.abap",
+			source = `CLASS zcl_object_b DEFINITION.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	handler := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, handler != nil && !has_diagnostic(handler, .Unknown_Field))
+
+	dependencies[0].source = `CLASS zcl_source DEFINITION.
+  PUBLIC SECTION.
+    EVENTS saved EXPORTING VALUE(ex_object) TYPE REF TO zcl_object_b.
+ENDCLASS.`
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		dependencies[:],
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	handler = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, handler != nil && has_diagnostic(handler, .Unknown_Field))
+}
+
+@(test)
 analyze_handles_more_units_than_initial_task_capacity :: proc(t: ^testing.T) {
 	target := analyze.Source_Input{uri = "mem://main.abap", source = "REPORT zmain."}
 	dependencies := make([dynamic]analyze.Source_Input, 0, 5, context.allocator)

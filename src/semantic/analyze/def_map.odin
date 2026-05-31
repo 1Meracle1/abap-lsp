@@ -136,6 +136,7 @@ Decl_Info_Flag :: enum {
 	Has_Implementation,
 	Is_Abstract,
 	Has_Declared_Type,
+	Has_Event_Derived_Type,
 	Is_Optional,
 	Is_Untyped,
 	Has_Default_Value,

@@ -4,6 +4,7 @@ import "src:ast"
 import deps "src:semantic/dependencies"
 
 import "core:mem"
+import "core:strings"
 import base_runtime "base:runtime"
 
 collect_project_remote_dependency_candidates :: proc(
@@ -432,15 +433,20 @@ record_remote_candidate_unit_incremental :: proc(
 	if name == "" {
 		return
 	}
-	key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
-	if key in recorded^ {
+	lookup_key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
+	if lookup_key in recorded^ {
 		return
 	}
-	recorded^[key] = true
+	recorded^[lookup_key] = true
+	key := deps.Remote_Dependency_Key {
+		name = strings.clone(name, state.allocator),
+		kind = kind,
+		hint = hint,
+	}
 	append(unit_candidates, key)
-	if units, ok := state.unresolved_candidates[key]; ok {
+	if units, ok := state.unresolved_candidates[lookup_key]; ok {
 		append(&units, unit_id)
-		state.unresolved_candidates[key] = units
+		state.unresolved_candidates[lookup_key] = units
 	} else {
 		waiting_units := make([dynamic]Unit_Id, 0, 2, state.index.allocator)
 		append(&waiting_units, unit_id)
@@ -460,14 +466,19 @@ record_remote_candidate_unit :: proc(
 	if name == "" {
 		return
 	}
-	key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
-	if previous, ok := recorded^[key]; ok && previous == unit_id {
+	lookup_key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
+	if previous, ok := recorded^[lookup_key]; ok && previous == unit_id {
 		return
 	}
-	recorded^[key] = unit_id
-	if units, ok := state.unresolved_candidates[key]; ok {
+	recorded^[lookup_key] = unit_id
+	key := deps.Remote_Dependency_Key {
+		name = strings.clone(name, state.allocator),
+		kind = kind,
+		hint = hint,
+	}
+	if units, ok := state.unresolved_candidates[lookup_key]; ok {
 		append(&units, unit_id)
-		state.unresolved_candidates[key] = units
+		state.unresolved_candidates[lookup_key] = units
 	} else {
 		waiting_units := make([dynamic]Unit_Id, 0, 2, base_runtime.heap_allocator())
 		append(&waiting_units, unit_id)

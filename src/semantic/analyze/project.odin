@@ -4,6 +4,7 @@ import "src:ast"
 import execution "src:execution"
 import "src:parser"
 import deps "src:semantic/dependencies"
+import "src:tokenizer"
 import uri_key "src:uri_key"
 
 import base_runtime "base:runtime"
@@ -468,6 +469,9 @@ project_state_parse_units :: proc(
 	if len(indices) == 0 {
 		return
 	}
+	for unit_index in indices {
+		project_state_reset_unit_allocator(state, unit_index)
+	}
 	work := Project_Work_State {
 		units           = state.units,
 		inputs          = state.inputs,
@@ -476,6 +480,18 @@ project_state_parse_units :: proc(
 	}
 	run_project_tasks(pool, indices[:], &work, parse_collect_task)
 	state.units = work.units
+}
+
+@(private)
+project_state_reset_unit_allocator :: proc(state: ^Project_State, unit_index: int) {
+	if unit_index < 0 ||
+	   unit_index >= len(state.unit_allocators) ||
+	   state.unit_allocators[unit_index].procedure != virtual.arena_allocator_proc {
+		return
+	}
+	arena := cast(^virtual.Arena)state.unit_allocators[unit_index].data
+	virtual.arena_free_all(arena)
+	state.unit_allocators[unit_index] = virtual.arena_allocator(arena)
 }
 
 @(private)
@@ -803,10 +819,7 @@ project_state_prepare_affected_units :: proc(state: ^Project_State, affected: []
 			continue
 		}
 		unit := &state.units[unit_index]
-		for &ref in unit.references {
-			ref.resolution = {}
-			ref.has_resolution = false
-		}
+		clear_unit_reference_resolutions(unit)
 		write := 0
 		for diagnostic in unit.diagnostics {
 			if diagnostic.kind == .Unresolved_Include || diagnostic.kind == .Include_Cycle {
@@ -816,6 +829,14 @@ project_state_prepare_affected_units :: proc(state: ^Project_State, affected: []
 			write += 1
 		}
 		resize(&unit.diagnostics, write)
+	}
+}
+
+@(private)
+clear_unit_reference_resolutions :: proc(unit: ^Unit_Analysis) {
+	for &ref in unit.references {
+		ref.resolution = {}
+		ref.has_resolution = false
 	}
 }
 
@@ -929,6 +950,34 @@ resolve_project_cross_unit_for_units :: proc(
 		return
 	}
 
+	resolve_project_cross_unit_references_for_units(units, affected, index)
+
+	if seed_inherited_method_scope_parameters_for_units(
+		units,
+		affected,
+		&index.root_lookup,
+		index.class_scope_entries,
+		index.visible,
+		index.predecessors,
+	) {
+		for unit_id in affected {
+			unit_index := unit_id_index(unit_id)
+			if unit_index < 0 || unit_index >= len(units) {
+				continue
+			}
+			clear_unit_reference_resolutions(&units[unit_index])
+			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
+		}
+		resolve_project_cross_unit_references_for_units(units, affected, index)
+	}
+}
+
+@(private)
+resolve_project_cross_unit_references_for_units :: proc(
+	units: []Unit_Analysis,
+	affected: []Unit_Id,
+	index: ^Project_Index,
+) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
 		if unit_index < 0 || unit_index >= len(units) {
@@ -950,23 +999,6 @@ resolve_project_cross_unit_for_units :: proc(
 			); ok {
 				set_project_reference_resolution(units, ref, resolution)
 			}
-		}
-	}
-
-	if seed_inherited_method_scope_parameters_for_units(
-		units,
-		affected,
-		&index.root_lookup,
-		index.class_scope_entries,
-		index.visible,
-		index.predecessors,
-	) {
-		for unit_id in affected {
-			unit_index := unit_id_index(unit_id)
-			if unit_index < 0 || unit_index >= len(units) {
-				continue
-			}
-			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
 		}
 	}
 }
@@ -1032,10 +1064,26 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 				predecessors[unit_index],
 			)
 			if member.symbol == INVALID_SYMBOL_ID {
+				changed =
+					remove_seeded_method_scope_parameters(
+						unit,
+						method_scope,
+						method_symbol.id,
+						method_symbol.decl_range,
+					) ||
+					changed
 				continue
 			}
 			member_info := entity_decl_info(&units[member_unit_index], member.symbol)
 			if member_info == nil {
+				changed =
+					remove_seeded_method_scope_parameters(
+						unit,
+						method_scope,
+						method_symbol.id,
+						method_symbol.decl_range,
+					) ||
+					changed
 				continue
 			}
 			if .For_Event in member_info.flags {
@@ -1052,11 +1100,32 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 					) ||
 					changed
 			}
+			changed =
+				remove_obsolete_seeded_method_scope_parameters(
+					unit,
+					method_scope,
+					method_symbol.id,
+					method_symbol.decl_range,
+					member_info.signature_parameters[:],
+				) ||
+				changed
 			for param in member_info.signature_parameters {
+				type_id := param.type_id if member_unit_index == unit_index else UNKNOWN_TYPE_ID
+				if existing, ok := seeded_method_scope_parameter(
+					unit,
+					method_scope,
+					method_symbol.id,
+					method_symbol.decl_range,
+					param.name,
+				); ok {
+					changed =
+						update_seeded_method_scope_parameter(unit, existing, param, type_id) ||
+						changed
+					continue
+				}
 				if method_scope_has_value_symbol(unit, method_scope, param.name) {
 					continue
 				}
-				type_id := param.type_id if member_unit_index == unit_index else UNKNOWN_TYPE_ID
 				symbol_id := declare_symbol(
 					unit,
 					method_scope,
@@ -1077,6 +1146,9 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 					if .Has_Declared_Type in param.flags {
 						info.flags += {.Has_Declared_Type}
 					}
+					if .Has_Event_Derived_Type in param.flags {
+						info.flags += {.Has_Event_Derived_Type}
+					}
 					if .Is_Optional in param.flags {
 						info.flags += {.Is_Optional}
 					}
@@ -1086,6 +1158,195 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 		}
 	}
 	return changed
+}
+
+@(private)
+remove_obsolete_seeded_method_scope_parameters :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	owner: Symbol_Id,
+	owner_range: tokenizer.Range,
+	params: []Decl_Signature_Parameter_Data,
+) -> bool {
+	s := scope(unit, scope_id)
+	if s == nil {
+		return false
+	}
+	changed := false
+	write := 0
+	for symbol_id in s.declarations {
+		item := symbol(unit, symbol_id)
+		if item != nil &&
+		   item.kind == .Parameter &&
+		   item.owner == owner &&
+		   item.decl_range == owner_range &&
+		   !signature_has_parameter(params, item.name) {
+			delete_key(
+				&s.declarations_by_name,
+				Scope_Declaration_Key{namespace = .Value, name = item.name},
+			)
+			restore_first_scope_value_declaration(unit, s, symbol_id, item.name)
+			item.scope = INVALID_SCOPE_ID
+			item.owner = INVALID_SYMBOL_ID
+			changed = true
+			continue
+		}
+		s.declarations[write] = symbol_id
+		write += 1
+	}
+	if changed {
+		resize(&s.declarations, write)
+	}
+	return changed
+}
+
+@(private)
+remove_seeded_method_scope_parameters :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	owner: Symbol_Id,
+	owner_range: tokenizer.Range,
+) -> bool {
+	s := scope(unit, scope_id)
+	if s == nil {
+		return false
+	}
+	changed := false
+	write := 0
+	for symbol_id in s.declarations {
+		item := symbol(unit, symbol_id)
+		if item != nil &&
+		   item.kind == .Parameter &&
+		   item.owner == owner &&
+		   item.decl_range == owner_range {
+			delete_key(
+				&s.declarations_by_name,
+				Scope_Declaration_Key{namespace = .Value, name = item.name},
+			)
+			restore_first_scope_value_declaration(unit, s, symbol_id, item.name)
+			item.scope = INVALID_SCOPE_ID
+			item.owner = INVALID_SYMBOL_ID
+			changed = true
+			continue
+		}
+		s.declarations[write] = symbol_id
+		write += 1
+	}
+	if changed {
+		resize(&s.declarations, write)
+	}
+	return changed
+}
+
+@(private)
+signature_has_parameter :: proc(params: []Decl_Signature_Parameter_Data, name: string) -> bool {
+	for param in params {
+		if param.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+@(private)
+seeded_method_scope_parameter :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	owner: Symbol_Id,
+	owner_range: tokenizer.Range,
+	name: string,
+) -> (Symbol_Id, bool) {
+	s := scope(unit, scope_id)
+	if s == nil {
+		return INVALID_SYMBOL_ID, false
+	}
+	for symbol_id in s.declarations {
+		item := symbol(unit, symbol_id)
+		if item != nil &&
+		   item.kind == .Parameter &&
+		   item.owner == owner &&
+		   item.decl_range == owner_range &&
+		   item.name == name {
+			return symbol_id, true
+		}
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+@(private)
+update_seeded_method_scope_parameter :: proc(
+	unit: ^Unit_Analysis,
+	symbol_id: Symbol_Id,
+	param: Decl_Signature_Parameter_Data,
+	type_id: Type_Id,
+) -> bool {
+	item := symbol(unit, symbol_id)
+	info := entity_decl_info(unit, symbol_id)
+	if item == nil || info == nil {
+		return false
+	}
+	has_declared_type := .Has_Declared_Type in param.flags
+	changed := item.has_declared_type != has_declared_type ||
+	           !field_type_refs_equal(item.declared_type, param.declared_type) ||
+	           item.type_clause_display != param.type_clause_display ||
+	           item.type_clause_form != param.type_clause_form ||
+	           item.has_type_clause_form != param.has_type_clause_form ||
+	           item.type_clause_table_has_of != param.type_clause_table_has_of ||
+	           item.type_id != type_id ||
+	           info.parameter_section != param.section ||
+	           info.parameter_passing != param.passing ||
+	           ((.Has_Declared_Type in info.flags) != has_declared_type) ||
+	           ((.Has_Event_Derived_Type in info.flags) != (.Has_Event_Derived_Type in param.flags)) ||
+	           ((.Is_Optional in info.flags) != (.Is_Optional in param.flags))
+	if !changed {
+		return false
+	}
+	item.declared_type = param.declared_type
+	item.has_declared_type = has_declared_type
+	item.type_clause_display = param.type_clause_display
+	item.type_clause_form = param.type_clause_form
+	item.has_type_clause_form = param.has_type_clause_form
+	item.type_clause_table_has_of = param.type_clause_table_has_of
+	item.type_id = type_id
+	info.parameter_section = param.section
+	info.parameter_passing = param.passing
+	if has_declared_type {
+		info.flags += {.Has_Declared_Type}
+	} else {
+		info.flags -= {.Has_Declared_Type}
+	}
+	if .Has_Event_Derived_Type in param.flags {
+		info.flags += {.Has_Event_Derived_Type}
+	} else {
+		info.flags -= {.Has_Event_Derived_Type}
+	}
+	if .Is_Optional in param.flags {
+		info.flags += {.Is_Optional}
+	} else {
+		info.flags -= {.Is_Optional}
+	}
+	return true
+}
+
+@(private)
+restore_first_scope_value_declaration :: proc(
+	unit: ^Unit_Analysis,
+	s: ^Scope_Data,
+	removed: Symbol_Id,
+	name: string,
+) {
+	for candidate_id in s.declarations {
+		if candidate_id == removed {
+			continue
+		}
+		if candidate := symbol(unit, candidate_id);
+		   candidate != nil &&
+		   candidate.name == name &&
+		   symbol_kind_occupies(candidate.kind, .Value) {
+			s.declarations_by_name[Scope_Declaration_Key{namespace = .Value, name = name}] = candidate_id
+			return
+		}
+	}
 }
 
 @(private)
@@ -1459,6 +1720,7 @@ project_state_add_dependency_edge_for_unit :: proc(
 	if edge in edge_seen^ {
 		return
 	}
+	edge.name = strings.clone(name, allocator)
 	edge_seen^[edge] = true
 	append(unit_edges, edge)
 	append(&state.edges, edge)
@@ -1554,6 +1816,7 @@ project_state_add_dependency_edge :: proc(
 	if edge in edge_seen^ {
 		return
 	}
+	edge.name = strings.clone(name, allocator)
 	edge_seen^[edge] = true
 	append(&state.edges, edge)
 	reverse_key := Reverse_Dependency_Key {
@@ -1627,14 +1890,14 @@ unit_interface_signature :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 		   info.visibility == .Private {
 			continue
 		}
-		write_class_member_decl_interface_signature(&out, info)
+		write_class_member_decl_interface_signature(&out, unit, info)
 	}
 	for s in unit.symbols {
 		if s.kind != .Form {
 			continue
 		}
 		info := decl_info(unit, s.decl_info)
-		write_signature_int(&out, symbol_id_index(s.id))
+		write_signature_string(&out, s.name)
 		write_signature_string(&out, info.signature if info != nil else "")
 	}
 	for s in unit.symbols {
@@ -1649,6 +1912,7 @@ unit_interface_signature :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 @(private)
 write_class_member_decl_interface_signature :: proc(
 	out: ^strings.Builder,
+	unit: ^Unit_Analysis,
 	info: ^Decl_Info_Data,
 ) {
 	for param in info.signature_parameters {
@@ -1658,7 +1922,8 @@ write_class_member_decl_interface_signature :: proc(
 			return
 		}
 	}
-	write_signature_int(out, symbol_id_index(info.owner))
+	owner := symbol(unit, info.owner)
+	write_signature_string(out, owner.name if owner != nil else "")
 	write_signature_int(out, int(info.member_kind))
 	write_signature_int(out, int(info.visibility))
 	write_signature_string(out, info.name)
@@ -1694,7 +1959,8 @@ write_function_decl_interface_signature :: proc(
 			return
 		}
 	}
-	write_signature_int(out, symbol_id_index(symbol_id))
+	s := symbol(unit, symbol_id)
+	write_signature_string(out, s.name if s != nil else info.name)
 	write_signature_string(out, info.signature)
 	for param in info.signature_parameters {
 		section, _ := function_section_from_decl(param.section)

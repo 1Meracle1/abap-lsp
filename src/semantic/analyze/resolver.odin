@@ -594,10 +594,22 @@ seed_event_handler_method_parameter_types :: proc(
 	}
 	changed := false
 	for &param in member_info.signature_parameters {
+		event_param := class_member_parameter(event_info, param.name)
+		if .Has_Event_Derived_Type in param.flags {
+			if event_param != nil &&
+			   .Has_Declared_Type in event_param.flags &&
+			   event_derived_parameter_matches(param, event_param^) {
+				continue
+			}
+			clear_event_derived_signature_parameter(&units[member_unit_index], &param)
+			changed = true
+			changed =
+				clear_event_derived_method_scope_parameter(&units[unit_index], method_scope, param.name) ||
+				changed
+		}
 		if .Has_Declared_Type in param.flags {
 			continue
 		}
-		event_param := class_member_parameter(event_info, param.name)
 		if event_param == nil || !(.Has_Declared_Type in event_param.flags) {
 			continue
 		}
@@ -609,7 +621,7 @@ seed_event_handler_method_parameter_types :: proc(
 			decl_param.has_type_clause_form = event_param.has_type_clause_form
 			decl_param.type_clause_table_has_of = event_param.type_clause_table_has_of
 			decl_param.type_id = UNKNOWN_TYPE_ID
-			decl_param.flags += {.Has_Declared_Type}
+			decl_param.flags += {.Has_Declared_Type, .Has_Event_Derived_Type}
 			update_parameter_symbol_from_signature(&units[member_unit_index], decl_param.symbol, event_param^)
 		}
 		changed =
@@ -623,6 +635,70 @@ seed_event_handler_method_parameter_types :: proc(
 			changed
 	}
 	return changed
+}
+
+event_derived_parameter_matches :: proc(
+	param: Decl_Signature_Parameter_Data,
+	event_param: Decl_Signature_Parameter_Data,
+) -> bool {
+	return field_type_refs_equal(param.declared_type, event_param.declared_type) &&
+	       param.type_clause_display == event_param.type_clause_display &&
+	       param.type_clause_form == event_param.type_clause_form &&
+	       param.has_type_clause_form == event_param.has_type_clause_form &&
+	       param.type_clause_table_has_of == event_param.type_clause_table_has_of
+}
+
+clear_event_derived_signature_parameter :: proc(
+	unit: ^Unit_Analysis,
+	param: ^Decl_Signature_Parameter_Data,
+) {
+	param.declared_type = {}
+	param.type_clause_display = ""
+	param.type_clause_form = {}
+	param.has_type_clause_form = false
+	param.type_clause_table_has_of = false
+	param.type_id = UNKNOWN_TYPE_ID
+	param.flags -= {.Has_Declared_Type, .Has_Event_Derived_Type}
+	clear_event_derived_parameter_symbol(unit, param.symbol)
+}
+
+clear_event_derived_method_scope_parameter :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	name: string,
+) -> bool {
+	s := scope(unit, scope_id)
+	if s == nil {
+		return false
+	}
+	for symbol_id in s.declarations {
+		item := symbol(unit, symbol_id)
+		if item == nil || item.name != name || item.kind != .Parameter {
+			continue
+		}
+		return clear_event_derived_parameter_symbol(unit, symbol_id)
+	}
+	return false
+}
+
+clear_event_derived_parameter_symbol :: proc(unit: ^Unit_Analysis, symbol_id: Symbol_Id) -> bool {
+	info := entity_decl_info(unit, symbol_id)
+	if info == nil || !(.Has_Event_Derived_Type in info.flags) {
+		return false
+	}
+	item := symbol(unit, symbol_id)
+	if item != nil {
+		item.structure = INVALID_STRUCTURE_ID
+		item.declared_type = {}
+		item.has_declared_type = false
+		item.type_clause_display = ""
+		item.type_clause_form = {}
+		item.has_type_clause_form = false
+		item.type_clause_table_has_of = false
+		item.type_id = UNKNOWN_TYPE_ID
+	}
+	info.flags -= {.Has_Declared_Type, .Has_Event_Derived_Type}
+	return true
 }
 
 update_parameter_symbol_from_signature :: proc(
@@ -642,7 +718,7 @@ update_parameter_symbol_from_signature :: proc(
 	item.type_clause_table_has_of = param.type_clause_table_has_of
 	item.type_id = type_id_from_symbol_data(unit, item)
 	if info := entity_decl_info(unit, symbol_id); info != nil {
-		info.flags += {.Has_Declared_Type}
+		info.flags += {.Has_Declared_Type, .Has_Event_Derived_Type}
 	}
 }
 
@@ -718,7 +794,7 @@ update_method_scope_parameter_symbol :: proc(
 		item.type_clause_table_has_of = param.type_clause_table_has_of
 		item.type_id = type_id_from_symbol_data(unit, item)
 		if info := entity_decl_info(unit, item.id); info != nil {
-			info.flags += {.Has_Declared_Type}
+			info.flags += {.Has_Declared_Type, .Has_Event_Derived_Type}
 		}
 		return true
 	}

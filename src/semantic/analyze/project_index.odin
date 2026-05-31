@@ -1,6 +1,7 @@
 package abap_frontend_semantic_analyze
 
 import "core:mem"
+import "core:strings"
 
 Root_Symbol_Key :: struct {
 	unit:      Unit_Id,
@@ -121,9 +122,6 @@ project_index_remove_unit :: proc(
 			name,
 		)
 	}
-	for entry in data.class_scope_entries {
-		project_index_remove_class_scope_candidate(index, entry.key, unit_id)
-	}
 	clear(&data.roots)
 	clear(&data.provided_names)
 	clear(&data.class_scope_entries)
@@ -137,11 +135,12 @@ project_index_collect_unit :: proc(
 	data := &index.unit_entries[unit_index]
 	unit_stem := uri_file_stem(unit.uri)
 	for name in unit.provided_names {
-		append(&data.provided_names, name)
+		index_name := strings.clone(name, index.allocator)
+		append(&data.provided_names, index_name)
 		project_index_increment_name_count(
 			&index.provided_name_counts,
 			&index.root_lookup.provided_names,
-			name,
+			index_name,
 		)
 	}
 	is_typepool := typepool_dependency_unit(unit.uri)
@@ -168,11 +167,12 @@ project_index_collect_unit :: proc(
 			if !symbol_kind_occupies(symbol.kind, namespace) {
 				continue
 			}
+			index_name := strings.clone(symbol.name, index.allocator)
 			entry := Root_Symbol_Entry {
 				unit = unit.unit_id,
 				symbol = symbol.id,
 				namespace = namespace,
-				name = symbol.name,
+				name = index_name,
 				visible_by_default = visible_by_default,
 			}
 			append(&data.roots, entry)
@@ -188,35 +188,6 @@ project_index_collect_unit :: proc(
 					Symbol_Handle{unit = entry.unit, symbol = entry.symbol},
 				)
 			}
-		}
-	}
-	for symbol in unit.symbols {
-		scope_data := scope(unit, symbol.scope)
-		if scope_data == nil ||
-		   !(scope_data.kind == .Class || scope_data.kind == .Interface) ||
-		   scope_data.owner == INVALID_SYMBOL_ID {
-			continue
-		}
-		namespaces := [?]Namespace{.Value, .Type, .Routine}
-		for namespace in namespaces {
-			if !symbol_kind_occupies(symbol.kind, namespace) {
-				continue
-			}
-			key := Project_Class_Member_Key {
-				class_unit = unit.unit_id,
-				class_symbol = scope_data.owner,
-				namespace = namespace,
-				name = symbol.name,
-			}
-			append(
-				&data.class_scope_entries,
-				Project_Class_Scope_Index_Entry {
-					unit = unit.unit_id,
-					key = key,
-					entry = Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
-				},
-			)
-			project_index_add_class_scope_candidate(index, data.class_scope_entries[len(data.class_scope_entries) - 1])
 		}
 	}
 }
@@ -312,7 +283,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 							class_unit   = unit.unit_id,
 							class_symbol = scope_data.owner,
 							namespace    = namespace,
-							name         = symbol.name,
+							name         = strings.clone(symbol.name, index.allocator),
 						},
 						Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
 					)
@@ -363,6 +334,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 						continue
 					}
 					if target_entry, target_ok := index.class_scope_entries[target_key]; target_ok {
+						alias_key.name = strings.clone(alias.alias_name, index.allocator)
 						project_index_record_class_scope_entry(index, unit.unit_id, alias_key, target_entry)
 						changed = true
 					}
@@ -473,34 +445,6 @@ project_index_add_class_scope_candidate :: proc(
 		index.class_scope_candidates[entry.key] = next
 	}
 	index.class_scope_entries[entry.key] = index.class_scope_candidates[entry.key][0].entry
-}
-
-project_index_remove_class_scope_candidate :: proc(
-	index: ^Project_Index,
-	key: Project_Class_Member_Key,
-	unit_id: Unit_Id,
-) {
-	candidates, ok := index.class_scope_candidates[key]
-	if !ok {
-		return
-	}
-	write := 0
-	for candidate in candidates {
-		if candidate.unit == unit_id {
-			continue
-		}
-		candidates[write] = candidate
-		write += 1
-	}
-	if write == 0 {
-		delete(candidates)
-		delete_key(&index.class_scope_candidates, key)
-		delete_key(&index.class_scope_entries, key)
-		return
-	}
-	resize(&candidates, write)
-	index.class_scope_candidates[key] = candidates
-	index.class_scope_entries[key] = candidates[0].entry
 }
 
 project_index_increment_name_count :: proc(
