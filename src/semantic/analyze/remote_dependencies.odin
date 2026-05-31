@@ -227,7 +227,7 @@ record_project_unresolved_candidates_for_units :: proc(
 	project: ^Project_Analysis,
 	unit_ids: []Unit_Id,
 ) {
-	project_index_ensure_unit_count(&state.index, len(project.units))
+	assert(len(state.unit_unresolved_candidates) >= len(project.units))
 	lookup := &state.index
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
@@ -237,16 +237,16 @@ record_project_unresolved_candidates_for_units :: proc(
 		if unit_index < 0 || unit_index >= len(project.units) {
 			continue
 		}
-		data := &state.index.unit_entries[unit_index]
-		for key in data.unresolved_candidates {
+		unit_candidates := &state.unit_unresolved_candidates[unit_index]
+		for key in unit_candidates^ {
 			remove_remote_candidate_unit(state, key, unit_id)
 		}
-		clear(&data.unresolved_candidates)
+		clear(unit_candidates)
 		recorded := make(map[deps.Remote_Dependency_Key]bool, 8, context.temp_allocator)
 		unit := &project.units[unit_index]
 		for &edge in unit.include_edges {
 			if !edge.has_target {
-				record_remote_candidate_unit_incremental(state, data, &recorded, edge.name, .Include, unit.unit_id)
+				record_remote_candidate_unit_incremental(state, unit_candidates, &recorded, edge.name, .Include, unit.unit_id)
 			}
 		}
 		for &ref in unit.references {
@@ -256,7 +256,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
 				record_remote_candidate_unit_incremental(
 					state,
-					data,
+					unit_candidates,
 					&recorded,
 					candidate.name,
 					candidate.kind,
@@ -272,7 +272,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			   symbol.declared_type.namespace == .Type {
 				record_remote_candidate_unit_incremental(
 					state,
-					data,
+					unit_candidates,
 					&recorded,
 					symbol.declared_type.base_name,
 					.Type,
@@ -284,7 +284,7 @@ record_project_unresolved_candidates_for_units :: proc(
 		if unit.has_message_default_class {
 			record_remote_candidate_unit_incremental(
 				state,
-				data,
+				unit_candidates,
 				&recorded,
 				unit.message_default_class.name,
 				.Message_Class,
@@ -295,7 +295,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			if message.class_name != "" {
 				record_remote_candidate_unit_incremental(
 					state,
-					data,
+					unit_candidates,
 					&recorded,
 					message.class_name,
 					.Message_Class,
@@ -305,7 +305,7 @@ record_project_unresolved_candidates_for_units :: proc(
 		}
 		for &sql_source in unit.sql_sources {
 			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
-				record_remote_candidate_unit_incremental(state, data, &recorded, sql_source.name, .Type, unit.unit_id)
+				record_remote_candidate_unit_incremental(state, unit_candidates, &recorded, sql_source.name, .Type, unit.unit_id)
 			}
 		}
 		for &call_site in unit.call_sites {
@@ -316,7 +316,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			case .Function:
 				record_remote_candidate_unit_incremental(
 					state,
-					data,
+					unit_candidates,
 					&recorded,
 					call_site.target.function_name,
 					.Function,
@@ -325,7 +325,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			case .Report:
 				record_remote_candidate_unit_incremental(
 					state,
-					data,
+					unit_candidates,
 					&recorded,
 					call_site.target.report_name,
 					.Report,
@@ -422,7 +422,7 @@ remove_remote_candidate_unit :: proc(
 @(private)
 record_remote_candidate_unit_incremental :: proc(
 	state: ^Project_State,
-	data: ^Project_Index_Unit,
+	unit_candidates: ^[dynamic]deps.Remote_Dependency_Key,
 	recorded: ^map[deps.Remote_Dependency_Key]bool,
 	name: string,
 	kind: deps.Remote_Dependency_Kind,
@@ -437,7 +437,7 @@ record_remote_candidate_unit_incremental :: proc(
 		return
 	}
 	recorded^[key] = true
-	append(&data.unresolved_candidates, key)
+	append(unit_candidates, key)
 	if units, ok := state.unresolved_candidates[key]; ok {
 		append(&units, unit_id)
 		state.unresolved_candidates[key] = units

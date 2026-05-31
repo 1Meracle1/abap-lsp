@@ -182,7 +182,7 @@ validate_unresolved_references :: proc(
 			continue
 		}
 		if ref.namespace == .Value &&
-		   sql_predicate_column_name(lookup, unit.unit_id, ref.range, ref.name) {
+		   sql_predicate_column_name(unit, ref.range, ref.name) {
 			continue
 		}
 		if symbol_exists_in_other_namespace(project, lookup, unit_index, ref) {
@@ -1027,26 +1027,16 @@ sql_source_for_name_ref :: proc(
 	return nil, false
 }
 
-sql_predicate_column_name :: proc(
-	lookup: ^Project_Index,
-	unit_id: Unit_Id,
-	range: tokenizer.Range,
-	name: string,
-) -> bool {
-	return sql_predicate_column_key(unit_id, range, name) in lookup.sql_predicate_columns
-}
-
-sql_predicate_column_key :: #force_inline proc(
-	unit_id: Unit_Id,
-	range: tokenizer.Range,
-	name: string,
-) -> Sql_Predicate_Column_Key {
-	return Sql_Predicate_Column_Key {
-		unit = unit_id,
-		range_start = range.start,
-		range_end = range.end,
-		name = name,
+sql_predicate_column_name :: proc(unit: ^Unit_Analysis, range: tokenizer.Range, name: string) -> bool {
+	for ref in unit.sql_name_refs {
+		if ref.kind == .Column &&
+		   ref.name == name &&
+		   ref.range.start == range.start &&
+		   ref.range.end == range.end {
+			return true
+		}
 	}
+	return false
 }
 
 class_handle_for_call_target :: proc(
