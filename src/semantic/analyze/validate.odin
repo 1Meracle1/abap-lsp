@@ -225,7 +225,7 @@ symbol_exists_in_other_namespace :: proc(
 		); ok {
 			return true
 		}
-		if _, ok := root_symbol_in_visible_units_lookup(lookup, namespace, ref.name, lookup.visible[unit_index]); ok {
+		if _, ok := root_symbol_in_visible_units_lookup(project, namespace, ref.name, lookup.visible[unit_index]); ok {
 			return true
 		}
 		if _, ok := global_visible_root_symbol_lookup(lookup, namespace, ref.name); ok {
@@ -1927,7 +1927,7 @@ value_handle_for_name :: proc(
 	   ok {
 		return handle, true
 	}
-	if handle, ok := root_symbol_in_visible_units_lookup(lookup, .Value, name, lookup.visible[unit_index]); ok {
+	if handle, ok := root_symbol_in_visible_units_lookup(project, .Value, name, lookup.visible[unit_index]); ok {
 		return handle, true
 	}
 	return global_visible_root_symbol_lookup(lookup, .Value, name)
@@ -2971,10 +2971,10 @@ resolve_type_name_in_project_lookup :: proc(
 	name: string,
 ) -> (Symbol_Handle, bool) {
 	unit_id := project.units[unit_index].unit_id
-	if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, .Type, name); ok {
+	if handle, ok := root_symbol_in_unit_lookup(project, unit_id, .Type, name); ok {
 		return handle, true
 	}
-	if handle, ok := root_symbol_in_visible_units_lookup(lookup, .Type, name, lookup.visible[unit_index]); ok {
+	if handle, ok := root_symbol_in_visible_units_lookup(project, .Type, name, lookup.visible[unit_index]); ok {
 		return handle, true
 	}
 	return global_visible_root_symbol_lookup(lookup, .Type, name)
@@ -2987,11 +2987,11 @@ resolve_function_module_in_project_lookup :: proc(
 	name: string,
 ) -> (Symbol_Handle, bool) {
 	unit_id := project.units[unit_index].unit_id
-	if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
+	if handle, ok := root_symbol_in_unit_lookup(project, unit_id, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
 		return handle, true
 	}
 	for visible in lookup.visible[unit_index] {
-		if handle, ok := root_symbol_in_unit_lookup(lookup, visible, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
+		if handle, ok := root_symbol_in_unit_lookup(project, visible, .Routine, name); ok && symbol_handle_is_kind(project, handle, .Module) {
 			return handle, true
 		}
 	}
@@ -3023,12 +3023,12 @@ resolve_type_ref_handle_project_lookup :: proc(
 			continue
 		}
 		unit_id := project.units[unit_index].unit_id
-		if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, namespace, type_ref.base_name);
+		if handle, ok := root_symbol_in_unit_lookup(project, unit_id, namespace, type_ref.base_name);
 		   ok {
 			return handle, true
 		}
 		if handle, ok := root_symbol_in_visible_units_lookup(
-			lookup,
+			project,
 			namespace,
 			type_ref.base_name,
 			lookup.visible[unit_index],
@@ -3060,26 +3060,22 @@ direct_superclass_handle_lookup :: proc(
 }
 
 root_symbol_in_unit_lookup :: #force_inline proc(
-	lookup: ^Project_Index,
+	project: ^Project_Analysis,
 	unit_id: Unit_Id,
 	namespace: Namespace,
 	name: string,
 ) -> (Symbol_Handle, bool) {
-	key := Root_Symbol_Key{unit = unit_id, namespace = namespace, name = name}
-	if handle, ok := lookup.root_lookup.by_unit[key]; ok {
-		return handle, true
-	}
-	return {}, false
+	return root_symbol_in_unit(project.units[:], unit_id, namespace, name)
 }
 
 root_symbol_in_visible_units_lookup :: proc(
-	lookup: ^Project_Index,
+	project: ^Project_Analysis,
 	namespace: Namespace,
 	name: string,
 	visible: [dynamic]Unit_Id,
 ) -> (Symbol_Handle, bool) {
 	for unit_id in visible {
-		if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, namespace, name); ok {
+		if handle, ok := root_symbol_in_unit_lookup(project, unit_id, namespace, name); ok {
 			return handle, true
 		}
 	}

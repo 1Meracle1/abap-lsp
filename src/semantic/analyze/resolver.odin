@@ -557,7 +557,6 @@ Root_Symbol_Entry :: struct {
 }
 
 Project_Root_Lookup :: struct {
-	by_unit:        map[Root_Symbol_Key]Symbol_Handle,
 	global:         map[Root_Name_Key]Symbol_Handle,
 	provided_names: map[string]bool,
 }
@@ -1038,7 +1037,7 @@ resolve_project_reference :: proc(
 		); ok {
 			return Resolution{kind = .Symbol, symbol = handle}, true
 		}
-		if handle, ok := root_symbol_in_visible_units(namespace, ref.name, roots, visible); ok {
+		if handle, ok := root_symbol_in_visible_units(units, namespace, ref.name, visible); ok {
 			return Resolution{kind = .Symbol, symbol = handle}, true
 		}
 		if handle, ok := global_visible_root_symbol(roots, namespace, ref.name); ok {
@@ -1264,10 +1263,10 @@ resolve_type_name_in_project :: proc(
 	Symbol_Handle,
 	bool,
 ) {
-	if handle, ok := root_symbol_in_unit(roots, units[unit_index].unit_id, .Type, name); ok {
+	if handle, ok := root_symbol_in_unit(units, units[unit_index].unit_id, .Type, name); ok {
 		return handle, true
 	}
-	if handle, ok := root_symbol_in_visible_units(.Type, name, roots, visible); ok {
+	if handle, ok := root_symbol_in_visible_units(units, .Type, name, visible); ok {
 		return handle, true
 	}
 	return global_visible_root_symbol(roots, .Type, name)
@@ -1350,7 +1349,7 @@ class_member_symbol_in_unit_by_class_name :: proc(
 	Symbol_Handle,
 	bool,
 ) {
-	class_handle, ok := root_symbol_in_unit(roots, unit_id, .Type, class_name)
+	class_handle, ok := root_symbol_in_unit(units, unit_id, .Type, class_name)
 	unit_index := unit_id_index(unit_id)
 	if !ok || unit_index < 0 || unit_index >= len(units) {
 		return {}, false
@@ -1406,16 +1405,16 @@ class_member_symbol_by_handle :: proc(
 }
 
 root_symbol_in_visible_units :: proc(
+	units: []Unit_Analysis,
 	namespace: Namespace,
 	name: string,
-	roots: ^Project_Root_Lookup,
 	visible: [dynamic]Unit_Id,
 ) -> (
 	Symbol_Handle,
 	bool,
 ) {
 	for unit_id in visible {
-		if handle, ok := root_symbol_in_unit(roots, unit_id, namespace, name); ok {
+		if handle, ok := root_symbol_in_unit(units, unit_id, namespace, name); ok {
 			return handle, true
 		}
 	}
@@ -1423,7 +1422,7 @@ root_symbol_in_visible_units :: proc(
 }
 
 root_symbol_in_unit :: proc(
-	roots: ^Project_Root_Lookup,
+	units: []Unit_Analysis,
 	unit_id: Unit_Id,
 	namespace: Namespace,
 	name: string,
@@ -1431,13 +1430,10 @@ root_symbol_in_unit :: proc(
 	Symbol_Handle,
 	bool,
 ) {
-	key := Root_Symbol_Key {
-		unit      = unit_id,
-		namespace = namespace,
-		name      = name,
-	}
-	if handle, ok := roots.by_unit[key]; ok {
-		return handle, true
+	unit_index := unit_id_index(unit_id)
+	unit := &units[unit_index]
+	if symbol_id, ok := scope_lookup_declaration(unit, unit.root_scope, namespace, name); ok {
+		return Symbol_Handle{unit = unit_id, symbol = symbol_id}, true
 	}
 	return {}, false
 }
@@ -2059,7 +2055,7 @@ resolve_type_ref_handle_project :: proc(
 			continue
 		}
 		if handle, ok := root_symbol_in_unit(
-			roots,
+			units,
 			units[unit_index].unit_id,
 			namespace,
 			type_ref.base_name,
@@ -2067,9 +2063,9 @@ resolve_type_ref_handle_project :: proc(
 			return handle, true
 		}
 		if handle, ok := root_symbol_in_visible_units(
+			units,
 			namespace,
 			type_ref.base_name,
-			roots,
 			visible,
 		); ok {
 			return handle, true

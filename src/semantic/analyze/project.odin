@@ -708,7 +708,6 @@ project_state_finish :: proc(
 		reset_cross_class_member_implementation_links(project.units[:])
 		link_class_member_implementations_with_index(
 			project.units[:],
-			&state.index.root_lookup,
 			state.index.predecessors,
 		)
 		project_state_add_class_definition_units(project.units[:], &affected)
@@ -1208,7 +1207,7 @@ project_state_rebuild_dependency_graph :: proc(
 			#partial switch call_site.target.kind {
 			case .Function:
 				if handle, ok := root_symbol_in_unit_lookup(
-					lookup,
+					project,
 					unit.unit_id,
 					.Routine,
 					call_site.target.function_name,
@@ -1226,7 +1225,7 @@ project_state_rebuild_dependency_graph :: proc(
 				}
 			case .Report:
 				if handle, ok := root_symbol_in_unit_lookup(
-					lookup,
+					project,
 					unit.unit_id,
 					.Value,
 					call_site.target.report_name,
@@ -1332,7 +1331,7 @@ project_state_update_dependency_graph_for_units :: proc(
 			#partial switch call_site.target.kind {
 			case .Function:
 				if handle, ok := root_symbol_in_unit_lookup(
-					lookup,
+					project,
 					unit.unit_id,
 					.Routine,
 					call_site.target.function_name,
@@ -1350,7 +1349,7 @@ project_state_update_dependency_graph_for_units :: proc(
 				}
 			case .Report:
 				if handle, ok := root_symbol_in_unit_lookup(
-					lookup,
+					project,
 					unit.unit_id,
 					.Value,
 					call_site.target.report_name,
@@ -1766,7 +1765,7 @@ finish_project_analysis :: proc(
 		append(&unit_ids, unit.unit_id)
 	}
 	resolve_project_cross_unit_for_units(project.units[:], unit_ids[:], &index)
-	link_class_member_implementations_with_index(project.units[:], &index.root_lookup, index.predecessors)
+	link_class_member_implementations_with_index(project.units[:], index.predecessors)
 	reclassify_project_open_sql_predicate_host_variables_for_units(project.units[:], unit_ids[:], allocator)
 	lookup := &index
 	check_project_bodies(project, lookup, pool, unit_allocators, allocator)
@@ -2266,7 +2265,6 @@ diagnostic_message :: proc(prefix, name: string, allocator: mem.Allocator) -> st
 
 link_class_member_implementations_with_index :: proc(
 	units: []Unit_Analysis,
-	root_lookup: ^Project_Root_Lookup,
 	predecessors: [][dynamic]Unit_Id,
 ) {
 	for impl_unit_index in 0 ..< len(units) {
@@ -2285,7 +2283,7 @@ link_class_member_implementations_with_index :: proc(
 			for i := len(predecessors[impl_unit_index]) - 1; i >= 0; i -= 1 {
 				def_unit := predecessors[impl_unit_index][i]
 				class_handle, class_ok := root_symbol_in_unit(
-					root_lookup,
+					units,
 					def_unit,
 					.Type,
 					class_name,

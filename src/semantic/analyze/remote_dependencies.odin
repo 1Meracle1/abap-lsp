@@ -378,10 +378,10 @@ resolve_root_name_in_project_lookup :: proc(
 	name: string,
 ) -> (Symbol_Handle, bool) {
 	unit_id := project.units[unit_index].unit_id
-	if handle, ok := root_symbol_in_unit_lookup(lookup, unit_id, namespace, name); ok {
+	if handle, ok := root_symbol_in_unit_lookup(project, unit_id, namespace, name); ok {
 		return handle, true
 	}
-	if handle, ok := root_symbol_in_visible_units_lookup(lookup, namespace, name, lookup.visible[unit_index]); ok {
+	if handle, ok := root_symbol_in_visible_units_lookup(project, namespace, name, lookup.visible[unit_index]); ok {
 		return handle, true
 	}
 	return global_visible_root_symbol_lookup(lookup, namespace, name)

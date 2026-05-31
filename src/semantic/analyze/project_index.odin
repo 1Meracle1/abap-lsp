@@ -3,35 +3,29 @@ package abap_frontend_semantic_analyze
 import "core:mem"
 import "core:strings"
 
-Root_Symbol_Key :: struct {
-	unit:      Unit_Id,
-	namespace: Namespace,
-	name:      string,
-}
-
 Root_Name_Key :: struct {
 	namespace: Namespace,
 	name:      string,
 }
 
 Project_Index :: struct {
-	root_lookup:              Project_Root_Lookup,
-	global_root_candidates:   map[Root_Name_Key][dynamic]Symbol_Handle,
-	provided_name_counts:     map[string]int,
-	class_scope_entries:      map[Project_Class_Member_Key]Project_Class_Member_Entry,
-	class_scope_candidates:   map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
-	names:                    map[string]string,
-	unit_entries:             [dynamic]Project_Index_Unit,
-	visible:                  [][dynamic]Unit_Id,
-	predecessors:             [][dynamic]Unit_Id,
-	allocator:                mem.Allocator,
+	root_lookup:            Project_Root_Lookup,
+	global_root_candidates: map[Root_Name_Key][dynamic]Symbol_Handle,
+	provided_name_counts:   map[string]int,
+	class_scope_entries:    map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	class_scope_candidates: map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
+	names:                  map[string]string,
+	unit_entries:           [dynamic]Project_Index_Unit,
+	visible:                [][dynamic]Unit_Id,
+	predecessors:           [][dynamic]Unit_Id,
+	allocator:              mem.Allocator,
 }
 
 Project_Index_Unit :: struct {
-	roots:                        [dynamic]Root_Symbol_Entry,
-	provided_names:               [dynamic]string,
-	class_scope_entries:          [dynamic]Project_Class_Scope_Index_Entry,
-	include_targets:              [dynamic]Unit_Id,
+	roots:               [dynamic]Root_Symbol_Entry,
+	provided_names:      [dynamic]string,
+	class_scope_entries: [dynamic]Project_Class_Scope_Index_Entry,
+	include_targets:     [dynamic]Unit_Id,
 }
 
 Project_Class_Scope_Index_Entry :: struct {
@@ -43,14 +37,21 @@ Project_Class_Scope_Index_Entry :: struct {
 project_index_make :: proc(allocator: mem.Allocator) -> Project_Index {
 	return Project_Index {
 		root_lookup = Project_Root_Lookup {
-			by_unit = make(map[Root_Symbol_Key]Symbol_Handle, 16, allocator),
 			global = make(map[Root_Name_Key]Symbol_Handle, 16, allocator),
 			provided_names = make(map[string]bool, 16, allocator),
 		},
 		global_root_candidates = make(map[Root_Name_Key][dynamic]Symbol_Handle, 16, allocator),
 		provided_name_counts = make(map[string]int, 16, allocator),
-		class_scope_entries = make(map[Project_Class_Member_Key]Project_Class_Member_Entry, 16, allocator),
-		class_scope_candidates = make(map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry, 16, allocator),
+		class_scope_entries = make(
+			map[Project_Class_Member_Key]Project_Class_Member_Entry,
+			16,
+			allocator,
+		),
+		class_scope_candidates = make(
+			map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
+			16,
+			allocator,
+		),
 		names = make(map[string]string, 128, allocator),
 		unit_entries = make([dynamic]Project_Index_Unit, 0, 8, allocator),
 		allocator = allocator,
@@ -69,7 +70,10 @@ project_index_name :: proc(index: ^Project_Index, name: string) -> string {
 	return interned
 }
 
-project_index_from_units :: proc(units: []Unit_Analysis, allocator: mem.Allocator) -> Project_Index {
+project_index_from_units :: proc(
+	units: []Unit_Analysis,
+	allocator: mem.Allocator,
+) -> Project_Index {
 	index := project_index_make(allocator)
 	unit_ids := make([dynamic]Unit_Id, 0, len(units), context.temp_allocator)
 	for unit in units {
@@ -87,7 +91,12 @@ project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) 
 			Project_Index_Unit {
 				roots = make([dynamic]Root_Symbol_Entry, 0, 8, index.allocator),
 				provided_names = make([dynamic]string, 0, 4, index.allocator),
-				class_scope_entries = make([dynamic]Project_Class_Scope_Index_Entry, 0, 8, index.allocator),
+				class_scope_entries = make(
+					[dynamic]Project_Class_Scope_Index_Entry,
+					0,
+					8,
+					index.allocator,
+				),
 				include_targets = make([dynamic]Unit_Id, 0, 2, index.allocator),
 			},
 		)
@@ -110,24 +119,15 @@ project_index_update_units :: proc(
 	}
 }
 
-project_index_remove_unit :: proc(
-	index: ^Project_Index,
-	unit_id: Unit_Id,
-) {
+project_index_remove_unit :: proc(index: ^Project_Index, unit_id: Unit_Id) {
 	unit_index := unit_id_index(unit_id)
 	data := &index.unit_entries[unit_index]
 	for entry in data.roots {
-		delete_key(
-			&index.root_lookup.by_unit,
-			Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name},
+		project_index_remove_global_root_candidate(
+			index,
+			Root_Name_Key{namespace = entry.namespace, name = entry.name},
+			unit_id,
 		)
-		if entry.visible_by_default {
-			project_index_remove_global_root_candidate(
-				index,
-				Root_Name_Key{namespace = entry.namespace, name = entry.name},
-				unit_id,
-			)
-		}
 	}
 	for name in data.provided_names {
 		project_index_decrement_name_count(
@@ -141,11 +141,7 @@ project_index_remove_unit :: proc(
 	clear(&data.class_scope_entries)
 }
 
-project_index_collect_unit :: proc(
-	index: ^Project_Index,
-	unit: ^Unit_Analysis,
-	unit_index: int,
-) {
+project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, unit_index: int) {
 	data := &index.unit_entries[unit_index]
 	unit_stem := uri_file_stem(unit.uri)
 	for name in unit.provided_names {
@@ -158,18 +154,18 @@ project_index_collect_unit :: proc(
 		)
 	}
 	is_typepool := typepool_dependency_unit(unit.uri)
-	for &symbol in unit.symbols {
-		if symbol.scope != unit.root_scope {
-			continue
-		}
+	root := scope(unit, unit.root_scope)
+	for symbol_id in root.declarations {
+		symbol := symbol(unit, symbol_id)
 		visible_by_default := false
 		if is_typepool {
 			visible_by_default = typepool_root_symbol_visible_by_default(symbol.kind)
 		} else {
 			#partial switch symbol.kind {
 			case .Class, .Interface:
-				visible_by_default = name_is_namespaced(symbol.name) ||
-				                     root_name_matches_unit_stem(unit_stem, symbol.name)
+				visible_by_default =
+					name_is_namespaced(symbol.name) ||
+					root_name_matches_unit_stem(unit_stem, symbol.name)
 			case .Type_Def:
 				visible_by_default = root_name_matches_unit_stem(unit_stem, symbol.name)
 			case .Module, .Report:
@@ -181,27 +177,31 @@ project_index_collect_unit :: proc(
 			if !symbol_kind_occupies(symbol.kind, namespace) {
 				continue
 			}
+			if first, ok := scope_lookup_declaration(
+				unit,
+				unit.root_scope,
+				namespace,
+				symbol.name,
+			); !ok || first != symbol.id {
+				continue
+			}
 			index_name := project_index_name(index, symbol.name)
 			entry := Root_Symbol_Entry {
-				unit = unit.unit_id,
-				symbol = symbol.id,
-				namespace = namespace,
-				name = index_name,
+				unit               = unit.unit_id,
+				symbol             = symbol.id,
+				namespace          = namespace,
+				name               = index_name,
 				visible_by_default = visible_by_default,
 			}
+			if !entry.visible_by_default {
+				continue
+			}
 			append(&data.roots, entry)
-			key := Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name}
-			_, slot, inserted, _ := map_entry(&index.root_lookup.by_unit, key)
-			if inserted {
-				slot^ = Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
-			}
-			if entry.visible_by_default {
-				project_index_add_global_root_candidate(
-					index,
-					Root_Name_Key{namespace = entry.namespace, name = entry.name},
-					Symbol_Handle{unit = entry.unit, symbol = entry.symbol},
-				)
-			}
+			project_index_add_global_root_candidate(
+				index,
+				Root_Name_Key{namespace = entry.namespace, name = entry.name},
+				Symbol_Handle{unit = entry.unit, symbol = entry.symbol},
+			)
 		}
 	}
 }
@@ -215,10 +215,10 @@ project_index_update_include_graph :: proc(
 	rebuild := len(index.visible) != len(units) || len(index.predecessors) != len(units)
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
-			continue
-		}
-		if project_index_include_targets_changed(&index.unit_entries[unit_index], &units[unit_index]) {
+		if project_index_include_targets_changed(
+			&index.unit_entries[unit_index],
+			&units[unit_index],
+		) {
 			rebuild = true
 		}
 	}
@@ -233,9 +233,6 @@ project_index_update_include_graph :: proc(
 project_index_class_scope_dirty :: proc(units: []Unit_Analysis, unit_ids: []Unit_Id) -> bool {
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
-			continue
-		}
 		unit := &units[unit_index]
 		if len(unit.class_definitions) > 0 ||
 		   len(unit.class_inheritance) > 0 ||
@@ -252,7 +249,10 @@ project_index_class_scope_dirty :: proc(units: []Unit_Analysis, unit_ids: []Unit
 	return false
 }
 
-project_index_include_targets_changed :: proc(data: ^Project_Index_Unit, unit: ^Unit_Analysis) -> bool {
+project_index_include_targets_changed :: proc(
+	data: ^Project_Index_Unit,
+	unit: ^Unit_Analysis,
+) -> bool {
 	changed := len(data.include_targets) != len(unit.include_edges)
 	if !changed {
 		for edge, i in unit.include_edges {
@@ -298,8 +298,16 @@ project_index_destroy_include_graph :: proc(index: ^Project_Index) {
 project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []Unit_Analysis) {
 	delete(index.class_scope_entries)
 	delete(index.class_scope_candidates)
-	index.class_scope_entries = make(map[Project_Class_Member_Key]Project_Class_Member_Entry, 16, index.allocator)
-	index.class_scope_candidates = make(map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry, 16, index.allocator)
+	index.class_scope_entries = make(
+		map[Project_Class_Member_Key]Project_Class_Member_Entry,
+		16,
+		index.allocator,
+	)
+	index.class_scope_candidates = make(
+		map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
+		16,
+		index.allocator,
+	)
 	for i in 0 ..< len(units) {
 		clear(&index.unit_entries[i].class_scope_entries)
 	}
@@ -315,9 +323,6 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 			}
 			for symbol_id in scope_data.declarations {
 				symbol := symbol(&unit, symbol_id)
-				if symbol == nil {
-					continue
-				}
 				namespaces := [?]Namespace{.Value, .Type, .Routine}
 				for namespace in namespaces {
 					if symbol_kind_occupies(symbol.kind, namespace) {
@@ -325,10 +330,10 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 							index,
 							unit.unit_id,
 							Project_Class_Member_Key {
-								class_unit   = unit.unit_id,
+								class_unit = unit.unit_id,
 								class_symbol = owner.id,
-								namespace    = namespace,
-								name         = project_index_name(index, symbol.name),
+								namespace = namespace,
+								name = project_index_name(index, symbol.name),
 							},
 							Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
 						)
@@ -379,9 +384,15 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 					if alias_key in index.class_scope_entries {
 						continue
 					}
-					if target_entry, target_ok := index.class_scope_entries[target_key]; target_ok {
+					if target_entry, target_ok := index.class_scope_entries[target_key];
+					   target_ok {
 						alias_key.name = project_index_name(index, alias.alias_name)
-						project_index_record_class_scope_entry(index, unit.unit_id, alias_key, target_entry)
+						project_index_record_class_scope_entry(
+							index,
+							unit.unit_id,
+							alias_key,
+							target_entry,
+						)
 						changed = true
 					}
 				}
@@ -397,19 +408,15 @@ project_index_record_class_scope_entry :: proc(
 	entry: Project_Class_Member_Entry,
 ) {
 	unit_index := unit_id_index(owner_unit)
-	if unit_index < 0 || unit_index >= len(index.unit_entries) {
-		return
-	}
 	data := &index.unit_entries[unit_index]
 	append(
 		&data.class_scope_entries,
-		Project_Class_Scope_Index_Entry {
-			unit = owner_unit,
-			key = key,
-			entry = entry,
-		},
+		Project_Class_Scope_Index_Entry{unit = owner_unit, key = key, entry = entry},
 	)
-	project_index_add_class_scope_candidate(index, data.class_scope_entries[len(data.class_scope_entries) - 1])
+	project_index_add_class_scope_candidate(
+		index,
+		data.class_scope_entries[len(data.class_scope_entries) - 1],
+	)
 }
 
 project_index_add_global_root_candidate :: proc(
