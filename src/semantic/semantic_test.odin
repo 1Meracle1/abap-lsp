@@ -7,7 +7,9 @@ import ddic_xml "src:ddic_xml"
 import "src:parser"
 import "src:tokenizer"
 import execution "src:execution"
+import lints "src:lints"
 import analyze "src:semantic/analyze"
+import deps "src:semantic/dependencies"
 import remote_deps "src:semantic/remote_dependencies"
 import sem_query "src:semantic/query"
 import session "src:semantic/session"
@@ -576,9 +578,9 @@ ENDFUNCTION.
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, ddxtt_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "ddxtt", kind = .Type}]
-	_, sy_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "sy", kind = .Type}]
-	_, local_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "ty_local", kind = .Type}]
+	_, ddxtt_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "ddxtt", kind = .Type}]
+	_, sy_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "sy", kind = .Type}]
+	_, local_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "ty_local", kind = .Type}]
 	ddxtt_found := false
 	sy_found := false
 	local_found := false
@@ -625,7 +627,7 @@ remote_dependency_candidates_include_like_occurs_table_type_bases :: proc(t: ^te
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "rsdsfields", kind = .Type}]
+	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "rsdsfields", kind = .Type}]
 	found := false
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
 		if candidate.name == "rsdsfields" && candidate.kind == .Type {
@@ -662,7 +664,7 @@ ENDFORM.
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "ddsymtab", kind = .Type}]
+	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "ddsymtab", kind = .Type}]
 	found := false
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
 		if candidate.name == "ddsymtab" && candidate.kind == .Type {
@@ -704,7 +706,7 @@ ENDFUNCTION.
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "hroexist", kind = .Type}]
+	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "hroexist", kind = .Type}]
 	found := false
 	candidates := analyze.collect_project_remote_dependency_candidates(&project, context.allocator)
 	for candidate in candidates {
@@ -755,8 +757,8 @@ lcl_local=>run( ).
 		context.allocator,
 	)
 
-	_, static_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "cl_message_helper", kind = .Static}]
-	_, local_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "lcl_local", kind = .Static}]
+	_, static_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "cl_message_helper", kind = .Static}]
+	_, local_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "lcl_local", kind = .Static}]
 	static_found := false
 	local_found := false
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
@@ -800,7 +802,7 @@ CALL FUNCTION 'Z_REMOTE_FM'.
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
+	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
 	found := false
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
 		if candidate.name == "z_remote_fm" && candidate.kind == .Function {
@@ -838,7 +840,7 @@ PERFORM logdelete IN PROGRAM rddu0001 USING lv_protname.
 		context.allocator,
 	)
 	unit := &project.units[0]
-	_, report_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "rddu0001", kind = .Report}]
+	_, report_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "rddu0001", kind = .Report}]
 	report_found := false
 	logdelete_found := false
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
@@ -855,7 +857,8 @@ PERFORM logdelete IN PROGRAM rddu0001 USING lv_protname.
 	testing.expect(t, !logdelete_found)
 	testing.expect(t, !has_reference(unit, "logdelete", .Routine, .Routine_Call))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
-	testing.expect_value(t, unit.perform_calls[0].program.name, "rddu0001")
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect_value(t, lint_unit.perform_calls[0].program.name, "rddu0001")
 }
 
 @(test)
@@ -883,7 +886,7 @@ SUBMIT scpr3 AND RETURN.
 		context.allocator,
 	)
 	unit := &project.units[0]
-	_, report_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
+	_, report_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
 	report_found := false
 	for candidate in analyze.collect_project_remote_dependency_candidates(&project, context.allocator) {
 		if candidate.name == "scpr3" && candidate.kind == .Report {
@@ -923,7 +926,7 @@ SUBMIT ('SCPR3') AND RETURN.
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, report_pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
+	_, report_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
 
 	testing.expect(t, report_pending)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
@@ -1374,6 +1377,38 @@ collect_test_unit :: proc(t: ^testing.T, uri, source: string) -> analyze.Unit_An
 	return analyze.analyze_unit(analyze.Unit_Id(0), uri, source, parsed, &pool, context.allocator)
 }
 
+expect_type_kind :: proc(
+	t: ^testing.T,
+	unit: ^analyze.Unit_Analysis,
+	id: analyze.Type_Id,
+	kind: analyze.Type_Kind,
+) -> ^analyze.Type_Data {
+	type_data := analyze.type_data(unit, id)
+	testing.expect(t, type_data != nil)
+	if type_data != nil {
+		testing.expect_value(t, type_data.kind, kind)
+	}
+	return type_data
+}
+
+expect_operand :: proc(
+	t: ^testing.T,
+	unit: ^analyze.Unit_Analysis,
+	operand: ^analyze.Operand_Data,
+	mode: analyze.Operand_Mode,
+	builtin_type_name: string,
+) {
+	testing.expect(t, operand != nil)
+	if operand == nil {
+		return
+	}
+	testing.expect_value(t, operand.mode, mode)
+	type_data := expect_type_kind(t, unit, operand.type_id, .Builtin)
+	if type_data != nil {
+		testing.expect_value(t, type_data.name, builtin_type_name)
+	}
+}
+
 has_symbol :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Symbol_Kind, name: string) -> bool {
 	for symbol in unit.symbols {
 		if symbol.kind == kind && symbol.name == name {
@@ -1394,6 +1429,15 @@ has_scope_kind :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Scope_Kind) -
 
 has_diagnostic :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_Kind) -> bool {
 	for diagnostic in unit.diagnostics {
+		if diagnostic.kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+diagnostic_present :: proc(diagnostics: []analyze.Diagnostic, kind: analyze.Diagnostic_Kind) -> bool {
+	for diagnostic in diagnostics {
 		if diagnostic.kind == kind {
 			return true
 		}
@@ -1933,7 +1977,7 @@ project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	units, ok := state.unresolved_candidates[analyze.Remote_Dependency_Key {
+	units, ok := state.unresolved_candidates[deps.Remote_Dependency_Key {
 		name = "zcl_waiting",
 		kind = .Type,
 		hint = .Object_Type,
@@ -1978,7 +2022,7 @@ TYPES: BEGIN OF enlfdir,
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, targets[0].uri)
-	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "enlfdir", kind = .Type}]
+	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "enlfdir", kind = .Type}]
 
 	testing.expect(t, !pending)
 	testing.expect(t, root != nil)
@@ -2014,7 +2058,7 @@ project_state_unresolved_candidates_skip_resolved_function_dependency :: proc(t:
 		analyze.Analyze_Options{pool = &pool},
 		context.allocator,
 	)
-	_, pending := state.unresolved_candidates[analyze.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
+	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
 	state_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, false, context.allocator)
 	found_state_candidate := false
 	for candidate in state_candidates {
@@ -2718,7 +2762,8 @@ internal_table_order_present :: proc(
 	table_name: string,
 	fields: []string,
 ) -> bool {
-	for order in unit.internal_table_orders {
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	for order in lint_unit.internal_table_orders {
 		if order.table_name == table_name && string_list_matches(order.key_fields, fields) {
 			return true
 		}
@@ -2727,7 +2772,8 @@ internal_table_order_present :: proc(
 }
 
 binary_search_present :: proc(unit: ^analyze.Unit_Analysis, table_name: string, fields: []string) -> bool {
-	for read in unit.read_table_binary_searches {
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	for read in lint_unit.read_table_binary_searches {
 		if read.table_name == table_name && string_list_matches(read.key_fields, fields) {
 			return true
 		}
@@ -2737,10 +2783,11 @@ binary_search_present :: proc(unit: ^analyze.Unit_Analysis, table_name: string, 
 
 system_update_present :: proc(
 	unit: ^analyze.Unit_Analysis,
-	statement: analyze.System_Field_Statement_Kind,
+	statement: lints.System_Field_Statement_Kind,
 	field_name: string,
 ) -> bool {
-	for update in unit.system_field_updates {
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	for update in lint_unit.system_field_updates {
 		if update.statement == statement && update.field_name == field_name {
 			return true
 		}
@@ -2802,6 +2849,39 @@ FIELD-SYMBOLS <fs_row> TYPE any.
 	testing.expect(t, has_symbol(&unit, .Field_Symbol, "<fs_row>"))
 	testing.expect(t, has_scope_kind(&unit, .Form))
 	testing.expect(t, has_scope_kind(&unit, .Method))
+}
+
+@(test)
+collected_symbols_have_persistent_decl_info :: proc(t: ^testing.T) {
+	source := `
+DATA gv_value TYPE i.
+CONSTANTS gc_limit TYPE i VALUE 1.
+`
+	unit := collect_test_unit(t, "file:///decl_info.abap", source)
+	gv := analyze.find_symbol(&unit, "gv_value", .Variable)
+	gc := analyze.find_symbol(&unit, "gc_limit", .Constant)
+
+	testing.expect(t, gv != nil)
+	testing.expect(t, gc != nil)
+	if gv != nil {
+		testing.expect(t, gv.decl_info != analyze.INVALID_DECL_INFO_ID)
+		info := analyze.decl_info(&unit, gv.decl_info)
+		testing.expect(t, info != nil)
+		if info != nil {
+			testing.expect_value(t, info.entity, gv.id)
+			testing.expect_value(t, info.kind, analyze.Symbol_Kind.Variable)
+			testing.expect(t, info.type_clause != nil)
+			testing.expect_value(t, info.state, analyze.Decl_Info_State.Unresolved)
+		}
+	}
+	if gc != nil {
+		info := analyze.decl_info(&unit, gc.decl_info)
+		testing.expect(t, info != nil)
+		if info != nil {
+			testing.expect_value(t, info.entity, gc.id)
+			testing.expect(t, info.value_clause != nil)
+		}
+	}
 }
 
 @(test)
@@ -2919,6 +2999,69 @@ TYPES ty_initial TYPE STANDARD TABLE OF string INITIAL SIZE 5.`
 	testing.expect_value(t, ty_def.type_clause_display, "STANDARD TABLE OF string WITH DEFAULT KEY")
 	testing.expect_value(t, ty_unique.type_clause_display, "SORTED TABLE OF string WITH UNIQUE KEY table_line")
 	testing.expect_value(t, ty_initial.type_clause_display, "STANDARD TABLE OF string INITIAL SIZE 5")
+}
+
+@(test)
+canonical_type_ids_cover_declared_types_and_structures :: proc(t: ^testing.T) {
+	source := `
+CLASS lcl_demo DEFINITION.
+ENDCLASS.
+INTERFACE lif_demo.
+ENDINTERFACE.
+TYPES: BEGIN OF ty_line,
+         text TYPE string,
+       END OF ty_line.
+TYPES ty_lines TYPE STANDARD TABLE OF ty_line WITH DEFAULT KEY.
+DATA ls_line TYPE ty_line.
+DATA lt_lines TYPE ty_lines.
+DATA lr_demo TYPE REF TO lcl_demo.
+DATA lr_if TYPE REF TO lif_demo.
+`
+	unit := collect_test_unit(t, "file:///canonical_types.abap", source)
+
+	ty_line := analyze.find_symbol(&unit, "ty_line", .Type_Def)
+	ty_lines := analyze.find_symbol(&unit, "ty_lines", .Type_Def)
+	ls_line := analyze.find_symbol(&unit, "ls_line", .Variable)
+	lt_lines := analyze.find_symbol(&unit, "lt_lines", .Variable)
+	lr_demo := analyze.find_symbol(&unit, "lr_demo", .Variable)
+	lr_if := analyze.find_symbol(&unit, "lr_if", .Variable)
+	text_field := analyze.structure_field(&unit, ty_line.structure, "text") if ty_line != nil else nil
+
+	testing.expect(t, ty_line != nil && ty_lines != nil && ls_line != nil && lt_lines != nil)
+	testing.expect(t, lr_demo != nil && lr_if != nil && text_field != nil)
+
+	line_type := expect_type_kind(t, &unit, ty_line.type_id, .Named)
+	line_base := expect_type_kind(t, &unit, line_type.base, .Structure)
+	testing.expect_value(t, line_base.structure, ty_line.structure)
+	text_type := expect_type_kind(t, &unit, text_field.type_id, .Builtin)
+	testing.expect_value(t, text_type.name, "string")
+	testing.expect_value(t, ls_line.type_id, ty_line.type_id)
+
+	lines_type := expect_type_kind(t, &unit, ty_lines.type_id, .Named)
+	lines_table := expect_type_kind(t, &unit, lines_type.base, .Table)
+	testing.expect_value(t, lines_table.base, ty_line.type_id)
+	testing.expect_value(t, lines_table.table_form, ast.Data_Type_Form.Standard_Table)
+	testing.expect_value(t, lt_lines.type_id, ty_lines.type_id)
+
+	demo_ref := expect_type_kind(t, &unit, lr_demo.type_id, .Ref)
+	testing.expect_value(t, expect_type_kind(t, &unit, demo_ref.base, .Class).name, "lcl_demo")
+	if_ref := expect_type_kind(t, &unit, lr_if.type_id, .Ref)
+	testing.expect_value(t, expect_type_kind(t, &unit, if_ref.base, .Interface).name, "lif_demo")
+}
+
+@(test)
+recursive_type_alias_resolution_is_bounded :: proc(t: ^testing.T) {
+	source := `TYPES ty_self TYPE ty_self.`
+	unit := collect_test_unit(t, "file:///recursive_type_alias.abap", source)
+
+	ty_self := analyze.find_symbol(&unit, "ty_self", .Type_Def)
+	testing.expect(t, ty_self != nil)
+	if ty_self == nil {
+		return
+	}
+	ty_self.type_id = analyze.UNKNOWN_TYPE_ID
+	resolved := analyze.type_id_from_symbol(&unit, ty_self.id)
+	testing.expect(t, analyze.type_id_is_known(resolved))
 }
 
 @(test)
@@ -3462,12 +3605,20 @@ ENDCLASS.
 	testing.expect_value(t, unit.member_aliases[0].alias_name, "alias_base")
 	testing.expect_value(t, unit.member_aliases[0].target_interface_name, "lif_demo")
 	testing.expect_value(t, unit.member_aliases[0].target_member_name, "base")
+	alias_info := analyze.entity_decl_info(&unit, unit.member_aliases[0].symbol)
+	testing.expect(t, alias_info != nil)
+	testing.expect_value(t, alias_info.owner, child.id)
+	testing.expect_value(t, alias_info.alias_target_interface_name, "lif_demo")
 
 	attr := class_member_named(&unit, child.id, "mv_flag", .Attribute)
 	static_attr := class_member_named(&unit, child.id, "gv_count", .Attribute)
 	event := class_member_named(&unit, child.id, "changed", .Event)
 	method := class_member_named(&unit, child.id, "run", .Method)
 	testing.expect(t, attr != nil)
+	attr_info := analyze.entity_decl_info(&unit, attr.symbol)
+	testing.expect(t, attr_info != nil)
+	testing.expect_value(t, attr_info.owner, child.id)
+	testing.expect_value(t, attr_info.member_kind, analyze.Class_Member_Kind.Attribute)
 	testing.expect(t, static_attr != nil)
 	testing.expect(t, .Is_Static in static_attr.flags)
 	testing.expect(t, event != nil)
@@ -3475,10 +3626,20 @@ ENDCLASS.
 	testing.expect_value(t, event.parameters[0].passing, analyze.Parameter_Passing_Kind.Value)
 	testing.expect(t, method != nil)
 	testing.expect(t, .Has_Implementation in method.flags)
+	method_info := analyze.entity_decl_info(&unit, method.symbol)
+	testing.expect(t, method_info != nil)
+	testing.expect_value(t, method_info.owner, child.id)
+	testing.expect_value(t, method_info.member_kind, analyze.Class_Member_Kind.Method)
+	testing.expect(t, method_info.signature_scope != analyze.INVALID_SCOPE_ID)
+	testing.expect(t, .Has_Implementation in method_info.flags)
 	testing.expect_value(t, len(method.parameters), 2)
 	testing.expect_value(t, method.parameters[0].section, analyze.Method_Parameter_Section.Importing)
 	testing.expect_value(t, method.parameters[0].name, "iv_value")
 	testing.expect_value(t, method.parameters[0].passing, analyze.Parameter_Passing_Kind.Direct)
+	param_info := analyze.entity_decl_info(&unit, method.parameters[0].symbol)
+	testing.expect(t, param_info != nil)
+	testing.expect_value(t, param_info.owner, method.symbol)
+	testing.expect_value(t, param_info.parameter_section, analyze.Decl_Parameter_Section.Method_Importing)
 	testing.expect_value(t, method.parameters[1].section, analyze.Method_Parameter_Section.Returning)
 	testing.expect_value(t, method.parameters[1].name, "rv_text")
 	testing.expect_value(t, method.parameters[1].passing, analyze.Parameter_Passing_Kind.Value)
@@ -3959,10 +4120,18 @@ ENDFUNCTION.
 
 	testing.expect_value(t, len(unit.form_routines), 1)
 	form := unit.form_routines[0]
+	form_info := analyze.entity_decl_info(&unit, form.symbol)
+	testing.expect(t, form_info != nil)
+	testing.expect(t, form_info.body_scope != analyze.INVALID_SCOPE_ID)
+	testing.expect_value(t, form_info.signature, "FORM run TABLES !ct_rows STRUCTURE mara USING VALUE(iv_text) TYPE string REFERENCE(iv_ref) LIKE sy-uname CHANGING cv_count TYPE i")
 	testing.expect_value(t, len(form.parameters), 4)
 	ct_rows := unit.symbols[analyze.symbol_id_index(form.parameters[0].symbol)]
 	iv_text := unit.symbols[analyze.symbol_id_index(form.parameters[1].symbol)]
 	iv_ref := unit.symbols[analyze.symbol_id_index(form.parameters[2].symbol)]
+	form_param_info := analyze.entity_decl_info(&unit, form.parameters[0].symbol)
+	testing.expect(t, form_param_info != nil)
+	testing.expect_value(t, form_param_info.owner, form.symbol)
+	testing.expect_value(t, form_param_info.parameter_section, analyze.Decl_Parameter_Section.Form_Tables)
 	testing.expect_value(t, ct_rows.name, "ct_rows")
 	testing.expect_value(t, ct_rows.declared_type.namespace, analyze.Namespace.Value)
 	testing.expect_value(t, form.parameters[0].section, analyze.Form_Parameter_Section.Tables)
@@ -3977,8 +4146,15 @@ ENDFUNCTION.
 
 	testing.expect_value(t, len(unit.function_modules), 1)
 	fm := unit.function_modules[0]
+	fm_info := analyze.entity_decl_info(&unit, fm.symbol)
+	testing.expect(t, fm_info != nil)
+	testing.expect(t, fm_info.body_scope != analyze.INVALID_SCOPE_ID)
 	testing.expect_value(t, len(fm.parameters), 5)
 	testing.expect_value(t, fm.parameters[0].name, "iv_value")
+	fm_param_info := analyze.entity_decl_info(&unit, fm.parameters[0].symbol)
+	testing.expect(t, fm_param_info != nil)
+	testing.expect_value(t, fm_param_info.owner, fm.symbol)
+	testing.expect_value(t, fm_param_info.parameter_section, analyze.Decl_Parameter_Section.Function_Importing)
 	testing.expect_value(t, fm.parameters[0].passing, analyze.Parameter_Passing_Kind.Value)
 	testing.expect(t, .Is_Optional in fm.parameters[0].flags)
 	testing.expect_value(t, fm.parameters[1].name, "iv_text")
@@ -4177,8 +4353,9 @@ ENDFORM.
 
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 	testing.expect(t, !has_reference(&unit, "line", .Value, .Identifier))
-	testing.expect_value(t, len(unit.find_sites), 1)
-	testing.expect_value(t, len(unit.find_sites[0].write_targets), 1)
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect_value(t, len(lint_unit.find_sites), 1)
+	testing.expect_value(t, len(lint_unit.find_sites[0].write_targets), 1)
 }
 
 @(test)
@@ -5141,6 +5318,74 @@ SELECT * FROM scarr INTO TABLE @DATA(lt_scarr).`
 	fact_copy, fact_copy_ok := sem_query.fact_expression_fact_copy_at_offset(fact_query, use_offset)
 	testing.expect(t, fact_copy_ok)
 	testing.expect_value(t, fact_copy.kind, analyze.Expression_Fact_Kind.Reference)
+
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	flows := make([dynamic]^lints.Value_Flow_Edge_Data, 0, 1, context.allocator)
+	for &edge in lint_unit.value_flow_edges {
+		if analyze.range_contains_offset(edge.source_range, use_offset) ||
+		   analyze.range_contains_offset(edge.target.range, use_offset) {
+			append(&flows, &edge)
+		}
+	}
+	testing.expect_value(t, len(flows), 1)
+	testing.expect_value(t, flows[0].kind, lints.Value_Flow_Kind.Assignment)
+	testing.expect_value(t, flows[0].target.kind, lints.Value_Flow_Target_Kind.Assignment)
+}
+
+@(test)
+operand_annotations_cover_core_body_expressions :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF ty_row,
+         field TYPE string,
+       END OF ty_row.
+DATA ls_row TYPE ty_row.
+
+CLASS lcl_dep DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_text RETURNING VALUE(rv_text) TYPE string.
+ENDCLASS.
+
+CLASS lcl_dep IMPLEMENTATION.
+  METHOD get_text.
+    rv_text = 'x'.
+  ENDMETHOD.
+ENDCLASS.
+
+DATA lo_dep TYPE REF TO lcl_dep.
+DATA(lv_text) = lo_dep->get_text( ).
+ls_row-field = lv_text.
+DATA(lv_num) = VALUE i( ).
+`
+	unit := collect_test_unit(t, "file:///operand_annotations.abap", source)
+	fact_query := sem_query.facts(sem_query.semantic(&unit))
+
+	inline_offset := find_text(source, "lv_text")
+	inline_operand := sem_query.fact_operand_at_offset(fact_query, inline_offset)
+	expect_operand(t, &unit, inline_operand, .Variable, "string")
+	if inline_operand != nil {
+		testing.expect(t, .Assignable in inline_operand.flags)
+	}
+
+	call_offset := find_text_last(source, "get_text")
+	call_operand := sem_query.fact_operand_at_offset(fact_query, call_offset)
+	expect_operand(t, &unit, call_operand, .Value, "string")
+
+	selector_offset := find_text(source, "ls_row-field") + len("ls_row-")
+	selector_operand := sem_query.fact_operand_at_offset(fact_query, selector_offset)
+	expect_operand(t, &unit, selector_operand, .Field, "string")
+
+	identifier_offset := find_text_last(source, "lv_text")
+	identifier_operand := sem_query.fact_operand_at_offset(fact_query, identifier_offset)
+	expect_operand(t, &unit, identifier_operand, .Variable, "string")
+
+	literal_offset := find_text(source, "'x'")
+	literal_operand := sem_query.fact_operand_at_offset(fact_query, literal_offset)
+	expect_operand(t, &unit, literal_operand, .Constant, "string")
+
+	constructor_offset := find_text(source, "VALUE i")
+	constructor_operand, constructor_ok := sem_query.fact_operand_copy_at_offset(fact_query, constructor_offset)
+	testing.expect(t, constructor_ok)
+	expect_operand(t, &unit, &constructor_operand, .Value, "i")
 }
 
 @(test)
@@ -5195,8 +5440,9 @@ ENDFORM.
 	)
 
 	testing.expect_value(t, reference_count(&unit, "lv_max_len", .Value, .Identifier), 1)
-	testing.expect_value(t, len(unit.routine_control_regions), 1)
-	testing.expect_value(t, unit.routine_control_regions[0].kind, analyze.Routine_Control_Region_Kind.Loop)
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect_value(t, len(lint_unit.routine_control_regions), 1)
+	testing.expect_value(t, lint_unit.routine_control_regions[0].kind, lints.Routine_Control_Region_Kind.Loop)
 }
 
 @(test)
@@ -5218,8 +5464,9 @@ ENDFORM.
 
 	testing.expect_value(t, reference_count(&unit, "lv_kind", .Value, .Identifier), 1)
 	testing.expect_value(t, reference_count(&unit, "lc_rs_agg_op", .Value, .Identifier), 2)
-	testing.expect_value(t, len(unit.routine_control_regions), 1)
-	testing.expect_value(t, unit.routine_control_regions[0].kind, analyze.Routine_Control_Region_Kind.Case)
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect_value(t, len(lint_unit.routine_control_regions), 1)
+	testing.expect_value(t, lint_unit.routine_control_regions[0].kind, lints.Routine_Control_Region_Kind.Case)
 }
 
 @(test)
@@ -5268,11 +5515,12 @@ ENDFORM.
 	)
 
 	first, last, new_, end_of := 0, 0, 0, 0
-	for region in unit.routine_control_regions {
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	for region in lint_unit.routine_control_regions {
 		if region.kind != .At {
 			continue
 		}
-		switch region.at.kind {
+		switch region.at_kind {
 		case .First:
 			first += 1
 		case .Last:
@@ -5338,7 +5586,8 @@ ENDFORM.
 `,
 	)
 
-	testing.expect(t, has_diagnostic(&unit, .Invalid_Control_Break))
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect(t, diagnostic_present(lint_unit.diagnostics[:], .Invalid_Control_Break))
 	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 }
 
@@ -5463,12 +5712,13 @@ ENDCLASS.
 	}
 	testing.expect_value(t, ls_row_field_accesses, 2)
 	testing.expect(t, len(unit.call_sites) >= 2)
-	testing.expect_value(t, len(unit.perform_calls), 1)
-	testing.expect_value(t, len(unit.perform_calls[0].arguments), 2)
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect_value(t, len(lint_unit.perform_calls), 1)
+	testing.expect_value(t, len(lint_unit.perform_calls[0].arguments), 2)
 	testing.expect_value(
 		t,
-		unit.perform_calls[0].arguments[1].section,
-		analyze.Perform_Parameter_Section.Changing,
+		lint_unit.perform_calls[0].arguments[1].section,
+		lints.Perform_Parameter_Section.Changing,
 	)
 }
 
@@ -5785,19 +6035,12 @@ DATA lo_dep TYPE REF TO lcl_dep.
 lo_dep->consume( iv_text = lo_dep->get_text( ) ).
 `
 	unit := collect_test_unit(t, "file:///method_result_call_arg_flow.abap", source)
-	arg_offset := find_text_last(source, "lo_dep->get_text")
-	found := false
-	for edge in unit.value_flow_edges {
-		if edge.kind == .Call_Argument &&
-		   analyze.range_contains_offset(edge.source_range, arg_offset) &&
-		   edge.source_type.has_declared_type &&
-		   edge.source_type.declared_type.base_name == "string" {
-			found = true
-		}
-	}
+	arg_offset := find_text_last(source, "get_text")
+	query := sem_query.facts(sem_query.semantic(&unit))
+	operand := sem_query.fact_operand_at_offset(query, arg_offset)
 
 	testing.expect(t, arg_offset >= 0)
-	testing.expect(t, found)
+	expect_operand(t, &unit, operand, .Value, "string")
 }
 
 @(test)
@@ -7483,8 +7726,9 @@ ENDFORM.
 	testing.expect(t, binary_search_present(&unit, "lt_rows", keys[:]))
 	testing.expect(t, system_update_present(&unit, .Read_Table, "subrc"))
 	testing.expect(t, system_update_present(&unit, .Read_Table, "tabix"))
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
 	found := false
-	for read in unit.read_table_binary_searches {
+	for read in lint_unit.read_table_binary_searches {
 		if read.table_name == "lt_rows" && string_list_matches(read.key_fields, keys[:]) {
 			testing.expect_value(t, source[read.range.start:read.range.end], "BINARY SEARCH")
 			found = true
@@ -7981,9 +8225,10 @@ ENDFORM.
 	testing.expect(t, system_update_present(&unit, .Insert_Textpool, "subrc"))
 	testing.expect(t, len(unit.concatenate_lines_of_sites) == 1)
 	testing.expect(t, unit.concatenate_lines_of_sites[0].byte_mode)
-	testing.expect(t, len(unit.find_sites) == 1)
-	testing.expect(t, len(unit.find_sites[0].write_targets) == 4)
-	testing.expect(t, unit.find_sites[0].write_targets[3].definitely_assigned)
+	lint_unit := lints.collect_source(unit.uri, unit.source, context.allocator)
+	testing.expect(t, len(lint_unit.find_sites) == 1)
+	testing.expect(t, len(lint_unit.find_sites[0].write_targets) == 4)
+	testing.expect(t, lint_unit.find_sites[0].write_targets[3].definitely_assigned)
 	testing.expect(t, len(unit.assignment_sites) >= 12)
 	testing.expect(t, has_reference(&unit, "lt_source", .Value, .Identifier))
 	testing.expect(t, has_reference(&unit, "lt_report", .Value, .Identifier))
@@ -8624,7 +8869,7 @@ cache_negative_skips_adt_and_allows_local_export_fallback :: proc(t: ^testing.T)
 	probe_candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	probe_dependencies := make([dynamic]analyze.Source_Input, context.allocator)
 	probe_seen := make(map[i64]bool, context.allocator)
-	probe_remote := [?]analyze.Remote_Dependency_Candidate {
+	probe_remote := [?]deps.Remote_Dependency_Candidate {
 		{name = "zinc_neg_local", kind = .Include},
 	}
 	pool_for_probe: execution.Pool
@@ -9051,7 +9296,7 @@ CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.`
 	}
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
-	remote := [?]analyze.Remote_Dependency_Candidate {
+	remote := [?]deps.Remote_Dependency_Candidate {
 		{name = "gfw_boolean", kind = .Type},
 		{name = "gfw_false", kind = .Symbol},
 	}
@@ -9516,7 +9761,7 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	}
 	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
-	remote := [?]analyze.Remote_Dependency_Candidate {
+	remote := [?]deps.Remote_Dependency_Candidate {
 		{name = "ZCL_STORE_TASK", kind = .Type},
 		{name = "ZINC_STORE_TASK", kind = .Include},
 	}
@@ -9710,7 +9955,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 	added := remote_deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		analyze.Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = .Type},
+		deps.Remote_Dependency_Candidate{name = "zcl_adt_fetch", kind = .Type},
 		&object_ref,
 		"global-class",
 		"CLASS zcl_adt_fetch DEFINITION. ENDCLASS. CLASS zcl_adt_fetch IMPLEMENTATION. ENDCLASS.",
@@ -9742,12 +9987,12 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 generic_type_adt_fetch_uses_search_before_direct_ddic_probe :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
-		!remote_deps.adt_candidate_direct_first(analyze.Remote_Dependency_Candidate{name = "scit_clas", kind = .Type}),
+		!remote_deps.adt_candidate_direct_first(deps.Remote_Dependency_Candidate{name = "scit_clas", kind = .Type}),
 	)
 	testing.expect(
 		t,
 		remote_deps.adt_candidate_direct_first(
-			analyze.Remote_Dependency_Candidate{name = "zcl_demo", kind = .Type, hint = .Object_Type},
+			deps.Remote_Dependency_Candidate{name = "zcl_demo", kind = .Type, hint = .Object_Type},
 		),
 	)
 }
@@ -9779,7 +10024,7 @@ CALL FUNCTION 'Z_REMOTE_FM'
 	added := remote_deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		analyze.Remote_Dependency_Candidate{name = "z_remote_fm", kind = .Function},
+		deps.Remote_Dependency_Candidate{name = "z_remote_fm", kind = .Function},
 		&object_ref,
 		"function-module",
 		`
@@ -9851,7 +10096,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 	added := remote_deps.add_adt_fetched_dependency_input(
 		&candidates,
 		&dependencies,
-		analyze.Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
+		deps.Remote_Dependency_Candidate{name = "tr_objects", kind = .Type},
 		&object_ref,
 		"ddic-table-type",
 		`<abapsource:elementInfo adtcore:type="TTYP/DA" adtcore:name="TR_OBJECTS" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
@@ -10117,6 +10362,14 @@ DATA lt_rows TYPE zddic_rows.
 	testing.expect(t, table_unit != nil)
 	testing.expect(t, reference_resolves_to_uri(&project, root, "zddic_rows", .Type, .Type_Ref, dependencies[0].uri))
 	testing.expect(t, reference_resolves_to_uri(&project, table_unit, "zddic_row", .Type, .Type_Ref, dependencies[1].uri))
+	table_type := analyze.find_symbol(table_unit, "zddic_rows", .Type_Def)
+	testing.expect(t, table_type != nil)
+	if table_type != nil {
+		named := expect_type_kind(t, table_unit, table_type.type_id, .Named)
+		table := expect_type_kind(t, table_unit, named.base, .Table)
+		row := expect_type_kind(t, table_unit, table.base, .Named)
+		testing.expect_value(t, row.name, "zddic_row")
+	}
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
 }
 
@@ -10229,7 +10482,7 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 	result := new(remote_deps.Adt_Fetch_Task_Result, result_allocator)
 	result.fetched = make([dynamic]remote_deps.Adt_Fetched_Object, 0, 1, result_allocator)
 	object_ref := adt.build_class_object_ref("ZCL_TASK_RESULT", "ZPKG", result_allocator)
-	candidate := analyze.Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type}
+	candidate := deps.Remote_Dependency_Candidate{name = "zcl_task_result", kind = .Type}
 	remote_deps.append_prepared_adt_input(
 		result,
 		candidate,
@@ -10244,7 +10497,7 @@ adt_fetch_task_result_applies_inputs_without_live_network :: proc(t: ^testing.T)
 	include_ref := adt.build_include_object_ref("ZINC_TASK_RESULT", "ZPKG", result_allocator)
 	remote_deps.append_prepared_adt_input(
 		result,
-		analyze.Remote_Dependency_Candidate{name = "ZINC_TASK_RESULT", kind = .Include},
+		deps.Remote_Dependency_Candidate{name = "ZINC_TASK_RESULT", kind = .Include},
 		&include_ref,
 		"include",
 		"abap",

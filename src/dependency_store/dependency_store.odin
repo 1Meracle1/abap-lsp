@@ -54,6 +54,19 @@ CREATE INDEX IF NOT EXISTS idx_dependency_symbol_lookup
 CREATE INDEX IF NOT EXISTS idx_dependency_symbol_artifact_lookup
     ON dependency_symbol_index(artifact_id, symbol_name, symbol_kind, priority DESC);
 
+CREATE TABLE IF NOT EXISTS dependency_typepool_symbols (
+    artifact_id INTEGER NOT NULL,
+    symbol_name TEXT NOT NULL,
+    pool_name TEXT NOT NULL,
+    FOREIGN KEY(artifact_id) REFERENCES dependency_artifacts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_dependency_typepool_symbol_lookup
+    ON dependency_typepool_symbols(symbol_name, pool_name, artifact_id);
+
+CREATE INDEX IF NOT EXISTS idx_dependency_typepool_artifact_lookup
+    ON dependency_typepool_symbols(artifact_id);
+
 CREATE TABLE IF NOT EXISTS dependency_negative_lookups (
     profile_key TEXT NOT NULL,
     product_version TEXT NOT NULL,
@@ -140,7 +153,8 @@ Stored_Artifact_Input :: struct {
 	file_extension: string,
 	source_text:    string,
 	fetched_at:     string,
-	symbols:        []Stored_Symbol_Input,
+	symbols:          []Stored_Symbol_Input,
+	typepool_symbols: []string,
 }
 
 Stored_Artifact_Record :: struct {
@@ -351,6 +365,81 @@ find_artifact_for_candidate_any_profile :: proc(
 	}
 	defer reader_destroy(&r)
 	return reader_find_artifact_for_candidate_any_profile(&r, candidate_name, candidate_kind, allocator)
+}
+
+find_typepool_artifacts_for_symbols :: proc(
+	store: ^Dependency_Store,
+	profile: ^Dependency_Profile,
+	symbol_names: []string,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return make([dynamic]Stored_Artifact_Record, allocator), err
+	}
+	defer reader_destroy(&r)
+	return reader_find_typepool_artifacts_for_symbols(&r, profile, symbol_names, allocator)
+}
+
+find_typepool_artifacts_for_symbols_any_profile :: proc(
+	store: ^Dependency_Store,
+	symbol_names: []string,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return make([dynamic]Stored_Artifact_Record, allocator), err
+	}
+	defer reader_destroy(&r)
+	return reader_find_typepool_artifacts_for_symbols_any_profile(&r, symbol_names, allocator)
+}
+
+list_unindexed_typepool_artifacts :: proc(
+	store: ^Dependency_Store,
+	profile: ^Dependency_Profile,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return make([dynamic]Stored_Artifact_Record, allocator), err
+	}
+	defer reader_destroy(&r)
+	return reader_list_unindexed_typepool_artifacts(&r, profile, false, allocator)
+}
+
+list_unindexed_typepool_artifacts_any_profile :: proc(
+	store: ^Dependency_Store,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return make([dynamic]Stored_Artifact_Record, allocator), err
+	}
+	defer reader_destroy(&r)
+	return reader_list_unindexed_typepool_artifacts(&r, nil, true, allocator)
+}
+
+put_typepool_symbols :: proc(
+	store: ^Dependency_Store,
+	artifact_id: i64,
+	pool_name: string,
+	symbols: []string,
+	allocator: mem.Allocator,
+) -> Store_Error {
+	db, err := open_connection(store.path, allocator)
+	if err != .None {
+		return err
+	}
+	defer sqlite3.close(db)
+	if err = exec_sql(db, "BEGIN", allocator); err != .None {
+		return err
+	}
+	err = put_typepool_symbols_in_tx(db, artifact_id, pool_name, symbols, allocator)
+	if err != .None {
+		exec_sql(db, "ROLLBACK", allocator)
+		return err
+	}
+	return exec_sql(db, "COMMIT", allocator)
 }
 
 list_artifacts_by_kind :: proc(
@@ -951,6 +1040,173 @@ WHERE object_name = ?
 	return reader_read_artifact_source(r, lookup.artifact_id, allocator)
 }
 
+reader_find_typepool_artifacts_for_symbols :: proc(
+	r: ^Dependency_Store_Reader,
+	profile: ^Dependency_Profile,
+	symbol_names: []string,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	return reader_find_typepool_artifacts_for_symbols_query(r, profile, symbol_names, false, allocator)
+}
+
+reader_find_typepool_artifacts_for_symbols_any_profile :: proc(
+	r: ^Dependency_Store_Reader,
+	symbol_names: []string,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	return reader_find_typepool_artifacts_for_symbols_query(r, nil, symbol_names, true, allocator)
+}
+
+reader_find_typepool_artifacts_for_symbols_query :: proc(
+	r: ^Dependency_Store_Reader,
+	profile: ^Dependency_Profile,
+	symbol_names: []string,
+	any_profile: bool,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	assert(any_profile || profile != nil)
+	records := make([dynamic]Stored_Artifact_Record, 0, 4, allocator)
+	names := make([dynamic]string, 0, len(symbol_names), allocator)
+	for name in symbol_names {
+		normalized := normalize_name(name, allocator)
+		if normalized != "" {
+			insert_unique_string(&names, normalized)
+		}
+	}
+	if len(names) == 0 {
+		return records, .None
+	}
+
+	sql := strings.builder_make(allocator)
+	defer strings.builder_destroy(&sql)
+	strings.write_string(
+		&sql,
+		`
+SELECT DISTINCT
+    artifact.id,
+    artifact.package_name,
+    artifact.package_version,
+    artifact.object_kind,
+    artifact.object_name,
+    artifact.object_uri,
+    artifact.object_type,
+    artifact.description,
+    artifact.file_extension,
+    artifact.source_text
+FROM dependency_typepool_symbols AS symbol
+JOIN dependency_artifacts AS artifact
+    ON artifact.id = symbol.artifact_id
+WHERE artifact.object_kind = ?
+  AND symbol.symbol_name IN (`,
+	)
+	append_placeholders(&sql, len(names))
+	strings.write_byte(&sql, ')')
+	package_versions := make([dynamic]string, allocator)
+	if !any_profile {
+		package_versions = package_version_set(profile, allocator)
+		strings.write_string(&sql, " AND artifact.product_version = ?")
+		strings.write_string(&sql, " AND artifact.package_version IN (")
+		append_placeholders(&sql, len(package_versions))
+		strings.write_byte(&sql, ')')
+	}
+	strings.write_string(
+		&sql,
+		" ORDER BY artifact.product_version ASC, artifact.package_version ASC, artifact.package_name ASC, artifact.object_name ASC",
+	)
+
+	stmt, err := prepare(r.connection, strings.to_string(sql), allocator)
+	if err != .None {
+		return records, err
+	}
+	defer sqlite3.finalize(stmt)
+	bind_text(stmt, 1, "type-pool")
+	index := bind_text_list(stmt, 2, names[:])
+	if !any_profile {
+		bind_text(stmt, index, normalized_product_version(profile, allocator))
+		index += 1
+		bind_text_list(stmt, index, package_versions[:])
+	}
+	for {
+		code := sqlite3.step(stmt)
+		if code == sqlite3.DONE {
+			break
+		}
+		if code != sqlite3.ROW {
+			return records, .Sqlite
+		}
+		append(&records, artifact_record_from_row(stmt, allocator))
+	}
+	return records, .None
+}
+
+reader_list_unindexed_typepool_artifacts :: proc(
+	r: ^Dependency_Store_Reader,
+	profile: ^Dependency_Profile,
+	any_profile: bool,
+	allocator: mem.Allocator,
+) -> ([dynamic]Stored_Artifact_Record, Store_Error) {
+	assert(any_profile || profile != nil)
+	records := make([dynamic]Stored_Artifact_Record, 0, 4, allocator)
+	sql := strings.builder_make(allocator)
+	defer strings.builder_destroy(&sql)
+	strings.write_string(
+		&sql,
+		`
+SELECT
+    id,
+    package_name,
+    package_version,
+    object_kind,
+    object_name,
+    object_uri,
+    object_type,
+    description,
+    file_extension,
+    source_text
+FROM dependency_artifacts AS artifact
+WHERE object_kind = ?
+  AND NOT EXISTS (
+      SELECT 1
+      FROM dependency_typepool_symbols AS symbol
+      WHERE symbol.artifact_id = artifact.id
+  )`,
+	)
+	package_versions := make([dynamic]string, allocator)
+	if !any_profile {
+		package_versions = package_version_set(profile, allocator)
+		strings.write_string(&sql, " AND product_version = ?")
+		strings.write_string(&sql, " AND package_version IN (")
+		append_placeholders(&sql, len(package_versions))
+		strings.write_byte(&sql, ')')
+	}
+	strings.write_string(
+		&sql,
+		" ORDER BY product_version ASC, package_version ASC, package_name ASC, object_name ASC",
+	)
+
+	stmt, err := prepare(r.connection, strings.to_string(sql), allocator)
+	if err != .None {
+		return records, err
+	}
+	defer sqlite3.finalize(stmt)
+	bind_text(stmt, 1, "type-pool")
+	if !any_profile {
+		bind_text(stmt, 2, normalized_product_version(profile, allocator))
+		bind_text_list(stmt, 3, package_versions[:])
+	}
+	for {
+		code := sqlite3.step(stmt)
+		if code == sqlite3.DONE {
+			break
+		}
+		if code != sqlite3.ROW {
+			return records, .Sqlite
+		}
+		append(&records, artifact_record_from_row(stmt, allocator))
+	}
+	return records, .None
+}
+
 reader_list_artifacts_by_kind :: proc(
 	r: ^Dependency_Store_Reader,
 	profile: ^Dependency_Profile,
@@ -1334,7 +1590,96 @@ INSERT INTO dependency_symbol_index (
 		sqlite3.finalize(stmt)
 	}
 
+	if object_kind == "type-pool" && len(artifact.typepool_symbols) > 0 {
+		err = put_typepool_symbols_in_tx(
+			db,
+			artifact_id,
+			object_name,
+			artifact.typepool_symbols,
+			allocator,
+		)
+	} else {
+		err = clear_typepool_symbols_in_tx(db, artifact_id, allocator)
+	}
+	if err != .None {
+		return 0, err
+	}
+
 	return artifact_id, .None
+}
+
+clear_typepool_symbols_in_tx :: proc(
+	db: ^sqlite3.Connection,
+	artifact_id: i64,
+	allocator: mem.Allocator,
+) -> Store_Error {
+	stmt, err := prepare(db, "DELETE FROM dependency_typepool_symbols WHERE artifact_id = ?1", allocator)
+	if err != .None {
+		return err
+	}
+	bind_i64(stmt, 1, artifact_id)
+	if step_done(stmt) != .None {
+		sqlite3.finalize(stmt)
+		return .Sqlite
+	}
+	sqlite3.finalize(stmt)
+	return .None
+}
+
+put_typepool_symbols_in_tx :: proc(
+	db: ^sqlite3.Connection,
+	artifact_id: i64,
+	pool_name: string,
+	symbols: []string,
+	allocator: mem.Allocator,
+) -> Store_Error {
+	err := clear_typepool_symbols_in_tx(db, artifact_id, allocator)
+	if err != .None {
+		return err
+	}
+	pool := normalize_name(pool_name, allocator)
+	if pool == "" {
+		return .None
+	}
+	stmt, prep_err := prepare(
+		db,
+		`
+INSERT INTO dependency_typepool_symbols (
+    artifact_id,
+    symbol_name,
+    pool_name
+) VALUES (?1, ?2, ?3)
+`,
+		allocator,
+	)
+	if prep_err != .None {
+		return prep_err
+	}
+	defer sqlite3.finalize(stmt)
+	inserted := false
+	for symbol in symbols {
+		name := normalize_name(symbol, allocator)
+		if name == "" {
+			continue
+		}
+		bind_i64(stmt, 1, artifact_id)
+		bind_text(stmt, 2, name)
+		bind_text(stmt, 3, pool)
+		if step_done(stmt) != .None {
+			return .Sqlite
+		}
+		sqlite3.reset(stmt)
+		inserted = true
+	}
+	if !inserted {
+		bind_i64(stmt, 1, artifact_id)
+		bind_text(stmt, 2, "")
+		bind_text(stmt, 3, pool)
+		if step_done(stmt) != .None {
+			return .Sqlite
+		}
+	}
+	return .None
 }
 
 candidate_artifact_kinds :: proc(kind: Candidate_Kind, out: ^[dynamic]string) {
@@ -1360,7 +1705,6 @@ candidate_artifact_kinds :: proc(kind: Candidate_Kind, out: ^[dynamic]string) {
 			"ddic-table",
 			"ddic-table-type",
 			"ddic-view",
-			"type-pool",
 		}
 		for v in kinds {
 			append(out, v)
@@ -1379,7 +1723,6 @@ candidate_artifact_kinds :: proc(kind: Candidate_Kind, out: ^[dynamic]string) {
 			"ddic-table",
 			"ddic-table-type",
 			"ddic-view",
-			"type-pool",
 		}
 		for v in kinds {
 			append(out, v)
@@ -1415,7 +1758,6 @@ candidate_artifact_object_types :: proc(
 		append(out, "tabl/da")
 		append(out, "ttyp/da")
 		append(out, "view/dv")
-		append(out, "typepool")
 	case .Symbol:
 		append(prefixes, "clas/%")
 		append(prefixes, "intf/%")
@@ -1432,7 +1774,6 @@ candidate_artifact_object_types :: proc(
 			"tabl/da",
 			"ttyp/da",
 			"view/dv",
-			"typepool",
 		}
 		for v in kinds {
 			append(out, v)

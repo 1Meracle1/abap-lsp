@@ -4,6 +4,7 @@ import "src:adt"
 import dep_store "src:dependency_store"
 import execution "src:execution"
 import analyze "src:semantic/analyze"
+import deps "src:semantic/dependencies"
 
 import base_runtime "base:runtime"
 import "core:mem"
@@ -20,7 +21,7 @@ Dependency_Store_Task_Result :: struct {
 Dependency_Store_Task_Payload :: struct {
 	store:            dep_store.Dependency_Store,
 	profile:          ^dep_store.Dependency_Profile,
-	candidate:        analyze.Remote_Dependency_Candidate,
+	candidate:        deps.Remote_Dependency_Candidate,
 	any_profile:      bool,
 	connection_key:   string,
 	result_allocator: mem.Allocator,
@@ -29,7 +30,7 @@ Dependency_Store_Task_Payload :: struct {
 add_dependency_cache_matches :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	remote_candidates: []analyze.Remote_Dependency_Candidate,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	any_profile: bool,
@@ -41,13 +42,13 @@ add_dependency_cache_matches :: proc(
 ) -> Cache_Phase_Result {
 	result := Cache_Phase_Result {
 		adt_candidates   = make(
-			[dynamic]analyze.Remote_Dependency_Candidate,
+			[dynamic]deps.Remote_Dependency_Candidate,
 			0,
 			len(remote_candidates),
 			context.temp_allocator,
 		),
 		local_candidates = make(
-			[dynamic]analyze.Remote_Dependency_Candidate,
+			[dynamic]deps.Remote_Dependency_Candidate,
 			0,
 			len(remote_candidates),
 			context.temp_allocator,
@@ -60,6 +61,19 @@ add_dependency_cache_matches :: proc(
 		len(remote_candidates),
 		context.temp_allocator,
 	)
+	if add_typepool_cache_matches(
+		candidates,
+		dependencies,
+		remote_candidates,
+		store,
+		profile,
+		any_profile,
+		seen_artifacts,
+		trace_source,
+		&uri_keys,
+	) {
+		result.added = true
+	}
 
 	graph: execution.Graph
 	execution.graph_init(&graph, pool, context.temp_allocator)
@@ -118,6 +132,109 @@ add_dependency_cache_matches :: proc(
 	execution.graph_wait(&graph)
 	execution.graph_destroy(&graph)
 	return result
+}
+
+add_typepool_cache_matches :: proc(
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	any_profile: bool,
+	seen_artifacts: ^map[i64]bool,
+	trace_source: string,
+	uri_keys: ^map[string]bool,
+) -> bool {
+	names := make([dynamic]string, 0, len(remote_candidates), context.temp_allocator)
+	for candidate in remote_candidates {
+		if candidate.kind == .Type || candidate.kind == .Symbol {
+			append(&names, candidate.name)
+		}
+	}
+	if len(names) == 0 {
+		return false
+	}
+	backfill_typepool_symbol_cache(store, profile, any_profile)
+	records: [dynamic]dep_store.Stored_Artifact_Record
+	err: dep_store.Store_Error
+	if any_profile {
+		records, err = dep_store.find_typepool_artifacts_for_symbols_any_profile(
+			store,
+			names[:],
+			context.temp_allocator,
+		)
+	} else if profile != nil {
+		records, err = dep_store.find_typepool_artifacts_for_symbols(
+			store,
+			profile,
+			names[:],
+			context.temp_allocator,
+		)
+	} else {
+		return false
+	}
+	if err != .None {
+		return false
+	}
+	added := false
+	for &record in records {
+		if record.artifact_id in seen_artifacts^ ||
+		   typepool_source_has_pending_expansion(record.source_text, context.temp_allocator) {
+			continue
+		}
+		candidate := deps.Remote_Dependency_Candidate{name = record.object_name, kind = .Type}
+		input := source_input_from_dependency_record(&record, candidate, context.temp_allocator)
+		if !project_input_uri_key_add_if_missing(uri_keys, input.uri) {
+			continue
+		}
+		seen_artifacts^[record.artifact_id] = true
+		append_dependency_input(candidates, dependencies, input, candidate, record.object_name)
+		added = true
+		when adt.DEPENDENCY_FETCH_TRACE {
+			trace_eprintf(
+				"adt_fetch\t%s\tadd\ttypepool\t%s\n",
+				trace_source,
+				record.object_name,
+			)
+		}
+	}
+	return added
+}
+
+backfill_typepool_symbol_cache :: proc(
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	any_profile: bool,
+) {
+	records: [dynamic]dep_store.Stored_Artifact_Record
+	err: dep_store.Store_Error
+	if any_profile {
+		records, err = dep_store.list_unindexed_typepool_artifacts_any_profile(
+			store,
+			context.temp_allocator,
+		)
+	} else if profile != nil {
+		records, err = dep_store.list_unindexed_typepool_artifacts(
+			store,
+			profile,
+			context.temp_allocator,
+		)
+	} else {
+		return
+	}
+	if err != .None {
+		return
+	}
+	for &record in records {
+		symbols := typepool_source_symbols(record.source_text, context.temp_allocator)
+		_ = dep_store.put_typepool_symbols(
+			store,
+			record.artifact_id,
+			record.object_name,
+			symbols[:],
+			context.temp_allocator,
+		)
+	}
 }
 
 dependency_store_find_task :: proc(
@@ -205,7 +322,7 @@ clone_dependency_record :: proc(
 add_dependency_store_task_result :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	result: ^Dependency_Store_Task_Result,
 	seen_artifacts: ^map[i64]bool,
 	trace_source: string,
@@ -259,7 +376,7 @@ dependency_record_uri :: proc(
 
 source_input_from_dependency_record :: proc(
 	record: ^dep_store.Stored_Artifact_Record,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	allocator: mem.Allocator,
 ) -> analyze.Source_Input {
 	uri := dependency_record_uri(record, allocator)

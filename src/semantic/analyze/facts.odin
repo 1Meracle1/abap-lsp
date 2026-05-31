@@ -40,6 +40,9 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 		return
 	}
 	#partial switch n in expr.derived_expr {
+	case ^ast.Literal_Expr:
+		fact := type_fact_from_expr(c, expr, scope)
+		add_syntax_operand(c.unit, scope, n.range, .Constant, fact.type_id)
 	case ^ast.Ident_Expr:
 		if n.name != "#" {
 			add_reference(c, scope, n.name, .Value, .Identifier, n.range)
@@ -89,7 +92,6 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 		collect_constructor_expr_refs(c, n, scope)
 	case ^ast.Is_Predicate_Expr:
 		collect_expr_refs(c, n.subject, scope)
-		add_state_check(c, n.subject, scope, n.range, n.kind, n.negated)
 	case ^ast.Instance_Of_Predicate_Expr:
 		collect_expr_refs(c, n.subject, scope)
 		collect_type_expr_ref(c, n.type_ref, scope, .Type)
@@ -107,7 +109,6 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Binary_Expr:
 		collect_expr_refs(c, n.left, scope)
 		collect_expr_refs(c, n.right, scope)
-		collect_zero_state_check(c, n, scope)
 	case ^ast.Unary_Expr:
 		collect_expr_refs(c, n.expr, scope)
 	case ^ast.Paren_Expr:
@@ -158,9 +159,31 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Constructor_Corresponding_Except_Clause_Expr:
 		collect_expr_list_refs(c, n.names[:], scope)
 	case ^ast.Data_Inline_Name_Expr:
-		declare_name_if_present(c, scope, n.name, .Variable, n.range)
+		if symbol_id := declare_name_if_present(c, scope, n.name, .Variable, n.range);
+		   symbol_id != INVALID_SYMBOL_ID {
+			add_syntax_operand(
+				c.unit,
+				scope,
+				n.range,
+				.Variable,
+				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
+				has_symbol = true,
+				assignable = true,
+			)
+		}
 	case ^ast.Field_Symbol_Inline_Name_Expr:
-		declare_name_if_present(c, scope, n.name, .Field_Symbol, n.range)
+		if symbol_id := declare_name_if_present(c, scope, n.name, .Field_Symbol, n.range);
+		   symbol_id != INVALID_SYMBOL_ID {
+			add_syntax_operand(
+				c.unit,
+				scope,
+				n.range,
+				.Variable,
+				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
+				has_symbol = true,
+				assignable = true,
+			)
+		}
 	case ^ast.Char_String_Template_Expr:
 		collect_expr_list_refs(c, n.parts[:], scope)
 	case ^ast.Template_Interpolation_Expr:
@@ -191,7 +214,7 @@ collect_type_expr_ref :: proc(
 			if access, access_ok := selector_access_from_expr(c, expr, scope, true);
 			   access_ok && len(access.field_path) > 0 {
 				access.base_namespace = namespace
-				append(&c.field_accesses, access)
+				append(&c.unit.field_accesses, access)
 			}
 		}
 		return
@@ -219,7 +242,9 @@ collect_constructor_expr_refs :: proc(
 	for arg in expr.args {
 		collect_expr_refs(c, arg, scope)
 	}
-	add_expression_fact(c, scope, expr.range, .Call_Result, type_fact_from_expr(c, expr, scope))
+	fact := type_fact_from_expr(c, expr, scope)
+	add_expression_fact(c, scope, expr.range, .Call_Result, fact)
+	add_syntax_operand(c.unit, scope, expr.range, .Value, fact.type_id)
 }
 
 collect_constructor_for_clause_refs :: proc(
@@ -244,7 +269,7 @@ collect_constructor_for_clause_refs :: proc(
 			data.source_access = source_access
 			data.has_source_access = true
 		}
-		append(&c.constructor_for_bindings, data)
+		append(&c.unit.constructor_for_bindings, data)
 	}
 	collect_expr_refs(c, expr.then_expr, for_scope)
 	collect_expr_refs(c, expr.condition, for_scope)
@@ -273,7 +298,7 @@ collect_selector_expr_refs :: proc(
 	add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
 	add_interface_qualified_segment_references(c, scope, access.field_path[:])
 	if len(access.field_path) > 0 {
-		append(&c.field_accesses, access)
+		append(&c.unit.field_accesses, access)
 		add_expression_fact(c, scope, expr.range, .Selector, type_fact_from_expr(c, expr, scope))
 	}
 }
@@ -296,7 +321,7 @@ collect_interface_qualified_selector_expr_refs :: proc(
 	add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
 	add_interface_qualified_segment_references(c, scope, access.field_path[:])
 	if len(access.field_path) > 0 {
-		append(&c.field_accesses, access)
+		append(&c.unit.field_accesses, access)
 		add_expression_fact(c, scope, expr.range, .Selector, type_fact_from_expr(c, expr, scope))
 	}
 }
@@ -667,7 +692,7 @@ collect_call_arg_list_refs :: proc(
 		ordinal += 1
 	}
 	append(
-		&c.call_sites,
+		&c.unit.call_sites,
 		Call_Site_Data{scope = scope, range = call_range, target = target, arguments = items},
 	)
 }
@@ -682,7 +707,7 @@ collect_call_arg_expr_refs :: proc(
 ) {
 	if named, ok := arg.derived_expr.(^ast.Call_Named_Arg_Expr); ok {
 		append(
-			&c.named_arguments,
+			&c.unit.named_arguments,
 			Named_Argument_Access {
 				scope = scope,
 				name = canonical_name(named.name, c.allocator),
@@ -782,7 +807,7 @@ collect_create_data_stmt_facts :: proc(
 		handle_name, handle_range, handle_ok := raw_operand_simple_ref(stmt.type_handle, c.allocator)
 		if handle_ok {
 			append(
-				&c.create_data_type_handles,
+				&c.unit.create_data_type_handles,
 				Create_Data_Type_Handle_Site_Data {
 					scope = scope,
 					target_name = target_name,
@@ -842,7 +867,7 @@ collect_dynamic_call_method_target_refs :: proc(
 			add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
 			add_interface_qualified_segment_references(c, scope, access.field_path[:])
 			if len(access.field_path) > 0 {
-				append(&c.field_accesses, access)
+				append(&c.unit.field_accesses, access)
 			}
 		} else if name, range, ok := expr_name(expr.base); ok {
 			namespace := Namespace.Value
@@ -888,7 +913,18 @@ collect_raw_operand_fact_refs :: proc(
 		if decl.kind == .Field_Symbol {
 			kind = .Field_Symbol
 		}
-		declare_name_if_present(c, scope, decl.name, kind, decl.range)
+		if symbol_id := declare_name_if_present(c, scope, decl.name, kind, decl.range);
+		   symbol_id != INVALID_SYMBOL_ID {
+			add_syntax_operand(
+				c.unit,
+				scope,
+				decl.range,
+				.Variable,
+				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
+				has_symbol = true,
+				assignable = true,
+			)
+		}
 	}
 	for ref in refs {
 		if ref.name == "" {
@@ -923,7 +959,7 @@ collect_raw_operand_fact_refs :: proc(
 				)
 			}
 			append(
-				&c.field_accesses,
+				&c.unit.field_accesses,
 				Field_Access {
 					scope = scope,
 					base_namespace = namespace,
@@ -943,12 +979,14 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 	if lit, ok := expr.derived_expr.(^ast.Literal_Expr); ok {
 		if len(lit.value) > 0 && lit.value[0] >= '0' && lit.value[0] <= '9' {
 			return Type_Fact_Data {
+				type_id = type_builtin(c.unit, "i"),
 				structure = INVALID_STRUCTURE_ID,
 				declared_type = builtin_type_ref("i"),
 				has_declared_type = true,
 			}
 		}
 		return Type_Fact_Data {
+			type_id = type_builtin(c.unit, "string"),
 			structure = INVALID_STRUCTURE_ID,
 			declared_type = builtin_type_ref("string"),
 			has_declared_type = true,
@@ -956,8 +994,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 	}
 	if access, ok := value_access_from_expr(c, expr, scope); ok && len(access.field_path) == 0 {
 		if id, found := lookup_symbol_in_scope_chain(c, scope, access.base_name, .Value); found {
-			s := c.symbols[symbol_id_index(id)]
+			s := c.unit.symbols[symbol_id_index(id)]
 			return Type_Fact_Data {
+				type_id = s.type_id,
 				structure = s.structure,
 				declared_type = s.declared_type,
 				has_declared_type = s.has_declared_type,
@@ -972,7 +1011,12 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			.Type,
 			con.kind == .New || con.kind == .Ref,
 		); has_type {
+			type_id := UNKNOWN_TYPE_ID
+			if len(type_ref.field_path) == 0 && is_builtin_type_name(type_ref.base_name) {
+				type_id = type_builtin(c.unit, type_ref.base_name)
+			}
 			return Type_Fact_Data {
+				type_id = type_id,
 				structure = INVALID_STRUCTURE_ID,
 				declared_type = type_ref,
 				has_declared_type = true,
@@ -991,95 +1035,9 @@ add_expression_fact :: proc(
 	fact: Type_Fact_Data,
 ) {
 	append(
-		&c.expression_facts,
+		&c.unit.expression_facts,
 		Expression_Fact_Data{scope = scope, range = range, kind = kind, type_fact = fact},
 	)
-}
-
-collect_zero_state_check :: proc(c: ^Collector, expr: ^ast.Binary_Expr, scope: Scope_Id) {
-	if expr.op != .Equal && expr.op != .Not_Equal {
-		return
-	}
-	if !expr_is_zero_literal(expr.right) {
-		return
-	}
-	access, ok := value_access_from_expr(c, expr.left, scope)
-	if !ok {
-		return
-	}
-	field_name := ""
-	if len(access.field_path) > 0 {
-		field_name = access.field_path[len(access.field_path) - 1].name
-	}
-	append(
-		&c.value_state_checks,
-		Value_State_Check_Data {
-			scope = scope,
-			range = expr.range,
-			symbol_name = access.base_name,
-			symbol_range = access.base_range,
-			field_name = field_name,
-			kind = .Equals_Zero if expr.op == .Equal else .Not_Equals_Zero,
-		},
-	)
-}
-
-expr_is_zero_literal :: proc(expr: ^ast.Expr) -> bool {
-	if expr == nil {
-		return false
-	}
-	if lit, ok := expr.derived_expr.(^ast.Literal_Expr); ok {
-		return lit.value == "0"
-	}
-	return false
-}
-
-add_state_check :: proc(
-	c: ^Collector,
-	subject: ^ast.Expr,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: ast.Is_Predicate_Kind,
-	negated: bool,
-) {
-	access, ok := value_access_from_expr(c, subject, scope)
-	if !ok {
-		return
-	}
-	if kind == .Assigned {
-		append(
-			&c.field_symbol_state_checks,
-			Field_Symbol_State_Check_Data {
-				scope = scope,
-				range = range,
-				symbol_name = access.base_name,
-				symbol_range = access.base_range,
-				kind = .Is_Not_Assigned if negated else .Is_Assigned,
-			},
-		)
-		return
-	}
-	if kind == .Initial || kind == .Bound {
-		check_kind := Value_State_Check_Kind.Is_Initial
-		if (kind == .Initial && negated) || (kind == .Bound && !negated) {
-			check_kind = .Is_Not_Initial
-		}
-		field_name := ""
-		if len(access.field_path) > 0 {
-			field_name = access.field_path[len(access.field_path) - 1].name
-		}
-		append(
-			&c.value_state_checks,
-			Value_State_Check_Data {
-				scope = scope,
-				range = range,
-				symbol_name = access.base_name,
-				symbol_range = access.base_range,
-				field_name = field_name,
-				kind = check_kind,
-			},
-		)
-	}
 }
 
 collect_inline_data_stmt_facts :: proc(
@@ -1121,7 +1079,7 @@ collect_assignment_stmt_facts :: proc(
 		flags += {.Is_Corresponding}
 	}
 	append(
-		&c.assignment_sites,
+		&c.unit.assignment_sites,
 		Assignment_Site_Data {
 			scope = scope,
 			range = range,
@@ -1148,7 +1106,7 @@ add_assignment_site :: proc(
 		flags += {.Has_Lhs_Target_Access}
 	}
 	append(
-		&c.assignment_sites,
+		&c.unit.assignment_sites,
 		Assignment_Site_Data {
 			scope = scope,
 			range = range,
@@ -1191,7 +1149,6 @@ collect_clear_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Clear_Stmt, scope: Sc
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
 		collect_expr_refs(c, op.value, scope)
-		add_routine_site_target(c, scope, stmt.range, .Clear, op.target)
 		if op.target != nil {
 			add_assignment_site(
 				c,
@@ -1211,14 +1168,12 @@ collect_clear_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Clear_Stmt, scope: Sc
 collect_refresh_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Refresh_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
-		add_routine_site_target(c, scope, stmt.range, .Clear, op.target)
 	}
 }
 
 collect_free_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Free_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
-		add_routine_site_target(c, scope, stmt.range, .Clear, op.target)
 	}
 	collect_expr_refs(c, stmt.memory_id, scope)
 }
@@ -1226,7 +1181,6 @@ collect_free_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Free_Stmt, scope: Scop
 collect_unassign_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Unassign_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
-		add_routine_site_target(c, scope, stmt.range, .Unassign, op.target)
 	}
 }
 
@@ -1305,14 +1259,13 @@ collect_concatenate_stmt_facts :: proc(
 	stmt: ^ast.Concatenate_Stmt,
 	scope: Scope_Id,
 ) {
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 	for e in stmt.entries {
 		collect_expr_list_refs(c, e.sources[:], scope)
 		collect_expr_refs(c, e.separator, scope)
 		collect_write_target_expr(c, scope, stmt.range, e.target, stmt.range)
 		if e.lines_of && len(e.sources) > 0 {
 			append(
-				&c.concatenate_lines_of_sites,
+				&c.unit.concatenate_lines_of_sites,
 				Concatenate_Lines_Of_Site_Data {
 					scope = scope,
 					range = stmt.range,
@@ -1326,7 +1279,6 @@ collect_concatenate_stmt_facts :: proc(
 }
 
 collect_split_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Split_Stmt, scope: Scope_Id) {
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.separator, scope)
@@ -1337,7 +1289,6 @@ collect_split_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Split_Stmt, scope: Sc
 }
 
 collect_replace_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Replace_Stmt, scope: Scope_Id) {
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.replacement, scope)
@@ -1346,21 +1297,17 @@ collect_replace_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Replace_Stmt, scope
 }
 
 collect_translate_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Translate_Stmt, scope: Scope_Id) {
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.operand, scope)
 }
 
 collect_shift_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Shift_Stmt, scope: Scope_Id) {
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.places, scope)
 	collect_expr_refs(c, stmt.delete_pattern, scope)
 }
 
 collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Find, "subrc")
-	add_system_field_update(c, scope, stmt.range, .Find, "fdpos")
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.section_offset, scope)
@@ -1371,67 +1318,9 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 	collect_expr_refs(c, stmt.match_count, scope)
 	collect_expr_refs(c, stmt.results, scope)
 	collect_expr_list_refs(c, stmt.submatches[:], scope)
-	read_ranges := make([dynamic]tokenizer.Range, 0, 4, c.allocator)
-	write_targets := make([dynamic]Find_Write_Target_Data, 0, 5, c.allocator)
-	if stmt.pattern != nil {append(&read_ranges, stmt.pattern.range)}
-	if stmt.target != nil {append(&read_ranges, stmt.target.range)}
-	if stmt.section_offset != nil {append(&read_ranges, stmt.section_offset.range)}
-	if stmt.section_length != nil {append(&read_ranges, stmt.section_length.range)}
-	if stmt.match_offset != nil {
-		append(
-			&write_targets,
-			Find_Write_Target_Data{range = stmt.match_offset.range, definitely_assigned = true},
-		)
-	}
-	if stmt.match_length != nil {
-		append(
-			&write_targets,
-			Find_Write_Target_Data{range = stmt.match_length.range, definitely_assigned = true},
-		)
-	}
-	if stmt.match_line != nil {
-		append(
-			&write_targets,
-			Find_Write_Target_Data{range = stmt.match_line.range, definitely_assigned = true},
-		)
-	}
-	if stmt.match_count != nil {
-		append(
-			&write_targets,
-			Find_Write_Target_Data{range = stmt.match_count.range, definitely_assigned = true},
-		)
-	}
-	for submatch in stmt.submatches {
-		if submatch != nil {
-			append(
-				&write_targets,
-				Find_Write_Target_Data{range = submatch.range, definitely_assigned = true},
-			)
-		}
-	}
-	if stmt.results != nil {
-		append(
-			&write_targets,
-			Find_Write_Target_Data {
-				range = stmt.results.range,
-				definitely_assigned = stmt.occurrence == .All,
-			},
-		)
-	}
-	append(
-		&c.find_sites,
-		Find_Site_Data {
-			scope = scope,
-			range = stmt.range,
-			read_ranges = read_ranges,
-			write_targets = write_targets,
-		},
-	)
 }
 
 collect_search_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Search_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Search, "subrc")
-	add_system_field_update(c, scope, stmt.range, .Search, "fdpos")
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.starting_at, scope)
@@ -1440,79 +1329,37 @@ collect_search_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Search_Stmt, scope: 
 
 collect_perform_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Perform_Stmt, scope: Scope_Id) {
 	routine_name := ""
-	routine_range := tokenizer.Range{}
-	is_dynamic := stmt.form_kind == .Dynamic
 	external_program := perform_has_external_program(stmt)
 	if name, range, ok := expr_name(stmt.form); ok && stmt.form_kind == .Static {
 		routine_name = canonical_name(name, c.allocator)
-		routine_range = range
 		if !external_program {
 			add_reference(c, scope, routine_name, .Routine, .Routine_Call, range)
 		}
 	} else {
 		collect_expr_refs(c, stmt.form, scope)
 	}
-	program := Perform_Program_Data{}
 	program_static := false
-	flags := Perform_Call_Flags{}
-	if is_dynamic {
-		flags += {.Is_Dynamic}
-	}
+	program_name := ""
 	if stmt.program != nil {
-		flags += {.Has_Program}
-		if name, range, ok := static_perform_program_name(c, stmt); ok {
+		if name, _, ok := static_perform_program_name(c, stmt); ok {
 			program_static = true
-			program = Perform_Program_Data {
-				name       = name,
-				range      = range,
-				is_dynamic = stmt.program_kind == .Dynamic,
-			}
+			program_name = name
 		} else {
-			program = Perform_Program_Data {
-				name       = "<dynamic>",
-				range      = stmt.program.range,
-				is_dynamic = true,
-			}
 			collect_expr_refs(c, stmt.program, scope)
 		}
-	} else if stmt.program_kind == .Omitted {
-		flags += {.Has_Program}
 	}
-	if stmt.if_found {
-		flags += {.Has_If_Found}
-	}
-	parameters := make(
-		[dynamic]Perform_Parameter_Section,
-		0,
-		len(stmt.tables) + len(stmt.using_args) + len(stmt.changing),
-		c.allocator,
-	)
-	arguments := make([dynamic]Perform_Argument_Data, 0, cap(parameters), c.allocator)
-	append_perform_args(c, &parameters, &arguments, stmt.tables[:], scope, .Tables)
-	append_perform_args(c, &parameters, &arguments, stmt.using_args[:], scope, .Using)
-	append_perform_args(c, &parameters, &arguments, stmt.changing[:], scope, .Changing)
-	append(
-		&c.perform_calls,
-		Perform_Call_Data {
-			scope = scope,
-			range = stmt.range,
-			routine_name = routine_name,
-			routine_range = routine_range,
-			program = program,
-			parameters = parameters,
-			arguments = arguments,
-			flags = flags,
-		},
-	)
+	collect_expr_list_refs(c, stmt.tables[:], scope)
+	collect_expr_list_refs(c, stmt.using_args[:], scope)
+	collect_expr_list_refs(c, stmt.changing[:], scope)
 	if program_static {
 		append(
-			&c.call_sites,
+			&c.unit.call_sites,
 			Call_Site_Data {
 				scope = scope,
 				range = stmt.range,
 				target = Named_Argument_Target {
 					kind        = .Report,
-					report_name = program.name,
+					report_name = program_name,
 				},
 			},
 		)
@@ -1548,34 +1395,11 @@ static_perform_program_name :: proc(
 	return "", tokenizer.Range{}, false
 }
 
-append_perform_args :: proc(
-	c: ^Collector,
-	parameters: ^[dynamic]Perform_Parameter_Section,
-	arguments: ^[dynamic]Perform_Argument_Data,
-	values: []^ast.Expr,
-	scope: Scope_Id,
-	section: Perform_Parameter_Section,
-) {
-	for i in 0 ..< len(values) {
-		collect_expr_refs(c, values[i], scope)
-		append(parameters, section)
-		append(
-			arguments,
-			Perform_Argument_Data {
-				range = values[i].range,
-				section = section,
-				ordinal_in_section = i,
-			},
-		)
-	}
-}
-
 collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scope_Id) {
 	#partial switch stmt.kind {
 	case .Direct:
 		collect_expr_refs(c, stmt.call, scope)
 	case .Function, .Customer_Function:
-		add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
 		target_name := call_stmt_function_name(c, stmt)
 		target := Named_Argument_Target {
 			kind          = .Function,
@@ -1587,7 +1411,6 @@ collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scop
 		collect_call_method_target_refs(c, stmt.target, scope)
 		collect_raw_call_stmt_args(c, stmt, scope, target)
 	case .Transaction:
-		add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
 		collect_expr_refs(c, stmt.target, scope)
 		collect_expr_list_refs(c, stmt.transaction_operands[:], scope)
 	case .Transformation:
@@ -1749,7 +1572,7 @@ collect_raw_call_args :: proc(
 		has_section := arg.has_section && valid_section
 		name := canonical_name(arg.name, c.allocator)
 		append(
-			&c.named_arguments,
+			&c.unit.named_arguments,
 			Named_Argument_Access {
 				scope = scope,
 				name = name,
@@ -1782,7 +1605,7 @@ collect_raw_call_args :: proc(
 		}
 	}
 	append(
-		&c.call_sites,
+		&c.unit.call_sites,
 		Call_Site_Data{scope = scope, range = call_range, target = target, arguments = args},
 	)
 }
@@ -1792,7 +1615,7 @@ collect_submit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Submit_Stmt, scope: 
 	if report_name, ok := submit_report_name(c, stmt); ok {
 		has_report_target = true
 		append(
-			&c.call_sites,
+			&c.unit.call_sites,
 			Call_Site_Data {
 				scope = scope,
 				range = stmt.range,
@@ -1863,14 +1686,7 @@ collect_message_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Message_Stmt, scope
 	collect_expr_refs(c, stmt.into, scope)
 	collect_expr_refs(c, stmt.display_like, scope)
 	collect_expr_refs(c, stmt.raising, scope)
-	add_system_field_update(c, scope, stmt.range, .Message, "msgid")
-	add_system_field_update(c, scope, stmt.range, .Message, "msgno")
-	add_system_field_update(c, scope, stmt.range, .Message, "msgty")
-	add_system_field_update(c, scope, stmt.range, .Message, "msgv1")
-	add_system_field_update(c, scope, stmt.range, .Message, "msgv2")
-	add_system_field_update(c, scope, stmt.range, .Message, "msgv3")
-	add_system_field_update(c, scope, stmt.range, .Message, "msgv4")
-	append(&c.message_uses, use)
+	append(&c.unit.message_uses, use)
 }
 
 collect_message_head :: proc(
@@ -1901,9 +1717,9 @@ collect_message_head :: proc(
 			use.class_range = head.compact_class_range
 			use.flags += {.Has_Class_Range}
 			add_reference(c, scope, class_name, .Value, .Message_Class, head.compact_class_range)
-		} else if c.has_message_default_class {
-			use.class_name = c.message_default_class.name
-			use.class_range = c.message_default_class.range
+		} else if c.unit.has_message_default_class {
+			use.class_name = c.unit.message_default_class.name
+			use.class_range = c.unit.message_default_class.range
 		}
 	}
 	collect_expr_refs(c, head.msg_type, scope)
@@ -1934,23 +1750,12 @@ collect_write_to_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Write_To_Stmt, sco
 }
 
 collect_flow_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Flow_Stmt, scope: Scope_Id) {
-	kind := Routine_Site_Kind.Return
-	#partial switch stmt.kind {
-	case .Return:
-		kind = .Return
-	case .Continue:
-		kind = .Continue
-	case .Exit:
-		kind = .Exit
-	case .Stop:
-		kind = .Stop
-	}
-	add_routine_site(c, scope, stmt.range, kind)
+	_ = c
+	_ = stmt
+	_ = scope
 }
 
 collect_describe_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Describe_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Describe_Table, "tfill")
-	add_system_field_update(c, scope, stmt.range, .Describe_Table, "tleng")
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.target, scope)
@@ -1979,7 +1784,6 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	collect_expr_refs(c, stmt.offset, scope)
 	collect_expr_list_refs(c, stmt.excluding[:], scope)
 	collect_expr_list_refs(c, stmt.operands[:], scope)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_set_handler_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Set_Handler_Stmt, scope: Scope_Id) {
@@ -1988,7 +1792,6 @@ collect_set_handler_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Set_Handler_Stm
 	}
 	collect_expr_refs(c, stmt.sender, scope)
 	collect_expr_refs(c, stmt.activation, scope)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_handler_ref :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
@@ -2011,7 +1814,6 @@ collect_import_stmt_facts :: proc(
 		collect_write_target_expr(c, scope, stmt.range, parameter.value)
 	}
 	collect_data_cluster_medium_refs(c, stmt.medium, scope, stmt.range, false)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_export_stmt_facts :: proc(
@@ -2023,7 +1825,6 @@ collect_export_stmt_facts :: proc(
 		collect_expr_refs(c, parameter.value, scope)
 	}
 	collect_data_cluster_medium_refs(c, stmt.medium, scope, stmt.range, true)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_data_cluster_medium_refs :: proc(
@@ -2062,14 +1863,12 @@ collect_bit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Bit_Stmt, scope: Scope_
 		collect_expr_refs(c, stmt.value, scope)
 		collect_write_target_expr(c, scope, stmt.range, stmt.target, expr_range(stmt.value))
 	}
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_locale_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Locale_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.language, scope)
 	collect_expr_refs(c, stmt.country, scope)
 	collect_expr_refs(c, stmt.modifier, scope)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_convert_time_stamp_stmt_facts :: proc(
@@ -2087,7 +1886,6 @@ collect_convert_time_stamp_stmt_facts :: proc(
 		collect_expr_refs(c, stmt.time, scope)
 		collect_write_target_expr(c, scope, stmt.range, stmt.time_stamp, expr_range(stmt.date))
 	}
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_receive_results_stmt_facts :: proc(
@@ -2095,7 +1893,6 @@ collect_receive_results_stmt_facts :: proc(
 	stmt: ^ast.Receive_Results_Stmt,
 	scope: Scope_Id,
 ) {
-	add_system_field_update(c, scope, stmt.range, .Call_Function, "subrc")
 	collect_expr_refs(c, stmt.target, scope)
 	collect_raw_call_args(
 		c,
@@ -2107,7 +1904,6 @@ collect_receive_results_stmt_facts :: proc(
 			function_name = function_target_name(c, stmt.target),
 		},
 	)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_raise_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Raise_Stmt, scope: Scope_Id) {
@@ -2117,7 +1913,6 @@ collect_raise_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Raise_Stmt, scope: Sc
 		collect_expr_refs(c, stmt.target, scope)
 	}
 	collect_expr_list_refs(c, stmt.operands[:], scope)
-	add_routine_site(c, scope, stmt.range, .Raise)
 }
 
 collect_authority_check_stmt_facts :: proc(
@@ -2125,7 +1920,6 @@ collect_authority_check_stmt_facts :: proc(
 	stmt: ^ast.Authority_Check_Stmt,
 	scope: Scope_Id,
 ) {
-	add_system_field_update(c, scope, stmt.range, .Authority_Check, "subrc")
 	collect_expr_refs(c, stmt.object, scope)
 	collect_expr_list_refs(c, stmt.operands[:], scope)
 	for id in stmt.ids {
@@ -2139,7 +1933,6 @@ collect_assign_field_stmt_facts :: proc(
 	stmt: ^ast.Assign_Field_Stmt,
 	scope: Scope_Id,
 ) {
-	add_system_field_update(c, scope, stmt.range, .Assign, "subrc")
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.component, scope)
 	collect_expr_refs(c, stmt.structure, scope)
@@ -2165,10 +1958,6 @@ collect_line_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Line_Stmt, scope: Scop
 }
 
 collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Loop_At, "subrc")
-	add_system_field_update(c, scope, stmt.range, .Loop_At, "tabix")
-	add_system_field_update(c, scope, stmt.range, .Loop_At, "tfill")
-	add_system_field_update(c, scope, stmt.range, .Loop_At, "tleng")
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.from, scope)
 	collect_expr_refs(c, stmt.to, scope)
@@ -2192,13 +1981,12 @@ collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scop
 	}
 	collect_internal_table_where_refs(c, stmt.source, stmt.where_cond, scope)
 	source_access, has_source := value_access_from_expr(c, stmt.source, scope)
-	target_access, has_target := value_access_from_expr(c, stmt.target, scope)
 	previous := c.current_scope
 	c.current_scope = scope
 	loop_scope := push_scope(c, .Loop_Block, stmt.range)
 	if has_source {
 		append(&c.loop_source_stack, source_access)
-		c.scopes[scope_id_index(loop_scope)].allows_internal_table_line_selector = true
+		c.unit.scopes[scope_id_index(loop_scope)].allows_internal_table_line_selector = true
 	}
 	walk_stmt_list(c, stmt.body, loop_scope)
 	if has_source {
@@ -2207,17 +1995,6 @@ collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scop
 	c.current_scope = loop_scope
 	pop_scope(c)
 	c.current_scope = previous
-	add_loop_region_with_access(
-		c,
-		scope,
-		stmt.range,
-		.Loop,
-		loop_scope,
-		source_access,
-		has_source,
-		target_access,
-		has_target,
-	)
 }
 
 pop_loop_source :: proc(c: ^Collector) -> bool {
@@ -2251,7 +2028,7 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 		}
 		append(&path, field)
 		append(
-			&c.field_accesses,
+			&c.unit.field_accesses,
 			Field_Access {
 				scope = at_scope,
 				base_namespace = source.base_namespace,
@@ -2261,7 +2038,7 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 			},
 		)
 		append(
-			&c.loop_at_field_contexts,
+			&c.unit.loop_at_field_contexts,
 			Loop_At_Field_Context {
 				scope = at_scope,
 				range = stmt.field_range,
@@ -2273,18 +2050,6 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 	c.current_scope = at_scope
 	pop_scope(c)
 	c.current_scope = previous
-	kind := At_Group_Kind.First
-	switch stmt.kind {
-	case .First:
-		kind = .First
-	case .Last:
-		kind = .Last
-	case .New:
-		kind = .New
-	case .End_Of:
-		kind = .End_Of
-	}
-	add_at_region(c, scope, stmt.range, kind, at_scope)
 }
 
 walk_catch_clause_facts :: proc(
@@ -2327,191 +2092,6 @@ walk_catch_clause_facts :: proc(
 	return catch_scope
 }
 
-add_if_region :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	then_scope: Scope_Id,
-	elseif_scopes: [dynamic]Scope_Id,
-	else_scope: Scope_Id,
-) {
-	append(
-		&c.routine_control_regions,
-		Routine_Control_Region_Data {
-			kind = .If,
-			if_ = If_Region_Data {
-				scope = scope,
-				range = range,
-				then_scope = then_scope,
-				elseif_scopes = elseif_scopes,
-				else_scope = else_scope,
-			},
-		},
-	)
-}
-
-add_case_region :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	when_scopes: [dynamic]Scope_Id,
-	has_others: bool,
-) {
-	append(
-		&c.routine_control_regions,
-		Routine_Control_Region_Data {
-			kind = .Case,
-			case_ = Case_Region_Data {
-				scope = scope,
-				range = range,
-				when_scopes = when_scopes,
-				has_when_others = has_others,
-			},
-		},
-	)
-}
-
-add_loop_region :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: Routine_Loop_Kind,
-	body_scope: Scope_Id,
-) {
-	add_loop_region_with_access(
-		c,
-		scope,
-		range,
-		kind,
-		body_scope,
-		Field_Access{},
-		false,
-		Field_Access{},
-		false,
-	)
-}
-
-add_loop_region_with_access :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: Routine_Loop_Kind,
-	body_scope: Scope_Id,
-	source: Field_Access,
-	has_source: bool,
-	target: Field_Access,
-	has_target: bool,
-) {
-	flags := Loop_Region_Flags{}
-	if has_source {flags += {.Has_Source_Access}}
-	if has_target {flags += {.Has_Target_Access}}
-	append(
-		&c.routine_control_regions,
-		Routine_Control_Region_Data {
-			kind = .Loop,
-			loop = Loop_Region_Data {
-				scope = scope,
-				range = range,
-				kind = kind,
-				body_scope = body_scope,
-				source_access = source,
-				target_access = target,
-				flags = flags,
-			},
-		},
-	)
-}
-
-add_at_region :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: At_Group_Kind,
-	body_scope: Scope_Id,
-) {
-	append(
-		&c.routine_control_regions,
-		Routine_Control_Region_Data {
-			kind = .At,
-			at = At_Region_Data {
-				scope = scope,
-				range = range,
-				kind = kind,
-				body_scope = body_scope,
-			},
-		},
-	)
-}
-
-add_try_region :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	body_scope: Scope_Id,
-	catch_scopes: [dynamic]Scope_Id,
-	cleanup_scope: Scope_Id,
-) {
-	append(
-		&c.routine_control_regions,
-		Routine_Control_Region_Data {
-			kind = .Try,
-			try = Try_Region_Data {
-				scope = scope,
-				range = range,
-				body_scope = body_scope,
-				catch_scopes = catch_scopes,
-				cleanup_scope = cleanup_scope,
-			},
-		},
-	)
-}
-
-add_routine_site :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: Routine_Site_Kind,
-) {
-	append(&c.routine_sites, Routine_Site_Data{scope = scope, range = range, kind = kind})
-}
-
-add_routine_site_target :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: Routine_Site_Kind,
-	target: ^ast.Expr,
-) {
-	site := Routine_Site_Data {
-		scope = scope,
-		range = range,
-		kind  = kind,
-	}
-	if target != nil {
-		site.target_range = target.range
-		site.has_target = true
-	}
-	append(&c.routine_sites, site)
-}
-
-add_system_field_update :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	statement: System_Field_Statement_Kind,
-	field_name: string,
-) {
-	append(
-		&c.system_field_updates,
-		System_Field_Update_Data {
-			scope = scope,
-			range = range,
-			statement = statement,
-			field_name = strings.clone(field_name, c.allocator),
-		},
-	)
-}
-
 walk_function_pool_decl :: proc(c: ^Collector, stmt: ^ast.Function_Pool_Decl, scope: Scope_Id) {
 	if stmt.name != "" {
 		_ = declare_collected_symbol(c, scope, stmt.name, .Report, stmt.range)
@@ -2528,21 +2108,16 @@ collect_report_stmt_refs :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: S
 	}
 	#partial switch stmt.kind {
 	case .Read_Report:
-		add_system_field_update(c, scope, stmt.range, .Read_Report, "subrc")
 		collect_expr_refs(c, stmt.name, scope)
 		collect_write_target_expr(c, scope, stmt.range, stmt.source)
 		collect_expr_refs(c, stmt.line_size, scope)
 		collect_expr_refs(c, stmt.line_count, scope)
 	case .Insert_Report:
-		add_system_field_update(c, scope, stmt.range, .Insert_Report, "subrc")
-		add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 		collect_expr_refs(c, stmt.name, scope)
 		collect_expr_refs(c, stmt.source, scope)
 		collect_expr_refs(c, stmt.line_size, scope)
 		collect_expr_refs(c, stmt.line_count, scope)
 	case .Delete_Report:
-		add_system_field_update(c, scope, stmt.range, .Delete_Report, "subrc")
-		add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 		collect_expr_refs(c, stmt.name, scope)
 	case:
 		collect_expr_refs(c, stmt.name, scope)
@@ -2558,17 +2133,15 @@ set_message_default_class :: proc(
 	scope: Scope_Id,
 ) {
 	class_name := canonical_name(strip_quotes(name), c.allocator)
-	c.message_default_class = Message_Class_Use_Data {
+	c.unit.message_default_class = Message_Class_Use_Data {
 		name  = class_name,
 		range = range,
 	}
-	c.has_message_default_class = true
+	c.unit.has_message_default_class = true
 	add_reference(c, scope, class_name, .Value, .Message_Class, range)
 }
 
 collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Read_Table, "subrc")
-	add_system_field_update(c, scope, stmt.range, .Read_Table, "tabix")
 	for e in stmt.entries {
 		collect_expr_refs(c, e.table, scope)
 		collect_expr_refs(c, e.into, scope)
@@ -2613,7 +2186,7 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 						)
 					}
 					append(
-						&c.field_accesses,
+						&c.unit.field_accesses,
 						Field_Access {
 							scope = scope,
 							base_namespace = access.base_namespace,
@@ -2639,17 +2212,6 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 				unknown_type_fact(),
 			)
 		}
-		if e.binary_search && e.table != nil {
-			key_fields := make([dynamic]string, 0, len(e.key_values), c.allocator)
-			for key in e.key_values {
-				append(&key_fields, canonical_name(key.name, c.allocator))
-			}
-			name := ""
-			if access, ok := value_access_from_expr(c, e.table, scope); ok {
-				name = table_order_name_from_access(c, access)
-			}
-			record_read_table_binary_search(c, scope, e.binary_search_clause, name, key_fields[:])
-		}
 	}
 }
 
@@ -2657,7 +2219,6 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 	query_id := -1
 	is_sql := false
 	if stmt.form == .Db_Table {
-		add_system_field_update(c, scope, stmt.range, .Insert_Db_Table, "subrc")
 		query_id, is_sql = collect_db_table_sql_source(
 			c,
 			stmt.range,
@@ -2685,7 +2246,6 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 			collect_expr_refs(c, stmt.target, scope)
 		}
 	} else {
-		add_system_field_update(c, scope, stmt.range, .Insert_Table, "subrc")
 		collect_expr_refs(c, stmt.target, scope)
 	}
 	collect_expr_refs(c, stmt.source, scope)
@@ -2714,7 +2274,6 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 }
 
 collect_append_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Append_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Append, "subrc")
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.assigning, scope)
@@ -2735,13 +2294,6 @@ collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: 
 			stmt.dynamic_where,
 		)
 	}
-	add_system_field_update(
-		c,
-		scope,
-		stmt.range,
-		.Modify_Db_Table if is_sql else .Modify_Table,
-		"subrc",
-	)
 	if !is_sql {
 		collect_expr_refs(c, stmt.target, scope)
 		collect_internal_table_where_refs(c, stmt.target, stmt.where_cond, scope)
@@ -2783,7 +2335,7 @@ collect_modify_transporting_refs :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, 
 			)
 		}
 		append(
-			&c.field_accesses,
+			&c.unit.field_accesses,
 			Field_Access {
 				scope = scope,
 				base_namespace = base.base_namespace,
@@ -2808,7 +2360,7 @@ collect_modify_where_context :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scop
 	}
 	target, has_target := value_access_from_expr(c, stmt.source, scope)
 	append(
-		&c.loop_where_field_contexts,
+		&c.unit.loop_where_field_contexts,
 		Loop_Where_Field_Context {
 			scope = scope,
 			range = stmt.where_clause if range_valid(stmt.where_clause) else stmt.where_cond.range,
@@ -2821,35 +2373,14 @@ collect_modify_where_context :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scop
 
 collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
-	target_access, has_target_access := value_access_from_expr(c, stmt.target, scope)
 	for field in stmt.fields {
 		if field.name == "" {
 			collect_expr_refs(c, field.expr, scope)
 		}
 	}
-	if has_target_access && len(stmt.fields) > 0 && !stmt.descending {
-		keys := make([dynamic]string, 0, len(stmt.fields), c.allocator)
-		for field in stmt.fields {
-			if field.name == "" || field.descending {
-				resize(&keys, 0)
-				break
-			}
-			append(&keys, canonical_name(field.name, c.allocator))
-		}
-		if len(keys) > 0 {
-			record_internal_table_order(
-				c,
-				scope,
-				stmt.range,
-				table_order_name_from_access(c, target_access),
-				keys[:],
-			)
-		}
-	}
 }
 
 collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: Scope_Id) {
-	add_system_field_update(c, scope, stmt.range, .Update_Db_Table, "subrc")
 	query_id, is_sql := collect_db_table_sql_source(
 		c,
 		stmt.range,
@@ -2898,13 +2429,6 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 			stmt.dynamic_where,
 		)
 	}
-	add_system_field_update(
-		c,
-		scope,
-		stmt.range,
-		.Delete_Db_Table if is_sql else .Delete_Table,
-		"subrc",
-	)
 	if !is_sql {
 		collect_expr_refs(c, stmt.target, scope)
 		collect_internal_table_where_refs(c, stmt.target, stmt.where_cond, scope)
@@ -2913,7 +2437,6 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 	collect_expr_refs(c, stmt.index, scope)
 	collect_expr_refs(c, stmt.using_key.dynamic_name, scope)
 	collect_delete_comparing_refs(c, stmt, scope)
-	add_routine_site(c, scope, stmt.range, .Delete)
 }
 
 collect_internal_table_where_refs :: proc(
@@ -2940,7 +2463,7 @@ collect_internal_table_where_refs :: proc(
 			append(&path, Field_Access_Segment{name = access.base_name, range = access.base_range})
 			for segment in access.field_path {append(&path, segment)}
 			append(
-				&c.field_accesses,
+				&c.unit.field_accesses,
 				Field_Access {
 					scope = scope,
 					base_namespace = target_access.base_namespace,
@@ -3005,17 +2528,16 @@ internal_table_where_target_has_shape :: proc(
 	if !ok {
 		return false
 	}
-	s := c.symbols[symbol_id_index(symbol_id)]
+	s := c.unit.symbols[symbol_id_index(symbol_id)]
 	return s.structure != INVALID_STRUCTURE_ID
 }
 
 class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> bool {
-	for s in c.scopes {
+	for s in c.unit.scopes {
 		if !(s.kind == .Class || s.kind == .Interface) || s.owner != class_symbol {
 			continue
 		}
-		key := Scope_Index_Key{scope = s.id, namespace = .Value, name = name}
-		if key in c.scope_symbols {
+		if _, ok := scope_lookup_declaration(c.unit, s.id, .Value, name); ok {
 			return true
 		}
 	}
@@ -3023,7 +2545,7 @@ class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: s
 }
 
 collector_superclass_name :: proc(c: ^Collector, class_symbol: Symbol_Id) -> (string, bool) {
-	for inheritance in c.class_inheritance {
+	for inheritance in c.unit.class_inheritance {
 		if inheritance.class_symbol == class_symbol {
 			return inheritance.superclass_name, true
 		}
@@ -3053,7 +2575,7 @@ collect_delete_comparing_refs :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, sco
 					append(&path, segment)
 				}
 				append(
-					&c.field_accesses,
+					&c.unit.field_accesses,
 					Field_Access {
 						scope = scope,
 						base_namespace = target.base_namespace,
@@ -3092,7 +2614,6 @@ collect_dataset_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Dataset_Stmt, scope
 	}
 	collect_expr_refs(c, stmt.maximum_length, scope)
 	collect_expr_refs(c, stmt.length, scope)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }
 
 collect_textpool_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Textpool_Stmt, scope: Scope_Id) {
@@ -3100,10 +2621,6 @@ collect_textpool_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Textpool_Stmt, sco
 	if stmt.kind == .Read {
 		collect_write_target_expr(c, scope, stmt.range, stmt.table)
 	} else {
-		if stmt.kind == .Insert {
-			add_system_field_update(c, scope, stmt.range, .Insert_Textpool, "subrc")
-			add_routine_site(c, scope, stmt.range, .Unknown_Effect)
-		}
 		collect_expr_refs(c, stmt.table, scope)
 	}
 	collect_expr_refs(c, stmt.language, scope)
@@ -3118,5 +2635,4 @@ collect_generate_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Generate_Stmt, sco
 	collect_write_target_expr(c, scope, stmt.range, stmt.line)
 	collect_write_target_expr(c, scope, stmt.range, stmt.word)
 	collect_write_target_expr(c, scope, stmt.range, stmt.offset)
-	add_routine_site(c, scope, stmt.range, .Unknown_Effect)
 }

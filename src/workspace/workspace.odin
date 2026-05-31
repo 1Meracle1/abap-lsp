@@ -3,6 +3,7 @@ package abap_frontend_workspace
 import adt "src:adt"
 import dep_store "src:dependency_store"
 import execution "src:execution"
+import lints "src:lints"
 import analyze "src:semantic/analyze"
 import remote_deps "src:semantic/remote_dependencies"
 
@@ -155,10 +156,16 @@ analyze_workspace :: proc(
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
 	assert(options.pool != nil)
+	result: Analysis_Result
 	if workspace.has_manifest && len(workspace.manifest.units) > 0 {
-		return analyze_manifest_workspace(workspace, include_paths, options, allocator)
+		result = analyze_manifest_workspace(workspace, include_paths, options, allocator)
+	} else {
+		result = analyze_workspace_files(workspace, include_paths, options, allocator)
 	}
-	return analyze_workspace_files(workspace, include_paths, options, allocator)
+	if result.ok {
+		lints.run_project_async(&result.project, options.pool, allocator)
+	}
+	return result
 }
 
 analyze_path :: proc(
@@ -175,14 +182,18 @@ analyze_path :: proc(
 	}
 
 	if !workspace.has_manifest {
-		return analyze_standalone_path(workspace, target_abs, include_paths, options, allocator)
+		result := analyze_standalone_path(workspace, target_abs, include_paths, options, allocator)
+		if result.ok {
+			lints.run_project_async(&result.project, options.pool, allocator)
+		}
+		return result
 	}
 
 	target_key := normalized_uri_path_key(target_abs, allocator)
 	root_keys := manifest_root_keys(&workspace.manifest, allocator)
 	if selected, ok := manifest_root_unit_by_key(&workspace.manifest, root_keys[:], target_key);
 	   ok {
-		return analyze_manifest_unit(
+		result := analyze_manifest_unit(
 			workspace,
 			selected,
 			root_keys[:],
@@ -190,10 +201,14 @@ analyze_path :: proc(
 			options,
 			allocator,
 		)
+		if result.ok {
+			lints.run_project_async(&result.project, options.pool, allocator)
+		}
+		return result
 	}
 	if selected, ok := manifest_member_owner_by_key(&workspace.manifest, target_key, allocator);
 	   ok {
-		return analyze_manifest_unit(
+		result := analyze_manifest_unit(
 			workspace,
 			selected,
 			root_keys[:],
@@ -201,6 +216,10 @@ analyze_path :: proc(
 			options,
 			allocator,
 		)
+		if result.ok {
+			lints.run_project_async(&result.project, options.pool, allocator)
+		}
+		return result
 	}
 
 	workspace_files := make([dynamic]string, 0, 32, allocator)
@@ -213,7 +232,7 @@ analyze_path :: proc(
 		options,
 		allocator,
 	); ok {
-		return analyze_manifest_unit_with_workspace_files(
+		result := analyze_manifest_unit_with_workspace_files(
 			workspace,
 			selected,
 			root_keys[:],
@@ -222,9 +241,17 @@ analyze_path :: proc(
 			options,
 			allocator,
 		)
+		if result.ok {
+			lints.run_project_async(&result.project, options.pool, allocator)
+		}
+		return result
 	}
 
-	return analyze_standalone_path(workspace, target_abs, include_paths, options, allocator)
+	result := analyze_standalone_path(workspace, target_abs, include_paths, options, allocator)
+	if result.ok {
+		lints.run_project_async(&result.project, options.pool, allocator)
+	}
+	return result
 }
 
 dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote_deps.Dependency_Config {

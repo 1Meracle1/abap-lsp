@@ -1710,11 +1710,16 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 			}
 			type_ref := builtin_type_ref(field.type_name)
 			type_ref.is_ref = field.is_ref
+			type_id := type_id_from_declared_type(unit, root_scope, type_ref) if field.type_name != "" else UNKNOWN_TYPE_ID
+			if !type_id_is_known(type_id) && nested != INVALID_STRUCTURE_ID {
+				type_id = type_structure(unit, nested)
+			}
 			append(
 				&fields,
 				Structure_Field_Data {
 					name = field.name,
 					decl_unit = unit.unit_id,
+					type_id = type_id,
 					structure = nested,
 					type_ref = type_ref,
 					description = field.description,

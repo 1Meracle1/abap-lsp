@@ -3,7 +3,9 @@ package abap_frontend_semantic_remote_dependencies
 import "src:adt"
 import ddic_xml "src:ddic_xml"
 import dep_store "src:dependency_store"
+import execution "src:execution"
 import analyze "src:semantic/analyze"
+import deps "src:semantic/dependencies"
 import uri_key "src:uri_key"
 
 import "core:fmt"
@@ -14,7 +16,7 @@ trace_eprintf :: fmt.eprintf
 
 @(private)
 dep_store_candidate_kind :: proc(
-	kind: analyze.Remote_Dependency_Kind,
+	kind: deps.Remote_Dependency_Kind,
 ) -> dep_store.Candidate_Kind {
 	switch kind {
 	case .Include:
@@ -36,7 +38,7 @@ dep_store_candidate_kind :: proc(
 }
 
 @(private)
-remote_candidate_kind_text :: proc(kind: analyze.Remote_Dependency_Kind) -> string {
+remote_candidate_kind_text :: proc(kind: deps.Remote_Dependency_Kind) -> string {
 	return dep_store.candidate_kind_text(dep_store_candidate_kind(kind))
 }
 
@@ -48,10 +50,157 @@ Dependency_Config :: struct {
 	adt_client:         ^adt.Client,
 }
 
+Dependency_State :: struct {
+	seen_artifacts:           map[i64]bool,
+	seen_local_candidates:    map[deps.Remote_Dependency_Key]bool,
+	seen_adt_candidates:      map[deps.Remote_Dependency_Key]bool,
+	seen_typepool_candidates: map[deps.Remote_Dependency_Key]bool,
+}
+
+dependency_state_make :: proc(allocator: mem.Allocator) -> Dependency_State {
+	return Dependency_State {
+		seen_artifacts           = make(map[i64]bool, 16, allocator),
+		seen_local_candidates    = make(map[deps.Remote_Dependency_Key]bool, 64, allocator),
+		seen_adt_candidates      = make(map[deps.Remote_Dependency_Key]bool, 64, allocator),
+		seen_typepool_candidates = make(map[deps.Remote_Dependency_Key]bool, 64, allocator),
+	}
+}
+
 Cache_Phase_Result :: struct {
 	added:            bool,
-	adt_candidates:   [dynamic]analyze.Remote_Dependency_Candidate,
-	local_candidates: [dynamic]analyze.Remote_Dependency_Candidate,
+	adt_candidates:   [dynamic]deps.Remote_Dependency_Candidate,
+	local_candidates: [dynamic]deps.Remote_Dependency_Candidate,
+}
+
+resolve_dependency_candidates :: proc(
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
+	config: ^Dependency_Config,
+	state: ^Dependency_State,
+	pool: ^execution.Pool,
+	target_uri: string,
+) -> int {
+	if len(remote_candidates) == 0 {
+		return 0
+	}
+	old_candidate_count := len(candidates^)
+	old_dependency_count := len(dependencies^)
+	has_cache := config.cache != nil
+	has_profile := config.profile != nil
+	cache_result := Cache_Phase_Result {
+		adt_candidates = make(
+			[dynamic]deps.Remote_Dependency_Candidate,
+			0,
+			len(remote_candidates),
+			context.temp_allocator,
+		),
+		local_candidates = make(
+			[dynamic]deps.Remote_Dependency_Candidate,
+			0,
+			len(remote_candidates),
+			context.temp_allocator,
+		),
+	}
+	if has_cache {
+		cache_candidates := unseen_remote_candidates(remote_candidates, nil, context.temp_allocator)
+		connection_key := adt.client_connection_key(config.adt_client, context.temp_allocator) if config.adt_client != nil else ""
+		cache_result = add_dependency_cache_matches(
+			candidates,
+			dependencies,
+			cache_candidates[:],
+			config.cache,
+			config.profile,
+			config.cache_any_profile || !has_profile,
+			connection_key,
+			&state.seen_artifacts,
+			pool,
+			target_uri,
+			"session_cache_any" if config.cache_any_profile || !has_profile else "session_cache",
+		)
+		if cache_result.added {
+			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+		}
+	} else {
+		for candidate in remote_candidates {
+			append(&cache_result.adt_candidates, candidate)
+			append(&cache_result.local_candidates, candidate)
+		}
+	}
+
+	if config.adt_client != nil {
+		adt_candidates := unseen_remote_candidates(
+			cache_result.adt_candidates[:],
+			&state.seen_adt_candidates,
+			context.temp_allocator,
+		)
+		if len(adt_candidates) > 0 &&
+		   add_adt_matches_with_client(
+				candidates,
+				dependencies,
+				adt_candidates[:],
+				config.cache if has_cache && has_profile else nil,
+				config.profile if has_cache && has_profile else nil,
+				config.adt_client,
+				pool,
+				target_uri,
+			) {
+			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+		}
+	}
+
+	if config.adt_client != nil && adt.typepool_resolver_enabled(config.adt_client) {
+		typepool_candidates := unseen_remote_candidates(
+			cache_result.local_candidates[:],
+			&state.seen_typepool_candidates,
+			context.temp_allocator,
+		)
+		if len(typepool_candidates) > 0 &&
+		   add_typepool_resolver_matches(
+				candidates,
+				dependencies,
+				typepool_candidates[:],
+				config.cache if has_cache && has_profile else nil,
+				config.profile if has_cache && has_profile else nil,
+				config.adt_client,
+				pool,
+				target_uri,
+			) {
+			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+		}
+	}
+
+	if len(config.local_export_roots) > 0 {
+		local_candidates := unseen_remote_candidates(
+			cache_result.local_candidates[:],
+			&state.seen_local_candidates,
+			context.temp_allocator,
+		)
+		if len(local_candidates) > 0 &&
+		   add_local_export_matches(
+				candidates,
+				dependencies,
+				local_candidates[:],
+				config.cache if has_cache && has_profile else nil,
+				config.profile if has_cache && has_profile else nil,
+				config.local_export_roots,
+				target_uri,
+				candidates.allocator,
+			) {
+			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+		}
+	}
+	return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+}
+
+@(private)
+dependency_input_count_since :: proc(
+	candidates: ^[dynamic]analyze.Project_Candidate_Input,
+	dependencies: ^[dynamic]analyze.Source_Input,
+	old_candidate_count: int,
+	old_dependency_count: int,
+) -> int {
+	return len(candidates^) - old_candidate_count + len(dependencies^) - old_dependency_count
 }
 
 analyze_inputs_with_state :: proc(
@@ -76,12 +225,12 @@ analyze_inputs_with_state :: proc(
 }
 
 unseen_remote_candidates :: proc(
-	remote_candidates: []analyze.Remote_Dependency_Candidate,
-	seen: ^map[analyze.Remote_Dependency_Key]bool,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
+	seen: ^map[deps.Remote_Dependency_Key]bool,
 	temp_allocator: mem.Allocator,
-) -> [dynamic]analyze.Remote_Dependency_Candidate {
+) -> [dynamic]deps.Remote_Dependency_Candidate {
 	out := make(
-		[dynamic]analyze.Remote_Dependency_Candidate,
+		[dynamic]deps.Remote_Dependency_Candidate,
 		0,
 		len(remote_candidates),
 		temp_allocator,
@@ -94,7 +243,7 @@ unseen_remote_candidates :: proc(
 			append(&out, candidate)
 			continue
 		}
-		key := analyze.Remote_Dependency_Key {
+		key := deps.Remote_Dependency_Key {
 			name = candidate.name,
 			kind = candidate.kind,
 			hint = candidate.hint,
@@ -114,7 +263,7 @@ append_dependency_input :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
 	input: analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	object_name: string,
 ) {
 	if candidate.kind == .Include {
@@ -150,7 +299,7 @@ source_input_clone :: proc(
 add_dependency_source_input :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	uri, object_name, object_kind, file_extension, source: string,
 	uri_keys: ^map[string]bool,
 	temp_allocator: mem.Allocator,
@@ -176,7 +325,7 @@ add_dependency_source_input :: proc(
 }
 
 dependency_input_source :: proc(
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	object_name, object_kind, file_extension, source: string,
 	allocator: mem.Allocator,
 ) -> string {

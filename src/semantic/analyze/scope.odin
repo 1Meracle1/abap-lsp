@@ -41,12 +41,12 @@ Scope_Data :: struct {
 	parent:                              Scope_Id,
 	owner:                               Symbol_Id,
 	declarations:                        [dynamic]Symbol_Id,
+	declarations_by_name:                map[Scope_Declaration_Key]Symbol_Id,
 	children:                            [dynamic]Scope_Id,
 	allows_internal_table_line_selector: bool,
 }
 
-Scope_Index_Key :: struct {
-	scope:     Scope_Id,
+Scope_Declaration_Key :: struct {
 	namespace: Namespace,
 	name:      string,
 }
@@ -58,8 +58,6 @@ Class_Scope_Index_Key :: struct {
 }
 
 Scope_Index :: struct {
-	scope_count:       int,
-	symbols:           map[Scope_Index_Key]Symbol_Id,
 	class_symbols:     map[Class_Scope_Index_Key]Symbol_Id,
 	enclosing_classes: [dynamic]Symbol_Id,
 	superclasses:      map[Symbol_Id]string,
@@ -67,14 +65,12 @@ Scope_Index :: struct {
 
 scope_index_make :: proc(allocator: mem.Allocator) -> Scope_Index {
 	return Scope_Index {
-		symbols = make(map[Scope_Index_Key]Symbol_Id, 0, allocator),
 		class_symbols = make(map[Class_Scope_Index_Key]Symbol_Id, 0, allocator),
 		superclasses = make(map[Symbol_Id]string, 0, allocator),
 	}
 }
 
 scope_index_destroy :: proc(index: ^Scope_Index) {
-	delete(index.symbols)
 	delete(index.class_symbols)
 	if len(index.enclosing_classes) > 0 {
 		delete(index.enclosing_classes)
@@ -99,6 +95,7 @@ add_scope :: proc(
 		parent       = parent,
 		owner        = owner,
 		declarations = make([dynamic]Symbol_Id, 0, 8, allocator),
+		declarations_by_name = make(map[Scope_Declaration_Key]Symbol_Id, 0, allocator),
 		children     = make([dynamic]Scope_Id, 0, 4, allocator),
 	}
 	append(&unit.scopes, scope)
@@ -106,4 +103,58 @@ add_scope :: proc(
 		append(&unit.scopes[scope_id_index(parent)].children, id)
 	}
 	return id
+}
+
+scope_record_declaration :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, symbol_id: Symbol_Id) {
+	s := scope(unit, scope_id)
+	item := symbol(unit, symbol_id)
+	assert(s != nil && item != nil)
+	append(&s.declarations, symbol_id)
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if !symbol_kind_occupies(item.kind, namespace) {
+			continue
+		}
+		key := Scope_Declaration_Key{namespace = namespace, name = item.name}
+		if _, exists := s.declarations_by_name[key]; !exists {
+			s.declarations_by_name[key] = symbol_id
+		}
+	}
+}
+
+scope_lookup_declaration :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	namespace: Namespace,
+	name: string,
+) -> (
+	Symbol_Id,
+	bool,
+) {
+	if s := scope(unit, scope_id); s != nil {
+		if id, ok := s.declarations_by_name[Scope_Declaration_Key{namespace = namespace, name = name}]; ok {
+			return id, true
+		}
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+scope_has_declared_declaration :: proc(
+	unit: ^Unit_Analysis,
+	scope_id: Scope_Id,
+	namespace: Namespace,
+	name: string,
+) -> bool {
+	if s := scope(unit, scope_id); s != nil {
+		for symbol_id in s.declarations {
+			if item := symbol(unit, symbol_id);
+			   item != nil &&
+			   !symbol_kind_is_builtin(item.kind) &&
+			   item.name == name &&
+			   symbol_kind_occupies(item.kind, namespace) {
+				return true
+			}
+		}
+	}
+	return false
 }

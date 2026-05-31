@@ -5,12 +5,19 @@ Scope_Id :: distinct u32
 Symbol_Id :: distinct u32
 Reference_Id :: distinct u32
 Structure_Id :: distinct u32
+Decl_Info_Id :: distinct u32
+Type_Id :: distinct u32
+
+Entity_Id :: Symbol_Id
 
 INVALID_UNIT_ID :: Unit_Id(0xffffffff)
 INVALID_SCOPE_ID :: Scope_Id(0xffffffff)
 INVALID_SYMBOL_ID :: Symbol_Id(0xffffffff)
 INVALID_REFERENCE_ID :: Reference_Id(0xffffffff)
 INVALID_STRUCTURE_ID :: Structure_Id(0xffffffff)
+INVALID_DECL_INFO_ID :: Decl_Info_Id(0xffffffff)
+INVALID_TYPE_ID :: Type_Id(0xffffffff)
+UNKNOWN_TYPE_ID :: Type_Id(0)
 
 Symbol_Handle :: struct {
 	unit:   Unit_Id,
@@ -34,5 +41,13 @@ reference_id_index :: #force_inline proc(id: Reference_Id) -> int {
 }
 
 structure_id_index :: #force_inline proc(id: Structure_Id) -> int {
+	return int(id)
+}
+
+decl_info_id_index :: #force_inline proc(id: Decl_Info_Id) -> int {
+	return int(id)
+}
+
+type_id_index :: #force_inline proc(id: Type_Id) -> int {
 	return int(id)
 }

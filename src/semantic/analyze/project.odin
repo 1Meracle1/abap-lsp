@@ -3,6 +3,7 @@ package abap_frontend_semantic_analyze
 import "src:ast"
 import execution "src:execution"
 import "src:parser"
+import deps "src:semantic/dependencies"
 import uri_key "src:uri_key"
 
 import base_runtime "base:runtime"
@@ -18,34 +19,6 @@ Source_Input :: struct {
 
 Analyze_Options :: struct {
 	pool: ^execution.Pool,
-}
-
-Remote_Dependency_Kind :: enum {
-	Include,
-	Message_Class,
-	Report,
-	Function,
-	Static,
-	Type,
-	Symbol,
-}
-
-Remote_Dependency_Hint :: enum {
-	None,
-	Object_Type,
-	Interface_Type,
-}
-
-Remote_Dependency_Candidate :: struct {
-	name: string,
-	kind: Remote_Dependency_Kind,
-	hint: Remote_Dependency_Hint,
-}
-
-Remote_Dependency_Key :: struct {
-	name: string,
-	kind: Remote_Dependency_Kind,
-	hint: Remote_Dependency_Hint,
 }
 
 Project_Dependency_Kind :: enum {
@@ -75,7 +48,7 @@ Project_State :: struct {
 	uri_to_unit:           map[string]Unit_Id,
 	edges:                 [dynamic]Project_Dependency_Edge,
 	reverse_edges:         map[Unit_Id][dynamic]Unit_Id,
-	unresolved_candidates: map[Remote_Dependency_Key][dynamic]Unit_Id,
+	unresolved_candidates: map[deps.Remote_Dependency_Key][dynamic]Unit_Id,
 	diagnostics:           [dynamic]Diagnostic,
 	index:                 Project_Index,
 	candidates:            [dynamic]Project_Candidate_Input,
@@ -107,7 +80,7 @@ Project_Task_Payload :: struct {
 
 Project_Infer_State :: struct {
 	project:         ^Project_Analysis,
-	lookup:          ^Validation_Lookup,
+	lookup:          ^Project_Index,
 	inferred:        []Inferred_Unit_Facts,
 	unit_allocators: []mem.Allocator,
 	allocator:       mem.Allocator,
@@ -115,7 +88,7 @@ Project_Infer_State :: struct {
 
 Project_Validate_State :: struct {
 	project:         ^Project_Analysis,
-	lookup:          ^Validation_Lookup,
+	lookup:          ^Project_Index,
 	diagnostics:     [][dynamic]Diagnostic,
 	unit_allocators: []mem.Allocator,
 	allocator:       mem.Allocator,
@@ -198,7 +171,7 @@ project_state_make :: proc(
 		uri_to_unit = make(map[string]Unit_Id, 16, allocator),
 		edges = make([dynamic]Project_Dependency_Edge, 0, 16, allocator),
 		reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, 16, allocator),
-		unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 16, allocator),
+		unresolved_candidates = make(map[deps.Remote_Dependency_Key][dynamic]Unit_Id, 16, allocator),
 		diagnostics = make([dynamic]Diagnostic, 0, 8, allocator),
 		index = project_index_make(allocator),
 		candidates = make([dynamic]Project_Candidate_Input, 0, 8, allocator),
@@ -723,25 +696,19 @@ project_state_finish :: proc(
 		allocator,
 	)
 	project_index_update_sql_predicate_columns(&state.index, project.units[:], affected[:])
-	lookup := validation_lookup_from_project_index(&state.index)
+	lookup := &state.index
 	infer_project_semantic_facts_for_units(
 		&project,
-		&lookup,
+		lookup,
 		affected[:],
 		pool,
 		state.unit_allocators,
 		allocator,
 	)
+	check_project_operands_for_units(&project, lookup, affected[:])
 	validate_project_units_for_units(
 		&project,
-		&lookup,
-		affected[:],
-		pool,
-		state.unit_allocators,
-		allocator,
-	)
-	rebuild_project_semantic_indexes_for_units(
-		&project,
+		lookup,
 		affected[:],
 		pool,
 		state.unit_allocators,
@@ -750,7 +717,7 @@ project_state_finish :: proc(
 	collect_project_diagnostics(&project)
 	state.units = project.units
 	state.diagnostics = project.diagnostics
-	project_state_update_dependency_graph_for_units(state, &project, &lookup, affected[:])
+	project_state_update_dependency_graph_for_units(state, &project, lookup, affected[:])
 	record_project_unresolved_candidates_for_units(state, &project, affected[:])
 }
 
@@ -994,8 +961,6 @@ resolve_project_cross_unit_for_units :: proc(
 			if unit_index < 0 || unit_index >= len(units) {
 				continue
 			}
-			scope_index_destroy(&units[unit_index].scope_index)
-			units[unit_index].scope_index = build_scope_index(&units[unit_index], allocator)
 			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
 		}
 	}
@@ -1115,7 +1080,7 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 					visible,
 					allocator,
 				)
-				_ = declare_symbol(
+				symbol_id := declare_symbol(
 					unit,
 					method_scope,
 					param.name,
@@ -1126,7 +1091,16 @@ seed_inherited_method_scope_parameters_for_units :: proc(
 					.Has_Declared_Type in param.flags,
 					param.type_clause_display,
 					type_clause_table_has_of = param.type_clause_table_has_of,
+					type_id = param.type_id,
+					owner = method_symbol.id,
 				)
+				if info := entity_decl_info(unit, symbol_id); info != nil {
+					info.parameter_section = decl_method_section(param.section)
+					info.parameter_passing = decl_passing(param.passing)
+					if .Is_Optional in param.flags {
+						info.flags += {.Is_Optional}
+					}
+				}
 				changed = true
 			}
 		}
@@ -1165,6 +1139,11 @@ reset_cross_class_member_implementation_links :: proc(units: []Unit_Analysis) {
 			member.flags -= {.Has_Implementation, .Has_Implementation_Range}
 			member.implementation = {}
 			member.implementation_range = {}
+			if info := entity_decl_info(&unit, member.symbol); info != nil {
+				info.flags -= {.Has_Implementation}
+				info.implementation_unit = INVALID_UNIT_ID
+				info.implementation_range = {}
+			}
 		}
 	}
 }
@@ -1228,7 +1207,7 @@ reclassify_project_open_sql_predicate_host_variables_for_units :: proc(
 project_state_rebuild_dependency_graph :: proc(
 	state: ^Project_State,
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 ) {
 	project_state_reverse_edges_destroy(state)
 	clear(&state.edges)
@@ -1350,7 +1329,7 @@ project_state_rebuild_dependency_graph :: proc(
 project_state_update_dependency_graph_for_units :: proc(
 	state: ^Project_State,
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_ids: []Unit_Id,
 ) {
 	project_index_ensure_unit_count(&state.index, len(project.units))
@@ -1682,9 +1661,13 @@ unit_interface_signature :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 			write_signature_string(&out, param.type_clause_display)
 		}
 	}
-	for routine in unit.form_routines {
-		write_signature_int(&out, symbol_id_index(routine.symbol))
-		write_signature_string(&out, routine.signature)
+	for s in unit.symbols {
+		if s.kind != .Form {
+			continue
+		}
+		info := decl_info(unit, s.decl_info)
+		write_signature_int(&out, symbol_id_index(s.id))
+		write_signature_string(&out, info.signature if info != nil else "")
 	}
 	for module in unit.function_modules {
 		write_signature_int(&out, symbol_id_index(module.symbol))
@@ -1758,10 +1741,11 @@ finish_project_analysis :: proc(
 	resolve_project_cross_unit(project.units[:], allocator)
 	link_class_member_implementations(project.units[:], allocator)
 	reclassify_project_open_sql_predicate_host_variables(project.units[:], allocator)
-	lookup := build_validation_lookup(project, allocator)
-	infer_project_semantic_facts(project, &lookup, pool, unit_allocators, allocator)
-	validate_project_units(project, &lookup, pool, unit_allocators, allocator)
-	rebuild_project_semantic_indexes(project, pool, unit_allocators, allocator)
+	index := project_index_from_units(project.units[:], allocator)
+	lookup := &index
+	infer_project_semantic_facts(project, lookup, pool, unit_allocators, allocator)
+	check_project_operands(project, lookup)
+	validate_project_units(project, lookup, pool, unit_allocators, allocator)
 	collect_project_diagnostics(project)
 }
 
@@ -1859,15 +1843,7 @@ build_scope_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Re
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	return execution.No_Result{}
-}
-
-@(private)
-rebuild_semantic_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Result {
-	rebuild_semantic_index(
-		&payload.state.units[payload.unit_index],
-		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
-	)
+	refresh_unit_type_ids(unit)
 	return execution.No_Result{}
 }
 
@@ -1978,7 +1954,7 @@ collect_project_diagnostics :: proc(project: ^Project_Analysis) {
 @(private)
 infer_project_semantic_facts :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
@@ -2009,7 +1985,7 @@ infer_project_semantic_facts :: proc(
 @(private)
 infer_project_semantic_facts_for_units :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_ids: []Unit_Id,
 	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
@@ -2045,7 +2021,7 @@ infer_project_semantic_facts_for_units :: proc(
 @(private)
 validate_project_units :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
@@ -2071,7 +2047,7 @@ validate_project_units :: proc(
 @(private)
 validate_project_units_for_units :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_ids: []Unit_Id,
 	pool: ^execution.Pool,
 	unit_allocators: []mem.Allocator,
@@ -2097,45 +2073,6 @@ validate_project_units_for_units :: proc(
 		delete(project.units[unit_index].diagnostics)
 		project.units[unit_index].diagnostics = diagnostics[i]
 	}
-}
-
-@(private)
-rebuild_project_semantic_indexes :: proc(
-	project: ^Project_Analysis,
-	pool: ^execution.Pool,
-	unit_allocators: []mem.Allocator,
-	allocator: mem.Allocator,
-) {
-	state := Project_Work_State {
-		units           = project.units,
-		inputs          = make([dynamic]Source_Input, 0, 0, allocator),
-		unit_allocators = unit_allocators,
-		allocator       = allocator,
-	}
-	run_all_unit_tasks(pool, &state, rebuild_semantic_index_task)
-	project.units = state.units
-}
-
-@(private)
-rebuild_project_semantic_indexes_for_units :: proc(
-	project: ^Project_Analysis,
-	unit_ids: []Unit_Id,
-	pool: ^execution.Pool,
-	unit_allocators: []mem.Allocator,
-	allocator: mem.Allocator,
-) {
-	indices := unit_ids_to_indices(unit_ids, len(project.units), context.temp_allocator)
-	if len(indices) == 0 {
-		return
-	}
-	state := Project_Work_State {
-		units           = project.units,
-		inputs          = make([dynamic]Source_Input, 0, 0, context.temp_allocator),
-		unit_allocators = unit_allocators,
-		allocator       = allocator,
-	}
-	run_project_tasks(pool, indices[:], &state, rebuild_semantic_index_task)
-	project.units = state.units
 }
 
 @(private)
@@ -2300,6 +2237,11 @@ link_class_member_implementations_with_index :: proc(
 					range = member.implementation_range,
 				}
 				member.flags += {.Has_Implementation}
+				if info := entity_decl_info(&units[unit_index], member.symbol); info != nil {
+					info.implementation_unit = member.implementation.unit
+					info.implementation_range = member.implementation.range
+					info.flags += {.Has_Implementation}
+				}
 			}
 		}
 	}
@@ -2345,6 +2287,12 @@ link_class_member_implementations_with_index :: proc(
 					}
 					member.implementation_range = method_symbol.decl_range
 					member.flags += {.Has_Implementation, .Has_Implementation_Range}
+					def_unit_index := unit_id_index(def_unit)
+					if info := entity_decl_info(&units[def_unit_index], member.symbol); info != nil {
+						info.implementation_unit = member.implementation.unit
+						info.implementation_range = member.implementation.range
+						info.flags += {.Has_Implementation}
+					}
 					break
 				}
 			}

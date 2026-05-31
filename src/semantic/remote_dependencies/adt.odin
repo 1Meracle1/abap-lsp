@@ -6,6 +6,7 @@ import "src:adt"
 import ddic_xml "src:ddic_xml"
 import dep_store "src:dependency_store"
 import execution "src:execution"
+import deps "src:semantic/dependencies"
 
 import base_runtime "base:runtime"
 import "core:mem"
@@ -13,7 +14,7 @@ import "core:strings"
 import "core:time"
 
 Adt_Fetched_Object :: struct {
-	candidate:   analyze.Remote_Dependency_Candidate,
+	candidate:   deps.Remote_Dependency_Candidate,
 	object_name: string,
 	object_type: string,
 	input:       analyze.Source_Input,
@@ -26,7 +27,7 @@ Adt_Fetch_Task_Result :: struct {
 
 Adt_Fetch_Task_Payload :: struct {
 	client:           ^adt.Client,
-	candidate:        analyze.Remote_Dependency_Candidate,
+	candidate:        deps.Remote_Dependency_Candidate,
 	store:            ^dep_store.Dependency_Store,
 	profile:          ^dep_store.Dependency_Profile,
 	connection_key:   string,
@@ -36,7 +37,7 @@ Adt_Fetch_Task_Payload :: struct {
 add_adt_matches_with_client :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	remote_candidates: []analyze.Remote_Dependency_Candidate,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	client: ^adt.Client,
@@ -44,7 +45,7 @@ add_adt_matches_with_client :: proc(
 	target_uri: string,
 ) -> bool {
 	adt_candidates := make(
-		[dynamic]analyze.Remote_Dependency_Candidate,
+		[dynamic]deps.Remote_Dependency_Candidate,
 		0,
 		len(remote_candidates),
 		context.temp_allocator,
@@ -126,7 +127,7 @@ record_adt_negative_lookup :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	connection_key: string,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	allocator: mem.Allocator,
 ) {
 	if store == nil || profile == nil {
@@ -168,7 +169,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 
 fetch_adt_candidate :: proc(
 	client: ^adt.Client,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	result_allocator: mem.Allocator,
@@ -267,7 +268,7 @@ fetch_adt_candidate :: proc(
 	return result
 }
 
-adt_candidate_direct_first :: proc(candidate: analyze.Remote_Dependency_Candidate) -> bool {
+adt_candidate_direct_first :: proc(candidate: deps.Remote_Dependency_Candidate) -> bool {
 	if candidate.hint == .Object_Type || candidate.hint == .Interface_Type {
 		return true
 	}
@@ -279,7 +280,7 @@ adt_candidate_direct_first :: proc(candidate: analyze.Remote_Dependency_Candidat
 }
 
 remote_candidate_direct_kind_text :: proc(
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 ) -> string {
 	if candidate.hint == .Interface_Type {
 		return "interface-type"
@@ -295,7 +296,7 @@ remote_candidate_direct_kind_text :: proc(
 
 fetch_adt_objects :: proc(
 	client: ^adt.Client,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	objects: []adt.Object_Ref,
 	result: ^Adt_Fetch_Task_Result,
 	store: ^dep_store.Dependency_Store,
@@ -367,7 +368,7 @@ fetch_adt_objects :: proc(
 		for &shared in fetched.shared_dependencies {
 			append_prepared_adt_input(
 				result,
-				analyze.Remote_Dependency_Candidate {
+				deps.Remote_Dependency_Candidate {
 					name = shared.object_ref.name,
 					kind = .Include,
 				},
@@ -391,7 +392,7 @@ fetch_adt_objects :: proc(
 add_adt_fetch_task_result :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	result: ^Adt_Fetch_Task_Result,
 	uri_keys: ^map[string]bool,
 	temp_allocator: mem.Allocator,
@@ -437,7 +438,7 @@ add_adt_fetch_task_result :: proc(
 
 append_prepared_adt_input :: proc(
 	result: ^Adt_Fetch_Task_Result,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	object_ref: ^adt.Object_Ref,
 	object_kind, file_extension, source: string,
 	shared: bool,
@@ -579,7 +580,7 @@ standalone_dependency_profile :: proc() -> dep_store.Dependency_Profile {
 add_adt_fetched_dependency_input :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	object_ref: ^adt.Object_Ref,
 	object_kind: string,
 	source: string,
@@ -605,7 +606,7 @@ add_adt_fetched_dependency_input :: proc(
 add_prepared_adt_dependency_input :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	input: analyze.Source_Input,
 	object_name: string,
 	uri_keys: ^map[string]bool,

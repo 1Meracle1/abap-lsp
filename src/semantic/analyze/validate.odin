@@ -6,95 +6,9 @@ import "src:ast"
 
 import "core:mem"
 
-Validation_Lookup :: struct {
-	visible:               [][dynamic]Unit_Id,
-	predecessors:          [][dynamic]Unit_Id,
-	root_by_unit:          map[Root_Symbol_Key]Symbol_Handle,
-	global_roots:          map[Root_Name_Key]Symbol_Handle,
-	class_members:         map[Class_Member_Lookup_Key]int,
-	sql_predicate_columns: map[Sql_Predicate_Column_Key]bool,
-}
-
-Root_Symbol_Key :: struct {
-	unit:      Unit_Id,
-	namespace: Namespace,
-	name:      string,
-}
-
-Root_Name_Key :: struct {
-	namespace: Namespace,
-	name:      string,
-}
-
-Class_Member_Lookup_Key :: struct {
-	unit:         Unit_Id,
-	class_symbol: Symbol_Id,
-	name:         string,
-}
-
-Sql_Predicate_Column_Key :: struct {
-	unit:        Unit_Id,
-	range_start: int,
-	range_end:   int,
-	name:        string,
-}
-
-build_validation_lookup :: proc(
-	project: ^Project_Analysis,
-	allocator: mem.Allocator,
-) -> Validation_Lookup {
-	roots := build_project_root_index(project.units[:], allocator)
-	member_hint, sql_hint := 0, 0
-	for unit in project.units {
-		member_hint += len(unit.class_members)
-		sql_hint += len(unit.sql_name_refs)
-	}
-	lookup := Validation_Lookup {
-		visible = include_visible_units_for_units(project.units[:], allocator),
-		predecessors = include_predecessor_units_for_units(project.units[:], allocator),
-		root_by_unit = make(map[Root_Symbol_Key]Symbol_Handle, len(roots), allocator),
-		global_roots = make(map[Root_Name_Key]Symbol_Handle, len(roots), allocator),
-		class_members = make(map[Class_Member_Lookup_Key]int, member_hint, allocator),
-		sql_predicate_columns = make(map[Sql_Predicate_Column_Key]bool, sql_hint, allocator),
-	}
-	for entry in roots {
-		handle := Symbol_Handle{unit = entry.unit, symbol = entry.symbol}
-		root_key := Root_Symbol_Key{unit = entry.unit, namespace = entry.namespace, name = entry.name}
-		_, slot, inserted, _ := map_entry(&lookup.root_by_unit, root_key)
-		if inserted {
-			slot^ = handle
-		}
-		if entry.visible_by_default {
-			global_key := Root_Name_Key{namespace = entry.namespace, name = entry.name}
-			_, global_slot, global_inserted, _ := map_entry(&lookup.global_roots, global_key)
-			if global_inserted {
-				global_slot^ = handle
-			}
-		}
-	}
-	for unit in project.units {
-		for member, i in unit.class_members {
-			key := Class_Member_Lookup_Key {
-				unit = unit.unit_id,
-				class_symbol = member.class_symbol,
-				name = member.name,
-			}
-			if !(key in lookup.class_members) {
-				lookup.class_members[key] = i
-			}
-		}
-		for ref in unit.sql_name_refs {
-			if ref.kind == .Column {
-				lookup.sql_predicate_columns[sql_predicate_column_key(unit.unit_id, ref.range, ref.name)] = true
-			}
-		}
-	}
-	return lookup
-}
-
 validate_unit_diagnostics :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	allocator: mem.Allocator,
 ) -> [dynamic]Diagnostic {
@@ -110,19 +24,29 @@ validate_unit_diagnostics :: proc(
 			seen[diagnostic_key(diagnostic)] = true
 		}
 	}
-	validate_later_include_type_refs(project, lookup, unit_index, &out, &seen, allocator)
-	validate_unresolved_references(project, lookup, unit_index, &out, &seen, allocator)
-	validate_create_data_type_handles(project, lookup, unit_index, &out, &seen, allocator)
-	validate_object_type_refs(project, lookup, unit_index, &out, &seen, allocator)
-	validate_missing_method_implementations(project, unit_index, &out, &seen, allocator)
-	validate_generic_builtin_types(project, unit_index, &out, &seen, allocator)
-	validate_generic_table_types(project, lookup, unit_index, &out, &seen, allocator)
-	validate_parameter_types(project, unit_index, &out, &seen, allocator)
-	validate_field_accesses(project, lookup, unit_index, &out, &seen, allocator)
-	validate_call_sites(project, lookup, unit_index, &out, &seen, allocator)
-	validate_open_sql(project, lookup, unit_index, &out, &seen, allocator)
-	validate_at_groups(project, unit_index, &out, &seen)
+	validate_core_diagnostics(project, lookup, unit_index, &out, &seen, allocator)
 	return out
+}
+
+validate_core_diagnostics :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+	allocator: mem.Allocator,
+) {
+	validate_later_include_type_refs(project, lookup, unit_index, out, seen, allocator)
+	validate_unresolved_references(project, lookup, unit_index, out, seen, allocator)
+	validate_create_data_type_handles(project, lookup, unit_index, out, seen, allocator)
+	validate_object_type_refs(project, lookup, unit_index, out, seen, allocator)
+	validate_missing_method_implementations(project, unit_index, out, seen, allocator)
+	validate_generic_builtin_types(project, unit_index, out, seen, allocator)
+	validate_generic_table_types(project, lookup, unit_index, out, seen, allocator)
+	validate_parameter_types(project, unit_index, out, seen, allocator)
+	validate_field_accesses(project, lookup, unit_index, out, seen, allocator)
+	validate_call_sites(project, lookup, unit_index, out, seen, allocator)
+	validate_open_sql(project, lookup, unit_index, out, seen, allocator)
 }
 
 Diagnostic_Key :: struct {
@@ -163,7 +87,7 @@ retained_collector_diagnostic :: proc(kind: Diagnostic_Kind) -> bool {
 
 validate_later_include_type_refs :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -198,7 +122,7 @@ validate_later_include_type_refs :: proc(
 
 type_decl_after_reference :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	ref_start: int,
 	target: Symbol_Handle,
@@ -244,7 +168,7 @@ type_decl_after_reference :: proc(
 
 validate_unresolved_references :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -281,7 +205,7 @@ validate_unresolved_references :: proc(
 
 symbol_exists_in_other_namespace :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	ref: Reference_Data,
 ) -> bool {
@@ -311,7 +235,7 @@ symbol_exists_in_other_namespace :: proc(
 
 validate_create_data_type_handles :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -320,8 +244,8 @@ validate_create_data_type_handles :: proc(
 	unit := &project.units[unit_index]
 	for site in unit.create_data_type_handles {
 		if site.target_name != "" {
-			if handle, ok := value_handle_for_name(project, lookup, unit_index, site.scope, site.target_name);
-			   ok && create_data_target_is_invalid(project, lookup, unit_index, handle) {
+			handle, ok := value_handle_for_site(project, lookup, unit_index, site.scope, site.target_range, site.target_name)
+			if ok && create_data_target_is_invalid(project, lookup, unit_index, handle) {
 				append_diag(
 					out,
 					seen,
@@ -331,8 +255,8 @@ validate_create_data_type_handles :: proc(
 				)
 			}
 		}
-		if handle, ok := value_handle_for_name(project, lookup, unit_index, site.scope, site.handle_name);
-		   ok && !create_data_handle_is_datadescr_ref(project, lookup, unit_index, handle) {
+		handle, ok := value_handle_for_site(project, lookup, unit_index, site.scope, site.handle_range, site.handle_name)
+		if ok && !create_data_handle_is_datadescr_ref(project, lookup, unit_index, handle) {
 			append_diag(
 				out,
 				seen,
@@ -346,7 +270,7 @@ validate_create_data_type_handles :: proc(
 
 create_data_target_is_invalid :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	handle: Symbol_Handle,
 ) -> bool {
@@ -359,7 +283,7 @@ create_data_target_is_invalid :: proc(
 
 create_data_handle_is_datadescr_ref :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	handle: Symbol_Handle,
 ) -> bool {
@@ -379,7 +303,7 @@ create_data_handle_is_datadescr_ref :: proc(
 
 type_ref_is_object_ref :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	type_ref: Field_Type_Ref_Data,
 ) -> bool {
@@ -396,7 +320,7 @@ type_ref_is_object_ref :: proc(
 
 class_is_or_inherits_from_name :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	name: string,
 ) -> bool {
@@ -424,7 +348,7 @@ symbol_for_project_handle :: proc(project: ^Project_Analysis, handle: Symbol_Han
 
 declared_type_has_unknown_shape :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
@@ -462,7 +386,7 @@ declared_type_has_unknown_shape :: proc(
 
 type_ref_handle_has_unknown_shape :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	depth: int,
 ) -> bool {
@@ -485,7 +409,7 @@ type_ref_handle_has_unknown_shape :: proc(
 
 type_ref_path_has_unknown_shape :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	path: []string,
 	selectors: []ast.Selector_Op,
@@ -555,7 +479,7 @@ type_ref_path_has_unknown_shape :: proc(
 
 type_ref_symbol_handle :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
@@ -605,7 +529,7 @@ type_ref_namespace_matches :: #force_inline proc "contextless" (want, got: Names
 
 validate_object_type_refs :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -722,7 +646,7 @@ invalid_generic_builtin_type_use :: proc "contextless" (s: Symbol_Data) -> bool 
 
 validate_generic_table_types :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -760,7 +684,7 @@ validate_generic_table_types :: proc(
 
 symbol_handle_is_generic_table_type :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	depth: int,
 ) -> bool {
@@ -827,7 +751,7 @@ parameter_type_uses_inline_table_type :: #force_inline proc "contextless" (s: Sy
 
 validate_field_accesses :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -913,7 +837,7 @@ validate_field_accesses :: proc(
 
 field_access_base_resolves :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	access: Field_Access,
 ) -> bool {
@@ -931,7 +855,7 @@ field_access_base_resolves :: proc(
 
 validate_call_sites :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -990,7 +914,7 @@ method_target_range :: proc(site: Call_Site_Data) -> tokenizer.Range {
 
 validate_open_sql :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
@@ -1059,44 +983,8 @@ sql_source_for_name_ref :: proc(
 	return nil, false
 }
 
-validate_at_groups :: proc(
-	project: ^Project_Analysis,
-	unit_index: int,
-	out: ^[dynamic]Diagnostic,
-	seen: ^map[Diagnostic_Key]bool,
-) {
-	unit := &project.units[unit_index]
-	for region in unit.routine_control_regions {
-		if region.kind != .At || at_group_has_loop_context(unit, region.at.scope) {
-			continue
-		}
-		append_diag(
-			out,
-			seen,
-			.Invalid_Control_Break,
-			region.at.range,
-			"AT group requires LOOP AT context",
-		)
-	}
-}
-
-at_group_has_loop_context :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> bool {
-	current := scope_id
-	for current != INVALID_SCOPE_ID {
-		s := scope(unit, current)
-		if s == nil {
-			return false
-		}
-		if s.kind == .Loop_Block {
-			return true
-		}
-		current = s.parent
-	}
-	return false
-}
-
 sql_predicate_column_name :: proc(
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_id: Unit_Id,
 	range: tokenizer.Range,
 	name: string,
@@ -1119,7 +1007,7 @@ sql_predicate_column_key :: #force_inline proc(
 
 class_handle_for_call_target :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	site: Call_Site_Data,
 ) -> (Symbol_Handle, bool) {
@@ -1169,7 +1057,7 @@ class_handle_for_call_target :: proc(
 
 class_handle_from_symbol :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	site_unit_index: int,
 	handle: Symbol_Handle,
 ) -> (Symbol_Handle, bool) {
@@ -1187,7 +1075,7 @@ class_handle_from_symbol :: proc(
 
 class_handle_from_type_fact :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	fact: Type_Fact_Data,
 ) -> (Symbol_Handle, bool) {
@@ -1199,7 +1087,7 @@ class_handle_from_type_fact :: proc(
 
 class_handle_from_declared_type :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	type_ref: Field_Type_Ref_Data,
 	line_of: bool,
@@ -1252,7 +1140,7 @@ class_handle_from_declared_type :: proc(
 
 line_of_type_fact_from_symbol :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 ) -> (Type_Fact_Data, int, bool) {
 	unit_index := unit_id_index(handle.unit)
@@ -1270,7 +1158,7 @@ line_of_type_fact_from_symbol :: proc(
 
 like_type_fact_from_symbol :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	depth := 0,
 ) -> (Type_Fact_Data, int, bool) {
@@ -1315,7 +1203,7 @@ like_type_fact_from_symbol :: proc(
 
 line_of_type_fact_from_declared_type :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
@@ -1357,7 +1245,7 @@ line_of_type_fact_from_declared_type :: proc(
 
 table_line_type_fact_from_symbol :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	s: ^Symbol_Data,
 ) -> (Type_Fact_Data, int, bool) {
@@ -1388,7 +1276,7 @@ table_line_type_fact_from_symbol :: proc(
 
 type_fact_from_data_ref_path :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	fact: Type_Fact_Data,
 	path: []Field_Access_Segment,
@@ -1423,7 +1311,7 @@ type_fact_from_data_ref_path :: proc(
 
 type_ref_leaf_handle :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
@@ -1444,7 +1332,7 @@ type_ref_leaf_handle :: proc(
 
 resolve_type_ref_leaf_handle_project_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	type_ref: Field_Type_Ref_Data,
 ) -> (Symbol_Handle, bool) {
@@ -1473,9 +1361,53 @@ type_form_is_table :: proc(form: ast.Data_Type_Form) -> bool {
 	return false
 }
 
+value_handle_for_site :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	scope_id: Scope_Id,
+	range: tokenizer.Range,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	if handle, ok := value_operand_handle_for_range(project, unit_index, scope_id, range, name); ok {
+		return handle, true
+	}
+	return value_handle_for_name(project, lookup, unit_index, scope_id, name)
+}
+
+value_operand_handle_for_range :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	range: tokenizer.Range,
+	name: string,
+) -> (Symbol_Handle, bool) {
+	if range.start == range.end {
+		return {}, false
+	}
+	unit := &project.units[unit_index]
+	for operand in unit.operands {
+		if operand.scope != scope_id ||
+		   operand.range != range ||
+		   !operand.has_symbol ||
+		   !operand_mode_is_value(operand.mode) {
+			continue
+		}
+		s := symbol_for_project_handle(project, operand.symbol)
+		if s != nil && s.name == name {
+			return operand.symbol, true
+		}
+	}
+	return {}, false
+}
+
+operand_mode_is_value :: #force_inline proc "contextless" (mode: Operand_Mode) -> bool {
+	return mode == .Value || mode == .Variable || mode == .Constant || mode == .Field
+}
+
 value_handle_for_name :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	name: string,
@@ -1524,7 +1456,7 @@ current_class_value_symbol :: proc(
 
 inherited_value_handle_for_name :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	name: string,
@@ -1561,7 +1493,7 @@ inherited_value_handle_for_name :: proc(
 
 value_alias_handle_for_name :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	name: string,
@@ -1576,7 +1508,7 @@ value_alias_handle_for_name :: proc(
 
 inherited_value_alias_handle_for_name :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	scope_id: Scope_Id,
 	name: string,
@@ -1612,7 +1544,7 @@ inherited_value_alias_handle_for_name :: proc(
 
 class_alias_symbol_by_handle_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	class_handle: Symbol_Handle,
 	namespace: Namespace,
@@ -1653,7 +1585,7 @@ class_alias_symbol_by_handle_lookup :: proc(
 
 resolve_field_access_tail :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	access: Field_Access,
 ) -> (Type_Fact_Data, bool) {
@@ -1833,7 +1765,7 @@ resolve_field_access_tail :: proc(
 
 type_fact_from_structure_path :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	start_unit: ^Unit_Analysis,
 	start_structure: Structure_Id,
@@ -1953,7 +1885,7 @@ type_fact_from_structure_path :: proc(
 
 type_fact_from_class_member_path :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	path: []Field_Access_Segment,
 	access_unit_index := -1,
@@ -2013,7 +1945,7 @@ type_fact_from_class_member_path :: proc(
 
 class_member_for_path_segment :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	segment: Field_Access_Segment,
 	access_unit_index := -1,
@@ -2051,7 +1983,7 @@ class_member_for_path_segment :: proc(
 
 class_member_in_hierarchy :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
 	inherited: bool,
@@ -2072,7 +2004,7 @@ class_member_in_hierarchy :: proc(
 
 class_member_in_hierarchy_with_unit :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
 	inherited: bool,
@@ -2152,7 +2084,7 @@ class_has_friend :: proc(
 
 type_exposes_interface :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	interface_name: string,
 	depth: int,
@@ -2196,7 +2128,7 @@ type_exposes_interface :: proc(
 
 interface_member_in_class :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
 ) -> (^Class_Member_Data, bool) {
@@ -2206,7 +2138,7 @@ interface_member_in_class :: proc(
 
 interface_member_in_class_with_unit :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
 ) -> (^Class_Member_Data, int, bool) {
@@ -2248,7 +2180,7 @@ interface_member_in_class_with_unit :: proc(
 
 interface_member_by_name :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	interface_name, member_name: string,
 ) -> (^Class_Member_Data, bool) {
@@ -2264,7 +2196,7 @@ interface_member_by_name :: proc(
 
 interface_member_by_name_with_unit :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	interface_name, member_name: string,
 ) -> (^Class_Member_Data, int, bool) {
@@ -2277,7 +2209,7 @@ interface_member_by_name_with_unit :: proc(
 
 interface_member_by_handle :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	member_name: string,
 	depth: int,
@@ -2294,7 +2226,7 @@ interface_member_by_handle :: proc(
 
 interface_member_by_handle_with_unit :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	handle: Symbol_Handle,
 	member_name: string,
 	depth: int,
@@ -2361,7 +2293,7 @@ interface_member_by_handle_with_unit :: proc(
 
 resolve_type_name_in_project_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	name: string,
 ) -> (Symbol_Handle, bool) {
@@ -2377,7 +2309,7 @@ resolve_type_name_in_project_lookup :: proc(
 
 resolve_function_module_in_project_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	name: string,
 ) -> (Symbol_Handle, bool) {
@@ -2407,7 +2339,7 @@ symbol_handle_is_kind :: proc(project: ^Project_Analysis, handle: Symbol_Handle,
 
 resolve_type_ref_handle_project_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	type_ref: Field_Type_Ref_Data,
 ) -> (Symbol_Handle, bool) {
@@ -2440,7 +2372,7 @@ resolve_type_ref_handle_project_lookup :: proc(
 
 direct_superclass_handle_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	current: Symbol_Handle,
 ) -> (Symbol_Handle, bool) {
 	unit_index := unit_id_index(current.unit)
@@ -2455,20 +2387,20 @@ direct_superclass_handle_lookup :: proc(
 }
 
 root_symbol_in_unit_lookup :: #force_inline proc(
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_id: Unit_Id,
 	namespace: Namespace,
 	name: string,
 ) -> (Symbol_Handle, bool) {
 	key := Root_Symbol_Key{unit = unit_id, namespace = namespace, name = name}
-	if handle, ok := lookup.root_by_unit[key]; ok {
+	if handle, ok := lookup.root_lookup.by_unit[key]; ok {
 		return handle, true
 	}
 	return {}, false
 }
 
 root_symbol_in_visible_units_lookup :: proc(
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	namespace: Namespace,
 	name: string,
 	visible: [dynamic]Unit_Id,
@@ -2482,12 +2414,12 @@ root_symbol_in_visible_units_lookup :: proc(
 }
 
 global_visible_root_symbol_lookup :: #force_inline proc(
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	namespace: Namespace,
 	name: string,
 ) -> (Symbol_Handle, bool) {
 	key := Root_Name_Key{namespace = namespace, name = name}
-	if handle, ok := lookup.global_roots[key]; ok {
+	if handle, ok := lookup.root_lookup.global[key]; ok {
 		return handle, true
 	}
 	return {}, false
@@ -2495,7 +2427,7 @@ global_visible_root_symbol_lookup :: #force_inline proc(
 
 unit_class_member_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	class_handle: Symbol_Handle,
 	name: string,
 ) -> ^Class_Member_Data {
@@ -2508,7 +2440,7 @@ unit_class_member_lookup :: proc(
 		class_symbol = class_handle.symbol,
 		name = name,
 	}
-	if member_index, ok := lookup.class_members[key]; ok {
+	if member_index, ok := lookup.class_member_lookup[key]; ok {
 		return &project.units[unit_index].class_members[member_index]
 	}
 	return nil

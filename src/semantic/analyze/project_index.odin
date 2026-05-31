@@ -1,6 +1,32 @@
 package abap_frontend_semantic_analyze
 
+import deps "src:semantic/dependencies"
+
 import "core:mem"
+
+Root_Symbol_Key :: struct {
+	unit:      Unit_Id,
+	namespace: Namespace,
+	name:      string,
+}
+
+Root_Name_Key :: struct {
+	namespace: Namespace,
+	name:      string,
+}
+
+Class_Member_Lookup_Key :: struct {
+	unit:         Unit_Id,
+	class_symbol: Symbol_Id,
+	name:         string,
+}
+
+Sql_Predicate_Column_Key :: struct {
+	unit:        Unit_Id,
+	range_start: int,
+	range_end:   int,
+	name:        string,
+}
 
 Project_Index :: struct {
 	root_lookup:              Project_Root_Lookup,
@@ -8,7 +34,7 @@ Project_Index :: struct {
 	provided_name_counts:     map[string]int,
 	class_scope_entries:      map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	class_scope_candidates:   map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
-	validation_class_members: map[Class_Member_Lookup_Key]int,
+	class_member_lookup: map[Class_Member_Lookup_Key]int,
 	sql_predicate_columns:    map[Sql_Predicate_Column_Key]bool,
 	dependency_pair_counts:   map[Reverse_Dependency_Key]int,
 	unit_entries:             [dynamic]Project_Index_Unit,
@@ -21,11 +47,11 @@ Project_Index_Unit :: struct {
 	roots:                        [dynamic]Root_Symbol_Entry,
 	provided_names:               [dynamic]string,
 	class_scope_entries:          [dynamic]Project_Class_Scope_Index_Entry,
-	validation_class_member_keys: [dynamic]Class_Member_Lookup_Key,
+	class_member_keys: [dynamic]Class_Member_Lookup_Key,
 	sql_predicate_column_keys:    [dynamic]Sql_Predicate_Column_Key,
 	include_targets:              [dynamic]Unit_Id,
 	dependency_edges:             [dynamic]Project_Dependency_Edge,
-	unresolved_candidates:        [dynamic]Remote_Dependency_Key,
+	unresolved_candidates:        [dynamic]deps.Remote_Dependency_Key,
 }
 
 Project_Class_Scope_Index_Entry :: struct {
@@ -45,12 +71,24 @@ project_index_make :: proc(allocator: mem.Allocator) -> Project_Index {
 		provided_name_counts = make(map[string]int, 16, allocator),
 		class_scope_entries = make(map[Project_Class_Member_Key]Project_Class_Member_Entry, 16, allocator),
 		class_scope_candidates = make(map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry, 16, allocator),
-		validation_class_members = make(map[Class_Member_Lookup_Key]int, 16, allocator),
+		class_member_lookup = make(map[Class_Member_Lookup_Key]int, 16, allocator),
 		sql_predicate_columns = make(map[Sql_Predicate_Column_Key]bool, 16, allocator),
 		dependency_pair_counts = make(map[Reverse_Dependency_Key]int, 16, allocator),
 		unit_entries = make([dynamic]Project_Index_Unit, 0, 8, allocator),
 		allocator = allocator,
 	}
+}
+
+project_index_from_units :: proc(units: []Unit_Analysis, allocator: mem.Allocator) -> Project_Index {
+	index := project_index_make(allocator)
+	unit_ids := make([dynamic]Unit_Id, 0, len(units), context.temp_allocator)
+	for unit in units {
+		append(&unit_ids, unit.unit_id)
+	}
+	project_index_update_units(&index, units, unit_ids[:])
+	project_index_update_include_graph(&index, units, unit_ids[:])
+	project_index_update_sql_predicate_columns(&index, units, unit_ids[:])
+	return index
 }
 
 project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) {
@@ -61,11 +99,11 @@ project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) 
 				roots = make([dynamic]Root_Symbol_Entry, 0, 8, index.allocator),
 				provided_names = make([dynamic]string, 0, 4, index.allocator),
 				class_scope_entries = make([dynamic]Project_Class_Scope_Index_Entry, 0, 8, index.allocator),
-				validation_class_member_keys = make([dynamic]Class_Member_Lookup_Key, 0, 8, index.allocator),
+				class_member_keys = make([dynamic]Class_Member_Lookup_Key, 0, 8, index.allocator),
 				sql_predicate_column_keys = make([dynamic]Sql_Predicate_Column_Key, 0, 8, index.allocator),
 				include_targets = make([dynamic]Unit_Id, 0, 2, index.allocator),
 				dependency_edges = make([dynamic]Project_Dependency_Edge, 0, 8, index.allocator),
-				unresolved_candidates = make([dynamic]Remote_Dependency_Key, 0, 8, index.allocator),
+				unresolved_candidates = make([dynamic]deps.Remote_Dependency_Key, 0, 8, index.allocator),
 			},
 		)
 	}
@@ -116,8 +154,8 @@ project_index_remove_unit :: proc(
 	for entry in data.class_scope_entries {
 		project_index_remove_class_scope_candidate(index, entry.key, unit_id)
 	}
-	for key in data.validation_class_member_keys {
-		delete_key(&index.validation_class_members, key)
+	for key in data.class_member_keys {
+		delete_key(&index.class_member_lookup, key)
 	}
 	for key in data.sql_predicate_column_keys {
 		delete_key(&index.sql_predicate_columns, key)
@@ -125,7 +163,7 @@ project_index_remove_unit :: proc(
 	clear(&data.roots)
 	clear(&data.provided_names)
 	clear(&data.class_scope_entries)
-	clear(&data.validation_class_member_keys)
+	clear(&data.class_member_keys)
 	clear(&data.sql_predicate_column_keys)
 }
 
@@ -225,8 +263,8 @@ project_index_collect_unit :: proc(
 			class_symbol = member.class_symbol,
 			name = member.name,
 		}
-		append(&data.validation_class_member_keys, key)
-		_, slot, inserted, _ := map_entry(&index.validation_class_members, key)
+		append(&data.class_member_keys, key)
+		_, slot, inserted, _ := map_entry(&index.class_member_lookup, key)
 		if inserted {
 			slot^ = i
 		}
@@ -431,17 +469,6 @@ project_index_record_class_scope_entry :: proc(
 		},
 	)
 	project_index_add_class_scope_candidate(index, data.class_scope_entries[len(data.class_scope_entries) - 1])
-}
-
-validation_lookup_from_project_index :: proc(index: ^Project_Index) -> Validation_Lookup {
-	return Validation_Lookup {
-		visible = index.visible,
-		predecessors = index.predecessors,
-		root_by_unit = index.root_lookup.by_unit,
-		global_roots = index.root_lookup.global,
-		class_members = index.validation_class_members,
-		sql_predicate_columns = index.sql_predicate_columns,
-	}
 }
 
 project_index_add_global_root_candidate :: proc(

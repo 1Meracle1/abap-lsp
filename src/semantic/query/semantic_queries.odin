@@ -49,12 +49,19 @@ facts :: proc(q: Semantic_Queries) -> Fact_Queries {
 }
 
 decl_symbol_at_offset :: proc(q: Decl_Queries, offset: int) -> ^analyze.Symbol_Data {
-	id, ok := analyze.semantic_index_symbol_at_offset(&q.unit.semantic_index, offset)
-	if !ok {
-		return nil
+	best := -1
+	best_width := 0
+	for symbol, i in q.unit.symbols {
+		if !analyze.range_contains_offset(symbol.decl_range, offset) {
+			continue
+		}
+		width := symbol.decl_range.end - symbol.decl_range.start
+		if best < 0 || width < best_width {
+			best = i
+			best_width = width
+		}
 	}
-	sem := q.unit.semantic_index.symbols[analyze.sem_symbol_index(id)]
-	return analyze.symbol(q.unit, sem.symbol_id)
+	return &q.unit.symbols[best] if best >= 0 else nil
 }
 
 decl_symbol_handle_at_offset :: proc(
@@ -90,24 +97,32 @@ decl_symbol_with_kind_and_decl_range :: proc(
 	kind: analyze.Symbol_Kind,
 	range: tokenizer.Range,
 ) -> ^analyze.Symbol_Data {
-	id, ok := analyze.semantic_index_symbol_with_kind_and_decl_range(&q.unit.semantic_index, kind, range)
-	if !ok {
-		return nil
+	for &symbol in q.unit.symbols {
+		if symbol.kind == kind && symbol.decl_range == range {
+			return &symbol
+		}
 	}
-	sem := q.unit.semantic_index.symbols[analyze.sem_symbol_index(id)]
-	return analyze.symbol(q.unit, sem.symbol_id)
+	return nil
 }
 
 decl_class_member_at_offset :: proc(q: Decl_Queries, offset: int) -> ^analyze.Class_Member_Data {
-	id, ok := analyze.semantic_index_class_member_at_offset(&q.unit.semantic_index, offset)
-	if !ok {
-		return nil
+	best := -1
+	best_width := 0
+	for member, i in q.unit.class_members {
+		width := 0
+		if analyze.range_contains_offset(member.decl_range, offset) {
+			width = member.decl_range.end - member.decl_range.start
+		} else if analyze.range_contains_offset(member.implementation_range, offset) {
+			width = member.implementation_range.end - member.implementation_range.start
+		} else {
+			continue
+		}
+		if best < 0 || width < best_width {
+			best = i
+			best_width = width
+		}
 	}
-	sem := q.unit.semantic_index.class_members[analyze.sem_class_member_index(id)]
-	if sem.raw_index < 0 || sem.raw_index >= len(q.unit.class_members) {
-		return nil
-	}
-	return &q.unit.class_members[sem.raw_index]
+	return &q.unit.class_members[best] if best >= 0 else nil
 }
 
 decl_class_member :: proc(
@@ -123,14 +138,6 @@ decl_class_member :: proc(
 	return nil
 }
 
-decl_structure_field :: proc(
-	q: Decl_Queries,
-	structure_id: analyze.Structure_Id,
-	field_name: string,
-) -> ^analyze.Structure_Field_Data {
-	return analyze.structure_field(q.unit, structure_id, field_name)
-}
-
 decl_structure_field_info :: proc(
 	q: Decl_Queries,
 	structure_id: analyze.Structure_Id,
@@ -142,50 +149,6 @@ decl_structure_field_info :: proc(
 	return analyze.structure_field_info(q.unit, structure_id, field_name)
 }
 
-decl_structure_field_infos :: proc(
-	q: Decl_Queries,
-	structure_id: analyze.Structure_Id,
-	allocator: mem.Allocator,
-) -> [dynamic]analyze.Structure_Field_Info {
-	out := make([dynamic]analyze.Structure_Field_Info, 0, 4, allocator)
-	st := analyze.structure(q.unit, structure_id)
-	if st == nil {
-		return out
-	}
-	for field in st.fields {
-		if info, ok := analyze.structure_field_info(q.unit, structure_id, field.name); ok {
-			append(&out, info)
-		}
-	}
-	return out
-}
-
-decl_resolve_structure_field_path :: proc(
-	q: Decl_Queries,
-	structure_id: analyze.Structure_Id,
-	field_path: []string,
-) -> (
-	analyze.Structure_Field_Info,
-	bool,
-) {
-	current := structure_id
-	info := analyze.Structure_Field_Info{}
-	for field_name, i in field_path {
-		next, ok := analyze.structure_field_info(q.unit, current, field_name)
-		if !ok {
-			return analyze.Structure_Field_Info{}, false
-		}
-		info = next
-		if i + 1 < len(field_path) {
-			if next.shape != .Structured {
-				return analyze.Structure_Field_Info{}, false
-			}
-			current = next.structure
-		}
-	}
-	return info, len(field_path) > 0
-}
-
 decl_structure_field_at_offset :: proc(
 	q: Decl_Queries,
 	offset: int,
@@ -193,28 +156,48 @@ decl_structure_field_at_offset :: proc(
 	analyze.Structure_Field_Info,
 	bool,
 ) {
-	id, ok := analyze.semantic_index_structure_field_at_offset(&q.unit.semantic_index, offset)
-	if !ok {
+	best_structure := analyze.INVALID_STRUCTURE_ID
+	best_name := ""
+	best_range := tokenizer.Range{}
+	best_width := 0
+	for st in q.unit.structures {
+		for field in st.fields {
+			if !analyze.range_contains_offset(field.decl_range, offset) {
+				continue
+			}
+			width := field.decl_range.end - field.decl_range.start
+			if best_structure == analyze.INVALID_STRUCTURE_ID || width < best_width {
+				best_structure = st.id
+				best_name = field.name
+				best_range = field.decl_range
+				best_width = width
+			}
+		}
+	}
+	if best_structure == analyze.INVALID_STRUCTURE_ID {
 		return analyze.Structure_Field_Info{}, false
 	}
-	sem := q.unit.semantic_index.structure_fields[analyze.sem_structure_field_index(id)]
-	info, info_ok := analyze.structure_field_info(q.unit, sem.structure_id, sem.name)
-	if !info_ok || info.decl_range != sem.decl_range {
+	info, ok := analyze.structure_field_info(q.unit, best_structure, best_name)
+	if !ok || info.decl_range != best_range {
 		return analyze.Structure_Field_Info{}, false
 	}
 	return info, true
 }
 
 ref_reference_at_offset :: proc(q: Ref_Queries, offset: int) -> ^analyze.Reference_Data {
-	id, ok := analyze.semantic_index_reference_at_offset(&q.unit.semantic_index, offset)
-	if !ok {
-		return nil
+	best := -1
+	best_width := 0
+	for reference, i in q.unit.references {
+		if !analyze.range_contains_offset(reference.range, offset) {
+			continue
+		}
+		width := reference.range.end - reference.range.start
+		if best < 0 || width < best_width {
+			best = i
+			best_width = width
+		}
 	}
-	sem := q.unit.semantic_index.references[analyze.sem_reference_index(id)]
-	if analyze.reference_id_index(sem.reference_id) >= len(q.unit.references) {
-		return nil
-	}
-	return &q.unit.references[analyze.reference_id_index(sem.reference_id)]
+	return &q.unit.references[best] if best >= 0 else nil
 }
 
 ref_reference_id_at_offset :: proc(
@@ -246,15 +229,12 @@ ref_reference_copy_at_offset :: proc(
 }
 
 ref_reference_at_range :: proc(q: Ref_Queries, range: tokenizer.Range) -> ^analyze.Reference_Data {
-	id, ok := analyze.semantic_index_reference_at_range(&q.unit.semantic_index, range)
-	if !ok {
-		return nil
+	for &reference in q.unit.references {
+		if reference.range == range {
+			return &reference
+		}
 	}
-	sem := q.unit.semantic_index.references[analyze.sem_reference_index(id)]
-	if analyze.reference_id_index(sem.reference_id) >= len(q.unit.references) {
-		return nil
-	}
-	return &q.unit.references[analyze.reference_id_index(sem.reference_id)]
+	return nil
 }
 
 ref_reference_copy_at_range :: proc(
@@ -269,14 +249,6 @@ ref_reference_copy_at_range :: proc(
 		return {}, false
 	}
 	return ref^, true
-}
-
-ref_type_reference_at_offset :: proc(q: Ref_Queries, offset: int) -> ^analyze.Reference_Data {
-	ref := ref_reference_at_offset(q, offset)
-	if ref == nil || !(ref.kind == .Type_Ref || ref.kind == .Interface_Use) {
-		return nil
-	}
-	return ref
 }
 
 ref_resolving_to :: proc(
@@ -295,45 +267,20 @@ ref_resolving_to :: proc(
 	return out
 }
 
-ref_type_named :: proc(
-	q: Ref_Queries,
-	name: string,
-	allocator: mem.Allocator,
-) -> [dynamic]^analyze.Reference_Data {
-	out := make([dynamic]^analyze.Reference_Data, 0, 2, allocator)
-	for &reference in q.unit.references {
-		if (reference.kind == .Type_Ref || reference.kind == .Interface_Use) &&
-		   strings.equal_fold(reference.name, name) {
-			append(&out, &reference)
-		}
-	}
-	return out
-}
-
-ref_in_scope :: proc(
-	q: Ref_Queries,
-	scope_id: analyze.Scope_Id,
-	allocator: mem.Allocator,
-) -> [dynamic]^analyze.Reference_Data {
-	out := make([dynamic]^analyze.Reference_Data, 0, 4, allocator)
-	for &reference in q.unit.references {
-		if reference.scope == scope_id {
-			append(&out, &reference)
-		}
-	}
-	return out
-}
-
 sql_name_ref_at_offset :: proc(q: Sql_Queries, offset: int) -> ^analyze.Sql_Name_Ref_Data {
-	id, ok := analyze.semantic_index_sql_name_ref_at_offset(&q.unit.semantic_index, offset)
-	if !ok {
-		return nil
+	best := -1
+	best_width := 0
+	for sql_ref, i in q.unit.sql_name_refs {
+		if !analyze.range_contains_offset(sql_ref.range, offset) {
+			continue
+		}
+		width := sql_ref.range.end - sql_ref.range.start
+		if best < 0 || width < best_width {
+			best = i
+			best_width = width
+		}
 	}
-	sem := q.unit.semantic_index.sql_name_refs[analyze.sem_sql_name_ref_index(id)]
-	if sem.raw_index < 0 || sem.raw_index >= len(q.unit.sql_name_refs) {
-		return nil
-	}
-	return &q.unit.sql_name_refs[sem.raw_index]
+	return &q.unit.sql_name_refs[best] if best >= 0 else nil
 }
 
 sql_source_name_refs_named :: proc(
@@ -397,32 +344,58 @@ fact_expression_fact_copy_at_offset :: proc(
 	return fact^, true
 }
 
-fact_value_flow_edges_touching_offset :: proc(
-	q: Fact_Queries,
-	offset: int,
-	allocator: mem.Allocator,
-) -> [dynamic]^analyze.Value_Flow_Edge_Data {
-	out := make([dynamic]^analyze.Value_Flow_Edge_Data, 0, 2, allocator)
-	for &edge in q.unit.value_flow_edges {
-		if analyze.range_contains_offset(edge.source_range, offset) ||
-		   value_flow_target_contains_offset(edge.target, offset) {
-			append(&out, &edge)
+fact_operand_at_offset :: proc(q: Fact_Queries, offset: int) -> ^analyze.Operand_Data {
+	best := -1
+	best_priority := 0
+	best_width := 0
+	for operand, i in q.unit.operands {
+		if !analyze.range_contains_offset(operand.range, offset) {
+			continue
+		}
+		priority := operand_priority(operand.mode)
+		width := operand.range.end - operand.range.start
+		if best < 0 ||
+		   width < best_width ||
+		   (width == best_width && priority < best_priority) {
+			best = i
+			best_priority = priority
+			best_width = width
 		}
 	}
-	return out
+	if best < 0 {
+		return nil
+	}
+	return &q.unit.operands[best]
 }
 
-value_flow_target_contains_offset :: proc(target: analyze.Value_Flow_Target_Data, offset: int) -> bool {
-	switch target.kind {
-	case .Assignment, .Field_Symbol:
-		return analyze.range_contains_offset(target.range, offset)
-	case .Call_Parameter:
-		return(
-			target.has_parameter_decl_range &&
-			analyze.range_contains_offset(target.parameter_decl_range, offset) \
-		)
+fact_operand_copy_at_offset :: proc(
+	q: Fact_Queries,
+	offset: int,
+) -> (
+	analyze.Operand_Data,
+	bool,
+) {
+	operand := fact_operand_at_offset(q, offset)
+	if operand == nil {
+		return {}, false
 	}
-	return false
+	return operand^, true
+}
+
+operand_priority :: proc(mode: analyze.Operand_Mode) -> int {
+	switch mode {
+	case .Field, .Method:
+		return 0
+	case .Variable, .Constant, .Type, .Routine:
+		return 1
+	case .Value:
+		return 2
+	case .Unknown:
+		return 3
+	case .Invalid:
+		return 4
+	}
+	return 5
 }
 
 expression_fact_priority :: proc(kind: analyze.Expression_Fact_Kind) -> int {

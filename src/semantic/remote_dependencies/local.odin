@@ -3,6 +3,7 @@ package abap_frontend_semantic_remote_dependencies
 import "src:adt"
 import dep_store "src:dependency_store"
 import analyze "src:semantic/analyze"
+import deps "src:semantic/dependencies"
 
 import base_runtime "base:runtime"
 import "core:mem"
@@ -16,7 +17,7 @@ import "core:time"
 add_local_export_matches :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	remote_candidates: []analyze.Remote_Dependency_Candidate,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	roots: []string,
@@ -105,7 +106,7 @@ add_local_export_matches :: proc(
 store_local_export_dependency :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	path: string,
 	roots: []string,
 	source: string,
@@ -160,7 +161,7 @@ read_text_file :: proc(path: string, allocator: mem.Allocator) -> (string, bool)
 }
 
 local_export_object_kind_type :: proc(
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	file_extension: string,
 	source: string,
 	allocator: mem.Allocator,
@@ -264,7 +265,7 @@ collect_local_export_candidate_paths :: proc(
 }
 
 local_export_candidate_file_names :: proc(
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	allocator: mem.Allocator,
 ) -> [dynamic]string {
 	names := make([dynamic]string, 0, 2, allocator)
@@ -294,7 +295,7 @@ local_export_file_name :: proc(encoded, extension: string, allocator: mem.Alloca
 }
 
 local_export_abap_source_matches :: proc(
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	source: string,
 ) -> bool {
 	if candidate.kind != .Static {

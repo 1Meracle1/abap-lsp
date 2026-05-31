@@ -45,7 +45,6 @@ Inline_Symbol_Index :: struct {
 
 Inferred_Unit_Facts :: struct {
 	expression_facts: [dynamic]Expression_Fact_Data,
-	value_flow_edges: [dynamic]Value_Flow_Edge_Data,
 	symbol_updates:   [dynamic]Inferred_Symbol_Type_Update,
 	assignments:      [dynamic]Inferred_Assignment_Update,
 	concatenates:     [dynamic]Inferred_Concatenate_Update,
@@ -58,7 +57,6 @@ inferred_unit_facts_destroy_updates :: proc(facts: ^Inferred_Unit_Facts) {
 }
 
 inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Inferred_Unit_Facts {
-	value_flow_cap := len(unit.assignment_sites) + len(unit.named_arguments) + len(unit.call_sites)
 	return Inferred_Unit_Facts {
 		expression_facts = make(
 			[dynamic]Expression_Fact_Data,
@@ -66,7 +64,6 @@ inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 			len(unit.references) + len(unit.field_accesses) + len(unit.call_sites),
 			allocator,
 		),
-		value_flow_edges = make([dynamic]Value_Flow_Edge_Data, 0, value_flow_cap, allocator),
 		symbol_updates = make(
 			[dynamic]Inferred_Symbol_Type_Update,
 			0,
@@ -90,7 +87,7 @@ inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 
 infer_unit_semantic_facts :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	allocator: mem.Allocator,
 ) -> Inferred_Unit_Facts {
@@ -134,36 +131,6 @@ infer_unit_semantic_facts :: proc(
 		context.temp_allocator,
 	)
 
-	for site in unit.call_sites {
-		for arg in site.arguments {
-			source := arg.type_fact
-			if fact, ok := type_fact_for_range_indexed(&range_facts, arg.range); ok {
-				source = fact
-			}
-			if !type_fact_known(source) {
-				continue
-			}
-			target := Value_Flow_Target_Data {
-				kind = .Call_Parameter,
-				range = arg.range,
-				call_range = site.range,
-				target = site.target,
-				parameter_name = arg.name,
-			}
-			append(
-				&out.value_flow_edges,
-				Value_Flow_Edge_Data {
-					scope = site.scope,
-					kind = .Call_Argument,
-					source_range = arg.range,
-					source_type = source,
-					target = target,
-					target_type = unknown_type_fact(),
-				},
-			)
-		}
-	}
-
 	for assignment, i in unit.assignment_sites {
 		lhs := assignment.lhs
 		rhs := assignment.rhs
@@ -180,20 +147,6 @@ infer_unit_semantic_facts :: proc(
 			rhs = fact
 		}
 		append(&out.assignments, Inferred_Assignment_Update{index = i, lhs = lhs, rhs = rhs})
-		append(
-			&out.value_flow_edges,
-			Value_Flow_Edge_Data {
-				scope = assignment.scope,
-				kind = .Assignment,
-				source_range = assignment.rhs_range,
-				source_type = rhs,
-				target = Value_Flow_Target_Data {
-					kind = .Assignment,
-					range = assignment.lhs_range,
-				},
-				target_type = lhs,
-			},
-		)
 		if symbol_id, ok := inline_symbol_at_range_indexed(&inline_symbols, assignment.lhs_range);
 		   ok && type_fact_known(rhs) {
 			append(
@@ -224,9 +177,7 @@ apply_inferred_project_facts :: proc(
 	for &facts, unit_index in inferred {
 		unit := &project.units[unit_index]
 		delete(unit.expression_facts)
-		delete(unit.value_flow_edges)
 		unit.expression_facts = facts.expression_facts
-		unit.value_flow_edges = facts.value_flow_edges
 		for update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
@@ -243,6 +194,7 @@ apply_inferred_project_facts :: proc(
 					s.has_declared_type = true
 					s.type_clause_display = update.type_fact.type_clause_display
 				}
+				s.type_id = type_id_from_symbol_data(unit, s)
 			}
 		}
 		for update in facts.assignments {
@@ -269,9 +221,7 @@ apply_inferred_project_facts_for_indices :: proc(
 		facts := &inferred[i]
 		unit := &project.units[unit_index]
 		delete(unit.expression_facts)
-		delete(unit.value_flow_edges)
 		unit.expression_facts = facts.expression_facts
-		unit.value_flow_edges = facts.value_flow_edges
 		for update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
@@ -288,6 +238,7 @@ apply_inferred_project_facts_for_indices :: proc(
 					s.has_declared_type = true
 					s.type_clause_display = update.type_fact.type_clause_display
 				}
+				s.type_id = type_id_from_symbol_data(unit, s)
 			}
 		}
 		for update in facts.assignments {
@@ -421,6 +372,7 @@ type_fact_from_symbol_handle :: proc(
 		return unknown_type_fact()
 	}
 	return Type_Fact_Data {
+		type_id = s.type_id if unit_index == site_unit_index else UNKNOWN_TYPE_ID,
 		structure = s.structure if unit_index == site_unit_index else INVALID_STRUCTURE_ID,
 		declared_type = s.declared_type,
 		has_declared_type = s.has_declared_type,
@@ -430,7 +382,7 @@ type_fact_from_symbol_handle :: proc(
 
 type_fact_for_access :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	access: Field_Access,
 ) -> (Type_Fact_Data, bool) {
@@ -482,7 +434,7 @@ range_type_fact_lower_bound :: proc(facts: []Range_Type_Fact, start: int) -> int
 
 call_result_type_fact :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	site: Call_Site_Data,
 ) -> Type_Fact_Data {

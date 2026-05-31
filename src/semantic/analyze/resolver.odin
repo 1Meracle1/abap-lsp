@@ -9,8 +9,6 @@ import "core:strings"
 
 build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Scope_Index {
 	index := Scope_Index {
-		scope_count       = len(unit.scopes),
-		symbols           = make(map[Scope_Index_Key]Symbol_Id, len(unit.symbols) * 2, allocator),
 		class_symbols     = make(map[Class_Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
 		enclosing_classes = make([dynamic]Symbol_Id, len(unit.scopes), len(unit.scopes), allocator),
 		superclasses      = make(map[Symbol_Id]string, len(unit.class_inheritance), allocator),
@@ -42,8 +40,6 @@ build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Sco
 		namespaces := [?]Namespace{.Value, .Type, .Routine}
 		for namespace in namespaces {
 			if symbol_kind_occupies(symbol.kind, namespace) {
-				index.symbols[Scope_Index_Key{scope = symbol.scope, namespace = namespace, name = symbol.name}] =
-					symbol.id
 				if class_symbol != INVALID_SYMBOL_ID {
 					index.class_symbols[Class_Scope_Index_Key{class_symbol = class_symbol, namespace = namespace, name = symbol.name}] =
 						symbol.id
@@ -72,8 +68,9 @@ analyze_unit :: proc(
 
 resolve_unit_locally :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) {
 	index := build_scope_index(unit, allocator)
-	resolve_unit_with_index(unit, &index)
 	unit.scope_index = index
+	refresh_unit_type_ids(unit)
+	resolve_unit_with_index(unit, &unit.scope_index)
 }
 
 resolve_unit_with_index :: proc(unit: ^Unit_Analysis, index: ^Scope_Index) {
@@ -226,7 +223,7 @@ resolve_reference :: proc(
 
 lookup_scope_chain :: proc(
 	unit: ^Unit_Analysis,
-	index: ^Scope_Index,
+	_: ^Scope_Index,
 	start_scope: Scope_Id,
 	namespace: Namespace,
 	name: string,
@@ -237,13 +234,8 @@ lookup_scope_chain :: proc(
 	current := start_scope
 	for current != INVALID_SCOPE_ID {
 		scope_idx := scope_id_index(current)
-		if scope_idx >= 0 && scope_idx < index.scope_count {
-			key := Scope_Index_Key {
-				scope     = current,
-				namespace = namespace,
-				name      = name,
-			}
-			if symbol_id, ok := index.symbols[key]; ok {
+		if scope_idx >= 0 && scope_idx < len(unit.scopes) {
+			if symbol_id, ok := scope_lookup_declaration(unit, current, namespace, name); ok {
 				return symbol_id, true
 			}
 		}
@@ -592,7 +584,6 @@ resolve_project_cross_unit :: proc(units: []Unit_Analysis, allocator: mem.Alloca
 		allocator,
 	) {
 		for unit_index in 0 ..< len(units) {
-			units[unit_index].scope_index = build_scope_index(&units[unit_index], allocator)
 			resolve_unit_with_index(&units[unit_index], &units[unit_index].scope_index)
 		}
 	}
@@ -705,7 +696,7 @@ seed_inherited_method_scope_parameters :: proc(
 					visible,
 					allocator,
 				)
-				_ = declare_symbol(
+				symbol_id := declare_symbol(
 					unit,
 					method_scope,
 					param.name,
@@ -716,7 +707,16 @@ seed_inherited_method_scope_parameters :: proc(
 					.Has_Declared_Type in param.flags,
 					param.type_clause_display,
 					type_clause_table_has_of = param.type_clause_table_has_of,
+					type_id = param.type_id,
+					owner = method_symbol.id,
 				)
+				if info := entity_decl_info(unit, symbol_id); info != nil {
+					info.parameter_section = decl_method_section(param.section)
+					info.parameter_passing = decl_passing(param.passing)
+					if .Is_Optional in param.flags {
+						info.flags += {.Is_Optional}
+					}
+				}
 				changed = true
 			}
 		}
@@ -774,6 +774,7 @@ seed_event_handler_method_parameter_types :: proc(
 		param.type_clause_form = event_param.type_clause_form
 		param.has_type_clause_form = event_param.has_type_clause_form
 		param.type_clause_table_has_of = event_param.type_clause_table_has_of
+		param.type_id = UNKNOWN_TYPE_ID
 		param.flags += {.Has_Declared_Type}
 		structure_id := seeded_method_parameter_structure(
 			units,
@@ -873,6 +874,7 @@ update_method_scope_parameter_symbol :: proc(
 		item.type_clause_form = param.type_clause_form
 		item.has_type_clause_form = param.has_type_clause_form
 		item.type_clause_table_has_of = param.type_clause_table_has_of
+		item.type_id = type_id_from_symbol_data(unit, item)
 		return true
 	}
 	return false
@@ -1946,6 +1948,7 @@ import_project_structures_for_unit :: proc(
 				allocator,
 			); ok {
 				s.structure = structure_id
+				s.type_id = type_id_from_symbol_data(&units[unit_index], s)
 				changed = true
 				any_changed = true
 			}
@@ -1991,6 +1994,10 @@ import_project_structures_for_unit :: proc(
 				); ok {
 					units[unit_index].structures[structure_index].fields[field_index].structure =
 						structure_id
+					field := &units[unit_index].structures[structure_index].fields[field_index]
+					if !type_id_is_known(field.type_id) {
+						field.type_id = type_structure(&units[unit_index], structure_id)
+					}
 					changed = true
 					any_changed = true
 				}
@@ -2057,6 +2064,7 @@ sync_class_member_structures_for_unit :: proc(unit: ^Unit_Analysis) {
 		}
 		if s := symbol(unit, symbol_id); s != nil {
 			member.structure = s.structure
+			member.type_id = s.type_id
 		}
 	}
 }
@@ -2616,6 +2624,7 @@ import_structure_to_unit :: proc(
 	for existing in target.structures {
 		if existing.origin_unit == source_structure.origin_unit &&
 		   existing.origin_structure == source_structure.origin_structure {
+			_ = type_structure(target, existing.id)
 			return existing.id
 		}
 	}
@@ -2628,6 +2637,7 @@ import_structure_to_unit :: proc(
 			origin_unit = source_structure.origin_unit,
 			origin_structure = source_structure.origin_structure,
 			name = strings.clone(source_structure.name, allocator),
+			scope = target.root_scope,
 			fields = fields,
 		},
 	)
@@ -2638,7 +2648,25 @@ import_structure_to_unit :: proc(
 		if field.structure != INVALID_STRUCTURE_ID {
 			next.structure = import_structure_to_unit(target, source, field.structure, allocator)
 		}
+		next.type_id = type_id_from_imported_field(target, next)
 		append(&target.structures[structure_id_index(id)].fields, next)
 	}
+	_ = type_structure(target, id)
 	return id
+}
+
+type_id_from_imported_field :: proc(unit: ^Unit_Analysis, field: Structure_Field_Data) -> Type_Id {
+	if field.structure != INVALID_STRUCTURE_ID {
+		return type_structure(unit, field.structure)
+	}
+	if .Has_Type_Ref in field.flags {
+		return type_id_from_declared_type(
+			unit,
+			unit.root_scope,
+			field.type_ref,
+			field.type_clause_form,
+			field.has_type_clause_form,
+		)
+	}
+	return UNKNOWN_TYPE_ID
 }

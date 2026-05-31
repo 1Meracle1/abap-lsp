@@ -6,6 +6,7 @@ import dep_store "src:dependency_store"
 import execution "src:execution"
 import "src:parser"
 import analyze "src:semantic/analyze"
+import deps "src:semantic/dependencies"
 
 import base_runtime "base:runtime"
 import "core:mem"
@@ -19,7 +20,7 @@ TYPEPOOL_OBJECT_TYPE :: "TYPEPOOL"
 add_typepool_resolver_matches :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
-	remote_candidates: []analyze.Remote_Dependency_Candidate,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
 	client: ^adt.Client,
@@ -33,7 +34,7 @@ add_typepool_resolver_matches :: proc(
 	defer virtual.arena_temp_end(temp_arena)
 
 	owner_candidates := make(
-		[dynamic]analyze.Remote_Dependency_Candidate,
+		[dynamic]deps.Remote_Dependency_Candidate,
 		0,
 		len(remote_candidates),
 		context.temp_allocator,
@@ -200,12 +201,12 @@ add_typepool_resolver_matches :: proc(
 
 Typepool_Owner_Payload :: struct {
 	client:           ^adt.Client,
-	candidate:        analyze.Remote_Dependency_Candidate,
+	candidate:        deps.Remote_Dependency_Candidate,
 	result_allocator: mem.Allocator,
 }
 
 Typepool_Owner_Result :: struct {
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	pool:      string,
 	err:       adt.Error,
 }
@@ -294,16 +295,16 @@ store_typepool_source :: proc(
 	fetched_at, _ := time.time_to_rfc3339(time.now(), allocator = allocator)
 	symbols := typepool_source_symbols(source, allocator)
 	artifact := dep_store.Stored_Artifact_Input {
-		package_name   = pool,
-		object_kind    = TYPEPOOL_OBJECT_KIND,
-		object_name    = pool,
-		object_uri     = typepool_object_uri(pool, allocator),
-		object_type    = TYPEPOOL_OBJECT_TYPE,
-		description    = "Type-pool source",
-		file_extension = "abap",
-		source_text    = source,
-		fetched_at     = fetched_at,
-		symbols        = symbols[:],
+		package_name     = pool,
+		object_kind      = TYPEPOOL_OBJECT_KIND,
+		object_name      = pool,
+		object_uri       = typepool_object_uri(pool, allocator),
+		object_type      = TYPEPOOL_OBJECT_TYPE,
+		description      = "Type-pool source",
+		file_extension   = "abap",
+		source_text      = source,
+		fetched_at       = fetched_at,
+		typepool_symbols = symbols[:],
 	}
 	_, _ = dep_store.put_artifact(store, profile, &artifact, allocator)
 }
@@ -311,8 +312,8 @@ store_typepool_source :: proc(
 typepool_source_symbols :: proc(
 	source: string,
 	allocator: mem.Allocator,
-) -> [dynamic]dep_store.Stored_Symbol_Input {
-	symbols := make([dynamic]dep_store.Stored_Symbol_Input, 0, 8, allocator)
+) -> [dynamic]string {
+	symbols := make([dynamic]string, 0, 8, allocator)
 	parsed := parser.parse(source, "abapls-typepool-symbols", context.temp_allocator)
 	if parsed.root == nil {
 		return symbols
@@ -322,13 +323,13 @@ typepool_source_symbols :: proc(
 		case ^ast.Types_Decl:
 			for clause in n.types {
 				if clause.kind == .Begin_Group || clause.kind == .Normal {
-					append_typepool_symbol(&symbols, clause.name, "typedef", stmt.range.start, stmt.range.end)
+					insert_unique_typepool_symbol(&symbols, clause.name, allocator)
 				}
 			}
 		case ^ast.Constants_Decl:
 			for clause in n.constants {
 				if clause.kind == .Begin_Group || clause.kind == .Normal {
-					append_typepool_symbol(&symbols, clause.name, "constant", stmt.range.start, stmt.range.end)
+					insert_unique_typepool_symbol(&symbols, clause.name, allocator)
 				}
 			}
 		}
@@ -336,24 +337,17 @@ typepool_source_symbols :: proc(
 	return symbols
 }
 
-append_typepool_symbol :: proc(
-	symbols: ^[dynamic]dep_store.Stored_Symbol_Input,
-	name, kind: string,
-	range_start, range_end: int,
-) {
+insert_unique_typepool_symbol :: proc(symbols: ^[dynamic]string, name: string, allocator: mem.Allocator) {
 	if name == "" {
 		return
 	}
-	append(
-		symbols,
-		dep_store.Stored_Symbol_Input {
-			symbol_name = name,
-			symbol_kind = kind,
-			range_start = range_start,
-			range_end   = range_end,
-			priority    = 100,
-		},
-	)
+	key := strings.to_lower(name, allocator)
+	for existing in symbols^ {
+		if existing == key {
+			return
+		}
+	}
+	append(symbols, key)
 }
 
 add_typepool_source_input :: proc(
@@ -376,7 +370,7 @@ add_typepool_source_input :: proc(
 		candidates,
 		dependencies,
 		input,
-		analyze.Remote_Dependency_Candidate{name = pool, kind = .Type},
+		deps.Remote_Dependency_Candidate{name = pool, kind = .Type},
 		pool,
 	)
 	return true

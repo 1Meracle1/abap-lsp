@@ -1,6 +1,7 @@
 package abap_frontend_semantic_analyze
 
 import "src:ast"
+import deps "src:semantic/dependencies"
 
 import "core:mem"
 import base_runtime "base:runtime"
@@ -8,10 +9,11 @@ import base_runtime "base:runtime"
 collect_project_remote_dependency_candidates :: proc(
 	project: ^Project_Analysis,
 	allocator: mem.Allocator,
-) -> [dynamic]Remote_Dependency_Candidate {
-	out := make([dynamic]Remote_Dependency_Candidate, 0, 8, allocator)
+) -> [dynamic]deps.Remote_Dependency_Candidate {
+	out := make([dynamic]deps.Remote_Dependency_Candidate, 0, 8, allocator)
 	index := make(map[string]int, 64, context.temp_allocator)
-	lookup := build_validation_lookup(project, context.temp_allocator)
+	project_index := project_index_from_units(project.units[:], context.temp_allocator)
+	lookup := &project_index
 	for &unit, unit_index in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
@@ -62,12 +64,12 @@ collect_project_remote_dependency_candidates :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source_needs_remote_dependency(project, &lookup, unit_index, sql_source) {
+			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
 				insert_remote_candidate(&out, &index, sql_source.name, .Type, allocator)
 			}
 		}
 		for &call_site in unit.call_sites {
-			if !call_site_needs_remote_dependency(project, &lookup, unit_index, call_site) {
+			if !call_site_needs_remote_dependency(project, lookup, unit_index, call_site) {
 				continue
 			}
 			#partial switch call_site.target.kind {
@@ -97,8 +99,8 @@ collect_project_state_remote_dependency_candidates :: proc(
 	state: ^Project_State,
 	include_dependency_interfaces: bool,
 	allocator: mem.Allocator,
-) -> [dynamic]Remote_Dependency_Candidate {
-	out := make([dynamic]Remote_Dependency_Candidate, 0, len(state.unresolved_candidates), allocator)
+) -> [dynamic]deps.Remote_Dependency_Candidate {
+	out := make([dynamic]deps.Remote_Dependency_Candidate, 0, len(state.unresolved_candidates), allocator)
 	index := make(map[string]int, len(state.unresolved_candidates), context.temp_allocator)
 	for key, units in state.unresolved_candidates {
 		if !include_dependency_interfaces &&
@@ -133,12 +135,12 @@ record_project_unresolved_candidates :: proc(
 ) {
 	project_state_unresolved_candidates_destroy(state)
 	candidate_allocator := base_runtime.heap_allocator()
-	state.unresolved_candidates = make(map[Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
+	state.unresolved_candidates = make(map[deps.Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	recorded := make(map[Remote_Dependency_Key]Unit_Id, 64, context.temp_allocator)
-	lookup := validation_lookup_from_project_index(&state.index)
+	recorded := make(map[deps.Remote_Dependency_Key]Unit_Id, 64, context.temp_allocator)
+	lookup := &state.index
 	for unit, unit_index in project.units {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
@@ -189,12 +191,12 @@ record_project_unresolved_candidates :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source_needs_remote_dependency(project, &lookup, unit_index, sql_source) {
+			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
 				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.unit_id)
 			}
 		}
 		for &call_site in unit.call_sites {
-			if !call_site_needs_remote_dependency(project, &lookup, unit_index, call_site) {
+			if !call_site_needs_remote_dependency(project, lookup, unit_index, call_site) {
 				continue
 			}
 			#partial switch call_site.target.kind {
@@ -226,7 +228,7 @@ record_project_unresolved_candidates_for_units :: proc(
 	unit_ids: []Unit_Id,
 ) {
 	project_index_ensure_unit_count(&state.index, len(project.units))
-	lookup := validation_lookup_from_project_index(&state.index)
+	lookup := &state.index
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
@@ -240,7 +242,7 @@ record_project_unresolved_candidates_for_units :: proc(
 			remove_remote_candidate_unit(state, key, unit_id)
 		}
 		clear(&data.unresolved_candidates)
-		recorded := make(map[Remote_Dependency_Key]bool, 8, context.temp_allocator)
+		recorded := make(map[deps.Remote_Dependency_Key]bool, 8, context.temp_allocator)
 		unit := &project.units[unit_index]
 		for &edge in unit.include_edges {
 			if !edge.has_target {
@@ -302,12 +304,12 @@ record_project_unresolved_candidates_for_units :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source_needs_remote_dependency(project, &lookup, unit_index, sql_source) {
+			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
 				record_remote_candidate_unit_incremental(state, data, &recorded, sql_source.name, .Type, unit.unit_id)
 			}
 		}
 		for &call_site in unit.call_sites {
-			if !call_site_needs_remote_dependency(project, &lookup, unit_index, call_site) {
+			if !call_site_needs_remote_dependency(project, lookup, unit_index, call_site) {
 				continue
 			}
 			#partial switch call_site.target.kind {
@@ -337,7 +339,7 @@ record_project_unresolved_candidates_for_units :: proc(
 @(private)
 sql_source_needs_remote_dependency :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	sql_source: Sql_Source_Data,
 ) -> bool {
@@ -351,7 +353,7 @@ sql_source_needs_remote_dependency :: proc(
 @(private)
 call_site_needs_remote_dependency :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	call_site: Call_Site_Data,
 ) -> bool {
@@ -369,7 +371,7 @@ call_site_needs_remote_dependency :: proc(
 @(private)
 resolve_root_name_in_project_lookup :: proc(
 	project: ^Project_Analysis,
-	lookup: ^Validation_Lookup,
+	lookup: ^Project_Index,
 	unit_index: int,
 	namespace: Namespace,
 	name: string,
@@ -395,7 +397,7 @@ project_state_unresolved_candidates_destroy :: proc(state: ^Project_State) {
 @(private)
 remove_remote_candidate_unit :: proc(
 	state: ^Project_State,
-	key: Remote_Dependency_Key,
+	key: deps.Remote_Dependency_Key,
 	unit_id: Unit_Id,
 ) {
 	if units, ok := state.unresolved_candidates[key]; ok {
@@ -421,16 +423,16 @@ remove_remote_candidate_unit :: proc(
 record_remote_candidate_unit_incremental :: proc(
 	state: ^Project_State,
 	data: ^Project_Index_Unit,
-	recorded: ^map[Remote_Dependency_Key]bool,
+	recorded: ^map[deps.Remote_Dependency_Key]bool,
 	name: string,
-	kind: Remote_Dependency_Kind,
+	kind: deps.Remote_Dependency_Kind,
 	unit_id: Unit_Id,
-	hint := Remote_Dependency_Hint.None,
+	hint := deps.Remote_Dependency_Hint.None,
 ) {
 	if name == "" {
 		return
 	}
-	key := Remote_Dependency_Key{name = name, kind = kind, hint = hint}
+	key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
 	if key in recorded^ {
 		return
 	}
@@ -449,16 +451,16 @@ record_remote_candidate_unit_incremental :: proc(
 @(private)
 record_remote_candidate_unit :: proc(
 	state: ^Project_State,
-	recorded: ^map[Remote_Dependency_Key]Unit_Id,
+	recorded: ^map[deps.Remote_Dependency_Key]Unit_Id,
 	name: string,
-	kind: Remote_Dependency_Kind,
+	kind: deps.Remote_Dependency_Kind,
 	unit_id: Unit_Id,
-	hint := Remote_Dependency_Hint.None,
+	hint := deps.Remote_Dependency_Hint.None,
 ) {
 	if name == "" {
 		return
 	}
-	key := Remote_Dependency_Key{name = name, kind = kind, hint = hint}
+	key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
 	if previous, ok := recorded^[key]; ok && previous == unit_id {
 		return
 	}
@@ -477,11 +479,11 @@ record_remote_candidate_unit :: proc(
 remote_dependency_candidate_for_reference :: proc(
 	ref: ^Reference_Data,
 ) -> (
-	Remote_Dependency_Candidate,
+	deps.Remote_Dependency_Candidate,
 	bool,
 ) {
-	kind := Remote_Dependency_Kind.Type
-	hint := Remote_Dependency_Hint.None
+	kind := deps.Remote_Dependency_Kind.Type
+	hint := deps.Remote_Dependency_Hint.None
 	switch ref.kind {
 	case .Include, .Structured_Decl_End:
 		return {}, false
@@ -520,7 +522,7 @@ remote_dependency_candidate_for_reference :: proc(
 		}
 		kind = .Symbol
 	}
-	return Remote_Dependency_Candidate{name = ref.name, kind = kind, hint = hint}, true
+	return deps.Remote_Dependency_Candidate{name = ref.name, kind = kind, hint = hint}, true
 }
 
 @(private)
@@ -539,12 +541,12 @@ like_value_type_ref_can_fetch_type :: proc(form: ast.Data_Type_Form) -> bool {
 
 @(private)
 insert_remote_candidate :: proc(
-	out: ^[dynamic]Remote_Dependency_Candidate,
+	out: ^[dynamic]deps.Remote_Dependency_Candidate,
 	index: ^map[string]int,
 	name: string,
-	kind: Remote_Dependency_Kind,
+	kind: deps.Remote_Dependency_Kind,
 	allocator: mem.Allocator,
-	hint := Remote_Dependency_Hint.None,
+	hint := deps.Remote_Dependency_Hint.None,
 ) {
 	normalized_name := canonical_name(name, allocator)
 	if normalized_name == "" {
@@ -563,11 +565,11 @@ insert_remote_candidate :: proc(
 		return
 	}
 	index^[normalized_name] = len(out^)
-	append(out, Remote_Dependency_Candidate{name = normalized_name, kind = kind, hint = hint})
+	append(out, deps.Remote_Dependency_Candidate{name = normalized_name, kind = kind, hint = hint})
 }
 
 @(private)
-remote_dependency_hint_for_type_ref :: proc(type_ref: Field_Type_Ref_Data) -> Remote_Dependency_Hint {
+remote_dependency_hint_for_type_ref :: proc(type_ref: Field_Type_Ref_Data) -> deps.Remote_Dependency_Hint {
 	if type_ref.is_ref {
 		return .Object_Type
 	}
@@ -575,7 +577,7 @@ remote_dependency_hint_for_type_ref :: proc(type_ref: Field_Type_Ref_Data) -> Re
 }
 
 @(private)
-remote_candidate_kind_priority :: proc(kind: Remote_Dependency_Kind) -> int {
+remote_candidate_kind_priority :: proc(kind: deps.Remote_Dependency_Kind) -> int {
 	if kind == .Message_Class {return 5}
 	if kind == .Include || kind == .Function {return 4}
 	if kind == .Static {return 3}
@@ -584,7 +586,7 @@ remote_candidate_kind_priority :: proc(kind: Remote_Dependency_Kind) -> int {
 }
 
 @(private)
-remote_candidate_hint_priority :: proc(hint: Remote_Dependency_Hint) -> int {
+remote_candidate_hint_priority :: proc(hint: deps.Remote_Dependency_Hint) -> int {
 	if hint == .Interface_Type {return 2}
 	if hint == .Object_Type {return 1}
 	return 0

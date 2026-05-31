@@ -1,7 +1,7 @@
 package abap_frontend_semantic_session
 
-import "src:adt"
 import analyze "src:semantic/analyze"
+import deps "src:semantic/dependencies"
 import remote_deps "src:semantic/remote_dependencies"
 import uri_key "src:uri_key"
 
@@ -47,13 +47,6 @@ Input_Change :: struct {
 	immutable:   bool,
 }
 
-Remote_Dependency_State :: struct {
-	seen_artifacts:           map[i64]bool,
-	seen_local_candidates:    map[analyze.Remote_Dependency_Key]bool,
-	seen_adt_candidates:      map[analyze.Remote_Dependency_Key]bool,
-	seen_typepool_candidates: map[analyze.Remote_Dependency_Key]bool,
-}
-
 Session_Memory :: struct {
 	session_arena:   virtual.Arena,
 	update_arena:    virtual.Arena,
@@ -77,7 +70,7 @@ Analysis_Session :: struct {
 	candidates:   [dynamic]analyze.Project_Candidate_Input,
 	dependencies: [dynamic]analyze.Source_Input,
 
-	dependency_state: Remote_Dependency_State,
+	dependency_state: remote_deps.Dependency_State,
 	config:           remote_deps.Dependency_Config,
 	options:          analyze.Analyze_Options,
 }
@@ -248,12 +241,7 @@ analysis_session_ensure_initialized :: proc(session: ^Analysis_Session) {
 	session.targets = make([dynamic]analyze.Source_Input, 0, 4, allocator)
 	session.candidates = make([dynamic]analyze.Project_Candidate_Input, 0, 16, allocator)
 	session.dependencies = make([dynamic]analyze.Source_Input, 0, 16, allocator)
-	session.dependency_state = Remote_Dependency_State {
-		seen_artifacts           = make(map[i64]bool, 16, dep_allocator),
-		seen_local_candidates    = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
-		seen_adt_candidates      = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
-		seen_typepool_candidates = make(map[analyze.Remote_Dependency_Key]bool, 64, dep_allocator),
-	}
+	session.dependency_state = remote_deps.dependency_state_make(dep_allocator)
 }
 
 analysis_session_reconcile_inputs :: proc(
@@ -412,174 +400,27 @@ analysis_session_resolve_new_dependencies :: proc(
 		true,
 		context.temp_allocator,
 	)
-	if len(remote_candidates) == 0 {
+	old_candidate_count := len(session.candidates)
+	old_dependency_count := len(session.dependencies)
+	added := remote_deps.resolve_dependency_candidates(
+		&session.candidates,
+		&session.dependencies,
+		remote_candidates[:],
+		&session.config,
+		&session.dependency_state,
+		session.options.pool,
+		session.targets[0].uri if len(session.targets) > 0 else "",
+	)
+	if added == 0 {
 		return 0
 	}
-
-	added := 0
-	has_cache := session.config.cache != nil
-	has_profile := session.config.profile != nil
-	cache_result := remote_deps.Cache_Phase_Result {
-		adt_candidates = make(
-			[dynamic]analyze.Remote_Dependency_Candidate,
-			0,
-			len(remote_candidates),
-			context.temp_allocator,
-		),
-		local_candidates = make(
-			[dynamic]analyze.Remote_Dependency_Candidate,
-			0,
-			len(remote_candidates),
-			context.temp_allocator,
-		),
-	}
-	if has_cache {
-		cache_candidates := remote_deps.unseen_remote_candidates(
-			remote_candidates[:],
-			nil,
-			context.temp_allocator,
-		)
-		connection_key :=
-			adt.client_connection_key(session.config.adt_client, context.temp_allocator) if session.config.adt_client != nil else ""
-		old_candidate_count := len(session.candidates)
-		old_dependency_count := len(session.dependencies)
-		cache_result = remote_deps.add_dependency_cache_matches(
-			&session.candidates,
-			&session.dependencies,
-			cache_candidates[:],
-			session.config.cache,
-			session.config.profile,
-			session.config.cache_any_profile || !has_profile,
-			connection_key,
-			&session.dependency_state.seen_artifacts,
-			session.options.pool,
-			session.targets[0].uri if len(session.targets) > 0 else "",
-			"session_cache_any" if session.config.cache_any_profile || !has_profile else "session_cache",
-		)
-		added += analysis_session_record_appended_inputs(
-			session,
-			old_candidate_count,
-			old_dependency_count,
-		)
-		if cache_result.added {
-			return added
-		}
-	} else {
-		for candidate in remote_candidates {
-			append(&cache_result.adt_candidates, candidate)
-			append(&cache_result.local_candidates, candidate)
-		}
-	}
-
-	if session.config.adt_client != nil {
-		adt_candidates := remote_deps.unseen_remote_candidates(
-			cache_result.adt_candidates[:],
-			&session.dependency_state.seen_adt_candidates,
-			context.temp_allocator,
-		)
-		if len(adt_candidates) > 0 {
-			old_candidate_count := len(session.candidates)
-			old_dependency_count := len(session.dependencies)
-			if remote_deps.add_adt_matches_with_client(
-				&session.candidates,
-				&session.dependencies,
-				adt_candidates[:],
-				session.config.cache if has_cache && has_profile else nil,
-				session.config.profile if has_cache && has_profile else nil,
-				session.config.adt_client,
-				session.options.pool,
-				session.targets[0].uri if len(session.targets) > 0 else "",
-			) {
-				added += analysis_session_record_appended_inputs(
-					session,
-					old_candidate_count,
-					old_dependency_count,
-				)
-				return added
-			}
-			added += analysis_session_record_appended_inputs(
-				session,
-				old_candidate_count,
-				old_dependency_count,
-			)
-		}
-	}
-
-	if session.config.adt_client != nil &&
-	   adt.typepool_resolver_enabled(session.config.adt_client) {
-		typepool_candidates := remote_deps.unseen_remote_candidates(
-			cache_result.local_candidates[:],
-			&session.dependency_state.seen_typepool_candidates,
-			context.temp_allocator,
-		)
-		if len(typepool_candidates) > 0 {
-			old_candidate_count := len(session.candidates)
-			old_dependency_count := len(session.dependencies)
-			if remote_deps.add_typepool_resolver_matches(
-				&session.candidates,
-				&session.dependencies,
-				typepool_candidates[:],
-				session.config.cache if has_cache && has_profile else nil,
-				session.config.profile if has_cache && has_profile else nil,
-				session.config.adt_client,
-				session.options.pool,
-				session.targets[0].uri if len(session.targets) > 0 else "",
-			) {
-				added += analysis_session_record_appended_inputs(
-					session,
-					old_candidate_count,
-					old_dependency_count,
-				)
-				return added
-			}
-			added += analysis_session_record_appended_inputs(
-				session,
-				old_candidate_count,
-				old_dependency_count,
-			)
-		}
-	}
-
-	if len(session.config.local_export_roots) > 0 {
-		local_candidates := remote_deps.unseen_remote_candidates(
-			cache_result.local_candidates[:],
-			&session.dependency_state.seen_local_candidates,
-			context.temp_allocator,
-		)
-		if len(local_candidates) > 0 {
-			old_candidate_count := len(session.candidates)
-			old_dependency_count := len(session.dependencies)
-			if remote_deps.add_local_export_matches(
-				&session.candidates,
-				&session.dependencies,
-				local_candidates[:],
-				session.config.cache if has_cache && has_profile else nil,
-				session.config.profile if has_cache && has_profile else nil,
-				session.config.local_export_roots,
-				session.targets[0].uri if len(session.targets) > 0 else "",
-				session.memory.allocator,
-			) {
-				added += analysis_session_record_appended_inputs(
-					session,
-					old_candidate_count,
-					old_dependency_count,
-				)
-				return added
-			}
-			added += analysis_session_record_appended_inputs(
-				session,
-				old_candidate_count,
-				old_dependency_count,
-			)
-		}
-	}
-	return added
+	return analysis_session_record_appended_inputs(session, old_candidate_count, old_dependency_count)
 }
 
 analysis_session_insert_dependency_input :: proc(
 	session: ^Analysis_Session,
 	input: analyze.Source_Input,
-	candidate: analyze.Remote_Dependency_Candidate,
+	candidate: deps.Remote_Dependency_Candidate,
 	object_name: string,
 ) -> bool {
 	owned := session_source_input_clone(input, session.memory.allocator)

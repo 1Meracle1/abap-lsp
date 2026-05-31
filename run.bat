@@ -27,14 +27,6 @@ if /I "%~1"=="debug" (
   set "APP=adt_cli"
   shift
   goto parse_prefix
-) else if /I "%~1"=="runtime_bench" (
-  set "APP=runtime_bench"
-  shift
-  goto parse_prefix
-) else if /I "%~1"=="bench" (
-  set "APP=runtime_bench"
-  shift
-  goto parse_prefix
 ) else if /I "%~1"=="trace-adt-fetch" (
   set "BUILD_ARGS=!BUILD_ARGS! trace-adt-fetch"
   shift

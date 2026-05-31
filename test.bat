@@ -28,23 +28,23 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\encoding\toml" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
-"%ODIN_EXE%" check "%ROOT%src\runtime" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\execution" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\http" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\adt" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\ddic_xml" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\semantic" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\lints" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\persistence\sqlite3" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\dependency_store" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\tokenizer" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\encoding\toml" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\ast" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
-"%ODIN_EXE%" test "%ROOT%src\runtime" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\execution" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\http" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\adt" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\ddic_xml" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\semantic" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\lints" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\persistence\sqlite3" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\dependency_store" %ODIN_FLAGS% %TEST_FLAGS%
