@@ -18,13 +18,15 @@ Dependency_Store_Task_Result :: struct {
 	err:      dep_store.Store_Error,
 }
 
-Dependency_Store_Task_Payload :: struct {
-	store:            dep_store.Dependency_Store,
-	profile:          ^dep_store.Dependency_Profile,
-	candidate:        deps.Remote_Dependency_Candidate,
-	any_profile:      bool,
-	connection_key:   string,
-	result_allocator: mem.Allocator,
+Dependency_Store_Batch_Payload :: struct {
+	store:          dep_store.Dependency_Store,
+	profile:        ^dep_store.Dependency_Profile,
+	candidates:     []deps.Remote_Dependency_Candidate,
+	any_profile:    bool,
+	connection_key: string,
+	result_arenas:  []mem.Dynamic_Arena,
+	results:        []^Dependency_Store_Task_Result,
+	offset:         int,
 }
 
 add_dependency_cache_matches :: proc(
@@ -75,39 +77,58 @@ add_dependency_cache_matches :: proc(
 		result.added = true
 	}
 
-	graph: execution.Graph
-	execution.graph_init(&graph, pool, context.temp_allocator)
+	if len(remote_candidates) == 0 {
+		return result
+	}
+
+	task_count := min(max(pool.options.worker_count, 1), len(remote_candidates))
+	batch_size := (len(remote_candidates) + task_count - 1) / task_count
+	// Worker result arenas outlive their task until the main thread consumes them.
+	// Keep them heap-backed so a temp allocator reset cannot invalidate results.
+	result_backing := base_runtime.heap_allocator()
 	result_arenas := make([]mem.Dynamic_Arena, len(remote_candidates), context.temp_allocator)
-	tasks := make(
-		[dynamic]execution.Task(^Dependency_Store_Task_Result),
-		0,
+	results := make(
+		[]^Dependency_Store_Task_Result,
 		len(remote_candidates),
 		context.temp_allocator,
 	)
-	result_backing := base_runtime.heap_allocator()
-	for candidate, i in remote_candidates {
-		mem.dynamic_arena_init(&result_arenas[i], result_backing, result_backing, alignment = 64)
-		payload := Dependency_Store_Task_Payload {
-			store            = store^,
-			profile          = profile,
-			candidate        = candidate,
-			any_profile      = any_profile,
-			connection_key   = connection_key,
-			result_allocator = mem.dynamic_arena_allocator(&result_arenas[i]),
+	for &result_arena in result_arenas {
+		mem.dynamic_arena_init(&result_arena, result_backing, result_backing, alignment = 64)
+	}
+
+	graph: execution.Graph
+	execution.graph_init(&graph, pool, context.temp_allocator)
+	tasks := make(
+		[dynamic]execution.Task(execution.No_Result),
+		0,
+		task_count,
+		context.temp_allocator,
+	)
+	for start := 0; start < len(remote_candidates); start += batch_size {
+		end := min(start + batch_size, len(remote_candidates))
+		payload := Dependency_Store_Batch_Payload {
+			store          = store^,
+			profile        = profile,
+			candidates     = remote_candidates[start:end],
+			any_profile    = any_profile,
+			connection_key = connection_key,
+			result_arenas  = result_arenas,
+			results        = results,
+			offset         = start,
 		}
 		task := execution.submit_value(
 			&graph,
 			execution.worker_executor(pool),
 			payload,
-			dependency_store_find_task,
+			dependency_store_find_batch_task,
 		)
 		append(&tasks, task)
 	}
 	execution.graph_start(&graph)
-	for task, i in tasks {
-		task_result := execution.wait(task)
+	execution.graph_wait(&graph)
+	for candidate, i in remote_candidates {
+		task_result := results[i]
 
-		candidate := remote_candidates[i]
 		if add_dependency_store_task_result(
 			candidates,
 			dependencies,
@@ -129,7 +150,6 @@ add_dependency_cache_matches :: proc(
 		}
 		mem.dynamic_arena_destroy(&result_arenas[i])
 	}
-	execution.graph_wait(&graph)
 	execution.graph_destroy(&graph)
 	return result
 }
@@ -237,23 +257,52 @@ backfill_typepool_symbol_cache :: proc(
 	}
 }
 
-dependency_store_find_task :: proc(
-	payload: Dependency_Store_Task_Payload,
-) -> ^Dependency_Store_Task_Result {
-	result_allocator := payload.result_allocator
-	result := new(Dependency_Store_Task_Result, result_allocator)
+dependency_store_find_batch_task :: proc(
+	payload: Dependency_Store_Batch_Payload,
+) -> execution.No_Result {
 	store := payload.store
 	reader, reader_err := dep_store.reader(&store, context.temp_allocator)
 	if reader_err != .None {
-		result.err = reader_err
-		return result
+		for _, i in payload.candidates {
+			index := payload.offset + i
+			result := new(
+				Dependency_Store_Task_Result,
+				mem.dynamic_arena_allocator(&payload.result_arenas[index]),
+			)
+			result.err = reader_err
+			payload.results[index] = result
+		}
+		return execution.No_Result{}
 	}
 	defer dep_store.reader_destroy(&reader)
-	if payload.any_profile {
-		record, ok, err := dep_store.reader_find_artifact_for_candidate_any_profile(
+	for candidate, i in payload.candidates {
+		index := payload.offset + i
+		payload.results[index] = dependency_store_find(
 			&reader,
-			payload.candidate.name,
-			dep_store_candidate_kind(payload.candidate.kind),
+			payload.profile,
+			candidate,
+			payload.any_profile,
+			payload.connection_key,
+			mem.dynamic_arena_allocator(&payload.result_arenas[index]),
+		)
+	}
+	return execution.No_Result{}
+}
+
+dependency_store_find :: proc(
+	reader: ^dep_store.Dependency_Store_Reader,
+	profile: ^dep_store.Dependency_Profile,
+	candidate: deps.Remote_Dependency_Candidate,
+	any_profile: bool,
+	connection_key: string,
+	result_allocator: mem.Allocator,
+) -> ^Dependency_Store_Task_Result {
+	result := new(Dependency_Store_Task_Result, result_allocator)
+	if any_profile {
+		record, ok, err := dep_store.reader_find_artifact_for_candidate_any_profile(
+			reader,
+			candidate.name,
+			dep_store_candidate_kind(candidate.kind),
 			context.temp_allocator,
 		)
 		result.ok = ok
@@ -262,17 +311,17 @@ dependency_store_find_task :: proc(
 			result.record = clone_dependency_record(&record, result_allocator)
 			result.input = source_input_from_dependency_record(
 				&result.record,
-				payload.candidate,
+				candidate,
 				result_allocator,
 			)
 		}
-	} else if payload.profile != nil {
+	} else if profile != nil {
 		status, err := dep_store.reader_find_cached_candidate(
-			&reader,
-			payload.profile,
-			payload.connection_key,
-			payload.candidate.name,
-			dep_store_candidate_kind(payload.candidate.kind),
+			reader,
+			profile,
+			connection_key,
+			candidate.name,
+			dep_store_candidate_kind(candidate.kind),
 			context.temp_allocator,
 		)
 		result.err = err
@@ -280,10 +329,10 @@ dependency_store_find_task :: proc(
 			result.negative = true
 		} else if err == .None && status == .Artifact {
 			record, ok, lookup_err := dep_store.reader_find_artifact_for_candidate(
-				&reader,
-				payload.profile,
-				payload.candidate.name,
-				dep_store_candidate_kind(payload.candidate.kind),
+				reader,
+				profile,
+				candidate.name,
+				dep_store_candidate_kind(candidate.kind),
 				context.temp_allocator,
 			)
 			result.ok = ok
@@ -292,7 +341,7 @@ dependency_store_find_task :: proc(
 				result.record = clone_dependency_record(&record, result_allocator)
 				result.input = source_input_from_dependency_record(
 					&result.record,
-					payload.candidate,
+					candidate,
 					result_allocator,
 				)
 			}

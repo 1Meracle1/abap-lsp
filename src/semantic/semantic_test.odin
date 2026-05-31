@@ -9919,7 +9919,61 @@ standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T
 }
 
 @(test)
-dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
+dependency_store_cache_misses_keep_fallback_candidates :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-cache-miss-fallback")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	remote := [?]deps.Remote_Dependency_Candidate {
+		{name = "tpak_package_interface_list", kind = .Type},
+		{name = "zinc_missing", kind = .Include},
+		{name = "zmissing_report", kind = .Report},
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	seen := make(map[i64]bool, context.allocator)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 8}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	temp_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&temp_arena)
+	defer virtual.arena_destroy(&temp_arena)
+	previous_temp_allocator := context.temp_allocator
+	context.temp_allocator = virtual.arena_allocator(&temp_arena)
+	defer context.temp_allocator = previous_temp_allocator
+
+	cache_result := remote_deps.add_dependency_cache_matches(
+		&candidates,
+		&dependencies,
+		remote[:],
+		&store,
+		&profile,
+		false,
+		"test-connection",
+		&seen,
+		&pool,
+		"file:///ZMAIN.abap",
+		"cache",
+	)
+	clobber := make([dynamic]deps.Remote_Dependency_Candidate, 0, 32, context.temp_allocator)
+	for _ in 0 ..< 32 {
+		append(&clobber, deps.Remote_Dependency_Candidate{name = "clobber", kind = .Report})
+	}
+
+	testing.expect(t, !cache_result.added)
+	testing.expect_value(t, len(cache_result.adt_candidates), len(remote))
+	testing.expect_value(t, len(cache_result.local_candidates), len(remote))
+	testing.expect_value(t, cache_result.local_candidates[0].name, "tpak_package_interface_list")
+	testing.expect_value(t, cache_result.local_candidates[0].kind, deps.Remote_Dependency_Kind.Type)
+}
+
+@(test)
+dependency_store_candidates_reuse_reader_without_lookup_tasks :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("dependency-store-task-lookup")
 	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
 	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
@@ -9965,6 +10019,7 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	remote := [?]deps.Remote_Dependency_Candidate {
 		{name = "ZCL_STORE_TASK", kind = .Type},
 		{name = "ZINC_STORE_TASK", kind = .Include},
+		{name = "ZMISS_STORE_TASK", kind = .Report},
 	}
 	seen := make(map[i64]bool, context.allocator)
 	temp_arena: virtual.Arena
@@ -9973,6 +10028,7 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	previous_temp_allocator := context.temp_allocator
 	context.temp_allocator = virtual.arena_allocator(&temp_arena)
 	defer context.temp_allocator = previous_temp_allocator
+	worker_limit := max(pool.options.worker_count, 1)
 	before := execution.pool_stats(&pool)
 	cache_result := remote_deps.add_dependency_cache_matches(
 		&candidates,
@@ -9998,7 +10054,9 @@ dependency_store_candidates_submit_lookup_tasks :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(candidates), 1)
 	testing.expect_value(t, dependencies[0].mode, analyze.Source_Mode.Dependency_Interface)
 	testing.expect_value(t, candidates[0].input.mode, analyze.Source_Mode.Dependency_Interface)
-	testing.expect(t, after.submitted >= before.submitted + u64(len(remote)))
+	lookup_tasks := after.submitted - before.submitted
+	testing.expect(t, lookup_tasks < u64(len(remote)))
+	testing.expect(t, lookup_tasks <= u64(worker_limit))
 }
 
 @(test)
