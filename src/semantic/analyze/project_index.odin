@@ -20,6 +20,7 @@ Project_Index :: struct {
 	provided_name_counts:     map[string]int,
 	class_scope_entries:      map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	class_scope_candidates:   map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
+	names:                    map[string]string,
 	unit_entries:             [dynamic]Project_Index_Unit,
 	visible:                  [][dynamic]Unit_Id,
 	predecessors:             [][dynamic]Unit_Id,
@@ -50,9 +51,22 @@ project_index_make :: proc(allocator: mem.Allocator) -> Project_Index {
 		provided_name_counts = make(map[string]int, 16, allocator),
 		class_scope_entries = make(map[Project_Class_Member_Key]Project_Class_Member_Entry, 16, allocator),
 		class_scope_candidates = make(map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry, 16, allocator),
+		names = make(map[string]string, 128, allocator),
 		unit_entries = make([dynamic]Project_Index_Unit, 0, 8, allocator),
 		allocator = allocator,
 	}
+}
+
+project_index_name :: proc(index: ^Project_Index, name: string) -> string {
+	if name == "" {
+		return ""
+	}
+	if interned, ok := index.names[name]; ok {
+		return interned
+	}
+	interned := strings.clone(name, index.allocator)
+	index.names[interned] = interned
+	return interned
 }
 
 project_index_from_units :: proc(units: []Unit_Analysis, allocator: mem.Allocator) -> Project_Index {
@@ -135,7 +149,7 @@ project_index_collect_unit :: proc(
 	data := &index.unit_entries[unit_index]
 	unit_stem := uri_file_stem(unit.uri)
 	for name in unit.provided_names {
-		index_name := strings.clone(name, index.allocator)
+		index_name := project_index_name(index, name)
 		append(&data.provided_names, index_name)
 		project_index_increment_name_count(
 			&index.provided_name_counts,
@@ -167,7 +181,7 @@ project_index_collect_unit :: proc(
 			if !symbol_kind_occupies(symbol.kind, namespace) {
 				continue
 			}
-			index_name := strings.clone(symbol.name, index.allocator)
+			index_name := project_index_name(index, symbol.name)
 			entry := Root_Symbol_Entry {
 				unit = unit.unit_id,
 				symbol = symbol.id,
@@ -211,7 +225,31 @@ project_index_update_include_graph :: proc(
 	if rebuild {
 		project_index_rebuild_include_graph(index, units)
 	}
-	project_index_rebuild_class_scope_index(index, units)
+	if rebuild || project_index_class_scope_dirty(units, unit_ids) {
+		project_index_rebuild_class_scope_index(index, units)
+	}
+}
+
+project_index_class_scope_dirty :: proc(units: []Unit_Analysis, unit_ids: []Unit_Id) -> bool {
+	for unit_id in unit_ids {
+		unit_index := unit_id_index(unit_id)
+		if unit_index < 0 || unit_index >= len(units) {
+			continue
+		}
+		unit := &units[unit_index]
+		if len(unit.class_definitions) > 0 ||
+		   len(unit.class_inheritance) > 0 ||
+		   len(unit.implemented_interfaces) > 0 ||
+		   len(unit.member_aliases) > 0 {
+			return true
+		}
+		for symbol in unit.symbols {
+			if symbol.kind == .Class || symbol.kind == .Interface {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 project_index_include_targets_changed :: proc(data: ^Project_Index_Unit, unit: ^Unit_Analysis) -> bool {
@@ -290,7 +328,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 								class_unit   = unit.unit_id,
 								class_symbol = owner.id,
 								namespace    = namespace,
-								name         = strings.clone(symbol.name, index.allocator),
+								name         = project_index_name(index, symbol.name),
 							},
 							Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
 						)
@@ -342,7 +380,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 						continue
 					}
 					if target_entry, target_ok := index.class_scope_entries[target_key]; target_ok {
-						alias_key.name = strings.clone(alias.alias_name, index.allocator)
+						alias_key.name = project_index_name(index, alias.alias_name)
 						project_index_record_class_scope_entry(index, unit.unit_id, alias_key, target_entry)
 						changed = true
 					}

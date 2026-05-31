@@ -45,6 +45,7 @@ Inline_Symbol_Index :: struct {
 
 Inferred_Unit_Facts :: struct {
 	expression_facts: [dynamic]Expression_Fact_Data,
+	operands:         [dynamic]Operand_Data,
 	symbol_updates:   [dynamic]Inferred_Symbol_Type_Update,
 	assignments:      [dynamic]Inferred_Assignment_Update,
 	concatenates:     [dynamic]Inferred_Concatenate_Update,
@@ -62,6 +63,13 @@ inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 			[dynamic]Expression_Fact_Data,
 			0,
 			len(unit.references) + len(unit.field_accesses) + len(unit.call_sites),
+			allocator,
+		),
+		operands = make(
+			[dynamic]Operand_Data,
+			0,
+			len(unit.operands) + len(unit.references) + len(unit.field_accesses) + len(unit.call_sites) +
+				len(unit.assignment_sites) * 2,
 			allocator,
 		),
 		symbol_updates = make(
@@ -98,8 +106,22 @@ infer_unit_semantic_facts :: proc(
 
 	inline_symbols := inline_symbol_index_make(unit, context.temp_allocator)
 
+	for operand in unit.operands {
+		if !(.Syntax in operand.flags) {
+			continue
+		}
+		next := operand
+		if next.has_symbol && next.symbol.unit == unit.unit_id {
+			if symbol(unit, next.symbol.symbol) != nil {
+				next.type_fact = type_fact_from_symbol_handle(project, unit_index, next.symbol)
+			}
+		}
+		append(&out.operands, next)
+	}
+
 	for ref in unit.references {
 		if ref.namespace != .Value {
+			append(&out.operands, reference_operand(project, unit_index, ref))
 			continue
 		}
 		fact := unknown_type_fact()
@@ -107,6 +129,7 @@ infer_unit_semantic_facts :: proc(
 			fact = type_fact_from_symbol_handle(project, unit_index, ref.resolution.symbol)
 		}
 		push_expression_fact(&out.expression_facts, ref.scope, ref.range, .Reference, fact)
+		append(&out.operands, reference_operand(project, unit_index, ref))
 	}
 
 	for access in unit.field_accesses {
@@ -116,12 +139,16 @@ infer_unit_semantic_facts :: proc(
 		if fact, ok := resolve_field_access_tail(project, lookup, unit_index, access); ok {
 			range := field_access_range(access)
 			push_expression_fact(&out.expression_facts, access.scope, range, .Selector, fact)
+			push_operand(&out.operands, access.scope, range, .Field, fact, assignable = true)
 		}
 	}
 
 	for site in unit.call_sites {
 		fact := call_result_type_fact(project, lookup, unit_index, site)
 		push_expression_fact(&out.expression_facts, site.scope, site.range, .Call_Result, fact)
+		if type_fact_is_known(fact) {
+			push_operand(&out.operands, site.scope, site.range, .Value, fact)
+		}
 	}
 
 	range_facts := range_type_fact_index_make(
@@ -145,6 +172,12 @@ infer_unit_semantic_facts :: proc(
 		}
 		if fact, ok := type_fact_for_range_indexed(&range_facts, assignment.rhs_range); ok {
 			rhs = fact
+		}
+		if assignment.lhs_range.end > assignment.lhs_range.start {
+			push_operand(&out.operands, assignment.scope, assignment.lhs_range, .Variable, lhs, assignable = true)
+		}
+		if assignment.rhs_range.end > assignment.rhs_range.start {
+			push_operand(&out.operands, assignment.scope, assignment.rhs_range, .Value, rhs)
 		}
 		append(&out.assignments, Inferred_Assignment_Update{index = i, lhs = lhs, rhs = rhs})
 		if symbol_id, ok := inline_symbol_at_range_indexed(&inline_symbols, assignment.lhs_range);
@@ -178,6 +211,8 @@ apply_inferred_project_facts :: proc(
 		unit := &project.units[unit_index]
 		delete(unit.expression_facts)
 		unit.expression_facts = facts.expression_facts
+		delete(unit.operands)
+		unit.operands = facts.operands
 		for update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
@@ -223,6 +258,8 @@ apply_inferred_project_facts_for_indices :: proc(
 		unit := &project.units[unit_index]
 		delete(unit.expression_facts)
 		unit.expression_facts = facts.expression_facts
+		delete(unit.operands)
+		unit.operands = facts.operands
 		for update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
@@ -524,5 +561,33 @@ push_expression_fact :: proc(
 	append(
 		facts,
 		Expression_Fact_Data{scope = scope_id, range = range, kind = kind, type_fact = type_fact},
+	)
+}
+
+push_operand :: proc(
+	operands: ^[dynamic]Operand_Data,
+	scope: Scope_Id,
+	range: tokenizer.Range,
+	mode: Operand_Mode,
+	type_fact: Type_Fact_Data,
+	symbol := Symbol_Handle{},
+	has_symbol := false,
+	assignable := false,
+) {
+	flags := Operand_Flags{}
+	if assignable {
+		flags += {.Assignable}
+	}
+	append(
+		operands,
+		Operand_Data {
+			scope = scope,
+			range = range,
+			mode = mode,
+			type_fact = type_fact,
+			symbol = symbol,
+			has_symbol = has_symbol,
+			flags = flags,
+		},
 	)
 }

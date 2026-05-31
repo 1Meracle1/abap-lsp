@@ -719,16 +719,7 @@ project_state_finish :: proc(
 		allocator,
 	)
 	lookup := &state.index
-	infer_project_semantic_facts_for_units(
-		&project,
-		lookup,
-		affected[:],
-		pool,
-		state.unit_allocators,
-		allocator,
-	)
-	check_project_operands_for_units(&project, lookup, affected[:])
-	validate_project_units_for_units(
+	check_project_bodies_for_units(
 		&project,
 		lookup,
 		affected[:],
@@ -1778,9 +1769,7 @@ finish_project_analysis :: proc(
 	link_class_member_implementations_with_index(project.units[:], &index.root_lookup, index.predecessors)
 	reclassify_project_open_sql_predicate_host_variables_for_units(project.units[:], unit_ids[:], allocator)
 	lookup := &index
-	infer_project_semantic_facts(project, lookup, pool, unit_allocators, allocator)
-	check_project_operands(project, lookup)
-	validate_project_units(project, lookup, pool, unit_allocators, allocator)
+	check_project_bodies(project, lookup, pool, unit_allocators, allocator)
 	collect_project_diagnostics(project)
 }
 
@@ -1799,10 +1788,7 @@ parse_collect_input :: proc(
 	input: Source_Input,
 	allocator: mem.Allocator,
 ) -> Unit_Analysis {
-	parse_arena: virtual.Arena
-	_ = virtual.arena_init_growing(&parse_arena)
-	defer virtual.arena_destroy(&parse_arena)
-	parsed := parser.parse(input.source, input.uri, virtual.arena_allocator(&parse_arena))
+	parsed := parser.parse(input.source, input.uri, allocator)
 	return collect_unit(unit_id, input.uri, input.source, parsed, allocator, input.mode)
 }
 
@@ -1988,6 +1974,31 @@ collect_project_diagnostics :: proc(project: ^Project_Analysis) {
 			}
 		}
 	}
+}
+
+@(private)
+check_project_bodies :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	pool: ^execution.Pool,
+	unit_allocators: []mem.Allocator,
+	allocator: mem.Allocator,
+) {
+	infer_project_semantic_facts(project, lookup, pool, unit_allocators, allocator)
+	validate_project_units(project, lookup, pool, unit_allocators, allocator)
+}
+
+@(private)
+check_project_bodies_for_units :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_ids: []Unit_Id,
+	pool: ^execution.Pool,
+	unit_allocators: []mem.Allocator,
+	allocator: mem.Allocator,
+) {
+	infer_project_semantic_facts_for_units(project, lookup, unit_ids, pool, unit_allocators, allocator)
+	validate_project_units_for_units(project, lookup, unit_ids, pool, unit_allocators, allocator)
 }
 
 @(private)

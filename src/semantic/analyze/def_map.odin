@@ -861,6 +861,7 @@ Unit_Analysis :: struct {
 	uri:                                    string,
 	source:                                 string,
 	source_mode:                            Source_Mode,
+	root:                                   ^ast.File,
 	root_scope:                             Scope_Id,
 	scopes:                                 [dynamic]Scope_Data,
 	symbols:                                [dynamic]Symbol_Data,

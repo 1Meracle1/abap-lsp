@@ -827,8 +827,18 @@ validate_field_accesses :: proc(
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	for access in project.units[unit_index].field_accesses {
+	unit := &project.units[unit_index]
+	resolved_selectors := make(map[tokenizer.Range]bool, len(unit.expression_facts), context.temp_allocator)
+	for fact in unit.expression_facts {
+		if fact.kind == .Selector {
+			resolved_selectors[fact.range] = true
+		}
+	}
+	for access in unit.field_accesses {
 		if len(access.field_path) == 0 || access.in_type_position {
+			continue
+		}
+		if resolved_selectors[field_access_range(access)] {
 			continue
 		}
 		if _, ok := resolve_field_access_tail(project, lookup, unit_index, access); !ok {
@@ -837,7 +847,7 @@ validate_field_accesses :: proc(
 			   len(access.field_path) == 1 &&
 			   access.field_path[0].selector == .Dash &&
 			   access.field_path[0].name == "table_line" {
-				for query in project.units[unit_index].sql_queries {
+				for query in unit.sql_queries {
 					if !(.Has_For_All_Entries in query.flags) ||
 					   query.for_all_entries_name != access.base_name ||
 					   !range_valid(query.where_clause) ||
