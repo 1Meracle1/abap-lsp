@@ -568,6 +568,8 @@ Field_Access :: struct {
 	base_range:       tokenizer.Range,
 	field_path:       [dynamic]Field_Access_Segment,
 	in_type_position: bool,
+	requires_known_base_shape: bool,
+	where_candidate_name: string,
 }
 
 Loop_Where_Field_Context :: struct {
@@ -613,6 +615,7 @@ Structure_Field_Data :: struct {
 	has_type_clause_form: bool,
 	value_clause_display: string,
 	description:          string,
+	include_renaming_suffix: string,
 	flags:                Structure_Field_Flags,
 }
 

@@ -3694,6 +3694,25 @@ ENDFORM.
 }
 
 @(test)
+internal_table_where_keeps_values_out_of_row_field_diagnostics :: proc(t: ^testing.T) {
+	source := `
+FORM run USING iv_id TYPE string.
+  TYPES: BEGIN OF ty_row,
+           id TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  CONSTANTS c_id TYPE string VALUE 'A'.
+  DELETE lt_rows WHERE id = c_id.
+  DELETE lt_rows WHERE id = iv_id.
+  DELETE lt_rows WHERE table_line IS INITIAL.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///internal_table_where_values.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 selection_ranges_collect_range_structure :: proc(t: ^testing.T) {
 	source := `
 TYPES zattp_gln TYPE string.

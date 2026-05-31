@@ -893,6 +893,10 @@ validate_field_accesses :: proc(
 			if !field_access_base_resolves(project, lookup, unit_index, access) {
 				continue
 			}
+			if access.requires_known_base_shape &&
+			   !internal_table_where_field_candidate_is_valid(project, lookup, unit_index, access) {
+				continue
+			}
 			field := access.field_path[len(access.field_path) - 1]
 			append_diag(
 				out,
@@ -921,6 +925,71 @@ field_access_base_resolves :: proc(
 	}
 	_, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
 	return ok
+}
+
+internal_table_where_field_candidate_is_valid :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> bool {
+	if access.where_candidate_name == "table_line" {
+		return false
+	}
+	if access.where_candidate_name != "" {
+		if _, ok := value_handle_for_name(
+			project,
+			lookup,
+			unit_index,
+			access.scope,
+			access.where_candidate_name,
+		); ok {
+			return false
+		}
+	}
+	return field_access_base_has_known_shape(project, lookup, unit_index, access)
+}
+
+field_access_base_has_known_shape :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> bool {
+	if access.base_namespace == .Type {
+		return true
+	}
+	base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
+	if !ok {
+		return false
+	}
+	base_unit_index := unit_id_index(base.unit)
+	if base_unit_index < 0 || base_unit_index >= len(project.units) {
+		return false
+	}
+	s := symbol(&project.units[base_unit_index], base.symbol)
+	if s == nil {
+		return false
+	}
+	if s.structure != INVALID_STRUCTURE_ID {
+		return true
+	}
+	if !s.has_declared_type {
+		return false
+	}
+	if fact, _, fact_ok := type_fact_from_declared_type(
+		project,
+		lookup,
+		base_unit_index,
+		s.scope,
+		s.declared_type,
+		s.type_clause_form,
+		s.has_type_clause_form,
+		0,
+	); fact_ok {
+		return fact.structure != INVALID_STRUCTURE_ID
+	}
+	return false
 }
 
 validate_call_sites :: proc(

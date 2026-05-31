@@ -1084,8 +1084,6 @@ declare_info_symbol :: proc(
 	if has_type {
 		if info.type_clause != nil && info.type_clause.form == .Range_Of {
 			structure_id = push_range_structure(c, scope, info.name, declared_type)
-		} else if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
-			structure_id = resolved
 		}
 		add_type_reference(c, scope, declared_type, info.range, type_form, has_type_form)
 	}
@@ -1126,9 +1124,6 @@ declare_typed_symbol :: proc(
 	type_table_has_of := type_clause_table_has_of_from_ast(type_clause)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
-		if resolved, ok := resolve_field_type_ref(c, scope, declared_type); ok {
-			structure_id = resolved
-		}
 		add_type_reference(c, scope, declared_type, range, type_form, has_type_form)
 	}
 	return declare_collected_symbol(
@@ -1359,9 +1354,6 @@ structure_field_from_info :: proc(
 	apply_occurs_table_form(info, &type_form, &has_type_form)
 	structure_id := INVALID_STRUCTURE_ID
 	if has_type {
-		if resolved, ok := resolve_field_type_ref(c, scope, type_ref); ok {
-			structure_id = resolved
-		}
 		add_type_reference(c, scope, type_ref, info.range, type_form, has_type_form)
 	}
 	type_id := type_structure(c.unit, structure_id) if structure_id != INVALID_STRUCTURE_ID else UNKNOWN_TYPE_ID
@@ -1403,22 +1395,6 @@ extend_structure_from_include :: proc(
 		append(fields, field)
 		return
 	}
-	resolved := INVALID_STRUCTURE_ID
-	if found, found_ok := resolve_field_type_ref(c, scope, type_ref); found_ok {
-		resolved = found
-		for source in c.unit.structures {
-			if source.id == found {
-				for field in source.fields {
-					next := field
-					if info.renaming_suffix != "" {
-						next.name = concat2(c, field.name, info.renaming_suffix)
-					}
-					append(fields, next)
-				}
-				break
-			}
-		}
-	}
 	if info.as_name != "" {
 		flags := Structure_Field_Flags{.Has_Type_Ref}
 		append(
@@ -1426,29 +1402,28 @@ extend_structure_from_include :: proc(
 			Structure_Field_Data {
 				name = canonical_name(info.as_name, c.allocator),
 				decl_unit = c.unit.unit_id,
-				type_id = type_structure(c.unit, resolved) if resolved != INVALID_STRUCTURE_ID else UNKNOWN_TYPE_ID,
-				structure = resolved,
+				structure = INVALID_STRUCTURE_ID,
 				type_ref = type_ref,
 				type_clause_form = .Structure,
 				has_type_clause_form = true,
 				flags = flags,
 			},
 		)
+		return
 	}
-	if resolved == INVALID_STRUCTURE_ID && info.as_name == "" {
-		append(
-			fields,
-			Structure_Field_Data {
-				decl_range = info.range,
-				decl_unit = c.unit.unit_id,
-				structure = INVALID_STRUCTURE_ID,
-				type_ref = type_ref,
-				type_clause_form = .Structure,
-				has_type_clause_form = true,
-				flags = {.Has_Type_Ref, .Is_Include},
-			},
-		)
-	}
+	append(
+		fields,
+		Structure_Field_Data {
+			decl_range = info.range,
+			decl_unit = c.unit.unit_id,
+			structure = INVALID_STRUCTURE_ID,
+			type_ref = type_ref,
+			type_clause_form = .Structure,
+			has_type_clause_form = true,
+			include_renaming_suffix = strings.clone(info.renaming_suffix, c.allocator) if info.renaming_suffix != "" else "",
+			flags = {.Has_Type_Ref, .Is_Include},
+		},
+	)
 }
 
 include_type_component_field :: proc(
@@ -1537,15 +1512,10 @@ range_field :: proc(
 	name: string,
 	type_ref: Field_Type_Ref_Data,
 ) -> Structure_Field_Data {
-	structure_id := INVALID_STRUCTURE_ID
-	if resolved, ok := resolve_field_type_ref(c, scope, type_ref); ok {
-		structure_id = resolved
-	}
 	return Structure_Field_Data {
 		name = strings.clone(name, c.allocator),
 		decl_unit = c.unit.unit_id,
-		type_id = type_structure(c.unit, structure_id) if structure_id != INVALID_STRUCTURE_ID else UNKNOWN_TYPE_ID,
-		structure = structure_id,
+		structure = INVALID_STRUCTURE_ID,
 		type_ref = type_ref,
 		flags = {.Has_Type_Ref},
 	}
@@ -1880,143 +1850,11 @@ add_type_reference :: proc(
 	}
 }
 
-resolve_field_type_ref :: proc(
-	c: ^Collector,
-	scope: Scope_Id,
-	type_ref: Field_Type_Ref_Data,
-) -> (
-	Structure_Id,
-	bool,
-) {
-	if type_ref.base_name == "" {
-		return INVALID_STRUCTURE_ID, false
-	}
-	symbol_id, ok := lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, type_ref.namespace)
-	if !ok && type_ref.namespace == .Type {
-		symbol_id, ok = lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, .Value)
-	}
-	if !ok && type_ref.namespace == .Type {
-		if class_symbol, class_ok := enclosing_owner(c, scope, .Class); class_ok {
-			symbol_id, ok = class_type_symbol(c, class_symbol, type_ref.base_name)
-		}
-	}
-	if !ok {
-		return INVALID_STRUCTURE_ID, false
-	}
-	s := c.unit.symbols[symbol_id_index(symbol_id)]
-	if (s.kind == .Class || s.kind == .Interface) && len(type_ref.field_path) > 0 {
-		return resolve_class_type_ref(c, symbol_id, type_ref.field_path[:], type_ref.field_selectors[:], type_ref.field_derefs[:])
-	}
-	if s.structure == INVALID_STRUCTURE_ID {
-		return INVALID_STRUCTURE_ID, false
-	}
-	return resolve_structure_path(
-		c,
-		s.structure,
-		type_ref.field_path[:],
-		type_ref.field_selectors[:],
-		type_ref.field_derefs[:],
-	)
-}
-
-resolve_class_type_ref :: proc(
-	c: ^Collector,
-	class_symbol: Symbol_Id,
-	path: []string,
-	selectors: []ast.Selector_Op,
-	derefs: []bool,
-) -> (
-	Structure_Id,
-	bool,
-) {
-	nested, ok := class_type_symbol(c, class_symbol, path[0])
-	if !ok {
-		return INVALID_STRUCTURE_ID, false
-	}
-	s := c.unit.symbols[symbol_id_index(nested)]
-	if s.structure == INVALID_STRUCTURE_ID {
-		return INVALID_STRUCTURE_ID, false
-	}
-	if len(path) == 1 {
-		return s.structure, true
-	}
-	next_selectors := selectors
-	next_derefs := derefs
-	if len(next_selectors) > 0 {next_selectors = next_selectors[1:]}
-	if len(next_derefs) > 0 {next_derefs = next_derefs[1:]}
-	return resolve_structure_path(c, s.structure, path[1:], next_selectors, next_derefs)
-}
-
-class_type_symbol :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> (Symbol_Id, bool) {
-	for scope in c.unit.scopes {
-		if scope.owner != class_symbol {
-			continue
-		}
-		if id, ok := scope_lookup_declaration(c.unit, scope.id, .Type, name); ok {
-			return id, true
-		}
-	}
-	return INVALID_SYMBOL_ID, false
-}
-
 type_ref_path_selector :: #force_inline proc(
 	type_ref: Field_Type_Ref_Data,
 	index: int,
 ) -> ast.Selector_Op {
 	return type_ref.field_selectors[index] if index < len(type_ref.field_selectors) else .Dash
-}
-
-type_ref_selector_at :: #force_inline proc(selectors: []ast.Selector_Op, index: int) -> ast.Selector_Op {
-	return selectors[index] if index < len(selectors) else .Dash
-}
-
-resolve_structure_path :: proc(
-	c: ^Collector,
-	id: Structure_Id,
-	path: []string,
-	selectors: []ast.Selector_Op,
-	derefs: []bool,
-) -> (
-	Structure_Id,
-	bool,
-) {
-	current := id
-	for segment, i in path {
-		if i < len(derefs) && derefs[i] {
-			continue
-		}
-		if type_ref_selector_at(selectors, i) != .Dash {
-			return INVALID_STRUCTURE_ID, false
-		}
-		st := find_collected_structure(c, current)
-		if st == nil {
-			return INVALID_STRUCTURE_ID, false
-		}
-		found := false
-		next := INVALID_STRUCTURE_ID
-		for field in st.fields {
-			if strings.equal_fold(field.name, segment) &&
-			   field.structure != INVALID_STRUCTURE_ID {
-				found = true
-				next = field.structure
-				break
-			}
-		}
-		if !found {
-			return INVALID_STRUCTURE_ID, false
-		}
-		current = next
-	}
-	return current, true
-}
-
-find_collected_structure :: proc(c: ^Collector, id: Structure_Id) -> ^Structure_Data {
-	for &st in c.unit.structures {
-		if st.id == id {
-			return &st
-		}
-	}
-	return nil
 }
 
 lookup_symbol_in_scope_chain :: proc(
@@ -2467,11 +2305,6 @@ collect_class_attribute_infos :: proc(
 			if info.kind == .Begin_Group {
 				structure_id = structure_from_group(c, scope, infos, i)
 				type_id = type_structure(c.unit, structure_id)
-			} else if type_ref, type_ok := type_ref_from_clause(c, info.type_clause); type_ok {
-				if resolved, resolved_ok := resolve_field_type_ref(c, scope, type_ref); resolved_ok {
-					structure_id = resolved
-				}
-				type_id = type_structure(c.unit, structure_id) if structure_id != INVALID_STRUCTURE_ID else UNKNOWN_TYPE_ID
 			}
 		}
 		decl_flags := Decl_Info_Flags{}
@@ -2865,10 +2698,6 @@ form_parameters_from_ast :: proc(
 		}
 		structure_id := INVALID_STRUCTURE_ID
 		if has_type {
-			if resolved, resolved_ok := resolve_field_type_ref(c, scope, declared_type);
-			   resolved_ok {
-				structure_id = resolved
-			}
 			add_type_reference(c, scope, declared_type, clause.range, type_form, has_type_form)
 		}
 		symbol_id := declare_collected_symbol(

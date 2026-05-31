@@ -1878,13 +1878,11 @@ build_scope_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Re
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
-	refresh_unit_type_ids(unit)
-	if expand_local_structure_includes(
+	expand_local_structure_includes(
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
-	) {
-		refresh_unit_type_ids(unit)
-	}
+	)
+	refresh_unit_type_ids(unit)
 	return execution.No_Result{}
 }
 

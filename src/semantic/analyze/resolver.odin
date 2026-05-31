@@ -74,10 +74,8 @@ analyze_unit :: proc(
 resolve_unit_locally :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) {
 	index := build_scope_index(unit, allocator)
 	unit.scope_index = index
+	expand_local_structure_includes(unit, allocator)
 	refresh_unit_type_ids(unit)
-	if expand_local_structure_includes(unit, allocator) {
-		refresh_unit_type_ids(unit)
-	}
 	resolve_unit_with_index(unit, &unit.scope_index)
 }
 
@@ -1657,7 +1655,6 @@ expand_local_structure_includes :: proc(
 			if structure_id, ok := local_structure_for_type_ref(unit, s.scope, s.declared_type);
 			   ok {
 				s.structure = structure_id
-				s.type_id = type_id_from_symbol_data(unit, s)
 				changed = true
 				any_changed = true
 			}
@@ -1716,7 +1713,15 @@ expand_resolved_structure_includes :: proc(unit: ^Unit_Analysis, allocator: mem.
 			   field.structure != unit.structures[structure_index].id {
 				if included := structure(unit, field.structure); included != nil {
 					for included_field in included.fields {
-						append(&new_fields, included_field)
+						next := included_field
+						if field.include_renaming_suffix != "" {
+							next.name = append_structure_field_suffix(
+								included_field.name,
+								field.include_renaming_suffix,
+								allocator,
+							)
+						}
+						append(&new_fields, next)
 					}
 					changed = true
 					continue
@@ -1727,6 +1732,13 @@ expand_resolved_structure_includes :: proc(unit: ^Unit_Analysis, allocator: mem.
 		unit.structures[structure_index].fields = new_fields
 	}
 	return changed
+}
+
+append_structure_field_suffix :: proc(name, suffix: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, name)
+	strings.write_string(&out, suffix)
+	return strings.to_string(out)
 }
 
 local_structure_for_type_ref :: proc(

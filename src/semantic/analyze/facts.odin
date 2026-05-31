@@ -2481,6 +2481,8 @@ collect_internal_table_where_refs :: proc(
 					base_name = target_access.base_name,
 					base_range = target_access.base_range,
 					field_path = path,
+					requires_known_base_shape = true,
+					where_candidate_name = access.base_name,
 				},
 			)
 			return
@@ -2540,7 +2542,7 @@ internal_table_where_target_has_shape :: proc(
 		return false
 	}
 	s := c.unit.symbols[symbol_id_index(symbol_id)]
-	return s.structure != INVALID_STRUCTURE_ID
+	return s.structure != INVALID_STRUCTURE_ID || s.has_declared_type
 }
 
 class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> bool {
