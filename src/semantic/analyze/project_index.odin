@@ -24,6 +24,7 @@ Project_Index :: struct {
 Project_Index_Unit :: struct {
 	roots:               [dynamic]Root_Symbol_Entry,
 	provided_names:      [dynamic]string,
+	exports:             [dynamic]string,
 	class_scope_entries: [dynamic]Project_Class_Scope_Index_Entry,
 	include_targets:     [dynamic]Unit_Id,
 }
@@ -91,6 +92,7 @@ project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) 
 			Project_Index_Unit {
 				roots = make([dynamic]Root_Symbol_Entry, 0, 8, index.allocator),
 				provided_names = make([dynamic]string, 0, 4, index.allocator),
+				exports = make([dynamic]string, 0, 8, index.allocator),
 				class_scope_entries = make(
 					[dynamic]Project_Class_Scope_Index_Entry,
 					0,
@@ -138,6 +140,7 @@ project_index_remove_unit :: proc(index: ^Project_Index, unit_id: Unit_Id) {
 	}
 	clear(&data.roots)
 	clear(&data.provided_names)
+	clear(&data.exports)
 	clear(&data.class_scope_entries)
 }
 
@@ -147,6 +150,7 @@ project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, 
 	for name in unit.provided_names {
 		index_name := project_index_name(index, name)
 		append(&data.provided_names, index_name)
+		project_index_add_remote_export(data, index_name)
 		project_index_increment_name_count(
 			&index.provided_name_counts,
 			&index.root_lookup.provided_names,
@@ -197,6 +201,9 @@ project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, 
 				continue
 			}
 			append(&data.roots, entry)
+			if is_typepool && symbol.kind == .Constant {
+				project_index_add_remote_export(data, entry.name)
+			}
 			project_index_add_global_root_candidate(
 				index,
 				Root_Name_Key{namespace = entry.namespace, name = entry.name},
@@ -204,6 +211,22 @@ project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, 
 			)
 		}
 	}
+}
+
+@(private)
+project_index_add_remote_export :: proc(
+	data: ^Project_Index_Unit,
+	name: string,
+) {
+	if name == "" {
+		return
+	}
+	for existing in data.exports {
+		if existing == name {
+			return
+		}
+	}
+	append(&data.exports, name)
 }
 
 project_index_update_include_graph :: proc(

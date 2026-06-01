@@ -137,6 +137,7 @@ record_project_unresolved_candidates :: proc(
 	project_state_unresolved_candidates_destroy(state)
 	candidate_allocator := base_runtime.heap_allocator()
 	state.unresolved_candidates = make(map[deps.Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
+	state.remote_waiters_by_name = make(map[string][dynamic]Unit_Id, 64, candidate_allocator)
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
@@ -393,6 +394,10 @@ project_state_unresolved_candidates_destroy :: proc(state: ^Project_State) {
 		delete(units)
 	}
 	delete(state.unresolved_candidates)
+	for _, units in state.remote_waiters_by_name {
+		delete(units)
+	}
+	delete(state.remote_waiters_by_name)
 }
 
 @(private)
@@ -416,6 +421,32 @@ remove_remote_candidate_unit :: proc(
 		} else {
 			resize(&units, write)
 			state.unresolved_candidates[key] = units
+		}
+	}
+	remove_remote_export_waiter(state, key, unit_id)
+}
+
+@(private)
+remove_remote_export_waiter :: proc(
+	state: ^Project_State,
+	key: deps.Remote_Dependency_Key,
+	unit_id: Unit_Id,
+) {
+	if units, ok := state.remote_waiters_by_name[key.name]; ok {
+		write := 0
+		for waiting in units {
+			if waiting == unit_id {
+				continue
+			}
+			units[write] = waiting
+			write += 1
+		}
+		if write == 0 {
+			delete(units)
+			delete_key(&state.remote_waiters_by_name, key.name)
+		} else {
+			resize(&units, write)
+			state.remote_waiters_by_name[key.name] = units
 		}
 	}
 }
@@ -452,6 +483,7 @@ record_remote_candidate_unit_incremental :: proc(
 		append(&waiting_units, unit_id)
 		state.unresolved_candidates[key] = waiting_units
 	}
+	record_remote_export_waiter(state, key.name, unit_id)
 }
 
 @(private)
@@ -484,6 +516,23 @@ record_remote_candidate_unit :: proc(
 		append(&waiting_units, unit_id)
 		state.unresolved_candidates[key] = waiting_units
 	}
+	record_remote_export_waiter(state, key.name, unit_id)
+}
+
+@(private)
+record_remote_export_waiter :: proc(
+	state: ^Project_State,
+	name: string,
+	unit_id: Unit_Id,
+) {
+	if units, ok := state.remote_waiters_by_name[name]; ok {
+		push_unique_unit(&units, unit_id)
+		state.remote_waiters_by_name[name] = units
+		return
+	}
+	units := make([dynamic]Unit_Id, 0, 2, state.allocator)
+	append(&units, unit_id)
+	state.remote_waiters_by_name[name] = units
 }
 
 @(private)

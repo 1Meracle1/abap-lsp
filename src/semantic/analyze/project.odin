@@ -26,6 +26,7 @@ Project_State :: struct {
 	uri_to_unit:                map[string]Unit_Id,
 	reverse_edges:              map[Unit_Id][dynamic]Unit_Id,
 	unresolved_candidates:      map[deps.Remote_Dependency_Key][dynamic]Unit_Id,
+	remote_waiters_by_name:     map[string][dynamic]Unit_Id,
 	unit_dependencies:          [dynamic][dynamic]Unit_Id,
 	unit_unresolved_candidates: [dynamic][dynamic]deps.Remote_Dependency_Key,
 	diagnostics:                [dynamic]Diagnostic,
@@ -161,6 +162,7 @@ project_state_make :: proc(
 			16,
 			allocator,
 		),
+		remote_waiters_by_name = make(map[string][dynamic]Unit_Id, 16, allocator),
 		unit_dependencies = make([dynamic][dynamic]Unit_Id, 0, 8, allocator),
 		unit_unresolved_candidates = make(
 			[dynamic][dynamic]deps.Remote_Dependency_Key,
@@ -654,7 +656,10 @@ project_state_finish :: proc(
 		push_unique_unit(&affected, unit_id)
 	}
 	remote_waiters := make([dynamic]Unit_Id, 0, len(interface_changed), context.temp_allocator)
-	project_state_collect_remote_waiters(state, interface_changed[:], &affected, &remote_waiters)
+	if len(state.unresolved_candidates) > 0 {
+		project_index_update_units(&state.index, state.units[:], interface_changed[:])
+		project_state_collect_remote_waiters(state, interface_changed[:], &affected, &remote_waiters)
+	}
 	reverse_roots := make(
 		[dynamic]Unit_Id,
 		0,
@@ -712,10 +717,12 @@ project_state_collect_remote_waiters :: proc(
 ) {
 	for provider in providers {
 		unit_index := unit_id_index(provider)
-		for key, units in state.unresolved_candidates {
-			if !unit_provides_name(&state.units[unit_index], key.name) {
-				continue
-			}
+		if unit_index < 0 || unit_index >= len(state.index.unit_entries) {
+			continue
+		}
+		for export in state.index.unit_entries[unit_index].exports {
+			units, ok := state.remote_waiters_by_name[export]
+			if !ok {continue}
 			for unit_id in units {
 				push_unique_unit(affected, unit_id)
 				push_unique_unit(waiters, unit_id)
@@ -745,24 +752,6 @@ project_state_expand_reverse_dependents :: proc(
 			}
 		}
 	}
-}
-
-@(private)
-unit_provides_name :: proc(unit: ^Unit_Analysis, name: string) -> bool {
-	for provided in unit.provided_names {
-		if strings.equal_fold(provided, name) {
-			return true
-		}
-	}
-	if !typepool_dependency_unit(unit.uri) {
-		return false
-	}
-	for &s in unit.symbols {
-		if s.scope == unit.root_scope && s.kind == .Constant && strings.equal_fold(s.name, name) {
-			return true
-		}
-	}
-	return false
 }
 
 @(private)
@@ -940,8 +929,10 @@ resolve_effective_method_signatures_for_units :: proc(
 			if method_info == nil || method_info.body_scope == INVALID_SCOPE_ID {
 				continue
 			}
-			method_info.effective_signature =
-				Symbol_Handle{unit = INVALID_UNIT_ID, symbol = INVALID_SYMBOL_ID}
+			method_info.effective_signature = Symbol_Handle {
+				unit   = INVALID_UNIT_ID,
+				symbol = INVALID_SYMBOL_ID,
+			}
 			member, member_unit_index := method_signature_member_for_scope(
 				units,
 				unit_index,
@@ -1274,7 +1265,11 @@ project_state_update_dependency_graph_for_units :: proc(
 		clear(unit_dependencies)
 
 		unit := &project.units[unit_index]
-		dependency_seen := make(map[Unit_Id]bool, len(unit.references) + len(unit.include_edges) + 8, context.temp_allocator)
+		dependency_seen := make(
+			map[Unit_Id]bool,
+			len(unit.references) + len(unit.include_edges) + 8,
+			context.temp_allocator,
+		)
 		for edge in unit.include_edges {
 			if edge.has_target {
 				project_state_add_unit_dependency(
@@ -1701,25 +1696,26 @@ run_project_tasks :: proc(
 	state: ^Project_Work_State,
 	work: proc(_: Project_Task_Payload) -> execution.No_Result,
 ) {
-	graph: execution.Graph
-	execution.graph_init(&graph, pool, context.temp_allocator)
-	tasks := make(
-		[dynamic]execution.Task(execution.No_Result),
-		0,
-		len(unit_indices),
-		context.temp_allocator,
-	)
-	for unit_index in unit_indices {
+	if len(unit_indices) == 1 {
 		payload := Project_Task_Payload {
 			state      = state,
-			unit_index = unit_index,
+			unit_index = unit_indices[0],
 		}
-		task := execution.submit_value(&graph, execution.worker_executor(pool), payload, work)
-		append(&tasks, task)
+		work(payload)
+	} else {
+		graph: execution.Graph
+		execution.graph_init(&graph, pool, context.temp_allocator)
+		for unit_index in unit_indices {
+			payload := Project_Task_Payload {
+				state      = state,
+				unit_index = unit_index,
+			}
+			execution.submit_value(&graph, execution.worker_executor(pool), payload, work)
+		}
+		execution.graph_start(&graph)
+		execution.graph_wait(&graph)
+		execution.graph_destroy(&graph)
 	}
-	execution.graph_start(&graph)
-	execution.graph_wait(&graph)
-	execution.graph_destroy(&graph)
 }
 
 @(private)
@@ -2009,18 +2005,27 @@ validate_project_units_for_units :: proc(
 
 @(private)
 run_infer_tasks :: proc(graph: ^execution.Graph, state: ^Project_Infer_State) {
-	exec := execution.worker_executor(graph.pool)
-	for unit_index in 0 ..< len(state.project.units) {
+	if len(state.project.units) == 1 {
 		payload := Project_Infer_Payload {
 			state        = state,
-			unit_index   = unit_index,
-			output_index = unit_index,
+			unit_index   = 0,
+			output_index = 0,
 		}
-		_ = execution.submit_value(graph, exec, payload, infer_task)
+		infer_task(payload)
+	} else {
+		exec := execution.worker_executor(graph.pool)
+		for _, unit_index in state.project.units {
+			payload := Project_Infer_Payload {
+				state        = state,
+				unit_index   = unit_index,
+				output_index = unit_index,
+			}
+			execution.submit_value(graph, exec, payload, infer_task)
+		}
+		execution.graph_start(graph)
+		execution.graph_wait(graph)
+		execution.graph_reset(graph)
 	}
-	execution.graph_start(graph)
-	execution.graph_wait(graph)
-	execution.graph_reset(graph)
 }
 
 @(private)
@@ -2029,18 +2034,27 @@ run_infer_tasks_for_indices :: proc(
 	state: ^Project_Infer_State,
 	indices: []int,
 ) {
-	exec := execution.worker_executor(graph.pool)
-	for unit_index, i in indices {
+	if len(indices) == 1 {
 		payload := Project_Infer_Payload {
 			state        = state,
-			unit_index   = unit_index,
-			output_index = i,
+			unit_index   = indices[0],
+			output_index = 0,
 		}
-		_ = execution.submit_value(graph, exec, payload, infer_task)
+		infer_task(payload)
+	} else {
+		exec := execution.worker_executor(graph.pool)
+		for unit_index, i in indices {
+			payload := Project_Infer_Payload {
+				state        = state,
+				unit_index   = unit_index,
+				output_index = i,
+			}
+			execution.submit_value(graph, exec, payload, infer_task)
+		}
+		execution.graph_start(graph)
+		execution.graph_wait(graph)
+		execution.graph_reset(graph)
 	}
-	execution.graph_start(graph)
-	execution.graph_wait(graph)
-	execution.graph_reset(graph)
 }
 
 @(private)
@@ -2048,34 +2062,28 @@ run_validate_tasks :: proc(pool: ^execution.Pool, state: ^Project_Validate_State
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	graph: execution.Graph
-	execution.graph_init(&graph, pool, context.temp_allocator)
-	tasks := make(
-		[dynamic]execution.Task(execution.No_Result),
-		0,
-		len(state.project.units),
-		context.temp_allocator,
-	)
-	for unit_index in 0 ..< len(state.project.units) {
+	if len(state.project.units) == 1 {
 		payload := Project_Validate_Payload {
 			state        = state,
-			unit_index   = unit_index,
-			output_index = unit_index,
+			unit_index   = 0,
+			output_index = 0,
 		}
-		task := execution.submit_value(
-			&graph,
-			execution.worker_executor(pool),
-			payload,
-			validate_task,
-		)
-		append(&tasks, task)
+		validate_task(payload)
+	} else {
+		graph: execution.Graph
+		execution.graph_init(&graph, pool, context.temp_allocator)
+		for _, unit_index in state.project.units {
+			payload := Project_Validate_Payload {
+				state        = state,
+				unit_index   = unit_index,
+				output_index = unit_index,
+			}
+			execution.submit_value(&graph, execution.worker_executor(pool), payload, validate_task)
+		}
+		execution.graph_start(&graph)
+		execution.graph_wait(&graph)
+		execution.graph_destroy(&graph)
 	}
-	execution.graph_start(&graph)
-	for task in tasks {
-		_ = execution.wait(task)
-	}
-	execution.graph_wait(&graph)
-	execution.graph_destroy(&graph)
 }
 
 @(private)
@@ -2084,34 +2092,28 @@ run_validate_tasks_for_indices :: proc(
 	state: ^Project_Validate_State,
 	indices: []int,
 ) {
-	graph: execution.Graph
-	execution.graph_init(&graph, pool, context.temp_allocator)
-	tasks := make(
-		[dynamic]execution.Task(execution.No_Result),
-		0,
-		len(indices),
-		context.temp_allocator,
-	)
-	for unit_index, i in indices {
+	if len(indices) == 1 {
 		payload := Project_Validate_Payload {
 			state        = state,
-			unit_index   = unit_index,
-			output_index = i,
+			unit_index   = indices[0],
+			output_index = 0,
 		}
-		task := execution.submit_value(
-			&graph,
-			execution.worker_executor(pool),
-			payload,
-			validate_task,
-		)
-		append(&tasks, task)
+		validate_task(payload)
+	} else {
+		graph: execution.Graph
+		execution.graph_init(&graph, pool, context.temp_allocator)
+		for unit_index, i in indices {
+			payload := Project_Validate_Payload {
+				state        = state,
+				unit_index   = unit_index,
+				output_index = i,
+			}
+			execution.submit_value(&graph, execution.worker_executor(pool), payload, validate_task)
+		}
+		execution.graph_start(&graph)
+		execution.graph_wait(&graph)
+		execution.graph_destroy(&graph)
 	}
-	execution.graph_start(&graph)
-	for task in tasks {
-		_ = execution.wait(task)
-	}
-	execution.graph_wait(&graph)
-	execution.graph_destroy(&graph)
 }
 
 @(private)
