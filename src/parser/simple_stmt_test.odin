@@ -216,6 +216,26 @@ COMPUTE EXACT lv_sum = a + b.`
 }
 
 @(test)
+split_accepts_multiline_targets :: proc(t: ^testing.T) {
+	source := `SPLIT lv_sgln
+AT ':'
+INTO DATA(lv_part_1)
+     DATA(lv_part_2)
+     DATA(lv_part_3)
+IN CHARACTER MODE.
+SPLIT lv_corrected_epc AT 'urn:epc:id:sgtin:' INTO TABLE
+     DATA(lt_parts).`
+	parsed := parse(source, "split_multiline.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Split_Stmt)
+	second := parsed.root.stmts[1].derived_stmt.(^ast.Split_Stmt)
+	testing.expect_value(t, len(first.entries[0].targets), 3)
+	testing.expect(t, second.entries[0].into_table)
+	testing.expect_value(t, len(second.entries[0].targets), 1)
+}
+
+@(test)
 move_corresponding_carries_statement_form :: proc(t: ^testing.T) {
 	parsed := parse("MOVE-CORRESPONDING src TO dst.", "move_corresponding.abap", context.allocator)
 

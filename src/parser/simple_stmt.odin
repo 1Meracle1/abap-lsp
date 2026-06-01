@@ -235,6 +235,7 @@ simple_full_period_stmt_starts :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "RAISE") ||
 		runtime_stmt_starts(p) ||
 		at_keyword_phrase(p, "AUTHORITY-CHECK") ||
+		at_keyword(p, "SPLIT") ||
 		at_keyword(p, "ASSIGN") ||
 		(at_keyword(p, "CREATE") &&
 				(at_keyword_index(p, p.index + 1, "OBJECT") ||
@@ -3044,10 +3045,29 @@ parse_concatenate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	return stmt
 }
 
-parse_split_entry :: proc(p: ^Parser, body_start: int) -> (ast.Split_Entry_Clause, bool) {
+split_stmt_done :: proc(p: ^Parser) -> bool {
+	return current_token(p).kind == .Period || current_token(p).kind == .Eof
+}
+
+split_entry_done :: proc(p: ^Parser) -> bool {
+	return split_stmt_done(p) || current_token(p).kind == .Comma
+}
+
+split_expr :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Expr {
+	if split_entry_done(p) || current_token(p).kind == .Colon || simple_current_keyword_in(p, stop_keywords) {
+		return nil
+	}
+	if !expr_lead_token(current_token(p)) {
+		return nil
+	}
+	return parse_expr(p)
+}
+
+parse_split_entry :: proc(p: ^Parser) -> (ast.Split_Entry_Clause, bool) {
 	entry := ast.Split_Entry_Clause{}
-	entry.source = required_simple_expr(p, body_start, []string{"AT"})
+	entry.source = split_expr(p, []string{"AT"})
 	if entry.source == nil {
+		error_current(p, "syntax error: expected expression")
 		return entry, false
 	}
 	if !allow_keyword(
@@ -3057,7 +3077,11 @@ parse_split_entry :: proc(p: ^Parser, body_start: int) -> (ast.Split_Entry_Claus
 		error_current(p, "syntax error: expected keyword")
 		return entry, false
 	}
-	entry.separator = required_simple_expr(p, body_start, []string{"INTO"})
+	entry.separator = split_expr(p, []string{"INTO"})
+	if entry.separator == nil {
+		error_current(p, "syntax error: expected expression")
+		return entry, false
+	}
 	if !allow_keyword(
 		p,
 		"INTO",
@@ -3066,22 +3090,32 @@ parse_split_entry :: proc(p: ^Parser, body_start: int) -> (ast.Split_Entry_Claus
 		return entry, false
 	}
 	entry.into_table = allow_keyword(p, "TABLE")
-	entry.targets = parse_exprs_until(p, body_start, []string{"IN"})
-	consume_simple_entry_tail(p, body_start)
+	entry.targets = make([dynamic]^ast.Expr, 0, 2, p.allocator)
+	for !split_entry_done(p) && !at_keyword(p, "IN") {
+		start := p.index
+		target := split_expr(p, []string{"IN"})
+		if target == nil {
+			break
+		}
+		append(&entry.targets, target)
+		ensure_forward_progress(p, start)
+	}
+	for !split_entry_done(p) {
+		bump_token(p)
+	}
 	return entry, entry.separator != nil && len(entry.targets) > 0
 }
 
 parse_split_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := expect_keyword(p, "SPLIT")
-	body_start := p.index
 	stmt := ast.new(ast.Split_Stmt, start.range, p.allocator)
 	stmt.entries = make([dynamic]ast.Split_Entry_Clause, 0, 1, p.allocator)
 	allow_token(p, .Colon)
-	for !simple_stmt_done(p, body_start) {
+	for !split_stmt_done(p) {
 		if allow_token(p, .Comma) {
 			continue
 		}
-		entry, ok := parse_split_entry(p, body_start)
+		entry, ok := parse_split_entry(p)
 		if ok {
 			append(&stmt.entries, entry)
 		} else {
