@@ -55,6 +55,7 @@ reference_operand :: proc(project: ^Project_Analysis, unit_index: int, ref: Refe
 				declared_type = builtin_type_ref(ref.name),
 				has_declared_type = true,
 				type_clause_display = ref.name,
+				confidence = .High,
 			}
 		case .Builtin_Routine:
 			mode = .Routine

@@ -991,6 +991,7 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			structure_unit = INVALID_UNIT_ID,
 			declared_type = builtin_type_ref("string"),
 			has_declared_type = true,
+			confidence = .High,
 		}
 	}
 	if lit, ok := expr.derived_expr.(^ast.Literal_Expr); ok {
@@ -1002,6 +1003,7 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 				structure_unit = INVALID_UNIT_ID,
 				declared_type = builtin_type_ref("i"),
 				has_declared_type = true,
+				confidence = .High,
 			}
 		}
 		return Type_Fact_Data {
@@ -1011,6 +1013,7 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			structure_unit = INVALID_UNIT_ID,
 			declared_type = builtin_type_ref("string"),
 			has_declared_type = true,
+			confidence = .High,
 		}
 	}
 	if access, ok := value_access_from_expr(c, expr, scope); ok && len(access.field_path) == 0 {
@@ -1024,6 +1027,7 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 				declared_type = s.declared_type,
 				has_declared_type = s.has_declared_type,
 				type_clause_display = s.type_clause_display,
+				confidence = .High,
 			}
 		}
 	}
@@ -1092,11 +1096,12 @@ collect_assignment_stmt_facts :: proc(
 	lhs, rhs: ^ast.Expr,
 	scope: Scope_Id,
 	corresponding: bool,
+	extra_flags := Assignment_Site_Flags{},
 ) {
 	collect_expr_refs(c, lhs, scope)
 	collect_expr_refs(c, rhs, scope)
 	lhs_access, has_lhs := value_access_from_expr(c, lhs, scope)
-	flags := Assignment_Site_Flags{}
+	flags := extra_flags
 	if has_lhs {
 		flags += {.Has_Lhs_Target_Access}
 	}
@@ -2237,7 +2242,23 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 				lhs_access,
 				has_lhs,
 				type_fact_from_expr(c, e.into, scope),
-				unknown_type_fact(),
+				type_fact_from_expr(c, e.table, scope),
+				{.Assigns_Table_Line},
+			)
+		}
+		if e.assigning != nil {
+			lhs_access, has_lhs := value_access_from_expr(c, e.assigning, scope)
+			add_assignment_site(
+				c,
+				scope,
+				stmt.range,
+				e.assigning.range,
+				e.table.range if e.table != nil else tokenizer.Range{},
+				lhs_access,
+				has_lhs,
+				type_fact_from_expr(c, e.assigning, scope),
+				type_fact_from_expr(c, e.table, scope),
+				{.Assigns_Table_Line},
 			)
 		}
 	}

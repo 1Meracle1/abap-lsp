@@ -471,7 +471,7 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 	case ^ast.Assign_Stmt:
 		collect_assignment_stmt_facts(c, n.range, n.lhs, n.rhs, scope, false)
 	case ^ast.Downcast_Assign_Stmt:
-		collect_assignment_stmt_facts(c, n.range, n.lhs, n.rhs, scope, false)
+		collect_assignment_stmt_facts(c, n.range, n.lhs, n.rhs, scope, false, {.Is_Downcast})
 	case ^ast.Expr_Stmt:
 		collect_expr_refs(c, n.expr, scope)
 	case ^ast.Clear_Stmt:

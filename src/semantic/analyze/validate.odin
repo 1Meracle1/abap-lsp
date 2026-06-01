@@ -1307,6 +1307,8 @@ type_fact_from_declared_type :: proc(
 			declared_type = type_ref,
 			has_declared_type = true,
 			type_clause_display = type_ref.base_name,
+			confidence = .High if structure_unit_index >= 0 &&
+			                     project.units[structure_unit_index].source_mode == .Full else .Low,
 		}, structure_unit_index, true
 	}
 	if is_builtin_type_name(type_ref.base_name) {
@@ -1318,6 +1320,7 @@ type_fact_from_declared_type :: proc(
 			declared_type = type_ref,
 			has_declared_type = true,
 			type_clause_display = type_ref.base_name,
+			confidence = .High,
 		}, unit_index, true
 	}
 	if handle, ok := type_ref_leaf_handle(project, lookup, unit_index, scope_id, type_ref);
@@ -1624,6 +1627,7 @@ like_type_fact_from_symbol :: proc(
 		declared_type = next_symbol.declared_type,
 		has_declared_type = next_symbol.has_declared_type,
 		type_clause_display = next_symbol.type_clause_display,
+		confidence = .High if project.units[next_unit_index].source_mode == .Full else .Low,
 	}, next_unit_index, true
 }
 
@@ -1655,6 +1659,8 @@ line_of_type_fact_from_declared_type :: proc(
 				declared_type = type_ref,
 				has_declared_type = true,
 				type_clause_display = type_ref.base_name,
+				confidence = .High if structure_unit_index >= 0 &&
+				                     project.units[structure_unit_index].source_mode == .Full else .Low,
 			}, structure_unit_index, true
 		}
 		if declared_type_has_unknown_shape(project, lookup, unit_index, scope_id, type_ref) {
@@ -1701,6 +1707,7 @@ table_line_type_fact_from_symbol :: proc(
 		declared_type = s.declared_type,
 		has_declared_type = true,
 		type_clause_display = s.type_clause_display,
+		confidence = .High if project.units[unit_index].source_mode == .Full else .Low,
 	}
 	if fact.structure == INVALID_STRUCTURE_ID {
 		if handle, ok := type_ref_leaf_handle(project, lookup, unit_index, s.scope, s.declared_type);
@@ -1713,6 +1720,7 @@ table_line_type_fact_from_symbol :: proc(
 					fact.structure_unit = handle.unit
 					fact.type_id = target.type_id
 					fact.type_unit = handle.unit if type_id_is_known(target.type_id) else INVALID_UNIT_ID
+					fact.confidence = .High if project.units[handle_unit_index].source_mode == .Full else .Low
 					return fact, handle_unit_index, true
 				}
 			}
@@ -2124,6 +2132,7 @@ resolve_field_access_tail :: proc(
 				declared_type = base_symbol.declared_type,
 				has_declared_type = true,
 				type_clause_display = base_symbol.type_clause_display,
+				confidence = .High if base_unit.source_mode == .Full else .Low,
 			}
 			fact.declared_type.is_ref = false
 			return fact, true
@@ -2137,6 +2146,7 @@ resolve_field_access_tail :: proc(
 			declared_type = base_symbol.declared_type,
 			has_declared_type = true,
 			type_clause_display = base_symbol.type_clause_display,
+			confidence = .High if base_unit.source_mode == .Full else .Low,
 		}
 		fact.declared_type.is_ref = false
 		return type_fact_from_structure_path(
@@ -2209,6 +2219,7 @@ resolve_field_access_tail :: proc(
 			declared_type = base_symbol.declared_type,
 			has_declared_type = base_symbol.has_declared_type,
 			type_clause_display = base_symbol.type_clause_display,
+			confidence = .High if base_unit.source_mode == .Full else .Low,
 		}
 		return type_fact_from_structure_path(
 			project,
@@ -2306,6 +2317,7 @@ type_fact_from_structure_path :: proc(
 		fact = Type_Fact_Data {
 			structure = current_structure,
 			structure_unit = current_unit.unit_id if current_structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
+			confidence = .High if current_unit.source_mode == .Full else .Low,
 		}
 	} else if fact.structure == INVALID_STRUCTURE_ID {
 		fact.structure = current_structure
@@ -2456,6 +2468,7 @@ type_fact_from_structure_path :: proc(
 			declared_type = field.type_ref,
 			has_declared_type = .Has_Type_Ref in field.flags,
 			type_clause_display = field.type_ref.base_name,
+			confidence = .High if field_unit.source_mode == .Full else .Low,
 		}
 		unknown_after_deref = false
 		current_unit = field_unit
@@ -3146,6 +3159,7 @@ class_member_type_fact :: proc(
 			declared_type = s.declared_type,
 			has_declared_type = s.has_declared_type,
 			type_clause_display = s.type_clause_display,
+			confidence = .High if unit.source_mode == .Full else .Low,
 		}
 	}
 	for param in info.signature_parameters {
@@ -3158,6 +3172,7 @@ class_member_type_fact :: proc(
 				declared_type = param.declared_type,
 				has_declared_type = .Has_Declared_Type in param.flags,
 				type_clause_display = param.type_clause_display,
+				confidence = .High if unit.source_mode == .Full else .Low,
 			}
 		}
 	}

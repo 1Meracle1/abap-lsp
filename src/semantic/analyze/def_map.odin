@@ -417,6 +417,12 @@ Type_Fact_Data :: struct {
 	has_declared_type:   bool,
 	type_clause_display: string,
 	table_line:          ^Type_Fact_Data,
+	confidence:          Type_Fact_Confidence,
+}
+
+Type_Fact_Confidence :: enum {
+	Low,
+	High,
 }
 
 unknown_type_fact :: #force_inline proc() -> Type_Fact_Data {
@@ -436,6 +442,19 @@ type_fact_is_known :: #force_inline proc(fact: Type_Fact_Data) -> bool {
 		fact.type_clause_display != "" ||
 		fact.table_line != nil \
 	)
+}
+
+type_fact_is_high_confidence :: #force_inline proc(fact: Type_Fact_Data) -> bool {
+	return type_fact_is_known(fact) && fact.confidence == .High
+}
+
+type_fact_with_confidence :: #force_inline proc(
+	fact: Type_Fact_Data,
+	confidence: Type_Fact_Confidence,
+) -> Type_Fact_Data {
+	out := fact
+	out.confidence = confidence
+	return out
 }
 
 Symbol_Data :: struct {
@@ -803,6 +822,7 @@ Assignment_Site_Flag :: enum {
 	Rhs_Is_Top_Level_Sum,
 	Assigns_Table_Line,
 	Is_Corresponding,
+	Is_Downcast,
 }
 Assignment_Site_Flags :: bit_set[Assignment_Site_Flag]
 

@@ -1845,6 +1845,7 @@ builtin_class_attribute_type_fact :: proc(
 					declared_type = builtin_type_ref(attribute.type_name),
 					has_declared_type = true,
 					type_clause_display = attribute.type_name,
+					confidence = .High,
 				},
 				true
 		}

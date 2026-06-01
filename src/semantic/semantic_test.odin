@@ -4406,7 +4406,7 @@ DATA lo_obj  TYPE REF TO object.
 DATA ls_e070 TYPE e070.
 
 lv_date = lv_time.
-lr_e070 = lr_data.
+lr_data = lr_e070.
 ls_e070 = lo_obj.`
 	unit := collect_test_unit(t, "file:///tc_assign_ref.abap", source)
 
@@ -4418,6 +4418,89 @@ ls_e070 = lo_obj.`
 		message,
 		"The type of 'lv_time' cannot be converted to the type of 'lv_date' (current type 't', expected type 'd')",
 	)
+}
+
+@(test)
+semantic_typecheck_reports_date_time_scalar_assignment_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_dt_scalar_bad.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+
+lv_date = lv_time.`
+	unit := collect_test_unit(t, "file:///tc_dt_scalar_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+semantic_typecheck_accepts_exact_and_widening_ref_assignments :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_ref_ok.
+INTERFACE lif_named.
+ENDINTERFACE.
+CLASS lcl_base DEFINITION.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_base.
+  PUBLIC SECTION.
+    INTERFACES lif_named.
+ENDCLASS.
+DATA lo_child TYPE REF TO lcl_child.
+DATA lo_same TYPE REF TO lcl_child.
+DATA lo_base TYPE REF TO lcl_base.
+DATA li_named TYPE REF TO lif_named.
+
+lo_same = lo_child.
+lo_base = lo_child.
+li_named = lo_child.`
+	unit := collect_test_unit(t, "file:///tc_ref_ok.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_handles_data_and_object_generic_refs :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_ref_generic.
+CLASS lcl_demo DEFINITION.
+ENDCLASS.
+DATA lr_i TYPE REF TO i.
+DATA lr_data TYPE REF TO data.
+DATA lo_demo TYPE REF TO lcl_demo.
+DATA lo_object TYPE REF TO object.
+DATA lo_down TYPE REF TO lcl_demo.
+
+lr_data = lr_i.
+lo_object = lo_demo.
+lo_down ?= lo_object.`
+	unit := collect_test_unit(t, "file:///tc_ref_generic.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_reports_generic_data_ref_narrowing_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_ref_data_bad.
+DATA lr_i TYPE REF TO i.
+DATA lr_data TYPE REF TO data.
+
+lr_i = lr_data.`
+	unit := collect_test_unit(t, "file:///tc_ref_data_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+semantic_typecheck_reports_impossible_ref_assignment :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_ref_bad.
+CLASS lcl_a DEFINITION.
+ENDCLASS.
+CLASS lcl_b DEFINITION.
+ENDCLASS.
+DATA lo_a TYPE REF TO lcl_a.
+DATA lo_b TYPE REF TO lcl_b.
+
+lo_b = lo_a.`
+	unit := collect_test_unit(t, "file:///tc_ref_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
 }
 
 @(test)
@@ -4440,6 +4523,96 @@ lv_date = lv_time.`
 	analyze.finish_project_analysis(&project, &pool, {}, context.allocator)
 
 	testing.expect(t, !has_diagnostic(&project.units[0], .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_trusts_complete_dependency_interface_signatures :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://tc_external_complete.abap",
+		source = `REPORT z_tc_external_complete.
+TYPES: BEGIN OF ty_row,
+         value TYPE c,
+       END OF ty_row.
+DATA lv_num TYPE i.
+DATA ls_row TYPE ty_row.
+zcl_dep=>run( EXPORTING method_unknown = lv_num ).
+zcl_dep=>run( EXPORTING value = ls_row required = lv_num ).
+zcl_dep=>run( EXPORTING value = lv_num ).
+CALL FUNCTION 'Z_DEP_FM' EXPORTING function_unknown = lv_num.
+CALL FUNCTION 'Z_DEP_FM' EXPORTING iv_num = ls_row iv_required = lv_num.
+CALL FUNCTION 'Z_DEP_FM' EXPORTING iv_num = lv_num.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/zcl_dep.abap",
+			source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING value TYPE numeric required TYPE i.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/function/z_dep_fm.abap",
+			source = `FUNCTION z_dep_fm
+  IMPORTING iv_num TYPE numeric iv_required TYPE i.
+ENDFUNCTION.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, diagnostic_count(root, .Unknown_Named_Parameter), 2)
+		testing.expect_value(t, diagnostic_count(root, .Incompatible_Argument_Type), 2)
+		testing.expect_value(t, diagnostic_count(root, .Missing_Required_Parameter), 2)
+	}
+}
+
+@(test)
+semantic_typecheck_keeps_incomplete_dependency_interface_signatures_silent :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://tc_external_incomplete.abap",
+		source = `REPORT z_tc_external_incomplete.
+TYPES: BEGIN OF ty_row,
+         value TYPE c,
+       END OF ty_row.
+DATA lv_num TYPE i.
+DATA ls_row TYPE ty_row.
+zcl_dep=>run( EXPORTING method_unknown = lv_num ).
+zcl_dep=>run( EXPORTING value = ls_row required = lv_num ).
+zcl_dep=>run( EXPORTING value = lv_num ).
+CALL FUNCTION 'Z_DEP_FM' EXPORTING function_unknown = lv_num.
+CALL FUNCTION 'Z_DEP_FM' EXPORTING iv_num = ls_row iv_required = lv_num.
+CALL FUNCTION 'Z_DEP_FM' EXPORTING iv_num = lv_num.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/zcl_dep.abap",
+			source = `CLASS zcl_dep DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING value TYPE TABLE required TYPE i.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/function/z_dep_fm.abap",
+			source = `FUNCTION z_dep_fm
+  IMPORTING iv_num TYPE TABLE iv_required TYPE i.
+ENDFUNCTION.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !has_diagnostic(root, .Unknown_Named_Parameter))
+		testing.expect(t, !has_diagnostic(root, .Incompatible_Argument_Type))
+		testing.expect(t, !has_diagnostic(root, .Missing_Required_Parameter))
+	}
 }
 
 @(test)
@@ -4479,6 +4652,30 @@ START-OF-SELECTION.
 }
 
 @(test)
+semantic_typecheck_reports_missing_required_method_and_function_parameters :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_missing_required.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run
+      IMPORTING iv_required TYPE i iv_optional TYPE i OPTIONAL iv_default TYPE i DEFAULT 1.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+FUNCTION z_required
+  IMPORTING iv_required TYPE i iv_default TYPE i DEFAULT 1.
+ENDFUNCTION.
+START-OF-SELECTION.
+  lcl_demo=>run( ).
+  CALL FUNCTION 'Z_REQUIRED'.`
+	unit := collect_test_unit(t, "file:///tc_missing_required.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Missing_Required_Parameter), 2)
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Named_Parameter))
+}
+
+@(test)
 semantic_typecheck_maps_positional_method_arguments :: proc(t: ^testing.T) {
 	source := `CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
@@ -4501,36 +4698,408 @@ START-OF-SELECTION.
 }
 
 @(test)
+semantic_typecheck_accepts_positional_required_parameter_for_missing_check :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_positional_required.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING iv_value TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lv_value TYPE i.
+  lcl_demo=>run( lv_value ).`
+	unit := collect_test_unit(t, "file:///tc_positional_required.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Named_Parameter))
+}
+
+@(test)
+semantic_typecheck_reports_positional_method_argument_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_positional_method_bad.
+TYPES: BEGIN OF e070,
+         trkorr TYPE c,
+       END OF e070.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING value TYPE numeric.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA ls_e070 TYPE e070.
+  lcl_demo=>run( ls_e070 ).`
+	unit := collect_test_unit(t, "file:///tc_positional_method_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 1)
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Named_Parameter))
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_maps_sectioned_method_and_function_arguments :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_sectioned_call_args.
+TYPES: BEGIN OF e070,
+         trkorr TYPE c,
+       END OF e070.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING iv_num TYPE numeric.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+FUNCTION z_demo
+  IMPORTING iv_num TYPE numeric.
+ENDFUNCTION.
+START-OF-SELECTION.
+  DATA ls_e070 TYPE e070.
+  lcl_demo=>run( EXPORTING iv_num = ls_e070 ).
+  CALL FUNCTION 'Z_DEMO' EXPORTING iv_num = ls_e070.`
+	unit := collect_test_unit(t, "file:///tc_sectioned_call_args.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 2)
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_maps_optional_default_positional_arguments :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_optional_default_positional.
+TYPES: BEGIN OF e070,
+         trkorr TYPE c,
+       END OF e070.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS optional IMPORTING value TYPE numeric OPTIONAL.
+    CLASS-METHODS defaulted IMPORTING value TYPE numeric DEFAULT 1.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD optional.
+  ENDMETHOD.
+  METHOD defaulted.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA ls_e070 TYPE e070.
+  lcl_demo=>optional( ls_e070 ).
+  lcl_demo=>defaulted( ls_e070 ).`
+	unit := collect_test_unit(t, "file:///tc_optional_default_positional.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 2)
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_skips_ambiguous_positional_method_mapping :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_positional_unknown.
+TYPES: BEGIN OF e070,
+         trkorr TYPE c,
+       END OF e070.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING first TYPE numeric second TYPE numeric.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA ls_e070 TYPE e070.
+  lcl_demo=>run( ls_e070 ).`
+	unit := collect_test_unit(t, "file:///tc_positional_unknown.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Argument_Type))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Named_Parameter))
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_skips_missing_required_after_uncertain_argument_mapping :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_missing_uncertain.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING first TYPE i second TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lv_value TYPE i.
+  lcl_demo=>run( unknown = lv_value ).
+  lcl_demo=>run( lv_value ).`
+	unit := collect_test_unit(t, "file:///tc_missing_uncertain.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Unknown_Named_Parameter), 1)
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_reports_clike_argument_family_failures :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_clike_args.
+TYPES: BEGIN OF ty_row,
+         value TYPE c,
+       END OF ty_row.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS needs_clike IMPORTING value TYPE clike.
+    CLASS-METHODS needs_csequence IMPORTING value TYPE csequence.
+    CLASS-METHODS text RETURNING VALUE(result) TYPE string.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD needs_clike.
+  ENDMETHOD.
+  METHOD needs_csequence.
+  ENDMETHOD.
+  METHOD text.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lv_char TYPE c.
+  DATA lv_num TYPE n.
+  DATA lv_string TYPE string.
+  DATA lv_date TYPE d.
+  DATA lv_time TYPE t.
+  DATA lv_bool TYPE abap_bool.
+  DATA lv_x TYPE x.
+  DATA lv_ddic TYPE rs38l_fnam.
+  DATA ls_row TYPE ty_row.
+  lcl_demo=>needs_clike( value = lv_char ).
+  lcl_demo=>needs_clike( value = lv_num ).
+  lcl_demo=>needs_clike( value = lv_string ).
+  lcl_demo=>needs_clike( value = lv_date ).
+  lcl_demo=>needs_clike( value = lv_time ).
+  lcl_demo=>needs_clike( value = lv_bool ).
+  lcl_demo=>needs_clike( value = lv_x ).
+  lcl_demo=>needs_clike( value = ls_row ).
+  lcl_demo=>needs_clike( value = lv_ddic ).
+  lcl_demo=>needs_clike( value = lcl_demo=>text( ) ).
+  lcl_demo=>needs_csequence( value = lv_date ).`
+	unit := collect_test_unit(t, "file:///tc_clike_args.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 2)
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Named_Parameter))
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_skips_missing_required_redefinition_signature :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_missing_redefinition.
+CLASS lcl_parent DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_value TYPE i.
+ENDCLASS.
+CLASS lcl_parent IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+CLASS lcl_child DEFINITION INHERITING FROM lcl_parent.
+  PUBLIC SECTION.
+    METHODS run REDEFINITION.
+ENDCLASS.
+CLASS lcl_child IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lo_child TYPE REF TO lcl_child.
+  CREATE OBJECT lo_child.
+  lo_child->run( ).`
+	unit := collect_test_unit(t, "file:///tc_missing_redefinition.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
 semantic_typecheck_accepts_common_assignment_conversions :: proc(t: ^testing.T) {
 	source := `REPORT z_tc_assignment_conversions.
 TYPES: BEGIN OF ty_key,
          attr1 TYPE c,
        END OF ty_key.
+TYPES ty_ints TYPE STANDARD TABLE OF i WITH DEFAULT KEY.
 DATA lv_tabix TYPE syst-tabix.
 DATA ls_key TYPE ty_key.
 DATA rv_valid TYPE abap_bool.
+DATA lv_char TYPE c.
+DATA lv_count TYPE i.
 DATA lv_key TYPE string.
 DATA iv_key TYPE string.
+DATA lt_ints TYPE ty_ints.
 
 lv_tabix = sy-tabix.
 ls_key-attr1 = 'MSGV1'.
+lv_char = 'MSGV1'.
 rv_valid = boolc( sy-subrc = 0 ).
+lv_count = lines( lt_ints ).
+lv_count = strlen( lv_key ).
 lv_key = to_upper( iv_key ).`
 	unit := collect_test_unit(t, "file:///tc_assignment_conversions.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+	seen_boolc, seen_lines, seen_strlen := false, false, false
+	for site in unit.assignment_sites {
+		rhs_text := source[site.rhs_range.start:site.rhs_range.end]
+		expected := ""
+		switch rhs_text {
+		case "boolc( sy-subrc = 0 )":
+			expected = "string"
+			seen_boolc = true
+		case "lines( lt_ints )":
+			expected = "i"
+			seen_lines = true
+		case "strlen( lv_key )":
+			expected = "i"
+			seen_strlen = true
+		}
+		if expected != "" {
+			type_data := expect_type_kind(t, &unit, site.rhs.type_id, .Builtin)
+			if type_data != nil {
+				testing.expect_value(t, type_data.name, expected)
+			}
+		}
+	}
+	testing.expect(t, seen_boolc)
+	testing.expect(t, seen_lines)
+	testing.expect(t, seen_strlen)
+}
+
+@(test)
+semantic_typecheck_skips_unknown_ddic_alias_assignment :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_unknown_ddic_alias.
+DATA lv_domain TYPE zmissing_domain.
+DATA lv_date TYPE d.
+
+lv_date = lv_domain.`
+	unit := collect_test_unit(t, "file:///tc_unknown_ddic_alias.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
 }
 
 @(test)
-semantic_typecheck_skips_loop_table_line_assignment :: proc(t: ^testing.T) {
-	source := `REPORT z_tc_loop_line.
-TYPES ty_text TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
-DATA lt_text TYPE ty_text.
-FIELD-SYMBOLS <lv_text> TYPE string.
+semantic_typecheck_accepts_high_confidence_call_result_assignment :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_call_result_ok.
+CLASS lcl_clock DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_time RETURNING VALUE(rv_time) TYPE t.
+ENDCLASS.
+CLASS lcl_clock IMPLEMENTATION.
+  METHOD get_time.
+  ENDMETHOD.
+ENDCLASS.
+DATA lo_clock TYPE REF TO lcl_clock.
+DATA lv_time TYPE t.
 
-LOOP AT lt_text ASSIGNING <lv_text>.
+lv_time = lo_clock->get_time( ).`
+	unit := collect_test_unit(t, "file:///tc_call_result_ok.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_reports_high_confidence_call_result_assignment_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_call_result_bad.
+CLASS lcl_clock DEFINITION.
+  PUBLIC SECTION.
+    METHODS get_time RETURNING VALUE(rv_time) TYPE t.
+ENDCLASS.
+CLASS lcl_clock IMPLEMENTATION.
+  METHOD get_time.
+  ENDMETHOD.
+ENDCLASS.
+DATA lo_clock TYPE REF TO lcl_clock.
+DATA lv_date TYPE d.
+
+lv_date = lo_clock->get_time( ).`
+	unit := collect_test_unit(t, "file:///tc_call_result_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+semantic_typecheck_reports_direct_attribute_selector_assignment_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_attr_selector_bad.
+CLASS lcl_clock DEFINITION.
+  PUBLIC SECTION.
+    DATA mv_time TYPE t.
+ENDCLASS.
+DATA lo_clock TYPE REF TO lcl_clock.
+DATA lv_date TYPE d.
+
+lv_date = lo_clock->mv_time.`
+	unit := collect_test_unit(t, "file:///tc_attr_selector_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+semantic_typecheck_accepts_zabapgit_like_object_selector_conversion :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_object_selector_conversion.
+TYPES: BEGIN OF trwbo_request_header,
+         trkorr TYPE c,
+       END OF trwbo_request_header.
+TYPES: BEGIN OF ty_range,
+         low TYPE string,
+       END OF ty_range.
+DATA lr_request TYPE REF TO trwbo_request_header.
+DATA ls_r_trkorr TYPE ty_range.
+
+ls_r_trkorr-low = lr_request->trkorr.`
+	unit := collect_test_unit(t, "file:///tc_object_selector_conversion.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_accepts_known_table_line_assignments :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_table_line_ok.
+TYPES ty_times TYPE STANDARD TABLE OF t WITH DEFAULT KEY.
+DATA lt_times TYPE ty_times.
+DATA lv_time TYPE t.
+FIELD-SYMBOLS <lv_time> TYPE t.
+FIELD-SYMBOLS <any> TYPE any.
+
+LOOP AT lt_times INTO lv_time.
+ENDLOOP.
+LOOP AT lt_times ASSIGNING <lv_time>.
+ENDLOOP.
+LOOP AT lt_times ASSIGNING <any>.
+ENDLOOP.
+READ TABLE lt_times INTO lv_time INDEX 1.
+READ TABLE lt_times ASSIGNING <lv_time> INDEX 1.`
+	unit := collect_test_unit(t, "file:///tc_table_line_ok.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_reports_known_table_line_assignment_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_table_line_bad.
+TYPES ty_times TYPE STANDARD TABLE OF t WITH DEFAULT KEY.
+DATA lt_times TYPE ty_times.
+FIELD-SYMBOLS <lv_date> TYPE d.
+
+LOOP AT lt_times ASSIGNING <lv_date>.
 ENDLOOP.`
-	unit := collect_test_unit(t, "file:///tc_loop_line.abap", source)
+	unit := collect_test_unit(t, "file:///tc_table_line_bad.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+semantic_typecheck_skips_unknown_table_line_assignment_rows :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_table_line_unknown.
+DATA lt_unknown TYPE zmissing_tab.
+DATA lv_date TYPE d.
+
+READ TABLE lt_unknown INTO lv_date INDEX 1.`
+	unit := collect_test_unit(t, "file:///tc_table_line_unknown.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
 }
@@ -4596,6 +5165,84 @@ START-OF-SELECTION.
 		sql_message,
 		"Open SQL target is not compatible: 'lv_time' (current type 'd', expected type 't')",
 	)
+}
+
+@(test)
+semantic_typecheck_accepts_sql_alias_scalar_conversion :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://tc_sql_alias_ok.abap",
+		source = `REPORT z_tc_sql_alias_ok.
+DATA lv_text TYPE string.
+SELECT SINGLE comp FROM zkeys INTO @lv_text.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zkeys.abap",
+			source = `TYPES: BEGIN OF zkeys,
+         comp TYPE abap_keycompname,
+       END OF zkeys.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !has_diagnostic(root, .Invalid_Open_Sql_Into_Target))
+	}
+}
+
+@(test)
+semantic_typecheck_reports_sql_dependency_date_time_target_failure :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://tc_sql_dt_bad.abap",
+		source = `REPORT z_tc_sql_dt_bad.
+DATA lv_time TYPE t.
+SELECT SINGLE as4date FROM e070 INTO @lv_time.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/e070.abap",
+			source = `TYPES: BEGIN OF e070,
+         as4date TYPE d,
+       END OF e070.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, diagnostic_count(root, .Invalid_Open_Sql_Into_Target), 1)
+	}
+}
+
+@(test)
+semantic_typecheck_skips_unknown_ddic_sql_source_target :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://tc_sql_unknown_ddic.abap",
+		source = `REPORT z_tc_sql_unknown_ddic.
+DATA lv_time TYPE t.
+SELECT SINGLE raw_value FROM zunknown INTO @lv_time.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zunknown.abap",
+			source = `TYPES: BEGIN OF zunknown,
+         raw_value TYPE zmissing_domain,
+       END OF zunknown.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !has_diagnostic(root, .Invalid_Open_Sql_Into_Target))
+	}
 }
 
 @(test)

@@ -11,14 +11,44 @@ import "core:strings"
 Typecheck_Call_Signature :: struct {
 	info:       ^Decl_Info_Data,
 	unit_index: int,
+	direct:     bool,
+}
+
+Typecheck_Ref_Target_Kind :: enum {
+	Data,
+	Data_Generic,
+	Object_Generic,
+	Class,
+	Interface,
+}
+
+Typecheck_Ref_Target :: struct {
+	kind:   Typecheck_Ref_Target_Kind,
+	name:   string,
+	handle: Symbol_Handle,
+}
+
+Typecheck_Scalar_Group :: enum {
+	Unknown,
+	Numeric,
+	Character,
+	Byte,
+	Date,
+	Time,
+	Generic_Simple,
 }
 
 Typecheck_Writable_Index :: struct {
 	ranges: [dynamic]tokenizer.Range,
 }
 
-Typecheck_Range_Index :: struct {
-	ranges: [dynamic]tokenizer.Range,
+Typecheck_Call_Range :: struct {
+	range: tokenizer.Range,
+	index: int,
+}
+
+Typecheck_Call_Index :: struct {
+	calls: [dynamic]Typecheck_Call_Range,
 }
 
 validate_typecheck_diagnostics :: proc(
@@ -32,8 +62,9 @@ validate_typecheck_diagnostics :: proc(
 	if project.units[unit_index].source_mode != .Full {
 		return
 	}
-	typecheck_assignments(project, lookup, unit_index, out, seen, allocator)
-	typecheck_calls(project, lookup, unit_index, out, seen, allocator)
+	call_index := typecheck_call_index_make(&project.units[unit_index], context.temp_allocator)
+	typecheck_assignments(project, lookup, unit_index, &call_index, out, seen, allocator)
+	typecheck_calls(project, lookup, unit_index, &call_index, out, seen, allocator)
 	typecheck_open_sql_targets(project, lookup, unit_index, out, seen, allocator)
 }
 
@@ -41,28 +72,37 @@ typecheck_assignments :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_index: int,
+	call_index: ^Typecheck_Call_Index,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
 	unit := &project.units[unit_index]
-	call_results := typecheck_call_result_index_make(unit, context.temp_allocator)
-	for site in unit.assignment_sites {
-		if .Is_Corresponding in site.flags || .Assigns_Table_Line in site.flags {
+	for &site in unit.assignment_sites {
+		if !typecheck_assignment_has_high_confidence(site) {
 			continue
 		}
-		if typecheck_range_index_contains(&call_results, site.rhs_range) {
-			continue
+		rhs := site.rhs
+		if call_fact, ok, is_call := typecheck_assignment_exact_call_result_fact(
+			project,
+			lookup,
+			unit_index,
+			call_index,
+			site,
+		); is_call {
+			if !ok {
+				continue
+			}
+			rhs = call_fact
 		}
-		if range_valid(site.rhs_range) &&
-		   site.rhs_range.end <= len(unit.source) &&
-		   strings.contains(unit.source[site.rhs_range.start:site.rhs_range.end], "->") {
-			continue
-		}
-		if !type_fact_known(site.lhs) || !type_fact_known(site.rhs) {
-			continue
-		}
-		if ok, known := typecheck_assignment_compatible(project, lookup, unit_index, site.rhs, site.lhs);
+		if ok, known := typecheck_assignment_compatible(
+			project,
+			lookup,
+			unit_index,
+			rhs,
+			site.lhs,
+			.Is_Downcast in site.flags,
+		);
 		   known && !ok {
 			append_diag(
 				out,
@@ -79,7 +119,7 @@ typecheck_assignments :: proc(
 						allocator,
 					),
 					project,
-					site.rhs,
+					rhs,
 					site.lhs,
 					allocator,
 				),
@@ -92,6 +132,7 @@ typecheck_calls :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_index: int,
+	call_index: ^Typecheck_Call_Index,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
@@ -102,16 +143,16 @@ typecheck_calls :: proc(
 	}
 	facts := typecheck_fact_index_make(unit, context.temp_allocator)
 	writable := typecheck_writable_index_make(unit, context.temp_allocator)
-	call_results := typecheck_call_result_index_make(unit, context.temp_allocator)
-	for site in unit.call_sites {
+	for &site in unit.call_sites {
 		signature, ok := typecheck_call_signature(project, lookup, unit_index, site)
 		if !ok || signature.info == nil {
 			continue
 		}
-		if project.units[signature.unit_index].source_mode != .Full {
+		if !typecheck_signature_trusted_for_diagnostics(project, lookup, signature, site.target.kind) {
 			continue
 		}
 		seen_args := make(map[string]bool, len(site.arguments), context.temp_allocator)
+		required_mapping_ok := true
 		for arg, arg_index in site.arguments {
 			if arg.section == .Exceptions {
 				continue
@@ -126,12 +167,14 @@ typecheck_calls :: proc(
 						arg.range,
 						typecheck_name_message("Duplicate formal parameter ", arg.name, allocator),
 					)
+					required_mapping_ok = false
 					continue
 				}
 				seen_args[key] = true
 			}
 			param, param_ok := typecheck_call_parameter(signature.info, site.target.kind, site, arg_index)
 			if !param_ok {
+				required_mapping_ok = false
 				if typecheck_signature_reports_parameter_names(signature.info) &&
 				   typecheck_simple_parameter_name(arg.name) {
 					append_diag(
@@ -147,6 +190,16 @@ typecheck_calls :: proc(
 					)
 				}
 				continue
+			}
+			arg_mapping_ok := typecheck_argument_mapping_has_high_confidence(
+				signature.info,
+				site.target.kind,
+				site,
+				arg_index,
+				param^,
+			)
+			if !arg_mapping_ok {
+				required_mapping_ok = false
 			}
 			if typecheck_argument_requires_writable(site.target.kind, arg.section) &&
 			   !typecheck_argument_is_writable(&writable, arg) {
@@ -164,17 +217,25 @@ typecheck_calls :: proc(
 				continue
 			}
 			actual := typecheck_argument_fact(&facts, arg)
+			if call_fact, call_ok, is_call := typecheck_argument_call_result_fact(
+				project,
+				lookup,
+				unit_index,
+				call_index,
+				arg,
+			); is_call {
+				if !call_ok {
+					continue
+				}
+				actual = call_fact
+			}
 			formal := typecheck_parameter_fact(project, lookup, signature.unit_index, signature.info, param^)
-			if arg.name == "" {
+			if !arg_mapping_ok ||
+			   !type_fact_is_high_confidence(actual) ||
+			   !type_fact_is_high_confidence(formal) {
 				continue
 			}
 			if !typecheck_formal_requires_typecheck(project, formal) {
-				continue
-			}
-			if typecheck_range_index_contains(&call_results, arg.value_range) {
-				continue
-			}
-			if !type_fact_known(actual) || !type_fact_known(formal) {
 				continue
 			}
 			if compatible, known := typecheck_call_compatible(project, lookup, unit_index, actual, formal);
@@ -199,6 +260,10 @@ typecheck_calls :: proc(
 				)
 			}
 		}
+		if required_mapping_ok &&
+		   typecheck_required_signature_is_complete(signature, site.target.kind) {
+			typecheck_required_parameters(project, unit_index, signature.info, site, out, seen, allocator)
+		}
 	}
 }
 
@@ -211,7 +276,7 @@ typecheck_open_sql_targets :: proc(
 	allocator: mem.Allocator,
 ) {
 	unit := &project.units[unit_index]
-	for target in unit.sql_targets {
+	for &target in unit.sql_targets {
 		if .Is_Table in target.flags || .Is_Corresponding in target.flags || target.target_name == "" {
 			continue
 		}
@@ -231,10 +296,10 @@ typecheck_open_sql_targets :: proc(
 			continue
 		}
 		target_fact := type_fact_from_symbol_handle(project, unit_index, handle)
-		if !type_fact_known(target_fact) {
+		if !type_fact_is_high_confidence(source) || !type_fact_is_high_confidence(target_fact) {
 			continue
 		}
-		if ok, known := typecheck_call_compatible(project, lookup, unit_index, source, target_fact);
+		if ok, known := typecheck_sql_target_compatible(project, source, target_fact);
 		   known && !ok {
 			append_diag(
 				out,
@@ -251,6 +316,193 @@ typecheck_open_sql_targets :: proc(
 			)
 		}
 	}
+}
+
+typecheck_assignment_has_high_confidence :: proc(site: Assignment_Site_Data) -> bool {
+	if .Is_Corresponding in site.flags {
+		return false
+	}
+	if !type_fact_is_high_confidence(site.lhs) || !type_fact_is_high_confidence(site.rhs) {
+		return false
+	}
+	return true
+}
+
+typecheck_sql_target_compatible :: proc(
+	project: ^Project_Analysis,
+	source, target: Type_Fact_Data,
+) -> (bool, bool) {
+	source_name, source_ok := typecheck_builtin_name(project, source)
+	target_name, target_ok := typecheck_builtin_name(project, target)
+	if !source_ok || !target_ok {
+		return false, false
+	}
+	return typecheck_scalar_assignment_conversion(source_name, target_name)
+}
+
+typecheck_assignment_exact_call_result_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	call_index: ^Typecheck_Call_Index,
+	site: Assignment_Site_Data,
+) -> (Type_Fact_Data, bool, bool) {
+	unit := &project.units[unit_index]
+	if call, ok := typecheck_exact_call_for_range(unit, call_index, site.rhs_range); ok {
+		fact := call_result_type_fact(project, lookup, unit_index, call)
+		return fact, type_fact_is_high_confidence(fact), true
+	}
+	return unknown_type_fact(), false, false
+}
+
+typecheck_argument_call_result_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	call_index: ^Typecheck_Call_Index,
+	arg: Call_Argument_Data,
+) -> (Type_Fact_Data, bool, bool) {
+	unit := &project.units[unit_index]
+	if call, ok := typecheck_first_contained_call_for_range(unit, call_index, arg.value_range); ok {
+		if !typecheck_range_equal(call.range, arg.value_range) {
+			return unknown_type_fact(), false, true
+		}
+		fact := call_result_type_fact(project, lookup, unit_index, call)
+		return fact, type_fact_is_high_confidence(fact), true
+	}
+	return unknown_type_fact(), false, false
+}
+
+typecheck_signature_trusted_for_diagnostics :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	signature: Typecheck_Call_Signature,
+	target_kind: Named_Argument_Target_Kind,
+) -> bool {
+	if signature.unit_index < 0 ||
+	   signature.unit_index >= len(project.units) ||
+	   signature.info == nil {
+		return false
+	}
+	if project.units[signature.unit_index].source_mode == .Full {
+		return true
+	}
+	return typecheck_external_signature_complete(project, lookup, signature, target_kind)
+}
+
+typecheck_external_signature_complete :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	signature: Typecheck_Call_Signature,
+	target_kind: Named_Argument_Target_Kind,
+) -> bool {
+	info := signature.info
+	if project.units[signature.unit_index].source_mode != .Dependency_Interface {
+		return false
+	}
+	if target_kind == .Function {
+		if info.kind != .Module {
+			return false
+		}
+	} else if target_kind == .Method || target_kind == .Implicit_Method {
+		if info.member_kind != .Method {
+			return false
+		}
+	} else {
+		return false
+	}
+	for &param in info.signature_parameters {
+		if param.name == "" ||
+		   !typecheck_parameter_section_complete(target_kind, param.section) ||
+		   !typecheck_parameter_passing_complete(param.passing) ||
+		   !(.Has_Declared_Type in param.flags) ||
+		   param.declared_type.base_name == "" ||
+		   !type_fact_is_high_confidence(typecheck_parameter_fact(project, lookup, signature.unit_index, info, param)) {
+			return false
+		}
+	}
+	return true
+}
+
+typecheck_required_signature_is_complete :: proc(
+	signature: Typecheck_Call_Signature,
+	target_kind: Named_Argument_Target_Kind,
+) -> bool {
+	if signature.info == nil {
+		return false
+	}
+	info := signature.info
+	if .Is_Redefinition in info.flags || .For_Event in info.flags || info.kind == .Alias {
+		return false
+	}
+	if target_kind == .Function {
+		if info.kind != .Module {
+			return false
+		}
+		for param in info.signature_parameters {
+			if param.name == "" || !typecheck_function_parameter_section_complete(param.section) {
+				return false
+			}
+		}
+		return true
+	}
+	if target_kind != .Method && target_kind != .Implicit_Method {
+		return false
+	}
+	if !signature.direct || info.member_kind != .Method {
+		return false
+	}
+	for &param in info.signature_parameters {
+		if param.name == "" || !typecheck_method_parameter_section_complete(param.section) {
+			return false
+		}
+	}
+	return true
+}
+
+typecheck_parameter_section_complete :: proc(
+	target_kind: Named_Argument_Target_Kind,
+	section: Decl_Parameter_Section,
+) -> bool {
+	return typecheck_function_parameter_section_complete(section) if target_kind == .Function else typecheck_method_parameter_section_complete(section)
+}
+
+typecheck_method_parameter_section_complete :: proc(section: Decl_Parameter_Section) -> bool {
+	#partial switch section {
+	case .Method_Importing, .Method_Exporting, .Method_Changing, .Method_Receiving, .Method_Returning:
+		return true
+	}
+	return false
+}
+
+typecheck_function_parameter_section_complete :: proc(section: Decl_Parameter_Section) -> bool {
+	#partial switch section {
+	case .Function_Importing, .Function_Exporting, .Function_Changing, .Function_Tables:
+		return true
+	}
+	return false
+}
+
+typecheck_parameter_passing_complete :: proc(passing: Decl_Parameter_Passing) -> bool {
+	#partial switch passing {
+	case .Direct, .Value, .Reference:
+		return true
+	}
+	return false
+}
+
+typecheck_argument_mapping_has_high_confidence :: proc(
+	info: ^Decl_Info_Data,
+	target_kind: Named_Argument_Target_Kind,
+	site: Call_Site_Data,
+	arg_index: int,
+	param: Decl_Signature_Parameter_Data,
+) -> bool {
+	if site.arguments[arg_index].name != "" {
+		return true
+	}
+	pos_param, ok := typecheck_positional_call_parameter(info, target_kind, site, arg_index)
+	return ok && pos_param.name == param.name && pos_param.section == param.section
 }
 
 typecheck_call_signature :: proc(
@@ -280,8 +532,17 @@ typecheck_call_signature :: proc(
 		if !member_ok {
 			return {}, false
 		}
+		direct, direct_ok := class_member_handle_lookup(project, lookup, class_handle, site.target.method_name)
+		member_unit_index = unit_id_index(member.unit)
+		if member_unit_index < 0 || member_unit_index >= len(project.units) {
+			return {}, false
+		}
 		info := entity_decl_info(&project.units[member_unit_index], member.symbol)
-		return Typecheck_Call_Signature{info = info, unit_index = member_unit_index}, info != nil
+		return Typecheck_Call_Signature {
+			info = info,
+			unit_index = member_unit_index,
+			direct = direct_ok && direct.unit == member.unit && direct.symbol == member.symbol,
+		}, info != nil
 	case .Implicit_Method:
 		class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], site.scope)
 		if !ok {
@@ -300,8 +561,17 @@ typecheck_call_signature :: proc(
 		if !member_ok {
 			return {}, false
 		}
+		direct, direct_ok := class_member_handle_lookup(project, lookup, class_handle, site.target.method_name)
+		member_unit_index = unit_id_index(member.unit)
+		if member_unit_index < 0 || member_unit_index >= len(project.units) {
+			return {}, false
+		}
 		info := entity_decl_info(&project.units[member_unit_index], member.symbol)
-		return Typecheck_Call_Signature{info = info, unit_index = member_unit_index}, info != nil
+		return Typecheck_Call_Signature {
+			info = info,
+			unit_index = member_unit_index,
+			direct = direct_ok && direct.unit == member.unit && direct.symbol == member.symbol,
+		}, info != nil
 	case .Function:
 		member, ok := resolve_function_module_in_project_lookup(
 			project,
@@ -316,6 +586,7 @@ typecheck_call_signature :: proc(
 		return Typecheck_Call_Signature {
 			info = info,
 			unit_index = unit_id_index(member.unit),
+			direct = true,
 		}, info != nil
 	case:
 	}
@@ -352,7 +623,16 @@ typecheck_positional_call_parameter :: proc(
 	site: Call_Site_Data,
 	arg_index: int,
 ) -> (^Decl_Signature_Parameter_Data, bool) {
+	if info == nil || .Is_Redefinition in info.flags || info.kind == .Alias {
+		return nil, false
+	}
 	arg := site.arguments[arg_index]
+	if !arg.has_section {
+		if len(site.arguments) != 1 {
+			return nil, false
+		}
+		return typecheck_short_positional_call_parameter(info, target_kind, arg.section)
+	}
 	position := 0
 	for i in 0 ..< arg_index {
 		prev := site.arguments[i]
@@ -370,6 +650,26 @@ typecheck_positional_call_parameter :: proc(
 		position -= 1
 	}
 	return nil, false
+}
+
+typecheck_short_positional_call_parameter :: proc(
+	info: ^Decl_Info_Data,
+	target_kind: Named_Argument_Target_Kind,
+	section: Named_Argument_Section,
+) -> (^Decl_Signature_Parameter_Data, bool) {
+	if target_kind != .Method && target_kind != .Implicit_Method && target_kind != .Constructor {
+		return nil, false
+	}
+	candidates := 0
+	result: ^Decl_Signature_Parameter_Data
+	for &param in info.signature_parameters {
+		if !typecheck_parameter_section_matches(target_kind, param.section, section) {
+			continue
+		}
+		candidates += 1
+		result = &param
+	}
+	return result, candidates == 1
 }
 
 typecheck_parameter_section_matches :: proc(
@@ -434,7 +734,7 @@ typecheck_required_parameters :: proc(
 ) {
 	_ = project
 	_ = unit_index
-	for param in info.signature_parameters {
+	for &param in info.signature_parameters {
 		if !typecheck_parameter_is_required(site.target.kind, param) {
 			continue
 		}
@@ -530,6 +830,7 @@ typecheck_parameter_fact :: proc(
 		declared_type = param.declared_type,
 		has_declared_type = .Has_Declared_Type in param.flags,
 		type_clause_display = param.type_clause_display,
+		confidence = .High if unit.source_mode == .Full else .Low,
 	}
 	if type_fact_known(fact) {
 		if !(.Has_Declared_Type in param.flags) {
@@ -672,31 +973,73 @@ typecheck_writable_index_make :: proc(
 	return index
 }
 
-typecheck_call_result_index_make :: proc(
+typecheck_call_index_make :: proc(
 	unit: ^Unit_Analysis,
 	allocator: mem.Allocator,
-) -> Typecheck_Range_Index {
-	index := Typecheck_Range_Index {
-		ranges = make([dynamic]tokenizer.Range, 0, len(unit.expression_facts), allocator),
+) -> Typecheck_Call_Index {
+	index := Typecheck_Call_Index {
+		calls = make([dynamic]Typecheck_Call_Range, 0, len(unit.call_sites), allocator),
 	}
-	for fact in unit.expression_facts {
-		if fact.kind == .Call_Result {
-			append(&index.ranges, fact.range)
-		}
+	for call, i in unit.call_sites {
+		append(&index.calls, Typecheck_Call_Range{range = call.range, index = i})
 	}
-	slice.sort_by(index.ranges[:], typecheck_range_less)
+	slice.sort_by(index.calls[:], typecheck_call_range_less)
 	return index
 }
 
-typecheck_range_index_contains :: proc(index: ^Typecheck_Range_Index, outer: tokenizer.Range) -> bool {
-	for i := typecheck_range_lower_bound(index.ranges[:], outer.start);
-	    i < len(index.ranges) && index.ranges[i].start <= outer.end;
+typecheck_exact_call_for_range :: proc(
+	unit: ^Unit_Analysis,
+	index: ^Typecheck_Call_Index,
+	range: tokenizer.Range,
+) -> (Call_Site_Data, bool) {
+	for i := typecheck_call_range_lower_bound(index.calls[:], range.start);
+	    i < len(index.calls) && index.calls[i].range.start == range.start;
 	    i += 1 {
-		if typecheck_range_contains(outer, index.ranges[i]) {
-			return true
+		if typecheck_range_equal(index.calls[i].range, range) {
+			return unit.call_sites[index.calls[i].index], true
 		}
 	}
-	return false
+	return {}, false
+}
+
+typecheck_first_contained_call_for_range :: proc(
+	unit: ^Unit_Analysis,
+	index: ^Typecheck_Call_Index,
+	range: tokenizer.Range,
+) -> (Call_Site_Data, bool) {
+	best_index := len(unit.call_sites)
+	for i := typecheck_call_range_lower_bound(index.calls[:], range.start);
+	    i < len(index.calls) && index.calls[i].range.start <= range.end;
+	    i += 1 {
+		call := index.calls[i]
+		if call.index < best_index && typecheck_range_contains(range, call.range) {
+			best_index = call.index
+		}
+	}
+	if best_index < len(unit.call_sites) {
+		return unit.call_sites[best_index], true
+	}
+	return {}, false
+}
+
+typecheck_call_range_less :: proc(a, b: Typecheck_Call_Range) -> bool {
+	if a.range.start != b.range.start {
+		return a.range.start < b.range.start
+	}
+	return a.index < b.index
+}
+
+typecheck_call_range_lower_bound :: proc(calls: []Typecheck_Call_Range, start: int) -> int {
+	left, right := 0, len(calls)
+	for left < right {
+		mid := int(uint(left + right) >> 1)
+		if calls[mid].range.start < start {
+			left = mid + 1
+		} else {
+			right = mid
+		}
+	}
+	return left
 }
 
 typecheck_fact_for_range_indexed :: proc(
@@ -759,17 +1102,22 @@ typecheck_range_lower_bound :: proc(ranges: []tokenizer.Range, start: int) -> in
 	return left
 }
 
+typecheck_range_equal :: proc "contextless" (a, b: tokenizer.Range) -> bool {
+	return a.start == b.start && a.end == b.end
+}
+
 typecheck_assignment_compatible :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_index: int,
 	src, dst: Type_Fact_Data,
+	downcast := false,
 ) -> (bool, bool) {
 	if field_type_refs_equal(src.declared_type, dst.declared_type) &&
 	   src.has_declared_type && dst.has_declared_type {
 		return true, true
 	}
-	if ok, known := typecheck_ref_compatible(project, lookup, unit_index, src, dst); known {
+	if ok, known := typecheck_ref_compatible(project, lookup, unit_index, src, dst, downcast); known {
 		return ok, true
 	}
 	if typecheck_exact_or_generic(project, lookup, unit_index, src, dst, false) {
@@ -778,7 +1126,7 @@ typecheck_assignment_compatible :: proc(
 	src_name, src_ok := typecheck_builtin_name(project, src)
 	dst_name, dst_ok := typecheck_builtin_name(project, dst)
 	if src_ok && dst_ok {
-		return !typecheck_date_time_pair(src_name, dst_name), true
+		return typecheck_scalar_assignment_conversion(src_name, dst_name)
 	}
 	src_table := typecheck_fact_is_table(project, src)
 	dst_table := typecheck_fact_is_table(project, dst)
@@ -809,14 +1157,11 @@ typecheck_call_compatible :: proc(
 	src_name, src_ok := typecheck_builtin_name(project, src)
 	dst_name, dst_ok := typecheck_builtin_name(project, dst)
 	if dst_ok && is_generic_builtin_type_name(dst_name) {
-		if dst_name != "numeric" && dst_name != "decfloat" {
+		if dst_name != "numeric" && dst_name != "decfloat" && dst_name != "clike" {
 			return true, true
 		}
 		return typecheck_generic_accepts(project, src, dst),
-		       src_ok ||
-		       typecheck_fact_is_structure(src) ||
-		       typecheck_fact_is_table(project, src) ||
-		       typecheck_fact_is_ref(project, src)
+		       typecheck_generic_actual_family_known(project, src, src_name, src_ok)
 	}
 	if typecheck_exact_or_generic(project, lookup, unit_index, src, dst, true) {
 		return true, true
@@ -858,7 +1203,11 @@ typecheck_exact_or_generic :: proc(
 	src_name, src_ok := typecheck_builtin_name(project, src)
 	dst_name, dst_ok := typecheck_builtin_name(project, dst)
 	if src_ok && dst_ok {
-		return src_name == dst_name if strict else !typecheck_date_time_pair(src_name, dst_name)
+		if strict {
+			return src_name == dst_name
+		}
+		ok, known := typecheck_scalar_assignment_conversion(src_name, dst_name)
+		return known && ok
 	}
 	_ = lookup
 	_ = unit_index
@@ -870,6 +1219,7 @@ typecheck_ref_compatible :: proc(
 	lookup: ^Project_Index,
 	unit_index: int,
 	src, dst: Type_Fact_Data,
+	downcast := false,
 ) -> (bool, bool) {
 	src_ref := typecheck_fact_is_ref(project, src)
 	dst_ref := typecheck_fact_is_ref(project, dst)
@@ -887,39 +1237,106 @@ typecheck_ref_compatible :: proc(
 	if src_name == dst_name {
 		return true, true
 	}
-	if dst_name == "data" && !typecheck_ref_target_is_object(project, lookup, unit_index, src_name) {
-		return true, true
+	src_target, src_known := typecheck_ref_target(project, lookup, unit_index, src_name)
+	dst_target, dst_known := typecheck_ref_target(project, lookup, unit_index, dst_name)
+	if !src_known || !dst_known {
+		return false, false
 	}
-	if dst_name == "object" && typecheck_ref_target_is_object(project, lookup, unit_index, src_name) {
-		return true, true
+	if dst_target.kind == .Data_Generic {
+		return typecheck_ref_target_kind_is_data(src_target.kind), true
+	}
+	if dst_target.kind == .Object_Generic {
+		return typecheck_ref_target_kind_is_object(src_target.kind), true
+	}
+	if dst_target.kind == .Data {
+		if src_target.kind == .Data_Generic {
+			return false, true
+		}
+		if typecheck_ref_target_kind_is_object(src_target.kind) {
+			return false, true
+		}
+		return false, false
+	}
+	if dst_target.kind == .Class {
+		#partial switch src_target.kind {
+		case .Object_Generic:
+			return downcast, true
+		case .Class:
+			if class_is_or_inherits_from_name(project, lookup, src_target.handle, dst_target.name) {
+				return true, true
+			}
+			if downcast && class_is_or_inherits_from_name(project, lookup, dst_target.handle, src_target.name) {
+				return true, true
+			}
+			return false, true
+		case .Data, .Data_Generic:
+			return false, true
+		case .Interface:
+			if downcast && type_exposes_interface(project, lookup, dst_target.handle, src_target.name, 0) {
+				return true, true
+			}
+			return false, false
+		}
+	}
+	if dst_target.kind == .Interface {
+		#partial switch src_target.kind {
+		case .Object_Generic:
+			return downcast, true
+		case .Class, .Interface:
+			if type_exposes_interface(project, lookup, src_target.handle, dst_target.name, 0) {
+				return true, true
+			}
+			if downcast &&
+			   src_target.kind == .Interface &&
+			   type_exposes_interface(project, lookup, dst_target.handle, src_target.name, 0) {
+				return true, true
+			}
+			return false, false
+		case .Data, .Data_Generic:
+			return false, true
+		}
 	}
 	return false, false
 }
 
-typecheck_table_compatible :: proc(
+typecheck_ref_target :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_index: int,
-	src, dst: Type_Fact_Data,
-	strict: bool,
-) -> (bool, bool) {
-	src_table := typecheck_fact_is_table(project, src)
-	dst_table := typecheck_fact_is_table(project, dst)
-	if src_table != dst_table {
-		return false, true
+	name: string,
+) -> (Typecheck_Ref_Target, bool) {
+	if name == "data" {
+		return Typecheck_Ref_Target{kind = .Data_Generic, name = name}, true
 	}
-	if typecheck_generic_accepts(project, src, dst) {
-		return true, true
+	if name == "object" {
+		return Typecheck_Ref_Target{kind = .Object_Generic, name = name}, true
 	}
-	src_row, src_ok := typecheck_table_row_fact(project, src)
-	dst_row, dst_ok := typecheck_table_row_fact(project, dst)
-	if !src_ok || !dst_ok {
-		return false, false
+	if is_builtin_type_name(name) {
+		return Typecheck_Ref_Target{kind = .Data, name = name}, true
 	}
-	if strict {
-		return typecheck_call_compatible(project, lookup, unit_index, src_row, dst_row)
+	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, name)
+	if !ok {
+		return {}, false
 	}
-	return typecheck_assignment_compatible(project, lookup, unit_index, src_row, dst_row)
+	s := symbol_for_project_handle(project, handle)
+	if s == nil {
+		return {}, false
+	}
+	if s.kind == .Class {
+		return Typecheck_Ref_Target{kind = .Class, name = s.name, handle = handle}, true
+	}
+	if s.kind == .Interface {
+		return Typecheck_Ref_Target{kind = .Interface, name = s.name, handle = handle}, true
+	}
+	return Typecheck_Ref_Target{kind = .Data, name = name, handle = handle}, true
+}
+
+typecheck_ref_target_kind_is_data :: proc "contextless" (kind: Typecheck_Ref_Target_Kind) -> bool {
+	return kind == .Data || kind == .Data_Generic
+}
+
+typecheck_ref_target_kind_is_object :: proc "contextless" (kind: Typecheck_Ref_Target_Kind) -> bool {
+	return kind == .Object_Generic || kind == .Class || kind == .Interface
 }
 
 typecheck_generic_accepts :: proc(project: ^Project_Analysis, src, dst: Type_Fact_Data) -> bool {
@@ -954,6 +1371,64 @@ typecheck_generic_accepts :: proc(project: ^Project_Analysis, src, dst: Type_Fac
 	return false
 }
 
+typecheck_generic_actual_family_known :: proc(
+	project: ^Project_Analysis,
+	src: Type_Fact_Data,
+	src_name: string,
+	src_ok: bool,
+) -> bool {
+	if src_ok {
+		group := typecheck_scalar_group(src_name)
+		if group != .Unknown && group != .Generic_Simple {
+			return true
+		}
+	}
+	return typecheck_fact_is_structure(src) ||
+	       typecheck_fact_is_table(project, src) ||
+	       typecheck_fact_is_ref(project, src)
+}
+
+typecheck_scalar_assignment_conversion :: proc(src_name, dst_name: string) -> (bool, bool) {
+	if src_name == dst_name {
+		return true, true
+	}
+	src_group := typecheck_scalar_group(src_name)
+	dst_group := typecheck_scalar_group(dst_name)
+	if src_group == .Unknown || dst_group == .Unknown ||
+	   src_group == .Generic_Simple || dst_group == .Generic_Simple {
+		return false, false
+	}
+	if (src_group == .Date && dst_group == .Time) ||
+	   (src_group == .Time && dst_group == .Date) {
+		return false, true
+	}
+	return true, true
+}
+
+typecheck_scalar_group :: proc(name: string, depth := 0) -> Typecheck_Scalar_Group {
+	if depth > 8 {
+		return .Unknown
+	}
+	switch name {
+	case "i", "int1", "int2", "int4", "int8", "p", "decfloat16", "decfloat34", "f":
+		return .Numeric
+	case "c", "n", "string", "abap_bool":
+		return .Character
+	case "x", "xstring":
+		return .Byte
+	case "d":
+		return .Date
+	case "t":
+		return .Time
+	case "simple", "numeric", "decfloat", "clike", "csequence", "xsequence", "any", "data":
+		return .Generic_Simple
+	}
+	if metadata, ok := builtin_type_metadata(name); ok && !metadata.is_ref {
+		return typecheck_scalar_group(metadata.type_name, depth + 1)
+	}
+	return .Unknown
+}
+
 typecheck_builtin_numeric :: proc "contextless" (name: string) -> bool {
 	switch name {
 	case "i", "int1", "int2", "int4", "int8", "p", "decfloat16", "decfloat34", "f":
@@ -968,10 +1443,6 @@ typecheck_builtin_clike :: proc "contextless" (name: string) -> bool {
 		return true
 	}
 	return false
-}
-
-typecheck_date_time_pair :: proc "contextless" (a, b: string) -> bool {
-	return (a == "d" && b == "t") || (a == "t" && b == "d")
 }
 
 typecheck_fact_is_structure :: proc(fact: Type_Fact_Data) -> bool {
@@ -1000,16 +1471,28 @@ typecheck_table_row_fact :: proc(project: ^Project_Analysis, fact: Type_Fact_Dat
 	if fact.table_line != nil {
 		return fact.table_line^, true
 	}
+	raw := typecheck_raw_type_data(project, fact)
 	t := typecheck_type_data(project, fact)
 	if t == nil || t.kind != .Table || !type_id_is_known(t.base) {
 		return unknown_type_fact(), false
 	}
-	return Type_Fact_Data {
+	row := Type_Fact_Data {
 		type_id = t.base,
 		type_unit = fact.type_unit,
 		structure = INVALID_STRUCTURE_ID,
 		structure_unit = INVALID_UNIT_ID,
-	}, true
+		confidence = fact.confidence,
+	}
+	if raw != nil && raw.kind == .Table && fact.has_declared_type {
+		row.declared_type = fact.declared_type
+		row.has_declared_type = true
+		row.type_clause_display = fact.declared_type.base_name
+	}
+	if row_type := typecheck_type_data(project, row); row_type != nil && row_type.kind == .Structure {
+		row.structure = row_type.structure
+		row.structure_unit = fact.type_unit if row_type.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID
+	}
+	return row, true
 }
 
 typecheck_fact_is_ref :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> bool {
@@ -1039,23 +1522,6 @@ typecheck_ref_target_name :: proc(project: ^Project_Analysis, fact: Type_Fact_Da
 		return "", false
 	}
 	return target.name, target.name != ""
-}
-
-typecheck_ref_target_is_object :: proc(
-	project: ^Project_Analysis,
-	lookup: ^Project_Index,
-	unit_index: int,
-	name: string,
-) -> bool {
-	if name == "object" {
-		return true
-	}
-	if handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, name); ok {
-		unit := &project.units[unit_id_index(handle.unit)]
-		s := symbol(unit, handle.symbol)
-		return s != nil && (s.kind == .Class || s.kind == .Interface)
-	}
-	return false
 }
 
 typecheck_builtin_name :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> (string, bool) {
@@ -1148,7 +1614,7 @@ typecheck_single_sql_projection_fact :: proc(
 	if !field_ok {
 		return unknown_type_fact(), false
 	}
-	return Type_Fact_Data {
+	fact := Type_Fact_Data {
 		type_id = field.type_id,
 		type_unit = project.units[field_unit_index].unit_id if type_id_is_known(field.type_id) else INVALID_UNIT_ID,
 		structure = field.structure,
@@ -1156,7 +1622,22 @@ typecheck_single_sql_projection_fact :: proc(
 		declared_type = field.type_ref,
 		has_declared_type = .Has_Type_Ref in field.flags,
 		type_clause_display = field.type_ref.base_name,
-	}, true
+		confidence = .Low,
+	}
+	if project.units[field_unit_index].source_mode == .Full ||
+	   typecheck_sql_scalar_fact_is_complete(project, fact) {
+		fact.confidence = .High
+	}
+	return fact, true
+}
+
+typecheck_sql_scalar_fact_is_complete :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> bool {
+	name, ok := typecheck_builtin_name(project, fact)
+	if !ok {
+		return false
+	}
+	group := typecheck_scalar_group(name)
+	return group != .Unknown && group != .Generic_Simple
 }
 
 typecheck_range_contains :: proc "contextless" (outer, inner: tokenizer.Range) -> bool {

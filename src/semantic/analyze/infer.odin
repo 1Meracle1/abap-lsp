@@ -137,6 +137,9 @@ infer_unit_semantic_facts :: proc(
 			continue
 		}
 		if fact, ok := resolve_field_access_tail(project, lookup, unit_index, access); ok {
+			if !field_access_fact_is_high_confidence(project, lookup, unit_index, access, fact) {
+				fact = type_fact_with_confidence(fact, .Low)
+			}
 			range := field_access_range(access)
 			push_expression_fact(&out.expression_facts, access.scope, range, .Selector, fact)
 			push_operand(&out.operands, access.scope, range, .Field, fact, assignable = true)
@@ -173,6 +176,13 @@ infer_unit_semantic_facts :: proc(
 		if fact, ok := type_fact_for_range_indexed(&range_facts, assignment.rhs_range); ok {
 			rhs = fact
 		}
+		if .Assigns_Table_Line in assignment.flags {
+			if row, ok := typecheck_table_row_fact(project, rhs); ok {
+				rhs = row
+			} else {
+				rhs = unknown_type_fact()
+			}
+		}
 		if assignment.lhs_range.end > assignment.lhs_range.start {
 			push_operand(&out.operands, assignment.scope, assignment.lhs_range, .Variable, lhs, assignable = true)
 		}
@@ -200,6 +210,93 @@ infer_unit_semantic_facts :: proc(
 	}
 
 	return out
+}
+
+field_access_fact_is_high_confidence :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+	fact: Type_Fact_Data,
+) -> bool {
+	if !type_fact_is_high_confidence(fact) {
+		return false
+	}
+	arrow_index := -1
+	for segment, i in access.field_path {
+		if segment.selector == .Arrow {
+			if arrow_index >= 0 {
+				return false
+			}
+			arrow_index = i
+		}
+	}
+	if arrow_index < 0 {
+		return true
+	}
+	if arrow_index != 0 {
+		return false
+	}
+	for segment, i in access.field_path {
+		if segment.deref {
+			return false
+		}
+		if i == 0 {
+			if segment.selector != .Arrow {
+				return false
+			}
+		} else if segment.selector != .Dash {
+			return false
+		}
+	}
+	class_handle, ok := class_handle_for_field_access_base(project, lookup, unit_index, access)
+	if !ok {
+		return false
+	}
+	member, _, member_ok := class_member_for_path_segment(
+		project,
+		lookup,
+		class_handle,
+		access.field_path[0],
+		unit_index,
+		access.scope,
+	)
+	if !member_ok {
+		return false
+	}
+	member_unit_index := unit_id_index(member.unit)
+	if member_unit_index < 0 || member_unit_index >= len(project.units) {
+		return false
+	}
+	info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+	return info != nil && info.member_kind == .Attribute
+}
+
+class_handle_for_field_access_base :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> (Symbol_Handle, bool) {
+	if access.base_namespace == .Type {
+		return resolve_type_name_in_project_lookup(project, lookup, unit_index, access.base_name)
+	}
+	if access.base_name == "super" {
+		class_symbol, ok := enclosing_instance_method_class_owner_unit(&project.units[unit_index], access.scope)
+		if !ok {
+			return {}, false
+		}
+		return direct_superclass_handle_lookup(
+			project,
+			lookup,
+			Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol},
+		)
+	}
+	base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
+	if !ok {
+		return {}, false
+	}
+	return class_handle_from_symbol(project, lookup, unit_index, base)
 }
 
 apply_inferred_project_facts :: proc(
@@ -429,6 +526,7 @@ type_fact_from_symbol_handle :: proc(
 		declared_type = s.declared_type,
 		has_declared_type = s.has_declared_type,
 		type_clause_display = s.type_clause_display,
+		confidence = .High if project.units[unit_index].source_mode == .Full else .Low,
 	}
 }
 
@@ -490,12 +588,35 @@ call_result_type_fact :: proc(
 	unit_index: int,
 	site: Call_Site_Data,
 ) -> Type_Fact_Data {
-	if site.target.kind != .Method || site.target.method_name == "" {
+	method_name := site.target.method_name
+	class_handle: Symbol_Handle
+	ok := false
+	#partial switch site.target.kind {
+	case .Routine:
+		return builtin_routine_result_type_fact(&project.units[unit_index], site.target.routine_name)
+	case .Method:
+		if method_name == "" {
+			return unknown_type_fact()
+		}
+		class_handle, ok = class_handle_for_call_target(project, lookup, unit_index, site)
+	case .Implicit_Method:
+		if method_name == "" {
+			return unknown_type_fact()
+		}
+		class_symbol, class_ok := enclosing_class_owner_unit(&project.units[unit_index], site.scope)
+		if class_ok {
+			class_handle = Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol}
+			ok = true
+		}
+	case:
 		return unknown_type_fact()
 	}
-	class_handle, ok := class_handle_for_call_target(project, lookup, unit_index, site)
 	if !ok {
 		return unknown_type_fact()
+	}
+	if fact, trusted := direct_call_result_type_fact(project, lookup, unit_index, site, class_handle, method_name);
+	   trusted {
+		return fact
 	}
 	member, member_unit_index, member_ok := class_member_in_hierarchy_with_unit(
 		project,
@@ -503,12 +624,69 @@ call_result_type_fact :: proc(
 		class_handle,
 		site.target.method_name,
 		false,
+		unit_index,
+		site.scope,
 	)
 	member_info := entity_decl_info(&project.units[member_unit_index], member.symbol) if member_ok else nil
 	if !member_ok || member_info == nil || member_info.member_kind != .Method {
 		return unknown_type_fact()
 	}
-	return class_member_type_fact(project, member, member_unit_index)
+	return type_fact_with_confidence(class_member_type_fact(project, member, member_unit_index), .Low)
+}
+
+builtin_routine_result_type_fact :: proc(unit: ^Unit_Analysis, name: string) -> Type_Fact_Data {
+	spec := builtin_routine_spec(name)
+	if spec == nil || spec.return_type == "" {
+		return unknown_type_fact()
+	}
+	return Type_Fact_Data {
+		type_id = type_builtin(unit, spec.return_type),
+		type_unit = unit.unit_id,
+		structure = INVALID_STRUCTURE_ID,
+		structure_unit = INVALID_UNIT_ID,
+		declared_type = builtin_type_ref(spec.return_type),
+		has_declared_type = true,
+		confidence = .High,
+	}
+}
+
+direct_call_result_type_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	site: Call_Site_Data,
+	class_handle: Symbol_Handle,
+	method_name: string,
+) -> (Type_Fact_Data, bool) {
+	if site.target.kind == .Method &&
+	   (len(site.target.receiver_path) > 0 || site.target.interface_qualified) {
+		return unknown_type_fact(), false
+	}
+	owner := symbol_for_project_handle(project, class_handle)
+	if owner == nil || owner.kind != .Class {
+		return unknown_type_fact(), false
+	}
+	member, member_ok := class_member_handle_lookup(project, lookup, class_handle, method_name)
+	if !member_ok {
+		return unknown_type_fact(), false
+	}
+	member_unit_index := unit_id_index(member.unit)
+	if member_unit_index < 0 ||
+	   member_unit_index >= len(project.units) ||
+	   project.units[member_unit_index].source_mode != .Full {
+		return unknown_type_fact(), false
+	}
+	info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+	if info == nil || info.member_kind != .Method || .Is_Redefinition in info.flags {
+		return unknown_type_fact(), false
+	}
+	for param in info.signature_parameters {
+		if param.section == .Method_Returning || param.section == .Method_Receiving {
+			fact := typecheck_parameter_fact(project, lookup, member_unit_index, info, param)
+			return type_fact_with_confidence(fact, .High), type_fact_is_known(fact)
+		}
+	}
+	return unknown_type_fact(), false
 }
 
 inline_symbol_at_range_indexed :: proc(
