@@ -6,7 +6,6 @@ import "src:parser"
 import deps "src:semantic/dependencies"
 import uri_key "src:uri_key"
 
-import base_runtime "base:runtime"
 import "core:mem"
 import "core:mem/virtual"
 import "core:strings"
@@ -21,36 +20,13 @@ Analyze_Options :: struct {
 	pool: ^execution.Pool,
 }
 
-Project_Dependency_Kind :: enum {
-	Include,
-	Type,
-	Static,
-	Message,
-	Sql,
-	Call,
-}
-
-Project_Dependency_Edge :: struct {
-	from: Unit_Id,
-	to:   Unit_Id,
-	kind: Project_Dependency_Kind,
-	name: string,
-}
-
-Reverse_Dependency_Key :: struct {
-	from: Unit_Id,
-	to:   Unit_Id,
-}
-
 Project_State :: struct {
 	inputs:                     [dynamic]Source_Input,
 	units:                      [dynamic]Unit_Analysis,
 	uri_to_unit:                map[string]Unit_Id,
-	edges:                      [dynamic]Project_Dependency_Edge,
 	reverse_edges:              map[Unit_Id][dynamic]Unit_Id,
-	dependency_pair_counts:     map[Reverse_Dependency_Key]int,
 	unresolved_candidates:      map[deps.Remote_Dependency_Key][dynamic]Unit_Id,
-	unit_dependency_edges:      [dynamic][dynamic]Project_Dependency_Edge,
+	unit_dependencies:          [dynamic][dynamic]Unit_Id,
 	unit_unresolved_candidates: [dynamic][dynamic]deps.Remote_Dependency_Key,
 	diagnostics:                [dynamic]Diagnostic,
 	index:                      Project_Index,
@@ -179,15 +155,13 @@ project_state_make :: proc(
 		inputs = make([dynamic]Source_Input, 0, 8, allocator),
 		units = make([dynamic]Unit_Analysis, 0, 8, allocator),
 		uri_to_unit = make(map[string]Unit_Id, 16, allocator),
-		edges = make([dynamic]Project_Dependency_Edge, 0, 16, allocator),
 		reverse_edges = make(map[Unit_Id][dynamic]Unit_Id, 16, allocator),
-		dependency_pair_counts = make(map[Reverse_Dependency_Key]int, 16, allocator),
 		unresolved_candidates = make(
 			map[deps.Remote_Dependency_Key][dynamic]Unit_Id,
 			16,
 			allocator,
 		),
-		unit_dependency_edges = make([dynamic][dynamic]Project_Dependency_Edge, 0, 8, allocator),
+		unit_dependencies = make([dynamic][dynamic]Unit_Id, 0, 8, allocator),
 		unit_unresolved_candidates = make(
 			[dynamic][dynamic]deps.Remote_Dependency_Key,
 			0,
@@ -387,7 +361,7 @@ project_state_upsert_input :: proc(
 	append(&state.unit_dirs, uri_parent_dir_key(input.uri, allocator))
 	append(&state.unit_candidate_index, candidate_index)
 	append(&state.interface_signatures, "")
-	append(&state.unit_dependency_edges, make([dynamic]Project_Dependency_Edge, 0, 8, allocator))
+	append(&state.unit_dependencies, make([dynamic]Unit_Id, 0, 8, allocator))
 	append(
 		&state.unit_unresolved_candidates,
 		make([dynamic]deps.Remote_Dependency_Key, 0, 8, allocator),
@@ -1235,165 +1209,34 @@ sql_name_ref_key :: #force_inline proc(ref: Sql_Name_Ref_Data) -> Sql_Predicate_
 }
 
 @(private)
-project_state_rebuild_dependency_graph :: proc(
-	state: ^Project_State,
-	project: ^Project_Analysis,
-	lookup: ^Project_Index,
-) {
-	project_state_reverse_edges_destroy(state)
-	clear(&state.edges)
-	graph_allocator := base_runtime.heap_allocator()
-	temp_arena := temp_arena_begin()
-	defer temp_arena_end(temp_arena)
-
-	edge_seen := make(
-		map[Project_Dependency_Edge]bool,
-		len(project.units) * 4 + 64,
-		context.temp_allocator,
-	)
-	reverse_seen := make(
-		map[Reverse_Dependency_Key]bool,
-		len(project.units) * 2 + 8,
-		context.temp_allocator,
-	)
-	state.reverse_edges = make(
-		map[Unit_Id][dynamic]Unit_Id,
-		len(project.units) * 2 + 8,
-		graph_allocator,
-	)
-	for unit, unit_index in project.units {
-		for edge in unit.include_edges {
-			if edge.has_target {
-				project_state_add_dependency_edge(
-					state,
-					unit.unit_id,
-					edge.target,
-					.Include,
-					edge.name,
-					&edge_seen,
-					&reverse_seen,
-					graph_allocator,
-				)
-			}
-		}
-		for ref in unit.references {
-			if !ref.has_resolution ||
-			   ref.resolution.kind != .Symbol ||
-			   ref.resolution.symbol.unit == unit.unit_id {
-				continue
-			}
-			project_state_add_dependency_edge(
-				state,
-				unit.unit_id,
-				ref.resolution.symbol.unit,
-				project_dependency_kind_for_reference(ref),
-				ref.name,
-				&edge_seen,
-				&reverse_seen,
-				graph_allocator,
-			)
-		}
-		for sql_source in unit.sql_sources {
-			if handle, ok := resolve_type_name_in_project_lookup(
-				project,
-				lookup,
-				unit_index,
-				sql_source.name,
-			); ok {
-				project_state_add_dependency_edge(
-					state,
-					unit.unit_id,
-					handle.unit,
-					.Sql,
-					sql_source.name,
-					&edge_seen,
-					&reverse_seen,
-					graph_allocator,
-				)
-			}
-		}
-		for call_site in unit.call_sites {
-			#partial switch call_site.target.kind {
-			case .Function:
-				if handle, ok := root_symbol_in_unit_lookup(
-					project,
-					unit.unit_id,
-					.Routine,
-					call_site.target.function_name,
-				); ok {
-					project_state_add_dependency_edge(
-						state,
-						unit.unit_id,
-						handle.unit,
-						.Call,
-						call_site.target.function_name,
-						&edge_seen,
-						&reverse_seen,
-						graph_allocator,
-					)
-				}
-			case .Report:
-				if handle, ok := root_symbol_in_unit_lookup(
-					project,
-					unit.unit_id,
-					.Value,
-					call_site.target.report_name,
-				); ok {
-					project_state_add_dependency_edge(
-						state,
-						unit.unit_id,
-						handle.unit,
-						.Call,
-						call_site.target.report_name,
-						&edge_seen,
-						&reverse_seen,
-						graph_allocator,
-					)
-				}
-			case:
-			}
-		}
-	}
-}
-
-@(private)
 project_state_update_dependency_graph_for_units :: proc(
 	state: ^Project_State,
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_ids: []Unit_Id,
 ) {
-	assert(len(state.unit_dependency_edges) >= len(project.units))
+	assert(len(state.unit_dependencies) >= len(project.units))
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
 	for unit_id in unit_ids {
 		unit_index := unit_id_index(unit_id)
-		unit_edges := &state.unit_dependency_edges[unit_index]
-		for edge in unit_edges^ {
-			project_state_decrement_dependency_pair(state, edge.from, edge.to)
+		unit_dependencies := &state.unit_dependencies[unit_index]
+		for dependency in unit_dependencies^ {
+			project_state_remove_reverse_dependency(state, dependency, unit_id)
 		}
-		project_state_remove_dependency_edges_from_unit(state, unit_id)
-		clear(unit_edges)
+		clear(unit_dependencies)
 
 		unit := &project.units[unit_index]
-		graph_allocator := state.allocator
-		edge_seen := make(
-			map[Project_Dependency_Edge]bool,
-			len(unit.references) + len(unit.include_edges) + 8,
-			context.temp_allocator,
-		)
+		dependency_seen := make(map[Unit_Id]bool, len(unit.references) + len(unit.include_edges) + 8, context.temp_allocator)
 		for edge in unit.include_edges {
 			if edge.has_target {
-				project_state_add_dependency_edge_for_unit(
+				project_state_add_unit_dependency(
 					state,
-					unit_edges,
+					unit_dependencies,
 					unit.unit_id,
 					edge.target,
-					.Include,
-					edge.name,
-					&edge_seen,
-					graph_allocator,
+					&dependency_seen,
 				)
 			}
 		}
@@ -1403,15 +1246,12 @@ project_state_update_dependency_graph_for_units :: proc(
 			   ref.resolution.symbol.unit == unit.unit_id {
 				continue
 			}
-			project_state_add_dependency_edge_for_unit(
+			project_state_add_unit_dependency(
 				state,
-				unit_edges,
+				unit_dependencies,
 				unit.unit_id,
 				ref.resolution.symbol.unit,
-				project_dependency_kind_for_reference(ref),
-				ref.name,
-				&edge_seen,
-				graph_allocator,
+				&dependency_seen,
 			)
 		}
 		for sql_source in unit.sql_sources {
@@ -1421,15 +1261,12 @@ project_state_update_dependency_graph_for_units :: proc(
 				unit_index,
 				sql_source.name,
 			); ok {
-				project_state_add_dependency_edge_for_unit(
+				project_state_add_unit_dependency(
 					state,
-					unit_edges,
+					unit_dependencies,
 					unit.unit_id,
 					handle.unit,
-					.Sql,
-					sql_source.name,
-					&edge_seen,
-					graph_allocator,
+					&dependency_seen,
 				)
 			}
 		}
@@ -1442,15 +1279,12 @@ project_state_update_dependency_graph_for_units :: proc(
 					.Routine,
 					call_site.target.function_name,
 				); ok {
-					project_state_add_dependency_edge_for_unit(
+					project_state_add_unit_dependency(
 						state,
-						unit_edges,
+						unit_dependencies,
 						unit.unit_id,
 						handle.unit,
-						.Call,
-						call_site.target.function_name,
-						&edge_seen,
-						graph_allocator,
+						&dependency_seen,
 					)
 				}
 			case .Report:
@@ -1460,15 +1294,12 @@ project_state_update_dependency_graph_for_units :: proc(
 					.Value,
 					call_site.target.report_name,
 				); ok {
-					project_state_add_dependency_edge_for_unit(
+					project_state_add_unit_dependency(
 						state,
-						unit_edges,
+						unit_dependencies,
 						unit.unit_id,
 						handle.unit,
-						.Call,
-						call_site.target.report_name,
-						&edge_seen,
-						graph_allocator,
+						&dependency_seen,
 					)
 				}
 			case:
@@ -1478,87 +1309,32 @@ project_state_update_dependency_graph_for_units :: proc(
 }
 
 @(private)
-project_state_remove_dependency_edges_from_unit :: proc(state: ^Project_State, unit_id: Unit_Id) {
-	write := 0
-	for edge in state.edges {
-		if edge.from == unit_id {
-			continue
-		}
-		state.edges[write] = edge
-		write += 1
-	}
-	resize(&state.edges, write)
-}
-
-@(private)
-project_state_add_dependency_edge_for_unit :: proc(
+project_state_add_unit_dependency :: proc(
 	state: ^Project_State,
-	unit_edges: ^[dynamic]Project_Dependency_Edge,
+	unit_dependencies: ^[dynamic]Unit_Id,
 	from, to: Unit_Id,
-	kind: Project_Dependency_Kind,
-	name: string,
-	edge_seen: ^map[Project_Dependency_Edge]bool,
-	allocator: mem.Allocator,
+	dependency_seen: ^map[Unit_Id]bool,
 ) {
 	if from == INVALID_UNIT_ID || to == INVALID_UNIT_ID || from == to {
 		return
 	}
-	edge := Project_Dependency_Edge {
-		from = from,
-		to   = to,
-		kind = kind,
-		name = name,
-	}
-	if edge in edge_seen^ {
+	if to in dependency_seen^ {
 		return
 	}
-	edge.name = strings.clone(name, allocator)
-	edge_seen^[edge] = true
-	append(unit_edges, edge)
-	append(&state.edges, edge)
-	project_state_increment_dependency_pair(state, from, to, allocator)
-}
-
-@(private)
-project_state_increment_dependency_pair :: proc(
-	state: ^Project_State,
-	from, to: Unit_Id,
-	allocator: mem.Allocator,
-) {
-	key := Reverse_Dependency_Key {
-		from = from,
-		to   = to,
-	}
-	if count, ok := state.dependency_pair_counts[key]; ok {
-		state.dependency_pair_counts[key] = count + 1
-		return
-	}
-	state.dependency_pair_counts[key] = 1
+	dependency_seen^[to] = true
+	append(unit_dependencies, to)
 	if dependents, ok := state.reverse_edges[to]; ok {
 		push_unique_unit(&dependents, from)
 		state.reverse_edges[to] = dependents
 	} else {
-		next_dependents := make([dynamic]Unit_Id, 0, 2, allocator)
+		next_dependents := make([dynamic]Unit_Id, 0, 2, state.allocator)
 		append(&next_dependents, from)
 		state.reverse_edges[to] = next_dependents
 	}
 }
 
 @(private)
-project_state_decrement_dependency_pair :: proc(state: ^Project_State, from, to: Unit_Id) {
-	key := Reverse_Dependency_Key {
-		from = from,
-		to   = to,
-	}
-	count, ok := state.dependency_pair_counts[key]
-	if !ok {
-		return
-	}
-	if count > 1 {
-		state.dependency_pair_counts[key] = count - 1
-		return
-	}
-	delete_key(&state.dependency_pair_counts, key)
+project_state_remove_reverse_dependency :: proc(state: ^Project_State, to, from: Unit_Id) {
 	if dependents, dependents_ok := state.reverse_edges[to]; dependents_ok {
 		write := 0
 		for dependent in dependents {
@@ -1576,74 +1352,6 @@ project_state_decrement_dependency_pair :: proc(state: ^Project_State, from, to:
 			state.reverse_edges[to] = dependents
 		}
 	}
-}
-
-@(private)
-project_state_reverse_edges_destroy :: proc(state: ^Project_State) {
-	for _, dependents in state.reverse_edges {
-		delete(dependents)
-	}
-	delete(state.reverse_edges)
-}
-
-@(private)
-project_state_add_dependency_edge :: proc(
-	state: ^Project_State,
-	from, to: Unit_Id,
-	kind: Project_Dependency_Kind,
-	name: string,
-	edge_seen: ^map[Project_Dependency_Edge]bool,
-	reverse_seen: ^map[Reverse_Dependency_Key]bool,
-	allocator: mem.Allocator,
-) {
-	if from == INVALID_UNIT_ID || to == INVALID_UNIT_ID || from == to {
-		return
-	}
-	edge := Project_Dependency_Edge {
-		from = from,
-		to   = to,
-		kind = kind,
-		name = name,
-	}
-	if edge in edge_seen^ {
-		return
-	}
-	edge.name = strings.clone(name, allocator)
-	edge_seen^[edge] = true
-	append(&state.edges, edge)
-	reverse_key := Reverse_Dependency_Key {
-		from = from,
-		to   = to,
-	}
-	if reverse_key in reverse_seen^ {
-		return
-	}
-	reverse_seen^[reverse_key] = true
-	if dependents, ok := state.reverse_edges[to]; ok {
-		append(&dependents, from)
-		state.reverse_edges[to] = dependents
-	} else {
-		next_dependents := make([dynamic]Unit_Id, 0, 2, allocator)
-		append(&next_dependents, from)
-		state.reverse_edges[to] = next_dependents
-	}
-}
-
-@(private)
-project_dependency_kind_for_reference :: proc(ref: Reference_Data) -> Project_Dependency_Kind {
-	#partial switch ref.kind {
-	case .Static_Target:
-		return .Static
-	case .Message_Class:
-		return .Message
-	case .Routine_Call:
-		return .Call
-	case:
-	}
-	if ref.namespace == .Type {
-		return .Type
-	}
-	return .Call
 }
 
 @(private)
