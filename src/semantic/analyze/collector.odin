@@ -1246,9 +1246,12 @@ declare_range_like_clause :: proc(
 		.Variable,
 		range,
 		structure_id,
-		Field_Type_Ref_Data{},
-		false,
+		low_high,
+		true,
 		display,
+		"",
+		.Range_Of,
+		true,
 	)
 }
 
@@ -1592,7 +1595,7 @@ type_ref_from_expr :: proc(
 	}
 	text := expr_display(c, expr)
 	text = strings.trim_space(text)
-	if text == "" {
+	if text == "" || text == "#" {
 		return {}, false
 	}
 	// Legacy non-selector fallback only; declaration-addition boundaries belong to parser AST.
@@ -1621,6 +1624,9 @@ type_ref_from_ast_expr :: proc(
 	case ^ast.Type_Ref_Expr:
 		return type_ref_from_type_ref_expr(c, n, namespace, is_ref)
 	case ^ast.Ident_Expr:
+		if n.name == "#" {
+			return {}, false
+		}
 		return Field_Type_Ref_Data {
 				namespace = namespace,
 				is_ref = is_ref,
@@ -1667,7 +1673,7 @@ type_ref_from_type_ref_expr :: proc(
 		base = expr.name
 		base_range = expr.range
 	}
-	if base == "" {
+	if base == "" || base == "#" {
 		return {}, false
 	}
 	ns := namespace

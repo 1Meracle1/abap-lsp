@@ -1139,6 +1139,8 @@ type_id_from_symbol_fields :: proc(
 		structure_type := type_structure(unit, structure_id)
 		if has_type_form && type_form == .Range_Of {
 			base = type_table(unit, structure_type, type_form)
+		} else if has_type_form && type_form_is_table_category(type_form) && !type_id_is_known(base) {
+			base = type_table(unit, structure_type, type_form)
 		} else if !type_id_is_known(base) {
 			base = structure_type
 		}

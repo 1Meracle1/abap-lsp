@@ -449,6 +449,14 @@ value_access_from_expr :: proc(
 }
 
 collect_call_expr_refs :: proc(c: ^Collector, expr: ^ast.Call_Expr, scope: Scope_Id) {
+	if _, ok := expr.callee.derived_expr.(^ast.Literal_Expr); ok {
+		collect_expr_refs(c, expr.callee, scope)
+		if args, args_ok := expr.args.derived_expr.(^ast.Call_Arg_List_Expr); args_ok {
+			collect_call_arg_list_refs(c, args, scope, {}, expr.range)
+		}
+		add_expression_fact(c, scope, expr.range, .Call_Result, unknown_type_fact())
+		return
+	}
 	target := call_target_from_callee(c, expr.callee, scope)
 	if target.kind == .Routine || target.kind == .Implicit_Method {
 		name := target.routine_name
@@ -495,6 +503,10 @@ collect_call_method_target_refs :: proc(c: ^Collector, target: ^ast.Expr, scope:
 		return
 	}
 	if collect_call_method_selector_target_refs(c, target, scope) {
+		return
+	}
+	if _, ok := target.derived_expr.(^ast.Literal_Expr); ok {
+		collect_expr_refs(c, target, scope)
 		return
 	}
 	if name, range, ok := expr_name(target); ok {

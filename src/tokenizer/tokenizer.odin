@@ -625,7 +625,7 @@ has_comment_or_pragma :: proc(trivia: []Trivia_Piece) -> bool {
 }
 
 is_letter :: proc(r: rune) -> bool {
-	if r == '_' || r == '/' {
+	if r == '_' || r == '/' || r == '%' {
 		return true
 	}
 	if 'A' <= r && r <= 'Z' || 'a' <= r && r <= 'z' {

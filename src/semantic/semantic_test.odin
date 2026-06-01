@@ -265,6 +265,44 @@ ENDCLASS.`,
 }
 
 @(test)
+percent_names_resolve_in_typepool_like_declarations :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"abapls-typepool:/ole2_test.abap",
+		`
+CONSTANTS: OLE2_%_POINTER POINTER.
+TYPES: BEGIN OF OLE2_PCB,
+       DATACB LIKE OLE2_%_POINTER,
+       END OF OLE2_PCB.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
+kernel_percent_constants_resolve_as_builtins :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"mem://kernel_percent_constants.abap",
+		`
+CONSTANTS charsize TYPE i VALUE %_CHARSIZE.
+CONSTANTS endian TYPE abap_endian VALUE %_ENDIAN.
+CONSTANTS minchar TYPE abap_char1 VALUE %_MINCHAR.
+CONSTANTS maxchar TYPE abap_char1 VALUE %_MAXCHAR.
+CONSTANTS horizontal_tab TYPE abap_char1 VALUE %_HORIZONTAL_TAB.
+CONSTANTS vertical_tab TYPE abap_char1 VALUE %_VERTICAL_TAB.
+CONSTANTS newline TYPE abap_char1 VALUE %_NEWLINE.
+CONSTANTS cr_lf TYPE abap_cr_lf VALUE %_CR_LF.
+CONSTANTS formfeed TYPE abap_char1 VALUE %_FORMFEED.
+CONSTANTS backspace TYPE abap_char1 VALUE %_BACKSPACE.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 generic_builtin_types_are_context_checked :: proc(t: ^testing.T) {
 	valid := `FIELD-SYMBOLS <value> TYPE simple.
 FORM demo USING iv_number TYPE numeric CHANGING cv_data TYPE data.
@@ -1086,6 +1124,16 @@ standard_type_pool_symbols_are_installed :: proc(t: ^testing.T) {
 	testing.expect(t, trans_ref != nil && trans_ref.declared_type.is_ref)
 
 	constant_specs := [?][3]string {
+		{"%_charsize", "i", "%_CHARSIZE"},
+		{"%_endian", "abap_endian", "%_ENDIAN"},
+		{"%_minchar", "abap_char1", "%_MINCHAR"},
+		{"%_maxchar", "abap_char1", "%_MAXCHAR"},
+		{"%_horizontal_tab", "abap_char1", "%_HORIZONTAL_TAB"},
+		{"%_vertical_tab", "abap_char1", "%_VERTICAL_TAB"},
+		{"%_newline", "abap_char1", "%_NEWLINE"},
+		{"%_cr_lf", "abap_cr_lf", "%_CR_LF"},
+		{"%_formfeed", "abap_char1", "%_FORMFEED"},
+		{"%_backspace", "abap_char1", "%_BACKSPACE"},
 		{"abap_true", "abap_bool", "'X'"},
 		{"abap_false", "abap_bool", "' '"},
 		{"abap_undefined", "abap_bool", "'-'"},
@@ -3738,6 +3786,9 @@ TYPES zattp_gln TYPE string.
 DATA lv_rogln TYPE zattp_gln.
 RANGES r_rogln FOR lv_rogln.
 SELECT-OPTIONS s_rogln FOR lv_rogln.
+LOOP AT s_rogln INTO DATA(ls_rogln).
+  lv_rogln = ls_rogln-low.
+ENDLOOP.
 `
 	unit := collect_test_unit(t, "file:///ranges.abap", source)
 
@@ -3752,6 +3803,7 @@ SELECT-OPTIONS s_rogln FOR lv_rogln.
 		testing.expect_value(t, st.fields[2].type_ref.namespace, analyze.Namespace.Value)
 		testing.expect_value(t, st.fields[2].type_ref.base_name, "lv_rogln")
 	}
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
 }
 
 @(test)
@@ -5593,6 +5645,29 @@ ENDCLASS.
 	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
 	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Routine, .Routine_Call), 4)
 	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Value, .Identifier), 0)
+}
+
+@(test)
+text_symbols_and_inferred_constructors_do_not_require_global_names :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///text_symbols_and_hash_constructors.abap",
+		`
+CLASS lcl_dep DEFINITION.
+ENDCLASS.
+
+DATA lv_text TYPE string.
+DATA lo_dep TYPE REF TO lcl_dep.
+DATA lt_text TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+START-OF-SELECTION.
+  lv_text = 'Doc. Num.'(008).
+  lo_dep = NEW #( ).
+  APPEND VALUE #( ) TO lt_text.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
 }
 
 @(test)
@@ -8432,6 +8507,25 @@ SELECT carrid, carrname
 	st := analyze.structure(&unit, target.structure)
 	fields := [?]string{"carrid", "carrname"}
 	testing.expect(t, field_names_match(st, fields[:]))
+}
+
+@(test)
+inline_open_sql_table_target_infers_row_fields :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///sql_inline_table_row.abap",
+		`
+DATA lv_carrid TYPE string.
+SELECT carrid, carrname
+  FROM scarr
+  INTO TABLE @DATA(lt_scarr).
+READ TABLE lt_scarr INTO DATA(ls_scarr) INDEX 1.
+lv_carrid = ls_scarr-carrid.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Generic_Table_Type))
 }
 
 @(test)
@@ -12404,6 +12498,33 @@ analyze_target_included_units_share_compilation_context :: proc(t: ^testing.T) {
 }
 
 @(test)
+analyze_target_infers_select_options_row_across_includes :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = "REPORT zmain. INCLUDE: zsel, zf01.",
+	}
+	candidates := [?]analyze.Source_Input {
+		{uri = "file:///workspace/zsel.abap", source = `
+DATA gv_doc TYPE string.
+SELECT-OPTIONS so_dels FOR gv_doc.
+`},
+		{uri = "file:///workspace/zf01.abap", source = `
+FORM run.
+  LOOP AT so_dels INTO DATA(ls_doc).
+    gv_doc = ls_doc-low.
+  ENDLOOP.
+ENDFORM.
+`},
+	}
+
+	project := analyze_project_test(t, 0, target, candidates[:])
+	form := analyze.project_unit_by_uri(&project, candidates[1].uri)
+
+	testing.expect(t, form != nil)
+	testing.expect(t, !has_diagnostic(form, .Unknown_Field))
+}
+
+@(test)
 analyze_target_reports_type_declared_in_later_include :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///workspace/zmain.abap",
@@ -12464,9 +12585,9 @@ CLASS lcl_demo DEFINITION.
   PUBLIC SECTION.
     METHODS get_data.
 ENDCLASS.
+DATA gr_demo TYPE REF TO lcl_demo.
 `},
 		{uri = "file:///workspace/zcls.abap", source = `
-DATA gr_demo TYPE REF TO lcl_demo.
 CLASS lcl_demo IMPLEMENTATION.
   METHOD get_data.
   ENDMETHOD.
@@ -12488,6 +12609,8 @@ ENDCLASS.
 
 	testing.expect(t, top != nil)
 	testing.expect(t, cls != nil)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
 	testing.expect(t, class_symbol != nil)
 	testing.expect(t, member != nil)
 	member_info := analyze.entity_decl_info(top, member.id) if top != nil && member != nil else nil

@@ -565,8 +565,12 @@ collect_select_result_clause :: proc(
 			declared_type := Field_Type_Ref_Data{}
 			has_type := false
 			type_display := ""
+			type_form := ast.Data_Type_Form{}
+			has_type_form := false
 			if result.table {
 				structure_id = inline_select_target_structure(c, query_id, target_name, scope)
+				type_form = .Standard_Table
+				has_type_form = true
 			} else if type_ref, type_ok := inline_select_target_type(c, query_id); type_ok {
 				declared_type = type_ref
 				has_type = true
@@ -582,6 +586,9 @@ collect_select_result_clause :: proc(
 				declared_type,
 				has_type,
 				type_display,
+				"",
+				type_form,
+				has_type_form,
 			)
 		} else {
 			_ = declare_collected_symbol(c, scope, target_name, .Field_Symbol, range)

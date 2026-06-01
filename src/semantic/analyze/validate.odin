@@ -777,6 +777,7 @@ generic_table_category_type :: #force_inline proc "contextless" (s: Symbol_Data)
 	       (s.type_clause_form == .Any_Table ||
 	        s.type_clause_form == .Index_Table ||
 	        (!s.has_declared_type &&
+	         s.structure == INVALID_STRUCTURE_ID &&
 	         (s.type_clause_form == .Table ||
 	          s.type_clause_form == .Standard_Table ||
 	          s.type_clause_form == .Sorted_Table ||
@@ -1208,7 +1209,8 @@ class_handle_from_symbol :: proc(
 		return {}, false
 	}
 	line_of := s.has_type_clause_form && type_form_is_line_of(s.type_clause_form)
-	return class_handle_from_declared_type(project, lookup, site_unit_index, s.declared_type, line_of, 0, s.scope)
+	_ = site_unit_index
+	return class_handle_from_declared_type(project, lookup, unit_index, s.declared_type, line_of, 0, s.scope)
 }
 
 class_handle_from_type_fact :: proc(

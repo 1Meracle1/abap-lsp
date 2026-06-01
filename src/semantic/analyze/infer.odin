@@ -315,7 +315,7 @@ apply_inferred_project_facts :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				update_structure := type_fact_local_structure(update.type_fact, unit.unit_id)
+				update_structure := type_fact_structure_for_unit(project, unit, update.type_fact)
 				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
@@ -362,7 +362,7 @@ apply_inferred_project_facts_for_indices :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				update_structure := type_fact_local_structure(update.type_fact, unit.unit_id)
+				update_structure := type_fact_structure_for_unit(project, unit, update.type_fact)
 				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
@@ -431,6 +431,41 @@ type_fact_local_structure :: proc(fact: Type_Fact_Data, unit_id: Unit_Id) -> Str
 		return fact.structure
 	}
 	return INVALID_STRUCTURE_ID
+}
+
+type_fact_structure_for_unit :: proc(
+	project: ^Project_Analysis,
+	unit: ^Unit_Analysis,
+	fact: Type_Fact_Data,
+) -> Structure_Id {
+	local := type_fact_local_structure(fact, unit.unit_id)
+	if local != INVALID_STRUCTURE_ID || fact.structure_unit == INVALID_UNIT_ID {
+		return local
+	}
+	source_index := unit_id_index(fact.structure_unit)
+	if source_index < 0 || source_index >= len(project.units) {
+		return INVALID_STRUCTURE_ID
+	}
+	source := &project.units[source_index]
+	source_structure := structure(source, fact.structure)
+	if source_structure == nil {
+		return INVALID_STRUCTURE_ID
+	}
+	for &st in unit.structures {
+		if st.origin_unit == source_structure.origin_unit &&
+		   st.origin_structure == source_structure.origin_structure {
+			return st.id
+		}
+	}
+	fields := make([dynamic]Structure_Field_Data, 0, len(source_structure.fields), context.allocator)
+	for &field in source_structure.fields {
+		append(&fields, field)
+	}
+	id := push_structure(unit, source_structure.name, fields)
+	st := &unit.structures[structure_id_index(id)]
+	st.origin_unit = source_structure.origin_unit
+	st.origin_structure = source_structure.origin_structure
+	return id
 }
 
 range_type_fact_index_make :: proc(
