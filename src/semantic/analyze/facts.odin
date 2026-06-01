@@ -188,6 +188,9 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 		}
 	case ^ast.Char_String_Template_Expr:
 		collect_expr_list_refs(c, n.parts[:], scope)
+		fact := type_fact_from_expr(c, expr, scope)
+		add_expression_fact(c, scope, expr.range, .Reference, fact)
+		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
 	case ^ast.Template_Interpolation_Expr:
 		collect_expr_refs(c, n.expr, scope)
 		collect_expr_list_refs(c, n.format_specs[:], scope)
@@ -750,6 +753,7 @@ append_call_argument :: proc(
 		items,
 		Call_Argument_Data {
 			range = arg.range,
+			value_range = value.range if value != nil else arg.range,
 			name = name,
 			section = section,
 			has_section = has_section,
@@ -979,6 +983,16 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 	if expr == nil {
 		return unknown_type_fact()
 	}
+	if _, ok := expr.derived_expr.(^ast.Char_String_Template_Expr); ok {
+		return Type_Fact_Data {
+			type_id = type_builtin(c.unit, "string"),
+			type_unit = c.unit.unit_id,
+			structure = INVALID_STRUCTURE_ID,
+			structure_unit = INVALID_UNIT_ID,
+			declared_type = builtin_type_ref("string"),
+			has_declared_type = true,
+		}
+	}
 	if lit, ok := expr.derived_expr.(^ast.Literal_Expr); ok {
 		if len(lit.value) > 0 && lit.value[0] >= '0' && lit.value[0] <= '9' {
 			return Type_Fact_Data {
@@ -1111,8 +1125,9 @@ add_assignment_site :: proc(
 	lhs_access: Field_Access,
 	has_lhs: bool,
 	lhs, rhs: Type_Fact_Data,
+	extra_flags := Assignment_Site_Flags{},
 ) {
-	flags := Assignment_Site_Flags{}
+	flags := extra_flags
 	if has_lhs {
 		flags += {.Has_Lhs_Target_Access}
 	}
@@ -1605,6 +1620,7 @@ collect_raw_call_args :: proc(
 				&args,
 				Call_Argument_Data {
 					range = arg.value_range,
+					value_range = arg.value_range,
 					name = name,
 					section = section,
 					has_section = has_section,
@@ -1987,6 +2003,7 @@ collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scop
 				has_target,
 				type_fact_from_expr(c, stmt.target, scope),
 				type_fact_from_expr(c, stmt.source, scope),
+				{.Assigns_Table_Line},
 			)
 		}
 	}

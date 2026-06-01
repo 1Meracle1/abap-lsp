@@ -1443,6 +1443,16 @@ has_diagnostic :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_Ki
 	return false
 }
 
+diagnostic_count :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_Kind) -> int {
+	count := 0
+	for diagnostic in unit.diagnostics {
+		if diagnostic.kind == kind {
+			count += 1
+		}
+	}
+	return count
+}
+
 diagnostic_present :: proc(diagnostics: []analyze.Diagnostic, kind: analyze.Diagnostic_Kind) -> bool {
 	for diagnostic in diagnostics {
 		if diagnostic.kind == kind {
@@ -4370,6 +4380,192 @@ ENDFUNCTION.
 	testing.expect(t, has_reference(&unit, "string", .Type, .Type_Ref))
 	testing.expect(t, has_reference(&unit, "sy", .Value, .Type_Ref))
 	testing.expect(t, has_reference(&unit, "bapiret2", .Value, .Type_Ref))
+}
+
+@(test)
+semantic_typecheck_reports_assignment_conversion_failures :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_assign_ref.
+TYPES: BEGIN OF e070,
+         trkorr TYPE c,
+         as4date TYPE d,
+       END OF e070.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+DATA lr_data TYPE REF TO data.
+DATA lr_e070 TYPE REF TO e070.
+DATA lo_obj  TYPE REF TO object.
+DATA ls_e070 TYPE e070.
+
+lv_date = lv_time.
+lr_e070 = lr_data.
+ls_e070 = lo_obj.`
+	unit := collect_test_unit(t, "file:///tc_assign_ref.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+}
+
+@(test)
+semantic_typecheck_skips_dependency_interface_units :: proc(t: ^testing.T) {
+	source := `REPORT z_remote_dep.
+DATA lv_date TYPE d.
+DATA lv_time TYPE t.
+lv_date = lv_time.`
+	parsed := parser.parse(source, "file:///remote_dep.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	unit := analyze.collect_unit(analyze.Unit_Id(0), "file:///remote_dep.abap", source, parsed, context.allocator)
+	unit.source_mode = .Dependency_Interface
+
+	units := make([dynamic]analyze.Unit_Analysis, 0, 1, context.allocator)
+	append(&units, unit)
+	project := analyze.project_analysis_from_units(units, context.allocator)
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 64}, context.allocator)
+	defer execution.pool_destroy(&pool)
+	analyze.finish_project_analysis(&project, &pool, {}, context.allocator)
+
+	testing.expect(t, !has_diagnostic(&project.units[0], .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_reports_method_argument_failures :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_method_args.
+TYPES: BEGIN OF e070,
+         trkorr TYPE c,
+       END OF e070.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run
+      IMPORTING iv_trkorr TYPE e070-trkorr iv_count TYPE i
+      EXPORTING ev_trkorr TYPE e070-trkorr
+      CHANGING  cv_count  TYPE i.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA lo TYPE REF TO lcl_demo.
+  DATA lv_trkorr TYPE e070-trkorr.
+  DATA lv_text TYPE string.
+  CREATE OBJECT lo.
+
+  lo->run(
+    EXPORTING iv_trkorr = sy-uzeit unknown = lv_trkorr
+    IMPORTING ev_trkorr = 'literal'
+    CHANGING  cv_count  = lv_text ).`
+	unit := collect_test_unit(t, "file:///tc_method_args.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unknown_Named_Parameter))
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 1)
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_maps_positional_method_arguments :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_count TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lo TYPE REF TO lcl_demo.
+  DATA lv_count TYPE i.
+  CREATE OBJECT lo.
+  lo->run( lv_count ).`
+	unit := collect_test_unit(t, "file:///tc_positional_method_arg.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Named_Parameter))
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Argument_Type))
+}
+
+@(test)
+semantic_typecheck_accepts_common_assignment_conversions :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_assignment_conversions.
+TYPES: BEGIN OF ty_key,
+         attr1 TYPE c,
+       END OF ty_key.
+DATA lv_tabix TYPE syst-tabix.
+DATA ls_key TYPE ty_key.
+DATA rv_valid TYPE abap_bool.
+DATA lv_key TYPE string.
+DATA iv_key TYPE string.
+
+lv_tabix = sy-tabix.
+ls_key-attr1 = 'MSGV1'.
+rv_valid = boolc( sy-subrc = 0 ).
+lv_key = to_upper( iv_key ).`
+	unit := collect_test_unit(t, "file:///tc_assignment_conversions.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_skips_loop_table_line_assignment :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_loop_line.
+TYPES ty_text TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
+DATA lt_text TYPE ty_text.
+FIELD-SYMBOLS <lv_text> TYPE string.
+
+LOOP AT lt_text ASSIGNING <lv_text>.
+ENDLOOP.`
+	unit := collect_test_unit(t, "file:///tc_loop_line.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Incompatible_Assignment_Type))
+}
+
+@(test)
+semantic_typecheck_treats_oop_defaults_as_optional :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run IMPORTING iv_req TYPE i iv_default TYPE i DEFAULT 1.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lo TYPE REF TO lcl_demo.
+  DATA lv_count TYPE i.
+  CREATE OBJECT lo.
+  lo->run( iv_req = lv_count ).`
+	unit := collect_test_unit(t, "file:///tc_oop_default_arg.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
+}
+
+@(test)
+semantic_typecheck_reports_generic_and_sql_target_failures :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_generic_sql.
+TYPES: BEGIN OF e070,
+         as4date TYPE d,
+         trkorr TYPE c,
+       END OF e070.
+CLASS lcl_generic DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS needs_numeric IMPORTING value TYPE numeric.
+ENDCLASS.
+
+CLASS lcl_generic IMPLEMENTATION.
+  METHOD needs_numeric.
+  ENDMETHOD.
+ENDCLASS.
+
+START-OF-SELECTION.
+  DATA ls_e070 TYPE e070.
+  DATA lv_time TYPE t.
+
+  lcl_generic=>needs_numeric( value = ls_e070 ).
+  SELECT SINGLE as4date FROM e070 INTO @lv_time.`
+	unit := collect_test_unit(t, "file:///tc_generic_sql.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Incompatible_Argument_Type))
+	testing.expect(t, has_diagnostic(&unit, .Invalid_Open_Sql_Into_Target))
 }
 
 @(test)

@@ -974,8 +974,26 @@ ENDINTERFACE.`
 	testing.expect_value(t, option_type.base_name, "I")
 	testing.expect_value(t, importing.parameters[1].name, "VALUE")
 	testing.expect_value(t, importing.parameters[1].passing, ast.Parameter_Passing_Kind.Direct)
+	testing.expect(t, importing.parameters[1].has_default)
 	value_type := importing.parameters[1].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect_value(t, value_type.base_name, "ABAP_BOOL")
+}
+
+@(test)
+oop_signature_accepts_unescaped_value_parameter_name :: proc(t: ^testing.T) {
+	source := `INTERFACE lif.
+  METHODS run IMPORTING value TYPE numeric.
+ENDINTERFACE.`
+	parsed := parse(source, "oop_value_parameter.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	methods := parsed.root.stmts[0].derived_stmt.(^ast.Interface_Decl).body[0].derived_stmt.(^ast.Oop_Simple_Stmt)
+	importing := methods.members[0].signatures[0]
+	testing.expect_value(t, len(importing.parameters), 1)
+	testing.expect_value(t, importing.parameters[0].name, "value")
+	testing.expect_value(t, importing.parameters[0].passing, ast.Parameter_Passing_Kind.Direct)
+	value_type := importing.parameters[0].type_clause.type_ref.derived_expr.(^ast.Type_Ref_Expr)
+	testing.expect_value(t, value_type.base_name, "numeric")
 }
 
 @(test)

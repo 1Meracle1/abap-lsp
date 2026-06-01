@@ -2310,12 +2310,14 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 		type_clause = parse_oop_parameter_type_clause(p)
 	}
 	optional := false
+	has_default := false
 	for !oop_signature_values_done(p) {
 		if allow_keyword(p, "OPTIONAL") {
 			optional = true
 			continue
 		}
 		if allow_keyword(p, "DEFAULT") {
+			has_default = true
 			skip_oop_parameter_addition_value(p)
 			continue
 		}
@@ -2336,6 +2338,7 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 			passing = passing,
 			type_clause = type_clause,
 			optional = optional,
+			has_default = has_default,
 		},
 	)
 	append_oop_signature_value(p, clause, start, p.index)
@@ -2353,16 +2356,19 @@ parse_oop_parameter_name :: proc(p: ^Parser) -> (
 		bump_token(p)
 		escaped = true
 	}
-	if !escaped && (at_keyword(p, "VALUE") || at_keyword(p, "REFERENCE")) {
+	if !escaped &&
+	   (at_keyword(p, "VALUE") || at_keyword(p, "REFERENCE")) &&
+	   p.index + 1 < len(p.tokens) &&
+	   p.tokens[p.index + 1].kind == .LParen {
 		passing := ast.Parameter_Passing_Kind.Value if at_keyword(p, "VALUE") else .Reference
 		bump_token(p)
-		allow_token(p, .LParen)
+		expect_token(p, .LParen)
 		tok := current_token(p)
 		if tok.kind != .Ident {
 			return "", tok.range, passing, false
 		}
 		bump_token(p)
-		allow_token(p, .RParen)
+		expect_token(p, .RParen)
 		return tokenizer.token_lexeme(tok, p.source), tok.range, passing, true
 	}
 	tok := current_token(p)
@@ -2571,13 +2577,12 @@ oop_parameter_starts :: proc(p: ^Parser, index: int) -> bool {
 		i += 1
 		escaped = true
 	}
-	if !escaped && (at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE")) {
-		if i + 4 >= len(p.tokens) ||
-		   p.tokens[i + 1].kind != .LParen ||
-		   p.tokens[i + 2].kind != .Ident ||
-		   p.tokens[i + 3].kind != .RParen {
-			return false
-		}
+	if !escaped &&
+	   (at_keyword_index(p, i, "VALUE") || at_keyword_index(p, i, "REFERENCE")) &&
+	   i + 3 < len(p.tokens) &&
+	   p.tokens[i + 1].kind == .LParen &&
+	   p.tokens[i + 2].kind == .Ident &&
+	   p.tokens[i + 3].kind == .RParen {
 		i += 4
 	} else if i < len(p.tokens) && p.tokens[i].kind == .Ident {
 		i += 1

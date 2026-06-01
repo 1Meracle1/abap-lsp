@@ -2509,6 +2509,9 @@ declare_signature_scope_params :: proc(
 		if .Is_Optional in param.flags {
 			flags += {.Is_Optional}
 		}
+		if .Has_Default_Value in param.flags {
+			flags += {.Has_Default_Value}
+		}
 		set_parameter_decl_info(
 			c,
 			parameters[i].symbol,
@@ -2652,6 +2655,9 @@ class_member_parameter_from_oop :: proc(
 	}
 	if clause.optional {
 		param.flags += {.Is_Optional}
+	}
+	if clause.has_default {
+		param.flags += {.Has_Default_Value}
 	}
 	return param
 }

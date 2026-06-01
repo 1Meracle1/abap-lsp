@@ -1031,6 +1031,7 @@ clone_oop_parameters :: proc(list: [dynamic]Oop_Parameter_Clause, allocator: mem
 				passing = clause.passing,
 				type_clause = clone_type_clause(clause.type_clause, allocator),
 				optional = clause.optional,
+				has_default = clause.has_default,
 			},
 		)
 	}

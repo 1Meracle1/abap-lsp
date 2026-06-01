@@ -1836,6 +1836,7 @@ Oop_Parameter_Clause :: struct {
 	passing:     Parameter_Passing_Kind,
 	type_clause: ^Data_Type_Clause,
 	optional:    bool,
+	has_default: bool,
 }
 
 Oop_Signature_Clause :: struct {

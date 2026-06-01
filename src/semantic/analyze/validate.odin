@@ -49,6 +49,7 @@ validate_core_diagnostics :: proc(
 	validate_field_accesses(project, lookup, unit_index, out, seen, allocator)
 	validate_call_sites(project, lookup, unit_index, out, seen, allocator)
 	validate_open_sql(project, lookup, unit_index, out, seen, allocator)
+	validate_typecheck_diagnostics(project, lookup, unit_index, out, seen, allocator)
 }
 
 Diagnostic_Key :: struct {

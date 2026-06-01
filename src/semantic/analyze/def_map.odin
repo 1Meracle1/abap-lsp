@@ -669,6 +669,7 @@ Method_Parameter_Section :: enum {
 Class_Member_Parameter_Flag :: enum {
 	Has_Declared_Type,
 	Is_Optional,
+	Has_Default_Value,
 }
 Class_Member_Parameter_Flags :: bit_set[Class_Member_Parameter_Flag]
 
@@ -782,6 +783,7 @@ Named_Argument_Access :: struct {
 
 Call_Argument_Data :: struct {
 	range:       tokenizer.Range,
+	value_range: tokenizer.Range,
 	name:        string,
 	section:     Named_Argument_Section,
 	has_section: bool,
