@@ -1908,6 +1908,61 @@ project_state_batch_resolves_target_candidates :: proc(t: ^testing.T) {
 }
 
 @(test)
+project_state_ignores_unparsed_candidate_provided_names :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	state := analyze.project_state_make({}, context.allocator)
+	target := analyze.Source_Input {
+		uri = "file:///workspace/main.abap",
+		source = "REPORT zmain. INCLUDE ztop.",
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 1, context.allocator)
+	project := analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		{},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, len(root.include_edges), 1)
+		testing.expect(t, !root.include_edges[0].has_target)
+	}
+
+	append(
+		&candidates,
+		analyze.Project_Candidate_Input {
+			input = analyze.Source_Input {
+				uri = "file:///workspace/zother.abap",
+				source = "DATA lv_other TYPE i.",
+			},
+			object_name = "zother",
+		},
+	)
+	project = analyze.project_state_analyze_target_with_candidate_inputs(
+		&state,
+		target,
+		candidates[:],
+		{},
+		analyze.Analyze_Options{pool = &pool},
+		context.allocator,
+	)
+	root = analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect_value(t, len(project.units), 1)
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, len(root.include_edges), 1)
+		testing.expect(t, !root.include_edges[0].has_target)
+	}
+}
+
+@(test)
 analysis_session_keeps_targets_that_are_also_candidates :: proc(t: ^testing.T) {
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)

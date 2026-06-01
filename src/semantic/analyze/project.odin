@@ -595,6 +595,9 @@ project_state_candidate_has_name :: proc(
 		return true
 	}
 	unit_id := state.candidate_to_unit[candidate_index]
+	if unit_id == INVALID_UNIT_ID {
+		return false
+	}
 	unit_index := unit_id_index(unit_id)
 	for provided in state.units[unit_index].provided_names {
 		if strings.equal_fold(provided, name) {
