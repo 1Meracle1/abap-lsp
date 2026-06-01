@@ -69,12 +69,18 @@ typecheck_assignments :: proc(
 				seen,
 				.Incompatible_Assignment_Type,
 				site.rhs_range,
-				typecheck_two_operand_message(
-					unit,
-					"The type of ",
-					site.rhs_range,
-					" cannot be converted to the type of ",
-					site.lhs_range,
+				typecheck_message_with_type_detail(
+					typecheck_two_operand_message(
+						unit,
+						"The type of ",
+						site.rhs_range,
+						" cannot be converted to the type of ",
+						site.lhs_range,
+						allocator,
+					),
+					project,
+					site.rhs,
+					site.lhs,
 					allocator,
 				),
 			)
@@ -178,10 +184,16 @@ typecheck_calls :: proc(
 					seen,
 					.Incompatible_Argument_Type,
 					arg.value_range,
-					typecheck_two_name_message(
-						typecheck_range_text(unit, arg.value_range, context.temp_allocator),
-						" is not type-compatible with formal parameter ",
-						param.name,
+					typecheck_message_with_type_detail(
+						typecheck_two_name_message(
+							typecheck_range_text(unit, arg.value_range, context.temp_allocator),
+							" is not type-compatible with formal parameter ",
+							param.name,
+							allocator,
+						),
+						project,
+						actual,
+						formal,
 						allocator,
 					),
 				)
@@ -229,7 +241,13 @@ typecheck_open_sql_targets :: proc(
 				seen,
 				.Invalid_Open_Sql_Into_Target,
 				target.target_range,
-				typecheck_name_message("Open SQL target is not compatible: ", target.target_name, allocator),
+				typecheck_message_with_type_detail(
+					typecheck_name_message("Open SQL target is not compatible: ", target.target_name, allocator),
+					project,
+					source,
+					target_fact,
+					allocator,
+				),
 			)
 		}
 	}
@@ -1055,7 +1073,7 @@ typecheck_builtin_name :: proc(project: ^Project_Analysis, fact: Type_Fact_Data)
 	return "", false
 }
 
-typecheck_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> ^Type_Data {
+typecheck_raw_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> ^Type_Data {
 	if !type_id_is_known(fact.type_id) || fact.type_unit == INVALID_UNIT_ID {
 		return nil
 	}
@@ -1063,7 +1081,12 @@ typecheck_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) ->
 	if unit_index < 0 || unit_index >= len(project.units) {
 		return nil
 	}
-	t := type_data(&project.units[unit_index], fact.type_id)
+	return type_data(&project.units[unit_index], fact.type_id)
+}
+
+typecheck_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> ^Type_Data {
+	t := typecheck_raw_type_data(project, fact)
+	unit_index := unit_id_index(fact.type_unit)
 	for depth := 0; t != nil && t.kind == .Named && type_id_is_known(t.base) && depth < 16; depth += 1 {
 		t = type_data(&project.units[unit_index], t.base)
 	}
@@ -1193,5 +1216,85 @@ typecheck_two_operand_message :: proc(
 	strings.write_byte(&out, '\'')
 	strings.write_string(&out, typecheck_range_text(unit, right, context.temp_allocator))
 	strings.write_byte(&out, '\'')
+	return strings.to_string(out)
+}
+
+typecheck_message_with_type_detail :: proc(
+	message: string,
+	project: ^Project_Analysis,
+	current, expected: Type_Fact_Data,
+	allocator: mem.Allocator,
+) -> string {
+	current_name, current_ok := typecheck_diagnostic_type_name(project, current, allocator)
+	expected_name, expected_ok := typecheck_diagnostic_type_name(project, expected, allocator)
+	if !current_ok || !expected_ok {
+		return message
+	}
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, message)
+	strings.write_string(&out, " (current type '")
+	strings.write_string(&out, current_name)
+	strings.write_string(&out, "', expected type '")
+	strings.write_string(&out, expected_name)
+	strings.write_string(&out, "')")
+	return strings.to_string(out)
+}
+
+typecheck_diagnostic_type_name :: proc(
+	project: ^Project_Analysis,
+	fact: Type_Fact_Data,
+	allocator: mem.Allocator,
+) -> (string, bool) {
+	if fact.has_declared_type && fact.declared_type.base_name != "" && len(fact.declared_type.field_path) == 0 {
+		if fact.declared_type.is_ref {
+			return typecheck_prefixed_type_name("REF TO ", fact.declared_type.base_name, allocator), true
+		}
+		return fact.declared_type.base_name, true
+	}
+	if name, ok := typecheck_builtin_name(project, fact); ok {
+		return name, true
+	}
+	if typecheck_fact_is_ref(project, fact) {
+		if name, ok := typecheck_ref_target_name(project, fact); ok {
+			return typecheck_prefixed_type_name("REF TO ", name, allocator), true
+		}
+		return "", false
+	}
+	if fact.structure != INVALID_STRUCTURE_ID {
+		unit_index := unit_id_index(fact.structure_unit)
+		if unit_index >= 0 && unit_index < len(project.units) {
+			if s := structure(&project.units[unit_index], fact.structure); s != nil && s.name != "" {
+				return s.name, true
+			}
+		}
+	}
+	if t := typecheck_raw_type_data(project, fact); t != nil {
+		#partial switch t.kind {
+		case .Builtin, .Named, .Structure, .Class, .Interface:
+			return t.name, t.name != ""
+		case .Table:
+			row := Type_Fact_Data {
+				type_id = t.base,
+				type_unit = fact.type_unit,
+				structure = INVALID_STRUCTURE_ID,
+				structure_unit = INVALID_UNIT_ID,
+			}
+			if name, ok := typecheck_diagnostic_type_name(project, row, allocator); ok {
+				return typecheck_prefixed_type_name("TABLE OF ", name, allocator), true
+			}
+		}
+	}
+	if fact.table_line != nil {
+		if name, ok := typecheck_diagnostic_type_name(project, fact.table_line^, allocator); ok {
+			return typecheck_prefixed_type_name("TABLE OF ", name, allocator), true
+		}
+	}
+	return "", false
+}
+
+typecheck_prefixed_type_name :: proc(prefix, name: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, prefix)
+	strings.write_string(&out, name)
 	return strings.to_string(out)
 }

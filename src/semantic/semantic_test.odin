@@ -1453,6 +1453,15 @@ diagnostic_count :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_
 	return count
 }
 
+diagnostic_message_for_kind :: proc(unit: ^analyze.Unit_Analysis, kind: analyze.Diagnostic_Kind) -> (string, bool) {
+	for diagnostic in unit.diagnostics {
+		if diagnostic.kind == kind {
+			return diagnostic.message, true
+		}
+	}
+	return "", false
+}
+
 diagnostic_present :: proc(diagnostics: []analyze.Diagnostic, kind: analyze.Diagnostic_Kind) -> bool {
 	for diagnostic in diagnostics {
 		if diagnostic.kind == kind {
@@ -4402,6 +4411,13 @@ ls_e070 = lo_obj.`
 	unit := collect_test_unit(t, "file:///tc_assign_ref.abap", source)
 
 	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Assignment_Type), 1)
+	message, ok := diagnostic_message_for_kind(&unit, .Incompatible_Assignment_Type)
+	testing.expect(t, ok)
+	testing.expect_value(
+		t,
+		message,
+		"The type of 'lv_time' cannot be converted to the type of 'lv_date' (current type 't', expected type 'd')",
+	)
 }
 
 @(test)
@@ -4566,6 +4582,20 @@ START-OF-SELECTION.
 
 	testing.expect(t, has_diagnostic(&unit, .Incompatible_Argument_Type))
 	testing.expect(t, has_diagnostic(&unit, .Invalid_Open_Sql_Into_Target))
+	arg_message, arg_ok := diagnostic_message_for_kind(&unit, .Incompatible_Argument_Type)
+	sql_message, sql_ok := diagnostic_message_for_kind(&unit, .Invalid_Open_Sql_Into_Target)
+	testing.expect(t, arg_ok)
+	testing.expect(t, sql_ok)
+	testing.expect_value(
+		t,
+		arg_message,
+		"'ls_e070' is not type-compatible with formal parameter 'value' (current type 'e070', expected type 'numeric')",
+	)
+	testing.expect_value(
+		t,
+		sql_message,
+		"Open SQL target is not compatible: 'lv_time' (current type 'd', expected type 't')",
+	)
 }
 
 @(test)
