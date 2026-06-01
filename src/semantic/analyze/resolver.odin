@@ -9,9 +9,26 @@ import "core:strings"
 
 build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Scope_Index {
 	index := Scope_Index {
-		class_symbols     = make(map[Class_Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
-		enclosing_classes = make([dynamic]Symbol_Id, len(unit.scopes), len(unit.scopes), allocator),
-		superclasses      = make(map[Symbol_Id]string, len(unit.class_inheritance), allocator),
+		class_symbols = make(map[Class_Scope_Index_Key]Symbol_Id, len(unit.symbols), allocator),
+		enclosing_classes = make(
+			[dynamic]Symbol_Id,
+			len(unit.scopes),
+			len(unit.scopes),
+			allocator,
+		),
+		enclosing_methods = make(
+			[dynamic]Symbol_Id,
+			len(unit.scopes),
+			len(unit.scopes),
+			allocator,
+		),
+		enclosing_method_scopes = make(
+			[dynamic]Scope_Id,
+			len(unit.scopes),
+			len(unit.scopes),
+			allocator,
+		),
+		superclasses = make(map[Symbol_Id]string, len(unit.class_inheritance), allocator),
 	}
 	for scope_data, i in unit.scopes {
 		owner := INVALID_SYMBOL_ID
@@ -25,6 +42,21 @@ build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Sco
 			}
 		}
 		index.enclosing_classes[i] = owner
+
+		method := INVALID_SYMBOL_ID
+		method_scope := INVALID_SCOPE_ID
+		if scope_data.kind == .Method && scope_data.owner != INVALID_SYMBOL_ID {
+			method = scope_data.owner
+			method_scope = scope_data.id
+		} else {
+			parent_index := scope_id_index(scope_data.parent)
+			if parent_index >= 0 && parent_index < i {
+				method = index.enclosing_methods[parent_index]
+				method_scope = index.enclosing_method_scopes[parent_index]
+			}
+		}
+		index.enclosing_methods[i] = method
+		index.enclosing_method_scopes[i] = method_scope
 	}
 	for inheritance in unit.class_inheritance {
 		index.superclasses[inheritance.class_symbol] = inheritance.superclass_name
@@ -46,8 +78,11 @@ build_scope_index :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Sco
 			namespaces := [?]Namespace{.Value, .Type, .Routine}
 			for namespace in namespaces {
 				if symbol_kind_occupies(member.kind, namespace) {
-					index.class_symbols[Class_Scope_Index_Key{class_symbol = owner.id, namespace = namespace, name = member.name}] =
-						member.id
+					index.class_symbols[Class_Scope_Index_Key {
+						class_symbol = owner.id,
+						namespace = namespace,
+						name = member.name,
+					}] = member.id
 				}
 			}
 		}
@@ -74,6 +109,7 @@ analyze_unit :: proc(
 resolve_unit_locally :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) {
 	index := build_scope_index(unit, allocator)
 	unit.scope_index = index
+	resolve_local_effective_method_signatures(unit)
 	expand_local_structure_includes(unit, allocator)
 	refresh_unit_type_ids(unit)
 	resolve_unit_with_index(unit, &unit.scope_index)
@@ -178,13 +214,13 @@ resolve_reference :: proc(
 		ref.kind,
 		ref.name,
 	); ok {
-		if resolution, effective_ok := resolve_local_effective_method_parameter(unit, ref, symbol_id);
+		if resolution, effective_ok := resolve_cached_local_method_parameter(unit, ref, symbol_id);
 		   effective_ok {
 			return resolution, true
 		}
 		return resolution_for_symbol(unit, symbol_id), true
 	}
-	if resolution, ok := resolve_local_effective_method_parameter(unit, ref, INVALID_SYMBOL_ID); ok {
+	if resolution, ok := resolve_cached_local_method_parameter(unit, ref, INVALID_SYMBOL_ID); ok {
 		return resolution, true
 	}
 	if symbol_id, ok := resolve_current_class_member(
@@ -322,6 +358,12 @@ enclosing_class_owner_unit :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> 
 }
 
 enclosing_method_scope :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> (Scope_Id, Symbol_Id, bool) {
+	scope_index := scope_id_index(scope_id)
+	if scope_index >= 0 && scope_index < len(unit.scope_index.enclosing_methods) {
+		method := unit.scope_index.enclosing_methods[scope_index]
+		method_scope := unit.scope_index.enclosing_method_scopes[scope_index]
+		return method_scope, method, method != INVALID_SYMBOL_ID
+	}
 	current := scope_id
 	for current != INVALID_SCOPE_ID {
 		s := scope(unit, current)
@@ -334,6 +376,31 @@ enclosing_method_scope :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id) -> (Sco
 		current = s.parent
 	}
 	return INVALID_SCOPE_ID, INVALID_SYMBOL_ID, false
+}
+
+resolve_local_effective_method_signatures :: proc(unit: ^Unit_Analysis) {
+	for &method in unit.symbols {
+		if method.kind != .Method {
+			continue
+		}
+		info := entity_decl_info(unit, method.id)
+		if info == nil || info.body_scope == INVALID_SCOPE_ID {
+			continue
+		}
+		info.effective_signature = Symbol_Handle{unit = INVALID_UNIT_ID, symbol = INVALID_SYMBOL_ID}
+		class_symbol, class_ok := enclosing_class_owner_unit(unit, method.scope)
+		if !class_ok {
+			continue
+		}
+		if member_symbol, member_ok := class_definition_member_canonical(
+			unit,
+			class_symbol,
+			.Routine,
+			method.name,
+		); member_ok {
+			info.effective_signature = Symbol_Handle{unit = unit.unit_id, symbol = member_symbol}
+		}
+	}
 }
 
 enclosing_instance_method_class_owner_unit :: proc(
@@ -355,7 +422,7 @@ enclosing_instance_method_class_owner_unit :: proc(
 			if !class_ok || method == nil {
 				return INVALID_SYMBOL_ID, false
 			}
-			member, _ := class_definition_member(unit, class_symbol, .Routine, method.name)
+			member, _ := class_definition_member_canonical(unit, class_symbol, .Routine, method.name)
 			info := entity_decl_info(unit, member)
 			return class_symbol, info == nil || !(.Is_Static in info.flags)
 		}
@@ -857,7 +924,7 @@ exposed_interface_member_for_scope :: proc(
 	if interface_unit_index < 0 || interface_unit_index >= len(units) {
 		return Symbol_Handle{unit = INVALID_UNIT_ID, symbol = INVALID_SYMBOL_ID}, -1
 	}
-	member := unit_class_member_symbol(&units[interface_unit_index], handle.symbol, member_name)
+	member := unit_class_member_symbol_canonical(&units[interface_unit_index], handle.symbol, member_name)
 	if member == nil {
 		return Symbol_Handle{unit = INVALID_UNIT_ID, symbol = INVALID_SYMBOL_ID}, -1
 	}
@@ -956,7 +1023,8 @@ inherited_project_class_member :: proc(
 				if s := symbol(member_unit, member_handle.symbol); s != nil {
 					if class_symbol, class_ok := enclosing_class_owner_unit(member_unit, s.scope);
 					   class_ok {
-						if member := unit_class_member_symbol(member_unit, class_symbol, s.name); member != nil {
+						if member := unit_class_member_symbol_canonical(member_unit, class_symbol, s.name);
+						   member != nil {
 							info := entity_decl_info(member_unit, member.id)
 							if fallback.symbol == INVALID_SYMBOL_ID {
 								fallback = Symbol_Handle{unit = member_handle.unit, symbol = member.id}
@@ -1000,10 +1068,6 @@ resolve_project_reference :: proc(
 		units,
 		unit_index,
 		ref,
-		roots,
-		class_entries,
-		visible,
-		predecessors,
 	); ok {
 		return resolution, true
 	}
@@ -1054,10 +1118,6 @@ resolve_project_effective_method_parameter :: proc(
 	units: []Unit_Analysis,
 	unit_index: int,
 	ref: Reference_Data,
-	roots: ^Project_Root_Lookup,
-	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
-	visible: [dynamic]Unit_Id,
-	predecessors: [dynamic]Unit_Id,
 ) -> (Resolution, bool) {
 	if ref.namespace != .Value || !(ref.kind == .Identifier || ref.kind == .Type_Ref) {
 		return {}, false
@@ -1067,10 +1127,6 @@ resolve_project_effective_method_parameter :: proc(
 		unit_index,
 		ref.scope,
 		ref.name,
-		roots,
-		class_entries,
-		visible,
-		predecessors,
 	)
 	if !ok {
 		return {}, false
@@ -1083,12 +1139,11 @@ effective_project_method_parameter_handle :: proc(
 	unit_index: int,
 	scope_id: Scope_Id,
 	name: string,
-	roots: ^Project_Root_Lookup,
-	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
-	visible: [dynamic]Unit_Id,
-	predecessors: [dynamic]Unit_Id,
 	found_symbol := INVALID_SYMBOL_ID,
 ) -> (Symbol_Handle, bool) {
+	if unit_index < 0 || unit_index >= len(units) {
+		return {}, false
+	}
 	method_scope, method_symbol, ok := enclosing_method_scope(&units[unit_index], scope_id)
 	if !ok {
 		return {}, false
@@ -1099,33 +1154,29 @@ effective_project_method_parameter_handle :: proc(
 			return {}, false
 		}
 	}
-	method := symbol(&units[unit_index], method_symbol)
-	if method == nil {
+	method_info := entity_decl_info(&units[unit_index], method_symbol)
+	if method_info == nil ||
+	   method_info.effective_signature.unit == INVALID_UNIT_ID ||
+	   method_info.effective_signature.symbol == INVALID_SYMBOL_ID {
 		return {}, false
 	}
-	member, member_unit_index := method_signature_member_for_scope(
-		units,
-		unit_index,
-		method_scope,
-		method.name,
-		roots,
-		class_entries,
-		visible,
-		predecessors,
+	member := method_info.effective_signature
+	member_unit_index := unit_id_index(member.unit)
+	if member_unit_index < 0 || member_unit_index >= len(units) {
+		return {}, false
+	}
+	param_symbol, param_ok := entity_signature_parameter_symbol(
+		&units[member_unit_index],
+		member.symbol,
+		name,
 	)
-	if member.symbol == INVALID_SYMBOL_ID ||
-	   member_unit_index < 0 ||
-	   member_unit_index >= len(units) {
+	if !param_ok {
 		return {}, false
 	}
-	param := entity_signature_parameter(&units[member_unit_index], member.symbol, name)
-	if param == nil || param.symbol == INVALID_SYMBOL_ID {
-		return {}, false
-	}
-	return Symbol_Handle{unit = member.unit, symbol = param.symbol}, true
+	return Symbol_Handle{unit = member.unit, symbol = param_symbol}, true
 }
 
-resolve_local_effective_method_parameter :: proc(
+resolve_cached_local_method_parameter :: proc(
 	unit: ^Unit_Analysis,
 	ref: Reference_Data,
 	found_symbol: Symbol_Id,
@@ -1143,23 +1194,21 @@ resolve_local_effective_method_parameter :: proc(
 			return {}, false
 		}
 	}
-	method := symbol(unit, method_symbol)
-	if method == nil {
+	method_info := entity_decl_info(unit, method_symbol)
+	if method_info == nil ||
+	   method_info.effective_signature.unit != unit.unit_id ||
+	   method_info.effective_signature.symbol == INVALID_SYMBOL_ID {
 		return {}, false
 	}
-	class_symbol, class_ok := enclosing_class_owner_unit(unit, method_scope)
-	if !class_ok {
+	param_symbol, param_ok := entity_signature_parameter_symbol(
+		unit,
+		method_info.effective_signature.symbol,
+		ref.name,
+	)
+	if !param_ok {
 		return {}, false
 	}
-	member_symbol, member_ok := class_definition_member(unit, class_symbol, .Routine, method.name)
-	if !member_ok {
-		return {}, false
-	}
-	param := entity_signature_parameter(unit, member_symbol, ref.name)
-	if param == nil || param.symbol == INVALID_SYMBOL_ID {
-		return {}, false
-	}
-	return symbol_resolution(unit, param.symbol), true
+	return symbol_resolution(unit, param_symbol), true
 }
 
 reference_namespace_allowed :: proc(
@@ -1393,7 +1442,7 @@ class_member_symbol_by_handle :: proc(
 	}
 	if entry, ok := class_entries[key]; ok {
 		if inherited {
-			member := unit_class_member_symbol(&units[unit_index], class_handle.symbol, name)
+			member := unit_class_member_symbol_canonical(&units[unit_index], class_handle.symbol, name)
 			info := entity_decl_info(&units[unit_index], member.id) if member != nil else nil
 			if info != nil && info.visibility == .Private {
 				return {}, false
@@ -1833,7 +1882,7 @@ inherited_class_attribute_symbol_for_type_ref :: proc(
 		if !super_ok {
 			return INVALID_SYMBOL_ID, false
 		}
-		member := unit_class_member_symbol(unit, super_symbol, name)
+		member := unit_class_member_symbol_canonical(unit, super_symbol, name)
 		info := entity_decl_info(unit, member.id) if member != nil else nil
 		if info != nil && info.member_kind == .Attribute && info.visibility != .Private {
 			return class_scope_symbol(&unit.scope_index, super_symbol, .Value, name)
@@ -1947,7 +1996,7 @@ local_structure_for_class_member_path :: proc(
 	if len(path) == 0 || selector_at(selectors, 0) != .Arrow {
 		return INVALID_STRUCTURE_ID, false
 	}
-	member := unit_class_member_symbol(unit, class_symbol, path[0])
+	member := unit_class_member_symbol_canonical(unit, class_symbol, path[0])
 	info := entity_decl_info(unit, member.id) if member != nil else nil
 	if member == nil || info == nil || info.member_kind != .Attribute || member.structure == INVALID_STRUCTURE_ID {
 		return INVALID_STRUCTURE_ID, false

@@ -207,6 +207,7 @@ Decl_Info_Data :: struct {
 	member_kind:                 Class_Member_Kind,
 	implementation_unit:         Unit_Id,
 	implementation_range:        tokenizer.Range,
+	effective_signature:         Symbol_Handle,
 	event_name:                  string,
 	event_range:                 tokenizer.Range,
 	event_source_type:           Field_Type_Ref_Data,
@@ -1207,7 +1208,7 @@ type_id_from_type_ref_path :: proc(
 		if selector == .Arrow {
 			target := type_ref_target(unit, current, depth + 1)
 			if class_symbol, ok := type_class_symbol_from_type(unit, target, depth + 1); ok {
-				if member := unit_class_member_symbol(unit, class_symbol, name); member != nil {
+				if member := unit_class_member_symbol_canonical(unit, class_symbol, name); member != nil {
 					current = member.type_id
 					continue
 				}
@@ -1423,6 +1424,7 @@ push_decl_info :: proc(
 			value_clause = value_clause,
 			default_clause = default_clause,
 			implementation_unit = INVALID_UNIT_ID,
+			effective_signature = Symbol_Handle{unit = INVALID_UNIT_ID, symbol = INVALID_SYMBOL_ID},
 		},
 	)
 	return id
@@ -1556,6 +1558,28 @@ entity_signature_parameter :: proc(
 	return nil
 }
 
+entity_signature_parameter_symbol :: proc(
+	unit: ^Unit_Analysis,
+	owner: Entity_Id,
+	name: string,
+) -> (Symbol_Id, bool) {
+	info := entity_decl_info(unit, owner)
+	if info == nil {
+		return INVALID_SYMBOL_ID, false
+	}
+	if info.signature_scope != INVALID_SCOPE_ID {
+		if symbol_id, ok := scope_lookup_declaration(unit, info.signature_scope, .Value, name); ok {
+			return symbol_id, true
+		}
+	}
+	for param in info.signature_parameters {
+		if param.name == name && param.symbol != INVALID_SYMBOL_ID {
+			return param.symbol, true
+		}
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
 symbol :: proc(unit: ^Unit_Analysis, id: Symbol_Id) -> ^Symbol_Data {
 	if id == INVALID_SYMBOL_ID || symbol_id_index(id) >= len(unit.symbols) {
 		return nil
@@ -1606,18 +1630,32 @@ class_definition_member :: proc(
 	namespace: Namespace,
 	name: string,
 ) -> (Symbol_Id, bool) {
+	canonical := strings.to_lower(name, context.temp_allocator)
+	return class_definition_member_canonical(unit, class_symbol, namespace, canonical)
+}
+
+class_definition_member_canonical :: proc(
+	unit: ^Unit_Analysis,
+	class_symbol: Symbol_Id,
+	namespace: Namespace,
+	name: string,
+) -> (Symbol_Id, bool) {
 	scope_id := class_definition_scope(unit, class_symbol)
 	if scope_id == INVALID_SCOPE_ID {
 		return INVALID_SYMBOL_ID, false
 	}
-	canonical := strings.to_lower(name, context.temp_allocator)
-	return scope_lookup_declaration(unit, scope_id, namespace, canonical)
+	return scope_lookup_declaration(unit, scope_id, namespace, name)
 }
 
 unit_class_member_symbol :: proc(unit: ^Unit_Analysis, class_symbol: Symbol_Id, name: string) -> ^Symbol_Data {
+	canonical := strings.to_lower(name, context.temp_allocator)
+	return unit_class_member_symbol_canonical(unit, class_symbol, canonical)
+}
+
+unit_class_member_symbol_canonical :: proc(unit: ^Unit_Analysis, class_symbol: Symbol_Id, name: string) -> ^Symbol_Data {
 	namespaces := [?]Namespace{.Value, .Routine, .Type}
 	for namespace in namespaces {
-		if id, ok := class_definition_member(unit, class_symbol, namespace, name); ok {
+		if id, ok := class_definition_member_canonical(unit, class_symbol, namespace, name); ok {
 			return symbol(unit, id)
 		}
 	}

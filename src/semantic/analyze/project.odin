@@ -896,7 +896,7 @@ resolve_project_cross_unit_for_units :: proc(
 		return
 	}
 
-	derive_event_handler_signature_parameters_for_units(
+	resolve_effective_method_signatures_for_units(
 		units,
 		affected,
 		&index.root_lookup,
@@ -904,7 +904,62 @@ resolve_project_cross_unit_for_units :: proc(
 		index.visible,
 		index.predecessors,
 	)
+	derive_event_handler_signature_parameters_for_units(
+		units,
+		affected,
+		&index.root_lookup,
+		index.class_scope_entries,
+		index.visible,
+	)
 	resolve_project_cross_unit_references_for_units(units, affected, index)
+}
+
+@(private)
+resolve_effective_method_signatures_for_units :: proc(
+	units: []Unit_Analysis,
+	affected: []Unit_Id,
+	roots: ^Project_Root_Lookup,
+	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
+	visible: [][dynamic]Unit_Id,
+	predecessors: [][dynamic]Unit_Id,
+) {
+	for unit_id in affected {
+		unit_index := unit_id_index(unit_id)
+		if unit_index < 0 ||
+		   unit_index >= len(units) ||
+		   unit_index >= len(visible) ||
+		   unit_index >= len(predecessors) {
+			continue
+		}
+		unit := &units[unit_index]
+		for &method_symbol in unit.symbols {
+			if method_symbol.kind != .Method {
+				continue
+			}
+			method_info := entity_decl_info(unit, method_symbol.id)
+			if method_info == nil || method_info.body_scope == INVALID_SCOPE_ID {
+				continue
+			}
+			method_info.effective_signature =
+				Symbol_Handle{unit = INVALID_UNIT_ID, symbol = INVALID_SYMBOL_ID}
+			member, member_unit_index := method_signature_member_for_scope(
+				units,
+				unit_index,
+				method_symbol.scope,
+				method_symbol.name,
+				roots,
+				class_entries,
+				visible[unit_index],
+				predecessors[unit_index],
+			)
+			if member.symbol == INVALID_SYMBOL_ID ||
+			   member_unit_index < 0 ||
+			   member_unit_index >= len(units) {
+				continue
+			}
+			method_info.effective_signature = member
+		}
+	}
 }
 
 @(private)
@@ -942,7 +997,6 @@ derive_event_handler_signature_parameters_for_units :: proc(
 	roots: ^Project_Root_Lookup,
 	class_entries: map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	visible: [][dynamic]Unit_Id,
-	predecessors: [][dynamic]Unit_Id,
 ) {
 	for unit_id in affected {
 		unit_index := unit_id_index(unit_id)
@@ -955,16 +1009,8 @@ derive_event_handler_signature_parameters_for_units :: proc(
 			if method_info == nil || method_info.body_scope == INVALID_SCOPE_ID {
 				continue
 			}
-			member, member_unit_index := method_signature_member_for_scope(
-				units,
-				unit_index,
-				method_symbol.scope,
-				method_symbol.name,
-				roots,
-				class_entries,
-				visible[unit_index],
-				predecessors[unit_index],
-			)
+			member := method_info.effective_signature
+			member_unit_index := unit_id_index(member.unit)
 			if member.symbol == INVALID_SYMBOL_ID ||
 			   member_unit_index < 0 ||
 			   member_unit_index >= len(units) {
@@ -1695,6 +1741,7 @@ build_scope_index_task :: proc(payload: Project_Task_Payload) -> execution.No_Re
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
 	)
+	resolve_local_effective_method_signatures(unit)
 	expand_local_structure_includes(
 		unit,
 		unit_allocator(payload.state.unit_allocators, payload.unit_index, payload.state.allocator),
@@ -2126,7 +2173,7 @@ link_class_member_implementations_with_index :: proc(
 					   ) {
 					continue
 				}
-				member := unit_class_member_symbol(
+				member := unit_class_member_symbol_canonical(
 					&units[unit_id_index(def_unit)],
 					class_handle.symbol,
 					method_symbol.name,

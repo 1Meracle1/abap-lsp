@@ -538,10 +538,6 @@ type_ref_symbol_handle :: proc(
 						unit_index,
 						scope_id,
 						type_ref.base_name,
-						&lookup.root_lookup,
-						lookup.class_scope_entries,
-						lookup.visible[unit_index],
-						lookup.predecessors[unit_index],
 						symbol_id,
 					); effective_ok {
 						return handle, true
@@ -558,10 +554,6 @@ type_ref_symbol_handle :: proc(
 					unit_index,
 					scope_id,
 					type_ref.base_name,
-					&lookup.root_lookup,
-					lookup.class_scope_entries,
-					lookup.visible[unit_index],
-					lookup.predecessors[unit_index],
 				); ok {
 					return handle, true
 				}
@@ -1887,10 +1879,6 @@ value_handle_for_name :: proc(
 				unit_index,
 				scope_id,
 				name,
-				&lookup.root_lookup,
-				lookup.class_scope_entries,
-				lookup.visible[unit_index],
-				lookup.predecessors[unit_index],
 				symbol_id,
 			); effective_ok {
 				return handle, true
@@ -1905,10 +1893,6 @@ value_handle_for_name :: proc(
 			unit_index,
 			scope_id,
 			name,
-			&lookup.root_lookup,
-			lookup.class_scope_entries,
-			lookup.visible[unit_index],
-			lookup.predecessors[unit_index],
 		); ok {
 			return handle, true
 		}

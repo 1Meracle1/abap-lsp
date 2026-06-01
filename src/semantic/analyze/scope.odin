@@ -58,9 +58,11 @@ Class_Scope_Index_Key :: struct {
 }
 
 Scope_Index :: struct {
-	class_symbols:     map[Class_Scope_Index_Key]Symbol_Id,
-	enclosing_classes: [dynamic]Symbol_Id,
-	superclasses:      map[Symbol_Id]string,
+	class_symbols:            map[Class_Scope_Index_Key]Symbol_Id,
+	enclosing_classes:        [dynamic]Symbol_Id,
+	enclosing_methods:        [dynamic]Symbol_Id,
+	enclosing_method_scopes:  [dynamic]Scope_Id,
+	superclasses:             map[Symbol_Id]string,
 }
 
 scope_index_make :: proc(allocator: mem.Allocator) -> Scope_Index {
@@ -74,6 +76,12 @@ scope_index_destroy :: proc(index: ^Scope_Index) {
 	delete(index.class_symbols)
 	if len(index.enclosing_classes) > 0 {
 		delete(index.enclosing_classes)
+	}
+	if len(index.enclosing_methods) > 0 {
+		delete(index.enclosing_methods)
+	}
+	if len(index.enclosing_method_scopes) > 0 {
+		delete(index.enclosing_method_scopes)
 	}
 	delete(index.superclasses)
 	index^ = {}
