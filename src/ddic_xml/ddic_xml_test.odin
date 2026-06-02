@@ -50,6 +50,59 @@ structure_dependency_source_uses_observed_element_info_fields :: proc(t: ^testin
 }
 
 @(test)
+structure_dependency_source_ignores_elementinfo_include_without_group :: proc(t: ^testing.T) {
+	xml := `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="/sttp/s_proc_evtt" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_proc_evt</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="evttime">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicDataElement">/sttp/e_timestamp_evt</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicIsPartOfInclude">/sttp/s_proc_evt</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIsPartOfInclude">/sttp/s_proc_evt</abapsource:entry>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_dm_evt_dat_code</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`
+	source := dependency_source("/sttp/s_proc_evtt", "ddic-structure", xml, context.allocator)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "evttime type /sttp/e_timestamp_evt")
+	lower := strings.to_lower(source, context.allocator)
+	defer delete(lower, context.allocator)
+	testing.expect(t, !strings.contains(lower, "include type /sttp/s_proc_evt as proc_evt"))
+	testing.expect(t, !strings.contains(lower, "include type /sttp/s_dm_evt_dat_code"))
+}
+
+@(test)
+structure_dependency_source_uses_ddic_source_include_group :: proc(t: ^testing.T) {
+	source := dependency_source(
+		"/sttp/s_proc_evtt",
+		"ddic-structure",
+		`@EndUserText.label : 'Event Processing Structure: Transaction Event'
+define type /sttp/s_proc_evtt {
+  proc_evt           : include /sttp/s_proc_evt;
+  parentobject       : /sttp/e_objcode;
+  include /sttp/s_extra_evt;
+  ext_xmlx           : abap.rawstring(0);
+}`,
+		context.allocator,
+	)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "include type /sttp/s_proc_evt as proc_evt")
+	expect_contains_fold(t, source, "parentobject type /sttp/e_objcode")
+	expect_contains_fold(t, source, "include type /sttp/s_extra_evt")
+	expect_contains_fold(t, source, "ext_xmlx type xstring")
+}
+
+@(test)
 view_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T) {
 	xml := `<abapsource:elementInfo adtcore:type="VIEW/DV" adtcore:name="zview" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="text">

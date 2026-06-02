@@ -12034,6 +12034,51 @@ ls_row-count = 1.
 }
 
 @(test)
+ddic_xml_direct_include_component_resolves_backing_structure :: proc(t: ^testing.T) {
+	ddic_source := `
+@EndUserText.label : 'Event Processing Structure: Transaction Event'
+define type /sttp/s_proc_evtt {
+  proc_evt  : include /sttp/s_proc_evt;
+  evtaction : abap.char(10);
+}`
+	structure_source := ddic_xml.dependency_source("/sttp/s_proc_evtt", "ddic-structure", ddic_source, context.allocator)
+	defer delete(structure_source, context.allocator)
+	testing.expect(t, contains_fold(structure_source, "include type /sttp/s_proc_evt as proc_evt"))
+
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+REPORT zmain.
+DATA ls_obj_evt TYPE /sttp/s_proc_evt.
+DATA ls_obj_event TYPE /sttp/s_proc_evtt.
+ls_obj_event-proc_evt = ls_obj_evt.
+ls_obj_event-proc_evt-evtaction = ls_obj_evt-evtaction.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-structure/sttp_s_proc_evtt.abap",
+			source = structure_source,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-structure/sttp_s_proc_evt.abap",
+			source = `
+TYPES: BEGIN OF /sttp/s_proc_evt,
+         evtaction TYPE c,
+       END OF /sttp/s_proc_evt.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 ddic_xml_table_type_dependency_uses_row_type :: proc(t: ^testing.T) {
 	row_xml := `<abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name="zddic_row" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="ID">

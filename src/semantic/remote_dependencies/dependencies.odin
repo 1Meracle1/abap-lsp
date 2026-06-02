@@ -329,6 +329,12 @@ dependency_input_source :: proc(
 	object_name, object_kind, file_extension, source: string,
 	allocator: mem.Allocator,
 ) -> string {
+	if candidate.kind == .Type && dependency_object_kind_is_ddic(object_kind) {
+		if formatted := ddic_xml.dependency_source(object_name, object_kind, source, allocator);
+		   formatted != "" {
+			return formatted
+		}
+	}
 	if dependency_source_is_xml(object_kind, file_extension, source) {
 		if candidate.kind == .Type {
 			return ddic_xml.dependency_source(object_name, object_kind, source, allocator)
