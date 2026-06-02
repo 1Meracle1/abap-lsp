@@ -2144,11 +2144,11 @@ parse_sql_assignments :: proc(
 	list: ^[dynamic]ast.Sql_Assignment_Clause,
 	stop_keywords: []string,
 ) {
-	for !data_stmt_done(p, body_start) && !data_current_keyword_in(p, stop_keywords) {
+	for !sql_assignment_list_done(p, body_start, stop_keywords) {
 		if allow_token(p, .Comma) {
 			continue
 		}
-		name := sql_data_expr(p, body_start, stop_keywords)
+		name := sql_data_expr(p, p.index, stop_keywords)
 		if name == nil {
 			bump_token(p)
 			continue
@@ -2156,7 +2156,7 @@ parse_sql_assignments :: proc(
 		if !allow_token(p, .Eq) {
 			continue
 		}
-		value := sql_data_expr(p, body_start, stop_keywords)
+		value := sql_data_expr(p, p.index, stop_keywords)
 		if value == nil {
 			error_current(p, "syntax error: expected expression")
 			continue
@@ -2172,6 +2172,20 @@ parse_sql_assignments :: proc(
 			},
 		)
 	}
+}
+
+sql_assignment_list_done :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> bool {
+	tok := current_token(p)
+	if tok.kind == .Period || tok.kind == .Eof || data_current_keyword_in(p, stop_keywords) {
+		return true
+	}
+	if p.index > body_start &&
+	   .Has_Newline_Before in tok.flags &&
+	   known_stmt_lead_at(p, p.index) &&
+	   !line_continuation_starts(p, p.index) {
+		return !assignment_starts(p, p.index)
+	}
+	return false
 }
 
 parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

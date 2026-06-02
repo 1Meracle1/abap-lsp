@@ -487,6 +487,25 @@ UPDATE (lv_tab) SET status = @lv_status, changed_at = sy-datum WHERE (lv_where).
 }
 
 @(test)
+open_sql_update_accepts_blank_separated_set_assignments :: proc(t: ^testing.T) {
+	source := `UPDATE zattp_cmo_portal SET status          = ls_cmo_portal-status
+                               submit          = ls_cmo_portal-submit
+                               evtid           = ls_cmo_portal-evtid
+* keep interleaved comments out of the assignment stream
+                               contract_number = ls_cmo_portal-contract_number
+                         WHERE trnid           = ls_cmo_portal-trnid
+                           AND legisl_del      = iv_legislation.`
+	parsed := parse(source, "update_blank_set_assignments.abap", context.allocator)
+	update := parsed.root.stmts[0].derived_stmt.(^ast.Update_Stmt)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(update.assignments), 4)
+	testing.expect_value(t, update.assignments[1].column_name, "submit")
+	testing.expect_value(t, update.assignments[3].column_name, "contract_number")
+	testing.expect(t, update.where_cond != nil)
+}
+
+@(test)
 open_sql_dml_delete_modify_and_insert_forms_are_parser_modeled :: proc(t: ^testing.T) {
 	source := `DELETE FROM zdelete_tab WHERE (lv_where) CONNECTION con.
 DELETE lt_rows WHERE objid = lv_objid.
