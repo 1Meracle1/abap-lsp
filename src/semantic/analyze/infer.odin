@@ -156,6 +156,27 @@ infer_unit_semantic_facts :: proc(
 		if type_fact_is_known(fact) {
 			push_operand(&out.operands, site.scope, site.range, .Value, fact)
 		}
+		signature, signature_ok := typecheck_call_signature(project, lookup, unit_index, site)
+		if !signature_ok || signature.info == nil {
+			continue
+		}
+		for arg, arg_index in site.arguments {
+			if !typecheck_argument_requires_writable(site.target.kind, arg.section) {
+				continue
+			}
+			symbol_id, symbol_ok := inline_symbol_at_range_indexed(&inline_symbols, arg.value_range)
+			if !symbol_ok {
+				continue
+			}
+			param, param_ok := typecheck_call_parameter(signature.info, site.target.kind, site, arg_index)
+			if !param_ok {
+				continue
+			}
+			param_fact := typecheck_parameter_fact(project, lookup, signature.unit_index, signature.info, param^)
+			if type_fact_known(param_fact) {
+				append(&out.symbol_updates, Inferred_Symbol_Type_Update{symbol = symbol_id, type_fact = param_fact})
+			}
+		}
 	}
 
 	range_facts := range_type_fact_index_make(

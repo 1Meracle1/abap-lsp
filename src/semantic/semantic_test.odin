@@ -7074,6 +7074,42 @@ ENDCLASS.
 }
 
 @(test)
+inline_call_importing_target_infers_formal_structure :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///inline_call_importing_structure.abap",
+		`
+CLASS lcl_rules DEFINITION.
+  PUBLIC SECTION.
+    TYPES: BEGIN OF ty_event,
+             readpnt_gln TYPE string,
+           END OF ty_event.
+    CLASS-METHODS get_event_data EXPORTING es_evt TYPE ty_event.
+ENDCLASS.
+
+CLASS lcl_rules IMPLEMENTATION.
+  METHOD get_event_data.
+  ENDMETHOD.
+ENDCLASS.
+
+FORM run.
+  lcl_rules=>get_event_data( IMPORTING es_evt = DATA(ls_evt) ).
+  DATA(lv_gln) = ls_evt-readpnt_gln.
+  SELECT SINGLE * FROM ztab INTO @DATA(ls_row) WHERE cmo_gln = @ls_evt-readpnt_gln.
+ENDFORM.
+`,
+	)
+
+	ls_evt := analyze.find_symbol(&unit, "ls_evt", .Variable)
+	testing.expect(t, ls_evt != nil)
+	if ls_evt != nil {
+		testing.expect(t, ls_evt.has_declared_type)
+		testing.expect_value(t, ls_evt.declared_type.base_name, "ty_event")
+	}
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 classic_data_declaration_is_visible_after_block :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
