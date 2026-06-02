@@ -1118,7 +1118,7 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			c,
 			con.type_ref,
 			.Type,
-			con.kind == .New || con.kind == .Ref,
+			con.kind == .New || con.kind == .Ref || con.kind == .Cast,
 		); has_type {
 			type_id := UNKNOWN_TYPE_ID
 			if len(type_ref.field_path) == 0 && is_builtin_type_name(type_ref.base_name) {
