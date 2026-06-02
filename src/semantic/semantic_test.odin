@@ -11082,6 +11082,72 @@ dependency_store_candidates_reuse_reader_without_lookup_tasks :: proc(t: ^testin
 }
 
 @(test)
+dependency_store_symbol_hit_for_include_adds_include_candidate :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("dependency-store-symbol-include")
+	store_path, _ := filepath.join({root, "cache.sqlite3"}, context.allocator)
+	store, err := dep_store.dependency_store_from_override_path(store_path, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+	profile := dep_store.Dependency_Profile {
+		product_version         = "S4-2023",
+		default_package_version = "base",
+	}
+	symbols := [?]dep_store.Stored_Symbol_Input {
+		{symbol_name = "gv_cancel", symbol_kind = "variable", priority = 1},
+	}
+	artifact := dep_store.Stored_Artifact_Input {
+		package_name   = "STTP",
+		object_kind    = "include",
+		object_name    = "/STTP/INT_GLOBAL",
+		object_uri     = "/sap/bc/adt/programs/includes/%2FSTTP%2FINT_GLOBAL",
+		object_type    = "PROG/I",
+		description    = "Namespaced include",
+		file_extension = "abap",
+		source_text    = "DATA gv_cancel TYPE abap_bool.",
+		fetched_at     = "2026-05-21T00:00:00Z",
+		symbols        = symbols[:],
+	}
+	_, err = dep_store.put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, dep_store.Store_Error.None)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 8}, context.allocator)
+	defer execution.pool_destroy(&pool)
+	candidates := make([dynamic]analyze.Project_Candidate_Input, context.allocator)
+	dependencies := make([dynamic]analyze.Source_Input, context.allocator)
+	remote := [?]deps.Remote_Dependency_Candidate {
+		{name = "gv_cancel", kind = .Symbol},
+		{name = "/sttp/int_global", kind = .Include},
+	}
+	seen := make(map[i64]bool, context.allocator)
+	temp_arena: virtual.Arena
+	_ = virtual.arena_init_growing(&temp_arena)
+	defer virtual.arena_destroy(&temp_arena)
+	previous_temp_allocator := context.temp_allocator
+	context.temp_allocator = virtual.arena_allocator(&temp_arena)
+	defer context.temp_allocator = previous_temp_allocator
+
+	cache_result := remote_deps.add_dependency_cache_matches(
+		&candidates,
+		&dependencies,
+		remote[:],
+		&store,
+		&profile,
+		false,
+		"test-connection",
+		&seen,
+		&pool,
+		"file:///ZMAIN.abap",
+		"cache",
+	)
+
+	testing.expect(t, cache_result.added)
+	testing.expect_value(t, len(candidates), 1)
+	testing.expect_value(t, len(dependencies), 0)
+	testing.expect_value(t, candidates[0].object_name, "/sttp/int_global")
+	testing.expect_value(t, candidates[0].input.mode, analyze.Source_Mode.Dependency_Interface)
+}
+
+@(test)
 manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) {
 	export_root := external_export_workspace_path("external-export-root")
 	export_file := manifest_test_file(

@@ -387,11 +387,17 @@ add_dependency_store_task_result :: proc(
 	if !project_input_uri_key_add_if_missing(uri_keys, result.input.uri) {
 		return false
 	}
+	input_candidate := candidate
+	if strings.equal_fold(result.record.object_kind, "include") {
+		input_candidate.name = result.record.object_name
+		input_candidate.kind = .Include
+		input_candidate.hint = .None
+	}
 	append_dependency_input(
 		candidates,
 		dependencies,
 		result.input,
-		candidate,
+		input_candidate,
 		result.record.object_name,
 	)
 	when adt.DEPENDENCY_FETCH_TRACE {
