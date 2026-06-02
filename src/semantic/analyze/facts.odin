@@ -212,7 +212,7 @@ collect_constructor_let_binding_refs :: proc(
 	declare_name_if_present(c, scope, expr.name, .Variable, name_range)
 	collect_expr_refs(c, expr.value, scope)
 	if expr.value != nil {
-		rhs, assigns_table_line := constructor_let_binding_inferred_value(expr.value)
+		rhs, assigns_table_line := constructor_assignment_inferred_value(expr.value)
 		add_assignment_site(
 			c,
 			scope,
@@ -227,7 +227,7 @@ collect_constructor_let_binding_refs :: proc(
 	}
 }
 
-constructor_let_binding_inferred_value :: proc(expr: ^ast.Expr) -> (^ast.Expr, bool) {
+constructor_assignment_inferred_value :: proc(expr: ^ast.Expr) -> (^ast.Expr, bool) {
 	if con, ok := expr.derived_expr.(^ast.Constructor_Expr);
 	   ok && con.kind == .Value && len(con.args) == 1 {
 		arg := con.args[0]
@@ -1247,16 +1247,17 @@ collect_inline_data_stmt_facts :: proc(
 ) {
 	collect_expr_refs(c, stmt.expr, scope)
 	if stmt.expr != nil {
+		rhs, assigns_table_line := constructor_assignment_inferred_value(stmt.expr)
 		add_assignment_site(
 			c,
 			scope,
 			stmt.range,
 			stmt.range,
-			stmt.expr.range,
+			rhs.range,
 			Field_Access{},
-			false,
+			assigns_table_line,
 			unknown_type_fact(),
-			type_fact_from_expr(c, stmt.expr, scope),
+			type_fact_from_expr(c, rhs, scope),
 		)
 	}
 }

@@ -4397,6 +4397,63 @@ ENDFORM.`
 }
 
 @(test)
+inline_data_statement_infers_optional_table_expr_row :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_item,
+         objid TYPE string,
+         gtin TYPE string,
+         uom TYPE string,
+       END OF ty_item.
+TYPES ty_items TYPE STANDARD TABLE OF ty_item WITH EMPTY KEY.
+DATA it_obj_itm TYPE ty_items.
+DATA is_obj_ids TYPE ty_item.
+
+FORM run.
+  DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
+  IF ls_obj_itm-uom IS INITIAL.
+    ls_obj_itm-uom = ls_obj_itm-gtin.
+  ENDIF.
+ENDFORM.`
+	unit := collect_test_unit(t, "file:///inline_data_optional_table_expr.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+inline_data_statement_from_ddic_cache_row_allows_incomplete_append_fields :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///inline_data_ddic_cache_row.abap",
+		source = `DATA it_obj_itm TYPE /sttp/t_dm_obj_itm.
+DATA is_obj_ids TYPE /sttp/dm_obj_itm.
+
+FORM run.
+  DATA(ls_obj_itm) = VALUE #( it_obj_itm[ objid = is_obj_ids-objid ] OPTIONAL ).
+  IF ls_obj_itm-uom IS INITIAL.
+    ls_obj_itm-uom = ls_obj_itm-gtin.
+  ENDIF.
+ENDFORM.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table-type/sttp_t_dm_obj_itm.abap",
+			source = "TYPES /sttp/t_dm_obj_itm TYPE STANDARD TABLE OF /sttp/dm_obj_itm WITH DEFAULT KEY.",
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table/sttp_dm_obj_itm.abap",
+			source = `TYPES: BEGIN OF /sttp/dm_obj_itm,
+         objid TYPE string,
+         gtin TYPE string,
+       END OF /sttp/dm_obj_itm.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 constructor_let_binding_unknown_table_expr_row_shape_is_not_invalid :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

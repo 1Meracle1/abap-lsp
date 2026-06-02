@@ -5,6 +5,7 @@ import "src:tokenizer"
 import "src:ast"
 
 import "core:mem"
+import "core:strings"
 
 max_type_lookup_depth :: 64
 
@@ -925,6 +926,9 @@ validate_field_accesses :: proc(
 			if skip_table_line_diag {
 				continue
 			}
+			if field_access_base_is_ddic_cache_shape(project, lookup, unit_index, access) {
+				continue
+			}
 			if !field_access_base_resolves(project, lookup, unit_index, access) {
 				continue
 			}
@@ -942,6 +946,69 @@ validate_field_accesses :: proc(
 			)
 		}
 	}
+}
+
+field_access_base_is_ddic_cache_shape :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> bool {
+	if access.base_namespace != .Value {
+		return false
+	}
+	handle, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
+	if !ok {
+		return false
+	}
+	handle_unit_index := unit_id_index(handle.unit)
+	if handle_unit_index < 0 || handle_unit_index >= len(project.units) {
+		return false
+	}
+	s := symbol(&project.units[handle_unit_index], handle.symbol)
+	if s == nil {
+		return false
+	}
+	if s.structure != INVALID_STRUCTURE_ID {
+		return structure_origin_is_ddic_cache(project, handle_unit_index, s.structure)
+	}
+	if !s.has_declared_type {
+		return false
+	}
+	fact, fact_unit_index, fact_ok := type_fact_from_declared_type(
+		project,
+		lookup,
+		handle_unit_index,
+		s.scope,
+		s.declared_type,
+		s.type_clause_form,
+		s.has_type_clause_form,
+		0,
+	)
+	return fact_ok &&
+	       fact.structure != INVALID_STRUCTURE_ID &&
+	       structure_origin_is_ddic_cache(project, fact_unit_index, fact.structure)
+}
+
+structure_origin_is_ddic_cache :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	structure_id: Structure_Id,
+) -> bool {
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return false
+	}
+	st := structure(&project.units[unit_index], structure_id)
+	if st == nil {
+		return false
+	}
+	origin_unit_index := unit_id_index(st.origin_unit)
+	if origin_unit_index < 0 || origin_unit_index >= len(project.units) {
+		return false
+	}
+	origin := &project.units[origin_unit_index]
+	return origin.source_mode == .Dependency_Interface &&
+	       strings.has_prefix(origin.uri, "abapls-cache:/ddic-")
 }
 
 field_access_base_resolves :: proc(
