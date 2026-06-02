@@ -997,23 +997,46 @@ open_sql_source_named_cross_is_not_join_without_join_keyword :: proc(t: ^testing
 @(test)
 open_sql_sap_validated_tail_orderings_are_valid :: proc(t: ^testing.T) {
 	source := `SELECT trkorr FROM e070 ORDER BY trkorr INTO TABLE @lt_rows.
+SELECT trkorr FROM e070 WHERE trkorr = @lv_trkorr INTO @DATA(lv_row) UP TO 1 ROWS.
 SELECT trkorr FROM e070 INTO TABLE @lt_rows UP TO 10 ROWS WHERE trkorr = @lv_trkorr.
 SELECT trkorr FROM e070 UP TO 10 ROWS INTO TABLE @lt_rows WHERE trkorr = @lv_trkorr.`
 	parsed := parse(source, "sql_sap_valid_tail_order.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	order_before_result := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
-	result_before_up_to := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
-	up_to_before_result := parsed.root.stmts[2].derived_stmt.(^ast.Select_Stmt)
+	final_result_before_up_to := parsed.root.stmts[1].derived_stmt.(^ast.Select_Stmt)
+	result_before_up_to := parsed.root.stmts[2].derived_stmt.(^ast.Select_Stmt)
+	up_to_before_result := parsed.root.stmts[3].derived_stmt.(^ast.Select_Stmt)
 
 	testing.expect_value(t, source[order_before_result.query.order_by_clause.start:order_before_result.query.order_by_clause.end], "ORDER BY trkorr")
 	testing.expect_value(t, source[order_before_result.query.into_clause.start:order_before_result.query.into_clause.end], "INTO TABLE @lt_rows")
+	testing.expect_value(t, source[final_result_before_up_to.query.where_clause.start:final_result_before_up_to.query.where_clause.end], "WHERE trkorr = @lv_trkorr")
+	testing.expect_value(t, source[final_result_before_up_to.query.into_clause.start:final_result_before_up_to.query.into_clause.end], "INTO @DATA(lv_row)")
+	testing.expect_value(t, source[final_result_before_up_to.query.up_to_clause.start:final_result_before_up_to.query.up_to_clause.end], "UP TO 1 ROWS")
 	testing.expect_value(t, source[result_before_up_to.query.into_clause.start:result_before_up_to.query.into_clause.end], "INTO TABLE @lt_rows")
 	testing.expect_value(t, source[result_before_up_to.query.up_to_clause.start:result_before_up_to.query.up_to_clause.end], "UP TO 10 ROWS")
 	testing.expect_value(t, source[result_before_up_to.query.where_clause.start:result_before_up_to.query.where_clause.end], "WHERE trkorr = @lv_trkorr")
 	testing.expect_value(t, source[up_to_before_result.query.up_to_clause.start:up_to_before_result.query.up_to_clause.end], "UP TO 10 ROWS")
 	testing.expect_value(t, source[up_to_before_result.query.into_clause.start:up_to_before_result.query.into_clause.end], "INTO TABLE @lt_rows")
 	testing.expect_value(t, source[up_to_before_result.query.where_clause.start:up_to_before_result.query.where_clause.end], "WHERE trkorr = @lv_trkorr")
+}
+
+@(test)
+open_sql_up_to_before_from_is_valid :: proc(t: ^testing.T) {
+	source := `SELECT trkorr UP TO 1 ROWS
+  FROM e070
+  INTO @DATA(lv_row)
+  WHERE trkorr = @lv_trkorr.
+ENDSELECT.`
+	parsed := parse(source, "sql_up_to_before_from.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	query := stmt.query
+	testing.expect_value(t, source[query.projection_clause.start:query.projection_clause.end], "trkorr")
+	testing.expect_value(t, source[query.up_to_clause.start:query.up_to_clause.end], "UP TO 1 ROWS")
+	testing.expect_value(t, source[query.from_clause.start:query.from_clause.end], "e070")
+	testing.expect_value(t, source[query.into_clause.start:query.into_clause.end], "INTO @DATA(lv_row)")
 }
 
 @(test)

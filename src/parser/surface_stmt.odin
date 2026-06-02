@@ -563,7 +563,12 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 	}
 	state := Select_Clause_State{}
 	for !select_query_done(p, body_start, stop_at_rparen) {
-		if state.result_closes_tail && select_clause_starts(p) {
+		if state.result_closes_tail && select_clause_starts(p) &&
+		   !at_keyword(p, "UP") &&
+		   !at_keyword(p, "OFFSET") &&
+		   !at_keyword(p, "BYPASSING") &&
+		   !at_keyword(p, "CONNECTION") &&
+		   !at_keyword(p, "CLIENT") {
 			start := bump_token(p)
 			select_reject_clause(p, start, "syntax error: invalid SELECT clause after result target", body_start, stop_at_rparen)
 			continue
@@ -702,7 +707,7 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if allow_keyword(p, "UP") {
 			start := previous_token(p)
 			allow_keyword(p, "TO")
-			if !state.from || state.up_to {
+			if state.up_to {
 				select_reject_clause(p, start, "syntax error: invalid SELECT UP TO clause placement", body_start, stop_at_rparen)
 				continue
 			}
