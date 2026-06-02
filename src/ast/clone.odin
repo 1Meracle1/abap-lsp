@@ -102,6 +102,12 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.base = clone(n.base, allocator)
 		r.method = clone(n.method, allocator)
 		return r
+	case ^Ole_Call_Method_Target_Expr:
+		r := clone_shallow(n, allocator)
+		r.object = clone(n.object, allocator)
+		r.member = clone(n.member, allocator)
+		r.result = clone(n.result, allocator)
+		return r
 	case ^Host_Expr:
 		r := clone_shallow(n, allocator)
 		r.value = clone(n.value, allocator)

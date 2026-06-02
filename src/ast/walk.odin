@@ -54,6 +54,10 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Dynamic_Call_Method_Target_Expr:
 		walk(next, n.base)
 		walk(next, n.method)
+	case ^Ole_Call_Method_Target_Expr:
+		walk(next, n.object)
+		walk(next, n.member)
+		walk(next, n.result)
 	case ^Host_Expr:
 		walk(next, n.value)
 	case ^Table_Expr:

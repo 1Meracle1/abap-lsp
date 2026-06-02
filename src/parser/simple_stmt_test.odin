@@ -1241,6 +1241,47 @@ CALL METHOD (lv_class)=>if_demo~create_instance.`
 }
 
 @(test)
+ole_call_method_targets_carry_value_parts :: proc(t: ^testing.T) {
+	source := `CALL METHOD OF lv_excel 'Workbooks' = lv_wrkbks.
+CALL METHOD OF lv_excel 'Cells' = lv_cell EXPORTING #1 = lv_row #2 = lv_col.
+CALL METHOD OF lv_wrkbk 'SaveAs' EXPORTING #1 = x_file.
+CALL METHOD OF lv_excel 'Quit'.`
+	parsed := parse(source, "ole_call_method_targets.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	workbooks := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	cells := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
+	save_as := parsed.root.stmts[2].derived_stmt.(^ast.Call_Stmt)
+	quit := parsed.root.stmts[3].derived_stmt.(^ast.Call_Stmt)
+	workbooks_target := workbooks.target.derived_expr.(^ast.Ole_Call_Method_Target_Expr)
+	cells_target := cells.target.derived_expr.(^ast.Ole_Call_Method_Target_Expr)
+	save_as_target := save_as.target.derived_expr.(^ast.Ole_Call_Method_Target_Expr)
+	quit_target := quit.target.derived_expr.(^ast.Ole_Call_Method_Target_Expr)
+
+	testing.expect_value(t, ast.print_node(workbooks_target, context.allocator), "OF lv_excel 'Workbooks' = lv_wrkbks")
+	testing.expect_value(t, ast.print_node(cells_target.object, context.allocator), "lv_excel")
+	testing.expect_value(t, ast.print_node(cells_target.member, context.allocator), "'Cells'")
+	testing.expect_value(t, ast.print_node(cells_target.result, context.allocator), "lv_cell")
+	testing.expect_value(t, len(cells.named_args), 2)
+	testing.expect_value(t, cells.named_args[0].name, "#1")
+	testing.expect_value(t, cells.named_args[1].name, "#2")
+	testing.expect(t, save_as_target.result == nil)
+	testing.expect_value(t, len(save_as.named_args), 1)
+	testing.expect_value(t, save_as.named_args[0].name, "#1")
+	testing.expect(t, quit_target.result == nil)
+}
+
+@(test)
+call_method_target_stops_before_positional_parenthesized_args :: proc(t: ^testing.T) {
+	source := `CALL METHOD lo_send_mail->set_document( lo_document ).`
+	parsed := parse(source, "call_method_positional_arg.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	testing.expect_value(t, ast.print_node(stmt.target, context.allocator), "lo_send_mail->set_document")
+}
+
+@(test)
 call_transformation_id_carries_modeled_args :: proc(t: ^testing.T) {
 	source := `CALL TRANSFORMATION id
   OPTIONS initial_components = 'suppress'
@@ -1312,6 +1353,17 @@ direct_call_statement_keeps_parser_modeled_arguments :: proc(t: ^testing.T) {
 	testing.expect_value(t, stmt.kind, ast.Call_Kind.Direct)
 	testing.expect_value(t, len(stmt.named_args), 0)
 	testing.expect_value(t, section.kind, ast.Call_Arg_Section_Kind.Exporting)
+}
+
+@(test)
+constructor_chain_statement_is_not_macro_call :: proc(t: ^testing.T) {
+	source := `NEW lcl_dep( )->consume( ).`
+	parsed := parse(source, "constructor_chain_stmt.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Expr_Stmt)
+	_, is_call := stmt.expr.derived_expr.(^ast.Call_Expr)
+	testing.expect(t, is_call)
 }
 
 @(test)

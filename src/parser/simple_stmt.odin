@@ -3669,6 +3669,9 @@ CALL_TRANSFORMATION_CLAUSE_KEYWORDS :: []string {
 
 parse_call_method_target_to_period :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Expr {
 	start := p.index
+	if target, ok := parse_ole_call_method_target(p, stop_keywords); ok {
+		return target
+	}
 	end := call_method_target_end(p, start, stop_keywords)
 	if end <= start {
 		return nil
@@ -3680,6 +3683,116 @@ parse_call_method_target_to_period :: proc(p: ^Parser, stop_keywords: []string) 
 		return cast(^ast.Expr)target
 	}
 	return raw
+}
+
+parse_ole_call_method_target :: proc(
+	p: ^Parser,
+	stop_keywords: []string,
+) -> (^ast.Expr, bool) {
+	start := p.index
+	if !at_keyword(p, "OF") {
+		return nil, false
+	}
+	member_start := ole_call_method_member_start(p, start + 1)
+	if member_start < 0 {
+		return nil, false
+	}
+	of := bump_token(p)
+	object := call_method_of_value_expr(p, start + 1, member_start)
+	member_end := member_start + 1
+	member := call_method_of_value_expr(p, member_start, member_end)
+	p.index = member_end
+	result: ^ast.Expr
+	if allow_token(p, .Eq) {
+		value_start := p.index
+		value_end := ole_call_method_result_end(p, value_start, stop_keywords)
+		result = call_method_of_value_expr(p, value_start, value_end)
+		p.index = value_end
+	}
+	out := ast.new(
+		ast.Ole_Call_Method_Target_Expr,
+		tokenizer.text_range(of.range.start, p.tokens[p.index - 1].range.end),
+		p.allocator,
+	)
+	out.object = object
+	out.member = member
+	out.result = result
+	return cast(^ast.Expr)out, true
+}
+
+ole_call_method_member_start :: proc(p: ^Parser, start: int) -> int {
+	paren, bracket, brace := 0, 0, 0
+	for i := start; i < len(p.tokens); i += 1 {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .String {
+				return i
+			}
+			if tok.kind == .Period || tok.kind == .Eof || call_argument_section_starts_at(p, i) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+	}
+	return -1
+}
+
+ole_call_method_result_end :: proc(p: ^Parser, start: int, stop_keywords: []string) -> int {
+	i := start
+	paren, bracket, brace := 0, 0, 0
+	for i < len(p.tokens) {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .Period || tok.kind == .Eof ||
+			   call_argument_section_starts_at(p, i) ||
+			   (i > start && token_in_keywords(p, tok, stop_keywords)) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+		i += 1
+	}
+	return i
+}
+
+call_method_of_value_expr :: proc(p: ^Parser, start, end: int) -> ^ast.Expr {
+	if end <= start {
+		return nil
+	}
+	if expr := parse_complete_logical_expr(p, start, end); expr != nil {
+		return expr
+	}
+	raw := type_ref_expr_from_tokens(p, start, end, -1, false, true)
+	populate_raw_operand_facts(p, raw, start, end, false)
+	return cast(^ast.Expr)raw
 }
 
 call_method_target_end :: proc(p: ^Parser, start: int, stop_keywords: []string) -> int {
@@ -3724,10 +3837,18 @@ call_method_parenthesized_args_start :: proc(p: ^Parser, index: int) -> bool {
 	if p.tokens[index].kind != .LParen || index + 1 >= len(p.tokens) {
 		return false
 	}
+	if index == p.index {
+		return false
+	}
+	prev := p.tokens[index - 1].kind
+	if prev == .Arrow || prev == .FatArrow || prev == .Tilde {
+		return false
+	}
 	next := index + 1
 	return p.tokens[next].kind == .RParen ||
 	       call_argument_section_starts_at(p, next) ||
-	       call_stmt_named_arg_starts(p, next)
+	       call_stmt_named_arg_starts(p, next) ||
+	       matching_group_index(p, index, .LParen, .RParen) >= 0
 }
 
 dynamic_call_method_target_from_tokens :: proc(
@@ -4111,7 +4232,7 @@ parse_raw_call_arguments :: proc(
 			bump_token(p)
 			continue
 		}
-		name := bump_token(p)
+		_, name_text, name_range := parse_call_stmt_arg_name(p)
 		eq := expect_token(p, .Eq)
 		value_start := p.index
 		value_end := call_stmt_arg_value_end(p, value_start)
@@ -4131,8 +4252,8 @@ parse_raw_call_arguments :: proc(
 			ast.Call_Stmt_Named_Arg {
 				section = section,
 				has_section = has_section,
-				name = tokenizer.token_lexeme(name, p.source),
-				name_range = name.range,
+				name = name_text,
+				name_range = name_range,
 				value_range = value_range,
 				value = value,
 				raw_decls = raw_decls,
@@ -4150,7 +4271,22 @@ call_stmt_named_arg_starts :: proc(p: ^Parser, index: int) -> bool {
 		return false
 	}
 	tok := p.tokens[index]
+	if tok.kind == .Hash {
+		return index + 2 < len(p.tokens) &&
+		       p.tokens[index + 1].kind == .Number &&
+		       p.tokens[index + 2].kind == .Eq
+	}
 	return (tok.kind == .Ident || tok.kind == .Number) && p.tokens[index + 1].kind == .Eq
+}
+
+parse_call_stmt_arg_name :: proc(p: ^Parser) -> (Token, string, tokenizer.Range) {
+	tok := bump_token(p)
+	if tok.kind == .Hash && current_token(p).kind == .Number {
+		number := bump_token(p)
+		name_range := tokenizer.text_range(tok.range.start, number.range.end)
+		return tok, p.source[name_range.start:name_range.end], name_range
+	}
+	return tok, tokenizer.token_lexeme(tok, p.source), tok.range
 }
 
 call_stmt_arg_value_end :: proc(p: ^Parser, start: int) -> int {

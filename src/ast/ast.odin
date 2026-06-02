@@ -239,6 +239,14 @@ Dynamic_Call_Method_Target_Expr :: struct {
 	method_dynamic: bool,
 }
 
+// ABAP syntax: OLE automation target `OF object 'member' [= result]` in `CALL METHOD`.
+Ole_Call_Method_Target_Expr :: struct {
+	using node: Expr,
+	object:     ^Expr,
+	member:     ^Expr,
+	result:     ^Expr,
+}
+
 // ABAP syntax: Open SQL host expression such as `@lv_value`.
 Host_Expr :: struct {
 	using node: Expr,
@@ -2701,6 +2709,7 @@ Any_Node :: union {
 	^Literal_Expr,
 	^Type_Ref_Expr,
 	^Dynamic_Call_Method_Target_Expr,
+	^Ole_Call_Method_Target_Expr,
 	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,
@@ -2863,6 +2872,7 @@ Any_Expr :: union {
 	^Literal_Expr,
 	^Type_Ref_Expr,
 	^Dynamic_Call_Method_Target_Expr,
+	^Ole_Call_Method_Target_Expr,
 	^Host_Expr,
 	^Table_Expr,
 	^Selector_Expr,

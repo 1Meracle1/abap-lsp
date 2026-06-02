@@ -4373,6 +4373,7 @@ DATA(lv_second) = REDUCE i( INIT x = 0 FOR i = 0 UNTIL i > 1 NEXT x = x + i ).`
 	unit := collect_test_unit(t, "file:///constructor_for_scope.abap", source)
 
 	testing.expect(t, !has_diagnostic(&unit, .Duplicate_Declaration))
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
 	testing.expect_value(t, len(unit.constructor_for_bindings), 2)
 }
 
@@ -5772,6 +5773,77 @@ ENDCLASS.
 }
 
 @(test)
+ole_call_method_of_uses_value_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///ole_call_method_of.abap",
+		`
+CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD run.
+    DATA lv_excel TYPE i.
+    DATA lv_cell TYPE i.
+    DATA lv_row TYPE i.
+    DATA lv_col TYPE i.
+    CALL METHOD OF lv_excel 'Cells' = lv_cell
+      EXPORTING #1 = lv_row #2 = lv_col.
+    CALL METHOD OF lv_excel 'Quit'.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "lv_excel", .Value, .Identifier), 2)
+	testing.expect_value(t, reference_count(&unit, "lv_cell", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lv_row", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lv_col", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lv_excel", .Routine, .Routine_Call), 0)
+}
+
+@(test)
+call_method_positional_args_do_not_enter_target_namespace :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///call_method_positional_arg.abap",
+		`
+CLASS lcl_document DEFINITION.
+ENDCLASS.
+
+CLASS lcl_sender DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_document IMPORTING io_document TYPE REF TO lcl_document.
+ENDCLASS.
+
+CLASS lcl_sender IMPLEMENTATION.
+  METHOD set_document.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD run.
+    DATA lo_send_mail TYPE REF TO lcl_sender.
+    DATA lo_document TYPE REF TO lcl_document.
+    CALL METHOD lo_send_mail->set_document( lo_document ).
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "lo_document", .Routine, .Routine_Call), 0)
+}
+
+@(test)
 new_call_and_constructor_forms_use_routine_namespace :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,
@@ -5806,6 +5878,7 @@ CLASS lcl_owner IMPLEMENTATION.
     CREATE OBJECT lo_dep EXPORTING iv_value = get_field_rules( ).
     lo_dep = NEW lcl_dep( iv_value = get_field_rules( ) ).
     lo_dep->consume( IMPORTING ev_value = get_field_rules( ) CHANGING cv_value = get_field_rules( ) ).
+    NEW lcl_dep( )->consume( IMPORTING ev_value = get_field_rules( ) CHANGING cv_value = get_field_rules( ) ).
   ENDMETHOD.
 
   METHOD get_field_rules.
@@ -5815,7 +5888,7 @@ ENDCLASS.
 	)
 
 	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
-	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Routine, .Routine_Call), 4)
+	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Routine, .Routine_Call), 6)
 	testing.expect_value(t, reference_count(&unit, "get_field_rules", .Value, .Identifier), 0)
 }
 

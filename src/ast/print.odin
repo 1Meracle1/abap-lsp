@@ -99,6 +99,8 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_type_ref_expr(p, n)
 	case ^Dynamic_Call_Method_Target_Expr:
 		emit_dynamic_call_method_target_expr(p, n)
+	case ^Ole_Call_Method_Target_Expr:
+		emit_ole_call_method_target_expr(p, n)
 	case ^Host_Expr:
 		if !n.implicit {
 			emit(p, "@")
@@ -814,6 +816,17 @@ emit_dynamic_call_method_target_expr :: proc(p: ^Printer, expr: ^Dynamic_Call_Me
 		if expr.method_dynamic {emit(p, "(")}
 		emit_node(p, expr.method)
 		if expr.method_dynamic {emit(p, ")")}
+	}
+}
+
+emit_ole_call_method_target_expr :: proc(p: ^Printer, expr: ^Ole_Call_Method_Target_Expr) {
+	emit(p, "OF ")
+	emit_node(p, expr.object)
+	emit_space(p)
+	emit_node(p, expr.member)
+	if expr.result != nil {
+		emit(p, " = ")
+		emit_node(p, expr.result)
 	}
 }
 

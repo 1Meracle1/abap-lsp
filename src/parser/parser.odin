@@ -209,6 +209,9 @@ parse_stmt_result :: proc(p: ^Parser) -> ^ast.Stmt {
 	if simple_stmt_starts(p) {
 		return parse_simple_stmt(p)
 	}
+	if constructor_expr_stmt_starts(p) {
+		return parse_expr_stmt(p)
+	}
 	if macro_call_stmt_starts(p) {
 		return parse_macro_call_stmt(p)
 	}
@@ -1611,6 +1614,10 @@ statement_lead_starts :: proc(p: ^Parser, index: int) -> bool {
 		return true
 	}
 	return known_stmt_lead_at(p, index) || assignment_starts(p, index)
+}
+
+constructor_expr_stmt_starts :: proc(p: ^Parser) -> bool {
+	return constructor_expr_starts(p, current_token(p)) && stmt_period_before_boundary(p, p.index)
 }
 
 known_stmt_lead_at :: proc(p: ^Parser, index: int) -> bool {

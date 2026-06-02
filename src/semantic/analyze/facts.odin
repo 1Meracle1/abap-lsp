@@ -55,6 +55,8 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 		return
 	case ^ast.Dynamic_Call_Method_Target_Expr:
 		collect_dynamic_call_method_target_refs(c, n, scope)
+	case ^ast.Ole_Call_Method_Target_Expr:
+		collect_ole_call_method_target_refs(c, n, scope)
 	case ^ast.Host_Expr:
 		collect_expr_refs(c, n.value, scope)
 	case ^ast.Table_Expr:
@@ -243,12 +245,46 @@ collect_constructor_expr_refs :: proc(
 	scope: Scope_Id,
 ) {
 	collect_type_expr_ref(c, expr.type_ref, scope, .Type)
+	if expr.kind == .Reduce {
+		collect_reduce_constructor_args(c, expr, scope)
+		fact := type_fact_from_expr(c, expr, scope)
+		add_expression_fact(c, scope, expr.range, .Call_Result, fact)
+		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+		return
+	}
 	for arg in expr.args {
 		collect_expr_refs(c, arg, scope)
 	}
 	fact := type_fact_from_expr(c, expr, scope)
 	add_expression_fact(c, scope, expr.range, .Call_Result, fact)
 	add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+}
+
+collect_reduce_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Expr, scope: Scope_Id) {
+	previous := c.current_scope
+	c.current_scope = scope
+	reduce_scope := push_scope(c, .Constructor_For, expr.range)
+	for arg in expr.args {
+		if init, ok := arg.derived_expr.(^ast.Constructor_Init_Clause_Expr); ok {
+			declare_reduce_init_assignments(c, reduce_scope, init.assignments[:])
+		}
+	}
+	collect_expr_list_refs(c, expr.args[:], reduce_scope)
+	c.current_scope = reduce_scope
+	pop_scope(c)
+	c.current_scope = previous
+}
+
+declare_reduce_init_assignments :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	assignments: []^ast.Expr,
+) {
+	for assignment in assignments {
+		if named, ok := assignment.derived_expr.(^ast.Constructor_Named_Assignment_Expr); ok {
+			declare_name_if_present(c, scope, named.name, .Variable, named.range)
+		}
+	}
 }
 
 collect_constructor_for_clause_refs :: proc(
@@ -553,6 +589,10 @@ collect_call_method_target_refs :: proc(c: ^Collector, target: ^ast.Expr, scope:
 		collect_dynamic_call_method_target_refs(c, dyn, scope)
 		return
 	}
+	if ole, ok := target.derived_expr.(^ast.Ole_Call_Method_Target_Expr); ok {
+		collect_ole_call_method_target_refs(c, ole, scope)
+		return
+	}
 	if raw, ok := target.derived_expr.(^ast.Type_Ref_Expr); ok && raw.raw_operand {
 		for ref in raw.raw_refs {
 			if ref.name == "" {
@@ -619,6 +659,16 @@ collect_call_method_selector_target_refs :: proc(
 		collect_expr_refs(c, sel.base, scope)
 	}
 	return true
+}
+
+collect_ole_call_method_target_refs :: proc(
+	c: ^Collector,
+	target: ^ast.Ole_Call_Method_Target_Expr,
+	scope: Scope_Id,
+) {
+	collect_expr_refs(c, target.object, scope)
+	collect_expr_refs(c, target.member, scope)
+	collect_expr_refs(c, target.result, scope)
 }
 
 call_target_from_callee :: proc(
