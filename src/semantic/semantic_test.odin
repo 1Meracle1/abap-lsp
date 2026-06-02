@@ -5729,6 +5729,49 @@ ENDCLASS.
 }
 
 @(test)
+parenthesized_call_method_arguments_see_method_locals :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///parenthesized_call_method_args.abap",
+		`
+CLASS /sttp/cl_dm_query DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS query_objectdata_item
+      IMPORTING iv_objcode TYPE string
+      CHANGING co_messages TYPE REF TO object.
+ENDCLASS.
+
+CLASS /sttp/cl_dm_query IMPLEMENTATION.
+  METHOD query_objectdata_item.
+  ENDMETHOD.
+ENDCLASS.
+
+CLASS lcl_owner DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_owner IMPLEMENTATION.
+  METHOD run.
+    DATA lv_objcode TYPE string.
+    DATA lo_messages TYPE REF TO object.
+    CALL METHOD /sttp/cl_dm_query=>query_objectdata_item(
+      EXPORTING
+        iv_objcode  = lv_objcode
+      CHANGING
+        co_messages = lo_messages
+    ).
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, !has_diagnostic(&unit, .Wrong_Namespace))
+	testing.expect_value(t, reference_count(&unit, "lv_objcode", .Value, .Identifier), 1)
+	testing.expect_value(t, reference_count(&unit, "lo_messages", .Value, .Identifier), 1)
+}
+
+@(test)
 new_call_and_constructor_forms_use_routine_namespace :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

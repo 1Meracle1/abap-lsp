@@ -1161,11 +1161,16 @@ CALL METHOD lo->run
 call_method_args_keep_value_exprs_and_keyword_names :: proc(t: ^testing.T) {
 	source := `CALL METHOD lo->run
   EXPORTING tables = get_field_rules( )
-  CHANGING cv_value = lv_value.`
+  CHANGING cv_value = lv_value.
+CALL METHOD /sttp/cl_dm_query=>query_objectdata_item(
+  EXPORTING iv_objcode = lv_objcode
+  CHANGING co_messages = lo_messages
+).`
 	parsed := parse(source, "call_method_value_exprs.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	parenthesized := parsed.root.stmts[1].derived_stmt.(^ast.Call_Stmt)
 	testing.expect_value(t, len(stmt.arg_sections), 2)
 	testing.expect_value(t, len(stmt.named_args), 2)
 	testing.expect_value(t, stmt.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exporting)
@@ -1175,6 +1180,12 @@ call_method_args_keep_value_exprs_and_keyword_names :: proc(t: ^testing.T) {
 	_, is_call := stmt.named_args[0].value.derived_expr.(^ast.Call_Expr)
 	testing.expect(t, is_call)
 	testing.expect(t, stmt.named_args[1].value != nil)
+	testing.expect_value(t, ast.print_node(parenthesized.target, context.allocator), "/sttp/cl_dm_query=>query_objectdata_item")
+	testing.expect_value(t, len(parenthesized.named_args), 2)
+	testing.expect_value(t, parenthesized.named_args[0].name, "iv_objcode")
+	testing.expect(t, parenthesized.named_args[0].value != nil)
+	testing.expect_value(t, parenthesized.named_args[1].name, "co_messages")
+	testing.expect(t, parenthesized.named_args[1].value != nil)
 }
 
 @(test)

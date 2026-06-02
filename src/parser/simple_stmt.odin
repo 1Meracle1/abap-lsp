@@ -497,6 +497,17 @@ raw_operand_stop_keyword :: proc(p: ^Parser, stop_keywords: []string) -> bool {
 	return simple_current_keyword_in(p, stop_keywords) && !type_ref_selector_field(p)
 }
 
+type_ref_selector_field_at :: proc(p: ^Parser, index: int) -> bool {
+	if index <= 0 || index >= len(p.tokens) || p.tokens[index].kind != .Ident {
+		return false
+	}
+	prev := p.tokens[index - 1]
+	if prev.kind == .Arrow || prev.kind == .FatArrow || prev.kind == .Tilde {
+		return true
+	}
+	return prev.kind == .Minus && tokens_touch(prev, p.tokens[index])
+}
+
 parse_generic_operands_to_period :: proc(
 	p: ^Parser,
 	stop_keywords: []string,
@@ -3658,14 +3669,65 @@ CALL_TRANSFORMATION_CLAUSE_KEYWORDS :: []string {
 
 parse_call_method_target_to_period :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Expr {
 	start := p.index
-	raw := parse_raw_operand_to_period(p, stop_keywords)
-	if raw == nil {
+	end := call_method_target_end(p, start, stop_keywords)
+	if end <= start {
 		return nil
 	}
-	if target, ok := dynamic_call_method_target_from_tokens(p, start, p.index); ok {
+	raw := type_ref_expr_from_tokens(p, start, end, -1, false, false)
+	populate_raw_operand_facts(p, raw, start, end)
+	p.index = end
+	if target, ok := dynamic_call_method_target_from_tokens(p, start, end); ok {
 		return cast(^ast.Expr)target
 	}
 	return raw
+}
+
+call_method_target_end :: proc(p: ^Parser, start: int, stop_keywords: []string) -> int {
+	i := start
+	paren, bracket, brace := 0, 0, 0
+	for i < len(p.tokens) {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .Period || tok.kind == .Eof || tok.kind == .Comma || tok.kind == .Colon ||
+			   (i > start && token_in_keywords(p, tok, stop_keywords) && !type_ref_selector_field_at(p, i)) ||
+			   call_method_parenthesized_args_start(p, i) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {
+				paren -= 1
+			}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {
+				bracket -= 1
+			}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {
+				brace -= 1
+			}
+		}
+		i += 1
+	}
+	return i
+}
+
+call_method_parenthesized_args_start :: proc(p: ^Parser, index: int) -> bool {
+	if p.tokens[index].kind != .LParen || index + 1 >= len(p.tokens) {
+		return false
+	}
+	next := index + 1
+	return p.tokens[next].kind == .RParen ||
+	       call_argument_section_starts_at(p, next) ||
+	       call_stmt_named_arg_starts(p, next)
 }
 
 dynamic_call_method_target_from_tokens :: proc(
@@ -4098,7 +4160,7 @@ call_stmt_arg_value_end :: proc(p: ^Parser, start: int) -> int {
 		tok := p.tokens[i]
 		top := paren == 0 && bracket == 0 && brace == 0
 		if top {
-			if tok.kind == .Period || tok.kind == .Eof {
+			if tok.kind == .Period || tok.kind == .Eof || tok.kind == .RParen {
 				break
 			}
 			if call_argument_section_starts_at(p, i) {
