@@ -58,8 +58,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Host_Expr:
 		collect_expr_refs(c, n.value, scope)
 	case ^ast.Table_Expr:
-		collect_expr_refs(c, n.table, scope)
-		collect_expr_list_refs(c, n.selectors[:], scope)
+		collect_table_expr_refs(c, n, scope)
 	case ^ast.Selector_Expr:
 		collect_selector_expr_refs(c, n, scope, false)
 	case ^ast.Interface_Qualified_Selector_Expr:
@@ -258,13 +257,16 @@ collect_constructor_for_clause_refs :: proc(
 	scope: Scope_Id,
 ) {
 	collect_expr_refs(c, expr.source, scope)
-	source_access, has_source := value_access_from_expr(c, expr.source, scope)
+	source_access, has_source := internal_table_where_target_access(c, expr.source, scope)
 	previous := c.current_scope
 	c.current_scope = scope
 	for_scope := push_scope(c, .Constructor_For, expr.range)
 	collect_expr_refs(c, expr.init, for_scope)
 	if expr.variable != "" {
-		declare_name_if_present(c, for_scope, expr.variable, .Variable, expr.range)
+		symbol_id := declare_name_if_present(c, for_scope, expr.variable, .Variable, expr.range)
+		if symbol_id != INVALID_SYMBOL_ID && has_source {
+			declare_constructor_for_iterator_type(c, symbol_id, source_access)
+		}
 		data := Constructor_For_Binding_Data {
 			scope = for_scope,
 			range = expr.range,
@@ -278,11 +280,79 @@ collect_constructor_for_clause_refs :: proc(
 	}
 	collect_expr_refs(c, expr.then_expr, for_scope)
 	collect_expr_refs(c, expr.condition, for_scope)
-	collect_expr_refs(c, expr.where_clause, for_scope)
+	if expr.where_clause != nil {
+		if where_expr, ok := expr.where_clause.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
+			collect_internal_table_where_refs(c, expr.source, where_expr.condition, for_scope)
+		} else {
+			collect_expr_refs(c, expr.where_clause, for_scope)
+		}
+	}
 	collect_expr_list_refs(c, expr.body[:], for_scope)
 	c.current_scope = for_scope
 	pop_scope(c)
 	c.current_scope = previous
+}
+
+declare_constructor_for_iterator_type :: proc(c: ^Collector, symbol_id: Symbol_Id, source: Field_Access) {
+	s := &c.unit.symbols[symbol_id_index(symbol_id)]
+	s.declared_type = type_ref_from_access(c, source)
+	s.has_declared_type = true
+	s.type_clause_form = .Like_Line_Of
+	s.has_type_clause_form = true
+	s.type_clause_display = concat2(c, "LINE OF ", source.base_name)
+}
+
+type_ref_from_access :: proc(c: ^Collector, access: Field_Access) -> Field_Type_Ref_Data {
+	ref := Field_Type_Ref_Data {
+		namespace = access.base_namespace,
+		base_name = access.base_name,
+		base_range = access.base_range,
+	}
+	if len(access.field_path) > 0 {
+		ref.field_path = make([dynamic]string, 0, len(access.field_path), c.allocator)
+		ref.field_ranges = make([dynamic]tokenizer.Range, 0, len(access.field_path), c.allocator)
+		ref.field_derefs = make([dynamic]bool, 0, len(access.field_path), c.allocator)
+		ref.field_selectors = make([dynamic]ast.Selector_Op, 0, len(access.field_path), c.allocator)
+		for segment in access.field_path {
+			append(&ref.field_path, segment.name)
+			append(&ref.field_ranges, segment.range)
+			append(&ref.field_derefs, segment.deref)
+			append(&ref.field_selectors, segment.selector)
+		}
+	}
+	return ref
+}
+
+collect_table_expr_refs :: proc(c: ^Collector, expr: ^ast.Table_Expr, scope: Scope_Id) {
+	collect_expr_refs(c, expr.table, scope)
+	for selector in expr.selectors {
+		if collect_table_expr_key_refs(c, expr.table, selector, scope) {
+			continue
+		}
+		collect_expr_refs(c, selector, scope)
+	}
+}
+
+collect_table_expr_key_refs :: proc(
+	c: ^Collector,
+	table, selector: ^ast.Expr,
+	scope: Scope_Id,
+) -> bool {
+	bin, ok := selector.derived_expr.(^ast.Binary_Expr)
+	if !ok || bin.op != .Equal {
+		return false
+	}
+	key, key_ok := value_access_from_expr(c, bin.left, scope)
+	if !key_ok {
+		return false
+	}
+	collect_expr_refs(c, bin.right, scope)
+	table_access, table_ok := internal_table_where_target_access(c, table, scope)
+	if !table_ok || !internal_table_where_target_has_shape(c, scope, table_access) {
+		return true
+	}
+	append_internal_table_field_access(c, scope, table_access, key)
+	return true
 }
 
 collect_selector_expr_refs :: proc(
@@ -2500,6 +2570,34 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 	collect_delete_comparing_refs(c, stmt, scope)
 }
 
+append_internal_table_field_access :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	target, field: Field_Access,
+) {
+	path := make(
+		[dynamic]Field_Access_Segment,
+		0,
+		len(target.field_path) + 1 + len(field.field_path),
+		c.allocator,
+	)
+	for segment in target.field_path {append(&path, segment)}
+	append(&path, Field_Access_Segment{name = field.base_name, range = field.base_range})
+	for segment in field.field_path {append(&path, segment)}
+	append(
+		&c.unit.field_accesses,
+		Field_Access {
+			scope = scope,
+			base_namespace = target.base_namespace,
+			base_name = target.base_name,
+			base_range = target.base_range,
+			field_path = path,
+			requires_known_base_shape = true,
+			where_candidate_name = field.base_name,
+		},
+	)
+}
+
 collect_internal_table_where_refs :: proc(
 	c: ^Collector,
 	target, expr: ^ast.Expr,
@@ -2514,27 +2612,7 @@ collect_internal_table_where_refs :: proc(
 			if !internal_table_where_target_has_shape(c, scope, target_access) {
 				return
 			}
-			path := make(
-				[dynamic]Field_Access_Segment,
-				0,
-				len(target_access.field_path) + 1 + len(access.field_path),
-				c.allocator,
-			)
-			for segment in target_access.field_path {append(&path, segment)}
-			append(&path, Field_Access_Segment{name = access.base_name, range = access.base_range})
-			for segment in access.field_path {append(&path, segment)}
-			append(
-				&c.unit.field_accesses,
-				Field_Access {
-					scope = scope,
-					base_namespace = target_access.base_namespace,
-					base_name = target_access.base_name,
-					base_range = target_access.base_range,
-					field_path = path,
-					requires_known_base_shape = true,
-					where_candidate_name = access.base_name,
-				},
-			)
+			append_internal_table_field_access(c, scope, target_access, access)
 			return
 		}
 	}

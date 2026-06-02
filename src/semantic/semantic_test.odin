@@ -3835,6 +3835,47 @@ ENDFORM.
 }
 
 @(test)
+table_expr_key_names_are_row_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_status,
+           exist_attp TYPE abap_bool,
+         END OF ty_status.
+  DATA lt_status TYPE STANDARD TABLE OF ty_status WITH EMPTY KEY.
+
+  IF line_exists( lt_status[ exist_attp = abap_undefined ] ).
+  ENDIF.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///table_expr_key_fields.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_reference(&unit, "exist_attp", .Value, .Identifier))
+}
+
+@(test)
+constructor_for_where_names_are_row_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_status,
+           exist_attp TYPE abap_bool,
+           epc_id_uri TYPE string,
+         END OF ty_status.
+  DATA lt_status TYPE STANDARD TABLE OF ty_status WITH EMPTY KEY.
+  DATA lt_serno_all TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+  lt_serno_all = VALUE #( FOR lv_stat IN lt_status WHERE ( exist_attp = abap_undefined ) ( lv_stat-epc_id_uri ) ).
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///constructor_for_where_fields.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_reference(&unit, "exist_attp", .Value, .Identifier))
+}
+
+@(test)
 loop_where_table_body_uses_row_fields :: proc(t: ^testing.T) {
 	source := `
 FORM run.
