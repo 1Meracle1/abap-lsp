@@ -848,6 +848,21 @@ validate_field_accesses :: proc(
 		if len(access.field_path) == 0 || access.in_type_position {
 			continue
 		}
+		if access.base_namespace == .Value &&
+		   access.base_name == "text" &&
+		   len(access.field_path) == 1 &&
+		   access.field_path[0].selector == .Dash {
+			text_pool_id := len(access.field_path[0].name) > 0
+			for r in access.field_path[0].name {
+				if !(('0' <= r && r <= '9') || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')) {
+					text_pool_id = false
+					break
+				}
+			}
+			if text_pool_id {
+				continue
+			}
+		}
 		if resolved_selectors[field_access_range(access)] {
 			continue
 		}

@@ -1908,36 +1908,21 @@ normalize_name :: proc(value: string, allocator: mem.Allocator) -> string {
 }
 
 percent_encode_sqlite_uri_path :: proc(out: ^strings.Builder, path: string) {
-	for byte in transmute([]byte)path {
-		if ascii_uri_byte(byte) {
-			strings.write_byte(out, byte)
-		} else {
+	hex := "0123456789ABCDEF"
+	for r in path {
+		if r > 0x7f {
+			strings.write_rune(out, r)
+			continue
+		}
+		switch r {
+		case '0'..='9', 'A'..='Z', 'a'..='z', '/', ':', '-', '_', '.', '~':
+			strings.write_rune(out, r)
+		case:
 			strings.write_byte(out, '%')
-			strings.write_byte(out, hex_digit(byte >> 4))
-			strings.write_byte(out, hex_digit(byte & 0x0f))
+			strings.write_byte(out, hex[int(r) >> 4])
+			strings.write_byte(out, hex[int(r) & 0x0f])
 		}
 	}
-}
-
-hex_digit :: proc(value: byte) -> byte {
-	if value <= 9 {
-		return '0' + value
-	}
-	return 'A' + (value - 10)
-}
-
-ascii_uri_byte :: proc(value: byte) -> bool {
-	return(
-		('0' <= value && value <= '9') ||
-		('A' <= value && value <= 'Z') ||
-		('a' <= value && value <= 'z') ||
-		value == '/' ||
-		value == ':' ||
-		value == '-' ||
-		value == '_' ||
-		value == '.' ||
-		value == '~' \
-	)
 }
 
 insert_unique_string :: proc(values: ^[dynamic]string, value: string) {

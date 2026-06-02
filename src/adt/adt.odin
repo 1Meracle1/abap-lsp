@@ -1448,13 +1448,19 @@ normalize_base_url :: proc(raw: string, allocator: mem.Allocator) -> string {
 
 encode_path_segment :: proc(value: string, allocator: mem.Allocator) -> string {
 	out := strings.builder_make(allocator)
-	for byte in transmute([]byte)value {
-		if ascii_uri_byte(byte) {
-			strings.write_byte(&out, byte)
-		} else {
+	hex := "0123456789ABCDEF"
+	for r in value {
+		if r > 0x7f {
+			strings.write_rune(&out, r)
+			continue
+		}
+		switch r {
+		case '0'..='9', 'A'..='Z', 'a'..='z', '-', '_', '.', '~':
+			strings.write_rune(&out, r)
+		case:
 			strings.write_byte(&out, '%')
-			strings.write_byte(&out, hex_upper(byte >> 4))
-			strings.write_byte(&out, hex_upper(byte & 0x0f))
+			strings.write_byte(&out, hex[int(r) >> 4])
+			strings.write_byte(&out, hex[int(r) & 0x0f])
 		}
 	}
 	return strings.to_string(out)
@@ -2107,7 +2113,7 @@ local_object_name :: proc(name: string, allocator: mem.Allocator) -> string {
 	if !strings.has_prefix(normalized, "/") {
 		return normalized
 	}
-	last := last_index_byte(normalized, '/')
+	last := strings.last_index_byte(normalized, '/')
 	if last >= 0 && last + 1 < len(normalized) {
 		out := strings.clone(normalized[last + 1:], allocator)
 		delete(normalized, allocator)
@@ -2277,17 +2283,6 @@ trim_upper :: proc(value: string, allocator: mem.Allocator) -> string {
 	return strings.to_upper(strings.trim_space(value), allocator)
 }
 
-last_index_byte :: proc(value: string, needle: byte) -> int {
-	i := len(value) - 1
-	for i >= 0 {
-		if value[i] == needle {
-			return i
-		}
-		i -= 1
-	}
-	return -1
-}
-
 ascii_starts_with_ignore_case :: proc(value, prefix: string) -> bool {
 	return len(value) >= len(prefix) && strings.equal_fold(value[:len(prefix)], prefix)
 }
@@ -2311,21 +2306,3 @@ ascii_index_ignore_case :: proc(value, needle: string) -> int {
 	return -1
 }
 
-ascii_uri_byte :: proc(value: byte) -> bool {
-	return(
-		('0' <= value && value <= '9') ||
-		('A' <= value && value <= 'Z') ||
-		('a' <= value && value <= 'z') ||
-		value == '-' ||
-		value == '_' ||
-		value == '.' ||
-		value == '~' \
-	)
-}
-
-hex_upper :: proc(value: byte) -> byte {
-	if value <= 9 {
-		return '0' + value
-	}
-	return 'A' + (value - 10)
-}
