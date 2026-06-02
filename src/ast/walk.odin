@@ -81,6 +81,10 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.value)
 	case ^Call_Positional_Arg_Expr:
 		walk(next, n.value)
+	case ^Sql_Column_Expr:
+	case ^Sql_Star_Expr:
+	case ^Sql_Call_Expr:
+		walk_expr_list(next, n.args)
 	case ^Constructor_Expr:
 		walk(next, n.type_ref)
 		walk_expr_list(next, n.args)

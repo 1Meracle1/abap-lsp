@@ -794,6 +794,73 @@ ENDSELECT.`
 }
 
 @(test)
+open_sql_projection_sql_shapes_are_parser_modeled :: proc(t: ^testing.T) {
+	source := `SELECT COUNT( DISTINCT rel~evtid ) AS total_events,
+       COUNT( ALL evt~evtid ) AS active_events,
+       COALESCE( evt~name, @lv_name ) AS event_name,
+       rel~*, evt~evtid
+  FROM zrel AS rel
+  INNER JOIN zevt AS evt ON evt~evtid = rel~evtid
+  INTO @DATA(ls_row).`
+	parsed := parse(source, "sql_projection_shapes.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(stmt.query.projection_clauses), 5)
+
+	total := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Sql_Call_Expr)
+	testing.expect_value(t, total.kind, ast.Sql_Call_Kind.Aggregate)
+	testing.expect_value(t, total.modifier, ast.Sql_Call_Modifier.Distinct)
+	testing.expect_value(t, len(total.args), 1)
+	total_arg := total.args[0].derived_expr.(^ast.Sql_Column_Expr)
+	testing.expect_value(t, total_arg.qualifier, "rel")
+	testing.expect_value(t, total_arg.name, "evtid")
+
+	active := stmt.query.projection_clauses[1].value.derived_expr.(^ast.Sql_Call_Expr)
+	testing.expect_value(t, active.kind, ast.Sql_Call_Kind.Aggregate)
+	testing.expect_value(t, active.modifier, ast.Sql_Call_Modifier.All)
+	testing.expect_value(t, len(active.args), 1)
+	active_arg := active.args[0].derived_expr.(^ast.Sql_Column_Expr)
+	testing.expect_value(t, active_arg.qualifier, "evt")
+	testing.expect_value(t, active_arg.name, "evtid")
+
+	func := stmt.query.projection_clauses[2].value.derived_expr.(^ast.Sql_Call_Expr)
+	testing.expect_value(t, func.kind, ast.Sql_Call_Kind.Function)
+	testing.expect_value(t, func.modifier, ast.Sql_Call_Modifier.None)
+	testing.expect_value(t, len(func.args), 2)
+	_, host_arg := func.args[1].derived_expr.(^ast.Host_Expr)
+	testing.expect(t, host_arg)
+
+	star := stmt.query.projection_clauses[3].value.derived_expr.(^ast.Sql_Star_Expr)
+	testing.expect_value(t, star.qualifier, "rel")
+	column := stmt.query.projection_clauses[4].value.derived_expr.(^ast.Sql_Column_Expr)
+	testing.expect_value(t, column.qualifier, "evt")
+	testing.expect_value(t, column.name, "evtid")
+
+	join_on := stmt.query.source_clause.joins[0].on.derived_expr.(^ast.Binary_Expr)
+	left := join_on.left.derived_expr.(^ast.Sql_Column_Expr)
+	right := join_on.right.derived_expr.(^ast.Sql_Column_Expr)
+	testing.expect_value(t, left.qualifier, "evt")
+	testing.expect_value(t, right.qualifier, "rel")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), "SELECT COUNT( DISTINCT rel~evtid ) AS total_events, COUNT( ALL evt~evtid ) AS active_events, COALESCE( evt~name, @lv_name ) AS event_name, rel~*, evt~evtid FROM zrel AS rel INNER JOIN zevt AS evt ON evt~evtid = rel~evtid INTO @DATA(ls_row).")
+}
+
+@(test)
+open_sql_function_arguments_named_like_modifiers_are_not_aggregate_modifiers :: proc(t: ^testing.T) {
+	source := `SELECT COALESCE( all, @lv_value ) AS value FROM ztab INTO @DATA(ls_row).`
+	parsed := parse(source, "sql_function_modifier_words.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	call := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Sql_Call_Expr)
+	testing.expect_value(t, call.kind, ast.Sql_Call_Kind.Function)
+	testing.expect_value(t, call.modifier, ast.Sql_Call_Modifier.None)
+	testing.expect_value(t, len(call.args), 2)
+	arg := call.args[0].derived_expr.(^ast.Sql_Column_Expr)
+	testing.expect_value(t, arg.name, "all")
+}
+
+@(test)
 open_sql_scalar_select_with_where_owns_endselect_body :: proc(t: ^testing.T) {
 	source := `SELECT * FROM snap INTO wa_snap WHERE seqno = '000'.
   CLEAR: x, cnt.
@@ -834,8 +901,8 @@ SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 	qualified := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
 	testing.expect_value(t, len(qualified.query.projection_clauses), 2)
 	testing.expect_value(t, qualified.query.projection_clauses[0].alias, "material")
-	_, qualified_star := qualified.query.projection_clauses[1].value.derived_expr.(^ast.Selector_Expr)
-	testing.expect(t, qualified_star)
+	qualified_star := qualified.query.projection_clauses[1].value.derived_expr.(^ast.Sql_Star_Expr)
+	testing.expect_value(t, qualified_star.qualifier, "a")
 	testing.expect_value(t, qualified.query.source_clause.alias, "a")
 	testing.expect(t, qualified.query.result.table)
 	testing.expect(t, qualified.query.result.corresponding_fields)
@@ -847,6 +914,7 @@ SELECT matnr FROM @lt_source AS s INTO FIELD-SYMBOL(<row>).`
 	_, dynamic_source := dynamic_stmt.query.source_clause.source.derived_expr.(^ast.Paren_Expr)
 	_, dynamic_target := dynamic_stmt.query.result.target.derived_expr.(^ast.Type_Ref_Expr)
 	testing.expect(t, dynamic_projection)
+	testing.expect(t, dynamic_stmt.query.projection_clauses[0].is_dynamic)
 	testing.expect(t, dynamic_source)
 	testing.expect(t, dynamic_stmt.query.dynamic_where)
 	testing.expect(t, dynamic_target)
@@ -1100,7 +1168,7 @@ open_sql_projection_named_value_before_dynamic_source_is_valid :: proc(t: ^testi
 
 	testing.expect_value(t, len(parsed.errors), 0)
 	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
-	projection := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Ident_Expr)
+	projection := stmt.query.projection_clauses[0].value.derived_expr.(^ast.Sql_Column_Expr)
 	testing.expect_value(t, projection.name, "value")
 	testing.expect(t, stmt.query.source_clause.dynamic_source)
 	testing.expect(t, stmt.query.where_cond != nil)

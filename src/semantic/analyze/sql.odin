@@ -320,7 +320,7 @@ collect_sql_projection :: proc(
 		return
 	}
 	alias := canonical_name(projection.alias, c.allocator) if projection.alias != "" else ""
-	if sql_expr_is_dynamic_operand(projection.value) {
+	if projection.is_dynamic || sql_expr_is_dynamic_operand(projection.value) {
 		collect_sql_dynamic_operand_refs(c, projection.value, scope)
 		append(
 			&c.unit.sql_dynamic_fragments,
@@ -346,7 +346,51 @@ collect_sql_projection :: proc(
 	kind := Sql_Projection_Kind.Expression
 	name := ""
 	source_alias := ""
-	if lit, lit_ok := projection.value.derived_expr.(^ast.Literal_Expr);
+	if star, star_ok := projection.value.derived_expr.(^ast.Sql_Star_Expr);
+	   star_ok {
+		name = "*"
+		if star.qualifier == "" {
+			kind = .Star
+			push_sql_name_ref(c, query_id, scope, star.range, "*", "", .Star, .Unresolved)
+		} else {
+			kind = .Qualified_Star
+			source_alias = canonical_name(star.qualifier, c.allocator)
+			push_sql_name_ref(
+				c,
+				query_id,
+				scope,
+				star.range,
+				"*",
+				source_alias,
+				.Qualified_Star,
+				.Unresolved,
+			)
+		}
+	} else if column, column_ok := projection.value.derived_expr.(^ast.Sql_Column_Expr);
+	          column_ok {
+		kind = .Column
+		name = canonical_name(column.name, c.allocator)
+		if column.qualifier == "" {
+			push_sql_name_ref(c, query_id, scope, column.name_range, name, "", .Column, .Unresolved)
+		} else {
+			source_alias = canonical_name(column.qualifier, c.allocator)
+			push_sql_name_ref(
+				c,
+				query_id,
+				scope,
+				column.range,
+				name,
+				source_alias,
+				.Qualified_Column,
+				.Unresolved,
+			)
+		}
+	} else if call, call_ok := projection.value.derived_expr.(^ast.Sql_Call_Expr);
+	          call_ok {
+		name = canonical_name(call.name, c.allocator)
+		kind = .Aggregate if call.kind == .Aggregate else .Expression
+		collect_sql_name_refs_from_expr(c, query_id, projection.value, scope, false)
+	} else if lit, lit_ok := projection.value.derived_expr.(^ast.Literal_Expr);
 	   lit_ok && lit.value == "*" {
 		kind = .Star
 		name = "*"
@@ -384,11 +428,10 @@ collect_sql_projection :: proc(
 		kind = .Column
 		name = canonical_name(simple, c.allocator)
 		push_sql_name_ref(c, query_id, scope, simple_range, name, "", .Column, .Unresolved)
-	} else if call_name, call_range, call_ok := sql_call_name(projection.value); call_ok {
+	} else if call_name, _, generic_call_ok := sql_call_name(projection.value); generic_call_ok {
 		name = canonical_name(call_name, c.allocator)
 		ref_kind := sql_call_ref_kind(name)
 		kind = .Aggregate if ref_kind == .Aggregate else .Expression
-		push_sql_name_ref(c, query_id, scope, call_range, name, "", ref_kind, .External)
 		collect_sql_name_refs_from_expr(c, query_id, projection.value, scope, false)
 	} else {
 		collect_sql_name_refs_from_expr(c, query_id, projection.value, scope, false)
@@ -569,13 +612,16 @@ collect_select_result_clause :: proc(
 			type_form := ast.Data_Type_Form{}
 			has_type_form := false
 			if result.table {
-				structure_id = inline_select_target_structure(c, query_id, target_name, decl_scope)
+				structure_id, _ = inline_select_target_structure(c, query_id, target_name, decl_scope, 1)
 				type_form = .Standard_Table
 				has_type_form = true
 			} else if type_ref, type_ok := inline_select_target_type(c, query_id); type_ok {
 				declared_type = type_ref
 				has_type = true
 				type_display = type_ref.base_name
+			} else if row_structure, field_count := inline_select_target_structure(c, query_id, target_name, decl_scope, 2);
+			          field_count > 1 {
+				structure_id = row_structure
 			}
 			_ = declare_collected_symbol(
 				c,
@@ -681,6 +727,40 @@ collect_sql_name_refs_from_expr :: proc(
 		if n.value == "*" {
 			push_sql_name_ref(c, query_id, scope, n.range, "*", "", .Star, .Unresolved)
 		}
+	case ^ast.Sql_Column_Expr:
+		if n.qualifier == "" {
+			if open_sql_predicate {
+				push_sql_predicate_name(c, query_id, scope, n.name_range, n.name)
+			} else {
+				push_sql_name_ref(c, query_id, scope, n.name_range, n.name, "", .Column, .Unresolved)
+			}
+		} else {
+			push_sql_name_ref(
+				c,
+				query_id,
+				scope,
+				n.range,
+				n.name,
+				n.qualifier,
+				.Qualified_Column,
+				.Unresolved,
+			)
+		}
+	case ^ast.Sql_Star_Expr:
+		if n.qualifier == "" {
+			push_sql_name_ref(c, query_id, scope, n.star_range, "*", "", .Star, .Unresolved)
+		} else {
+			push_sql_name_ref(
+				c,
+				query_id,
+				scope,
+				n.range,
+				"*",
+				n.qualifier,
+				.Qualified_Star,
+				.Unresolved,
+			)
+		}
 	case ^ast.Selector_Expr:
 		if qualifier, column, range, ok := sql_qualified_column(expr); ok {
 			kind := Sql_Name_Ref_Kind.Qualified_Column
@@ -703,9 +783,17 @@ collect_sql_name_refs_from_expr :: proc(
 				collect_expr_refs(c, expr, scope)
 			}
 		}
+	case ^ast.Sql_Call_Expr:
+		ref_kind := Sql_Name_Ref_Kind.Aggregate if n.kind == .Aggregate else .Function
+		push_sql_name_ref(c, query_id, scope, n.name_range, n.name, "", ref_kind, .External)
+		for arg in n.args {
+			collect_sql_name_refs_from_expr(c, query_id, arg, scope, open_sql_predicate)
+		}
 	case ^ast.Call_Expr:
+		call_kind := Sql_Name_Ref_Kind.Function
 		if name, range, ok := sql_call_name(expr); ok {
 			lower := canonical_name(name, c.allocator)
+			call_kind = sql_call_ref_kind(lower)
 			push_sql_name_ref(
 				c,
 				query_id,
@@ -713,7 +801,7 @@ collect_sql_name_refs_from_expr :: proc(
 				range,
 				lower,
 				"",
-				sql_call_ref_kind(lower),
+				call_kind,
 				.External,
 			)
 		}
@@ -775,6 +863,8 @@ collect_sql_host_refs_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: S
 	case ^ast.Selector_Expr:
 		collect_sql_host_refs_from_expr(c, n.base, scope)
 		collect_sql_host_refs_from_expr(c, n.field, scope)
+	case ^ast.Sql_Call_Expr:
+		for arg in n.args {collect_sql_host_refs_from_expr(c, arg, scope)}
 	case ^ast.Call_Expr:
 		collect_sql_host_refs_from_expr(c, n.callee, scope)
 		collect_sql_host_refs_from_expr(c, n.args, scope)
@@ -873,12 +963,18 @@ sql_simple_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
 	if typ, ok := expr.derived_expr.(^ast.Type_Ref_Expr); ok {
 		return typ.name, typ.range, typ.name != ""
 	}
+	if column, ok := expr.derived_expr.(^ast.Sql_Column_Expr); ok && column.qualifier == "" {
+		return column.name, column.name_range, column.name != ""
+	}
 	return "", tokenizer.Range{}, false
 }
 
 sql_call_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
 	if expr == nil {
 		return "", tokenizer.Range{}, false
+	}
+	if call, ok := expr.derived_expr.(^ast.Sql_Call_Expr); ok {
+		return call.name, call.name_range, call.name != ""
 	}
 	call, ok := expr.derived_expr.(^ast.Call_Expr)
 	if !ok || call.callee == nil {
@@ -890,6 +986,12 @@ sql_call_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
 sql_qualified_column :: proc(expr: ^ast.Expr) -> (string, string, tokenizer.Range, bool) {
 	if expr == nil {
 		return "", "", tokenizer.Range{}, false
+	}
+	if column, ok := expr.derived_expr.(^ast.Sql_Column_Expr); ok && column.qualifier != "" {
+		return column.qualifier, column.name, column.range, column.name != ""
+	}
+	if star, ok := expr.derived_expr.(^ast.Sql_Star_Expr); ok && star.qualifier != "" {
+		return star.qualifier, "*", star.range, true
 	}
 	sel, ok := expr.derived_expr.(^ast.Selector_Expr)
 	if !ok || sel.op != .Tilde {
@@ -974,7 +1076,8 @@ inline_select_target_structure :: proc(
 	query_id: int,
 	target_name: string,
 	scope: Scope_Id,
-) -> Structure_Id {
+	min_fields: int,
+) -> (Structure_Id, int) {
 	fields := make([dynamic]Structure_Field_Data, 0, 4, c.allocator)
 	for projection in c.unit.sql_projections {
 		if projection.query_id != query_id {
@@ -1005,10 +1108,10 @@ inline_select_target_structure :: proc(
 			},
 		)
 	}
-	if len(fields) == 0 {
-		return INVALID_STRUCTURE_ID
+	if len(fields) < min_fields {
+		return INVALID_STRUCTURE_ID, len(fields)
 	}
-	return push_collected_structure(c, concat3(c, "<open_sql_inline:", target_name, ">"), fields, scope)
+	return push_collected_structure(c, concat3(c, "<open_sql_inline:", target_name, ">"), fields, scope), len(fields)
 }
 
 inline_select_target_type :: proc(c: ^Collector, query_id: int) -> (Field_Type_Ref_Data, bool) {

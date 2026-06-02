@@ -153,6 +153,29 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 		emit_node(p, n.value)
 	case ^Call_Positional_Arg_Expr:
 		emit_node(p, n.value)
+	case ^Sql_Column_Expr:
+		if n.qualifier != "" {
+			emit(p, n.qualifier)
+			emit(p, "~")
+		}
+		emit(p, n.name)
+	case ^Sql_Star_Expr:
+		if n.qualifier != "" {
+			emit(p, n.qualifier)
+			emit(p, "~")
+		}
+		emit(p, "*")
+	case ^Sql_Call_Expr:
+		emit(p, n.name)
+		emit(p, "( ")
+		if n.modifier != .None {
+			emit(p, sql_call_modifier_text(n.modifier))
+			if len(n.args) > 0 {
+				emit_space(p)
+			}
+		}
+		emit_expr_list(p, n.args, ", ")
+		emit(p, " )")
 	case ^Constructor_Expr:
 		emit(p, constructor_kind_text(n.kind))
 		emit_space(p)
@@ -3488,4 +3511,13 @@ select_set_kind_text :: proc(kind: Select_Set_Kind) -> string {
 	case .Except: return "EXCEPT"
 	}
 	return "UNION"
+}
+
+sql_call_modifier_text :: proc(modifier: Sql_Call_Modifier) -> string {
+	switch modifier {
+	case .Distinct: return "DISTINCT"
+	case .All: return "ALL"
+	case .None:
+	}
+	return ""
 }

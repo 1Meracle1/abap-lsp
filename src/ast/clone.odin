@@ -149,6 +149,14 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.value = clone(n.value, allocator)
 		return r
+	case ^Sql_Column_Expr:
+		return clone_shallow(n, allocator)
+	case ^Sql_Star_Expr:
+		return clone_shallow(n, allocator)
+	case ^Sql_Call_Expr:
+		r := clone_shallow(n, allocator)
+		r.args = clone_expr_list(n.args, allocator)
+		return r
 	case ^Constructor_Expr:
 		r := clone_shallow(n, allocator)
 		r.type_ref = clone(n.type_ref, allocator)
@@ -1300,7 +1308,7 @@ clone_select_ctes :: proc(list: [dynamic]Select_Cte_Clause, allocator: mem.Alloc
 clone_select_projections :: proc(list: [dynamic]Select_Projection_Clause, allocator: mem.Allocator) -> [dynamic]Select_Projection_Clause {
 	res := make([dynamic]Select_Projection_Clause, 0, len(list), allocator)
 	for clause in list {
-		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clause.alias, range = clause.range})
+		append(&res, Select_Projection_Clause{value = clone(clause.value, allocator), alias = clause.alias, is_dynamic = clause.is_dynamic, range = clause.range})
 	}
 	return res
 }

@@ -335,6 +335,235 @@ sql_implicit_host_operand :: proc(expr: ^ast.Expr) -> bool {
 	return false
 }
 
+select_sql_projection_expr :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+) -> (^ast.Expr, bool) {
+	value := sql_data_expr(p, body_start, stop_keywords)
+	is_dynamic := sql_dynamic_operand_expr(value)
+	if value != nil && !is_dynamic {
+		value = sql_model_select_expr(p, value)
+	}
+	return value, is_dynamic
+}
+
+select_sql_logical_expr :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+) -> (^ast.Expr, bool) {
+	expr := sql_logical_expr(p, body_start, stop_keywords)
+	is_dynamic := sql_dynamic_where_expr(expr)
+	if expr != nil && !is_dynamic {
+		expr = sql_model_select_expr(p, expr)
+	}
+	return expr, is_dynamic
+}
+
+sql_model_select_source_expr :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
+	if expr == nil || sql_dynamic_operand_expr(expr) {
+		return expr
+	}
+	if call, ok := expr.derived_expr.(^ast.Call_Expr); ok {
+		return sql_model_call_expr(p, expr, call)
+	}
+	return expr
+}
+
+sql_model_select_expr :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Host_Expr:
+		return expr
+	case ^ast.Ident_Expr:
+		if n.name != "" {
+			return sql_column_expr(p, expr.range, "", tokenizer.Range{}, n.name, n.range)
+		}
+	case ^ast.Type_Ref_Expr:
+		if n.name != "" {
+			return sql_column_expr(p, expr.range, "", tokenizer.Range{}, n.name, n.range)
+		}
+	case ^ast.Literal_Expr:
+		if n.value == "*" {
+			return sql_star_expr(p, expr.range, "", tokenizer.Range{}, n.range)
+		}
+	case ^ast.Selector_Expr:
+		if n.op == .Tilde {
+			qualifier, qualifier_range, qualifier_ok := sql_expr_simple_name(n.base)
+			if qualifier_ok {
+				if lit, lit_ok := n.field.derived_expr.(^ast.Literal_Expr); lit_ok && lit.value == "*" {
+					return sql_star_expr(p, expr.range, qualifier, qualifier_range, lit.range)
+				}
+				name, name_range, name_ok := sql_expr_simple_name(n.field)
+				if name_ok {
+					return sql_column_expr(p, expr.range, qualifier, qualifier_range, name, name_range)
+				}
+			}
+		}
+		n.base = sql_model_select_expr(p, n.base)
+		n.field = sql_model_select_expr(p, n.field)
+	case ^ast.Call_Expr:
+		return sql_model_call_expr(p, expr, n)
+	case ^ast.Call_Named_Arg_Expr:
+		n.value = sql_model_select_expr(p, n.value)
+	case ^ast.Call_Positional_Arg_Expr:
+		n.value = sql_model_select_expr(p, n.value)
+	case ^ast.Call_Arg_List_Expr:
+		for arg, i in n.args {
+			n.args[i] = sql_model_select_expr(p, arg)
+		}
+	case ^ast.Binary_Expr:
+		n.left = sql_model_select_expr(p, n.left)
+		n.right = sql_model_select_expr(p, n.right)
+	case ^ast.Unary_Expr:
+		n.expr = sql_model_select_expr(p, n.expr)
+	case ^ast.Paren_Expr:
+		n.expr = sql_model_select_expr(p, n.expr)
+	case ^ast.Between_Expr:
+		n.subject = sql_model_select_expr(p, n.subject)
+		n.low = sql_model_select_expr(p, n.low)
+		n.high = sql_model_select_expr(p, n.high)
+	case ^ast.Is_Predicate_Expr:
+		n.subject = sql_model_select_expr(p, n.subject)
+	case ^ast.Instance_Of_Predicate_Expr:
+		n.subject = sql_model_select_expr(p, n.subject)
+	case ^ast.Table_Expr:
+		n.table = sql_model_select_expr(p, n.table)
+		for selector, i in n.selectors {
+			n.selectors[i] = sql_model_select_expr(p, selector)
+		}
+	case ^ast.Sql_Case_When_Expr:
+		n.condition = sql_model_select_expr(p, n.condition)
+		n.result = sql_model_select_expr(p, n.result)
+	case ^ast.Sql_Case_Expr:
+		n.operand = sql_model_select_expr(p, n.operand)
+		for when_expr, i in n.whens {
+			n.whens[i] = sql_model_select_expr(p, when_expr)
+		}
+		n.else_expr = sql_model_select_expr(p, n.else_expr)
+	}
+	return expr
+}
+
+sql_model_call_expr :: proc(p: ^Parser, expr: ^ast.Expr, call: ^ast.Call_Expr) -> ^ast.Expr {
+	name, name_range, ok := sql_expr_simple_name(call.callee)
+	if !ok {
+		call.callee = sql_model_select_expr(p, call.callee)
+		call.args = sql_model_select_expr(p, call.args)
+		return expr
+	}
+	sql_call := ast.new(ast.Sql_Call_Expr, expr.range, p.allocator)
+	sql_call.name = name
+	sql_call.name_range = name_range
+	sql_call.kind = .Aggregate if sql_aggregate_name(name) else .Function
+	sql_call.args = make([dynamic]^ast.Expr, 0, 4, p.allocator)
+	if args, args_ok := call.args.derived_expr.(^ast.Call_Arg_List_Expr); args_ok {
+		for arg, i in args.args {
+			if i == 0 && sql_call.kind == .Aggregate {
+				if modifier, modifier_range, modifier_ok := sql_call_modifier_arg(arg); modifier_ok {
+					sql_call.modifier = modifier
+					sql_call.modifier_range = modifier_range
+					continue
+				}
+			}
+			append(&sql_call.args, sql_model_call_arg_expr(p, arg))
+		}
+	}
+	return sql_call
+}
+
+sql_model_call_arg_expr :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
+	if pos, ok := expr.derived_expr.(^ast.Call_Positional_Arg_Expr); ok {
+		return sql_model_select_expr(p, pos.value)
+	}
+	return sql_model_select_expr(p, expr)
+}
+
+sql_call_modifier_arg :: proc(expr: ^ast.Expr) -> (ast.Sql_Call_Modifier, tokenizer.Range, bool) {
+	if pos, ok := expr.derived_expr.(^ast.Call_Positional_Arg_Expr); ok {
+		name, range, name_ok := sql_expr_simple_name(pos.value)
+		if name_ok && strings.equal_fold(name, "DISTINCT") {
+			return .Distinct, range, true
+		}
+		if name_ok && strings.equal_fold(name, "ALL") {
+			return .All, range, true
+		}
+	}
+	return .None, tokenizer.Range{}, false
+}
+
+sql_column_expr :: proc(
+	p: ^Parser,
+	range: tokenizer.Range,
+	qualifier: string,
+	qualifier_range: tokenizer.Range,
+	name: string,
+	name_range: tokenizer.Range,
+) -> ^ast.Expr {
+	expr := ast.new(ast.Sql_Column_Expr, range, p.allocator)
+	expr.qualifier = qualifier
+	expr.qualifier_range = qualifier_range
+	expr.name = name
+	expr.name_range = name_range
+	return expr
+}
+
+sql_star_expr :: proc(
+	p: ^Parser,
+	range: tokenizer.Range,
+	qualifier: string,
+	qualifier_range: tokenizer.Range,
+	star_range: tokenizer.Range,
+) -> ^ast.Expr {
+	expr := ast.new(ast.Sql_Star_Expr, range, p.allocator)
+	expr.qualifier = qualifier
+	expr.qualifier_range = qualifier_range
+	expr.star_range = star_range
+	return expr
+}
+
+sql_expr_simple_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
+	if expr == nil {
+		return "", tokenizer.Range{}, false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Ident_Expr:
+		return n.name, n.range, n.name != ""
+	case ^ast.Type_Ref_Expr:
+		return n.name, n.range, n.name != ""
+	}
+	return "", tokenizer.Range{}, false
+}
+
+sql_aggregate_name :: proc(name: string) -> bool {
+	return(
+		strings.equal_fold(name, "avg") ||
+		strings.equal_fold(name, "count") ||
+		strings.equal_fold(name, "max") ||
+		strings.equal_fold(name, "min") ||
+		strings.equal_fold(name, "sum") ||
+		strings.equal_fold(name, "median") ||
+		strings.equal_fold(name, "stddev") ||
+		strings.equal_fold(name, "var") ||
+		strings.equal_fold(name, "corr") ||
+		strings.equal_fold(name, "corr_spearman") ||
+		strings.equal_fold(name, "grouping") ||
+		strings.equal_fold(name, "string_agg") ||
+		strings.equal_fold(name, "allow_precision_loss") \
+	)
+}
+
+sql_dynamic_operand_expr :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	_, ok := expr.derived_expr.(^ast.Paren_Expr)
+	return ok
+}
+
 required_data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
 	expr := data_expr(p, body_start, stop_keywords)
 	if expr == nil {
@@ -524,15 +753,14 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 			continue
 		}
 		if star := current_token(p); allow_token(p, .Star) {
-			value := ast.new(ast.Literal_Expr, star.range, p.allocator)
-			value.value = "*"
+			value := sql_star_expr(p, star.range, "", tokenizer.Range{}, star.range)
 			append(&query.projections, value)
 			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, range = value.range})
 			query.projection_clause = select_merge_range(query.projection_clause, value.range)
 			continue
 		}
 		start := p.index
-		value := sql_data_expr(
+		value, is_dynamic := select_sql_projection_expr(
 			p,
 			body_start,
 			[]string {
@@ -569,7 +797,7 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 			alias := parse_select_alias(p)
 			projection_range := tokenizer.text_range(value.range.start, previous_token(p).range.end)
 			append(&query.projections, value)
-			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, alias = alias, range = projection_range})
+			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, alias = alias, is_dynamic = is_dynamic, range = projection_range})
 			query.projection_clause = select_merge_range(query.projection_clause, projection_range)
 		} else {
 			bump_token(p)
@@ -633,13 +861,12 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 				select_reject_clause(p, start, "syntax error: invalid SELECT WHERE clause placement", body_start, stop_at_rparen)
 				continue
 			}
-			query.where_cond = sql_logical_expr(
+			query.where_cond, query.dynamic_where = select_sql_logical_expr(
 				p,
 				body_start,
 				[]string{"INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
 			)
 			if query.where_cond != nil {
-				query.dynamic_where = sql_dynamic_where_expr(query.where_cond)
 				query.where_clause = select_clause_expr_range(p, start, query.where_cond)
 				state.has_where = true
 			}
@@ -817,7 +1044,7 @@ parse_select_fields_clause :: proc(
 			continue
 		}
 		start := p.index
-		value := sql_data_expr(
+		value, is_dynamic := select_sql_projection_expr(
 			p,
 			body_start,
 			[]string{"INTO", "APPENDING", "WHERE", "FOR", "GROUP", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
@@ -826,7 +1053,7 @@ parse_select_fields_clause :: proc(
 			alias := parse_select_alias(p)
 			projection_range := tokenizer.text_range(value.range.start, previous_token(p).range.end)
 			append(&query.projections, value)
-			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, alias = alias, range = projection_range})
+			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, alias = alias, is_dynamic = is_dynamic, range = projection_range})
 			query.projection_clause = select_merge_range(query.projection_clause, projection_range)
 		} else {
 			bump_token(p)
@@ -939,6 +1166,7 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 		body_start,
 		[]string{"AS", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
 	)
+	clause.source = sql_model_select_source_expr(p, clause.source)
 	if clause.source == nil {
 		error_current(p, "syntax error: expected SELECT source")
 	}
@@ -954,12 +1182,13 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 			body_start,
 			[]string{"AS", "ON", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
 		)
+		join.source = sql_model_select_source_expr(p, join.source)
 		if join.source == nil {
 			error_current(p, "syntax error: expected SELECT JOIN source")
 		}
 		join.alias = parse_select_alias(p)
 		if allow_keyword(p, "ON") {
-			join.on = sql_logical_expr(
+			join.on, _ = select_sql_logical_expr(
 				p,
 				body_start,
 				[]string{"INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
@@ -1937,6 +2166,8 @@ select_projection_is_aggregate :: proc(expr: ^ast.Expr) -> bool {
 		return false
 	}
 	#partial switch n in expr.derived_expr {
+	case ^ast.Sql_Call_Expr:
+		return n.kind == .Aggregate
 	case ^ast.Call_Expr:
 		if n.callee == nil {
 			return false

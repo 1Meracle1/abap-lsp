@@ -322,6 +322,45 @@ Call_Positional_Arg_Expr :: struct {
 	value:      ^Expr,
 }
 
+// ABAP SQL syntax: column reference such as `field` or `alias~field`.
+Sql_Column_Expr :: struct {
+	using node:     Expr,
+	qualifier:      string,
+	qualifier_range: tokenizer.Range,
+	name:           string,
+	name_range:     tokenizer.Range,
+}
+
+// ABAP SQL syntax: star projection such as `*` or `alias~*`.
+Sql_Star_Expr :: struct {
+	using node:     Expr,
+	qualifier:      string,
+	qualifier_range: tokenizer.Range,
+	star_range:     tokenizer.Range,
+}
+
+Sql_Call_Kind :: enum {
+	Function,
+	Aggregate,
+}
+
+Sql_Call_Modifier :: enum {
+	None,
+	Distinct,
+	All,
+}
+
+// ABAP SQL syntax: SQL function or aggregate call such as `COUNT( DISTINCT field )`.
+Sql_Call_Expr :: struct {
+	using node:    Expr,
+	kind:          Sql_Call_Kind,
+	modifier:      Sql_Call_Modifier,
+	name:          string,
+	name_range:    tokenizer.Range,
+	modifier_range: tokenizer.Range,
+	args:          [dynamic]^Expr,
+}
+
 Constructor_Kind :: enum {
 	New,
 	Value,
@@ -2200,6 +2239,7 @@ Test_Injection_Stmt :: struct {
 Select_Projection_Clause :: struct {
 	value: ^Expr,
 	alias: string,
+	is_dynamic: bool,
 	range: tokenizer.Range,
 }
 
@@ -2671,6 +2711,9 @@ Any_Node :: union {
 	^Call_Arg_Section_Expr,
 	^Call_Named_Arg_Expr,
 	^Call_Positional_Arg_Expr,
+	^Sql_Column_Expr,
+	^Sql_Star_Expr,
+	^Sql_Call_Expr,
 	^Constructor_Expr,
 	^Is_Predicate_Expr,
 	^Instance_Of_Predicate_Expr,
@@ -2830,6 +2873,9 @@ Any_Expr :: union {
 	^Call_Arg_Section_Expr,
 	^Call_Named_Arg_Expr,
 	^Call_Positional_Arg_Expr,
+	^Sql_Column_Expr,
+	^Sql_Star_Expr,
+	^Sql_Call_Expr,
 	^Constructor_Expr,
 	^Is_Predicate_Expr,
 	^Instance_Of_Predicate_Expr,

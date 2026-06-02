@@ -8805,6 +8805,56 @@ lv_carrid = ls_scarr-carrid.
 }
 
 @(test)
+inline_open_sql_scalar_target_infers_aggregate_alias_fields :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///sql_inline_aggregate_row.abap",
+		source = `
+TYPES: BEGIN OF ty_obj_ids,
+         objid TYPE string,
+       END OF ty_obj_ids.
+DATA ls_obj_ids TYPE ty_obj_ids.
+SELECT COUNT( DISTINCT rel~evtid ) AS total_events,
+       COUNT( DISTINCT evt~evtid ) AS active_events
+  FROM zrel AS rel
+  LEFT OUTER JOIN zevt AS evt ON rel~evtid = evt~evtid
+  WHERE rel~objid = @ls_obj_ids-objid
+  INTO @DATA(ls_event_summary).
+IF ls_event_summary-total_events > 0 AND
+   ls_event_summary-total_events > ls_event_summary-active_events.
+ENDIF.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{uri = "abapls-cache:/ddic-table/zrel.abap", source = `
+TYPES: BEGIN OF zrel,
+         evtid TYPE string,
+         objid TYPE string,
+       END OF zrel.
+`},
+		{uri = "abapls-cache:/ddic-table/zevt.abap", source = `
+TYPES: BEGIN OF zevt,
+         evtid TYPE string,
+       END OF zevt.
+`},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	unit := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, unit != nil)
+	if unit == nil {
+		return
+	}
+	testing.expect(t, !has_diagnostic(unit, .Unknown_Field))
+	result := analyze.find_symbol(unit, "ls_event_summary", .Variable)
+	testing.expect(t, result != nil && result.structure != analyze.INVALID_STRUCTURE_ID)
+	if result != nil && result.structure != analyze.INVALID_STRUCTURE_ID {
+		st := analyze.structure(unit, result.structure)
+		fields := [?]string{"total_events", "active_events"}
+		testing.expect(t, field_names_match(st, fields[:]))
+	}
+}
+
+@(test)
 inline_open_sql_star_table_target_uses_source_structure :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "mem://sql_inline_star_table.abap",
@@ -8981,7 +9031,9 @@ collects_join_alias_qualified_star_aggregate_and_set_operator_facts :: proc(t: ^
 		t,
 		"file:///sql_join_set.abap",
 		`
-SELECT a~carrid AS carrier, COUNT( * ) AS total
+SELECT a~carrid AS carrier,
+       COUNT( DISTINCT b~connid ) AS total,
+       COUNT( ALL b~connid ) AS all_total
   FROM scarr AS a
   INNER JOIN spfli AS b ON b~carrid = a~carrid
   INTO TABLE @DATA(lt_rows)
@@ -8995,9 +9047,13 @@ UNION ALL SELECT * FROM spfli INTO TABLE @lt_rows.
 	testing.expect(t, sql_source_alias_present(&unit, "spfli", "b", .Join))
 	testing.expect(t, sql_projection_alias_present(&unit, "carrier", .Column))
 	testing.expect(t, sql_projection_alias_present(&unit, "total", .Aggregate))
+	testing.expect(t, sql_projection_alias_present(&unit, "all_total", .Aggregate))
 	testing.expect(t, sql_name_ref_present(&unit, "count", .Aggregate))
 	testing.expect(t, sql_qualified_ref_present(&unit, "a", "carrid", .Qualified_Column))
+	testing.expect(t, sql_qualified_ref_present(&unit, "b", "connid", .Qualified_Column))
 	testing.expect(t, sql_name_ref_present(&unit, "*", .Star))
+	testing.expect(t, !sql_name_ref_present(&unit, "distinct", .Column))
+	testing.expect(t, !sql_name_ref_present(&unit, "all", .Column))
 	testing.expect(t, sql_predicate_present(&unit, .Join_On))
 }
 
