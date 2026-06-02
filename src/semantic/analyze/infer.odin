@@ -6,11 +6,15 @@ import "src:tokenizer"
 
 import "core:mem"
 import "core:slice"
+import "core:strings"
 
 Inferred_Symbol_Type_Update :: struct {
 	symbol:             Symbol_Id,
 	type_fact:          Type_Fact_Data,
 	overwrite_existing: bool,
+	sql_star_query_id:  int,
+	sql_star_name:      string,
+	is_sql_star:        bool,
 }
 
 Inferred_Assignment_Update :: struct {
@@ -161,6 +165,28 @@ infer_unit_semantic_facts :: proc(
 		context.temp_allocator,
 	)
 
+	for target in unit.sql_targets {
+		if !(.Is_Table in target.flags && .Is_Inline in target.flags) {
+			continue
+		}
+		symbol_id, symbol_ok := inline_symbol_at_range_indexed(&inline_symbols, target.target_range)
+		s := symbol(unit, symbol_id) if symbol_ok else nil
+		if s == nil || s.structure != INVALID_STRUCTURE_ID {
+			continue
+		}
+		if open_sql_star_table_target(unit, target.query_id) {
+			append(
+				&out.symbol_updates,
+				Inferred_Symbol_Type_Update {
+					symbol            = symbol_id,
+					sql_star_query_id = target.query_id,
+					sql_star_name     = target.target_name,
+					is_sql_star       = true,
+				},
+			)
+		}
+	}
+
 	for assignment, i in unit.assignment_sites {
 		lhs := assignment.lhs
 		rhs := assignment.rhs
@@ -210,6 +236,20 @@ infer_unit_semantic_facts :: proc(
 	}
 
 	return out
+}
+
+open_sql_star_table_target :: proc(unit: ^Unit_Analysis, query_id: int) -> bool {
+	count := 0
+	for projection in unit.sql_projections {
+		if projection.query_id != query_id {
+			continue
+		}
+		if !(projection.kind == .Star || projection.kind == .Qualified_Star) {
+			return false
+		}
+		count += 1
+	}
+	return count > 0
 }
 
 field_access_fact_is_high_confidence :: proc(
@@ -301,6 +341,7 @@ class_handle_for_field_access_base :: proc(
 
 apply_inferred_project_facts :: proc(
 	project: ^Project_Analysis,
+	lookup: ^Project_Index,
 	inferred: []Inferred_Unit_Facts,
 ) -> bool {
 	rerun := false
@@ -315,7 +356,7 @@ apply_inferred_project_facts :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				update_structure := type_fact_structure_for_unit(project, unit, update.type_fact)
+				update_structure := symbol_update_structure_for_unit(project, lookup, unit_index, unit, update)
 				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
@@ -346,6 +387,7 @@ apply_inferred_project_facts :: proc(
 
 apply_inferred_project_facts_for_indices :: proc(
 	project: ^Project_Analysis,
+	lookup: ^Project_Index,
 	inferred: []Inferred_Unit_Facts,
 	indices: []int,
 ) -> bool {
@@ -362,7 +404,7 @@ apply_inferred_project_facts_for_indices :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				update_structure := type_fact_structure_for_unit(project, unit, update.type_fact)
+				update_structure := symbol_update_structure_for_unit(project, lookup, unit_index, unit, update)
 				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
@@ -431,6 +473,145 @@ type_fact_local_structure :: proc(fact: Type_Fact_Data, unit_id: Unit_Id) -> Str
 		return fact.structure
 	}
 	return INVALID_STRUCTURE_ID
+}
+
+symbol_update_structure_for_unit :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	unit: ^Unit_Analysis,
+	update: Inferred_Symbol_Type_Update,
+) -> Structure_Id {
+	if update.is_sql_star {
+		return open_sql_star_table_target_structure_for_unit(
+			project,
+			lookup,
+			unit_index,
+			unit,
+			update.sql_star_query_id,
+			update.sql_star_name,
+		)
+	}
+	return type_fact_structure_for_unit(project, unit, update.type_fact)
+}
+
+open_sql_star_table_target_structure_for_unit :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	unit: ^Unit_Analysis,
+	query_id: int,
+	target_name: string,
+) -> Structure_Id {
+	source_count, single, ok := open_sql_star_source_count(project, lookup, unit_index, query_id)
+	if !ok {
+		return INVALID_STRUCTURE_ID
+	}
+	if source_count == 1 {
+		return type_fact_structure_for_unit(project, unit, single)
+	}
+	name := open_sql_star_structure_name(target_name)
+	if st := find_structure(unit, name); st != nil {
+		return st.id
+	}
+	fields := make([dynamic]Structure_Field_Data, 0, 8, context.allocator)
+	for projection in unit.sql_projections {
+		if projection.query_id != query_id {
+			continue
+		}
+		for source in unit.sql_sources {
+			if !sql_star_projection_selects_source(projection, source) {
+				continue
+			}
+			fact, fact_ok := sql_source_structure_fact(project, lookup, unit_index, source)
+			assert(fact_ok)
+			source_unit_index := unit_id_index(fact.structure_unit)
+			source_structure := structure(&project.units[source_unit_index], fact.structure)
+			assert(source_structure != nil)
+			for field in source_structure.fields {
+				append(&fields, field)
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return INVALID_STRUCTURE_ID
+	}
+	return push_structure(unit, name, fields)
+}
+
+open_sql_star_source_count :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	query_id: int,
+) -> (int, Type_Fact_Data, bool) {
+	unit := &project.units[unit_index]
+	count := 0
+	single := Type_Fact_Data{}
+	for projection in unit.sql_projections {
+		if projection.query_id != query_id {
+			continue
+		}
+		for source in unit.sql_sources {
+			if !sql_star_projection_selects_source(projection, source) {
+				continue
+			}
+			fact, ok := sql_source_structure_fact(project, lookup, unit_index, source)
+			if !ok {
+				return 0, {}, false
+			}
+			count += 1
+			single = fact
+		}
+	}
+	return count, single, count > 0
+}
+
+sql_star_projection_selects_source :: proc(projection: Sql_Projection_Data, source: Sql_Source_Data) -> bool {
+	if source.query_id != projection.query_id {
+		return false
+	}
+	if projection.kind == .Star {
+		return true
+	}
+	return projection.kind == .Qualified_Star &&
+	       (source.alias == projection.source_alias || source.name == projection.source_alias)
+}
+
+sql_source_structure_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	source: Sql_Source_Data,
+) -> (Type_Fact_Data, bool) {
+	if source.resolution != .External {
+		return {}, false
+	}
+	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, source.name)
+	if !ok {
+		return {}, false
+	}
+	source_unit_index := unit_id_index(handle.unit)
+	if source_unit_index < 0 || source_unit_index >= len(project.units) {
+		return {}, false
+	}
+	source_symbol := symbol(&project.units[source_unit_index], handle.symbol)
+	if source_symbol == nil || source_symbol.structure == INVALID_STRUCTURE_ID {
+		return {}, false
+	}
+	return Type_Fact_Data {
+		structure = source_symbol.structure,
+		structure_unit = handle.unit,
+		confidence = .High if project.units[source_unit_index].source_mode == .Full else .Low,
+	}, true
+}
+
+open_sql_star_structure_name :: proc(target_name: string) -> string {
+	out := strings.builder_make(context.allocator)
+	strings.write_string(&out, "<open_sql_star:")
+	strings.write_string(&out, target_name)
+	strings.write_byte(&out, '>')
+	return strings.to_string(out)
 }
 
 type_fact_structure_for_unit :: proc(

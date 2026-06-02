@@ -8769,6 +8769,109 @@ lv_carrid = ls_scarr-carrid.
 }
 
 @(test)
+inline_open_sql_star_table_target_uses_source_structure :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://sql_inline_star_table.abap",
+		source = `REPORT z_sql_inline_star_table.
+SELECT * FROM zrows INTO TABLE @DATA(lt_rows).
+READ TABLE lt_rows INTO DATA(ls_row) INDEX 1.
+DATA lv_text TYPE string.
+lv_text = ls_row-text.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zrows.abap",
+			source = `TYPES: BEGIN OF zrows,
+         id TYPE i,
+         text TYPE string,
+       END OF zrows.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !has_diagnostic(root, .Invalid_Generic_Table_Type))
+		testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+
+		rows := analyze.find_symbol(root, "lt_rows", .Variable)
+		testing.expect(t, rows != nil && rows.structure != analyze.INVALID_STRUCTURE_ID)
+		if rows != nil && rows.structure != analyze.INVALID_STRUCTURE_ID {
+			st := analyze.structure(root, rows.structure)
+			fields := [?]string{"id", "text"}
+			testing.expect(t, field_names_match(st, fields[:]))
+		}
+	}
+}
+
+@(test)
+inline_open_sql_join_star_table_target_combines_source_structures :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://sql_inline_join_star_table.abap",
+		source = `REPORT z_sql_inline_join_star_table.
+SELECT *
+  FROM zhead AS h
+  INNER JOIN zitem AS i ON i~head_id = h~id
+  INTO TABLE @DATA(lt_rows).
+READ TABLE lt_rows INTO DATA(ls_row) INDEX 1.
+DATA lv_text TYPE string.
+DATA lv_qty TYPE i.
+lv_text = ls_row-text.
+lv_qty = ls_row-qty.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zhead.abap",
+			source = `TYPES: BEGIN OF zhead,
+         id TYPE i,
+         text TYPE string,
+       END OF zhead.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table/zitem.abap",
+			source = `TYPES: BEGIN OF zitem,
+         head_id TYPE i,
+         qty TYPE i,
+       END OF zitem.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect(t, !has_diagnostic(root, .Invalid_Generic_Table_Type))
+		testing.expect(t, !has_diagnostic(root, .Unknown_Field))
+
+		rows := analyze.find_symbol(root, "lt_rows", .Variable)
+		testing.expect(t, rows != nil && rows.structure != analyze.INVALID_STRUCTURE_ID)
+		if rows != nil && rows.structure != analyze.INVALID_STRUCTURE_ID {
+			st := analyze.structure(root, rows.structure)
+			fields := [?]string{"id", "text", "head_id", "qty"}
+			testing.expect(t, field_names_match(st, fields[:]))
+		}
+	}
+}
+
+@(test)
+inline_open_sql_table_target_with_unresolved_source_is_not_generic :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///sql_inline_unknown_table.abap",
+		`TYPES string_table TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+SELECT * FROM zmissing INTO TABLE @DATA(lt_rows).
+DATA(lt_out) = VALUE string_table( FOR ls_row IN lt_rows ( '' ) ).`,
+	)
+
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Open_Sql_Source))
+	testing.expect(t, !has_diagnostic(&unit, .Invalid_Generic_Table_Type))
+}
+
+@(test)
 collects_dynamic_open_sql_fragments :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

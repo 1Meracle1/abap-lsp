@@ -1905,7 +1905,7 @@ infer_project_semantic_facts :: proc(
 			allocator       = allocator,
 		}
 		run_infer_tasks(&graph, &state)
-		changed := apply_inferred_project_facts(project, inferred)
+		changed := apply_inferred_project_facts(project, lookup, inferred)
 		temp_arena_end(temp_arena)
 		if !changed {
 			break
@@ -1941,7 +1941,7 @@ infer_project_semantic_facts_for_units :: proc(
 			allocator       = allocator,
 		}
 		run_infer_tasks_for_indices(&graph, &state, indices[:])
-		changed := apply_inferred_project_facts_for_indices(project, inferred, indices[:])
+		changed := apply_inferred_project_facts_for_indices(project, lookup, inferred, indices[:])
 		temp_arena_end(temp_arena)
 		if !changed {
 			break

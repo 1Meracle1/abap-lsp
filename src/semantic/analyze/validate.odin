@@ -717,6 +717,9 @@ validate_generic_table_types :: proc(
 ) {
 	unit := &project.units[unit_index]
 	for s in unit.symbols {
+		if inline_sql_table_target_symbol(unit, s) {
+			continue
+		}
 		if generic_table_category_type(s) {
 			if s.kind == .Parameter ||
 			   s.kind == .Field_Symbol ||
@@ -727,7 +730,8 @@ validate_generic_table_types :: proc(
 			if !s.has_declared_type ||
 			   s.kind == .Parameter ||
 			   s.kind == .Field_Symbol ||
-			   s.kind == .Type_Def {
+			   s.kind == .Type_Def ||
+			   (s.has_type_clause_form && type_form_is_line_of(s.type_clause_form)) {
 				continue
 			}
 			handle, ok := type_ref_leaf_handle(project, lookup, unit_index, s.scope, s.declared_type)
@@ -743,6 +747,18 @@ validate_generic_table_types :: proc(
 			diagnostic_message("generic table type only allowed for parameters and field symbols: ", s.name, allocator),
 		)
 	}
+}
+
+inline_sql_table_target_symbol :: proc(unit: ^Unit_Analysis, s: Symbol_Data) -> bool {
+	for target in unit.sql_targets {
+		if .Is_Table in target.flags &&
+		   .Is_Inline in target.flags &&
+		   target.target_name == s.name &&
+		   target.target_range == s.decl_range {
+			return true
+		}
+	}
+	return false
 }
 
 symbol_handle_is_generic_table_type :: proc(
