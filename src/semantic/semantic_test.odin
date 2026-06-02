@@ -4378,6 +4378,116 @@ DATA(lv_second) = REDUCE i( INIT x = 0 FOR i = 0 UNTIL i > 1 NEXT x = x + i ).`
 }
 
 @(test)
+constructor_let_binding_infers_optional_table_expr_row :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_event,
+         objid TYPE string,
+         status_rep_evt TYPE i,
+       END OF ty_event.
+TYPES ty_events TYPE STANDARD TABLE OF ty_event WITH EMPTY KEY.
+DATA lt_events TYPE ty_events.
+
+FORM run.
+  DATA(lv_text) = COND string(
+    LET ls_evt_obj = VALUE #( lt_events[ objid = '1' ] OPTIONAL )
+    IN WHEN ls_evt_obj-status_rep_evt = 1 THEN ls_evt_obj-objid ELSE '' ).
+ENDFORM.`
+	unit := collect_test_unit(t, "file:///constructor_let_optional_table_expr.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+constructor_let_binding_unknown_table_expr_row_shape_is_not_invalid :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS get RETURNING VALUE(rt_events) TYPE zmissing_tt.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA(lt_events) = get( ).
+    DATA(lv_text) = COND string(
+      LET ls_evt_obj = VALUE #( lt_events[ objid = '1' ] OPTIONAL )
+      IN WHEN ls_evt_obj-status_rep_evt = 1 THEN ls_evt_obj-objid ELSE '' ).
+  ENDMETHOD.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///constructor_let_unknown_table_expr.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+method_return_assignment_richer_than_declared_table_shape :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_declared,
+         objid TYPE string,
+       END OF ty_declared.
+TYPES tt_declared TYPE STANDARD TABLE OF ty_declared WITH EMPTY KEY.
+TYPES: BEGIN OF ty_actual,
+         objid TYPE string,
+         status_rep_evt TYPE i,
+       END OF ty_actual.
+TYPES tt_actual TYPE STANDARD TABLE OF ty_actual WITH EMPTY KEY.
+
+CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS get RETURNING VALUE(rt_events) TYPE tt_declared.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD get.
+    DATA lt_events TYPE tt_actual.
+    rt_events = lt_events.
+  ENDMETHOD.
+
+  METHOD run.
+    DATA(lt_events) = get( ).
+    DATA(lv_text) = COND string(
+      LET ls_evt_obj = VALUE #( lt_events[ objid = '1' ] OPTIONAL )
+      IN WHEN ls_evt_obj-status_rep_evt = 1 THEN ls_evt_obj-objid ELSE '' ).
+ENDMETHOD.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///method_return_assignment_richer_table.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+method_return_assignment_infers_unresolved_declared_table_shape :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS get RETURNING VALUE(rt_events) TYPE zmissing_tt.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD get.
+    TYPES: BEGIN OF lty_evt,
+             objid TYPE string,
+             status_rep_evt TYPE i,
+           END OF lty_evt.
+    DATA lt_events TYPE TABLE OF lty_evt.
+    IF lt_events IS NOT INITIAL.
+      rt_events = lt_events.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD run.
+    DATA(lt_events) = get( ).
+    DATA(lv_text) = COND string(
+      LET ls_evt_obj = VALUE #( lt_events[ objid = '1' ] OPTIONAL )
+      IN WHEN ls_evt_obj-status_rep_evt = 1 THEN ls_evt_obj-objid ELSE '' ).
+  ENDMETHOD.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///method_return_assignment_unresolved_table.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 collects_multiple_method_parameters_from_oop_ast :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.

@@ -66,13 +66,14 @@ inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 		expression_facts = make(
 			[dynamic]Expression_Fact_Data,
 			0,
-			len(unit.references) + len(unit.field_accesses) + len(unit.call_sites),
+			len(unit.references) + len(unit.field_accesses) + len(unit.table_exprs) + len(unit.call_sites),
 			allocator,
 		),
 		operands = make(
 			[dynamic]Operand_Data,
 			0,
-			len(unit.operands) + len(unit.references) + len(unit.field_accesses) + len(unit.call_sites) +
+			len(unit.operands) + len(unit.references) + len(unit.field_accesses) + len(unit.table_exprs) +
+				len(unit.call_sites) +
 				len(unit.assignment_sites) * 2,
 			allocator,
 		),
@@ -147,6 +148,16 @@ infer_unit_semantic_facts :: proc(
 			range := field_access_range(access)
 			push_expression_fact(&out.expression_facts, access.scope, range, .Selector, fact)
 			push_operand(&out.operands, access.scope, range, .Field, fact, assignable = true)
+		}
+	}
+
+	for site in unit.table_exprs {
+		if fact, ok := table_expr_source_fact(project, lookup, unit_index, site.table_access);
+		   ok {
+			if row, row_ok := typecheck_table_row_fact(project, fact); row_ok {
+				push_expression_fact(&out.expression_facts, site.scope, site.range, .Selector, row)
+				push_operand(&out.operands, site.scope, site.range, .Value, row)
+			}
 		}
 	}
 
@@ -244,7 +255,7 @@ infer_unit_semantic_facts :: proc(
 				Inferred_Symbol_Type_Update {
 					symbol = symbol_id,
 					type_fact = rhs,
-					overwrite_existing = false,
+					overwrite_existing = rhs.has_declared_type,
 				},
 			)
 		}
@@ -257,6 +268,20 @@ infer_unit_semantic_facts :: proc(
 	}
 
 	return out
+}
+
+table_expr_source_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> (Type_Fact_Data, bool) {
+	if len(access.field_path) == 0 {
+		if base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name); ok {
+			return type_fact_from_symbol_handle(project, unit_index, base), true
+		}
+	}
+	return type_fact_for_access(project, lookup, unit_index, access)
 }
 
 open_sql_star_table_target :: proc(unit: ^Unit_Analysis, query_id: int) -> bool {
@@ -868,6 +893,16 @@ call_result_type_fact :: proc(
 	if !member_ok || member_info == nil || member_info.member_kind != .Method {
 		return unknown_type_fact()
 	}
+	if fact, fact_ok := method_signature_result_type_fact(
+		project,
+		lookup,
+		member,
+		member_unit_index,
+		member_info,
+		.Low,
+	); fact_ok {
+		return fact
+	}
 	return type_fact_with_confidence(class_member_type_fact(project, member, member_unit_index), .Low)
 }
 
@@ -917,13 +952,199 @@ direct_call_result_type_fact :: proc(
 	if info == nil || info.member_kind != .Method || .Is_Redefinition in info.flags {
 		return unknown_type_fact(), false
 	}
-	for param in info.signature_parameters {
-		if param.section == .Method_Returning || param.section == .Method_Receiving {
-			fact := typecheck_parameter_fact(project, lookup, member_unit_index, info, param)
-			return type_fact_with_confidence(fact, .High), type_fact_is_known(fact)
+	return method_signature_result_type_fact(project, lookup, member, member_unit_index, info, .High)
+}
+
+method_signature_result_type_fact :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	member: Symbol_Handle,
+	member_unit_index: int,
+	info: ^Decl_Info_Data,
+	confidence: Type_Fact_Confidence,
+) -> (Type_Fact_Data, bool) {
+	signature := member
+	signature_unit_index := member_unit_index
+	signature_info := info
+	if info.effective_signature.unit != INVALID_UNIT_ID &&
+	   info.effective_signature.symbol != INVALID_SYMBOL_ID {
+		unit_index := unit_id_index(info.effective_signature.unit)
+		if unit_index >= 0 && unit_index < len(project.units) {
+			if effective := entity_decl_info(&project.units[unit_index], info.effective_signature.symbol);
+			   effective != nil {
+				signature = info.effective_signature
+				signature_unit_index = unit_index
+				signature_info = effective
+			}
 		}
 	}
+	for param in signature_info.signature_parameters {
+		if param.section != .Method_Returning && param.section != .Method_Receiving {
+			continue
+		}
+		fact := typecheck_parameter_fact(project, lookup, signature_unit_index, signature_info, param)
+		impl_scope, impl_unit_index, has_impl := method_implementation_scope(
+			project,
+			signature,
+			signature_unit_index,
+			signature_info,
+		)
+		if inferred, inferred_ok := method_return_assignment_type_fact(
+			project,
+			impl_unit_index if has_impl else signature_unit_index,
+			impl_scope if has_impl else signature_info.body_scope,
+			param,
+		); inferred_ok &&
+		   (!type_fact_has_resolved_shape(project, fact) ||
+		    type_fact_has_richer_structure(project, inferred, fact)) {
+			return type_fact_with_confidence(inferred, .Low), true
+		}
+		return type_fact_with_confidence(fact, confidence), type_fact_is_known(fact)
+	}
 	return unknown_type_fact(), false
+}
+
+method_implementation_scope :: proc(
+	project: ^Project_Analysis,
+	signature: Symbol_Handle,
+	signature_unit_index: int,
+	signature_info: ^Decl_Info_Data,
+) -> (Scope_Id, int, bool) {
+	if signature_info.body_scope != INVALID_SCOPE_ID {
+		return signature_info.body_scope, signature_unit_index, true
+	}
+	if signature_info.implementation_unit != INVALID_UNIT_ID {
+		unit_index := unit_id_index(signature_info.implementation_unit)
+		if scope, ok := method_implementation_scope_in_unit(
+			project,
+			unit_index,
+			signature,
+			signature_info.implementation_range,
+		); ok {
+			return scope, unit_index, true
+		}
+	}
+	if scope, ok := method_implementation_scope_in_unit(
+		project,
+		signature_unit_index,
+		signature,
+		signature_info.implementation_range,
+	); ok {
+		return scope, signature_unit_index, true
+	}
+	return INVALID_SCOPE_ID, -1, false
+}
+
+method_implementation_scope_in_unit :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	signature: Symbol_Handle,
+	implementation_range: tokenizer.Range,
+) -> (Scope_Id, bool) {
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return INVALID_SCOPE_ID, false
+	}
+	unit := &project.units[unit_index]
+	for &info in unit.decl_infos {
+		if info.body_scope != INVALID_SCOPE_ID &&
+		   info.kind == .Method &&
+		   (info.effective_signature == signature ||
+		    (range_valid(implementation_range) &&
+		     info.decl_range == implementation_range)) {
+			return info.body_scope, true
+		}
+	}
+	return INVALID_SCOPE_ID, false
+}
+
+type_fact_has_resolved_shape :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> bool {
+	if fact.structure != INVALID_STRUCTURE_ID {
+		return true
+	}
+	if t := typecheck_type_data(project, fact); t != nil {
+		if t.kind == .Table {
+			row, ok := typecheck_table_row_fact(project, fact)
+			return ok && type_fact_has_resolved_shape(project, row)
+		}
+		return t.kind != .Unknown
+	}
+	return false
+}
+
+type_fact_has_richer_structure :: proc(project: ^Project_Analysis, a, b: Type_Fact_Data) -> bool {
+	a_count, a_ok := type_fact_structure_field_count(project, a)
+	b_count, b_ok := type_fact_structure_field_count(project, b)
+	return a_ok && (!b_ok || a_count > b_count)
+}
+
+type_fact_structure_field_count :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> (int, bool) {
+	structure_unit := fact.structure_unit
+	structure_id := fact.structure
+	if structure_id == INVALID_STRUCTURE_ID {
+		if row, ok := typecheck_table_row_fact(project, fact); ok {
+			structure_unit = row.structure_unit
+			structure_id = row.structure
+		}
+	}
+	unit_index := unit_id_index(structure_unit)
+	if structure_id == INVALID_STRUCTURE_ID || unit_index < 0 || unit_index >= len(project.units) {
+		return 0, false
+	}
+	st := structure(&project.units[unit_index], structure_id)
+	if st == nil {
+		return 0, false
+	}
+	return len(st.fields), true
+}
+
+method_return_assignment_type_fact :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	body_scope: Scope_Id,
+	param: Decl_Signature_Parameter_Data,
+) -> (Type_Fact_Data, bool) {
+	if param.name == "" ||
+	   body_scope == INVALID_SCOPE_ID ||
+	   unit_index < 0 ||
+	   unit_index >= len(project.units) {
+		return {}, false
+	}
+	unit := &project.units[unit_index]
+	out := Type_Fact_Data{}
+	found := false
+	for site in unit.assignment_sites {
+		if !(.Has_Lhs_Target_Access in site.flags) ||
+		   len(site.lhs_target_access.field_path) > 0 ||
+		   site.lhs_target_access.base_name != param.name ||
+		   !scope_is_or_child(unit, site.scope, body_scope) ||
+		   !type_fact_has_resolved_shape(project, site.rhs) {
+			continue
+		}
+		if found &&
+		   (out.type_id != site.rhs.type_id ||
+		    out.type_unit != site.rhs.type_unit ||
+		    out.structure != site.rhs.structure ||
+		    out.structure_unit != site.rhs.structure_unit) {
+			return {}, false
+		}
+		out = site.rhs
+		found = true
+	}
+	return out, found
+}
+
+scope_is_or_child :: proc(unit: ^Unit_Analysis, scope_id, parent: Scope_Id) -> bool {
+	for current := scope_id; current != INVALID_SCOPE_ID; {
+		if current == parent {
+			return true
+		}
+		s := scope(unit, current)
+		if s == nil {
+			break
+		}
+		current = s.parent
+	}
+	return false
 }
 
 inline_symbol_at_range_indexed :: proc(

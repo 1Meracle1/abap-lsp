@@ -29,6 +29,7 @@ unit_analysis_make :: proc(
 	unit.table_work_areas = make([dynamic]Table_Work_Area_Data, 0, 0, allocator)
 	unit.selection_screen_report_type_positions = make([dynamic]tokenizer.Range, 0, 0, allocator)
 	unit.field_accesses = make([dynamic]Field_Access, 0, 0, allocator)
+	unit.table_exprs = make([dynamic]Table_Expr_Data, 0, 0, allocator)
 	unit.loop_where_field_contexts = make([dynamic]Loop_Where_Field_Context, 0, 0, allocator)
 	unit.loop_at_field_contexts = make([dynamic]Loop_At_Field_Context, 0, 0, allocator)
 	unit.constructor_for_bindings = make([dynamic]Constructor_For_Binding_Data, 0, 0, allocator)

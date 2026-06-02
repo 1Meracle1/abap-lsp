@@ -599,6 +599,12 @@ Field_Access :: struct {
 	where_candidate_name: string,
 }
 
+Table_Expr_Data :: struct {
+	scope:        Scope_Id,
+	range:        tokenizer.Range,
+	table_access: Field_Access,
+}
+
 Loop_Where_Field_Context :: struct {
 	scope:         Scope_Id,
 	range:         tokenizer.Range,
@@ -908,6 +914,7 @@ Unit_Analysis :: struct {
 	table_work_areas:                       [dynamic]Table_Work_Area_Data,
 	selection_screen_report_type_positions: [dynamic]tokenizer.Range,
 	field_accesses:                         [dynamic]Field_Access,
+	table_exprs:                            [dynamic]Table_Expr_Data,
 	loop_where_field_contexts:              [dynamic]Loop_Where_Field_Context,
 	loop_at_field_contexts:                 [dynamic]Loop_At_Field_Context,
 	constructor_for_bindings:               [dynamic]Constructor_For_Binding_Data,

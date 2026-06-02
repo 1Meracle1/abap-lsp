@@ -117,16 +117,14 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Let_Expr:
 		for binding in n.bindings {
 			if b, ok := binding.derived_expr.(^ast.Constructor_Let_Binding_Expr); ok {
-				declare_name_if_present(c, scope, b.name, .Variable, b.range)
-				collect_expr_refs(c, b.value, scope)
+				collect_constructor_let_binding_refs(c, b, scope)
 			} else {
 				collect_expr_refs(c, binding, scope)
 			}
 		}
 		collect_expr_list_refs(c, n.body[:], scope)
 	case ^ast.Constructor_Let_Binding_Expr:
-		declare_name_if_present(c, scope, n.name, .Variable, n.range)
-		collect_expr_refs(c, n.value, scope)
+		collect_constructor_let_binding_refs(c, n, scope)
 	case ^ast.Constructor_When_Clause_Expr:
 		collect_expr_refs(c, n.condition, scope)
 		collect_expr_refs(c, n.result, scope)
@@ -203,6 +201,44 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 			collect_expr_refs(c, n.value, scope)
 		}
 	}
+}
+
+collect_constructor_let_binding_refs :: proc(
+	c: ^Collector,
+	expr: ^ast.Constructor_Let_Binding_Expr,
+	scope: Scope_Id,
+) {
+	name_range := tokenizer.text_range(expr.range.start, expr.range.start + len(expr.name))
+	declare_name_if_present(c, scope, expr.name, .Variable, name_range)
+	collect_expr_refs(c, expr.value, scope)
+	if expr.value != nil {
+		rhs, assigns_table_line := constructor_let_binding_inferred_value(expr.value)
+		add_assignment_site(
+			c,
+			scope,
+			expr.range,
+			name_range,
+			rhs.range,
+			Field_Access{},
+			assigns_table_line,
+			unknown_type_fact(),
+			type_fact_from_expr(c, rhs, scope),
+		)
+	}
+}
+
+constructor_let_binding_inferred_value :: proc(expr: ^ast.Expr) -> (^ast.Expr, bool) {
+	if con, ok := expr.derived_expr.(^ast.Constructor_Expr);
+	   ok && con.kind == .Value && len(con.args) == 1 {
+		arg := con.args[0]
+		if opt, opt_ok := arg.derived_expr.(^ast.Constructor_Optional_Expr); opt_ok {
+			arg = opt.value
+		}
+		if table, table_ok := arg.derived_expr.(^ast.Table_Expr); table_ok && table.table != nil {
+			return table.table, true
+		}
+	}
+	return expr, false
 }
 
 collect_type_expr_ref :: proc(
@@ -360,6 +396,9 @@ type_ref_from_access :: proc(c: ^Collector, access: Field_Access) -> Field_Type_
 }
 
 collect_table_expr_refs :: proc(c: ^Collector, expr: ^ast.Table_Expr, scope: Scope_Id) {
+	if table_access, ok := value_access_from_expr(c, expr.table, scope); ok {
+		append(&c.unit.table_exprs, Table_Expr_Data{scope = scope, range = expr.range, table_access = table_access})
+	}
 	collect_expr_refs(c, expr.table, scope)
 	for selector in expr.selectors {
 		if collect_table_expr_key_refs(c, expr.table, selector, scope) {
