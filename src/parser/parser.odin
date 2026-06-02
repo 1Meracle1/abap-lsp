@@ -707,6 +707,7 @@ line_continuation_starts :: proc(p: ^Parser, index: int) -> bool {
 		return true
 	}
 	return(
+		field_symbol_inline_name_starts(p, index) ||
 		keyword_phrase_at(p, index, "WITH") ||
 		keyword_phrase_at(p, index, "OF") ||
 		keyword_phrase_at(p, index, "IN") ||
@@ -732,6 +733,16 @@ line_continuation_starts :: proc(p: ^Parser, index: int) -> bool {
 		keyword_phrase_at(p, index, "CHANGING") ||
 		keyword_phrase_at(p, index, "TABLES") ||
 		keyword_phrase_at(p, index, "EXCEPTIONS") \
+	)
+}
+
+field_symbol_inline_name_starts :: proc(p: ^Parser, index: int) -> bool {
+	return(
+		at_keyword_index(p, index, "FIELD") &&
+		index + 3 < len(p.tokens) &&
+		p.tokens[index + 1].kind == .Minus &&
+		at_keyword_index(p, index + 2, "SYMBOL") &&
+		p.tokens[index + 3].kind == .LParen \
 	)
 }
 

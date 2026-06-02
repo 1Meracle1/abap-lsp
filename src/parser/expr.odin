@@ -377,9 +377,7 @@ parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		if at_keyword(p, "DATA") && next_token_kind(p, 1) == .LParen {
 			return parse_data_inline_name_expr(p)
 		}
-		if at_keyword(p, "FIELD") &&
-		   next_token_kind(p, 1) == .Minus &&
-		   at_keyword_index(p, p.index + 2, "SYMBOL") {
+		if field_symbol_inline_name_starts(p, p.index) {
 			return parse_field_symbol_inline_name_expr(p)
 		}
 		if constructor_expr_starts(p, tok) {

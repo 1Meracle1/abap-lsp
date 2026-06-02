@@ -249,6 +249,19 @@ append_initial_line_keeps_append_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+append_initial_line_allows_split_inline_assigning :: proc(t: ^testing.T) {
+	source := `APPEND INITIAL LINE TO lt_stab ASSIGNING
+FIELD-SYMBOL(<ls_stab>).`
+	parsed := parse(source, "append_initial_line_inline_assigning.abap", context.allocator)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Append_Stmt)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect(t, stmt.initial_line)
+	testing.expect(t, stmt.assigning != nil)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), `APPEND INITIAL LINE TO lt_stab ASSIGNING FIELD-SYMBOL(<ls_stab>).`)
+}
+
+@(test)
 insert_initial_line_keeps_insert_shape :: proc(t: ^testing.T) {
 	source := `INSERT INITIAL LINE INTO TABLE lt_stab ASSIGNING <ls_stab> INDEX 1.`
 	parsed := parse(source, "insert_initial_line.abap", context.allocator)
