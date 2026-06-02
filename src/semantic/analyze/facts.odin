@@ -2237,7 +2237,7 @@ walk_catch_clause_facts :: proc(
 			}
 			_ = declare_collected_symbol(
 				c,
-				catch_scope,
+				local_decl_scope(c, catch_scope),
 				inline_name_expr.name,
 				.Variable,
 				inline_name_expr.range,
