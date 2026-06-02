@@ -529,6 +529,8 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 		walk(next, n.to)
 		walk(next, n.where_cond)
 		walk(next, n.using_key.dynamic_name)
+		walk(next, n.group_by)
+		walk(next, n.group_target)
 		walk_stmt_list(next, n.body)
 	case ^At_Stmt:
 		walk(next, n.expr)

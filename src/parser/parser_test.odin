@@ -438,9 +438,17 @@ top_level_loop_makes_progress_on_unexpected_tokens :: proc(t: ^testing.T) {
 	parsed := parse("@ @ .", "test.abap", context.allocator)
 	counts := count_nodes(parsed.root)
 
-	testing.expect_value(t, len(parsed.root.stmts), 3)
-	testing.expect_value(t, counts.invalid_stmt, 3)
+	testing.expect_value(t, len(parsed.root.stmts), 2)
+	testing.expect_value(t, counts.invalid_stmt, 2)
 	testing.expect(t, len(parsed.errors) > 0)
+}
+
+@(test)
+empty_statements_are_ignored :: proc(t: ^testing.T) {
+	parsed := parse(".\nDATA lv TYPE i..\n.", "empty_statements.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 1)
 }
 
 @(test)

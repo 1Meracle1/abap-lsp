@@ -29,6 +29,31 @@ DATA lv2.`
 }
 
 @(test)
+star_comment_requires_column_one :: proc(t: ^testing.T) {
+	source := "* full\n  * multiply"
+	result := tokenize(source, context.allocator)
+	defer delete(result.tokens, context.allocator)
+	defer delete(result.trivia, context.allocator)
+	defer delete(result.errors, context.allocator)
+
+	comment_count := 0
+	star_tokens := 0
+	for piece in result.trivia {
+		if piece.kind == .Comment {
+			comment_count += 1
+		}
+	}
+	for token in result.tokens {
+		if token.kind == .Star {
+			star_tokens += 1
+		}
+	}
+
+	testing.expect_value(t, comment_count, 1)
+	testing.expect_value(t, star_tokens, 1)
+}
+
+@(test)
 pragma_arguments_are_trivia_not_tokens :: proc(t: ^testing.T) {
 	source := `LOOP AT lt WHERE field = lv ##PRIMKEY[FILE_PATH].`
 	result := tokenize(source, context.allocator)

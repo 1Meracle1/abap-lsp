@@ -641,6 +641,18 @@ INSERT TEXTPOOL prog FROM pool LANGUAGE lang.`
 }
 
 @(test)
+read_table_allows_inline_target_on_next_line :: proc(t: ^testing.T) {
+	source := `READ TABLE lt_ctg_reprocess INTO
+  DATA(ls_ctg_reprocess) WITH KEY msgguid = <fs_idx_tbl>-msgguid.`
+	parsed := parse(source, "read_table_split_inline.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Read_Table_Stmt)
+	testing.expect(t, stmt.entries[0].into != nil)
+	testing.expect_value(t, len(stmt.entries[0].key_values), 1)
+}
+
+@(test)
 islands_generated_source_and_line_statements_keep_nodes :: proc(t: ^testing.T) {
 	source := `EXEC SQL.
   SELECT * FROM mara
@@ -714,6 +726,101 @@ open_sql_projection_source_and_set_fields :: proc(t: ^testing.T) {
 	testing.expect(t, stmt.query.set_ops[0].all)
 	printed := ast.print_node(parsed.root, context.allocator)
 	testing.expect_value(t, printed, "SELECT a~matnr AS material, b~maktx AS text FROM mara AS a INNER JOIN makt AS b ON b~matnr = a~matnr INTO TABLE @lt_rows UNION ALL SELECT matnr FROM zmara INTO TABLE @lt_rows.")
+}
+
+@(test)
+open_sql_from_fields_clause_builds_projections :: proc(t: ^testing.T) {
+	source := `SELECT
+  FROM /sttp/rep_obj_rl AS a
+  INNER JOIN /sttp/rep_evt AS b ON a~rep_evtid = b~rep_evtid
+  FIELDS a~objid AS objid
+  FOR ALL ENTRIES IN @lt_child_obj
+  WHERE a~objid = @lt_child_obj-objid
+  INTO TABLE @DATA(lt_rep_rel_obj).`
+	parsed := parse(source, "sql_from_fields.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(stmt.query.projection_clauses), 1)
+	testing.expect_value(t, stmt.query.projection_clauses[0].alias, "objid")
+	testing.expect_value(t, len(stmt.query.source_clause.joins), 1)
+	testing.expect(t, stmt.query.for_all_entries != nil)
+}
+
+@(test)
+open_sql_case_projection_parses_as_field :: proc(t: ^testing.T) {
+	source := `SELECT rep_evtid,
+       ext_ref_id,
+       CASE
+         WHEN ext_ref_id = 'PRIORITY1' THEN 'X'
+         WHEN ext_ref_id = 'EXCLUDED' THEN 'X'
+         ELSE ' '
+       END AS priority,
+       creation_time
+  FROM /sttp/rep_evt
+  INTO TABLE @DATA(lt_rep_evt)
+  WHERE status_rep_evt = @lc_sts_rep.`
+	parsed := parse(source, "sql_case_projection.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(stmt.query.projection_clauses), 4)
+	testing.expect_value(t, stmt.query.projection_clauses[2].alias, "priority")
+}
+
+@(test)
+open_sql_aggregate_scalar_selects_do_not_wait_for_endselect :: proc(t: ^testing.T) {
+	source := `SELECT COUNT(*)
+  FROM zerr AS e
+  INNER JOIN /sttp/dm_obj_itm AS i ON i~serno = e~serno
+  INTO lv_failed_cnt
+  WHERE i~objid = iv_parent
+    AND ( e~error_30 = abap_true OR e~error_31 = abap_true ).
+SELECT COUNT( DISTINCT rel~evtid ) AS total_events,
+       COUNT( DISTINCT evt~evtid ) AS active_events
+  FROM /sttp/dm_evt_rel AS rel
+  LEFT OUTER JOIN /sttp/dm_evt AS evt ON rel~evtid = evt~evtid
+  WHERE rel~objid = @ls_obj_ids-objid
+  INTO @DATA(ls_event_summary).
+SELECT objid UP TO 1 ROWS
+  FROM /sttp/dm_obj_ids
+  INTO lv_objid
+  WHERE objid = iv_objid.
+ENDSELECT.`
+	parsed := parse(source, "sql_aggregate_scalar_selects.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 3)
+}
+
+@(test)
+open_sql_scalar_select_with_where_owns_endselect_body :: proc(t: ^testing.T) {
+	source := `SELECT * FROM snap INTO wa_snap WHERE seqno = '000'.
+  CLEAR: x, cnt.
+ENDSELECT.`
+	parsed := parse(source, "sql_scalar_loop_where.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(stmt.body), 1)
+}
+
+@(test)
+open_sql_scalar_select_body_tolerates_catch_system_block :: proc(t: ^testing.T) {
+	source := `SELECT * FROM snap INTO wa_snap WHERE seqno = '000'.
+  ASSIGN wa_snap-flist(1600) TO <buffer> RANGE wa_snap.
+  CLEAR: x, cnt.
+  CATCH SYSTEM-EXCEPTIONS conversion_errors = 0 data_access_errors = 0.
+    WHILE <buffer>+x(1) <> '%'.
+      ADD 1 TO cnt.
+    ENDWHILE.
+  ENDCATCH.
+ENDSELECT.`
+	parsed := parse(source, "sql_loop_catch_system.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Select_Stmt)
+	testing.expect_value(t, len(stmt.body), 3)
 }
 
 @(test)

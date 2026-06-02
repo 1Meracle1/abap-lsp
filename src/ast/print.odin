@@ -588,6 +588,32 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 				emit(p, " WHERE ")
 				emit_node(p, n.where_cond)
 			}
+			if n.group_by != nil {
+				emit(p, " GROUP BY ")
+				emit_node(p, n.group_by)
+				switch n.group_order {
+				case .Ascending:
+					emit(p, " ASCENDING")
+				case .Descending:
+					emit(p, " DESCENDING")
+				case .None:
+				}
+				if n.group_without_members {
+					emit(p, " WITHOUT MEMBERS")
+				}
+				switch n.group_target_kind {
+				case .Into:
+					emit(p, " INTO ")
+					emit_node(p, n.group_target)
+				case .Assigning:
+					emit(p, " ASSIGNING ")
+					emit_node(p, n.group_target)
+				case .Reference_Into:
+					emit(p, " REFERENCE INTO ")
+					emit_node(p, n.group_target)
+				case .None:
+				}
+			}
 		}
 		emit_block(p, n.body, "ENDLOOP")
 	case ^At_Stmt:

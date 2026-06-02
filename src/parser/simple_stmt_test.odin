@@ -1372,6 +1372,16 @@ raw_assign_casting_does_not_reference_clause_keyword :: proc(t: ^testing.T) {
 }
 
 @(test)
+raw_assign_allows_range_addition :: proc(t: ^testing.T) {
+	parsed := parse(`ASSIGN wa_snap-flist(1600) TO <buffer> RANGE wa_snap.`, "assign_range.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	assign := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Field_Stmt)
+	testing.expect(t, assign.source != nil)
+	testing.expect(t, assign.target != nil)
+}
+
+@(test)
 assign_casting_addition_is_modeled_and_printed :: proc(t: ^testing.T) {
 	source := `ASSIGN lv_x TO <lv_y> CASTING TYPE i DECIMALS lv_dec.`
 	parsed := parse(source, "assign_casting_type.abap", context.allocator)

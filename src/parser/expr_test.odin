@@ -22,6 +22,21 @@ expression_precedence_keeps_multiply_inside_add :: proc(t: ^testing.T) {
 }
 
 @(test)
+parenthesized_mod_arithmetic_keeps_closing_delimiters_balanced :: proc(t: ^testing.T) {
+	source := `lv2 = ( 10
+      - ( ( ( 3
+              * ( lv1+1(1)
+                + lv1+3(1)
+                + lv1+5(1) ) )
+            + ( lv1(1)
+              + lv1+2(1)
+              + lv1+4(1) ) ) MOD 10 ) ) MOD 10.`
+	parsed := parse(source, "check_digit.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+}
+
+@(test)
 selector_chains_build_nested_selector_nodes :: proc(t: ^testing.T) {
 	parsed := parse("lv = lo_obj->mo_child=>gc_value~part-name.", "test.abap", context.allocator)
 
@@ -132,6 +147,26 @@ call_argument_sections_carry_parser_kinds :: proc(t: ^testing.T) {
 		testing.expect_value(t, section.kind, expected[i])
 		testing.expect_value(t, len(section.args), 1)
 	}
+}
+
+@(test)
+call_argument_value_stops_before_operator_named_arg :: proc(t: ^testing.T) {
+	source := `rv = lo_obj->add_message(
+  EXPORTING
+    msgguid = iv_msgguid
+    ns = ls_pers_qmsg-queue_ns
+  EXCEPTIONS
+    already_exist = 1
+    lock_failed = 2 ).`
+	parsed := parse(source, "call_ns_arg.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	call := parsed.root.stmts[0].derived_stmt.(^ast.Assign_Stmt).rhs.derived_expr.(^ast.Call_Expr)
+	args := call.args.derived_expr.(^ast.Call_Arg_List_Expr)
+	exporting := args.args[0].derived_expr.(^ast.Call_Arg_Section_Expr)
+	exceptions := args.args[1].derived_expr.(^ast.Call_Arg_Section_Expr)
+	testing.expect_value(t, len(exporting.args), 2)
+	testing.expect_value(t, len(exceptions.args), 2)
 }
 
 @(test)
@@ -283,6 +318,16 @@ value_constructor_builds_base_for_and_assignment_clauses :: proc(t: ^testing.T) 
 }
 
 @(test)
+value_constructor_allows_component_path_assignment_names :: proc(t: ^testing.T) {
+	source := `lt_decode = VALUE #( ( obj_code-code_char = |{ '(00)' }{ is_resp_stru-kod } | code_type = 'C' ) ).`
+	parsed := parse(source, "value_component_path.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.constructor_named, 2)
+}
+
+@(test)
 reduce_constructor_builds_init_for_and_next_clauses :: proc(t: ^testing.T) {
 	source := `DATA(lv_rep) = REDUCE i( INIT x = 0 FOR wa IN lt_rep NEXT x = x + wa ).`
 	parsed := parse(source, "reduce.abap", context.allocator)
@@ -305,6 +350,34 @@ cond_constructor_builds_let_when_and_else_clauses :: proc(t: ^testing.T) {
 	testing.expect_value(t, counts.let_expr, 1)
 	testing.expect_value(t, counts.constructor_when, 1)
 	testing.expect_value(t, counts.constructor_else, 1)
+}
+
+@(test)
+cond_constructor_allows_let_as_when_result :: proc(t: ^testing.T) {
+	source := `lt_ext_pda_data = COND #(
+  WHEN is_response-success = 'false'
+  THEN LET ls_extpda1 = VALUE zattp_rs_extpda1( status = TEXT-005 )
+           lv_update_pda1 = update_zattp_rs_extpda1( is_rs_extpda1 = ls_extpda1 )
+       IN VALUE #( ( ext_pda_fail_flag = abap_true extpda1 = VALUE zattp_tt_rs_extpda1( ( ls_extpda1 ) ) ) )
+  ELSE VALUE #( ) ).`
+	parsed := parse(source, "cond_then_let.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.let_expr, 1)
+	testing.expect_value(t, counts.constructor_when, 1)
+}
+
+@(test)
+filter_constructor_allows_except_in_where :: proc(t: ^testing.T) {
+	source := `DATA(lt_obj_dif) = FILTER #( lt_child_obj
+  EXCEPT IN lt_rep_rel_obj
+  WHERE objid = objid ).`
+	parsed := parse(source, "filter_except_in.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.constructor, 1)
 }
 
 @(test)

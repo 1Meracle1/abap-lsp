@@ -1440,7 +1440,7 @@ parse_assign_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			error_current(p, "syntax error: expected ASSIGN STRUCTURE operand")
 		}
 	} else {
-		stmt.source = parse_raw_operand_to_period(p, []string{"TO", "CASTING"})
+		stmt.source = parse_raw_operand_to_period(p, []string{"TO", "CASTING", "RANGE"})
 		if stmt.source == nil {
 			error_current(p, "syntax error: expected ASSIGN source operand")
 		}
@@ -1448,11 +1448,15 @@ parse_assign_field_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if !assign_field_expect_keyword(p, "TO", "syntax error: expected TO in ASSIGN statement") {
 		return assign_field_finish_after_error(p, stmt, start)
 	}
-	stmt.target = parse_raw_operand_to_period(p, []string{"CASTING", "TYPE", "DECIMALS"})
+	stmt.target = parse_raw_operand_to_period(p, []string{"CASTING", "TYPE", "DECIMALS", "RANGE"})
 	if stmt.target == nil {
 		error_current(p, "syntax error: expected ASSIGN target")
 	}
 	parse_assign_field_casting_addition(p, stmt)
+	if allow_keyword(p, "RANGE") {
+		_ = parse_raw_operand_to_period(p, []string{"CASTING", "TYPE", "DECIMALS"})
+		parse_assign_field_casting_addition(p, stmt)
+	}
 	if !raw_period_done(p) {
 		error_current(p, "syntax error: unexpected ASSIGN addition")
 		recover_to_statement_boundary(p, nil, false)

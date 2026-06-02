@@ -45,6 +45,18 @@ TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo). WRITE 'y'. CLEANUP. WRITE 'z'. ENDT
 }
 
 @(test)
+catch_system_exceptions_block_is_accepted :: proc(t: ^testing.T) {
+	source := `CATCH SYSTEM-EXCEPTIONS conversion_errors = 0 data_access_errors = 0.
+  WHILE x < 4.
+    ADD 1 TO x.
+  ENDWHILE.
+ENDCATCH.`
+	parsed := parse(source, "catch_system.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+}
+
+@(test)
 at_group_stmt_kinds_are_parser_modeled :: proc(t: ^testing.T) {
 	source := `LOOP AT itab INTO wa.
   AT FIRST.
@@ -591,6 +603,58 @@ ENDLOOP.`
 	testing.expect(t, loop.to != nil)
 	testing.expect(t, loop.using_key.dynamic_name != nil)
 	testing.expect(t, loop.where_cond != nil)
+}
+
+@(test)
+loop_header_allows_group_by_targets :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_hu_por ASSIGNING FIELD-SYMBOL(<fs_hu_por>)
+  GROUP BY ( unique_id = <fs_hu_por>-unique_id ) ASCENDING
+  ASSIGNING FIELD-SYMBOL(<fs_group>).
+ENDLOOP.
+LOOP AT lt_serno ASSIGNING FIELD-SYMBOL(<lfs_serno>)
+  GROUP BY ( date = <lfs_serno>-date size = GROUP SIZE )
+  INTO DATA(ls_serno_grp).
+ENDLOOP.
+LOOP AT lt_rows INTO DATA(ls_row)
+  GROUP BY ls_row-id WITHOUT MEMBERS.
+ENDLOOP.`
+	parsed := parse(source, "loop_group_by.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.stmts), 3)
+	first := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect_value(t, first.target_kind, ast.Loop_Target_Kind.Assigning)
+	testing.expect(t, first.target != nil)
+	testing.expect(t, first.group_by != nil)
+	testing.expect_value(t, source[first.group_by.range.start:first.group_by.range.end], "( unique_id = <fs_hu_por>-unique_id )")
+	testing.expect_value(t, first.group_order, ast.Loop_Group_Order.Ascending)
+	testing.expect_value(t, first.group_target_kind, ast.Loop_Target_Kind.Assigning)
+	testing.expect(t, first.group_target != nil)
+
+	second := parsed.root.stmts[1].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect(t, second.group_by != nil)
+	testing.expect_value(t, source[second.group_by.range.start:second.group_by.range.end], "( date = <lfs_serno>-date size = GROUP SIZE )")
+	testing.expect_value(t, second.group_target_kind, ast.Loop_Target_Kind.Into)
+	testing.expect(t, second.group_target != nil)
+
+	third := parsed.root.stmts[2].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect(t, third.group_by != nil)
+	testing.expect_value(t, source[third.group_by.range.start:third.group_by.range.end], "ls_row-id")
+	testing.expect(t, third.group_without_members)
+	testing.expect_value(t, source[third.group_without_members_range.start:third.group_without_members_range.end], "WITHOUT MEMBERS")
+}
+
+@(test)
+loop_at_group_allows_member_iteration :: proc(t: ^testing.T) {
+	source := `LOOP AT GROUP <fs_group> ASSIGNING FIELD-SYMBOL(<fs_group_mem>).
+  lt_ids = VALUE #( BASE lt_ids ( <fs_group_mem> ) ).
+ENDLOOP.`
+	parsed := parse(source, "loop_at_group.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0].derived_stmt.(^ast.Loop_Stmt)
+	testing.expect(t, loop.source != nil)
+	testing.expect_value(t, loop.target_kind, ast.Loop_Target_Kind.Assigning)
 }
 
 @(test)

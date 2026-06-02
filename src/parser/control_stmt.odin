@@ -15,6 +15,7 @@ control_stmt_starts :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "DO") ||
 		(at_keyword(p, "LOOP") && at_keyword_index(p, p.index + 1, "AT")) ||
 		at_group_stmt_starts(p) ||
+		catch_system_stmt_starts(p) ||
 		at_keyword(p, "TRY") \
 	)
 }
@@ -117,7 +118,14 @@ parse_control_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if at_group_stmt_starts(p) {
 		return parse_at_stmt(p)
 	}
+	if catch_system_stmt_starts(p) {
+		return parse_catch_system_stmt(p)
+	}
 	return parse_try_stmt(p)
+}
+
+catch_system_stmt_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword(p, "CATCH") && keyword_phrase_at(p, p.index + 1, "SYSTEM-EXCEPTIONS")
 }
 
 parse_required_expr_after :: proc(p: ^Parser, message: string) -> ^ast.Expr {
@@ -230,7 +238,7 @@ when_dash_is_selector :: proc(p: ^Parser, index, start, end: int) -> bool {
 }
 
 parse_loop_header_tail :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int) -> bool {
-	stops := []string{"INTO", "ASSIGNING", "REFERENCE", "FROM", "TO", "USING", "WHERE", "TRANSPORTING"}
+	stops := []string{"INTO", "ASSIGNING", "REFERENCE", "FROM", "TO", "USING", "WHERE", "TRANSPORTING", "GROUP"}
 	for current_token(p).kind != .Period &&
 	    current_token(p).kind != .Eof &&
 	    !block_header_boundary_at(p, []string{"ENDLOOP"}) {
@@ -303,10 +311,105 @@ parse_loop_header_tail :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int
 			}
 			continue
 		}
+		if allow_keyword(p, "GROUP") {
+			group_start := previous_token(p)
+			if !allow_keyword(p, "BY") {
+				error_current(p, "syntax error: expected BY after GROUP")
+				return false
+			}
+			if !parse_loop_group_by(p, stmt, body_start, group_start) {
+				return false
+			}
+			continue
+		}
 		if skip_loop_header_pragma_arg(p) {
 			continue
 		}
 		error_current(p, "syntax error: expected LOOP AT addition")
+		return false
+	}
+	return true
+}
+
+parse_loop_group_by :: proc(p: ^Parser, stmt: ^ast.Loop_Stmt, body_start: int, group_start: Token) -> bool {
+	stops := []string{"ASCENDING", "DESCENDING", "WITHOUT", "INTO", "ASSIGNING", "REFERENCE"}
+	key_start := p.index
+	paren, bracket, brace := 0, 0, 0
+	for !data_stmt_done(p, body_start) {
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && loop_group_addition_starts(p, stops) {
+			break
+		}
+		tok := bump_token(p)
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+	}
+	if p.index == key_start {
+		error_current(p, "syntax error: expected LOOP GROUP BY expression")
+		return false
+	}
+	stmt.group_by = type_ref_expr_from_tokens(p, key_start, p.index, -1, false, false)
+	stmt.group_by_clause = tokenizer.text_range(group_start.range.start, previous_token(p).range.end)
+
+	if allow_keyword(p, "ASCENDING") {
+		stmt.group_order = .Ascending
+		stmt.group_order_range = previous_token(p).range
+	} else if allow_keyword(p, "DESCENDING") {
+		stmt.group_order = .Descending
+		stmt.group_order_range = previous_token(p).range
+	}
+
+	if allow_keyword(p, "WITHOUT") {
+		start := previous_token(p)
+		if !allow_keyword(p, "MEMBERS") {
+			error_current(p, "syntax error: expected MEMBERS after WITHOUT")
+			return false
+		}
+		stmt.group_without_members = true
+		stmt.group_without_members_range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
+	}
+
+	if allow_keyword(p, "INTO") {
+		return parse_loop_group_target(p, stmt, body_start, .Into, "syntax error: expected group target after INTO")
+	} else if allow_keyword(p, "ASSIGNING") {
+		return parse_loop_group_target(p, stmt, body_start, .Assigning, "syntax error: expected group target after ASSIGNING")
+	} else if allow_keyword(p, "REFERENCE") {
+		if !allow_keyword(p, "INTO") {
+			error_current(p, "syntax error: expected INTO after REFERENCE")
+			return false
+		}
+		return parse_loop_group_target(p, stmt, body_start, .Reference_Into, "syntax error: expected group target after REFERENCE INTO")
+	}
+	return true
+}
+
+loop_group_addition_starts :: proc(p: ^Parser, stops: []string) -> bool {
+	return data_current_keyword_in(p, stops)
+}
+
+parse_loop_group_target :: proc(
+	p: ^Parser,
+	stmt: ^ast.Loop_Stmt,
+	body_start: int,
+	kind: ast.Loop_Target_Kind,
+	message: string,
+) -> bool {
+	stmt.group_target_kind = kind
+	stmt.group_target = data_expr(p, body_start, []string{})
+	if stmt.group_target == nil {
+		error_current(p, message)
 		return false
 	}
 	return true
@@ -586,7 +689,7 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		error_current(p, "syntax error: expected keyword")
 		return nil
 	}
-	source := parse_required_expr_after(p, "syntax error: expected loop source after LOOP AT")
+	source := parse_loop_source(p, body_start)
 	if source == nil {
 		return nil
 	}
@@ -615,6 +718,20 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	return stmt
+}
+
+parse_loop_source :: proc(p: ^Parser, body_start: int) -> ^ast.Expr {
+	if !at_keyword(p, "GROUP") {
+		return parse_required_expr_after(p, "syntax error: expected loop source after LOOP AT")
+	}
+	start := p.index
+	bump_token(p)
+	_ = data_expr(p, body_start, []string{"INTO", "ASSIGNING", "REFERENCE", "FROM", "TO", "USING", "WHERE", "TRANSPORTING"})
+	if p.index <= start + 1 {
+		error_current(p, "syntax error: expected loop source after LOOP AT")
+		return nil
+	}
+	return type_ref_expr_from_tokens(p, start, p.index, -1, false, false)
 }
 
 parse_at_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
@@ -664,6 +781,28 @@ parse_at_group_field :: proc(p: ^Parser, stmt: ^ast.At_Stmt) -> bool {
 	stmt.field_name = tokenizer.token_lexeme(name, p.source)
 	stmt.field_range = name.range
 	return true
+}
+
+parse_catch_system_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	start := expect_keyword(p, "CATCH")
+	expect_keyword_phrase(p, "SYSTEM-EXCEPTIONS")
+	for current_token(p).kind != .Period && current_token(p).kind != .Eof {
+		bump_token(p)
+	}
+	period := expect_token_message(p, .Period, "syntax error: expected '.' after CATCH SYSTEM-EXCEPTIONS")
+	if period.kind != .Period {
+		return nil
+	}
+	_ = parse_stmt_list_until(p, []string{"ENDCATCH"})
+	end := expect_keyword_message(p, "ENDCATCH", "syntax error: expected ENDCATCH")
+	if !token_is_keyword(p, end, "ENDCATCH") {
+		return nil
+	}
+	period = expect_token_message(p, .Period, "syntax error: expected '.' after ENDCATCH")
+	if period.kind != .Period {
+		return nil
+	}
+	return ast.new(ast.Invalid_Stmt, tokenizer.text_range(start.range.start, period.range.end), p.allocator)
 }
 
 parse_try_stmt :: proc(p: ^Parser) -> ^ast.Stmt {

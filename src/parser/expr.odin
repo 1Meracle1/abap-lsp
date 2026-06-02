@@ -3,12 +3,15 @@ package abap_frontend_parser
 import "src:ast"
 import "src:tokenizer"
 
+import "core:strings"
+
 Constructor_Body_Kind :: enum {
 	Value,
 	Corresponding,
 	Cond,
 	Switch,
 	Reduce,
+	Filter,
 	Single,
 }
 
@@ -678,7 +681,7 @@ parse_call_arg_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
 		name := bump_token(p)
 		expect_token(p, .Eq)
-		value := parse_logical_expr(p)
+		value := parse_call_named_arg_value_expr(p)
 		if value == nil {
 			return nil
 		}
@@ -698,6 +701,55 @@ parse_call_arg_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	arg := ast.new(ast.Call_Positional_Arg_Expr, value.range, p.allocator)
 	arg.value = value
 	return arg
+}
+
+parse_call_named_arg_value_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	start := p.index
+	end := call_named_arg_value_end(p, start)
+	if end > start {
+		if value := parse_complete_logical_expr(p, start, end); value != nil {
+			p.index = end
+			p.previous_index = end - 1
+			return value
+		}
+	}
+	return parse_logical_expr(p)
+}
+
+call_named_arg_value_end :: proc(p: ^Parser, start: int) -> int {
+	paren, bracket, brace := 0, 0, 0
+	for i := start; i < len(p.tokens); i += 1 {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top && i > start &&
+		   (tok.kind == .Comma ||
+		    tok.kind == .RParen ||
+		    tok.kind == .Period ||
+		    tok.kind == .Eof ||
+		    call_argument_section_starts_at(p, i) ||
+		    call_named_arg_starts_at(p, i)) {
+			return i
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+	}
+	return len(p.tokens)
+}
+
+call_named_arg_starts_at :: proc(p: ^Parser, index: int) -> bool {
+	return index + 1 < len(p.tokens) && p.tokens[index].kind == .Ident && p.tokens[index + 1].kind == .Eq
 }
 
 parse_constructor_expr :: proc(p: ^Parser) -> ^ast.Expr {
@@ -760,6 +812,8 @@ parse_constructor_body_sequence :: proc(
 		parse_switch_constructor_sequence(p, out)
 	case .Reduce:
 		parse_reduce_constructor_sequence(p, out)
+	case .Filter:
+		parse_filter_constructor_sequence(p, out)
 	case .Single:
 		if expr := parse_constructor_value_expr(p); expr != nil {
 			append(out, expr)
@@ -783,7 +837,7 @@ parse_value_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
 			append_if_expr(out, parse_constructor_base_clause_expr(p))
 		} else if at_keyword(p, "LINES") && at_keyword_index(p, p.index + 1, "OF") {
 			append_if_expr(out, parse_constructor_lines_of_clause_expr(p))
-		} else if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
+		} else if constructor_named_assignment_starts(p) {
 			append_if_expr(out, parse_constructor_named_assignment_expr(p))
 		} else if current_token(p).kind == .LParen {
 			append_if_expr(out, parse_constructor_row_expr(p, .Value))
@@ -845,6 +899,26 @@ parse_switch_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) 
 			append_if_expr(out, parse_constructor_when_clause_expr(p, true))
 		} else if at_keyword(p, "ELSE") {
 			append_if_expr(out, parse_constructor_else_clause_expr(p))
+		} else {
+			append_if_expr(out, parse_constructor_value_expr(p))
+		}
+		ensure_forward_progress(p, start)
+	}
+}
+
+parse_filter_constructor_sequence :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
+	for !constructor_args_done(p) {
+		if allow_token(p, .Comma) {
+			continue
+		}
+		start := p.index
+		if allow_keyword(p, "EXCEPT") {
+			allow_keyword(p, "IN")
+			append_if_expr(out, parse_constructor_value_expr(p))
+		} else if allow_keyword(p, "IN") {
+			append_if_expr(out, parse_constructor_value_expr(p))
+		} else if at_keyword(p, "WHERE") {
+			append_if_expr(out, parse_constructor_where_clause_expr(p))
 		} else {
 			append_if_expr(out, parse_constructor_value_expr(p))
 		}
@@ -1002,7 +1076,7 @@ parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool) -> ^ast.
 		error_current(p, "syntax error: expected keyword")
 		return nil
 	}
-	result := parse_constructor_value_expr(p)
+	result := parse_constructor_result_expr(p)
 	if result == nil {
 		return nil
 	}
@@ -1018,7 +1092,7 @@ parse_constructor_when_clause_expr :: proc(p: ^Parser, is_switch: bool) -> ^ast.
 
 parse_constructor_else_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	start := expect_keyword(p, "ELSE")
-	result := parse_constructor_value_expr(p)
+	result := parse_constructor_result_expr(p)
 	if result == nil {
 		return nil
 	}
@@ -1029,6 +1103,13 @@ parse_constructor_else_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	)
 	expr.result = result
 	return expr
+}
+
+parse_constructor_result_expr :: proc(p: ^Parser) -> ^ast.Expr {
+	if at_keyword(p, "LET") {
+		return parse_let_expr(p, .Single)
+	}
+	return parse_constructor_value_expr(p)
 }
 
 parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Body_Kind) -> ^ast.Expr {
@@ -1120,7 +1201,7 @@ parse_constructor_next_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 parse_constructor_assignment_list :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) {
 	for !constructor_args_done(p) && !constructor_clause_boundary(p) {
 		start := p.index
-		if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
+		if constructor_named_assignment_starts(p) {
 			append_if_expr(out, parse_constructor_named_assignment_expr(p))
 		} else {
 			bump_token(p)
@@ -1130,7 +1211,11 @@ parse_constructor_assignment_list :: proc(p: ^Parser, out: ^[dynamic]^ast.Expr) 
 }
 
 parse_constructor_named_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
-	name := expect_token(p, .Ident)
+	target := parse_expr(p)
+	if target == nil {
+		return nil
+	}
+	name := strings.clone(p.source[target.range.start:target.range.end], p.allocator)
 	expect_token(p, .Eq)
 	value := parse_constructor_value_expr(p)
 	if value == nil {
@@ -1138,12 +1223,46 @@ parse_constructor_named_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 	expr := ast.new(
 		ast.Constructor_Named_Assignment_Expr,
-		tokenizer.text_range(name.range.start, value.range.end),
+		tokenizer.text_range(target.range.start, value.range.end),
 		p.allocator,
 	)
-	expr.name = tokenizer.token_lexeme(name, p.source)
+	expr.name = name
 	expr.value = value
 	return expr
+}
+
+constructor_named_assignment_starts :: proc(p: ^Parser) -> bool {
+	if !expr_lead_token(current_token(p)) {
+		return false
+	}
+	paren, bracket, brace := 0, 0, 0
+	for i := p.index; i < len(p.tokens); i += 1 {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .Eq {
+				return true
+			}
+			if tok.kind == .RParen || tok.kind == .Comma || tok.kind == .Period || tok.kind == .Eof {
+				return false
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {paren -= 1}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {bracket -= 1}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {brace -= 1}
+		}
+	}
+	return false
 }
 
 parse_constructor_base_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
@@ -1469,6 +1588,9 @@ constructor_body_kind :: proc(p: ^Parser, tok: Token) -> Constructor_Body_Kind {
 	}
 	if token_is_keyword(p, tok, "REDUCE") {
 		return .Reduce
+	}
+	if token_is_keyword(p, tok, "FILTER") {
+		return .Filter
 	}
 	return .Value
 }

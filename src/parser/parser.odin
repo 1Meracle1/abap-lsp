@@ -114,6 +114,9 @@ parse_top_level :: proc(p: ^Parser) {
 		if at_eof(p) {
 			return
 		}
+		if allow_token(p, .Period) {
+			continue
+		}
 		start := p.index
 		stmt := parse_stmt(p, nil)
 		if stmt != nil {
@@ -130,6 +133,9 @@ parse_stmt_list_until :: proc(p: ^Parser, stop_keywords: []string) -> [dynamic]^
 		   at_any_keyword(p, stop_keywords) ||
 		   at_outer_boundary_for_stops(p, stop_keywords) {
 			return stmts
+		}
+		if allow_token(p, .Period) {
+			continue
 		}
 		start := p.index
 		stmt := parse_stmt(p, stop_keywords)
@@ -726,6 +732,7 @@ line_continuation_starts :: proc(p: ^Parser, index: int) -> bool {
 		keyword_phrase_at(p, index, "EXTENSION") ||
 		keyword_phrase_at(p, index, "USING") ||
 		keyword_phrase_at(p, index, "FOR") ||
+		keyword_phrase_at(p, index, "CASE") ||
 		keyword_phrase_at(p, index, "AND") ||
 		keyword_phrase_at(p, index, "OR") ||
 		keyword_phrase_at(p, index, "EXPORTING") ||
@@ -864,6 +871,9 @@ keyword_phrase_at_static :: #force_inline proc(p: ^Parser, index: int, $keyword:
 	}
 	when keyword == "NON-UNIQUE" {
 		return hyphen2_at(p, index, "NON", "UNIQUE")
+	}
+	when keyword == "SYSTEM-EXCEPTIONS" {
+		return hyphen2_at(p, index, "SYSTEM", "EXCEPTIONS")
 	}
 	when keyword == "NO-DISPLAY" {
 		return hyphen2_at(p, index, "NO", "DISPLAY")
@@ -1042,6 +1052,9 @@ keyword_phrase_at_dynamic :: proc(p: ^Parser, index: int, keyword: string) -> bo
 	}
 	if keyword == "NON-UNIQUE" {
 		return hyphen2_at(p, index, "NON", "UNIQUE")
+	}
+	if keyword == "SYSTEM-EXCEPTIONS" {
+		return hyphen2_at(p, index, "SYSTEM", "EXCEPTIONS")
 	}
 	if keyword == "NO-DISPLAY" {
 		return hyphen2_at(p, index, "NO", "DISPLAY")
@@ -1232,6 +1245,7 @@ keyword_phrase_token_count :: proc(keyword: string) -> int {
 	   keyword == "BIT-OR" ||
 	   keyword == "BIT-XOR" ||
 	   keyword == "NON-UNIQUE" ||
+	   keyword == "SYSTEM-EXCEPTIONS" ||
 	   keyword == "ENHANCEMENT-SECTION" ||
 	   keyword == "TEST-SEAM" ||
 	   keyword == "TEST-INJECTION" {
@@ -1427,6 +1441,9 @@ keyword_is_compact_call :: proc(p: ^Parser, keyword: string) -> bool {
 
 at_outer_boundary_for_stops :: proc(p: ^Parser, stop_keywords: []string) -> bool {
 	if len(stop_keywords) == 0 {
+		return false
+	}
+	if catch_system_stmt_starts(p) {
 		return false
 	}
 	if stop_keywords_include_any(stop_keywords, CONTROL_BODY_STOP_MARKERS) {
@@ -1748,6 +1765,9 @@ parse_stray_block_boundary_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 stray_block_boundary :: proc(p: ^Parser) -> (string, bool) {
+	if catch_system_stmt_starts(p) {
+		return "", false
+	}
 	for boundary in STRAY_BLOCK_BOUNDARIES {
 		if at_keyword_phrase(p, boundary) {
 			return boundary, true

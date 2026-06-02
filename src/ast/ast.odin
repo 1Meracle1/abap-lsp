@@ -1962,6 +1962,12 @@ Loop_Target_Kind :: enum {
 	Reference_Into,
 }
 
+Loop_Group_Order :: enum {
+	None,
+	Ascending,
+	Descending,
+}
+
 // ABAP syntax: `LOOP AT source [INTO|ASSIGNING|REFERENCE INTO target] ... ENDLOOP.`
 Loop_Stmt :: struct {
 	using node:             Stmt,
@@ -1973,6 +1979,14 @@ Loop_Stmt :: struct {
 	where_cond:             ^Expr,
 	using_key:              Table_Key_Selector,
 	transporting_no_fields: bool,
+	group_by:               ^Expr,
+	group_by_clause:        tokenizer.Range,
+	group_order:            Loop_Group_Order,
+	group_order_range:      tokenizer.Range,
+	group_without_members:  bool,
+	group_without_members_range: tokenizer.Range,
+	group_target:           ^Expr,
+	group_target_kind:      Loop_Target_Kind,
 	body:                   [dynamic]^Stmt,
 	header_range:           tokenizer.Range,
 	header_text:            string,

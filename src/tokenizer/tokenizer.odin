@@ -421,7 +421,7 @@ skip_trivia :: proc(lexer: ^Lexer) {
 			}
 			append(&lexer.trivia, Trivia_Piece{.Newline, text_range(start, lexer.offset)})
 		case '*':
-			if !line_leading_trivia_is_whitespace_only(lexer) {
+			if lexer.offset != lexer.line_start {
 				return
 			}
 			start := lexer.offset
@@ -442,17 +442,6 @@ skip_trivia :: proc(lexer: ^Lexer) {
 			return
 		}
 	}
-}
-
-line_leading_trivia_is_whitespace_only :: proc(lexer: ^Lexer) -> bool {
-	for i in lexer.line_start ..< lexer.offset {
-		switch lexer.src[i] {
-		case ' ', '\t', '\r':
-		case:
-			return false
-		}
-	}
-	return true
 }
 
 advance_rune :: proc(lexer: ^Lexer) {

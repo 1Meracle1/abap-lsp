@@ -662,6 +662,8 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r.to = clone(n.to, allocator)
 		r.where_cond = clone(n.where_cond, allocator)
 		r.using_key = clone_table_key_selector(n.using_key, allocator)
+		r.group_by = clone(n.group_by, allocator)
+		r.group_target = clone(n.group_target, allocator)
 		r.body = clone_stmt_list(n.body, allocator)
 		return r
 	case ^At_Stmt:
