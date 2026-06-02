@@ -926,7 +926,7 @@ validate_field_accesses :: proc(
 			if skip_table_line_diag {
 				continue
 			}
-			if field_access_base_is_ddic_cache_shape(project, lookup, unit_index, access) {
+			if field_access_base_is_external_ddic_shape(project, lookup, unit_index, access) {
 				continue
 			}
 			if !field_access_base_resolves(project, lookup, unit_index, access) {
@@ -948,7 +948,7 @@ validate_field_accesses :: proc(
 	}
 }
 
-field_access_base_is_ddic_cache_shape :: proc(
+field_access_base_is_external_ddic_shape :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_index: int,
@@ -970,7 +970,7 @@ field_access_base_is_ddic_cache_shape :: proc(
 		return false
 	}
 	if s.structure != INVALID_STRUCTURE_ID {
-		return structure_origin_is_ddic_cache(project, handle_unit_index, s.structure)
+		return structure_origin_is_external_ddic_dependency(project, handle_unit_index, s.structure)
 	}
 	if !s.has_declared_type {
 		return false
@@ -987,10 +987,10 @@ field_access_base_is_ddic_cache_shape :: proc(
 	)
 	return fact_ok &&
 	       fact.structure != INVALID_STRUCTURE_ID &&
-	       structure_origin_is_ddic_cache(project, fact_unit_index, fact.structure)
+	       structure_origin_is_external_ddic_dependency(project, fact_unit_index, fact.structure)
 }
 
-structure_origin_is_ddic_cache :: proc(
+structure_origin_is_external_ddic_dependency :: proc(
 	project: ^Project_Analysis,
 	unit_index: int,
 	structure_id: Structure_Id,
@@ -1008,7 +1008,10 @@ structure_origin_is_ddic_cache :: proc(
 	}
 	origin := &project.units[origin_unit_index]
 	return origin.source_mode == .Dependency_Interface &&
-	       strings.has_prefix(origin.uri, "abapls-cache:/ddic-")
+	       (strings.has_prefix(origin.uri, "abapls-cache:/ddic-") ||
+	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/ddic/") ||
+	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/vit/wb/object_type/tabldt/") ||
+	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/vit/wb/object_type/viewdv/"))
 }
 
 field_access_base_resolves :: proc(
@@ -1200,6 +1203,13 @@ validate_open_sql :: proc(
 			source_symbol.structure,
 			name_ref.name,
 		); !field_ok {
+			if structure_origin_is_external_ddic_dependency(
+				project,
+				unit_id_index(source_handle.unit),
+				source_symbol.structure,
+			) {
+				continue
+			}
 			append_diag(
 				out,
 				seen,

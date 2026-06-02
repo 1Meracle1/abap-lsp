@@ -363,7 +363,7 @@ cached_dependency_record_is_stale :: proc(
 	candidate: deps.Remote_Dependency_Candidate,
 ) -> bool {
 	return candidate.kind == .Type &&
-	       strings.equal_fold(record.object_kind, "ddic-structure") &&
+	       dependency_object_kind_is_ddic(record.object_kind) &&
 	       dependency_source_is_xml(record.object_kind, record.file_extension, record.source_text) &&
 	       strings.contains(record.source_text, "ddicIncludeName")
 }

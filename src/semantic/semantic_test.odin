@@ -4454,6 +4454,32 @@ ENDFORM.`,
 }
 
 @(test)
+open_sql_from_adt_ddic_table_allows_incomplete_append_fields :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///open_sql_adt_ddic_append_fields.abap",
+		source = `DATA lv_evtid TYPE string.
+SELECT SINGLE rep_evtid
+  FROM /sttp/rep_evt
+  INTO @lv_evtid
+  WHERE recall_status = space
+    AND response_code <> space.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-adt:/sap/bc/adt/vit/wb/object_type/tabldt/object_name/%2fSTTP%2fREP_EVT.xml",
+			source = `TYPES: BEGIN OF /sttp/rep_evt,
+         rep_evtid TYPE string,
+       END OF /sttp/rep_evt.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+}
+
+@(test)
 constructor_let_binding_unknown_table_expr_row_shape_is_not_invalid :: proc(t: ^testing.T) {
 	source := `CLASS lcl DEFINITION.
   PUBLIC SECTION.
@@ -12643,6 +12669,24 @@ adt_fetched_ddic_table_preserves_xml_in_cache :: proc(t: ^testing.T) {
 	testing.expect(t, contains_fold(record.source_text, "ddicdatatype"))
 	testing.expect(t, contains_fold(record.source_text, "mandt"))
 	testing.expect(t, contains_fold(record.source_text, "mtext"))
+}
+
+@(test)
+cached_ddic_table_with_include_is_stale :: proc(t: ^testing.T) {
+	record := dep_store.Stored_Artifact_Record {
+		object_kind    = "ddic-table",
+		file_extension = "xml",
+		source_text    = `<abapsource:elementInfo adtcore:type="TABL/DT" adtcore:name="/sttp/rep_evt" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
+  <abapsource:elementInfo adtcore:type="TABL/DS" adtcore:name=".include">
+    <abapsource:properties>
+      <abapsource:entry abapsource:key="ddicIncludeName">/sttp/s_rep_evt_att</abapsource:entry>
+    </abapsource:properties>
+  </abapsource:elementInfo>
+</abapsource:elementInfo>`,
+	}
+	candidate := deps.Remote_Dependency_Candidate{name = "/sttp/rep_evt", kind = .Type}
+
+	testing.expect(t, remote_deps.cached_dependency_record_is_stale(&record, candidate))
 }
 
 @(test)
