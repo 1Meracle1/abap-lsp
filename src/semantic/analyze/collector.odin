@@ -373,15 +373,15 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 	case ^ast.Data_Decl:
 		infos := make([dynamic]Decl_Info, 0, 1, c.allocator)
 		append(&infos, data_decl_info(n))
-		collect_decl_infos(c, scope, infos[:], .Variable)
+		collect_decl_infos(c, local_decl_scope(c, scope), infos[:], .Variable)
 	case ^ast.Data_Chained_Decl:
 		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
 		for clause in n.decls {
 			append(&infos, data_branch_info(clause, n.range))
 		}
-		collect_decl_infos(c, scope, infos[:], .Variable)
+		collect_decl_infos(c, local_decl_scope(c, scope), infos[:], .Variable)
 	case ^ast.Data_Inline_Decl:
-		if symbol_id := declare_name_if_present(c, scope, n.name, .Variable, n.range);
+		if symbol_id := declare_inline_symbol(c, scope, n.name, .Variable, n.range);
 		   symbol_id != INVALID_SYMBOL_ID {
 			add_syntax_operand(
 				c.unit,
@@ -679,6 +679,34 @@ declare_name_if_present :: proc(
 		return INVALID_SYMBOL_ID
 	}
 	return declare_collected_symbol(c, scope, name, kind, range, owner = owner)
+}
+
+declare_inline_symbol :: proc(
+	c: ^Collector,
+	scope: Scope_Id,
+	name: string,
+	kind: Symbol_Kind,
+	range: tokenizer.Range,
+) -> Symbol_Id {
+	return declare_name_if_present(c, local_decl_scope(c, scope), name, kind, range)
+}
+
+local_decl_scope :: proc(c: ^Collector, start: Scope_Id) -> Scope_Id {
+	current := start
+	for current != INVALID_SCOPE_ID {
+		i := scope_id_index(current)
+		if i < 0 || i >= len(c.unit.scopes) {
+			break
+		}
+		#partial switch c.unit.scopes[i].kind {
+		case .File, .Form, .Module, .Event_Block, .Method:
+			return current
+		case .Class, .Interface, .Signature:
+			return start
+		}
+		current = c.unit.scopes[i].parent
+	}
+	return start
 }
 
 set_entity_owner :: proc(c: ^Collector, id: Entity_Id, owner: Entity_Id) {

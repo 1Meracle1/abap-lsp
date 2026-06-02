@@ -560,6 +560,7 @@ collect_select_result_clause :: proc(
 		target_range = range
 		is_inline = true
 		flags += {.Is_Inline}
+		decl_scope := local_decl_scope(c, scope)
 		if inline_kind == .Variable {
 			structure_id := INVALID_STRUCTURE_ID
 			declared_type := Field_Type_Ref_Data{}
@@ -568,7 +569,7 @@ collect_select_result_clause :: proc(
 			type_form := ast.Data_Type_Form{}
 			has_type_form := false
 			if result.table {
-				structure_id = inline_select_target_structure(c, query_id, target_name, scope)
+				structure_id = inline_select_target_structure(c, query_id, target_name, decl_scope)
 				type_form = .Standard_Table
 				has_type_form = true
 			} else if type_ref, type_ok := inline_select_target_type(c, query_id); type_ok {
@@ -578,7 +579,7 @@ collect_select_result_clause :: proc(
 			}
 			_ = declare_collected_symbol(
 				c,
-				scope,
+				decl_scope,
 				target_name,
 				.Variable,
 				range,
@@ -591,7 +592,7 @@ collect_select_result_clause :: proc(
 				has_type_form,
 			)
 		} else {
-			_ = declare_collected_symbol(c, scope, target_name, .Field_Symbol, range)
+			_ = declare_collected_symbol(c, decl_scope, target_name, .Field_Symbol, range)
 		}
 	} else {
 		target_name = sql_target_name_from_expr(c, result.target)

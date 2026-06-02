@@ -6960,6 +6960,74 @@ ENDCLASS.
 }
 
 @(test)
+inline_call_importing_declaration_is_visible_after_block :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///inline_call_importing_scope.abap",
+		`
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS compose EXPORTING ev_value TYPE i.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD compose.
+  ENDMETHOD.
+  METHOD run.
+    DO 1 TIMES.
+      CALL METHOD me->compose
+        IMPORTING ev_value = DATA(lv_value).
+    ENDDO.
+    lv_value = lv_value.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	testing.expect(t, has_symbol(&unit, .Variable, "lv_value"))
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
+classic_data_declaration_is_visible_after_block :: proc(t: ^testing.T) {
+	unit := collect_test_unit(
+		t,
+		"file:///classic_data_scope.abap",
+		`
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+    DO 1 TIMES.
+      DATA lv_value TYPE i.
+      lv_value = 1.
+    ENDDO.
+    lv_value = lv_value.
+  ENDMETHOD.
+ENDCLASS.
+`,
+	)
+
+	found := false
+	for symbol in unit.symbols {
+		if symbol.kind == .Variable && symbol.name == "lv_value" {
+			found = true
+			scope := analyze.scope(&unit, symbol.scope)
+			testing.expect(t, scope != nil)
+			if scope != nil {
+				testing.expect_value(t, scope.kind, analyze.Scope_Kind.Method)
+			}
+		}
+	}
+	testing.expect(t, found)
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 receive_results_from_function_uses_call_argument_facts :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

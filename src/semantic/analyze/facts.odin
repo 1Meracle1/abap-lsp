@@ -159,7 +159,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Constructor_Corresponding_Except_Clause_Expr:
 		collect_expr_list_refs(c, n.names[:], scope)
 	case ^ast.Data_Inline_Name_Expr:
-		if symbol_id := declare_name_if_present(c, scope, n.name, .Variable, n.range);
+		if symbol_id := declare_inline_symbol(c, scope, n.name, .Variable, n.range);
 		   symbol_id != INVALID_SYMBOL_ID {
 			add_syntax_operand(
 				c.unit,
@@ -173,7 +173,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 			)
 		}
 	case ^ast.Field_Symbol_Inline_Name_Expr:
-		if symbol_id := declare_name_if_present(c, scope, n.name, .Field_Symbol, n.range);
+		if symbol_id := declare_inline_symbol(c, scope, n.name, .Field_Symbol, n.range);
 		   symbol_id != INVALID_SYMBOL_ID {
 			add_syntax_operand(
 				c.unit,
@@ -931,7 +931,7 @@ collect_raw_operand_fact_refs :: proc(
 		if decl.kind == .Field_Symbol {
 			kind = .Field_Symbol
 		}
-		if symbol_id := declare_name_if_present(c, scope, decl.name, kind, decl.range);
+		if symbol_id := declare_inline_symbol(c, scope, decl.name, kind, decl.range);
 		   symbol_id != INVALID_SYMBOL_ID {
 			add_syntax_operand(
 				c.unit,
