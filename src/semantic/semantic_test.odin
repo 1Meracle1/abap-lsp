@@ -3835,6 +3835,39 @@ ENDFORM.
 }
 
 @(test)
+loop_where_table_body_uses_row_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_row,
+           type TYPE string,
+         END OF ty_row.
+  DATA lt_rows TYPE STANDARD TABLE OF ty_row WITH EMPTY KEY.
+  LOOP AT lt_rows[] ASSIGNING FIELD-SYMBOL(<row>) WHERE type CS 'A'.
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///loop_where_table_body.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+loop_where_table_body_suppresses_row_fields_for_unknown_shape :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  FIELD-SYMBOLS <choice>.
+  LOOP AT <choice>-destination[] ASSIGNING FIELD-SYMBOL(<destination>) WHERE type CS 'A'.
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///loop_where_unknown_table_body.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 selection_ranges_collect_range_structure :: proc(t: ^testing.T) {
 	source := `
 TYPES zattp_gln TYPE string.

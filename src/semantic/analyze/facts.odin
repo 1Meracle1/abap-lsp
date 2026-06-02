@@ -2510,7 +2510,7 @@ collect_internal_table_where_refs :: proc(
 	}
 	if access, ok := value_access_from_expr(c, expr, scope);
 	   ok && !internal_table_where_value_exists(c, scope, access.base_name) {
-		if target_access, target_ok := value_access_from_expr(c, target, scope); target_ok {
+		if target_access, target_ok := internal_table_where_target_access(c, target, scope); target_ok {
 			if !internal_table_where_target_has_shape(c, scope, target_access) {
 				return
 			}
@@ -2561,6 +2561,20 @@ collect_internal_table_where_refs :: proc(
 	}
 }
 
+internal_table_where_target_access :: proc(
+	c: ^Collector,
+	target: ^ast.Expr,
+	scope: Scope_Id,
+) -> (Field_Access, bool) {
+	if target == nil {
+		return {}, false
+	}
+	if table, ok := target.derived_expr.(^ast.Table_Expr); ok && len(table.selectors) == 0 {
+		return value_access_from_expr(c, table.table, scope)
+	}
+	return value_access_from_expr(c, target, scope)
+}
+
 internal_table_where_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: string) -> bool {
 	if sql_local_value_exists(c, scope, name) {
 		return true
@@ -2592,7 +2606,7 @@ internal_table_where_target_has_shape :: proc(
 		return false
 	}
 	s := c.unit.symbols[symbol_id_index(symbol_id)]
-	return s.structure != INVALID_STRUCTURE_ID || s.has_declared_type
+	return s.structure != INVALID_STRUCTURE_ID || s.has_declared_type || s.kind == .Field_Symbol
 }
 
 class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> bool {
