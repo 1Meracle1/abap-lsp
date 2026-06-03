@@ -37,6 +37,7 @@ simple_stmt_starts :: proc(p: ^Parser) -> bool {
 		at_keyword(p, "CONTINUE") ||
 		at_keyword(p, "EXIT") ||
 		at_keyword(p, "STOP") ||
+		leave_list_processing_at(p, p.index) ||
 		at_keyword(p, "COMMIT") ||
 		at_keyword(p, "ROLLBACK") ||
 		at_keyword(p, "DESCRIBE") ||
@@ -759,7 +760,13 @@ source_range_text :: proc(p: ^Parser, range: tokenizer.Range) -> string {
 }
 
 flow_stmt_starts :: proc(p: ^Parser) -> bool {
-	return at_keyword(p, "RETURN") || at_keyword(p, "CONTINUE") || at_keyword(p, "EXIT") || at_keyword(p, "STOP")
+	return(
+		at_keyword(p, "RETURN") ||
+		at_keyword(p, "CONTINUE") ||
+		at_keyword(p, "EXIT") ||
+		at_keyword(p, "STOP") ||
+		leave_list_processing_at(p, p.index) \
+	)
 }
 
 parse_assert_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
@@ -793,6 +800,17 @@ parse_check_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 parse_flow_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
+	if leave_list_processing_at(p, p.index) {
+		start := bump_token(p)
+		ok := allow_hyphen2(p, "LIST", "PROCESSING")
+		assert(ok)
+		body_start := p.index
+		stmt := ast.new(ast.Flow_Stmt, start.range, p.allocator)
+		stmt.kind = .Leave_List_Processing
+		consume_simple_entry_tail(p, body_start)
+		stmt.range = simple_stmt_range(p, start)
+		return stmt
+	}
 	start := bump_token(p)
 	body_start := p.index
 	stmt := ast.new(ast.Flow_Stmt, start.range, p.allocator)

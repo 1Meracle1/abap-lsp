@@ -1200,6 +1200,10 @@ hyphen2_at :: proc(p: ^Parser, index: int, a, b: string) -> bool {
 	)
 }
 
+leave_list_processing_at :: proc(p: ^Parser, index: int) -> bool {
+	return at_keyword_index(p, index, "LEAVE") && hyphen2_at(p, index + 1, "LIST", "PROCESSING")
+}
+
 hyphen3_at :: proc(p: ^Parser, index: int, a, b, c: string) -> bool {
 	return(
 		at_keyword_index(p, index, a) &&
@@ -1709,6 +1713,7 @@ known_stmt_lead_at :: proc(p: ^Parser, index: int) -> bool {
 		keyword_phrase_at(p, index, "CONTINUE") ||
 		keyword_phrase_at(p, index, "EXIT") ||
 		keyword_phrase_at(p, index, "STOP") ||
+		leave_list_processing_at(p, index) ||
 		keyword_phrase_at(p, index, "COMMIT") ||
 		keyword_phrase_at(p, index, "ROLLBACK") ||
 		keyword_phrase_at(p, index, "DESCRIBE") ||

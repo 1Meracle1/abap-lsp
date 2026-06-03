@@ -530,6 +530,7 @@ RETURN.
 CONTINUE.
 EXIT.
 STOP.
+LEAVE LIST-PROCESSING.
 COMMIT WORK AND WAIT.
 ROLLBACK WORK.
 DESCRIBE TABLE lt_text LINES DATA(lv_lines).
@@ -565,7 +566,7 @@ set_field lv_a lv_b.`
 	testing.expect_value(t, len(parsed.errors), 0)
 	testing.expect_value(t, counts.assert_stmt, 1)
 	testing.expect_value(t, counts.check_stmt, 1)
-	testing.expect_value(t, counts.flow_stmt, 4)
+	testing.expect_value(t, counts.flow_stmt, 5)
 	testing.expect_value(t, counts.transaction_stmt, 2)
 	testing.expect_value(t, counts.describe_stmt, 1)
 	testing.expect_value(t, counts.runtime_stmt, 3)

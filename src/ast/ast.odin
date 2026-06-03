@@ -1486,9 +1486,10 @@ Flow_Kind :: enum {
 	Continue,
 	Exit,
 	Stop,
+	Leave_List_Processing,
 }
 
-// ABAP syntax: simple control-flow statements such as `RETURN.`, `CONTINUE.`, `EXIT.`, or `STOP.`
+// ABAP syntax: simple control-flow statements such as `RETURN.`, `EXIT.`, or `LEAVE LIST-PROCESSING.`
 Flow_Stmt :: struct {
 	using node: Stmt,
 	kind:       Flow_Kind,

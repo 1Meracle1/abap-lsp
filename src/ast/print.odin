@@ -3394,6 +3394,7 @@ flow_kind_text :: proc(kind: Flow_Kind) -> string {
 	case .Continue: return "CONTINUE"
 	case .Exit: return "EXIT"
 	case .Stop: return "STOP"
+	case .Leave_List_Processing: return "LEAVE LIST-PROCESSING"
 	}
 	return "?"
 }

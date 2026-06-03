@@ -928,6 +928,8 @@ add_flow_site :: proc(out: ^Unit_Lints, stmt: ^ast.Flow_Stmt) {
 		kind = .Continue
 	case .Stop:
 		kind = .Stop
+	case .Leave_List_Processing:
+		kind = .Leave_List_Processing
 	}
 	add_routine_site(out, stmt.range, kind)
 }
