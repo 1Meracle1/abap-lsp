@@ -3592,6 +3592,35 @@ ls_wrap-include = 1.
 }
 
 @(test)
+type_position_structure_component_paths_are_validated :: proc(t: ^testing.T) {
+	source := `
+TYPES: BEGIN OF ty_inner,
+         code TYPE i,
+       END OF ty_inner.
+TYPES: BEGIN OF ty_row,
+         id    TYPE i,
+         inner TYPE ty_inner,
+       END OF ty_row.
+DATA lv_ok TYPE ty_row-id.
+DATA lv_nested_ok TYPE ty_row-inner-code.
+DATA lv_bad TYPE ty_row-response_http_code.
+DATA lv_nested_bad TYPE ty_row-inner-missing.
+`
+	unit := collect_test_unit(t, "file:///type_position_components.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Unknown_Field), 2)
+}
+
+@(test)
+type_position_component_path_with_unknown_base_does_not_emit_unknown_field :: proc(t: ^testing.T) {
+	source := `DATA lv_any TYPE zmissing-row.`
+	unit := collect_test_unit(t, "file:///type_position_unknown_base.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
+}
+
+@(test)
 project_index_include_graph_rebuild_uses_index_allocator :: proc(t: ^testing.T) {
 	arena: virtual.Arena
 	_ = virtual.arena_init_growing(&arena)
@@ -12459,6 +12488,49 @@ ls_row-count = 1.
 	testing.expect(t, root != nil)
 	testing.expect(t, !has_diagnostic(root, .Unknown_Field))
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
+type_position_ddic_include_component_paths_are_validated :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `
+REPORT zmain.
+DATA lv_ok TYPE zddic_table-status_response.
+DATA lv_bad TYPE zddic_table-response_http_code.
+`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-table/zddic_table.abap",
+			source = `
+TYPES: BEGIN OF zddic_table,
+         rep_evtid TYPE i,
+         INCLUDE TYPE zddic_att,
+       END OF zddic_table.
+`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-structure/zddic_att.abap",
+			source = `
+TYPES: BEGIN OF zddic_att,
+         status_response TYPE i,
+       END OF zddic_att.
+`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, diagnostic_count(root, .Unknown_Field), 1)
+		message, ok := diagnostic_message_for_kind(root, .Unknown_Field)
+		testing.expect(t, ok)
+		testing.expect_value(t, message, "unknown field 'response_http_code'")
+	}
 }
 
 @(test)

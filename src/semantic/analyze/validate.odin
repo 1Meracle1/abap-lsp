@@ -854,7 +854,11 @@ validate_field_accesses :: proc(
 		}
 	}
 	for access in unit.field_accesses {
-		if len(access.field_path) == 0 || access.in_type_position {
+		if len(access.field_path) == 0 {
+			continue
+		}
+		if access.in_type_position {
+			validate_type_position_field_access(project, lookup, unit_index, access, out, seen, allocator)
 			continue
 		}
 		if access.base_namespace == .Value &&
@@ -957,6 +961,311 @@ validate_field_accesses :: proc(
 			)
 		}
 	}
+}
+
+Type_Position_Field_Path_Status :: enum {
+	Unknown,
+	Valid,
+	Missing,
+}
+
+validate_type_position_field_access :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+	allocator: mem.Allocator,
+) {
+	if _, ok := resolve_field_access_tail(project, lookup, unit_index, access); ok {
+		return
+	}
+	status, segment := type_position_field_path_status(project, lookup, unit_index, access)
+	if status != .Missing {
+		return
+	}
+	append_diag(
+		out,
+		seen,
+		.Unknown_Field,
+		segment.range,
+		diagnostic_message("unknown field ", segment.name, allocator),
+	)
+}
+
+type_position_field_path_status :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> (Type_Position_Field_Path_Status, Field_Access_Segment) {
+	start_unit, start_structure, path_start, base_status, segment := type_position_base_structure(
+		project,
+		lookup,
+		unit_index,
+		access,
+	)
+	if base_status != .Valid {
+		return base_status, segment
+	}
+	return type_position_structure_path_status(
+		project,
+		lookup,
+		start_unit,
+		start_structure,
+		access.field_path[path_start:],
+		0,
+	)
+}
+
+type_position_base_structure :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> (Unit_Id, Structure_Id, int, Type_Position_Field_Path_Status, Field_Access_Segment) {
+	if is_generic_builtin_type_name(access.base_name) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, 0, .Unknown, {}
+	}
+	if is_builtin_type_name(access.base_name) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, 0, .Missing, access.field_path[0]
+	}
+	base_ref := Field_Type_Ref_Data {
+		namespace  = access.base_namespace,
+		base_name  = access.base_name,
+		base_range = access.base_range,
+	}
+	handle, ok := type_ref_symbol_handle(project, lookup, unit_index, access.scope, base_ref)
+	if !ok {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, 0, .Unknown, {}
+	}
+	path_start := 0
+	for {
+		handle_unit_index := unit_id_index(handle.unit)
+		if handle_unit_index < 0 || handle_unit_index >= len(project.units) {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, 0, .Unknown, {}
+		}
+		source_symbol := symbol(&project.units[handle_unit_index], handle.symbol)
+		if source_symbol == nil {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, 0, .Unknown, {}
+		}
+		if (source_symbol.kind == .Class || source_symbol.kind == .Interface) &&
+		   path_start < len(access.field_path) &&
+		   access.field_path[path_start].selector != .Dash {
+			next, next_ok := class_type_symbol_handle(
+				project.units[:],
+				handle,
+				access.field_path[path_start].name,
+			)
+			if !next_ok {
+				return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, path_start, .Missing, access.field_path[path_start]
+			}
+			handle = next
+			path_start += 1
+			continue
+		}
+		if source_symbol.structure != INVALID_STRUCTURE_ID {
+			return handle.unit, source_symbol.structure, path_start, .Valid, {}
+		}
+		if source_symbol.has_declared_type {
+			if structure_unit, structure_id, structure_ok := project_structure_for_type_ref_lookup(
+				project,
+				lookup,
+				handle_unit_index,
+				source_symbol.scope,
+				source_symbol.declared_type,
+				0,
+			); structure_ok {
+				return structure_unit, structure_id, path_start, .Valid, {}
+			}
+			if declared_type_has_unknown_shape(
+				project,
+				lookup,
+				handle_unit_index,
+				source_symbol.scope,
+				source_symbol.declared_type,
+			) {
+				return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, path_start, .Unknown, {}
+			}
+		}
+		if path_start < len(access.field_path) {
+			return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, path_start, .Missing, access.field_path[path_start]
+		}
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, path_start, .Valid, {}
+	}
+}
+
+type_position_structure_path_status :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	start_unit: Unit_Id,
+	start_structure: Structure_Id,
+	path: []Field_Access_Segment,
+	depth: int,
+) -> (Type_Position_Field_Path_Status, Field_Access_Segment) {
+	if depth > max_type_lookup_depth {
+		return .Unknown, {}
+	}
+	if len(path) == 0 {
+		return .Valid, {}
+	}
+	current_unit := start_unit
+	current_structure := start_structure
+	for &segment, i in path {
+		if segment.deref || segment.selector != .Dash {
+			return .Unknown, {}
+		}
+		field, field_unit, owner_structure, field_ok, field_unknown := project_structure_field_lookup_deep(
+			project,
+			lookup,
+			current_unit,
+			current_structure,
+			segment.name,
+			depth + 1,
+		)
+		if !field_ok {
+			if field_unknown {
+				return .Unknown, {}
+			}
+			return .Missing, segment
+		}
+		if i == len(path) - 1 {
+			return .Valid, {}
+		}
+		next_unit, next_structure, next_ok, next_unknown := structure_field_next_structure(
+			project,
+			lookup,
+			field,
+			field_unit,
+			owner_structure,
+			depth + 1,
+		)
+		if next_ok {
+			current_unit = next_unit
+			current_structure = next_structure
+			continue
+		}
+		if next_unknown {
+			return .Unknown, {}
+		}
+		return .Missing, path[i + 1]
+	}
+	return .Valid, {}
+}
+
+project_structure_field_lookup_deep :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	structure_unit: Unit_Id,
+	structure_id: Structure_Id,
+	field_name: string,
+	depth: int,
+) -> (^Structure_Field_Data, Unit_Id, Structure_Id, bool, bool) {
+	if depth > max_type_lookup_depth {
+		return nil, INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, true
+	}
+	unit_index := unit_id_index(structure_unit)
+	if unit_index < 0 || unit_index >= len(project.units) {
+		return nil, INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, true
+	}
+	unit := &project.units[unit_index]
+	if field := structure_field(unit, structure_id, field_name); field != nil {
+		return field, unit.unit_id, structure_id, true, false
+	}
+	owner := structure(unit, structure_id)
+	if owner == nil {
+		return nil, INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, true
+	}
+	unknown_include := false
+	for &include in owner.fields {
+		if !(.Is_Include in include.flags) || !(.Has_Type_Ref in include.flags) {
+			continue
+		}
+		include_unit_index := unit_id_index(include.decl_unit)
+		if include_unit_index < 0 || include_unit_index >= len(project.units) {
+			include_unit_index = unit_index
+		}
+		scope_id := unit.root_scope
+		if include_unit_index == unit_index && owner.scope != INVALID_SCOPE_ID {
+			scope_id = owner.scope
+		}
+		include_unit, include_structure, include_ok := project_structure_for_type_ref_lookup(
+			project,
+			lookup,
+			include_unit_index,
+			scope_id,
+			include.type_ref,
+			depth + 1,
+		)
+		if !include_ok {
+			unknown_include = true
+			continue
+		}
+		field, field_unit, field_owner, field_ok, field_unknown := project_structure_field_lookup_deep(
+			project,
+			lookup,
+			include_unit,
+			include_structure,
+			field_name,
+			depth + 1,
+		)
+		if field_ok {
+			return field, field_unit, field_owner, true, false
+		}
+		if field_unknown {
+			unknown_include = true
+		}
+	}
+	return nil, INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, unknown_include
+}
+
+structure_field_next_structure :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	field: ^Structure_Field_Data,
+	field_unit: Unit_Id,
+	owner_structure: Structure_Id,
+	depth: int,
+) -> (Unit_Id, Structure_Id, bool, bool) {
+	if field == nil {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, true
+	}
+	if field.structure != INVALID_STRUCTURE_ID {
+		return field_unit, field.structure, true, false
+	}
+	if !(.Has_Type_Ref in field.flags) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, false
+	}
+	field_unit_index := unit_id_index(field.decl_unit)
+	if field_unit_index < 0 || field_unit_index >= len(project.units) {
+		field_unit_index = unit_id_index(field_unit)
+	}
+	if field_unit_index < 0 || field_unit_index >= len(project.units) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, true
+	}
+	scope_id := project.units[field_unit_index].root_scope
+	if field.decl_unit == field_unit {
+		if owner := structure(&project.units[field_unit_index], owner_structure);
+		   owner != nil && owner.scope != INVALID_SCOPE_ID {
+			scope_id = owner.scope
+		}
+	}
+	next_unit, next_structure, next_ok := project_structure_for_type_ref_lookup(
+		project,
+		lookup,
+		field_unit_index,
+		scope_id,
+		field.type_ref,
+		depth + 1,
+	)
+	if next_ok {
+		return next_unit, next_structure, true, false
+	}
+	if declared_type_has_unknown_shape(project, lookup, field_unit_index, scope_id, field.type_ref) {
+		return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, true
+	}
+	return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, false
 }
 
 field_access_base_is_external_ddic_shape :: proc(
