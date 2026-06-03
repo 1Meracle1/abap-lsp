@@ -70,6 +70,45 @@ CLASS-DATA gv TYPE i VALUE 0.`
 }
 
 @(test)
+selection_screen_declaration_names_are_limited_to_eight_characters :: proc(t: ^testing.T) {
+	source := `PARAMETERS p_too_long TYPE i.
+SELECT-OPTIONS so_too_long FOR mara-matnr.`
+	parsed := parse(source, "selection_screen_decl_name_length.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 2)
+	expect_error_contains(t, parsed, "parameter name can be up to eight characters long")
+	expect_error_contains(t, parsed, "select-option name can be up to eight characters long")
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"p_too_long",
+	)
+	testing.expect_value(
+		t,
+		source[parsed.errors[1].range.start:parsed.errors[1].range.end],
+		"so_too_long",
+	)
+}
+
+@(test)
+abap_declaration_names_are_limited_to_thirty_characters :: proc(t: ^testing.T) {
+	source := `REPORT zlen_general_30.
+
+DATA abcdefghijabcdefghijabcdefghija TYPE i.
+DATA(abcdefghijabcdefghijabcdefghijb) = 1.
+
+TYPES: BEGIN OF ty_s,
+         abcdefghijabcdefghijabcdefghijc TYPE i,
+       END OF ty_s.
+
+FIELD-SYMBOLS <abcdefghijabcdefghijabcdefghijd> TYPE any.`
+	parsed := parse(source, "abap_name_length.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 4)
+	expect_error_contains(t, parsed, "name can be up to 30 characters long")
+}
+
+@(test)
 declaration_additions_keep_concrete_fields :: proc(t: ^testing.T) {
 	source := `CONSTANTS lcv_max(14) TYPE p DECIMALS 7 VALUE '0.9999999'.
 FIELD-SYMBOLS <line> LIKE LINE OF itab.

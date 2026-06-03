@@ -95,6 +95,55 @@ SELECTION-SCREEN END OF SCREEN 1002.`
 }
 
 @(test)
+selection_screen_comment_names_are_limited_to_eight_characters :: proc(t: ^testing.T) {
+	source := `SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE gv_sel_title.
+SELECTION-SCREEN COMMENT 1(18) gv_comment.`
+	parsed := parse(source, "selection_screen_name_length.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 2)
+	expect_error_contains(t, parsed, "comment name can be up to eight characters long")
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"gv_sel_title",
+	)
+	testing.expect_value(
+		t,
+		source[parsed.errors[1].range.start:parsed.errors[1].range.end],
+		"gv_comment",
+	)
+}
+
+@(test)
+selection_screen_addition_names_have_sap_length_limits :: proc(t: ^testing.T) {
+	source := `REPORT zlen_selection.
+
+SELECTION-SCREEN BEGIN OF BLOCK abcdefghijabcdefghija WITH FRAME TITLE abcdefghi.
+PARAMETERS p_abcdefg TYPE c RADIOBUTTON GROUP abcde
+  USER-COMMAND 123456789012345678901
+  MODIF ID abcd
+  MEMORY ID abcdefghijabcdefghija.
+SELECT-OPTIONS so_abcdef FOR sy-datum MODIF ID abcd MEMORY ID abcdefghijabcdefghija.
+SELECTION-SCREEN COMMENT /1(20) abcdefghi FOR FIELD p_abcdefg MODIF ID abcd.
+SELECTION-SCREEN PUSHBUTTON /1(10) abcdefghi USER-COMMAND 123456789012345678901 MODIF ID abcd.
+SELECTION-SCREEN END OF BLOCK abcdefghijabcdefghija.`
+	parsed := parse(source, "selection_screen_addition_name_length.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 18)
+	expect_error_contains(t, parsed, "block name can be up to 20 characters long")
+	expect_error_contains(t, parsed, "frame title name can be up to eight characters long")
+	expect_error_contains(t, parsed, "parameter name can be up to eight characters long")
+	expect_error_contains(t, parsed, "radio button group name can be up to four characters long")
+	expect_error_contains(t, parsed, "user command can be up to 20 characters long")
+	expect_error_contains(t, parsed, "modification id can be up to three characters long")
+	expect_error_contains(t, parsed, "memory id can be up to 20 characters long")
+	expect_error_contains(t, parsed, "RADIOBUTTON GROUP and MEMORY ID cannot be used together")
+	expect_error_contains(t, parsed, "select-option name can be up to eight characters long")
+	expect_error_contains(t, parsed, "comment name can be up to eight characters long")
+	expect_error_contains(t, parsed, "pushbutton name can be up to eight characters long")
+}
+
+@(test)
 selection_screen_block_prints_without_information_loss :: proc(t: ^testing.T) {
 	source := `SELECTION-SCREEN BEGIN OF SCREEN 1002 TITLE sc_title.
 SELECTION-SCREEN SKIP.

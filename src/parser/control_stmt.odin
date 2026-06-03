@@ -952,6 +952,15 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start_index := p.index
 	start := expect_keyword(p, "METHOD")
 	name, name_range, qualifier, qualifier_range, member_name, member_range, _ := first_qualified_name_parts_until_period(p)
+	validate_qualified_abap_name_length(
+		p,
+		name,
+		name_range,
+		qualifier,
+		qualifier_range,
+		member_name,
+		member_range,
+	)
 	consume_raw_until_top_level_period(p)
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
@@ -1061,6 +1070,9 @@ parse_named_block_stmt :: proc(
 	start_index := p.index
 	start := expect_keyword_phrase(p, start_keyword)
 	name := first_name_token_until_period(p)
+	if name.kind != .Eof && named_block_uses_abap_name_limit(start_keyword) {
+		validate_abap_name_length(p, name)
+	}
 	consume_raw_until_top_level_period(p)
 	period := expect_token(p, .Period)
 	if period.kind != .Period {
@@ -1110,6 +1122,14 @@ parse_named_block_stmt :: proc(
 	}
 	stmt.range = tokenizer.text_range(start.range.start, period.range.end)
 	return stmt
+}
+
+named_block_uses_abap_name_limit :: proc(start_keyword: string) -> bool {
+	return start_keyword == "CLASS" ||
+	       start_keyword == "INTERFACE" ||
+	       start_keyword == "FORM" ||
+	       start_keyword == "FUNCTION" ||
+	       start_keyword == "MODULE"
 }
 
 named_block_header_is_bodyless :: proc(
@@ -1180,6 +1200,7 @@ named_block_header_friends :: proc(
 			if tok.kind != .Ident && tok.kind != .Number {
 				break
 			}
+			validate_abap_name_length(p, tok)
 			append(
 				&friends,
 				ast.Class_Friend_Clause {
@@ -1211,6 +1232,7 @@ parse_form_header_parameters :: proc(
 			i += 1
 			continue
 		}
+		validate_abap_name_text_length(p, name, name_range)
 		param := ast.Form_Parameter_Clause {
 			section = section,
 			name    = name,
@@ -1249,6 +1271,7 @@ parse_function_header_parameters :: proc(
 			i += 1
 			continue
 		}
+		validate_abap_name_text_length(p, name, name_range)
 		i = next
 		if in_exceptions {
 			append(&exceptions, ast.Function_Exception_Clause{name, name_range})

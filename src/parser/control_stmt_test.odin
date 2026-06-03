@@ -45,6 +45,31 @@ TRY. WRITE 'x'. CATCH cx_root INTO DATA(lo). WRITE 'y'. CLEANUP. WRITE 'z'. ENDT
 }
 
 @(test)
+oop_and_form_names_are_limited_to_thirty_characters :: proc(t: ^testing.T) {
+	source := `REPORT zlen_oop_30.
+
+CLASS lcl_test DEFINITION.
+  PUBLIC SECTION.
+    DATA abcdefghijabcdefghijabcdefghija TYPE i.
+    METHODS abcdefghijabcdefghijabcdefghijb
+      IMPORTING abcdefghijabcdefghijabcdefghijc TYPE i.
+ENDCLASS.
+
+CLASS lcl_test IMPLEMENTATION.
+  METHOD abcdefghijabcdefghijabcdefghijb.
+  ENDMETHOD.
+ENDCLASS.
+
+FORM abcdefghijabcdefghijabcdefghijd
+  USING abcdefghijabcdefghijabcdefghije TYPE i.
+ENDFORM.`
+	parsed := parse(source, "oop_name_length.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 6)
+	expect_error_contains(t, parsed, "name can be up to 30 characters long")
+}
+
+@(test)
 catch_system_exceptions_block_is_accepted :: proc(t: ^testing.T) {
 	source := `CATCH SYSTEM-EXCEPTIONS conversion_errors = 0 data_access_errors = 0.
   WHILE x < 4.

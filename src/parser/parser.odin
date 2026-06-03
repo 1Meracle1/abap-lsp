@@ -1949,3 +1949,71 @@ error :: proc(p: ^Parser, range: Range, message: string) {
 error_current :: proc(p: ^Parser, message: string) {
 	error(p, current_token(p).range, message)
 }
+
+ABAP_NAME_MAX_LENGTH :: 30
+SELECTION_SCREEN_NAME_MAX_LENGTH :: 8
+SELECTION_SCREEN_BLOCK_NAME_MAX_LENGTH :: 20
+SELECTION_SCREEN_RADIOBUTTON_GROUP_MAX_LENGTH :: 4
+SELECTION_SCREEN_MODIF_ID_MAX_LENGTH :: 3
+SELECTION_SCREEN_COMMAND_MAX_LENGTH :: 20
+SELECTION_SCREEN_MEMORY_ID_MAX_LENGTH :: 20
+
+validate_name_length :: proc(
+	p: ^Parser,
+	name: string,
+	range: tokenizer.Range,
+	max_length: int,
+	message: string,
+) {
+	if len(name) > max_length {
+		error(p, range, message)
+	}
+}
+
+validate_token_name_length :: proc(
+	p: ^Parser,
+	tok: Token,
+	max_length: int,
+	message: string,
+) {
+	validate_name_length(p, tokenizer.token_lexeme(tok, p.source), tok.range, max_length, message)
+}
+
+validate_abap_name_length :: proc(
+	p: ^Parser,
+	tok: Token,
+	message := "syntax error: name can be up to 30 characters long",
+) {
+	validate_token_name_length(p, tok, ABAP_NAME_MAX_LENGTH, message)
+}
+
+validate_abap_name_text_length :: proc(
+	p: ^Parser,
+	name: string,
+	range: tokenizer.Range,
+	message := "syntax error: name can be up to 30 characters long",
+) {
+	validate_name_length(p, name, range, ABAP_NAME_MAX_LENGTH, message)
+}
+
+validate_qualified_abap_name_length :: proc(
+	p: ^Parser,
+	name: string,
+	name_range: tokenizer.Range,
+	qualifier: string,
+	qualifier_range: tokenizer.Range,
+	member_name: string,
+	member_range: tokenizer.Range,
+	message := "syntax error: name can be up to 30 characters long",
+) {
+	if qualifier != "" {
+		validate_abap_name_text_length(p, qualifier, qualifier_range, message)
+		validate_abap_name_text_length(p, member_name, member_range, message)
+		return
+	}
+	validate_abap_name_text_length(p, name, name_range, message)
+}
+
+validate_selection_screen_name_length :: proc(p: ^Parser, tok: Token, message: string) {
+	validate_token_name_length(p, tok, SELECTION_SCREEN_NAME_MAX_LENGTH, message)
+}

@@ -1608,6 +1608,9 @@ parse_data_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	start := expect_keyword(p, "DATA")
 	expect_token(p, .LParen)
 	name := expect_token(p, .Ident)
+	if name.kind == .Ident {
+		validate_abap_name_length(p, name)
+	}
 	close := expect_token(p, .RParen)
 	if close.kind != .RParen {
 		return nil
@@ -1627,6 +1630,9 @@ parse_field_symbol_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	expect_keyword(p, "SYMBOL")
 	expect_token(p, .LParen)
 	name := expect_token(p, .Ident)
+	if name.kind == .Ident {
+		validate_abap_name_length(p, name)
+	}
 	close := expect_token(p, .RParen)
 	if close.kind != .RParen {
 		return nil

@@ -137,6 +137,9 @@ parse_data_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_data_inline_decl_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 	expect_token(p, .LParen)
 	name := expect_token(p, .Ident)
+	if name.kind == .Ident {
+		validate_abap_name_length(p, name)
+	}
 	close := expect_token(p, .RParen)
 	if close.kind != .RParen {
 		return nil
@@ -852,7 +855,11 @@ parse_ranges_clause :: proc(p: ^Parser) -> (ast.Ranges_Clause, bool) {
 }
 
 parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
-	name, name_index, ok := parse_decl_name(p)
+	name, name_index, ok := parse_decl_name(
+		p,
+		SELECTION_SCREEN_NAME_MAX_LENGTH,
+		"syntax error: selection-screen parameter name can be up to eight characters long",
+	)
 	if !ok {
 		return ast.Parameters_Clause{}, false
 	}
@@ -894,7 +901,11 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 }
 
 parse_select_options_clause :: proc(p: ^Parser) -> (ast.Select_Options_Clause, bool) {
-	name, name_index, ok := parse_decl_name(p)
+	name, name_index, ok := parse_decl_name(
+		p,
+		SELECTION_SCREEN_NAME_MAX_LENGTH,
+		"syntax error: selection-screen select-option name can be up to eight characters long",
+	)
 	if !ok {
 		return ast.Select_Options_Clause{}, false
 	}
@@ -1015,7 +1026,11 @@ parse_class_data_clause :: proc(p: ^Parser) -> (ast.Class_Data_Clause, bool) {
 	return clause, true
 }
 
-parse_decl_name :: proc(p: ^Parser) -> (Token, int, bool) {
+parse_decl_name :: proc(
+	p: ^Parser,
+	max_length := ABAP_NAME_MAX_LENGTH,
+	limit_message := "syntax error: name can be up to 30 characters long",
+) -> (Token, int, bool) {
 	index := p.index
 	tok := current_token(p)
 	if tok.kind != .Ident && tok.kind != .Number && tok.kind != .Star {
@@ -1027,6 +1042,7 @@ parse_decl_name :: proc(p: ^Parser) -> (Token, int, bool) {
 		tail := bump_token(p)
 		tok.range.end = tail.range.end
 	}
+	validate_token_name_length(p, tok, max_length, limit_message)
 	return tok, index, true
 }
 
@@ -1510,6 +1526,9 @@ parse_parameter_addition :: proc(p: ^Parser, clause: ^ast.Parameters_Clause) -> 
 		return true, true
 	}
 	if at_keyword_phrase(p, "RADIOBUTTON GROUP") {
+		if clause.memory_id != nil {
+			error_current(p, "syntax error: RADIOBUTTON GROUP and MEMORY ID cannot be used together")
+		}
 		clause.radiobutton_group = parse_required_radiobutton_group_clause(p)
 		return true, clause.radiobutton_group != nil
 	}
@@ -1522,6 +1541,9 @@ parse_parameter_addition :: proc(p: ^Parser, clause: ^ast.Parameters_Clause) -> 
 		return true, clause.modif_id != nil
 	}
 	if at_keyword_phrase(p, "MEMORY ID") {
+		if clause.radiobutton_group != nil {
+			error_current(p, "syntax error: RADIOBUTTON GROUP and MEMORY ID cannot be used together")
+		}
 		clause.memory_id = parse_required_memory_id_clause(p)
 		return true, clause.memory_id != nil
 	}
@@ -1646,7 +1668,11 @@ parse_required_sign_clause :: proc(p: ^Parser) -> ^ast.Sign_Clause {
 
 parse_required_radiobutton_group_clause :: proc(p: ^Parser) -> ^ast.Radiobutton_Group_Clause {
 	expect_keyword_phrase(p, "RADIOBUTTON GROUP")
-	group, ok := parse_required_addition_name(p)
+	group, ok := parse_required_addition_name(
+		p,
+		SELECTION_SCREEN_RADIOBUTTON_GROUP_MAX_LENGTH,
+		"syntax error: selection-screen radio button group name can be up to four characters long",
+	)
 	if !ok {
 		return nil
 	}
@@ -1657,7 +1683,11 @@ parse_required_radiobutton_group_clause :: proc(p: ^Parser) -> ^ast.Radiobutton_
 
 parse_required_user_command_clause :: proc(p: ^Parser) -> ^ast.User_Command_Clause {
 	expect_keyword_phrase(p, "USER-COMMAND")
-	command, ok := parse_required_addition_name(p)
+	command, ok := parse_required_addition_name(
+		p,
+		SELECTION_SCREEN_COMMAND_MAX_LENGTH,
+		"syntax error: selection-screen user command can be up to 20 characters long",
+	)
 	if !ok {
 		return nil
 	}
@@ -1668,7 +1698,11 @@ parse_required_user_command_clause :: proc(p: ^Parser) -> ^ast.User_Command_Clau
 
 parse_required_modif_id_clause :: proc(p: ^Parser) -> ^ast.Modif_Id_Clause {
 	expect_keyword_phrase(p, "MODIF ID")
-	id, ok := parse_required_addition_name(p)
+	id, ok := parse_required_addition_name(
+		p,
+		SELECTION_SCREEN_MODIF_ID_MAX_LENGTH,
+		"syntax error: selection-screen modification id can be up to three characters long",
+	)
 	if !ok {
 		return nil
 	}
@@ -1679,6 +1713,15 @@ parse_required_modif_id_clause :: proc(p: ^Parser) -> ^ast.Modif_Id_Clause {
 
 parse_required_memory_id_clause :: proc(p: ^Parser) -> ^ast.Memory_Id_Clause {
 	expect_keyword_phrase(p, "MEMORY ID")
+	name := current_token(p)
+	if name.kind == .Ident || name.kind == .Number {
+		validate_token_name_length(
+			p,
+			name,
+			SELECTION_SCREEN_MEMORY_ID_MAX_LENGTH,
+			"syntax error: selection-screen memory id can be up to 20 characters long",
+		)
+	}
 	id := parse_expr(p)
 	if id == nil {
 		return nil
@@ -1729,9 +1772,16 @@ parse_required_selection_request_clause :: proc(
 	return clause
 }
 
-parse_required_addition_name :: proc(p: ^Parser) -> (string, bool) {
+parse_required_addition_name :: proc(
+	p: ^Parser,
+	max_length := 0,
+	limit_message := "",
+) -> (string, bool) {
 	tok := current_token(p)
 	if tok.kind == .Ident || tok.kind == .Number || tok.kind == .String {
+		if max_length > 0 {
+			validate_token_name_length(p, tok, max_length, limit_message)
+		}
 		bump_token(p)
 		return tokenizer.token_lexeme(tok, p.source), true
 	}

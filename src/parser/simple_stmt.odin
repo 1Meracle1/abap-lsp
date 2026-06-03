@@ -638,6 +638,7 @@ raw_operand_inline_decl_at :: proc(
 	   raw_operand_ident_like(p.tokens[index + 2]) &&
 	   p.tokens[index + 3].kind == .RParen {
 		name := p.tokens[index + 2]
+		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Data,
 				name = tokenizer.token_lexeme(name, p.source),
@@ -654,6 +655,7 @@ raw_operand_inline_decl_at :: proc(
 	   raw_operand_ident_like(p.tokens[index + 4]) &&
 	   p.tokens[index + 5].kind == .RParen {
 		name := p.tokens[index + 4]
+		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Field_Symbol,
 				name = tokenizer.token_lexeme(name, p.source),
@@ -1948,10 +1950,20 @@ parse_selection_screen_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Selection_Screen_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "COMMENT") {
 		parse_selection_screen_comment(p, stmt, body_start)
+	} else if allow_keyword(p, "PUSHBUTTON") {
+		parse_selection_screen_pushbutton(p, body_start)
 	} else {
 		for !simple_stmt_done(p, body_start) {
 			if allow_keyword(p, "TITLE") {
-				selection_screen_read_name(p, &stmt.title_name, &stmt.title_range)
+				selection_screen_read_name(
+					p,
+					&stmt.title_name,
+					&stmt.title_range,
+					"syntax error: selection-screen frame title name can be up to eight characters long",
+				)
+				continue
+			}
+			if parse_selection_screen_block_name(p) {
 				continue
 			}
 			bump_token(p)
@@ -1972,11 +1984,66 @@ parse_selection_screen_comment :: proc(
 	for !simple_stmt_done(p, body_start) {
 		if allow_keyword(p, "FOR") {
 			allow_keyword(p, "FIELD")
-			selection_screen_read_name(p, &stmt.field_name, &stmt.field_range)
+			selection_screen_read_name(
+				p,
+				&stmt.field_name,
+				&stmt.field_range,
+				"syntax error: selection-screen field name can be up to eight characters long",
+			)
+			continue
+		}
+		if at_keyword_phrase(p, "MODIF ID") {
+			_ = parse_required_modif_id_clause(p)
 			continue
 		}
 		bump_token(p)
 	}
+}
+
+parse_selection_screen_pushbutton :: proc(p: ^Parser, body_start: int) {
+	parse_selection_screen_comment_position(p, body_start)
+	name: string
+	name_range: tokenizer.Range
+	selection_screen_read_name(
+		p,
+		&name,
+		&name_range,
+		"syntax error: selection-screen pushbutton name can be up to eight characters long",
+	)
+	for !simple_stmt_done(p, body_start) {
+		if at_keyword_phrase(p, "USER-COMMAND") {
+			_ = parse_required_user_command_clause(p)
+			continue
+		}
+		if at_keyword_phrase(p, "MODIF ID") {
+			_ = parse_required_modif_id_clause(p)
+			continue
+		}
+		bump_token(p)
+	}
+}
+
+parse_selection_screen_block_name :: proc(p: ^Parser) -> bool {
+	if !(at_keyword(p, "BEGIN") || at_keyword(p, "END")) {
+		return false
+	}
+	bump_token(p)
+	if !allow_keyword(p, "OF") {
+		return true
+	}
+	if !allow_keyword(p, "BLOCK") {
+		return true
+	}
+	name: string
+	name_range: tokenizer.Range
+	selection_screen_read_name(
+		p,
+		&name,
+		&name_range,
+		"syntax error: selection-screen block name can be up to 20 characters long",
+		SELECTION_SCREEN_BLOCK_NAME_MAX_LENGTH,
+	)
+	return true
 }
 
 parse_selection_screen_comment_position :: proc(p: ^Parser, body_start: int) {
@@ -1996,11 +2063,14 @@ selection_screen_read_name :: proc(
 	p: ^Parser,
 	name: ^string,
 	range: ^tokenizer.Range,
+	limit_message := "syntax error: selection-screen comment name can be up to eight characters long",
+	max_length := SELECTION_SCREEN_NAME_MAX_LENGTH,
 ) -> bool {
 	tok := current_token(p)
 	if tok.kind != .Ident {
 		return false
 	}
+	validate_token_name_length(p, tok, max_length, limit_message)
 	name^ = tokenizer.token_lexeme(tok, p.source)
 	range^ = tok.range
 	bump_token(p)
@@ -2114,6 +2184,7 @@ parse_oop_alias_clause :: proc(p: ^Parser) -> (ast.Oop_Alias_Clause, bool) {
 		error_current(p, "syntax error: expected alias name")
 		return {}, false
 	}
+	validate_abap_name_length(p, name)
 	bump_token(p)
 	if !allow_keyword(p, "FOR") {
 		error_current(p, "syntax error: expected FOR in ALIASES statement")
@@ -2204,6 +2275,15 @@ parse_oop_members :: proc(p: ^Parser, stmt: ^ast.Oop_Simple_Stmt) {
 			continue
 		}
 		member_name, member_range, qualifier, qualifier_range, component_name, component_range, next_index, _ := qualified_ident_parts_at(p, p.index)
+		validate_qualified_abap_name_length(
+			p,
+			member_name,
+			member_range,
+			qualifier,
+			qualifier_range,
+			component_name,
+			component_range,
+		)
 		p.index = next_index
 		member := ast.Oop_Member_Clause {
 			name            = member_name,
@@ -2297,6 +2377,7 @@ parse_oop_event_handler_clause :: proc(p: ^Parser) -> (ast.Oop_Event_Handler_Cla
 		error_current(p, "syntax error: expected event name after FOR EVENT")
 		return {}, false
 	}
+	validate_abap_name_length(p, event)
 	bump_token(p)
 	if !allow_keyword(p, "OF") {
 		error_current(p, "syntax error: expected OF in FOR EVENT method declaration")
@@ -2339,6 +2420,7 @@ parse_oop_signature_parameter :: proc(p: ^Parser, clause: ^ast.Oop_Signature_Cla
 	if !ok {
 		return false
 	}
+	validate_abap_name_text_length(p, name, name_range)
 	type_clause: ^ast.Data_Type_Clause
 	if at_keyword(p, "TYPE") || at_keyword(p, "LIKE") {
 		type_clause = parse_oop_parameter_type_clause(p)
