@@ -2884,6 +2884,8 @@ type_fact_from_structure_path :: proc(
 					current_unit = &project.units[resolved_unit_index]
 					current_structure = resolved.structure
 					continue
+				} else if resolved_ok && type_fact_is_known(resolved) {
+					fact = resolved
 				}
 			}
 			next_unit_index := unit_id_index(field.decl_unit)

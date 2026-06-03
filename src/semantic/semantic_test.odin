@@ -5187,6 +5187,183 @@ ENDFUNCTION.`,
 }
 
 @(test)
+semantic_typecheck_reports_concrete_method_argument_failure :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_concrete_arg.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run IMPORTING iv_index TYPE i.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD run.
+  ENDMETHOD.
+ENDCLASS.
+START-OF-SELECTION.
+  DATA lv_text TYPE string.
+  lcl_demo=>run( lv_text ).`
+	unit := collect_test_unit(t, "file:///tc_concrete_arg.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 1)
+	message, ok := diagnostic_message_for_kind(&unit, .Incompatible_Argument_Type)
+	testing.expect(t, ok)
+	testing.expect_value(
+		t,
+		message,
+		"'lv_text' is not type-compatible with formal parameter 'iv_index' (current type 'string', expected type 'i')",
+	)
+}
+
+@(test)
+semantic_typecheck_reports_dependency_structure_field_argument_failure :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://tc_dependency_field_arg.abap",
+		source = `REPORT z_tc_dependency_field_arg.
+CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_current_by_index IMPORTING iv_index TYPE i.
+    METHODS sync_current_from_top.
+ENDCLASS.
+CLASS lcl_demo IMPLEMENTATION.
+  METHOD set_current_by_index.
+  ENDMETHOD.
+  METHOD sync_current_from_top.
+    DATA ls_row TYPE zrow.
+    set_current_by_index( ls_row-index ).
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/ddic-structure/zrow.abap",
+			source = `TYPES: BEGIN OF zrow,
+         index TYPE c,
+       END OF zrow.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, diagnostic_count(root, .Incompatible_Argument_Type), 1)
+		message, ok := diagnostic_message_for_kind(root, .Incompatible_Argument_Type)
+		testing.expect(t, ok)
+		testing.expect_value(
+			t,
+			message,
+			"'ls_row-index' is not type-compatible with formal parameter 'iv_index' (current type 'c', expected type 'i')",
+		)
+	}
+}
+
+@(test)
+semantic_typecheck_reports_include_definition_method_argument_failure :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zmain.abap",
+			source = `REPORT zmain.
+INCLUDE: ztop, zf01.`,
+		},
+		{
+			uri = "file:///workspace/ztop.abap",
+			source = `CLASS lcl_report DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_current_by_index IMPORTING iv_index TYPE i.
+    METHODS sync_current_from_top.
+ENDCLASS.`,
+		},
+		{
+			uri = "file:///workspace/zf01.abap",
+			source = `CLASS lcl_report IMPLEMENTATION.
+  METHOD set_current_by_index.
+  ENDMETHOD.
+  METHOD sync_current_from_top.
+    DATA ls_row TYPE zrow.
+    set_current_by_index( ls_row-index ).
+  ENDMETHOD.
+ENDCLASS.`,
+		},
+		{
+			uri = "abapls-cache:/ddic-structure/zrow.abap",
+			source = `TYPES: BEGIN OF zrow,
+         index TYPE c,
+       END OF zrow.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_units_project_test(t, sources[:])
+	impl := analyze.project_unit_by_uri(&project, sources[2].uri)
+
+	testing.expect(t, impl != nil)
+	if impl != nil {
+		testing.expect_value(t, diagnostic_count(impl, .Incompatible_Argument_Type), 1)
+		message, ok := diagnostic_message_for_kind(impl, .Incompatible_Argument_Type)
+		testing.expect(t, ok)
+		testing.expect_value(
+			t,
+			message,
+			"'ls_row-index' is not type-compatible with formal parameter 'iv_index' (current type 'c', expected type 'i')",
+		)
+	}
+}
+
+@(test)
+semantic_typecheck_reports_include_dependency_alias_field_argument_failure :: proc(t: ^testing.T) {
+	sources := [?]analyze.Source_Input {
+		{
+			uri = "file:///workspace/zmain_alias.abap",
+			source = `REPORT zmain_alias.
+INCLUDE: ztop_alias, zf01_alias.`,
+		},
+		{
+			uri = "file:///workspace/ztop_alias.abap",
+			source = `CLASS lcl_report DEFINITION.
+  PUBLIC SECTION.
+    METHODS set_current_by_index IMPORTING iv_index TYPE i.
+    METHODS sync_current_from_top.
+ENDCLASS.`,
+		},
+		{
+			uri = "file:///workspace/zf01_alias.abap",
+			source = `CLASS lcl_report IMPLEMENTATION.
+  METHOD set_current_by_index.
+  ENDMETHOD.
+  METHOD sync_current_from_top.
+    DATA ls_row TYPE zrow_alias.
+    set_current_by_index( ls_row-index ).
+  ENDMETHOD.
+ENDCLASS.`,
+		},
+		{
+			uri = "abapls-cache:/ddic-structure/zrow_alias.abap",
+			source = `TYPES: BEGIN OF zrow_alias,
+         index TYPE zindex_alias,
+       END OF zrow_alias.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-data-element/zindex_alias.abap",
+			source = `TYPES zindex_alias TYPE n.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_units_project_test(t, sources[:])
+	impl := analyze.project_unit_by_uri(&project, sources[2].uri)
+
+	testing.expect(t, impl != nil)
+	if impl != nil {
+		testing.expect_value(t, diagnostic_count(impl, .Incompatible_Argument_Type), 1)
+		message, ok := diagnostic_message_for_kind(impl, .Incompatible_Argument_Type)
+		testing.expect(t, ok)
+		testing.expect_value(
+			t,
+			message,
+			"'ls_row-index' is not type-compatible with formal parameter 'iv_index' (current type 'n', expected type 'i')",
+		)
+	}
+}
+
+@(test)
 semantic_typecheck_reports_method_argument_failures :: proc(t: ^testing.T) {
 	source := `REPORT z_tc_method_args.
 TYPES: BEGIN OF e070,
@@ -5218,7 +5395,7 @@ START-OF-SELECTION.
 	unit := collect_test_unit(t, "file:///tc_method_args.abap", source)
 
 	testing.expect(t, has_diagnostic(&unit, .Unknown_Named_Parameter))
-	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 1)
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 3)
 	testing.expect(t, !has_diagnostic(&unit, .Missing_Required_Parameter))
 }
 

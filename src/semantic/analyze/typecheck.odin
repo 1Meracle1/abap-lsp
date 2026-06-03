@@ -231,8 +231,8 @@ typecheck_calls :: proc(
 			}
 			formal := typecheck_parameter_fact(project, lookup, signature.unit_index, signature.info, param^)
 			if !arg_mapping_ok ||
-			   !type_fact_is_high_confidence(actual) ||
-			   !type_fact_is_high_confidence(formal) {
+			   !typecheck_call_fact_is_trusted(project, actual) ||
+			   !typecheck_call_fact_is_trusted(project, formal) {
 				continue
 			}
 			if !typecheck_formal_requires_typecheck(project, formal) {
@@ -544,6 +544,39 @@ typecheck_call_signature :: proc(
 			direct = direct_ok && direct.unit == member.unit && direct.symbol == member.symbol,
 		}, info != nil
 	case .Implicit_Method:
+		if site.target.method_name == "" {
+			return {}, false
+		}
+		if unit_index >= 0 &&
+		   unit_index < len(lookup.visible) &&
+		   unit_index < len(lookup.predecessors) {
+			member, member_unit_index := method_signature_member_for_scope(
+				project.units[:],
+				unit_index,
+				site.scope,
+				site.target.method_name,
+				&lookup.root_lookup,
+				lookup.class_scope_entries,
+				lookup.visible[unit_index],
+				lookup.predecessors[unit_index],
+			)
+			if member.symbol != INVALID_SYMBOL_ID &&
+			   member_unit_index >= 0 &&
+			   member_unit_index < len(project.units) {
+				info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+				return Typecheck_Call_Signature {
+					info = info,
+					unit_index = member_unit_index,
+					direct = typecheck_implicit_method_signature_is_direct(
+						project,
+						unit_index,
+						site.scope,
+						member,
+						member_unit_index,
+					),
+				}, info != nil
+			}
+		}
 		class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], site.scope)
 		if !ok {
 			return {}, false
@@ -591,6 +624,34 @@ typecheck_call_signature :: proc(
 	case:
 	}
 	return {}, false
+}
+
+typecheck_implicit_method_signature_is_direct :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	scope_id: Scope_Id,
+	member: Symbol_Handle,
+	member_unit_index: int,
+) -> bool {
+	if unit_index < 0 || unit_index >= len(project.units) ||
+	   member_unit_index < 0 || member_unit_index >= len(project.units) {
+		return false
+	}
+	current_class_symbol, current_ok := enclosing_class_owner_unit(&project.units[unit_index], scope_id)
+	member_symbol := symbol(&project.units[member_unit_index], member.symbol)
+	if !current_ok || member_symbol == nil {
+		return false
+	}
+	member_class_symbol, member_ok := enclosing_class_owner_unit(
+		&project.units[member_unit_index],
+		member_symbol.scope,
+	)
+	if !member_ok {
+		return false
+	}
+	current_class := symbol(&project.units[unit_index], current_class_symbol)
+	member_class := symbol(&project.units[member_unit_index], member_class_symbol)
+	return current_class != nil && member_class != nil && current_class.name == member_class.name
 }
 
 typecheck_call_parameter :: proc(
@@ -799,8 +860,20 @@ typecheck_argument_fact :: proc(
 }
 
 typecheck_formal_requires_typecheck :: proc(project: ^Project_Analysis, formal: Type_Fact_Data) -> bool {
-	name, ok := typecheck_builtin_name(project, formal)
-	return ok && is_generic_builtin_type_name(name)
+	if _, ok := typecheck_builtin_name(project, formal); ok {
+		return true
+	}
+	return typecheck_fact_is_structure(formal) ||
+	       typecheck_fact_is_table(project, formal) ||
+	       typecheck_fact_is_ref(project, formal)
+}
+
+typecheck_call_fact_is_trusted :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> bool {
+	if type_fact_is_high_confidence(fact) {
+		return true
+	}
+	name, ok := typecheck_builtin_name(project, fact)
+	return ok && !is_generic_builtin_type_name(name) && typecheck_scalar_group(name) != .Unknown
 }
 
 typecheck_signature_reports_parameter_names :: proc(info: ^Decl_Info_Data) -> bool {
@@ -1167,7 +1240,7 @@ typecheck_call_compatible :: proc(
 		return true, true
 	}
 	if src_ok && dst_ok {
-		return src_name == dst_name, true
+		return typecheck_scalar_call_compatibility(src_name, dst_name)
 	}
 	src_table := typecheck_fact_is_table(project, src)
 	dst_table := typecheck_fact_is_table(project, dst)
@@ -1403,6 +1476,22 @@ typecheck_scalar_assignment_conversion :: proc(src_name, dst_name: string) -> (b
 		return false, true
 	}
 	return true, true
+}
+
+typecheck_scalar_call_compatibility :: proc(src_name, dst_name: string) -> (bool, bool) {
+	if src_name == dst_name {
+		return true, true
+	}
+	src_group := typecheck_scalar_group(src_name)
+	dst_group := typecheck_scalar_group(dst_name)
+	if src_group == .Unknown || dst_group == .Unknown ||
+	   src_group == .Generic_Simple || dst_group == .Generic_Simple {
+		return false, false
+	}
+	if src_group == dst_group {
+		return true, true
+	}
+	return false, true
 }
 
 typecheck_scalar_group :: proc(name: string, depth := 0) -> Typecheck_Scalar_Group {
