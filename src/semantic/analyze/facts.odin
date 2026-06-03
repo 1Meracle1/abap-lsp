@@ -291,12 +291,61 @@ collect_constructor_expr_refs :: proc(
 		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
 		return
 	}
+	if expr.kind == .Filter {
+		collect_filter_constructor_args(c, expr, scope)
+		fact := type_fact_from_expr(c, expr, scope)
+		add_expression_fact(c, scope, expr.range, .Call_Result, fact)
+		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+		return
+	}
 	for arg in expr.args {
 		collect_expr_refs(c, arg, scope)
 	}
 	fact := type_fact_from_expr(c, expr, scope)
 	add_expression_fact(c, scope, expr.range, .Call_Result, fact)
 	add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+}
+
+collect_filter_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Expr, scope: Scope_Id) {
+	source: ^ast.Expr
+	filter: ^ast.Expr
+	for arg in expr.args {
+		if where_expr, ok := arg.derived_expr.(^ast.Constructor_Where_Clause_Expr); ok {
+			collect_filter_where_refs(c, source, filter, where_expr.condition, scope)
+			continue
+		}
+		collect_expr_refs(c, arg, scope)
+		if source == nil {
+			source = arg
+		} else if filter == nil {
+			filter = arg
+		}
+	}
+}
+
+collect_filter_where_refs :: proc(
+	c: ^Collector,
+	source, filter, expr: ^ast.Expr,
+	scope: Scope_Id,
+) {
+	if expr == nil {
+		return
+	}
+	if n, ok := expr.derived_expr.(^ast.Binary_Expr); ok {
+		if n.op == .And || n.op == .Or {
+			collect_filter_where_refs(c, source, filter, n.left, scope)
+			collect_filter_where_refs(c, source, filter, n.right, scope)
+			return
+		}
+		right_target := filter
+		if right_target == nil {
+			right_target = source
+		}
+		collect_internal_table_where_refs(c, source, n.left, scope)
+		collect_internal_table_where_refs(c, right_target, n.right, scope)
+		return
+	}
+	collect_internal_table_where_refs(c, source, expr, scope)
 }
 
 collect_reduce_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Expr, scope: Scope_Id) {

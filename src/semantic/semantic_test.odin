@@ -3876,6 +3876,28 @@ ENDFORM.
 }
 
 @(test)
+filter_constructor_where_names_are_row_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_obj,
+           objid TYPE string,
+         END OF ty_obj.
+  DATA lt_child_obj TYPE STANDARD TABLE OF ty_obj WITH EMPTY KEY.
+  DATA lt_rep_rel_obj TYPE STANDARD TABLE OF ty_obj WITH EMPTY KEY.
+
+  DATA(lt_obj_dif) = FILTER #( lt_child_obj
+                               EXCEPT IN lt_rep_rel_obj
+                               WHERE objid = objid ).
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///filter_constructor_where_fields.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_reference(&unit, "objid", .Value, .Identifier))
+}
+
+@(test)
 constructor_for_in_group_uses_loop_group_binding :: proc(t: ^testing.T) {
 	source := `
 FORM run.
