@@ -228,6 +228,9 @@ collect_constructor_let_binding_refs :: proc(
 }
 
 constructor_assignment_inferred_value :: proc(expr: ^ast.Expr) -> (^ast.Expr, bool) {
+	if table, ok := expr.derived_expr.(^ast.Table_Expr); ok && table.table != nil {
+		return table.table, true
+	}
 	if con, ok := expr.derived_expr.(^ast.Constructor_Expr);
 	   ok && con.kind == .Value && len(con.args) == 1 {
 		arg := con.args[0]

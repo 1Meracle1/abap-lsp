@@ -4419,6 +4419,28 @@ ENDFORM.`
 }
 
 @(test)
+inline_data_statement_infers_direct_table_expr_row :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF ty_item,
+         objid TYPE string,
+         gtin TYPE string,
+         uom TYPE string,
+       END OF ty_item.
+TYPES ty_items TYPE STANDARD TABLE OF ty_item WITH EMPTY KEY.
+DATA it_obj_itm TYPE ty_items.
+DATA is_obj_ids TYPE ty_item.
+
+FORM run.
+  DATA(ls_obj_itm) = it_obj_itm[ objid = is_obj_ids-objid ].
+  IF ls_obj_itm-uom IS INITIAL.
+    ls_obj_itm-uom = ls_obj_itm-gtin.
+  ENDIF.
+ENDFORM.`
+	unit := collect_test_unit(t, "file:///inline_data_direct_table_expr.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 inline_data_statement_from_ddic_cache_row_allows_incomplete_append_fields :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///inline_data_ddic_cache_row.abap",
@@ -4496,6 +4518,29 @@ CLASS lcl IMPLEMENTATION.
   ENDMETHOD.
 ENDCLASS.`
 	unit := collect_test_unit(t, "file:///constructor_let_unknown_table_expr.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
+inline_data_statement_unknown_direct_table_expr_row_shape_is_not_invalid :: proc(t: ^testing.T) {
+	source := `CLASS lcl DEFINITION.
+  PUBLIC SECTION.
+    METHODS get RETURNING VALUE(rt_events) TYPE zmissing_tt.
+    METHODS run.
+ENDCLASS.
+
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    DATA(lt_events) = get( ).
+    DATA(ls_evt_obj) = lt_events[ objid = '1' ].
+    IF ls_evt_obj-status_rep_evt = 1.
+      DATA(lv_objid) = ls_evt_obj-objid.
+    ENDIF.
+  ENDMETHOD.
+ENDCLASS.`
+	unit := collect_test_unit(t, "file:///inline_data_direct_unknown_table_expr.abap", source)
 
 	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
 	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
