@@ -4,16 +4,24 @@
 
 This section has priority over every other convention in this file.
 
-- Simplicity first: write the minimum code that solves the problem. Nothing
-  speculative.
-- Implement only what was asked. No features beyond the request.
-- Do not add abstractions for single-use code.
-- Do not add flexibility or configurability that was not requested.
-- Do not add error handling for impossible scenarios, use assertions if these conditions can be verified in debug builds.
-- If you write 20 lines and it could be 5, rewrite it.
-- Minimize code size aggressively: no pessimization, no bloat, no excess.
-- Write compact, simple, clean, deeply thought-through code from first
-  principles that surgically executes the intention.
+- Make the change that best fits the existing architecture. Understand the
+  relevant modules, ownership boundaries, and data flow before editing.
+- Simplicity means clear design with the least necessary code, not the shortest
+  local workaround. A small change that duplicates behavior, bypasses the owning
+  subsystem, or leaves inconsistent rules in different places is not simple.
+- Implement only what was asked. Do not add speculative features, configuration,
+  dependencies, or framework-like abstractions.
+- Reuse existing parser, semantic-analysis, workspace, ADT, dependency-store,
+  runtime, and persistence APIs before creating new code. If behavior already
+  exists, extend or adapt the owning implementation instead of copying it.
+- Add helpers or abstractions only when they remove real duplication, preserve
+  module boundaries, or express an established project pattern.
+- Fix root causes in the responsible subsystem. Avoid call-site workarounds
+  unless the issue is truly local to that call site.
+- Keep code compact and direct, but prioritize correctness, coherence, and
+  maintainability over minimizing line count.
+- Do not add error handling for impossible scenarios; use assertions if these
+  conditions can be verified in debug builds.
 
 ## Project Structure & Module Organization
 
@@ -52,7 +60,8 @@ Follow the style already used in `src/`: package names are lower snake case,
 types use `Camel_Case` where the surrounding Odin code does, procedures and
 variables use `snake_case`, and tests are descriptive `snake_case` procedures
 annotated with `@(test)`. Keep modules focused by responsibility and prefer
-small local helpers over framework-like abstractions.
+existing package helpers over duplicated local logic. Use small local helpers
+when behavior is truly local, and avoid framework-like abstractions.
 
 Default procedure calling convention passes implicit `context` pointer on each call- this context variable is local to each scope.
 In tests, pass `context.allocator` directly instead of creating a heap allocator or local allocator alias.

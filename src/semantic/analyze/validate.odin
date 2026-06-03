@@ -937,7 +937,7 @@ validate_field_accesses :: proc(
 			if skip_table_line_diag {
 				continue
 			}
-			if field_access_base_is_inline_table_line_target(project, lookup, unit_index, access) {
+			if field_access_base_has_unknown_inline_table_line_shape(project, lookup, unit_index, access) {
 				continue
 			}
 			if !field_access_base_resolves(project, lookup, unit_index, access) {
@@ -1264,7 +1264,7 @@ structure_field_next_structure :: proc(
 	return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, false
 }
 
-field_access_base_is_inline_table_line_target :: proc(
+field_access_base_has_unknown_inline_table_line_shape :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	unit_index: int,
@@ -1282,12 +1282,20 @@ field_access_base_is_inline_table_line_target :: proc(
 	if base == nil {
 		return false
 	}
+	found := false
 	for assignment in unit.assignment_sites {
 		if .Assigns_Table_Line in assignment.flags && assignment.lhs_range == base.decl_range {
-			return true
+			found = true
+			break
 		}
 	}
-	return false
+	if !found || base.structure != INVALID_STRUCTURE_ID {
+		return false
+	}
+	if !base.has_declared_type {
+		return true
+	}
+	return declared_type_has_unknown_shape(project, lookup, unit_index, base.scope, base.declared_type)
 }
 
 field_access_base_resolves :: proc(

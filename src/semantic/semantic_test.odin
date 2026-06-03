@@ -8758,6 +8758,77 @@ ENDFORM.
 }
 
 @(test)
+inline_table_line_targets_report_missing_known_row_fields :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_rep,
+           rep_evtid        TYPE string,
+           status_response  TYPE string,
+         END OF ty_rep.
+  DATA mt_rep TYPE STANDARD TABLE OF ty_rep WITH EMPTY KEY.
+  DATA lv_text TYPE string.
+
+  LOOP AT mt_rep INTO DATA(ls_loop).
+    lv_text = ls_loop-rep_evtid.
+    lv_text = ls_loop-response_http_code.
+  ENDLOOP.
+
+  READ TABLE mt_rep INTO DATA(ls_read) INDEX 1.
+  lv_text = ls_read-response_http_reason.
+
+  LOOP AT mt_rep ASSIGNING FIELD-SYMBOL(<ls_assign>).
+    lv_text = <ls_assign>-status_response.
+    lv_text = <ls_assign>-response_http_text.
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///inline_table_line_missing_fields.abap", source)
+
+	missing_code := false
+	missing_reason := false
+	missing_text := false
+	for diagnostic in unit.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		switch diagnostic.message {
+		case "unknown field 'response_http_code'":
+			missing_code = true
+		case "unknown field 'response_http_reason'":
+			missing_reason = true
+		case "unknown field 'response_http_text'":
+			missing_text = true
+		}
+	}
+
+	testing.expect_value(t, diagnostic_count(&unit, .Unknown_Field), 3)
+	testing.expect(t, missing_code)
+	testing.expect(t, missing_reason)
+	testing.expect(t, missing_text)
+}
+
+@(test)
+inline_table_line_targets_keep_unknown_row_shape_quiet :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  DATA lt_rows TYPE zmissing_rows.
+  DATA lv_text TYPE string.
+
+  LOOP AT lt_rows INTO DATA(ls_loop).
+    lv_text = ls_loop-any_field.
+  ENDLOOP.
+
+  READ TABLE lt_rows INTO DATA(ls_read) INDEX 1.
+  lv_text = ls_read-other_field.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///inline_table_line_unknown_shape.abap", source)
+
+	testing.expect(t, has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+}
+
+@(test)
 dereference_operator_requires_data_reference :: proc(t: ^testing.T) {
 	generic_any := collect_test_unit(
 		t,
@@ -13646,6 +13717,58 @@ ENDFORM.
 
 	testing.expect(t, form != nil)
 	testing.expect(t, !has_diagnostic(form, .Unknown_Field))
+}
+
+@(test)
+analyze_target_reports_inline_table_line_missing_fields_across_includes :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "file:///workspace/zmain.abap",
+		source = "REPORT zmain. INCLUDE: ztop, zf01.",
+	}
+	candidates := [?]analyze.Source_Input {
+		{uri = "file:///workspace/ztop.abap", source = `
+TYPES: BEGIN OF ty_rep,
+         rep_evtid        TYPE string,
+         status_response  TYPE string,
+       END OF ty_rep.
+DATA mt_rep TYPE STANDARD TABLE OF ty_rep WITH EMPTY KEY.
+`},
+		{uri = "file:///workspace/zf01.abap", source = `
+FORM fill_rep_events.
+  DATA lv_text TYPE string.
+  LOOP AT mt_rep INTO DATA(ls_rep).
+    lv_text = ls_rep-rep_evtid.
+    lv_text = ls_rep-response_http_code.
+    lv_text = ls_rep-response_http_reason.
+    lv_text = ls_rep-status_response.
+  ENDLOOP.
+ENDFORM.
+`},
+	}
+
+	project := analyze_project_test(t, 0, target, candidates[:])
+	form := analyze.project_unit_by_uri(&project, candidates[1].uri)
+
+	testing.expect(t, form != nil)
+	if form == nil {
+		return
+	}
+	missing_code := false
+	missing_reason := false
+	for diagnostic in form.diagnostics {
+		if diagnostic.kind != .Unknown_Field {
+			continue
+		}
+		switch diagnostic.message {
+		case "unknown field 'response_http_code'":
+			missing_code = true
+		case "unknown field 'response_http_reason'":
+			missing_reason = true
+		}
+	}
+	testing.expect_value(t, diagnostic_count(form, .Unknown_Field), 2)
+	testing.expect(t, missing_code)
+	testing.expect(t, missing_reason)
 }
 
 @(test)
