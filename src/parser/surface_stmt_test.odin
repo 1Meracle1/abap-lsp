@@ -972,6 +972,28 @@ SELECT a~matnr FROM mara AS a JOIN makt AS b ON b~matnr = a~matnr INTO TABLE lt_
 }
 
 @(test)
+open_sql_mixed_host_escape_styles_are_diagnosed :: proc(t: ^testing.T) {
+	source := `SELECT q~docnum, w~trnid, e~evtid, e~bizstep
+  FROM /sttp/dm_trn_evt AS w
+  INNER JOIN /sttp/dm_evt AS e ON e~evtid = w~evtid
+  INNER JOIN /sttp/dm_trn AS q ON q~trnid = w~trnid
+  FOR ALL ENTRIES IN @mt_trn
+  WHERE w~trnid = @mt_trn-trnid
+    AND e~bizstep = /sttp/cl_dm_constants=>gcs_bizstep-shipping
+  ORDER BY w~trnid e~evttime DESCENDING e~creation_time DESCENDING
+  INTO TABLE @mt_event.`
+	parsed := parse(source, "sql_mixed_host_escapes.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(t, parsed.errors[0].message, OPEN_SQL_HOST_ESCAPE_MESSAGE)
+	testing.expect_value(
+		t,
+		source[parsed.errors[0].range.start:parsed.errors[0].range.end],
+		"/sttp/cl_dm_constants=>gcs_bizstep-shipping",
+	)
+}
+
+@(test)
 open_sql_invalid_aliases_and_partial_joins_are_diagnosed :: proc(t: ^testing.T) {
 	source := `SELECT carrid AS FROM mara AS WHERE carrid = @lv_carrid INTO TABLE @lt_rows.
 SELECT * FROM mara INNER WHERE matnr = @lv_matnr INTO TABLE @lt_rows.`
@@ -1053,7 +1075,7 @@ open_sql_null_and_like_predicates_are_modeled :: proc(t: ^testing.T) {
 	source := `SELECT * FROM mara WHERE matnr IS NULL INTO TABLE @lt_rows.
 SELECT * FROM mara WHERE matnr IS NOT NULL INTO TABLE @lt_rows.
 SELECT * FROM mara WHERE matnr LIKE @lv_pattern INTO TABLE @lt_rows.
-SELECT * FROM mara WHERE matnr NOT LIKE lv_pattern INTO TABLE @lt_rows.`
+SELECT * FROM mara WHERE matnr NOT LIKE lv_pattern INTO TABLE lt_rows.`
 	parsed := parse(source, "sql_null_like.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)

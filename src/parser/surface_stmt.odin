@@ -171,7 +171,11 @@ data_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.
 	}
 	value := parse_expr(p)
 	if has_host && value != nil {
-		expr := ast.new(ast.Host_Expr, tokenizer.text_range(host.range.start, value.range.end), p.allocator)
+		expr := ast.new(
+			ast.Host_Expr,
+			tokenizer.text_range(host.range.start, value.range.end),
+			p.allocator,
+		)
 		expr.value = value
 		return expr
 	}
@@ -241,7 +245,8 @@ sql_logical_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -
 	defer p.expr_stop_keywords = old_stops
 	defer p.open_sql_expr = old_open_sql
 	expr := parse_logical_expr(p)
-	if expr == nil && (data_stmt_done(p, body_start) || data_current_keyword_in(p, stop_keywords)) {
+	if expr == nil &&
+	   (data_stmt_done(p, body_start) || data_current_keyword_in(p, stop_keywords)) {
 		error_current(p, "syntax error: expected expression")
 	}
 	if expr != nil {
@@ -339,7 +344,10 @@ select_sql_projection_expr :: proc(
 	p: ^Parser,
 	body_start: int,
 	stop_keywords: []string,
-) -> (^ast.Expr, bool) {
+) -> (
+	^ast.Expr,
+	bool,
+) {
 	value := sql_data_expr(p, body_start, stop_keywords)
 	is_dynamic := sql_dynamic_operand_expr(value)
 	if value != nil && !is_dynamic {
@@ -352,7 +360,10 @@ select_sql_logical_expr :: proc(
 	p: ^Parser,
 	body_start: int,
 	stop_keywords: []string,
-) -> (^ast.Expr, bool) {
+) -> (
+	^ast.Expr,
+	bool,
+) {
 	expr := sql_logical_expr(p, body_start, stop_keywords)
 	is_dynamic := sql_dynamic_where_expr(expr)
 	if expr != nil && !is_dynamic {
@@ -394,12 +405,20 @@ sql_model_select_expr :: proc(p: ^Parser, expr: ^ast.Expr) -> ^ast.Expr {
 		if n.op == .Tilde {
 			qualifier, qualifier_range, qualifier_ok := sql_expr_simple_name(n.base)
 			if qualifier_ok {
-				if lit, lit_ok := n.field.derived_expr.(^ast.Literal_Expr); lit_ok && lit.value == "*" {
+				if lit, lit_ok := n.field.derived_expr.(^ast.Literal_Expr);
+				   lit_ok && lit.value == "*" {
 					return sql_star_expr(p, expr.range, qualifier, qualifier_range, lit.range)
 				}
 				name, name_range, name_ok := sql_expr_simple_name(n.field)
 				if name_ok {
-					return sql_column_expr(p, expr.range, qualifier, qualifier_range, name, name_range)
+					return sql_column_expr(
+						p,
+						expr.range,
+						qualifier,
+						qualifier_range,
+						name,
+						name_range,
+					)
 				}
 			}
 		}
@@ -463,7 +482,8 @@ sql_model_call_expr :: proc(p: ^Parser, expr: ^ast.Expr, call: ^ast.Call_Expr) -
 	if args, args_ok := call.args.derived_expr.(^ast.Call_Arg_List_Expr); args_ok {
 		for arg, i in args.args {
 			if i == 0 && sql_call.kind == .Aggregate {
-				if modifier, modifier_range, modifier_ok := sql_call_modifier_arg(arg); modifier_ok {
+				if modifier, modifier_range, modifier_ok := sql_call_modifier_arg(arg);
+				   modifier_ok {
 					sql_call.modifier = modifier
 					sql_call.modifier_range = modifier_range
 					continue
@@ -625,7 +645,11 @@ parse_exec_sql_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if period.kind != .Period {
 		return nil
 	}
-	stmt := ast.new(ast.Exec_Sql_Stmt, tokenizer.text_range(start.range.start, period.range.end), p.allocator)
+	stmt := ast.new(
+		ast.Exec_Sql_Stmt,
+		tokenizer.text_range(start.range.start, period.range.end),
+		p.allocator,
+	)
 	stmt.header_range = tokenizer.text_range(start.range.start, header_period.range.end)
 	if header_period.range.end < body_end {
 		stmt.body = source_range_text(p, tokenizer.text_range(header_period.range.end, body_end))
@@ -672,7 +696,9 @@ parse_select_with_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_Wit
 	clause, _ := mem.new(ast.Select_With_Clause, p.allocator)
 	clause.entries = make([dynamic]ast.Select_Cte_Clause, 0, 2, p.allocator)
 	for !data_stmt_done(p, body_start) && !at_keyword(p, "SELECT") {
-		entry := ast.Select_Cte_Clause{name = parse_cte_name(p)}
+		entry := ast.Select_Cte_Clause {
+			name = parse_cte_name(p),
+		}
 		if !allow_keyword(p, "AS") {
 			break
 		}
@@ -702,23 +728,25 @@ parse_cte_name :: proc(p: ^Parser) -> string {
 }
 
 Select_Clause_State :: struct {
-	from:            bool,
-	result:          bool,
+	from:               bool,
+	result:             bool,
 	result_closes_tail: bool,
-	has_where:       bool,
-	group_by:        bool,
-	fields:          bool,
-	having:          bool,
-	order_by:        bool,
-	for_all_entries: bool,
-	for_update:      bool,
-	up_to:           bool,
-	package_size:    bool,
-	offset:          bool,
-	bypassing:       bool,
-	connection:      bool,
-	client:          bool,
+	has_where:          bool,
+	group_by:           bool,
+	fields:             bool,
+	having:             bool,
+	order_by:           bool,
+	for_all_entries:    bool,
+	for_update:         bool,
+	up_to:              bool,
+	package_size:       bool,
+	offset:             bool,
+	bypassing:          bool,
+	connection:         bool,
+	client:             bool,
 }
+
+OPEN_SQL_HOST_ESCAPE_MESSAGE :: "syntax error: when escaped, all host variables in an Open SQL statement must be escaped using @"
 
 select_reject_clause :: proc(
 	p: ^Parser,
@@ -737,7 +765,11 @@ select_skip_to_query_end :: proc(p: ^Parser, body_start: int, stop_at_rparen: bo
 	}
 }
 
-parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen := false) -> ast.Select_Query_Clause {
+parse_select_query_clause :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_at_rparen := false,
+) -> ast.Select_Query_Clause {
 	query := ast.Select_Query_Clause{}
 	query.projections = make([dynamic]^ast.Expr, 0, 4, p.allocator)
 	query.projection_clauses = make([dynamic]ast.Select_Projection_Clause, 0, 4, p.allocator)
@@ -755,7 +787,10 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if star := current_token(p); allow_token(p, .Star) {
 			value := sql_star_expr(p, star.range, "", tokenizer.Range{}, star.range)
 			append(&query.projections, value)
-			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, range = value.range})
+			append(
+				&query.projection_clauses,
+				ast.Select_Projection_Clause{value = value, range = value.range},
+			)
 			query.projection_clause = select_merge_range(query.projection_clause, value.range)
 			continue
 		}
@@ -795,9 +830,20 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		)
 		if value != nil {
 			alias := parse_select_alias(p)
-			projection_range := tokenizer.text_range(value.range.start, previous_token(p).range.end)
+			projection_range := tokenizer.text_range(
+				value.range.start,
+				previous_token(p).range.end,
+			)
 			append(&query.projections, value)
-			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, alias = alias, is_dynamic = is_dynamic, range = projection_range})
+			append(
+				&query.projection_clauses,
+				ast.Select_Projection_Clause {
+					value = value,
+					alias = alias,
+					is_dynamic = is_dynamic,
+					range = projection_range,
+				},
+			)
 			query.projection_clause = select_merge_range(query.projection_clause, projection_range)
 		} else {
 			bump_token(p)
@@ -806,7 +852,8 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 	}
 	state := Select_Clause_State{}
 	for !select_query_done(p, body_start, stop_at_rparen) {
-		if state.result_closes_tail && select_clause_starts(p) &&
+		if state.result_closes_tail &&
+		   select_clause_starts(p) &&
 		   !at_keyword(p, "UP") &&
 		   !at_keyword(p, "FIELDS") &&
 		   !at_keyword(p, "OFFSET") &&
@@ -814,13 +861,25 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		   !at_keyword(p, "CONNECTION") &&
 		   !at_keyword(p, "CLIENT") {
 			start := bump_token(p)
-			select_reject_clause(p, start, "syntax error: invalid SELECT clause after result target", body_start, stop_at_rparen)
+			select_reject_clause(
+				p,
+				start,
+				"syntax error: invalid SELECT clause after result target",
+				body_start,
+				stop_at_rparen,
+			)
 			continue
 		}
 		if at_keyword(p, "FROM") {
 			start := bump_token(p)
 			if state.from {
-				select_reject_clause(p, start, "syntax error: duplicate SELECT FROM clause", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: duplicate SELECT FROM clause",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.source_clause = parse_select_source_clause(p, body_start)
@@ -834,37 +893,75 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if at_keyword(p, "INTO") {
 			start := bump_token(p)
 			if state.result {
-				select_reject_clause(p, start, "syntax error: duplicate SELECT result clause", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: duplicate SELECT result clause",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.result = parse_select_result_tail(p, .Into, body_start)
 			query.into_clause = query.result.range if query.result != nil else tokenizer.Range{}
 			state.result = true
-			state.result_closes_tail = state.has_where || state.group_by || state.having || state.order_by
+			state.result_closes_tail =
+				state.has_where || state.group_by || state.having || state.order_by
 			continue
 		}
 		if at_keyword(p, "APPENDING") {
 			start := bump_token(p)
 			if state.result {
-				select_reject_clause(p, start, "syntax error: duplicate SELECT result clause", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: duplicate SELECT result clause",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.result = parse_select_result_tail(p, .Appending, body_start)
 			query.into_clause = query.result.range if query.result != nil else tokenizer.Range{}
 			state.result = true
-			state.result_closes_tail = state.has_where || state.group_by || state.having || state.order_by
+			state.result_closes_tail =
+				state.has_where || state.group_by || state.having || state.order_by
 			continue
 		}
 		if at_keyword(p, "WHERE") {
 			start := bump_token(p)
 			if !state.from || state.has_where || state.group_by || state.having || state.order_by {
-				select_reject_clause(p, start, "syntax error: invalid SELECT WHERE clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT WHERE clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.where_cond, query.dynamic_where = select_sql_logical_expr(
 				p,
 				body_start,
-				[]string{"INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
+				[]string {
+					"INTO",
+					"APPENDING",
+					"WHERE",
+					"FOR",
+					"GROUP",
+					"FIELDS",
+					"HAVING",
+					"ORDER",
+					"UP",
+					"PACKAGE",
+					"OFFSET",
+					"BYPASSING",
+					"CONNECTION",
+					"CLIENT",
+					"UNION",
+					"INTERSECT",
+					"EXCEPT",
+				},
 			)
 			if query.where_cond != nil {
 				query.where_clause = select_clause_expr_range(p, start, query.where_cond)
@@ -875,33 +972,86 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if allow_keyword(p, "FOR") {
 			start := previous_token(p)
 			if allow_keyword(p, "ALL") && allow_keyword(p, "ENTRIES") && allow_keyword(p, "IN") {
-				if !state.from || state.for_all_entries || state.has_where || state.group_by || state.having || state.order_by {
-					select_reject_clause(p, start, "syntax error: invalid SELECT FOR ALL ENTRIES clause placement", body_start, stop_at_rparen)
+				if !state.from ||
+				   state.for_all_entries ||
+				   state.has_where ||
+				   state.group_by ||
+				   state.having ||
+				   state.order_by {
+					select_reject_clause(
+						p,
+						start,
+						"syntax error: invalid SELECT FOR ALL ENTRIES clause placement",
+						body_start,
+						stop_at_rparen,
+					)
 					continue
 				}
 				query.for_all_entries = sql_data_expr(
 					p,
 					body_start,
-					[]string{"INTO", "APPENDING", "WHERE", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
+					[]string {
+						"INTO",
+						"APPENDING",
+						"WHERE",
+						"GROUP",
+						"FIELDS",
+						"HAVING",
+						"ORDER",
+						"UP",
+						"PACKAGE",
+						"OFFSET",
+						"BYPASSING",
+						"CONNECTION",
+						"CLIENT",
+						"UNION",
+						"INTERSECT",
+						"EXCEPT",
+					},
 				)
-				query.for_all_entries_clause = select_clause_expr_range(p, start, query.for_all_entries)
+				query.for_all_entries_clause = select_clause_expr_range(
+					p,
+					start,
+					query.for_all_entries,
+				)
 				state.for_all_entries = true
 			} else if allow_keyword(p, "UPDATE") {
 				if !state.from || state.for_update {
-					select_reject_clause(p, start, "syntax error: invalid SELECT FOR UPDATE clause placement", body_start, stop_at_rparen)
+					select_reject_clause(
+						p,
+						start,
+						"syntax error: invalid SELECT FOR UPDATE clause placement",
+						body_start,
+						stop_at_rparen,
+					)
 					continue
 				}
-				query.for_update_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
+				query.for_update_clause = tokenizer.text_range(
+					start.range.start,
+					previous_token(p).range.end,
+				)
 				state.for_update = true
 			} else {
-				select_reject_clause(p, start, "syntax error: invalid SELECT FOR clause", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT FOR clause",
+					body_start,
+					stop_at_rparen,
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "GROUP") {
 			start := previous_token(p)
 			if !state.from || state.group_by || state.having || state.order_by {
-				select_reject_clause(p, start, "syntax error: invalid SELECT GROUP BY clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT GROUP BY clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			if !allow_keyword(p, "BY") {
@@ -913,8 +1063,19 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		}
 		if allow_keyword(p, "FIELDS") {
 			start := previous_token(p)
-			if !state.from || state.fields || state.has_where || state.group_by || state.having || state.order_by {
-				select_reject_clause(p, start, "syntax error: invalid SELECT FIELDS clause placement", body_start, stop_at_rparen)
+			if !state.from ||
+			   state.fields ||
+			   state.has_where ||
+			   state.group_by ||
+			   state.having ||
+			   state.order_by {
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT FIELDS clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			parse_select_fields_clause(p, &query, body_start, stop_at_rparen)
@@ -924,7 +1085,13 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if allow_keyword(p, "HAVING") {
 			start := previous_token(p)
 			if !state.group_by || state.having || state.order_by {
-				select_reject_clause(p, start, "syntax error: invalid SELECT HAVING clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT HAVING clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.having_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
@@ -934,7 +1101,13 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if allow_keyword(p, "ORDER") {
 			start := previous_token(p)
 			if !state.from || state.order_by {
-				select_reject_clause(p, start, "syntax error: invalid SELECT ORDER BY clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT ORDER BY clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			parse_select_order_by_clause(p, &query, start, body_start, stop_at_rparen)
@@ -945,13 +1118,35 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 			start := previous_token(p)
 			allow_keyword(p, "SIZE")
 			if !state.from || state.package_size {
-				select_reject_clause(p, start, "syntax error: invalid SELECT PACKAGE SIZE clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT PACKAGE SIZE clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.package_size = sql_data_expr(
 				p,
 				body_start,
-				[]string{"INTO", "APPENDING", "WHERE", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
+				[]string {
+					"INTO",
+					"APPENDING",
+					"WHERE",
+					"GROUP",
+					"FIELDS",
+					"HAVING",
+					"ORDER",
+					"UP",
+					"OFFSET",
+					"BYPASSING",
+					"CONNECTION",
+					"CLIENT",
+					"UNION",
+					"INTERSECT",
+					"EXCEPT",
+				},
 			)
 			query.package_size_clause = select_clause_expr_range(p, start, query.package_size)
 			state.package_size = true
@@ -961,13 +1156,35 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 			start := previous_token(p)
 			allow_keyword(p, "TO")
 			if state.up_to {
-				select_reject_clause(p, start, "syntax error: invalid SELECT UP TO clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT UP TO clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.up_to_rows = sql_data_expr(
 				p,
 				body_start,
-				[]string{"ROWS", "INTO", "APPENDING", "WHERE", "GROUP", "HAVING", "ORDER", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
+				[]string {
+					"ROWS",
+					"INTO",
+					"APPENDING",
+					"WHERE",
+					"GROUP",
+					"HAVING",
+					"ORDER",
+					"PACKAGE",
+					"OFFSET",
+					"BYPASSING",
+					"CONNECTION",
+					"CLIENT",
+					"UNION",
+					"INTERSECT",
+					"EXCEPT",
+				},
 			)
 			allow_keyword(p, "ROWS")
 			query.up_to_clause = select_clause_expr_range(p, start, query.up_to_rows)
@@ -977,22 +1194,33 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 		if allow_keyword(p, "OFFSET") {
 			start := previous_token(p)
 			if !state.from || state.offset {
-				select_reject_clause(p, start, "syntax error: invalid SELECT OFFSET clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT OFFSET clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			query.offset_clause = select_skip_clause(p, start, body_start, stop_at_rparen)
 			state.offset = true
 			continue
 		}
-		if at_keyword(p, "BYPASSING") ||
-		   at_keyword(p, "CONNECTION") ||
-		   at_keyword(p, "CLIENT") {
+		if at_keyword(p, "BYPASSING") || at_keyword(p, "CONNECTION") || at_keyword(p, "CLIENT") {
 			start := bump_token(p)
 			is_bypassing := token_is_keyword(p, start, "BYPASSING")
 			is_connection := token_is_keyword(p, start, "CONNECTION")
-			duplicate := state.bypassing if is_bypassing else (state.connection if is_connection else state.client)
+			duplicate :=
+				state.bypassing if is_bypassing else (state.connection if is_connection else state.client)
 			if !state.from || duplicate {
-				select_reject_clause(p, start, "syntax error: invalid SELECT ABAP options clause placement", body_start, stop_at_rparen)
+				select_reject_clause(
+					p,
+					start,
+					"syntax error: invalid SELECT ABAP options clause placement",
+					body_start,
+					stop_at_rparen,
+				)
 				continue
 			}
 			if is_bypassing {
@@ -1013,7 +1241,11 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 			bump_token(p)
 			all := allow_keyword(p, "ALL")
 			if !state.from || !at_keyword(p, "SELECT") {
-				error(p, set_start.range, "syntax error: SELECT set operator requires following SELECT")
+				error(
+					p,
+					set_start.range,
+					"syntax error: SELECT set operator requires following SELECT",
+				)
 				select_skip_to_query_end(p, body_start, stop_at_rparen)
 				continue
 			}
@@ -1021,16 +1253,169 @@ parse_select_query_clause :: proc(p: ^Parser, body_start: int, stop_at_rparen :=
 				query.set_operator_clause,
 				tokenizer.text_range(set_start.range.start, previous_token(p).range.end),
 			)
-			append(&query.set_ops, ast.Select_Set_Clause{
-				kind  = kind,
-				all   = all,
-				query = parse_select_query_clause(p, body_start, stop_at_rparen),
-			})
+			append(
+				&query.set_ops,
+				ast.Select_Set_Clause {
+					kind = kind,
+					all = all,
+					query = parse_select_query_clause(p, body_start, stop_at_rparen),
+				},
+			)
 			continue
 		}
 		bump_token(p)
 	}
+	validate_select_query_host_escapes(p, &query)
 	return query
+}
+
+validate_select_query_host_escapes :: proc(p: ^Parser, query: ^ast.Select_Query_Clause) {
+	if !select_query_has_explicit_host(query) {
+		return
+	}
+	for projection in query.projection_clauses {
+		select_error_implicit_hosts_in_expr(p, projection.value)
+	}
+	if query.source_clause != nil {
+		select_error_implicit_hosts_in_expr(p, query.source_clause.source)
+		for join in query.source_clause.joins {
+			select_error_implicit_hosts_in_expr(p, join.source)
+			select_error_implicit_hosts_in_expr(p, join.on)
+		}
+	}
+	if query.result != nil {
+		select_error_implicit_hosts_in_expr(p, query.result.target)
+	}
+	select_error_implicit_hosts_in_expr(p, query.where_cond)
+	select_error_implicit_hosts_in_expr(p, query.for_all_entries)
+	select_error_implicit_hosts_in_expr(p, query.package_size)
+	select_error_implicit_hosts_in_expr(p, query.up_to_rows)
+}
+
+select_query_has_explicit_host :: proc(query: ^ast.Select_Query_Clause) -> bool {
+	for projection in query.projection_clauses {
+		if sql_expr_has_explicit_host(projection.value) {
+			return true
+		}
+	}
+	if query.source_clause != nil {
+		if sql_expr_has_explicit_host(query.source_clause.source) {
+			return true
+		}
+		for join in query.source_clause.joins {
+			if sql_expr_has_explicit_host(join.source) || sql_expr_has_explicit_host(join.on) {
+				return true
+			}
+		}
+	}
+	if query.result != nil && sql_expr_has_explicit_host(query.result.target) {
+		return true
+	}
+	return(
+		sql_expr_has_explicit_host(query.where_cond) ||
+		sql_expr_has_explicit_host(query.for_all_entries) ||
+		sql_expr_has_explicit_host(query.package_size) ||
+		sql_expr_has_explicit_host(query.up_to_rows) \
+	)
+}
+
+sql_expr_has_explicit_host :: proc(expr: ^ast.Expr) -> bool {
+	if expr == nil {
+		return false
+	}
+	has_explicit := false
+	select_visit_host_escapes(nil, expr, &has_explicit, false)
+	return has_explicit
+}
+
+select_error_implicit_hosts_in_expr :: proc(p: ^Parser, expr: ^ast.Expr) {
+	if expr == nil {
+		return
+	}
+	has_explicit := false
+	select_visit_host_escapes(p, expr, &has_explicit, true)
+}
+
+select_visit_host_escapes :: proc(
+	p: ^Parser,
+	expr: ^ast.Expr,
+	has_explicit: ^bool,
+	error_implicit: bool,
+) {
+	if expr == nil {
+		return
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Host_Expr:
+		if n.implicit {
+			if error_implicit {
+				error(p, n.range, OPEN_SQL_HOST_ESCAPE_MESSAGE)
+			}
+		} else {
+			has_explicit^ = true
+		}
+		return
+	case ^ast.Binary_Expr:
+		select_visit_host_escapes(p, n.left, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.right, has_explicit, error_implicit)
+	case ^ast.Unary_Expr:
+		select_visit_host_escapes(p, n.expr, has_explicit, error_implicit)
+	case ^ast.Paren_Expr:
+		select_visit_host_escapes(p, n.expr, has_explicit, error_implicit)
+	case ^ast.Selector_Expr:
+		select_visit_host_escapes(p, n.base, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.field, has_explicit, error_implicit)
+	case ^ast.Interface_Qualified_Selector_Expr:
+		select_visit_host_escapes(p, n.receiver, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.interface, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.member, has_explicit, error_implicit)
+	case ^ast.Table_Expr:
+		select_visit_host_escapes(p, n.table, has_explicit, error_implicit)
+		for selector in n.selectors {
+			select_visit_host_escapes(p, selector, has_explicit, error_implicit)
+		}
+	case ^ast.Substring_Expr:
+		select_visit_host_escapes(p, n.base, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.offset, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.length, has_explicit, error_implicit)
+	case ^ast.Call_Expr:
+		select_visit_host_escapes(p, n.callee, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.args, has_explicit, error_implicit)
+	case ^ast.Call_Arg_List_Expr:
+		for arg in n.args {
+			select_visit_host_escapes(p, arg, has_explicit, error_implicit)
+		}
+	case ^ast.Call_Arg_Section_Expr:
+		for arg in n.args {
+			select_visit_host_escapes(p, arg, has_explicit, error_implicit)
+		}
+	case ^ast.Call_Named_Arg_Expr:
+		select_visit_host_escapes(p, n.value, has_explicit, error_implicit)
+	case ^ast.Call_Positional_Arg_Expr:
+		select_visit_host_escapes(p, n.value, has_explicit, error_implicit)
+	case ^ast.Sql_Call_Expr:
+		for arg in n.args {
+			select_visit_host_escapes(p, arg, has_explicit, error_implicit)
+		}
+	case ^ast.Is_Predicate_Expr:
+		select_visit_host_escapes(p, n.subject, has_explicit, error_implicit)
+	case ^ast.Instance_Of_Predicate_Expr:
+		select_visit_host_escapes(p, n.subject, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.type_ref, has_explicit, error_implicit)
+	case ^ast.Between_Expr:
+		select_visit_host_escapes(p, n.subject, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.low, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.high, has_explicit, error_implicit)
+	case ^ast.Sql_Case_When_Expr:
+		select_visit_host_escapes(p, n.condition, has_explicit, error_implicit)
+		select_visit_host_escapes(p, n.result, has_explicit, error_implicit)
+	case ^ast.Sql_Case_Expr:
+		select_visit_host_escapes(p, n.operand, has_explicit, error_implicit)
+		for when_expr in n.whens {
+			select_visit_host_escapes(p, when_expr, has_explicit, error_implicit)
+		}
+		select_visit_host_escapes(p, n.else_expr, has_explicit, error_implicit)
+	}
 }
 
 parse_select_fields_clause :: proc(
@@ -1047,13 +1432,42 @@ parse_select_fields_clause :: proc(
 		value, is_dynamic := select_sql_projection_expr(
 			p,
 			body_start,
-			[]string{"INTO", "APPENDING", "WHERE", "FOR", "GROUP", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
+			[]string {
+				"INTO",
+				"APPENDING",
+				"WHERE",
+				"FOR",
+				"GROUP",
+				"HAVING",
+				"ORDER",
+				"UP",
+				"PACKAGE",
+				"OFFSET",
+				"BYPASSING",
+				"CONNECTION",
+				"CLIENT",
+				"UNION",
+				"INTERSECT",
+				"EXCEPT",
+				"SELECT",
+			},
 		)
 		if value != nil {
 			alias := parse_select_alias(p)
-			projection_range := tokenizer.text_range(value.range.start, previous_token(p).range.end)
+			projection_range := tokenizer.text_range(
+				value.range.start,
+				previous_token(p).range.end,
+			)
 			append(&query.projections, value)
-			append(&query.projection_clauses, ast.Select_Projection_Clause{value = value, alias = alias, is_dynamic = is_dynamic, range = projection_range})
+			append(
+				&query.projection_clauses,
+				ast.Select_Projection_Clause {
+					value = value,
+					alias = alias,
+					is_dynamic = is_dynamic,
+					range = projection_range,
+				},
+			)
 			query.projection_clause = select_merge_range(query.projection_clause, projection_range)
 		} else {
 			bump_token(p)
@@ -1117,14 +1531,20 @@ parse_select_order_by_clause :: proc(
 			   p.tokens[p.index + 1].kind == .Tilde &&
 			   p.tokens[p.index + 2].kind == .Ident {
 				if !descending {
-					append(&query.order_by_fields, tokenizer.token_lexeme(p.tokens[p.index + 2], p.source))
+					append(
+						&query.order_by_fields,
+						tokenizer.token_lexeme(p.tokens[p.index + 2], p.source),
+					)
 				}
 				bump_token(p)
 				bump_token(p)
 				bump_token(p)
 			} else {
 				if !descending {
-					append(&query.order_by_fields, tokenizer.token_lexeme(current_token(p), p.source))
+					append(
+						&query.order_by_fields,
+						tokenizer.token_lexeme(current_token(p), p.source),
+					)
 				}
 				bump_token(p)
 			}
@@ -1164,7 +1584,33 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 	clause.source = parse_select_source_expr(
 		p,
 		body_start,
-		[]string{"AS", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
+		[]string {
+			"AS",
+			"INNER",
+			"LEFT",
+			"RIGHT",
+			"FULL",
+			"CROSS",
+			"JOIN",
+			"INTO",
+			"APPENDING",
+			"WHERE",
+			"FOR",
+			"GROUP",
+			"FIELDS",
+			"HAVING",
+			"ORDER",
+			"UP",
+			"PACKAGE",
+			"OFFSET",
+			"BYPASSING",
+			"CONNECTION",
+			"CLIENT",
+			"UNION",
+			"INTERSECT",
+			"EXCEPT",
+			"SELECT",
+		},
 	)
 	clause.source = sql_model_select_source_expr(p, clause.source)
 	if clause.source == nil {
@@ -1176,11 +1622,40 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 		if !ok {
 			break
 		}
-		join := ast.Select_Join_Clause{kind = kind}
+		join := ast.Select_Join_Clause {
+			kind = kind,
+		}
 		join.source = parse_select_source_expr(
 			p,
 			body_start,
-			[]string{"AS", "ON", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
+			[]string {
+				"AS",
+				"ON",
+				"INNER",
+				"LEFT",
+				"RIGHT",
+				"FULL",
+				"CROSS",
+				"JOIN",
+				"INTO",
+				"APPENDING",
+				"WHERE",
+				"FOR",
+				"GROUP",
+				"FIELDS",
+				"HAVING",
+				"ORDER",
+				"UP",
+				"PACKAGE",
+				"OFFSET",
+				"BYPASSING",
+				"CONNECTION",
+				"CLIENT",
+				"UNION",
+				"INTERSECT",
+				"EXCEPT",
+				"SELECT",
+			},
 		)
 		join.source = sql_model_select_source_expr(p, join.source)
 		if join.source == nil {
@@ -1191,7 +1666,31 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 			join.on, _ = select_sql_logical_expr(
 				p,
 				body_start,
-				[]string{"INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "INTO", "APPENDING", "WHERE", "FOR", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "PACKAGE", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT"},
+				[]string {
+					"INNER",
+					"LEFT",
+					"RIGHT",
+					"FULL",
+					"CROSS",
+					"JOIN",
+					"INTO",
+					"APPENDING",
+					"WHERE",
+					"FOR",
+					"GROUP",
+					"FIELDS",
+					"HAVING",
+					"ORDER",
+					"UP",
+					"PACKAGE",
+					"OFFSET",
+					"BYPASSING",
+					"CONNECTION",
+					"CLIENT",
+					"UNION",
+					"INTERSECT",
+					"EXCEPT",
+				},
 			)
 		}
 		append(&clause.joins, join)
@@ -1202,9 +1701,15 @@ parse_select_source_clause :: proc(p: ^Parser, body_start: int) -> ^ast.Select_S
 	return clause
 }
 
-parse_select_source_expr :: proc(p: ^Parser, body_start: int, stop_keywords: []string) -> ^ast.Expr {
+parse_select_source_expr :: proc(
+	p: ^Parser,
+	body_start: int,
+	stop_keywords: []string,
+) -> ^ast.Expr {
 	value := sql_data_expr(p, body_start, stop_keywords)
-	if value != nil || !select_join_keyword_at(p, p.index) || select_join_kind_starts_at(p, p.index) {
+	if value != nil ||
+	   !select_join_keyword_at(p, p.index) ||
+	   select_join_kind_starts_at(p, p.index) {
 		return value
 	}
 	tok := bump_token(p)
@@ -1319,13 +1824,49 @@ parse_select_result_tail :: proc(
 	if current_token(p).kind == .LParen {
 		clause.target = parse_raw_operand_to_period(
 			p,
-			[]string{"PACKAGE", "WHERE", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "FOR", "FROM", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
+			[]string {
+				"PACKAGE",
+				"WHERE",
+				"GROUP",
+				"FIELDS",
+				"HAVING",
+				"ORDER",
+				"UP",
+				"FOR",
+				"FROM",
+				"OFFSET",
+				"BYPASSING",
+				"CONNECTION",
+				"CLIENT",
+				"UNION",
+				"INTERSECT",
+				"EXCEPT",
+				"SELECT",
+			},
 		)
 	} else {
 		clause.target = sql_data_expr(
 			p,
 			body_start,
-			[]string{"PACKAGE", "WHERE", "GROUP", "FIELDS", "HAVING", "ORDER", "UP", "FOR", "FROM", "OFFSET", "BYPASSING", "CONNECTION", "CLIENT", "UNION", "INTERSECT", "EXCEPT", "SELECT"},
+			[]string {
+				"PACKAGE",
+				"WHERE",
+				"GROUP",
+				"FIELDS",
+				"HAVING",
+				"ORDER",
+				"UP",
+				"FOR",
+				"FROM",
+				"OFFSET",
+				"BYPASSING",
+				"CONNECTION",
+				"CLIENT",
+				"UNION",
+				"INTERSECT",
+				"EXCEPT",
+				"SELECT",
+			},
 		)
 	}
 	if clause.target == nil {
@@ -1546,7 +2087,10 @@ parse_read_table_entry :: proc(p: ^Parser, body_start: int) -> ast.Read_Table_En
 			if at_keyword(p, "SEARCH") {
 				search := bump_token(p)
 				entry.binary_search = true
-				entry.binary_search_clause = tokenizer.text_range(binary.range.start, search.range.end)
+				entry.binary_search_clause = tokenizer.text_range(
+					binary.range.start,
+					search.range.end,
+				)
 			}
 			continue
 		}
@@ -1621,11 +2165,11 @@ parse_read_table_key_values :: proc(
 			append(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {
-					name         = name,
-					name_range   = tokenizer.text_range(name_start, name_end_byte),
+					name = name,
+					name_range = tokenizer.text_range(name_start, name_end_byte),
 					dynamic_name = dynamic_name,
-					is_dynamic   = true,
-					value        = value,
+					is_dynamic = true,
+					value = value,
 				},
 			)
 			continue
@@ -1676,17 +2220,21 @@ parse_read_table_key_values :: proc(
 			append(
 				&entry.key_values,
 				ast.Read_Table_Key_Value_Clause {
-					name       = name,
+					name = name,
 					name_range = tokenizer.text_range(name_start, name_end_byte),
-					path       = path,
+					path = path,
 					table_line = len(path) == 1 && strings.equal_fold(path[0].name, "table_line"),
-					value      = value,
+					value = value,
 				},
 			)
 			continue
 		}
 		if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Minus {
-			error(p, current_token(p).range, "syntax error: expected READ TABLE key component path")
+			error(
+				p,
+				current_token(p).range,
+				"syntax error: expected READ TABLE key component path",
+			)
 			bump_token(p)
 			continue
 		}
@@ -1731,7 +2279,12 @@ dml_range_valid :: #force_inline proc(range: tokenizer.Range) -> bool {
 	return range.end > range.start
 }
 
-dml_skip_clause :: proc(p: ^Parser, start: Token, body_start: int, stop_keywords: []string) -> tokenizer.Range {
+dml_skip_clause :: proc(
+	p: ^Parser,
+	start: Token,
+	body_start: int,
+	stop_keywords: []string,
+) -> tokenizer.Range {
 	for !data_stmt_done(p, body_start) && !data_current_keyword_in(p, stop_keywords) {
 		bump_token(p)
 	}
@@ -1862,7 +2415,17 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 					start,
 					"syntax error: conflicting INSERT INTO clause",
 					body_start,
-					[]string{"FROM", "VALUES", "SET", "INDEX", "ASSIGNING", "REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"},
+					[]string {
+						"FROM",
+						"VALUES",
+						"SET",
+						"INDEX",
+						"ASSIGNING",
+						"REFERENCE",
+						"ACCEPTING",
+						"CLIENT",
+						"CONNECTION",
+					},
 				)
 				continue
 			}
@@ -1877,13 +2440,26 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 		}
 		if allow_keyword(p, "FROM") {
 			start := previous_token(p)
-			if dml_range_valid(stmt.from_clause) || stmt.form == .Internal_Table || stmt.form == .Lines_Of {
+			if dml_range_valid(stmt.from_clause) ||
+			   stmt.form == .Internal_Table ||
+			   stmt.form == .Lines_Of {
 				dml_reject_clause(
 					p,
 					start,
 					"syntax error: duplicate or conflicting INSERT FROM clause",
 					body_start,
-					[]string{"INTO", "FROM", "VALUES", "SET", "INDEX", "ASSIGNING", "REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"},
+					[]string {
+						"INTO",
+						"FROM",
+						"VALUES",
+						"SET",
+						"INDEX",
+						"ASSIGNING",
+						"REFERENCE",
+						"ACCEPTING",
+						"CLIENT",
+						"CONNECTION",
+					},
 				)
 				continue
 			}
@@ -1903,13 +2479,26 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 		}
 		if allow_keyword(p, "VALUES") {
 			start := previous_token(p)
-			if stmt.values_clause || dml_range_valid(stmt.from_clause) || dml_range_valid(stmt.set_clause) {
+			if stmt.values_clause ||
+			   dml_range_valid(stmt.from_clause) ||
+			   dml_range_valid(stmt.set_clause) {
 				dml_reject_clause(
 					p,
 					start,
 					"syntax error: duplicate or conflicting INSERT VALUES clause",
 					body_start,
-					[]string{"INTO", "FROM", "VALUES", "SET", "INDEX", "ASSIGNING", "REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"},
+					[]string {
+						"INTO",
+						"FROM",
+						"VALUES",
+						"SET",
+						"INDEX",
+						"ASSIGNING",
+						"REFERENCE",
+						"ACCEPTING",
+						"CLIENT",
+						"CONNECTION",
+					},
 				)
 				continue
 			}
@@ -1928,13 +2517,26 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 		}
 		if allow_keyword(p, "SET") {
 			start := previous_token(p)
-			if dml_range_valid(stmt.set_clause) || dml_range_valid(stmt.from_clause) || stmt.values_clause {
+			if dml_range_valid(stmt.set_clause) ||
+			   dml_range_valid(stmt.from_clause) ||
+			   stmt.values_clause {
 				dml_reject_clause(
 					p,
 					start,
 					"syntax error: duplicate or conflicting INSERT SET clause",
 					body_start,
-					[]string{"INTO", "FROM", "VALUES", "SET", "INDEX", "ASSIGNING", "REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"},
+					[]string {
+						"INTO",
+						"FROM",
+						"VALUES",
+						"SET",
+						"INDEX",
+						"ASSIGNING",
+						"REFERENCE",
+						"ACCEPTING",
+						"CLIENT",
+						"CONNECTION",
+					},
 				)
 				continue
 			}
@@ -1953,16 +2555,28 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 			continue
 		}
 		if allow_keyword(p, "INDEX") {
-			stmt.index = data_expr(p, body_start, []string{"ASSIGNING", "REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"})
+			stmt.index = data_expr(
+				p,
+				body_start,
+				[]string{"ASSIGNING", "REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"},
+			)
 			continue
 		}
 		if allow_keyword(p, "ASSIGNING") {
-			stmt.assigning = data_expr(p, body_start, []string{"REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"})
+			stmt.assigning = data_expr(
+				p,
+				body_start,
+				[]string{"REFERENCE", "ACCEPTING", "CLIENT", "CONNECTION"},
+			)
 			continue
 		}
 		if allow_keyword(p, "REFERENCE") {
 			allow_keyword(p, "INTO")
-			stmt.reference_into = data_expr(p, body_start, []string{"ACCEPTING", "CLIENT", "CONNECTION"})
+			stmt.reference_into = data_expr(
+				p,
+				body_start,
+				[]string{"ACCEPTING", "CLIENT", "CONNECTION"},
+			)
 			continue
 		}
 		if allow_keyword(p, "ACCEPTING") {
@@ -1980,13 +2594,22 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 			if allow_keyword(p, "DUPLICATE") {
 				stmt.accepting_duplicate_keys = allow_keyword(p, "KEYS")
 			}
-			stmt.accepting_clause = tokenizer.text_range(start.range.start, previous_token(p).range.end)
+			stmt.accepting_clause = tokenizer.text_range(
+				start.range.start,
+				previous_token(p).range.end,
+			)
 			continue
 		}
 		if allow_keyword(p, "CLIENT") {
 			start := previous_token(p)
 			if dml_range_valid(stmt.client_clause) {
-				dml_reject_clause(p, start, "syntax error: duplicate INSERT CLIENT clause", body_start, []string{"CONNECTION"})
+				dml_reject_clause(
+					p,
+					start,
+					"syntax error: duplicate INSERT CLIENT clause",
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			} else {
 				stmt.client_clause = dml_skip_clause(p, start, body_start, []string{"CONNECTION"})
 			}
@@ -1995,7 +2618,13 @@ parse_insert_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Insert_Stmt) {
 		if allow_keyword(p, "CONNECTION") {
 			start := previous_token(p)
 			if dml_range_valid(stmt.connection_clause) {
-				dml_reject_clause(p, start, "syntax error: duplicate INSERT CONNECTION clause", body_start, []string{"CLIENT"})
+				dml_reject_clause(
+					p,
+					start,
+					"syntax error: duplicate INSERT CONNECTION clause",
+					body_start,
+					[]string{"CLIENT"},
+				)
 			} else {
 				stmt.connection_clause = dml_skip_clause(p, start, body_start, []string{"CLIENT"})
 			}
@@ -2045,8 +2674,8 @@ read_line_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
 		at_keyword(p, "READ") &&
 		(at_keyword_index(p, p.index + 1, "LINE") ||
-		 (at_keyword_index(p, p.index + 1, "CURRENT") &&
-		  at_keyword_index(p, p.index + 2, "LINE"))) \
+				(at_keyword_index(p, p.index + 1, "CURRENT") &&
+						at_keyword_index(p, p.index + 2, "LINE"))) \
 	)
 }
 
@@ -2054,8 +2683,8 @@ modify_line_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
 		at_keyword(p, "MODIFY") &&
 		(at_keyword_index(p, p.index + 1, "LINE") ||
-		 (at_keyword_index(p, p.index + 1, "CURRENT") &&
-		  at_keyword_index(p, p.index + 2, "LINE"))) \
+				(at_keyword_index(p, p.index + 1, "CURRENT") &&
+						at_keyword_index(p, p.index + 2, "LINE"))) \
 	)
 }
 
@@ -2104,7 +2733,11 @@ parse_generate_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if allow_keyword(p, "SUBROUTINE") {
 		allow_keyword(p, "POOL")
 		stmt.kind = .Subroutine_Pool
-		stmt.source = data_expr(p, body_start, []string{"NAME", "MESSAGE", "LINE", "WORD", "OFFSET"})
+		stmt.source = data_expr(
+			p,
+			body_start,
+			[]string{"NAME", "MESSAGE", "LINE", "WORD", "OFFSET"},
+		)
 		for !data_stmt_done(p, body_start) {
 			if allow_keyword(p, "NAME") {
 				stmt.name = data_expr(p, body_start, []string{"MESSAGE", "LINE", "WORD", "OFFSET"})
@@ -2204,7 +2837,16 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.target = data_expr(
 		p,
 		body_start,
-		[]string{"FROM", "INDEX", "TRANSPORTING", "WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
+		[]string {
+			"FROM",
+			"INDEX",
+			"TRANSPORTING",
+			"WHERE",
+			"ASSIGNING",
+			"REFERENCE",
+			"CLIENT",
+			"CONNECTION",
+		},
 	)
 	if stmt.target != nil {
 		stmt.db_source_range = stmt.target.range
@@ -2219,7 +2861,15 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 					from_start,
 					"syntax error: duplicate MODIFY FROM clause",
 					body_start,
-					[]string{"INDEX", "TRANSPORTING", "WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
+					[]string {
+						"INDEX",
+						"TRANSPORTING",
+						"WHERE",
+						"ASSIGNING",
+						"REFERENCE",
+						"CLIENT",
+						"CONNECTION",
+					},
 				)
 				continue
 			}
@@ -2227,7 +2877,15 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			stmt.source = data_expr(
 				p,
 				body_start,
-				[]string{"INDEX", "TRANSPORTING", "WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
+				[]string {
+					"INDEX",
+					"TRANSPORTING",
+					"WHERE",
+					"ASSIGNING",
+					"REFERENCE",
+					"CLIENT",
+					"CONNECTION",
+				},
 			)
 			continue
 		}
@@ -2235,7 +2893,14 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			stmt.index = data_expr(
 				p,
 				body_start,
-				[]string{"TRANSPORTING", "WHERE", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
+				[]string {
+					"TRANSPORTING",
+					"WHERE",
+					"ASSIGNING",
+					"REFERENCE",
+					"CLIENT",
+					"CONNECTION",
+				},
 			)
 			continue
 		}
@@ -2251,36 +2916,75 @@ parse_modify_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 					where_start,
 					"syntax error: duplicate MODIFY WHERE clause",
 					body_start,
-					[]string{"INDEX", "TRANSPORTING", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
+					[]string {
+						"INDEX",
+						"TRANSPORTING",
+						"ASSIGNING",
+						"REFERENCE",
+						"CLIENT",
+						"CONNECTION",
+					},
 				)
 				continue
 			}
 			stmt.where_cond = sql_logical_expr(
 				p,
 				body_start,
-				[]string{"INDEX", "TRANSPORTING", "ASSIGNING", "REFERENCE", "CLIENT", "CONNECTION"},
+				[]string {
+					"INDEX",
+					"TRANSPORTING",
+					"ASSIGNING",
+					"REFERENCE",
+					"CLIENT",
+					"CONNECTION",
+				},
 			)
 			if stmt.where_cond != nil {
 				stmt.dynamic_where = sql_dynamic_where_expr(stmt.where_cond)
-				stmt.where_clause = tokenizer.text_range(where_start.range.start, previous_token(p).range.end)
+				stmt.where_clause = tokenizer.text_range(
+					where_start.range.start,
+					previous_token(p).range.end,
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "CLIENT") {
 			client_start := previous_token(p)
 			if dml_range_valid(stmt.client_clause) {
-				dml_reject_clause(p, client_start, "syntax error: duplicate MODIFY CLIENT clause", body_start, []string{"CONNECTION"})
+				dml_reject_clause(
+					p,
+					client_start,
+					"syntax error: duplicate MODIFY CLIENT clause",
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			} else {
-				stmt.client_clause = dml_skip_clause(p, client_start, body_start, []string{"CONNECTION"})
+				stmt.client_clause = dml_skip_clause(
+					p,
+					client_start,
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "CONNECTION") {
 			connection_start := previous_token(p)
 			if dml_range_valid(stmt.connection_clause) {
-				dml_reject_clause(p, connection_start, "syntax error: duplicate MODIFY CONNECTION clause", body_start, []string{"CLIENT"})
+				dml_reject_clause(
+					p,
+					connection_start,
+					"syntax error: duplicate MODIFY CONNECTION clause",
+					body_start,
+					[]string{"CLIENT"},
+				)
 			} else {
-				stmt.connection_clause = dml_skip_clause(p, connection_start, body_start, []string{"CLIENT"})
+				stmt.connection_clause = dml_skip_clause(
+					p,
+					connection_start,
+					body_start,
+					[]string{"CLIENT"},
+				)
 			}
 			continue
 		}
@@ -2307,7 +3011,12 @@ parse_modify_transporting_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast
 	}
 }
 
-parse_modify_transporting_field :: proc(p: ^Parser) -> (ast.Modify_Transporting_Field_Clause, bool) {
+parse_modify_transporting_field :: proc(
+	p: ^Parser,
+) -> (
+	ast.Modify_Transporting_Field_Clause,
+	bool,
+) {
 	if !modify_transporting_segment_token(current_token(p)) {
 		return {}, false
 	}
@@ -2419,7 +3128,9 @@ parse_sort_by_fields :: proc(p: ^Parser, body_start: int, stmt: ^ast.Sort_Stmt) 
 }
 
 sort_field_clause :: proc(p: ^Parser, expr: ^ast.Expr) -> ast.Sort_Field_Clause {
-	clause := ast.Sort_Field_Clause{expr = expr}
+	clause := ast.Sort_Field_Clause {
+		expr = expr,
+	}
 	if sort_field_name_expr(expr) {
 		clause.name = p.source[expr.range.start:expr.range.end]
 		clause.range = expr.range
@@ -2435,7 +3146,12 @@ sort_field_name_expr :: proc(expr: ^ast.Expr) -> bool {
 		return true
 	}
 	sel, ok := expr.derived_expr.(^ast.Selector_Expr)
-	return ok && sel.op == .Dash && sort_field_name_expr(sel.base) && sort_field_name_expr(sel.field)
+	return(
+		ok &&
+		sel.op == .Dash &&
+		sort_field_name_expr(sel.base) &&
+		sort_field_name_expr(sel.field) \
+	)
 }
 
 sort_field_segment_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
@@ -2518,7 +3234,9 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "FROM") {
 			from_start := previous_token(p)
-			if stmt.source != nil || len(stmt.assignments) > 0 || dml_range_valid(stmt.set_clause) {
+			if stmt.source != nil ||
+			   len(stmt.assignments) > 0 ||
+			   dml_range_valid(stmt.set_clause) {
 				dml_reject_clause(
 					p,
 					from_start,
@@ -2558,7 +3276,10 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if len(stmt.assignments) == before {
 				error(p, set_start.range, "syntax error: expected SQL assignment")
 			} else {
-				stmt.set_clause = tokenizer.text_range(set_start.range.start, previous_token(p).range.end)
+				stmt.set_clause = tokenizer.text_range(
+					set_start.range.start,
+					previous_token(p).range.end,
+				)
 			}
 			continue
 		}
@@ -2581,34 +3302,70 @@ parse_update_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			)
 			if stmt.where_cond != nil {
 				stmt.dynamic_where = sql_dynamic_where_expr(stmt.where_cond)
-				stmt.where_clause = tokenizer.text_range(where_start.range.start, previous_token(p).range.end)
+				stmt.where_clause = tokenizer.text_range(
+					where_start.range.start,
+					previous_token(p).range.end,
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "CLIENT") {
 			client_start := previous_token(p)
 			if dml_range_valid(stmt.client_clause) {
-				dml_reject_clause(p, client_start, "syntax error: duplicate UPDATE CLIENT clause", body_start, []string{"CONNECTION"})
+				dml_reject_clause(
+					p,
+					client_start,
+					"syntax error: duplicate UPDATE CLIENT clause",
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			} else {
-				stmt.client_clause = dml_skip_clause(p, client_start, body_start, []string{"CONNECTION"})
+				stmt.client_clause = dml_skip_clause(
+					p,
+					client_start,
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "CONNECTION") {
 			connection_start := previous_token(p)
 			if dml_range_valid(stmt.connection_clause) {
-				dml_reject_clause(p, connection_start, "syntax error: duplicate UPDATE CONNECTION clause", body_start, []string{"CLIENT"})
+				dml_reject_clause(
+					p,
+					connection_start,
+					"syntax error: duplicate UPDATE CONNECTION clause",
+					body_start,
+					[]string{"CLIENT"},
+				)
 			} else {
-				stmt.connection_clause = dml_skip_clause(p, connection_start, body_start, []string{"CLIENT"})
+				stmt.connection_clause = dml_skip_clause(
+					p,
+					connection_start,
+					body_start,
+					[]string{"CLIENT"},
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "USING") {
 			using_start := previous_token(p)
 			if allow_keyword(p, "CLIENT") && !dml_range_valid(stmt.client_clause) {
-				stmt.client_clause = dml_skip_clause(p, using_start, body_start, []string{"CONNECTION"})
+				stmt.client_clause = dml_skip_clause(
+					p,
+					using_start,
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			} else {
-				dml_reject_clause(p, using_start, "syntax error: invalid UPDATE USING clause", body_start, []string{"FROM", "SET", "WHERE", "CLIENT", "CONNECTION"})
+				dml_reject_clause(
+					p,
+					using_start,
+					"syntax error: invalid UPDATE USING clause",
+					body_start,
+					[]string{"FROM", "SET", "WHERE", "CLIENT", "CONNECTION"},
+				)
 			}
 			continue
 		}
@@ -2692,7 +3449,10 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			)
 			if stmt.where_cond != nil {
 				stmt.dynamic_where = sql_dynamic_where_expr(stmt.where_cond)
-				stmt.where_clause = tokenizer.text_range(where_start.range.start, previous_token(p).range.end)
+				stmt.where_clause = tokenizer.text_range(
+					where_start.range.start,
+					previous_token(p).range.end,
+				)
 			}
 			continue
 		}
@@ -2701,7 +3461,11 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			continue
 		}
 		if allow_keyword(p, "USING") {
-			stmt.using_key = parse_table_key_selector(p, body_start, []string{"WHERE", "COMPARING"})
+			stmt.using_key = parse_table_key_selector(
+				p,
+				body_start,
+				[]string{"WHERE", "COMPARING"},
+			)
 			continue
 		}
 		if allow_keyword(p, "COMPARING") {
@@ -2712,7 +3476,7 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 					&stmt.comparing,
 					ast.Delete_Comparing_Clause {
 						all_fields = true,
-						range      = tokenizer.text_range(all_start.range.start, fields.range.end),
+						range = tokenizer.text_range(all_start.range.start, fields.range.end),
 					},
 				)
 				continue
@@ -2724,18 +3488,40 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if allow_keyword(p, "CLIENT") {
 			client_start := previous_token(p)
 			if dml_range_valid(stmt.client_clause) {
-				dml_reject_clause(p, client_start, "syntax error: duplicate DELETE CLIENT clause", body_start, []string{"CONNECTION"})
+				dml_reject_clause(
+					p,
+					client_start,
+					"syntax error: duplicate DELETE CLIENT clause",
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			} else {
-				stmt.client_clause = dml_skip_clause(p, client_start, body_start, []string{"CONNECTION"})
+				stmt.client_clause = dml_skip_clause(
+					p,
+					client_start,
+					body_start,
+					[]string{"CONNECTION"},
+				)
 			}
 			continue
 		}
 		if allow_keyword(p, "CONNECTION") {
 			connection_start := previous_token(p)
 			if dml_range_valid(stmt.connection_clause) {
-				dml_reject_clause(p, connection_start, "syntax error: duplicate DELETE CONNECTION clause", body_start, []string{"CLIENT"})
+				dml_reject_clause(
+					p,
+					connection_start,
+					"syntax error: duplicate DELETE CONNECTION clause",
+					body_start,
+					[]string{"CLIENT"},
+				)
 			} else {
-				stmt.connection_clause = dml_skip_clause(p, connection_start, body_start, []string{"CLIENT"})
+				stmt.connection_clause = dml_skip_clause(
+					p,
+					connection_start,
+					body_start,
+					[]string{"CLIENT"},
+				)
 			}
 			continue
 		}
@@ -2746,7 +3532,9 @@ parse_delete_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 }
 
 delete_comparing_clause :: proc(expr: ^ast.Expr) -> ast.Delete_Comparing_Clause {
-	clause := ast.Delete_Comparing_Clause{expr = expr}
+	clause := ast.Delete_Comparing_Clause {
+		expr = expr,
+	}
 	if id, ok := expr.derived_expr.(^ast.Ident_Expr); ok {
 		clause.name = id.name
 		clause.range = id.range
@@ -2815,10 +3603,7 @@ parse_dataset_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 parse_dataset_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Dataset_Stmt) {
 	for !data_stmt_done(p, body_start) {
 		if allow_keyword(p, "FOR") {
-			if allow_keyword(
-				p,
-				"INPUT",
-			) {
+			if allow_keyword(p, "INPUT") {
 				stmt.access = .Input
 			} else if allow_keyword(p, "OUTPUT") {
 				stmt.access = .Output
@@ -2830,10 +3615,7 @@ parse_dataset_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Dataset_Stmt)
 			continue
 		}
 		if allow_keyword(p, "IN") {
-			if allow_keyword(
-				p,
-				"TEXT",
-			) {
+			if allow_keyword(p, "TEXT") {
 				stmt.text_mode = true
 				allow_keyword(p, "MODE")
 			} else if allow_keyword(p, "BINARY") {
@@ -2903,10 +3685,18 @@ parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt := ast.new(ast.Report_Stmt, start.range, p.allocator)
 	if allow_keyword(p, "REPORT") {
 		stmt.kind = .Report
-		stmt.name = data_expr(p, body_start, []string{"MESSAGE-ID", "LINE-SIZE", "LINE", "LINE-COUNT"})
+		stmt.name = data_expr(
+			p,
+			body_start,
+			[]string{"MESSAGE-ID", "LINE-SIZE", "LINE", "LINE-COUNT"},
+		)
 	} else if allow_keyword(p, "PROGRAM") {
 		stmt.kind = .Program
-		stmt.name = data_expr(p, body_start, []string{"MESSAGE-ID", "LINE-SIZE", "LINE", "LINE-COUNT"})
+		stmt.name = data_expr(
+			p,
+			body_start,
+			[]string{"MESSAGE-ID", "LINE-SIZE", "LINE", "LINE-COUNT"},
+		)
 	} else if allow_keyword(p, "READ") {
 		stmt.kind = .Read_Report
 		allow_keyword(p, "REPORT")
@@ -2922,7 +3712,8 @@ parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		stmt.name = data_expr(p, body_start, []string{})
 	}
 	for !data_stmt_done(p, body_start) {
-		if (stmt.kind == .Report || stmt.kind == .Program) && allow_keyword_phrase(p, "MESSAGE-ID") {
+		if (stmt.kind == .Report || stmt.kind == .Program) &&
+		   allow_keyword_phrase(p, "MESSAGE-ID") {
 			tok := current_token(p)
 			if tok.kind == .Ident || tok.kind == .Number || tok.kind == .String {
 				bump_token(p)
@@ -3042,7 +3833,9 @@ direct_call_stmt_starts :: proc(p: ^Parser) -> bool {
 	}
 	target_has_selector := false
 	for i in p.index ..< lparen {
-		if p.tokens[i].kind == .Arrow || p.tokens[i].kind == .FatArrow || p.tokens[i].kind == .Tilde {
+		if p.tokens[i].kind == .Arrow ||
+		   p.tokens[i].kind == .FatArrow ||
+		   p.tokens[i].kind == .Tilde {
 			target_has_selector = true
 			break
 		}

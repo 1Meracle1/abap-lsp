@@ -10357,7 +10357,7 @@ FORM run.
     FROM sflight
     INTO TABLE @lt_rows
     WHERE carrid IS NOT NULL
-      AND connid NOT LIKE lv_old_pattern.
+      AND connid NOT LIKE @lv_old_pattern.
 ENDFORM.
 `,
 	)
