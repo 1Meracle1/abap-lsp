@@ -671,6 +671,9 @@ validate_generic_builtin_types :: proc(
 		   len(s.declared_type.field_path) > 0 {
 			continue
 		}
+		if !symbol_has_source_type_clause(unit, s) && s.kind != .Parameter && s.kind != .Field_Symbol {
+			continue
+		}
 		if s.declared_type.base_name == "object" && !s.declared_type.is_ref {
 			append_diag(
 				out,
@@ -696,6 +699,11 @@ validate_generic_builtin_types :: proc(
 			diagnostic_message(message, s.declared_type.base_name, allocator),
 		)
 	}
+}
+
+symbol_has_source_type_clause :: proc(unit: ^Unit_Analysis, s: Symbol_Data) -> bool {
+	info := decl_info(unit, s.decl_info)
+	return info != nil && info.type_clause != nil
 }
 
 invalid_generic_builtin_type_use :: proc "contextless" (s: Symbol_Data) -> bool {

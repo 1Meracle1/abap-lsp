@@ -309,7 +309,18 @@ FORM demo USING iv_number TYPE numeric CHANGING cv_data TYPE data.
 ENDFORM.
 CLASS lcl DEFINITION.
   PUBLIC SECTION.
-    METHODS run IMPORTING iv_text TYPE csequence.
+    METHODS fill EXPORTING !ev_data TYPE data.
+    METHODS run IMPORTING iv_text TYPE csequence !is_data TYPE data.
+    CLASS-METHODS decode IMPORTING !iv_sgtin TYPE xsequence.
+ENDCLASS.
+CLASS lcl IMPLEMENTATION.
+  METHOD run.
+    fill( IMPORTING ev_data = DATA(lv_data) ).
+  ENDMETHOD.
+  METHOD fill.
+  ENDMETHOD.
+  METHOD decode.
+  ENDMETHOD.
 ENDCLASS.
 DATA lr_data TYPE REF TO data.
 DATA lr_object TYPE REF TO object.`
