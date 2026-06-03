@@ -147,6 +147,7 @@ run_parse :: proc(path: string, dump_tree: bool, allocator: mem.Allocator) {
 }
 
 run_analyze :: proc(args: []string, allocator: mem.Allocator) {
+	assert(context.temp_allocator.procedure == virtual.arena_allocator_proc && context.temp_allocator.data != nil)
 	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 	defer virtual.arena_temp_end(temp_arena)
 
@@ -254,6 +255,7 @@ analyze_cli_path :: proc(
 }
 
 print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
+	assert(context.temp_allocator.procedure == virtual.arena_allocator_proc && context.temp_allocator.data != nil)
 	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 	defer virtual.arena_temp_end(temp_arena)
 
@@ -431,6 +433,7 @@ print_analyze_diagnostics :: proc(
 	had_error := false
 	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
 	for unit in project.units {
+		assert(context.temp_allocator.procedure == virtual.arena_allocator_proc && context.temp_allocator.data != nil)
 		temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 		defer virtual.arena_temp_end(temp_arena)
 

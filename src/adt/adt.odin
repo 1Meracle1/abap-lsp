@@ -1693,6 +1693,7 @@ send_text :: proc(
 
 	request: http.Request
 	http.request_init(&request, method, url, temp_allocator)
+	defer http.request_destroy(&request, temp_allocator)
 	set_common_headers(&request, client, accept, temp_allocator)
 	if content_type != "" {
 		http.header_set(&request.headers, "Content-Type", content_type, temp_allocator)
@@ -1702,16 +1703,18 @@ send_text :: proc(
 	if http_err != .None {
 		return "", http_error_to_adt(http_err)
 	}
+	defer http.response_destroy(&response, temp_allocator)
 	if !status_success(response.status_code) {
 		return "", .Bad_Status
 	}
-	return string(response.body), .None
+	return strings.clone(string(response.body), temp_allocator), .None
 }
 
 ensure_session :: proc(client: ^Client, temp_allocator: mem.Allocator) -> Error {
 	url := absolute_url(&client.connection, "/runtime/systemmessages", temp_allocator)
 	request: http.Request
 	http.request_init(&request, .Get, url, temp_allocator)
+	defer http.request_destroy(&request, temp_allocator)
 	set_auth_header(&request, &client.connection, temp_allocator)
 	http.header_set(&request.headers, "Cache-Control", "no-cache", temp_allocator)
 	http.header_set(&request.headers, "Accept", SESSION_BOOTSTRAP_ACCEPT, temp_allocator)
@@ -1721,6 +1724,7 @@ ensure_session :: proc(client: ^Client, temp_allocator: mem.Allocator) -> Error 
 	if http_err != .None {
 		return http_error_to_adt(http_err)
 	}
+	defer http.response_destroy(&response, temp_allocator)
 	if !status_success(response.status_code) {
 		return .Bad_Status
 	}
@@ -2329,4 +2333,3 @@ ascii_index_ignore_case :: proc(value, needle: string) -> int {
 	}
 	return -1
 }
-

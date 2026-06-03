@@ -479,7 +479,7 @@ record_remote_candidate_unit_incremental :: proc(
 		append(&units, unit_id)
 		state.unresolved_candidates[lookup_key] = units
 	} else {
-		waiting_units := make([dynamic]Unit_Id, 0, 2, state.index.allocator)
+		waiting_units := make([dynamic]Unit_Id, 0, 2, base_runtime.heap_allocator())
 		append(&waiting_units, unit_id)
 		state.unresolved_candidates[key] = waiting_units
 	}

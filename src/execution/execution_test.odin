@@ -351,10 +351,13 @@ main_executor_temp_allocator_is_active_and_reset :: proc(t: ^testing.T) {
 	graph_init(&graph, &pool, context.allocator)
 	defer graph_destroy(&graph)
 
+	previous_temp_allocator := context.temp_allocator
 	task := submit_value(&graph, main_executor(&main), 0, temp_arena_is_active)
 	value_task := submit_value(&graph, main_executor(&main), 7, alloc_temp_value)
 	graph_start(&graph)
 	testing.expect_value(t, main_executor_drain(&main), 2)
+	testing.expect_value(t, context.temp_allocator.procedure, previous_temp_allocator.procedure)
+	testing.expect_value(t, context.temp_allocator.data, previous_temp_allocator.data)
 	testing.expect(t, wait(task))
 	testing.expect_value(t, wait(value_task), 7)
 	testing.expect_value(t, main.temp_arena.total_used, uint(0))

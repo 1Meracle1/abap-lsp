@@ -7,6 +7,7 @@ import "src:tokenizer"
 import "core:mem"
 import "core:slice"
 import "core:strings"
+import base_runtime "base:runtime"
 
 Inferred_Symbol_Type_Update :: struct {
 	symbol:             Symbol_Id,
@@ -61,7 +62,11 @@ inferred_unit_facts_destroy_updates :: proc(facts: ^Inferred_Unit_Facts) {
 	delete(facts.concatenates)
 }
 
-inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator) -> Inferred_Unit_Facts {
+inferred_unit_facts_make :: proc(
+	unit: ^Unit_Analysis,
+	allocator: mem.Allocator,
+	update_allocator: mem.Allocator,
+) -> Inferred_Unit_Facts {
 	return Inferred_Unit_Facts {
 		expression_facts = make(
 			[dynamic]Expression_Fact_Data,
@@ -81,19 +86,19 @@ inferred_unit_facts_make :: proc(unit: ^Unit_Analysis, allocator: mem.Allocator)
 			[dynamic]Inferred_Symbol_Type_Update,
 			0,
 			len(unit.assignment_sites),
-			allocator,
+			update_allocator,
 		),
 		assignments = make(
 			[dynamic]Inferred_Assignment_Update,
 			0,
 			len(unit.assignment_sites),
-			allocator,
+			update_allocator,
 		),
 		concatenates = make(
 			[dynamic]Inferred_Concatenate_Update,
 			0,
 			len(unit.concatenate_lines_of_sites),
-			allocator,
+			update_allocator,
 		),
 	}
 }
@@ -105,7 +110,7 @@ infer_unit_semantic_facts :: proc(
 	allocator: mem.Allocator,
 ) -> Inferred_Unit_Facts {
 	unit := &project.units[unit_index]
-	out := inferred_unit_facts_make(unit, allocator)
+	out := inferred_unit_facts_make(unit, allocator, base_runtime.heap_allocator())
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
@@ -389,10 +394,13 @@ apply_inferred_project_facts :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	inferred: []Inferred_Unit_Facts,
+	unit_allocators: []mem.Allocator,
+	allocator: mem.Allocator,
 ) -> bool {
 	rerun := false
 	for &facts, unit_index in inferred {
 		unit := &project.units[unit_index]
+		unit_alloc := unit_allocator(unit_allocators, unit_index, allocator)
 		delete(unit.expression_facts)
 		unit.expression_facts = facts.expression_facts
 		delete(unit.operands)
@@ -402,7 +410,14 @@ apply_inferred_project_facts :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				update_structure := symbol_update_structure_for_unit(project, lookup, unit_index, unit, update)
+				update_structure := symbol_update_structure_for_unit(
+					project,
+					lookup,
+					unit_index,
+					unit,
+					update,
+					unit_alloc,
+				)
 				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
@@ -436,11 +451,14 @@ apply_inferred_project_facts_for_indices :: proc(
 	lookup: ^Project_Index,
 	inferred: []Inferred_Unit_Facts,
 	indices: []int,
+	unit_allocators: []mem.Allocator,
+	allocator: mem.Allocator,
 ) -> bool {
 	rerun := false
 	for unit_index, i in indices {
 		facts := &inferred[i]
 		unit := &project.units[unit_index]
+		unit_alloc := unit_allocator(unit_allocators, unit_index, allocator)
 		delete(unit.expression_facts)
 		unit.expression_facts = facts.expression_facts
 		delete(unit.operands)
@@ -450,7 +468,14 @@ apply_inferred_project_facts_for_indices :: proc(
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
 			if update.overwrite_existing || !s.has_declared_type {
-				update_structure := symbol_update_structure_for_unit(project, lookup, unit_index, unit, update)
+				update_structure := symbol_update_structure_for_unit(
+					project,
+					lookup,
+					unit_index,
+					unit,
+					update,
+					unit_alloc,
+				)
 				rerun = rerun || s.structure != update_structure ||
 				        s.has_declared_type != update.type_fact.has_declared_type ||
 				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
@@ -527,6 +552,7 @@ symbol_update_structure_for_unit :: proc(
 	unit_index: int,
 	unit: ^Unit_Analysis,
 	update: Inferred_Symbol_Type_Update,
+	allocator: mem.Allocator,
 ) -> Structure_Id {
 	if update.is_sql_star {
 		return open_sql_star_table_target_structure_for_unit(
@@ -536,9 +562,10 @@ symbol_update_structure_for_unit :: proc(
 			unit,
 			update.sql_star_query_id,
 			update.sql_star_name,
+			allocator,
 		)
 	}
-	return type_fact_structure_for_unit(project, unit, update.type_fact)
+	return type_fact_structure_for_unit(project, unit, update.type_fact, allocator)
 }
 
 open_sql_star_table_target_structure_for_unit :: proc(
@@ -548,19 +575,21 @@ open_sql_star_table_target_structure_for_unit :: proc(
 	unit: ^Unit_Analysis,
 	query_id: int,
 	target_name: string,
+	allocator: mem.Allocator,
 ) -> Structure_Id {
 	source_count, single, ok := open_sql_star_source_count(project, lookup, unit_index, query_id)
 	if !ok {
 		return INVALID_STRUCTURE_ID
 	}
 	if source_count == 1 {
-		return type_fact_structure_for_unit(project, unit, single)
+		return type_fact_structure_for_unit(project, unit, single, allocator)
 	}
-	name := open_sql_star_structure_name(target_name)
+	name := open_sql_star_structure_name(target_name, context.temp_allocator)
 	if st := find_structure(unit, name); st != nil {
 		return st.id
 	}
-	fields := make([dynamic]Structure_Field_Data, 0, 8, context.allocator)
+	name = strings.clone(name, allocator)
+	fields := make([dynamic]Structure_Field_Data, 0, 8, allocator)
 	for projection in unit.sql_projections {
 		if projection.query_id != query_id {
 			continue
@@ -652,8 +681,8 @@ sql_source_structure_fact :: proc(
 	}, true
 }
 
-open_sql_star_structure_name :: proc(target_name: string) -> string {
-	out := strings.builder_make(context.allocator)
+open_sql_star_structure_name :: proc(target_name: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
 	strings.write_string(&out, "<open_sql_star:")
 	strings.write_string(&out, target_name)
 	strings.write_byte(&out, '>')
@@ -664,6 +693,7 @@ type_fact_structure_for_unit :: proc(
 	project: ^Project_Analysis,
 	unit: ^Unit_Analysis,
 	fact: Type_Fact_Data,
+	allocator: mem.Allocator,
 ) -> Structure_Id {
 	local := type_fact_local_structure(fact, unit.unit_id)
 	if local != INVALID_STRUCTURE_ID || fact.structure_unit == INVALID_UNIT_ID {
@@ -684,7 +714,7 @@ type_fact_structure_for_unit :: proc(
 			return st.id
 		}
 	}
-	fields := make([dynamic]Structure_Field_Data, 0, len(source_structure.fields), context.allocator)
+	fields := make([dynamic]Structure_Field_Data, 0, len(source_structure.fields), allocator)
 	for &field in source_structure.fields {
 		append(&fields, field)
 	}

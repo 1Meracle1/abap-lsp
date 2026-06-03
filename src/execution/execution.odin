@@ -951,8 +951,13 @@ worker_execute_cell :: proc(worker: ^Worker, cell: ^Task_Cell) {
 }
 
 main_executor_execute_cell :: proc(main: ^Main_Executor, cell: ^Task_Cell) {
+	previous_main_executor := current_main_executor
+	previous_temp_allocator := context.temp_allocator
 	current_main_executor = main
 	context.temp_allocator = main.temp_allocator
+	defer current_main_executor = previous_main_executor
+	defer context.temp_allocator = previous_temp_allocator
+
 	main.temp_depth += 1
 	temp := virtual.arena_temp_begin(&main.temp_arena)
 

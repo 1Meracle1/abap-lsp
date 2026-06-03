@@ -30,8 +30,16 @@ add_typepool_resolver_matches :: proc(
 	if client == nil || worker_pool == nil || !adt.typepool_resolver_enabled(client) {
 		return false
 	}
-	temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
-	defer virtual.arena_temp_end(temp_arena)
+	temp_active := false
+	temp_arena: virtual.Arena_Temp
+	if context.temp_allocator.procedure == virtual.arena_allocator_proc {
+		assert(context.temp_allocator.data != nil)
+		temp_arena = virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
+		temp_active = true
+	}
+	defer if temp_active {
+		virtual.arena_temp_end(temp_arena)
+	}
 
 	owner_candidates := make(
 		[dynamic]deps.Remote_Dependency_Candidate,

@@ -826,6 +826,7 @@ temp_arena_begin :: proc() -> Temp_Arena_Marker {
 	if context.temp_allocator.procedure != virtual.arena_allocator_proc {
 		return {}
 	}
+	assert(context.temp_allocator.data != nil)
 	return Temp_Arena_Marker {
 		temp = virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data),
 		active = true,
@@ -1905,7 +1906,7 @@ infer_project_semantic_facts :: proc(
 			allocator       = allocator,
 		}
 		run_infer_tasks(&graph, &state)
-		changed := apply_inferred_project_facts(project, lookup, inferred)
+		changed := apply_inferred_project_facts(project, lookup, inferred, unit_allocators, allocator)
 		temp_arena_end(temp_arena)
 		if !changed {
 			break
@@ -1941,7 +1942,14 @@ infer_project_semantic_facts_for_units :: proc(
 			allocator       = allocator,
 		}
 		run_infer_tasks_for_indices(&graph, &state, indices[:])
-		changed := apply_inferred_project_facts_for_indices(project, lookup, inferred, indices[:])
+		changed := apply_inferred_project_facts_for_indices(
+			project,
+			lookup,
+			inferred,
+			indices[:],
+			unit_allocators,
+			allocator,
+		)
 		temp_arena_end(temp_arena)
 		if !changed {
 			break
