@@ -208,6 +208,7 @@ analyze_inputs_with_state :: proc(
 	targets: []analyze.Source_Input,
 	candidates: []analyze.Project_Candidate_Input,
 	dependencies: []analyze.Source_Input,
+	pool: ^execution.Pool,
 	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> analyze.Project_Analysis {
@@ -219,6 +220,7 @@ analyze_inputs_with_state :: proc(
 		targets,
 		candidates,
 		dependencies,
+		pool,
 		options,
 		allocator,
 	)

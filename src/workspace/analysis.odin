@@ -4,6 +4,7 @@ package abap_frontend_workspace
 import adt "src:adt"
 import analyze "src:semantic/analyze"
 import session "src:semantic/session"
+import execution "src:execution"
 
 import "core:mem"
 import "core:os"
@@ -12,6 +13,7 @@ import "core:strings"
 analyze_manifest_workspace :: proc(
 	workspace: ^Workspace,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
@@ -45,7 +47,8 @@ analyze_manifest_workspace :: proc(
 		candidates[:],
 		make([dynamic]analyze.Source_Input, 0, 4, allocator)[:],
 		dependency_config_from_workspace(workspace),
-		analyze.Analyze_Options{pool = options.pool},
+		pool,
+		analyze_options_from_workspace_options(options),
 		allocator,
 	)
 	return Analysis_Result{project = project, ok = true, used_manifest = true}
@@ -54,6 +57,7 @@ analyze_manifest_workspace :: proc(
 analyze_workspace_files :: proc(
 	workspace: ^Workspace,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
@@ -86,7 +90,8 @@ analyze_workspace_files :: proc(
 		candidates[:],
 		make([dynamic]analyze.Source_Input, 0, 4, allocator)[:],
 		dependency_config_from_workspace(workspace),
-		analyze.Analyze_Options{pool = options.pool},
+		pool,
+		analyze_options_from_workspace_options(options),
 		allocator,
 	)
 	return Analysis_Result{project = project, ok = true}
@@ -96,6 +101,7 @@ analyze_standalone_path :: proc(
 	workspace: ^Workspace,
 	target_path: string,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
@@ -117,7 +123,8 @@ analyze_standalone_path :: proc(
 		candidates[:],
 		make([dynamic]analyze.Source_Input, 0, 4, allocator)[:],
 		dependency_config_from_workspace(workspace),
-		analyze.Analyze_Options{pool = options.pool},
+		pool,
+		analyze_options_from_workspace_options(options),
 		allocator,
 	)
 	return Analysis_Result{project = project, ok = true}
@@ -128,6 +135,7 @@ analyze_manifest_unit :: proc(
 	unit_index: int,
 	root_keys: []string,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
@@ -139,6 +147,7 @@ analyze_manifest_unit :: proc(
 		root_keys,
 		workspace_files[:],
 		include_paths,
+		pool,
 		options,
 		allocator,
 	)
@@ -150,6 +159,7 @@ analyze_manifest_unit_with_workspace_files :: proc(
 	root_keys: []string,
 	workspace_files: []string,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
@@ -191,7 +201,8 @@ analyze_manifest_unit_with_workspace_files :: proc(
 		candidates[:],
 		dependencies[:],
 		dependency_config_from_workspace(workspace),
-		analyze.Analyze_Options{pool = options.pool},
+		pool,
+		analyze_options_from_workspace_options(options),
 		allocator,
 	)
 	return Analysis_Result{project = project, ok = true, used_manifest = true}
@@ -334,6 +345,7 @@ manifest_reachable_owner_by_key :: proc(
 	target_key: string,
 	workspace_files: []string,
 	root_keys: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> (
@@ -361,7 +373,8 @@ manifest_reachable_owner_by_key :: proc(
 			target,
 			candidates[:],
 			{},
-			analyze.Analyze_Options{pool = options.pool},
+			pool,
+			analyze_options_from_workspace_options(options),
 			allocator,
 		)
 		for analyzed_unit in project.units {
@@ -464,6 +477,17 @@ init_workspace_adt :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
 
 analysis_error :: proc(message: string) -> Analysis_Result {
 	return Analysis_Result{ok = false, error = message}
+}
+
+@(private)
+analyze_options_from_workspace_options :: proc(options: Options) -> analyze.Analyze_Options {
+	flags: analyze.Analyze_Flags
+	if .Enable_Dependency_Diagnostics in options.flags {
+		flags += {.Enable_Dependency_Diagnostics}
+	}
+	return analyze.Analyze_Options {
+		flags = flags,
+	}
 }
 
 string_list_contains :: proc(values: []string, name: string) -> bool {

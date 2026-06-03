@@ -16,8 +16,13 @@ Source_Input :: struct {
 	mode:   Source_Mode,
 }
 
+Analyze_Flag :: enum {
+	Enable_Dependency_Diagnostics,
+}
+Analyze_Flags :: bit_set[Analyze_Flag]
+
 Analyze_Options :: struct {
-	pool: ^execution.Pool,
+	flags: Analyze_Flags,
 }
 
 Project_State :: struct {
@@ -101,6 +106,7 @@ Sql_Predicate_Name_Key :: struct {
 analyze_target :: proc(
 	target: Source_Input,
 	candidates: []Source_Input,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
@@ -108,13 +114,14 @@ analyze_target :: proc(
 	for candidate in candidates {
 		append(&wrapped, Project_Candidate_Input{input = candidate})
 	}
-	return analyze_target_with_candidate_inputs(target, wrapped[:], {}, options, allocator)
+	return analyze_target_with_candidate_inputs(target, wrapped[:], {}, pool, options, allocator)
 }
 
 analyze_target_with_candidate_inputs :: proc(
 	target: Source_Input,
 	candidates: []Project_Candidate_Input,
 	dependencies: []Source_Input,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
@@ -122,6 +129,7 @@ analyze_target_with_candidate_inputs :: proc(
 		target,
 		candidates,
 		dependencies,
+		pool,
 		options,
 		{},
 		allocator,
@@ -132,17 +140,19 @@ analyze_target_with_candidate_inputs_allocators :: proc(
 	target: Source_Input,
 	candidates: []Project_Candidate_Input,
 	dependencies: []Source_Input,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	unit_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
-	assert(options.pool != nil)
+	assert(pool != nil)
 	state := project_state_make(unit_allocators, allocator)
 	return project_state_analyze_target_with_candidate_inputs(
 		&state,
 		target,
 		candidates,
 		dependencies,
+		pool,
 		options,
 		allocator,
 	)
@@ -188,6 +198,7 @@ project_state_analyze_target_with_candidate_inputs :: proc(
 	target: Source_Input,
 	candidates: []Project_Candidate_Input,
 	dependencies: []Source_Input,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
@@ -197,6 +208,7 @@ project_state_analyze_target_with_candidate_inputs :: proc(
 		targets[:],
 		candidates,
 		dependencies,
+		pool,
 		options,
 		allocator,
 	)
@@ -207,6 +219,7 @@ project_state_analyze_targets_with_candidate_inputs :: proc(
 	targets: []Source_Input,
 	candidates: []Project_Candidate_Input,
 	dependencies: []Source_Input,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
@@ -217,6 +230,7 @@ project_state_analyze_targets_with_candidate_inputs :: proc(
 		dependencies,
 		{},
 		{},
+		pool,
 		options,
 		allocator,
 	)
@@ -229,6 +243,7 @@ project_state_apply_dirty_inputs :: proc(
 	dependencies: []Source_Input,
 	dirty: []Unit_Id,
 	include_roots: []Unit_Id,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) -> Project_Analysis {
@@ -264,7 +279,7 @@ project_state_apply_dirty_inputs :: proc(
 	}
 	project_state_mark_active_candidate_changes(state, &next_dirty, &next_include_roots)
 	project_state_collect_include_roots_for_candidates(state, &next_include_roots)
-	project_state_update(state, next_dirty[:], next_include_roots[:], options, allocator)
+	project_state_update(state, next_dirty[:], next_include_roots[:], pool, options, allocator)
 	return project_state_analysis(state)
 }
 
@@ -378,6 +393,7 @@ project_state_update :: proc(
 	state: ^Project_State,
 	dirty_units: []Unit_Id,
 	include_roots: []Unit_Id,
+	pool: ^execution.Pool,
 	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) {
@@ -389,7 +405,7 @@ project_state_update :: proc(
 	defer temp_arena_end(temp_arena)
 
 	parsed_units := make([dynamic]Unit_Id, 0, len(dirty_units), context.temp_allocator)
-	project_state_parse_units(state, dirty_units, options.pool, allocator)
+	project_state_parse_units(state, dirty_units, pool, allocator)
 	project_state_refresh_candidate_units(state, allocator)
 	for unit_id in dirty_units {
 		push_unique_unit(&parsed_units, unit_id)
@@ -409,13 +425,13 @@ project_state_update :: proc(
 		if len(new_units) == 0 {
 			break
 		}
-		project_state_parse_units(state, new_units[:], options.pool, allocator)
+		project_state_parse_units(state, new_units[:], pool, allocator)
 		for unit_id in new_units {push_unique_unit(&parsed_units, unit_id)}
 		clear(&next_roots)
 		for unit_id in new_units {push_unique_unit(&next_roots, unit_id)}
 	}
 
-	project_state_finish(state, parsed_units[:], include_roots, options.pool, allocator)
+	project_state_finish(state, parsed_units[:], include_roots, pool, options, allocator)
 }
 
 @(private)
@@ -634,6 +650,7 @@ project_state_finish :: proc(
 	parsed_units: []Unit_Id,
 	include_roots: []Unit_Id,
 	pool: ^execution.Pool,
+	options: Analyze_Options,
 	allocator: mem.Allocator,
 ) {
 	temp_arena := temp_arena_begin()
@@ -705,6 +722,9 @@ project_state_finish :: proc(
 		allocator,
 	)
 	collect_project_diagnostics(&project)
+	if !(.Enable_Dependency_Diagnostics in options.flags) {
+		filter_dependency_diagnostics(&project)
+	}
 	state.units = project.units
 	state.diagnostics = project.diagnostics
 	project_state_update_dependency_graph_for_units(state, &project, lookup, affected[:])
@@ -1646,6 +1666,16 @@ finish_project_analysis :: proc(
 	resolve_project_open_sql_predicate_names_for_units(project.units[:], unit_ids[:], &index)
 	lookup := &index
 	check_project_bodies(project, lookup, pool, unit_allocators, allocator)
+	collect_project_diagnostics(project)
+}
+
+filter_dependency_diagnostics :: proc(project: ^Project_Analysis) {
+	for &unit in project.units {
+		if unit.source_mode != .Dependency_Interface {
+			continue
+		}
+		clear(&unit.diagnostics)
+	}
 	collect_project_diagnostics(project)
 }
 

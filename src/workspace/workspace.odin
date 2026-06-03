@@ -11,10 +11,15 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 
+Option_Flag :: enum {
+	Enable_ADT,
+	Enable_Dependency_Diagnostics,
+}
+Option_Flags :: bit_set[Option_Flag]
+
 Options :: struct {
-	pool:                  ^execution.Pool,
 	dependency_store_path: string,
-	enable_adt:            bool,
+	flags:                 Option_Flags,
 }
 
 Analysis_Result :: struct {
@@ -103,7 +108,7 @@ open_workspace :: proc(
 	}
 
 	workspace.local_export_roots = workspace_local_export_roots(&workspace.manifest, allocator)
-	if options.enable_adt {
+	if .Enable_ADT in options.flags {
 		init_workspace_adt(&workspace, allocator)
 	}
 	return workspace, true, ""
@@ -135,7 +140,7 @@ open_standalone_workspace :: proc(
 			workspace.standalone_profile = remote_deps.standalone_dependency_profile()
 		}
 	}
-	if options.enable_adt {
+	if .Enable_ADT in options.flags {
 		init_workspace_adt(&workspace, allocator)
 	}
 	return workspace, true, ""
@@ -152,19 +157,18 @@ workspace_destroy :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
 analyze_workspace :: proc(
 	workspace: ^Workspace,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
-	assert(options.pool != nil)
+	assert(pool != nil)
 	result: Analysis_Result
 	if workspace.has_manifest && len(workspace.manifest.units) > 0 {
-		result = analyze_manifest_workspace(workspace, include_paths, options, allocator)
+		result = analyze_manifest_workspace(workspace, include_paths, pool, options, allocator)
 	} else {
-		result = analyze_workspace_files(workspace, include_paths, options, allocator)
+		result = analyze_workspace_files(workspace, include_paths, pool, options, allocator)
 	}
-	if result.ok {
-		lints.run_project_async(&result.project, options.pool, allocator)
-	}
+	finish_workspace_analysis_result(&result, pool, options, allocator)
 	return result
 }
 
@@ -172,20 +176,19 @@ analyze_path :: proc(
 	workspace: ^Workspace,
 	target_path: string,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: Options,
 	allocator: mem.Allocator,
 ) -> Analysis_Result {
-	assert(options.pool != nil)
+	assert(pool != nil)
 	target_abs, target_ok := absolute_clean_path(target_path, allocator)
 	if !target_ok {
 		return analysis_error("invalid target path")
 	}
 
 	if !workspace.has_manifest {
-		result := analyze_standalone_path(workspace, target_abs, include_paths, options, allocator)
-		if result.ok {
-			lints.run_project_async(&result.project, options.pool, allocator)
-		}
+		result := analyze_standalone_path(workspace, target_abs, include_paths, pool, options, allocator)
+		finish_workspace_analysis_result(&result, pool, options, allocator)
 		return result
 	}
 
@@ -198,12 +201,11 @@ analyze_path :: proc(
 			selected,
 			root_keys[:],
 			include_paths,
+			pool,
 			options,
 			allocator,
 		)
-		if result.ok {
-			lints.run_project_async(&result.project, options.pool, allocator)
-		}
+		finish_workspace_analysis_result(&result, pool, options, allocator)
 		return result
 	}
 	if selected, ok := manifest_member_owner_by_key(&workspace.manifest, target_key, allocator);
@@ -213,12 +215,11 @@ analyze_path :: proc(
 			selected,
 			root_keys[:],
 			include_paths,
+			pool,
 			options,
 			allocator,
 		)
-		if result.ok {
-			lints.run_project_async(&result.project, options.pool, allocator)
-		}
+		finish_workspace_analysis_result(&result, pool, options, allocator)
 		return result
 	}
 
@@ -229,6 +230,7 @@ analyze_path :: proc(
 		target_key,
 		workspace_files[:],
 		root_keys[:],
+		pool,
 		options,
 		allocator,
 	); ok {
@@ -238,20 +240,33 @@ analyze_path :: proc(
 			root_keys[:],
 			workspace_files[:],
 			include_paths,
+			pool,
 			options,
 			allocator,
 		)
-		if result.ok {
-			lints.run_project_async(&result.project, options.pool, allocator)
-		}
+		finish_workspace_analysis_result(&result, pool, options, allocator)
 		return result
 	}
 
-	result := analyze_standalone_path(workspace, target_abs, include_paths, options, allocator)
-	if result.ok {
-		lints.run_project_async(&result.project, options.pool, allocator)
-	}
+	result := analyze_standalone_path(workspace, target_abs, include_paths, pool, options, allocator)
+	finish_workspace_analysis_result(&result, pool, options, allocator)
 	return result
+}
+
+@(private)
+finish_workspace_analysis_result :: proc(
+	result: ^Analysis_Result,
+	pool: ^execution.Pool,
+	options: Options,
+	allocator: mem.Allocator,
+) {
+	if !result.ok {
+		return
+	}
+	lints.run_project_async(&result.project, pool, allocator)
+	if !(.Enable_Dependency_Diagnostics in options.flags) {
+		analyze.filter_dependency_diagnostics(&result.project)
+	}
 }
 
 dependency_config_from_workspace :: proc(workspace: ^Workspace) -> remote_deps.Dependency_Config {

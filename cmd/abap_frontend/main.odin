@@ -99,7 +99,7 @@ print_usage :: proc() {
 	fmt.println("usage: abap_frontend --help")
 	fmt.println("       abap_frontend parse <file>")
 	fmt.println("       abap_frontend tree <file>")
-	fmt.println("       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors]")
+	fmt.println("       abap_frontend analyze <file-or-folder> [--include <file>...] [--warnings-as-errors] [--enable-dependency-diagnostics]")
 }
 
 read_source :: proc(path: string, allocator: mem.Allocator) -> (string, bool) {
@@ -162,10 +162,14 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	target_path := args[2]
 
 	warnings_as_errors := false
+	workspace_flags := workspace.Option_Flags{.Enable_ADT}
 	include_paths := make([dynamic]string, 0, 4, context.temp_allocator)
 	for i := 3; i < len(args); {
 		if args[i] == "--warnings-as-errors" {
 			warnings_as_errors = true
+			i += 1
+		} else if args[i] == "--enable-dependency-diagnostics" {
+			workspace_flags += {.Enable_Dependency_Diagnostics}
 			i += 1
 		} else if args[i] == "--include" && i + 1 < len(args) {
 			append(&include_paths, args[i + 1])
@@ -193,7 +197,10 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 	result := analyze_cli_path(
 		target_path,
 		include_paths[:],
-		workspace.Options{pool = &pool, enable_adt = true},
+		&pool,
+		workspace.Options {
+			flags = workspace_flags,
+		},
 		context.allocator,
 	)
 	if !result.ok {
@@ -218,6 +225,7 @@ run_analyze :: proc(args: []string, allocator: mem.Allocator) {
 analyze_cli_path :: proc(
 	path: string,
 	include_paths: []string,
+	pool: ^execution.Pool,
 	options: workspace.Options,
 	allocator: mem.Allocator,
 ) -> workspace.Analysis_Result {
@@ -239,7 +247,7 @@ analyze_cli_path :: proc(
 			return workspace.Analysis_Result{ok = false, error = workspace_error}
 		}
 		defer workspace.workspace_destroy(&opened, allocator)
-		return workspace.analyze_workspace(&opened, include_paths, options, allocator)
+		return workspace.analyze_workspace(&opened, include_paths, pool, options, allocator)
 	}
 
 	opened, workspace_ok, workspace_error := workspace.open_standalone_workspace(
@@ -251,7 +259,7 @@ analyze_cli_path :: proc(
 		return workspace.Analysis_Result{ok = false, error = workspace_error}
 	}
 	defer workspace.workspace_destroy(&opened, allocator)
-	return workspace.analyze_path(&opened, abs_path, include_paths, options, allocator)
+	return workspace.analyze_path(&opened, abs_path, include_paths, pool, options, allocator)
 }
 
 print_analyze_memory_report :: proc(tracker: ^mem.Tracking_Allocator) {
@@ -440,7 +448,7 @@ print_analyze_diagnostics :: proc(
 		line_starts := build_line_starts(unit.source, context.temp_allocator)
 		uri := display_uri(unit.uri, context.temp_allocator)
 		for diagnostic in unit.diagnostics {
-			warning := diagnostic_is_warning(diagnostic.kind) && !warnings_as_errors
+			warning := semantic_analyze.diagnostic_is_warning(diagnostic.kind) && !warnings_as_errors
 			color := ""
 			label := "error"
 			if warning {
@@ -473,15 +481,6 @@ print_analyze_diagnostics :: proc(
 		}
 	}
 	return had_error
-}
-
-diagnostic_is_warning :: proc(kind: semantic_analyze.Diagnostic_Kind) -> bool {
-	#partial switch kind {
-	case .Shadowed_Symbol,
-	     .Unreachable_Code:
-		return true
-	}
-	return false
 }
 
 print_lex_errors :: proc(errors: []tokenizer.Lex_Error) {

@@ -624,7 +624,7 @@ ENDFUNCTION.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, ddxtt_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "ddxtt", kind = .Type}]
@@ -673,7 +673,7 @@ remote_dependency_candidates_include_like_occurs_table_type_bases :: proc(t: ^te
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "rsdsfields", kind = .Type}]
@@ -710,7 +710,7 @@ ENDFORM.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "ddsymtab", kind = .Type}]
@@ -752,7 +752,7 @@ ENDFUNCTION.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "hroexist", kind = .Type}]
@@ -809,7 +809,7 @@ lcl_local=>run( ).
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 
@@ -855,7 +855,7 @@ CALL FUNCTION 'Z_REMOTE_FM'.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
@@ -892,7 +892,7 @@ PERFORM logdelete IN PROGRAM rddu0001 USING lv_protname.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	unit := &project.units[0]
@@ -938,7 +938,7 @@ SUBMIT scpr3 AND RETURN.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	unit := &project.units[0]
@@ -979,7 +979,7 @@ SUBMIT ('SCPR3') AND RETURN.
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, report_pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "scpr3", kind = .Report}]
@@ -1595,7 +1595,7 @@ analyze_project_test :: proc(
 	if pool.options.worker_count > 0 {
 		execution.pool_start(&pool)
 	}
-	project := analyze.analyze_target(target, candidates, analyze.Analyze_Options{pool = &pool}, context.allocator)
+	project := analyze.analyze_target(target, candidates, &pool, analyze.Analyze_Options{}, context.allocator)
 	if pool.options.worker_count > 0 {
 		execution.pool_join(&pool)
 	}
@@ -1615,11 +1615,67 @@ analyze_project_dependencies_test :: proc(
 		target,
 		candidates[:],
 		dependencies,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
 	return project
+}
+
+@(test)
+dependency_diagnostics_are_disabled_by_default :: proc(t: ^testing.T) {
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	defer execution.pool_destroy(&pool)
+
+	target := analyze.Source_Input {
+		uri = "mem://main.abap",
+		source = "DATA lo_dep TYPE REF TO zcl_dep. DATA lo_missing TYPE REF TO zmissing_target.",
+	}
+	dependency := analyze.Source_Input {
+		uri = "abapls-cache:/global-class/zcl_dep.abap",
+		source = `CLASS zcl_dep DEFINITION. ENDCLASS.
+DATA lv_value TYPE zmissing_dep.`,
+		mode = .Dependency_Interface,
+	}
+	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
+	dependencies := [?]analyze.Source_Input{dependency}
+
+	project := analyze.analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies[:],
+		&pool, analyze.Analyze_Options{},
+		context.allocator,
+	)
+	root := analyze.project_unit_by_uri(&project, target.uri)
+	dep := analyze.project_unit_by_uri(&project, dependency.uri)
+
+	testing.expect(t, root != nil)
+	testing.expect(t, dep != nil)
+	if root != nil {
+		testing.expect(t, has_diagnostic(root, .Unresolved_Reference))
+	}
+	if dep != nil {
+		testing.expect_value(t, len(dep.diagnostics), 0)
+	}
+
+	project = analyze.analyze_target_with_candidate_inputs(
+		target,
+		candidates[:],
+		dependencies[:],
+		&pool,
+		analyze.Analyze_Options {
+			flags = {.Enable_Dependency_Diagnostics},
+		},
+		context.allocator,
+	)
+	dep = analyze.project_unit_by_uri(&project, dependency.uri)
+
+	testing.expect(t, dep != nil)
+	if dep != nil {
+		testing.expect(t, has_diagnostic(dep, .Unresolved_Reference))
+	}
 }
 
 @(test)
@@ -1641,7 +1697,7 @@ project_state_incremental_dependency_update_resolves_waiting_unit :: proc(t: ^te
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
@@ -1661,7 +1717,7 @@ project_state_incremental_dependency_update_resolves_waiting_unit :: proc(t: ^te
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root = analyze.project_unit_by_uri(&project, target.uri)
@@ -1697,6 +1753,9 @@ ENDCLASS.`,
 	}
 	candidates := make([dynamic]analyze.Project_Candidate_Input, 0, 0, context.allocator)
 	dependencies := make([dynamic]analyze.Source_Input, 0, 2, context.allocator)
+	analyze_options := analyze.Analyze_Options {
+		flags = {.Enable_Dependency_Diagnostics},
+	}
 	append(
 		&dependencies,
 		analyze.Source_Input {
@@ -1711,7 +1770,8 @@ ENDCLASS.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool,
+		analyze_options,
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
@@ -1734,7 +1794,8 @@ ENDCLASS.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool,
+		analyze_options,
 		context.allocator,
 	)
 	root = analyze.project_unit_by_uri(&project, target.uri)
@@ -1781,7 +1842,7 @@ ls_outer-inner-leaf = 'x'.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
@@ -1803,7 +1864,7 @@ ls_outer-inner-leaf = 'x'.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root = analyze.project_unit_by_uri(&project, target.uri)
@@ -1845,7 +1906,7 @@ ENDCLASS.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
@@ -1872,7 +1933,7 @@ ENDCLASS.`
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	dep_unit = analyze.project_unit_by_uri(&project, dep.uri)
@@ -1905,7 +1966,7 @@ project_state_batch_resolves_target_candidates :: proc(t: ^testing.T) {
 		targets[:],
 		candidates[:],
 		{},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, targets[0].uri)
@@ -1935,7 +1996,7 @@ project_state_ignores_unparsed_candidate_provided_names :: proc(t: ^testing.T) {
 		target,
 		candidates[:],
 		{},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
@@ -1960,7 +2021,7 @@ project_state_ignores_unparsed_candidate_provided_names :: proc(t: ^testing.T) {
 		target,
 		candidates[:],
 		{},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root = analyze.project_unit_by_uri(&project, target.uri)
@@ -1992,7 +2053,7 @@ analysis_session_keeps_targets_that_are_also_candidates :: proc(t: ^testing.T) {
 		candidates[:],
 		{},
 		remote_deps.Dependency_Config{},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, targets[0].uri)
@@ -2025,7 +2086,7 @@ analysis_session_keeps_unchanged_inputs_clean :: proc(t: ^testing.T) {
 	}
 	analysis_session := session.analysis_session_make(
 		remote_deps.Dependency_Config{},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	defer session.analysis_session_destroy(&analysis_session)
@@ -2075,7 +2136,7 @@ analysis_session_ignores_editor_change_to_immutable_dependency :: proc(t: ^testi
 	}
 	analysis_session := session.analysis_session_make(
 		remote_deps.Dependency_Config{},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	defer session.analysis_session_destroy(&analysis_session)
@@ -2114,7 +2175,7 @@ project_state_unresolved_candidates_keep_one_waiter_per_unit :: proc(t: ^testing
 		targets[:],
 		candidates[:],
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	units, ok := state.unresolved_candidates[deps.Remote_Dependency_Key {
@@ -2158,7 +2219,7 @@ TYPES: BEGIN OF enlfdir,
 		targets[:],
 		nil,
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, targets[0].uri)
@@ -2195,7 +2256,7 @@ project_state_unresolved_candidates_skip_resolved_function_dependency :: proc(t:
 		targets[:],
 		nil,
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	_, pending := state.unresolved_candidates[deps.Remote_Dependency_Key{name = "z_remote_fm", kind = .Function}]
@@ -2240,7 +2301,7 @@ ENDCLASS.`,
 		targets[:],
 		nil,
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	full_candidates := analyze.collect_project_state_remote_dependency_candidates(&state, true, context.allocator)
@@ -2279,7 +2340,7 @@ project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	consumer := analyze.project_unit_by_uri(&project, targets[2].uri)
@@ -2293,7 +2354,7 @@ project_state_retained_global_roots_keep_first_winner :: proc(t: ^testing.T) {
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	consumer = analyze.project_unit_by_uri(&project, targets[2].uri)
@@ -2319,7 +2380,7 @@ project_state_retained_global_root_removal_exposes_next_winner :: proc(t: ^testi
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 
@@ -2329,7 +2390,7 @@ project_state_retained_global_root_removal_exposes_next_winner :: proc(t: ^testi
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	consumer := analyze.project_unit_by_uri(&project, targets[2].uri)
@@ -2354,7 +2415,7 @@ project_state_retained_provided_name_removal_keeps_other_owner :: proc(t: ^testi
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 
@@ -2364,7 +2425,7 @@ project_state_retained_provided_name_removal_keeps_other_owner :: proc(t: ^testi
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 
@@ -2387,7 +2448,7 @@ project_state_root_namespace_change_revalidates_type_reference :: proc(t: ^testi
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	consumer := analyze.project_unit_by_uri(&project, targets[1].uri)
@@ -2402,7 +2463,7 @@ project_state_root_namespace_change_revalidates_type_reference :: proc(t: ^testi
 		targets[:],
 		nil,
 		nil,
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	consumer = analyze.project_unit_by_uri(&project, targets[1].uri)
@@ -2444,7 +2505,7 @@ ENDCLASS.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root := analyze.project_unit_by_uri(&project, target.uri)
@@ -2459,7 +2520,7 @@ ENDCLASS.`
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	root = analyze.project_unit_by_uri(&project, target.uri)
@@ -2503,7 +2564,7 @@ ENDCLASS.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	child := analyze.project_unit_by_uri(&project, target.uri)
@@ -2518,7 +2579,7 @@ ENDCLASS.`
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	child = analyze.project_unit_by_uri(&project, target.uri)
@@ -2577,7 +2638,7 @@ ENDCLASS.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	handler := analyze.project_unit_by_uri(&project, target.uri)
@@ -2592,7 +2653,7 @@ ENDCLASS.`
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	handler = analyze.project_unit_by_uri(&project, target.uri)
@@ -2617,7 +2678,7 @@ analyze_handles_more_units_than_initial_task_capacity :: proc(t: ^testing.T) {
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -2638,14 +2699,13 @@ analyze_path_test_with_options :: proc(
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	run_options := options
-	run_options.pool = &pool
 	opened, workspace_ok, workspace_error := workspace.open_workspace(root, run_options, context.allocator)
 	testing.expect(t, workspace_ok)
 	if !workspace_ok {
 		execution.pool_destroy(&pool)
 		return workspace.Analysis_Result{ok = false, error = workspace_error}
 	}
-	result := workspace.analyze_path(&opened, target_path, nil, run_options, context.allocator)
+	result := workspace.analyze_path(&opened, target_path, nil, &pool, run_options, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	return result
@@ -2659,7 +2719,6 @@ analyze_standalone_path_test_with_options :: proc(
 	pool: execution.Pool
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	run_options := options
-	run_options.pool = &pool
 	target_abs, target_ok := workspace.absolute_clean_path(target_path, context.allocator)
 	testing.expect(t, target_ok)
 	if !target_ok {
@@ -2676,7 +2735,7 @@ analyze_standalone_path_test_with_options :: proc(
 		execution.pool_destroy(&pool)
 		return workspace.Analysis_Result{ok = false, error = workspace_error}
 	}
-	result := workspace.analyze_path(&opened, target_abs, nil, run_options, context.allocator)
+	result := workspace.analyze_path(&opened, target_abs, nil, &pool, run_options, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	return result
@@ -10553,7 +10612,7 @@ dependency_store_resolves_formatted_decfloat_data_element_in_structure :: proc(t
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -10697,7 +10756,7 @@ dependency_store_ddic_data_elements_resolve_transitive_table_fields :: proc(t: ^
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -10742,7 +10801,7 @@ dependency_store_function_hit_clears_remote_candidate :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -10808,7 +10867,7 @@ cache_hit_resolves_before_unreachable_adt :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -10870,7 +10929,7 @@ adt_runs_for_cache_miss_after_cache_hit_reanalysis :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -10976,7 +11035,7 @@ cache_negative_skips_adt_and_allows_local_export_fallback :: proc(t: ^testing.T)
 			profile = &profile,
 			local_export_roots = roots[:],
 		},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11019,7 +11078,7 @@ adt_miss_records_negative_cache_lookup :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11080,7 +11139,7 @@ TYPES tpak_permission_to_use_list TYPE STANDARD TABLE OF tpak_permission_to_use 
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11138,7 +11197,7 @@ CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.`
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
@@ -11152,7 +11211,7 @@ CONSTANTS gfw_false TYPE gfw_boolean VALUE ' '.`
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11197,7 +11256,7 @@ TYPES sprx_s_contract_actor TYPE string.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	testing.expect(t, project_units_have_diagnostic(&project, .Unresolved_Reference))
@@ -11208,7 +11267,7 @@ TYPES sprx_s_contract_actor TYPE string.`,
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
@@ -11267,7 +11326,7 @@ TYPES: BEGIN OF trsel_ts_ranges,
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11321,7 +11380,7 @@ lv_flag = gfw_false.`,
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11435,7 +11494,7 @@ cached_typepool_source_skips_source_endpoint :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11508,7 +11567,7 @@ cached_typepool_like_dependency_is_fetched :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11587,7 +11646,7 @@ INCLUDE LSVRXPIN.`
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11639,7 +11698,7 @@ typepool_resolver_miss_keeps_unresolved_diagnostic :: proc(t: ^testing.T) {
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{adt_client = &client},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -11764,7 +11823,7 @@ standalone_file_drains_dependency_store_with_threaded_pool :: proc(t: ^testing.T
 		make([dynamic]analyze.Project_Candidate_Input, context.allocator)[:],
 		make([dynamic]analyze.Source_Input, context.allocator)[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, cache_any_profile = true},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	if pool.options.worker_count > 0 {
@@ -12009,7 +12068,7 @@ manifest_local_export_fallback_resolves_remote_candidate :: proc(t: ^testing.T) 
 		candidates[:],
 		dependencies[:],
 		remote_deps.Dependency_Config{local_export_roots = roots[:]},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -12057,7 +12116,7 @@ manifest_local_export_match_is_cached_under_manifest_profile :: proc(t: ^testing
 		candidates[:],
 		dependencies[:],
 		remote_deps.Dependency_Config{cache = &store, profile = &profile, local_export_roots = roots[:]},
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -12093,7 +12152,7 @@ ABAP_ADT_USER=demo
 ABAP_ADT_PASSWORD=secret
 `,
 	)
-	opened, opened_ok, _ := workspace.open_workspace(root, workspace.Options{enable_adt = true}, context.allocator)
+	opened, opened_ok, _ := workspace.open_workspace(root, workspace.Options{flags = {.Enable_ADT}}, context.allocator)
 	testing.expect(t, opened_ok)
 	testing.expect(t, opened.has_dotenv)
 	testing.expect(t, opened.has_adt)
@@ -12116,7 +12175,7 @@ ABAP_ADT_PASSWORD=secret
 	)
 	opened, opened_ok, _ := workspace.open_standalone_workspace(
 		root,
-		workspace.Options{enable_adt = true},
+		workspace.Options{flags = {.Enable_ADT}},
 		context.allocator,
 	)
 	testing.expect(t, opened_ok)
@@ -12157,7 +12216,7 @@ adt_fetched_dependency_input_resolves_remote_candidate :: proc(t: ^testing.T) {
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -12237,7 +12296,7 @@ ENDFUNCTION.
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -12305,7 +12364,7 @@ adt_fetched_ddic_table_type_resolves_type_reference :: proc(t: ^testing.T) {
 		target,
 		candidates[:],
 		dependencies[:],
-		analyze.Analyze_Options{pool = &pool},
+		&pool, analyze.Analyze_Options{},
 		context.allocator,
 	)
 	execution.pool_destroy(&pool)
@@ -14021,7 +14080,7 @@ root_file = "src/ZOTHER.abap"
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	opened, workspace_ok, _ := workspace.open_workspace(
 		root,
-		workspace.Options{pool = &pool},
+		workspace.Options{},
 		context.allocator,
 	)
 	testing.expect(t, workspace_ok)
@@ -14029,7 +14088,7 @@ root_file = "src/ZOTHER.abap"
 		execution.pool_destroy(&pool)
 		return
 	}
-	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	result := workspace.analyze_workspace(&opened, nil, &pool, workspace.Options{}, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 
@@ -14050,7 +14109,7 @@ analyze_workspace_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) {
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	opened, workspace_ok, _ := workspace.open_workspace(
 		root,
-		workspace.Options{pool = &pool},
+		workspace.Options{},
 		context.allocator,
 	)
 	testing.expect(t, workspace_ok)
@@ -14058,7 +14117,7 @@ analyze_workspace_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) {
 		execution.pool_destroy(&pool)
 		return
 	}
-	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	result := workspace.analyze_workspace(&opened, nil, &pool, workspace.Options{}, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
@@ -14111,7 +14170,7 @@ members = [
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	opened, workspace_ok, _ := workspace.open_workspace(
 		root,
-		workspace.Options{pool = &pool},
+		workspace.Options{},
 		context.allocator,
 	)
 	testing.expect(t, workspace_ok)
@@ -14119,7 +14178,7 @@ members = [
 		execution.pool_destroy(&pool)
 		return
 	}
-	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	result := workspace.analyze_workspace(&opened, nil, &pool, workspace.Options{}, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
@@ -14166,7 +14225,7 @@ analyze_workspace_resolves_ordered_include_with_local_sibling_aliases :: proc(t:
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	opened, workspace_ok, _ := workspace.open_workspace(
 		root,
-		workspace.Options{pool = &pool},
+		workspace.Options{},
 		context.allocator,
 	)
 	testing.expect(t, workspace_ok)
@@ -14174,7 +14233,7 @@ analyze_workspace_resolves_ordered_include_with_local_sibling_aliases :: proc(t:
 		execution.pool_destroy(&pool)
 		return
 	}
-	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	result := workspace.analyze_workspace(&opened, nil, &pool, workspace.Options{}, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
@@ -14218,7 +14277,7 @@ root_file = "src/ZOTHER.abap"
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
 	opened, workspace_ok, _ := workspace.open_standalone_workspace(
 		filepath.dir(main_file),
-		workspace.Options{pool = &pool},
+		workspace.Options{},
 		context.allocator,
 	)
 	testing.expect(t, workspace_ok)
@@ -14226,7 +14285,7 @@ root_file = "src/ZOTHER.abap"
 		execution.pool_destroy(&pool)
 		return
 	}
-	result := workspace.analyze_path(&opened, main_file, nil, workspace.Options{pool = &pool}, context.allocator)
+	result := workspace.analyze_path(&opened, main_file, nil, &pool, workspace.Options{}, context.allocator)
 	workspace.workspace_destroy(&opened, context.allocator)
 	execution.pool_destroy(&pool)
 

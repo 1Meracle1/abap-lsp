@@ -2,6 +2,7 @@ package abap_frontend_semantic_session
 
 import analyze "src:semantic/analyze"
 import deps "src:semantic/dependencies"
+import execution "src:execution"
 import remote_deps "src:semantic/remote_dependencies"
 import uri_key "src:uri_key"
 
@@ -72,6 +73,7 @@ Analysis_Session :: struct {
 
 	dependency_state: remote_deps.Dependency_State,
 	config:           remote_deps.Dependency_Config,
+	pool:             ^execution.Pool,
 	options:          analyze.Analyze_Options,
 }
 
@@ -84,6 +86,7 @@ Update_Result :: struct {
 
 analysis_session_make :: proc(
 	config: remote_deps.Dependency_Config,
+	pool: ^execution.Pool,
 	options: analyze.Analyze_Options,
 	backing_allocator: mem.Allocator,
 ) -> Analysis_Session {
@@ -91,6 +94,7 @@ analysis_session_make :: proc(
 	return Analysis_Session {
 		memory = memory,
 		config = config,
+		pool = pool,
 		options = options,
 	}
 }
@@ -147,11 +151,12 @@ analysis_session_analyze_once :: proc(
 	candidates: []analyze.Project_Candidate_Input,
 	dependencies: []analyze.Source_Input,
 	config: remote_deps.Dependency_Config,
+	pool: ^execution.Pool,
 	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> analyze.Project_Analysis {
 	session := new(Analysis_Session, allocator)
-	session^ = analysis_session_make(config, options, allocator)
+	session^ = analysis_session_make(config, pool, options, allocator)
 	changes := make(
 		[dynamic]Input_Change,
 		0,
@@ -349,6 +354,7 @@ analysis_session_update_project :: proc(
 		session.dependencies[:],
 		dirty,
 		include_roots,
+		session.pool,
 		session.options,
 		session.memory.allocator,
 	)
@@ -579,7 +585,7 @@ analysis_session_resolve_new_dependencies :: proc(
 		remote_candidates[:],
 		&session.config,
 		&session.dependency_state,
-		session.options.pool,
+		session.pool,
 		session.targets[0].uri if len(session.targets) > 0 else "",
 	)
 	if added == 0 {
