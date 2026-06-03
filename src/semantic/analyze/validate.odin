@@ -5,7 +5,6 @@ import "src:tokenizer"
 import "src:ast"
 
 import "core:mem"
-import "core:strings"
 
 max_type_lookup_depth :: 64
 
@@ -938,9 +937,6 @@ validate_field_accesses :: proc(
 			if skip_table_line_diag {
 				continue
 			}
-			if field_access_base_is_external_ddic_shape(project, lookup, unit_index, access) {
-				continue
-			}
 			if field_access_base_is_inline_table_line_target(project, lookup, unit_index, access) {
 				continue
 			}
@@ -1268,72 +1264,6 @@ structure_field_next_structure :: proc(
 	return INVALID_UNIT_ID, INVALID_STRUCTURE_ID, false, false
 }
 
-field_access_base_is_external_ddic_shape :: proc(
-	project: ^Project_Analysis,
-	lookup: ^Project_Index,
-	unit_index: int,
-	access: Field_Access,
-) -> bool {
-	if access.base_namespace != .Value {
-		return false
-	}
-	handle, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
-	if !ok {
-		return false
-	}
-	handle_unit_index := unit_id_index(handle.unit)
-	if handle_unit_index < 0 || handle_unit_index >= len(project.units) {
-		return false
-	}
-	s := symbol(&project.units[handle_unit_index], handle.symbol)
-	if s == nil {
-		return false
-	}
-	if s.structure != INVALID_STRUCTURE_ID {
-		return structure_origin_is_external_ddic_dependency(project, handle_unit_index, s.structure)
-	}
-	if !s.has_declared_type {
-		return false
-	}
-	fact, fact_unit_index, fact_ok := type_fact_from_declared_type(
-		project,
-		lookup,
-		handle_unit_index,
-		s.scope,
-		s.declared_type,
-		s.type_clause_form,
-		s.has_type_clause_form,
-		0,
-	)
-	return fact_ok &&
-	       fact.structure != INVALID_STRUCTURE_ID &&
-	       structure_origin_is_external_ddic_dependency(project, fact_unit_index, fact.structure)
-}
-
-structure_origin_is_external_ddic_dependency :: proc(
-	project: ^Project_Analysis,
-	unit_index: int,
-	structure_id: Structure_Id,
-) -> bool {
-	if unit_index < 0 || unit_index >= len(project.units) {
-		return false
-	}
-	st := structure(&project.units[unit_index], structure_id)
-	if st == nil {
-		return false
-	}
-	origin_unit_index := unit_id_index(st.origin_unit)
-	if origin_unit_index < 0 || origin_unit_index >= len(project.units) {
-		return false
-	}
-	origin := &project.units[origin_unit_index]
-	return origin.source_mode == .Dependency_Interface &&
-	       (strings.has_prefix(origin.uri, "abapls-cache:/ddic-") ||
-	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/ddic/") ||
-	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/vit/wb/object_type/tabldt/") ||
-	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/vit/wb/object_type/viewdv/"))
-}
-
 field_access_base_is_inline_table_line_target :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
@@ -1549,13 +1479,6 @@ validate_open_sql :: proc(
 			source_symbol.structure,
 			name_ref.name,
 		); !field_ok {
-			if structure_origin_is_external_ddic_dependency(
-				project,
-				unit_id_index(source_handle.unit),
-				source_symbol.structure,
-			) {
-				continue
-			}
 			append_diag(
 				out,
 				seen,

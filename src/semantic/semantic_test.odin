@@ -4591,7 +4591,7 @@ ENDFORM.`
 }
 
 @(test)
-inline_data_statement_from_ddic_cache_row_allows_incomplete_append_fields :: proc(t: ^testing.T) {
+inline_data_statement_from_ddic_cache_row_reports_missing_fields :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///inline_data_ddic_cache_row.abap",
 		source = `DATA it_obj_itm TYPE /sttp/t_dm_obj_itm.
@@ -4622,19 +4622,17 @@ ENDFORM.`,
 	project := analyze_project_dependencies_test(t, target, dependencies[:])
 	root := analyze.project_unit_by_uri(&project, target.uri)
 
-	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, root != nil && has_diagnostic(root, .Unknown_Field))
 }
 
 @(test)
-open_sql_from_adt_ddic_table_allows_incomplete_append_fields :: proc(t: ^testing.T) {
+open_sql_from_adt_ddic_table_reports_missing_projection_fields :: proc(t: ^testing.T) {
 	target := analyze.Source_Input {
 		uri = "file:///open_sql_adt_ddic_append_fields.abap",
-		source = `DATA lv_evtid TYPE string.
-SELECT SINGLE rep_evtid
+		source = `DATA lt_rep_evt TYPE STANDARD TABLE OF /sttp/rep_evt.
+SELECT response_http_code, response_http_reason
   FROM /sttp/rep_evt
-  INTO @lv_evtid
-  WHERE recall_status = space
-    AND response_code <> space.`,
+  INTO TABLE @lt_rep_evt.`,
 	}
 	dependencies := [?]analyze.Source_Input {
 		{
@@ -4648,7 +4646,10 @@ SELECT SINGLE rep_evtid
 	project := analyze_project_dependencies_test(t, target, dependencies[:])
 	root := analyze.project_unit_by_uri(&project, target.uri)
 
-	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, root != nil)
+	if root != nil {
+		testing.expect_value(t, diagnostic_count(root, .Unknown_Field), 2)
+	}
 }
 
 @(test)
