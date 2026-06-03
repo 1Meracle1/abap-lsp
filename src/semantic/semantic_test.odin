@@ -3876,6 +3876,35 @@ ENDFORM.
 }
 
 @(test)
+constructor_for_in_group_uses_loop_group_binding :: proc(t: ^testing.T) {
+	source := `
+FORM run.
+  TYPES: BEGIN OF ty_hry,
+           objid_parent TYPE string,
+           objid_child TYPE string,
+         END OF ty_hry.
+  TYPES ty_hry_tab TYPE STANDARD TABLE OF ty_hry WITH EMPTY KEY.
+  TYPES: BEGIN OF ty_child,
+           objid TYPE string,
+         END OF ty_child.
+  TYPES ty_child_tab TYPE STANDARD TABLE OF ty_child WITH EMPTY KEY.
+  DATA lt_obj_hry TYPE ty_hry_tab.
+
+  LOOP AT lt_obj_hry ASSIGNING FIELD-SYMBOL(<row>) GROUP BY <row>-objid_parent INTO DATA(lg_child_obj).
+    DATA lt_child_obj TYPE ty_child_tab.
+    lt_child_obj = VALUE #( FOR ls_child_obj IN GROUP lg_child_obj ( objid = ls_child_obj-objid_child ) ).
+  ENDLOOP.
+ENDFORM.
+`
+	unit := collect_test_unit(t, "file:///constructor_for_in_group.abap", source)
+
+	testing.expect(t, !has_diagnostic(&unit, .Unresolved_Reference))
+	testing.expect(t, !has_diagnostic(&unit, .Unknown_Field))
+	testing.expect(t, !has_reference(&unit, "group", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lg_child_obj", .Value, .Identifier))
+}
+
+@(test)
 loop_where_table_body_uses_row_fields :: proc(t: ^testing.T) {
 	source := `
 FORM run.

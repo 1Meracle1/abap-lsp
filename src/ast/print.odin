@@ -873,7 +873,10 @@ emit_type_ref_key_clause :: proc(p: ^Printer, key: ^Type_Ref_Key_Clause) {
 emit_constructor_for_clause :: proc(p: ^Printer, expr: ^Constructor_For_Clause_Expr) {
 	emit(p, "FOR ")
 	emit(p, expr.variable)
-	if expr.source != nil {
+	if expr.group_source != "" {
+		emit(p, " IN GROUP ")
+		emit(p, expr.group_source)
+	} else if expr.source != nil {
 		emit(p, " IN ")
 		emit_node(p, expr.source)
 		if expr.where_clause != nil {

@@ -318,6 +318,17 @@ value_constructor_builds_base_for_and_assignment_clauses :: proc(t: ^testing.T) 
 }
 
 @(test)
+value_constructor_allows_for_in_group_clause :: proc(t: ^testing.T) {
+	source := `DATA(lt_new) = VALUE #( FOR ls_obj IN GROUP lg_obj ( objid = ls_obj-objid ) ).`
+	parsed := parse(source, "value_for_group.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	counts := count_nodes(parsed.root)
+	testing.expect_value(t, counts.constructor_for, 1)
+	testing.expect_value(t, counts.constructor_for_group, 1)
+}
+
+@(test)
 value_constructor_allows_component_path_assignment_names :: proc(t: ^testing.T) {
 	source := `lt_decode = VALUE #( ( obj_code-code_char = |{ '(00)' }{ is_resp_stru-kod } | code_type = 'C' ) ).`
 	parsed := parse(source, "value_component_path.abap", context.allocator)

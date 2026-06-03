@@ -332,7 +332,13 @@ collect_constructor_for_clause_refs :: proc(
 	scope: Scope_Id,
 ) {
 	collect_expr_refs(c, expr.source, scope)
+	if expr.group_source != "" {
+		add_reference(c, scope, expr.group_source, .Value, .Identifier, expr.group_source_range)
+	}
 	source_access, has_source := internal_table_where_target_access(c, expr.source, scope)
+	if !has_source && expr.group_source != "" {
+		source_access, has_source = constructor_for_group_source_access(c, expr.group_source)
+	}
 	previous := c.current_scope
 	c.current_scope = scope
 	for_scope := push_scope(c, .Constructor_For, expr.range)
@@ -366,6 +372,17 @@ collect_constructor_for_clause_refs :: proc(
 	c.current_scope = for_scope
 	pop_scope(c)
 	c.current_scope = previous
+}
+
+constructor_for_group_source_access :: proc(c: ^Collector, name: string) -> (Field_Access, bool) {
+	canonical := canonical_name(name, c.allocator)
+	for i := len(c.loop_group_source_stack) - 1; i >= 0; i -= 1 {
+		frame := c.loop_group_source_stack[i]
+		if frame.name == canonical {
+			return frame.source, true
+		}
+	}
+	return {}, false
 }
 
 declare_constructor_for_iterator_type :: proc(c: ^Collector, symbol_id: Symbol_Id, source: Field_Access) {
@@ -2187,22 +2204,48 @@ collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scop
 			)
 		}
 	}
+	collect_expr_refs(c, stmt.group_target, scope)
 	collect_internal_table_where_refs(c, stmt.source, stmt.where_cond, scope)
 	source_access, has_source := value_access_from_expr(c, stmt.source, scope)
 	previous := c.current_scope
 	c.current_scope = scope
 	loop_scope := push_scope(c, .Loop_Block, stmt.range)
+	group_source_pushed := false
 	if has_source {
 		append(&c.loop_source_stack, source_access)
 		c.unit.scopes[scope_id_index(loop_scope)].allows_internal_table_line_selector = true
+		if name, ok := loop_group_target_name(stmt.group_target); ok {
+			append(
+				&c.loop_group_source_stack,
+				Loop_Group_Source_Frame{name = canonical_name(name, c.allocator), source = source_access},
+			)
+			group_source_pushed = true
+		}
 	}
 	walk_stmt_list(c, stmt.body, loop_scope)
+	if group_source_pushed {
+		resize(&c.loop_group_source_stack, len(c.loop_group_source_stack) - 1)
+	}
 	if has_source {
 		_ = pop_loop_source(c)
 	}
 	c.current_scope = loop_scope
 	pop_scope(c)
 	c.current_scope = previous
+}
+
+loop_group_target_name :: proc(expr: ^ast.Expr) -> (string, bool) {
+	if expr == nil {
+		return "", false
+	}
+	#partial switch n in expr.derived_expr {
+	case ^ast.Data_Inline_Name_Expr:
+		return n.name, n.name != ""
+	case ^ast.Field_Symbol_Inline_Name_Expr:
+		return n.name, n.name != ""
+	}
+	name, _, ok := expr_name(expr)
+	return name, ok
 }
 
 pop_loop_source :: proc(c: ^Collector) -> bool {

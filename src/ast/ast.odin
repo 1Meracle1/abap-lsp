@@ -482,6 +482,8 @@ Constructor_For_Clause_Expr :: struct {
 	then_expr:  ^Expr,
 	condition:  ^Expr,
 	source:     ^Expr,
+	group_source: string,
+	group_source_range: tokenizer.Range,
 	where_clause: ^Expr,
 	body:       [dynamic]^Expr,
 }

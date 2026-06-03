@@ -22,6 +22,7 @@ Node_Counts :: struct {
 	constructor_when: int,
 	constructor_else: int,
 	constructor_for:  int,
+	constructor_for_group: int,
 	constructor_init: int,
 	constructor_next: int,
 	constructor_named: int,
@@ -143,7 +144,7 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		return v
 	}
 	counts := cast(^Node_Counts)v.data
-	#partial switch _ in node.derived {
+	#partial switch n in node.derived {
 	case ^ast.Binary_Expr:
 		counts.binary += 1
 	case ^ast.Selector_Expr:
@@ -174,6 +175,9 @@ count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 		counts.constructor_else += 1
 	case ^ast.Constructor_For_Clause_Expr:
 		counts.constructor_for += 1
+		if n.group_source != "" {
+			counts.constructor_for_group += 1
+		}
 	case ^ast.Constructor_Init_Clause_Expr:
 		counts.constructor_init += 1
 	case ^ast.Constructor_Next_Clause_Expr:

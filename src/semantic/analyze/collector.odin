@@ -14,7 +14,13 @@ Collector :: struct {
 	forward_type_symbols:                   map[Symbol_Id]bool,
 	current_scope:                          Scope_Id,
 	loop_source_stack:                      [dynamic]Field_Access,
+	loop_group_source_stack:                [dynamic]Loop_Group_Source_Frame,
 	structured_groups:                      [dynamic]Structured_Group_Frame,
+}
+
+Loop_Group_Source_Frame :: struct {
+	name:   string,
+	source: Field_Access,
 }
 
 Structured_Group_Frame :: struct {
@@ -78,6 +84,7 @@ collect_unit :: proc(
 		forward_type_symbols                   = make(map[Symbol_Id]bool, 16, allocator),
 		current_scope                          = unit.root_scope,
 		loop_source_stack                      = make([dynamic]Field_Access, 0, 4, allocator),
+		loop_group_source_stack                = make([dynamic]Loop_Group_Source_Frame, 0, 2, allocator),
 		structured_groups                      = make([dynamic]Structured_Group_Frame, 0, 2, allocator),
 	}
 

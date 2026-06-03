@@ -1139,8 +1139,17 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 		expr.condition = parse_logical_expr(p)
 	} else if allow_keyword(p, "IN") {
 		expr.kind = .For_In
-		expr.source = parse_expr(p)
-		if at_keyword(p, "WHERE") {
+		if allow_keyword(p, "GROUP") {
+			group := expect_token(p, .Ident)
+			if group.kind != .Ident {
+				return nil
+			}
+			expr.group_source = tokenizer.token_lexeme(group, p.source)
+			expr.group_source_range = group.range
+		} else {
+			expr.source = parse_expr(p)
+		}
+		if expr.source != nil && at_keyword(p, "WHERE") {
 			expr.where_clause = parse_constructor_where_clause_expr(p)
 		}
 	} else {
