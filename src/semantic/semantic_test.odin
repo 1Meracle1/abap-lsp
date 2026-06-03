@@ -13893,6 +13893,129 @@ analyze_workspace_with_empty_manifest_analyzes_files :: proc(t: ^testing.T) {
 }
 
 @(test)
+analyze_workspace_resolves_ordered_include_with_manifest_member_names :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("folder-path-manifest-member-names")
+	manifest_test_file(
+		t,
+		root,
+		"abapls.toml",
+		`
+[[unit]]
+name = "ZDEMO_REPORT"
+root_file = "src/reports/ZDEMO_REPORT/ZDEMO_REPORT.abap"
+members = [
+  { file = "src/reports/ZDEMO_REPORT/ZDEMO_DECLS.abap", object_name = "zdemo_report_top" },
+  { file = "src/reports/ZDEMO_REPORT/ZDEMO_FORMS.abap", object_name = "zdemo_report_f01" },
+]
+`,
+	)
+	main_file := manifest_test_file(
+		t,
+		root,
+		"src/reports/ZDEMO_REPORT/ZDEMO_REPORT.abap",
+		"REPORT zdemo_report. INCLUDE: zdemo_report_top, zdemo_report_f01.",
+	)
+	top_file := manifest_test_file(
+		t,
+		root,
+		"src/reports/ZDEMO_REPORT/ZDEMO_DECLS.abap",
+		"DATA lv_total_items TYPE i.",
+	)
+	form_file := manifest_test_file(
+		t,
+		root,
+		"src/reports/ZDEMO_REPORT/ZDEMO_FORMS.abap",
+		"FORM run. IF lv_total_items LE 10. ENDIF. ENDFORM.",
+	)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	opened, workspace_ok, _ := workspace.open_workspace(
+		root,
+		workspace.Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return
+	}
+	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
+	execution.pool_destroy(&pool)
+	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
+	form := analyze.project_unit_by_uri(&result.project, form_file)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, root_unit != nil)
+	testing.expect(t, form != nil)
+	if root_unit != nil {
+		testing.expect_value(t, include_target_uri(&result.project, root_unit, "zdemo_report_top"), top_file)
+		testing.expect_value(t, include_target_uri(&result.project, root_unit, "zdemo_report_f01"), form_file)
+		testing.expect(t, !has_diagnostic(root_unit, .Unresolved_Include))
+	}
+	if form != nil {
+		testing.expect(t, reference_resolves_to_uri(&result.project, form, "lv_total_items", .Value, .Identifier, top_file))
+		testing.expect(t, !has_diagnostic(form, .Unresolved_Reference))
+	}
+}
+
+@(test)
+analyze_workspace_resolves_ordered_include_with_local_sibling_aliases :: proc(t: ^testing.T) {
+	root := manifest_workspace_path("folder-path-local-sibling-aliases")
+	manifest_test_file(t, root, "abapls.toml", "version = 1")
+	main_file := manifest_test_file(
+		t,
+		root,
+		"src/reports/ZLOCAL_DEMO_MAIN/ZLOCAL_DEMO_MAIN.abap",
+		"REPORT zlocal_demo_main. INCLUDE: zlocal_demo_header, zlocal_demo_body.",
+	)
+	header_file := manifest_test_file(
+		t,
+		root,
+		"src/reports/ZLOCAL_DEMO_MAIN/ZLOCAL_DEMO_DATA.abap",
+		"DATA lv_shared_total TYPE i.",
+	)
+	body_file := manifest_test_file(
+		t,
+		root,
+		"src/reports/ZLOCAL_DEMO_MAIN/ZLOCAL_DEMO_IMPL.abap",
+		"FORM run. DATA lt_items TYPE STANDARD TABLE OF i. lv_shared_total = lines( lt_items ). ENDFORM.",
+	)
+
+	pool: execution.Pool
+	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 128}, context.allocator)
+	opened, workspace_ok, _ := workspace.open_workspace(
+		root,
+		workspace.Options{pool = &pool},
+		context.allocator,
+	)
+	testing.expect(t, workspace_ok)
+	if !workspace_ok {
+		execution.pool_destroy(&pool)
+		return
+	}
+	result := workspace.analyze_workspace(&opened, nil, workspace.Options{pool = &pool}, context.allocator)
+	workspace.workspace_destroy(&opened, context.allocator)
+	execution.pool_destroy(&pool)
+	root_unit := analyze.project_unit_by_uri(&result.project, main_file)
+	body := analyze.project_unit_by_uri(&result.project, body_file)
+
+	testing.expect(t, result.ok)
+	testing.expect(t, root_unit != nil)
+	testing.expect(t, body != nil)
+	if root_unit != nil {
+		testing.expect_value(t, include_target_uri(&result.project, root_unit, "zlocal_demo_header"), header_file)
+		testing.expect_value(t, include_target_uri(&result.project, root_unit, "zlocal_demo_body"), body_file)
+		testing.expect(t, !has_diagnostic(root_unit, .Unresolved_Include))
+	}
+	if body != nil {
+		testing.expect(t, reference_resolves_to_uri(&result.project, body, "lv_shared_total", .Value, .Identifier, header_file))
+		testing.expect(t, !has_diagnostic(body, .Unresolved_Reference))
+	}
+}
+
+@(test)
 standalone_workspace_does_not_open_parent_manifest :: proc(t: ^testing.T) {
 	root := manifest_workspace_path("file-path-no-parent-workspace")
 	manifest_test_file(

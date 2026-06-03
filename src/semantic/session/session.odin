@@ -115,6 +115,10 @@ analysis_session_apply_changes :: proc(
 	analysis_session_reconcile_inputs(session, changes, &dirty, &include_roots)
 
 	project := analysis_session_update_project(session, dirty[:], include_roots[:])
+	local_include_roots := make([dynamic]analyze.Unit_Id, 0, 8, context.temp_allocator)
+	if analysis_session_add_local_include_aliases(session, &local_include_roots) {
+		project = analysis_session_update_project(session, {}, local_include_roots[:])
+	}
 	added_dependencies := 0
 	for {
 		added := analysis_session_resolve_new_dependencies(session, &project)
@@ -350,6 +354,173 @@ analysis_session_update_project :: proc(
 	)
 	analysis_session_refresh_input_units(session)
 	return project
+}
+
+@(private)
+analysis_session_add_local_include_aliases :: proc(
+	session: ^Analysis_Session,
+	include_roots: ^[dynamic]analyze.Unit_Id,
+) -> bool {
+	changed := false
+	for &record in session.inputs {
+		if !(.Active in record.flags) || record.unit == analyze.INVALID_UNIT_ID {
+			continue
+		}
+		root := analysis_session_unit(session, record.unit)
+		if root == nil || !analysis_session_unit_is_report_root(root) {
+			continue
+		}
+		names := make([dynamic]string, 0, len(root.include_edges), context.temp_allocator)
+		for edge in root.include_edges {
+			if !edge.has_target && edge.name != "" {
+				append(&names, edge.name)
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+
+		dir := analysis_session_uri_parent_dir_key(record.input.uri, context.temp_allocator)
+		members := make([dynamic]int, 0, len(names), context.temp_allocator)
+		for member, i in session.inputs {
+			if !(.Active in member.flags) ||
+			   !(member.role == .Target || member.role == .Candidate) ||
+			   member.unit == analyze.INVALID_UNIT_ID ||
+			   member.unit == record.unit ||
+			   member.object_name != "" ||
+			   analysis_session_uri_parent_dir_key(member.input.uri, context.temp_allocator) != dir {
+				continue
+			}
+			unit := analysis_session_unit(session, member.unit)
+			if unit == nil || analysis_session_unit_is_report_root(unit) {
+				continue
+			}
+			append(&members, i)
+		}
+		if len(members) != len(names) {
+			continue
+		}
+
+		ordered, ordered_ok := analysis_session_order_members(session, members[:], context.temp_allocator)
+		if !ordered_ok {
+			continue
+		}
+		for name, i in names {
+			member := &session.inputs[ordered[i]]
+			member.object_name = strings.clone(name, session.memory.allocator)
+			session_push_unique_unit(include_roots, record.unit)
+			session_push_unique_unit(include_roots, member.unit)
+			changed = true
+		}
+	}
+	if changed {
+		analysis_session_rebuild_role_inputs(session)
+	}
+	return changed
+}
+
+@(private)
+analysis_session_order_members :: proc(
+	session: ^Analysis_Session,
+	members: []int,
+	allocator: mem.Allocator,
+) -> ([dynamic]int, bool) {
+	order := make([dynamic]int, 0, len(members), allocator)
+	depends_on := make([][dynamic]int, len(members), allocator)
+	for i in 0 ..< len(members) {
+		depends_on[i] = make([dynamic]int, 0, 2, allocator)
+		for j in 0 ..< len(members) {
+			if i != j && analysis_session_member_depends_on(session, members[i], members[j]) {
+				append(&depends_on[i], j)
+			}
+		}
+	}
+
+	selected := make([]bool, len(members), allocator)
+	for len(order) < len(members) {
+		next := -1
+		for i in 0 ..< len(members) {
+			ready := true
+			for dependency in depends_on[i] {
+				if !selected[dependency] {
+					ready = false
+					break
+				}
+			}
+			if selected[i] || !ready {
+				continue
+			}
+			if next >= 0 {
+				return order, false
+			}
+			next = i
+		}
+		if next < 0 {
+			return order, false
+		}
+		selected[next] = true
+		append(&order, members[next])
+	}
+	return order, true
+}
+
+@(private)
+analysis_session_member_depends_on :: proc(
+	session: ^Analysis_Session,
+	consumer_record, provider_record: int,
+) -> bool {
+	consumer := analysis_session_unit(session, session.inputs[consumer_record].unit)
+	provider := analysis_session_unit(session, session.inputs[provider_record].unit)
+	if consumer == nil || provider == nil {
+		return false
+	}
+	for ref in consumer.references {
+		if ref.has_resolution || ref.kind == .Include {
+			continue
+		}
+		for symbol in provider.symbols {
+			if symbol.scope == provider.root_scope &&
+			   !analyze.symbol_kind_is_builtin(symbol.kind) &&
+			   strings.equal_fold(symbol.name, ref.name) &&
+			   analyze.symbol_kind_occupies(symbol.kind, ref.namespace) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+@(private)
+analysis_session_unit_is_report_root :: proc(unit: ^analyze.Unit_Analysis) -> bool {
+	for symbol in unit.symbols {
+		if symbol.scope == unit.root_scope && symbol.kind == .Report {
+			return true
+		}
+	}
+	return false
+}
+
+@(private)
+analysis_session_unit :: proc(
+	session: ^Analysis_Session,
+	unit_id: analyze.Unit_Id,
+) -> ^analyze.Unit_Analysis {
+	unit_index := analyze.unit_id_index(unit_id)
+	if unit_index < 0 || unit_index >= len(session.project_state.units) {
+		return nil
+	}
+	return &session.project_state.units[unit_index]
+}
+
+@(private)
+analysis_session_uri_parent_dir_key :: proc(uri: string, allocator: mem.Allocator) -> string {
+	normalized := uri_key.normalized_uri_path_key(uri, allocator)
+	for i := len(normalized) - 1; i >= 0; i -= 1 {
+		if normalized[i] == '/' {
+			return normalized[:i]
+		}
+	}
+	return ""
 }
 
 @(private)
