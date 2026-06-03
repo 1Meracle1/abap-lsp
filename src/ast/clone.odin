@@ -459,6 +459,9 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.call = clone(n.call, allocator)
 		r.target = clone(n.target, allocator)
+		r.function_destination = clone(n.function_destination, allocator)
+		r.function_task = clone(n.function_task, allocator)
+		r.function_end_task_handler = clone(n.function_end_task_handler, allocator)
 		r.arg_sections = clone_call_stmt_arg_sections(n.arg_sections, allocator)
 		r.named_args = clone_call_stmt_named_args(n.named_args, allocator)
 		r.transaction_operands = clone_expr_list(n.transaction_operands, allocator)
@@ -944,6 +947,7 @@ clone_call_stmt_named_args :: proc(list: [dynamic]Call_Stmt_Named_Arg, allocator
 	for x in list {
 		arg := x
 		arg.value = clone(x.value, allocator)
+		arg.message = clone(x.message, allocator)
 		arg.raw_decls = clone_raw_operand_decls(x.raw_decls, allocator)
 		arg.raw_refs = clone_raw_operand_refs(x.raw_refs, allocator)
 		append(&res, arg)

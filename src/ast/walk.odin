@@ -358,8 +358,12 @@ walk :: proc(v: ^Visitor, node: ^Node) {
 	case ^Call_Stmt:
 		walk(next, n.call)
 		walk(next, n.target)
+		walk(next, n.function_destination)
+		walk(next, n.function_task)
+		walk(next, n.function_end_task_handler)
 		for arg in n.named_args {
 			walk(next, arg.value)
+			walk(next, arg.message)
 		}
 		walk_expr_list(next, n.transaction_operands)
 		for arg in n.transformation_args {

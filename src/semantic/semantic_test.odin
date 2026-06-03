@@ -7434,6 +7434,7 @@ ENDCLASS.
 CLASS lcl_demo IMPLEMENTATION.
   METHOD exec.
     DATA lv_value TYPE i.
+    DATA lv_msg TYPE string.
     DATA lo_obj TYPE REF TO lcl_demo.
     DATA lt_rows TYPE TABLE OF i.
     DATA: BEGIN OF ls_row,
@@ -7450,9 +7451,9 @@ CLASS lcl_demo IMPLEMENTATION.
     CALL FUNCTION 'Z_DEMO'
       EXPORTING iv_value = lv_value is_row = ls_row-field
       IMPORTING ev_func = DATA(lv_func)
-      CHANGING cv_func = FIELD-SYMBOL(<fs_func>)
       TABLES ct_rows = lt_rows
-      EXCEPTIONS failed = 1.
+      CHANGING cv_func = FIELD-SYMBOL(<fs_func>)
+      EXCEPTIONS system_failure = 1 MESSAGE lv_msg failed = 2.
     PERFORM process_data USING 'demo' CHANGING lv_value.
   ENDMETHOD.
 ENDCLASS.
@@ -7470,6 +7471,7 @@ ENDCLASS.
 	testing.expect(t, has_named_argument(&unit, "ev_func", .Importing, .Function))
 	testing.expect(t, has_named_argument(&unit, "cv_func", .Changing, .Function))
 	testing.expect(t, has_named_argument(&unit, "ct_rows", .Tables, .Function))
+	testing.expect(t, has_named_argument(&unit, "system_failure", .Exceptions, .Function))
 	testing.expect(t, has_named_argument(&unit, "failed", .Exceptions, .Function))
 	testing.expect(t, has_symbol(&unit, .Variable, "lv_out"))
 	testing.expect(t, has_symbol(&unit, .Variable, "lv_recv"))
@@ -7484,6 +7486,7 @@ ENDCLASS.
 	testing.expect(t, !has_reference(&unit, "iv_value", .Value, .Identifier))
 	testing.expect(t, !has_reference(&unit, "failed", .Value, .Identifier))
 	testing.expect(t, !has_reference(&unit, "1", .Value, .Identifier))
+	testing.expect(t, has_reference(&unit, "lv_msg", .Value, .Identifier))
 	ls_row_field_accesses := 0
 	for access in unit.field_accesses {
 		if !access.in_type_position &&

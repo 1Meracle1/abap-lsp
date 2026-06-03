@@ -1110,8 +1110,8 @@ raw_call_statements_carry_argument_facts :: proc(t: ^testing.T) {
 	source := `CALL FUNCTION 'Z_FM'
   EXPORTING iv_in = lv_in
   IMPORTING ev_out = DATA(lv_out)
-  CHANGING cv_any = FIELD-SYMBOL(<fs_any>)
   TABLES ct_rows = lt_rows
+  CHANGING cv_any = FIELD-SYMBOL(<fs_any>)
   EXCEPTIONS failed = 1.
 CALL METHOD lo->run
   EXPORTING iv_dyn = (lv_dynamic)
@@ -1124,8 +1124,8 @@ CALL METHOD lo->run
 	expected_function := [?]ast.Call_Arg_Section_Kind {
 		.Exporting,
 		.Importing,
-		.Changing,
 		.Tables,
+		.Changing,
 		.Exceptions,
 	}
 
@@ -1147,15 +1147,94 @@ CALL METHOD lo->run
 	testing.expect_value(t, function.named_args[0].raw_refs[0].name, "lv_in")
 	testing.expect_value(t, len(function.named_args[1].raw_decls), 1)
 	testing.expect_value(t, function.named_args[1].raw_decls[0].name, "lv_out")
-	testing.expect_value(t, len(function.named_args[2].raw_decls), 1)
-	testing.expect_value(t, function.named_args[2].raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
-	testing.expect_value(t, function.named_args[2].raw_decls[0].name, "<fs_any>")
-	testing.expect_value(t, len(function.named_args[3].raw_refs), 1)
-	testing.expect_value(t, function.named_args[3].raw_refs[0].name, "lt_rows")
+	testing.expect_value(t, len(function.named_args[2].raw_refs), 1)
+	testing.expect_value(t, function.named_args[2].raw_refs[0].name, "lt_rows")
+	testing.expect_value(t, len(function.named_args[3].raw_decls), 1)
+	testing.expect_value(t, function.named_args[3].raw_decls[0].kind, ast.Raw_Operand_Inline_Decl_Kind.Field_Symbol)
+	testing.expect_value(t, function.named_args[3].raw_decls[0].name, "<fs_any>")
 	testing.expect_value(t, len(function.named_args[4].raw_refs), 0)
 	testing.expect_value(t, len(method.named_args[0].raw_refs), 0)
 	testing.expect_value(t, len(method.named_args[1].raw_decls), 1)
 	testing.expect_value(t, method.named_args[1].raw_decls[0].name, "lv_result")
+}
+
+@(test)
+call_function_rejects_parameter_table_clause :: proc(t: ^testing.T) {
+	source := `CALL FUNCTION lv_func DESTINATION c_dest
+  PARAMETER-TABLE lt_params
+  EXCEPTIONS failed = 1.`
+	parsed := parse(source, "call_function_parameter_table.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 1)
+	testing.expect_value(
+		t,
+		parsed.errors[0].message,
+		"syntax error: PARAMETER-TABLE is not allowed in CALL FUNCTION parameter list",
+	)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	testing.expect_value(t, len(stmt.arg_sections), 1)
+	testing.expect_value(t, stmt.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exceptions)
+	testing.expect_value(t, len(stmt.named_args), 1)
+	testing.expect_value(t, stmt.named_args[0].section, ast.Call_Arg_Section_Kind.Exceptions)
+	testing.expect_value(t, stmt.named_args[0].name, "failed")
+}
+
+@(test)
+call_function_models_destination_sections_and_exception_messages :: proc(t: ^testing.T) {
+	source := `CALL FUNCTION lv_func DESTINATION c_dest
+  EXPORTING iv_value = lv_value
+  IMPORTING ev_value = DATA(lv_out)
+  TABLES ct_rows = lt_rows
+  CHANGING cv_value = lv_value
+  EXCEPTIONS
+    system_failure = 1 MESSAGE lv_msg
+    communication_failure = 2 MESSAGE lv_msg
+    OTHERS = 3.`
+	parsed := parse(source, "call_function_destination.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Call_Stmt)
+	target := stmt.target.derived_expr.(^ast.Ident_Expr)
+	destination := stmt.function_destination.derived_expr.(^ast.Ident_Expr)
+	testing.expect_value(t, target.name, "lv_func")
+	testing.expect_value(t, stmt.function_execution, ast.Call_Function_Execution_Kind.Destination)
+	testing.expect_value(t, destination.name, "c_dest")
+	testing.expect_value(t, len(stmt.arg_sections), 5)
+	testing.expect_value(t, stmt.arg_sections[0].kind, ast.Call_Arg_Section_Kind.Exporting)
+	testing.expect_value(t, stmt.arg_sections[1].kind, ast.Call_Arg_Section_Kind.Importing)
+	testing.expect_value(t, stmt.arg_sections[2].kind, ast.Call_Arg_Section_Kind.Tables)
+	testing.expect_value(t, stmt.arg_sections[3].kind, ast.Call_Arg_Section_Kind.Changing)
+	testing.expect_value(t, stmt.arg_sections[4].kind, ast.Call_Arg_Section_Kind.Exceptions)
+	testing.expect_value(t, len(stmt.named_args), 7)
+	testing.expect_value(t, stmt.named_args[4].name, "system_failure")
+	testing.expect(t, stmt.named_args[4].message != nil)
+	testing.expect_value(t, stmt.named_args[5].name, "communication_failure")
+	testing.expect(t, stmt.named_args[5].message != nil)
+	testing.expect_value(t, stmt.named_args[6].name, "OTHERS")
+	testing.expect(t, stmt.named_args[6].message == nil)
+}
+
+@(test)
+call_function_rejects_invalid_parameter_list_forms :: proc(t: ^testing.T) {
+	parsed := parse(
+		`CALL FUNCTION 'A' iv_value = lv_value.
+CALL FUNCTION 'B' RECEIVING rv_value = lv_value.
+CALL FUNCTION 'C' EXPORTING.
+CALL FUNCTION 'D' CHANGING cv_value = lv_value TABLES ct_rows = lt_rows.
+CALL FUNCTION 'E' EXPORTING iv_value = lv_value EXPORTING iv_other = lv_value.
+CALL FUNCTION 'F' EXPORTING iv_value = lv_value iv_value = lv_other.
+CALL FUNCTION 'G' UNKNOWN.`,
+		"call_function_bad_parameter_lists.abap",
+		context.allocator,
+	)
+
+	expect_error_contains(t, parsed, "parameter assignment requires a parameter section")
+	expect_error_contains(t, parsed, "RECEIVING is not allowed in CALL FUNCTION parameter list")
+	expect_error_contains(t, parsed, "expected parameter assignment after CALL FUNCTION section")
+	expect_error_contains(t, parsed, "CALL FUNCTION parameter sections are out of order")
+	expect_error_contains(t, parsed, "duplicate CALL FUNCTION parameter section")
+	expect_error_contains(t, parsed, "duplicate CALL FUNCTION parameter")
+	expect_error_contains(t, parsed, "unexpected CALL FUNCTION addition")
 }
 
 @(test)

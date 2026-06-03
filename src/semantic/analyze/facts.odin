@@ -1862,6 +1862,9 @@ collect_raw_call_args :: proc(
 			} else {
 				collect_raw_operand_fact_refs(c, arg.raw_decls[:], arg.raw_refs[:], scope)
 			}
+			if arg.message != nil {
+				collect_expr_refs(c, arg.message, scope)
+			}
 			append(
 				&args,
 				Call_Argument_Data {

@@ -860,6 +860,9 @@ keyword_phrase_at_static :: #force_inline proc(p: ^Parser, index: int, $keyword:
 	when keyword == "MESSAGE-ID" {
 		return hyphen2_at(p, index, "MESSAGE", "ID")
 	}
+	when keyword == "PARAMETER-TABLE" {
+		return hyphen2_at(p, index, "PARAMETER", "TABLE")
+	}
 	when keyword == "READ-ONLY" {
 		return hyphen2_at(p, index, "READ", "ONLY")
 	}
@@ -1040,6 +1043,9 @@ keyword_phrase_at_dynamic :: proc(p: ^Parser, index: int, keyword: string) -> bo
 	}
 	if keyword == "MESSAGE-ID" {
 		return hyphen2_at(p, index, "MESSAGE", "ID")
+	}
+	if keyword == "PARAMETER-TABLE" {
+		return hyphen2_at(p, index, "PARAMETER", "TABLE")
 	}
 	if keyword == "READ-ONLY" {
 		return hyphen2_at(p, index, "READ", "ONLY")
@@ -1247,6 +1253,7 @@ keyword_phrase_token_count :: proc(keyword: string) -> int {
 	   keyword == "NEW-LINE" ||
 	   keyword == "NEW-PAGE" ||
 	   keyword == "MESSAGE-ID" ||
+	   keyword == "PARAMETER-TABLE" ||
 	   keyword == "READ-ONLY" ||
 	   keyword == "BIT-AND" ||
 	   keyword == "BIT-OR" ||

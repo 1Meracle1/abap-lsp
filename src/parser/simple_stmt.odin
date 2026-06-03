@@ -3610,7 +3610,9 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	} else if allow_keyword(p, "SUBSCREEN") {
 		stmt.kind = .Subscreen
 	}
-	if stmt.kind == .Transaction {
+	if stmt.kind == .Function {
+		parse_call_function_stmt(p, stmt)
+	} else if stmt.kind == .Transaction {
 		stmt.target = parse_raw_operand_to_period(
 			p,
 			[]string {
@@ -3653,7 +3655,7 @@ parse_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			},
 		)
 	}
-	if stmt.kind == .Function || stmt.kind == .Method {
+	if stmt.kind == .Method {
 		parse_call_stmt_raw_arguments(p, stmt)
 	} else if stmt.kind == .Transaction {
 		parse_call_transaction_operands(p, stmt)
@@ -3678,11 +3680,497 @@ CALL_METHOD_TARGET_STOP_KEYWORDS :: []string {
 	"WITH",
 }
 
+CALL_FUNCTION_TARGET_STOP_KEYWORDS :: []string {
+	"DESTINATION",
+	"STARTING",
+	"IN",
+	"PERFORMING",
+	"CALLING",
+	"AS",
+	"EXPORTING",
+	"IMPORTING",
+	"TABLES",
+	"CHANGING",
+	"RECEIVING",
+	"EXCEPTIONS",
+	"PARAMETER-TABLE",
+}
+
+CALL_FUNCTION_HANDLER_STOP_KEYWORDS :: []string {
+	"ON",
+	"DESTINATION",
+	"STARTING",
+	"IN",
+	"PERFORMING",
+	"CALLING",
+	"AS",
+	"EXPORTING",
+	"IMPORTING",
+	"TABLES",
+	"CHANGING",
+	"RECEIVING",
+	"EXCEPTIONS",
+	"PARAMETER-TABLE",
+}
+
 CALL_TRANSFORMATION_CLAUSE_KEYWORDS :: []string {
 	"OPTIONS",
 	"PARAMETERS",
 	"SOURCE",
 	"RESULT",
+}
+
+parse_call_function_stmt :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	body_start := p.index
+	stmt.target = simple_expr(p, body_start, CALL_FUNCTION_TARGET_STOP_KEYWORDS)
+	if stmt.target == nil {
+		error_current(p, "syntax error: expected function module name after CALL FUNCTION")
+	}
+	parse_call_function_additions(p, stmt)
+	parse_call_function_parameter_list(p, stmt)
+}
+
+parse_call_function_additions :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	for !raw_period_done(p) && !call_function_parameter_list_starts(p) {
+		start := p.index
+		if allow_keyword(p, "DESTINATION") {
+			parse_call_function_destination(p, stmt)
+			continue
+		}
+		if allow_keyword(p, "STARTING") {
+			parse_call_function_starting_new_task(p, stmt)
+			continue
+		}
+		if allow_keyword(p, "IN") {
+			parse_call_function_in_addition(p, stmt)
+			continue
+		}
+		if allow_keyword(p, "PERFORMING") {
+			parse_call_function_end_task_handler(p, stmt, .Performing)
+			continue
+		}
+		if allow_keyword(p, "CALLING") {
+			parse_call_function_end_task_handler(p, stmt, .Calling)
+			continue
+		}
+		if allow_keyword(p, "AS") {
+			parse_call_function_as_addition(p, stmt)
+			continue
+		}
+		error_current(p, "syntax error: unexpected CALL FUNCTION addition")
+		ensure_forward_progress(p, start)
+	}
+}
+
+parse_call_function_destination :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	keyword := previous_token(p)
+	if stmt.function_destination != nil {
+		error(p, keyword.range, "syntax error: duplicate DESTINATION in CALL FUNCTION")
+	}
+	if stmt.function_execution == .In_Update_Task {
+		error(p, keyword.range, "syntax error: DESTINATION is not allowed with CALL FUNCTION IN UPDATE TASK")
+	}
+	if stmt.function_execution == .Normal {
+		stmt.function_execution = .Destination
+	}
+	if raw_period_done(p) || call_function_parameter_list_starts(p) {
+		error_current(p, "syntax error: expected destination after DESTINATION")
+		return
+	}
+	value := simple_expr(p, p.index, CALL_FUNCTION_TARGET_STOP_KEYWORDS)
+	if value == nil {
+		error_current(p, "syntax error: expected destination after DESTINATION")
+		return
+	}
+	if stmt.function_destination == nil {
+		stmt.function_destination = value
+	}
+}
+
+parse_call_function_starting_new_task :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	keyword := previous_token(p)
+	if stmt.function_execution != .Normal {
+		error(p, keyword.range, "syntax error: conflicting CALL FUNCTION execution addition")
+	}
+	stmt.function_execution = .Starting_New_Task
+	expect_keyword(p, "NEW")
+	expect_keyword(p, "TASK")
+	if raw_period_done(p) || call_function_parameter_list_starts(p) {
+		error_current(p, "syntax error: expected task after STARTING NEW TASK")
+		return
+	}
+	task := simple_expr(p, p.index, CALL_FUNCTION_TARGET_STOP_KEYWORDS)
+	if task == nil {
+		error_current(p, "syntax error: expected task after STARTING NEW TASK")
+		return
+	}
+	stmt.function_task = task
+}
+
+parse_call_function_in_addition :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	keyword := previous_token(p)
+	if allow_keyword(p, "UPDATE") {
+		expect_keyword(p, "TASK")
+		if stmt.function_execution != .Normal {
+			error(p, keyword.range, "syntax error: conflicting CALL FUNCTION execution addition")
+		}
+		stmt.function_execution = .In_Update_Task
+		return
+	}
+	if allow_keyword(p, "BACKGROUND") {
+		expect_keyword(p, "TASK")
+		if stmt.function_execution != .Normal {
+			error(p, keyword.range, "syntax error: conflicting CALL FUNCTION execution addition")
+		}
+		stmt.function_execution = .In_Background_Task
+		return
+	}
+	error_current(p, "syntax error: expected UPDATE TASK or BACKGROUND TASK after CALL FUNCTION IN")
+}
+
+parse_call_function_as_addition :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	keyword := previous_token(p)
+	if !allow_keyword(p, "SEPARATE") {
+		error_current(p, "syntax error: expected SEPARATE UNIT after AS")
+		return
+	}
+	expect_keyword(p, "UNIT")
+	if stmt.function_execution != .In_Background_Task {
+		error(p, keyword.range, "syntax error: AS SEPARATE UNIT is only allowed with CALL FUNCTION IN BACKGROUND TASK")
+	}
+	stmt.function_as_separate_unit = true
+}
+
+parse_call_function_end_task_handler :: proc(
+	p: ^Parser,
+	stmt: ^ast.Call_Stmt,
+	kind: ast.Call_Function_End_Task_Handler_Kind,
+) {
+	keyword := previous_token(p)
+	if stmt.function_end_task_handler_kind != .None {
+		error(p, keyword.range, "syntax error: duplicate end-of-task handler in CALL FUNCTION")
+	}
+	if stmt.function_execution != .Starting_New_Task {
+		error(p, keyword.range, "syntax error: end-of-task handler requires STARTING NEW TASK")
+	}
+	handler := simple_expr(p, p.index, CALL_FUNCTION_HANDLER_STOP_KEYWORDS)
+	if handler == nil {
+		error_current(p, "syntax error: expected end-of-task handler")
+	} else if stmt.function_end_task_handler == nil {
+		stmt.function_end_task_handler = handler
+		stmt.function_end_task_handler_kind = kind
+	}
+	expect_keyword(p, "ON")
+	expect_keyword(p, "END")
+	expect_keyword(p, "OF")
+	expect_keyword(p, "TASK")
+}
+
+call_function_parameter_list_starts :: proc(p: ^Parser) -> bool {
+	return at_keyword_phrase(p, "PARAMETER-TABLE") ||
+	       call_argument_section_starts(p) ||
+	       call_stmt_named_arg_starts(p, p.index)
+}
+
+parse_call_function_parameter_list :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
+	stmt.arg_sections = make([dynamic]ast.Call_Stmt_Arg_Section, 0, 2, p.allocator)
+	stmt.named_args = make([dynamic]ast.Call_Stmt_Named_Arg, 0, 4, p.allocator)
+	seen_sections: [5]bool
+	last_rank := -1
+	for !raw_period_done(p) {
+		if at_keyword_phrase(p, "PARAMETER-TABLE") {
+			parse_invalid_call_function_parameter_table(p)
+			continue
+		}
+		if call_argument_section_starts(p) {
+			kind := call_argument_section_kind(p, current_token(p))
+			tok := bump_token(p)
+			rank, ok := call_function_section_rank(kind)
+			if !ok {
+				error(
+					p,
+					tok.range,
+					"syntax error: RECEIVING is not allowed in CALL FUNCTION parameter list",
+				)
+				skip_call_function_invalid_section(p)
+				continue
+			}
+			if seen_sections[rank] {
+				error(
+					p,
+					tok.range,
+					"syntax error: duplicate CALL FUNCTION parameter section",
+				)
+			}
+			seen_sections[rank] = true
+			if rank < last_rank {
+				error(
+					p,
+					tok.range,
+					"syntax error: CALL FUNCTION parameter sections are out of order",
+				)
+			} else {
+				last_rank = rank
+			}
+			append(&stmt.arg_sections, ast.Call_Stmt_Arg_Section{kind = kind, range = tok.range})
+			count := parse_call_function_section_args(p, stmt, kind)
+			if count == 0 {
+				error(
+					p,
+					tok.range,
+					"syntax error: expected parameter assignment after CALL FUNCTION section",
+				)
+			}
+			continue
+		}
+		if call_stmt_named_arg_starts(p, p.index) {
+			error_current(
+				p,
+				"syntax error: CALL FUNCTION parameter assignment requires a parameter section",
+			)
+			skip_call_function_named_assignment(p)
+			continue
+		}
+		error_current(p, "syntax error: unexpected token in CALL FUNCTION parameter list")
+		bump_token(p)
+	}
+}
+
+parse_call_function_section_args :: proc(
+	p: ^Parser,
+	stmt: ^ast.Call_Stmt,
+	section: ast.Call_Arg_Section_Kind,
+) -> int {
+	count := 0
+	seen_names := make(map[string]bool, 4, context.temp_allocator)
+	for !raw_period_done(p) &&
+	    !at_keyword_phrase(p, "PARAMETER-TABLE") &&
+	    !call_argument_section_starts(p) {
+		if !call_function_named_arg_starts(p, p.index) {
+			if call_stmt_named_arg_starts(p, p.index) {
+				error_current(p, "syntax error: expected CALL FUNCTION parameter name")
+				skip_call_function_named_assignment(p)
+				continue
+			}
+			error_current(p, "syntax error: expected CALL FUNCTION parameter assignment")
+			bump_token(p)
+			continue
+		}
+		arg, ok := parse_call_function_named_arg(p, section)
+		if !ok {
+			continue
+		}
+		key := strings.to_lower(arg.name, context.temp_allocator)
+		if seen_names[key] {
+			error(p, arg.name_range, "syntax error: duplicate CALL FUNCTION parameter")
+		}
+		seen_names[key] = true
+		append(&stmt.named_args, arg)
+		count += 1
+	}
+	return count
+}
+
+parse_call_function_named_arg :: proc(
+	p: ^Parser,
+	section: ast.Call_Arg_Section_Kind,
+) -> (ast.Call_Stmt_Named_Arg, bool) {
+	_, name_text, name_range := parse_call_stmt_arg_name(p)
+	eq := expect_token(p, .Eq)
+	value_start := p.index
+	value_end := call_function_arg_value_end(p, value_start, section)
+	value_range := tokenizer.text_range(eq.range.end, eq.range.end)
+	raw_decls := make([dynamic]ast.Raw_Operand_Inline_Decl, 0, 1, p.allocator)
+	raw_refs := make([dynamic]ast.Raw_Operand_Ref, 0, 2, p.allocator)
+	if value_start < value_end {
+		value_range = tokenizer.text_range(
+			p.tokens[value_start].range.start,
+			p.tokens[value_end - 1].range.end,
+		)
+		populate_raw_operand_fact_lists(p, value_start, value_end, &raw_decls, &raw_refs)
+	} else {
+		error_current(p, "syntax error: expected CALL FUNCTION parameter value")
+	}
+	value := parse_complete_logical_expr(p, value_start, value_end)
+	for p.index < value_end {
+		bump_token(p)
+	}
+	message: ^ast.Expr
+	message_range := tokenizer.Range{}
+	if section == .Exceptions && at_keyword(p, "MESSAGE") {
+		message_keyword := bump_token(p)
+		if !call_function_exception_accepts_message(name_text) {
+			error(
+				p,
+				message_keyword.range,
+				"syntax error: MESSAGE is only allowed for system_failure or communication_failure",
+			)
+		}
+		message_start := p.index
+		message_end := call_function_message_value_end(p, message_start)
+		if message_start < message_end {
+			message_range = tokenizer.text_range(
+				p.tokens[message_start].range.start,
+				p.tokens[message_end - 1].range.end,
+			)
+			message = parse_complete_logical_expr(p, message_start, message_end)
+		} else {
+			error_current(p, "syntax error: expected message variable after MESSAGE")
+		}
+		for p.index < message_end {
+			bump_token(p)
+		}
+	}
+	return ast.Call_Stmt_Named_Arg {
+			section = section,
+			has_section = true,
+			name = name_text,
+			name_range = name_range,
+			value_range = value_range,
+			value = value,
+			message_range = message_range,
+			message = message,
+			raw_decls = raw_decls,
+			raw_refs = raw_refs,
+		},
+		true
+}
+
+call_function_section_rank :: proc(kind: ast.Call_Arg_Section_Kind) -> (int, bool) {
+	switch kind {
+	case .Exporting:
+		return 0, true
+	case .Importing:
+		return 1, true
+	case .Tables:
+		return 2, true
+	case .Changing:
+		return 3, true
+	case .Exceptions:
+		return 4, true
+	case .Unknown, .Receiving:
+		return 0, false
+	}
+	return 0, false
+}
+
+call_function_named_arg_starts :: proc(p: ^Parser, index: int) -> bool {
+	return index + 1 < len(p.tokens) &&
+	       p.tokens[index].kind == .Ident &&
+	       p.tokens[index + 1].kind == .Eq
+}
+
+call_function_arg_value_end :: proc(
+	p: ^Parser,
+	start: int,
+	section: ast.Call_Arg_Section_Kind,
+) -> int {
+	i := start
+	paren, bracket, brace := 0, 0, 0
+	for i < len(p.tokens) {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .Period ||
+			   tok.kind == .Eof ||
+			   tok.kind == .RParen ||
+			   keyword_phrase_at(p, i, "PARAMETER-TABLE") ||
+			   call_argument_section_starts_at(p, i) ||
+			   (i > start && call_stmt_named_arg_starts(p, i)) ||
+			   (section == .Exceptions && i > start && token_is_keyword(p, tok, "MESSAGE")) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {
+				paren -= 1
+			}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {
+				bracket -= 1
+			}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {
+				brace -= 1
+			}
+		}
+		i += 1
+	}
+	return i
+}
+
+call_function_message_value_end :: proc(p: ^Parser, start: int) -> int {
+	i := start
+	paren, bracket, brace := 0, 0, 0
+	for i < len(p.tokens) {
+		tok := p.tokens[i]
+		top := paren == 0 && bracket == 0 && brace == 0
+		if top {
+			if tok.kind == .Period ||
+			   tok.kind == .Eof ||
+			   tok.kind == .RParen ||
+			   keyword_phrase_at(p, i, "PARAMETER-TABLE") ||
+			   call_argument_section_starts_at(p, i) ||
+			   (i > start && call_stmt_named_arg_starts(p, i)) {
+				break
+			}
+		}
+		#partial switch tok.kind {
+		case .LParen:
+			paren += 1
+		case .RParen:
+			if paren > 0 {
+				paren -= 1
+			}
+		case .LBracket:
+			bracket += 1
+		case .RBracket:
+			if bracket > 0 {
+				bracket -= 1
+			}
+		case .LBrace:
+			brace += 1
+		case .RBrace:
+			if brace > 0 {
+				brace -= 1
+			}
+		}
+		i += 1
+	}
+	return i
+}
+
+call_function_exception_accepts_message :: proc(name: string) -> bool {
+	return strings.equal_fold(name, "system_failure") ||
+	       strings.equal_fold(name, "communication_failure")
+}
+
+skip_call_function_invalid_section :: proc(p: ^Parser) {
+	for !raw_period_done(p) &&
+	    !at_keyword_phrase(p, "PARAMETER-TABLE") &&
+	    !call_argument_section_starts(p) {
+		bump_token(p)
+	}
+}
+
+skip_call_function_named_assignment :: proc(p: ^Parser) {
+	if !call_stmt_named_arg_starts(p, p.index) {
+		bump_token(p)
+		return
+	}
+	_, _, _ = parse_call_stmt_arg_name(p)
+	expect_token(p, .Eq)
+	value_end := call_function_arg_value_end(p, p.index, .Unknown)
+	for p.index < value_end {
+		bump_token(p)
+	}
 }
 
 parse_call_method_target_to_period :: proc(p: ^Parser, stop_keywords: []string) -> ^ast.Expr {
@@ -4225,19 +4713,24 @@ append_call_transaction_operand :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
 }
 
 parse_call_stmt_raw_arguments :: proc(p: ^Parser, stmt: ^ast.Call_Stmt) {
-	parse_raw_call_arguments(p, &stmt.arg_sections, &stmt.named_args)
+	parse_raw_call_arguments(p, &stmt.arg_sections, &stmt.named_args, stmt.kind)
 }
 
 parse_raw_call_arguments :: proc(
 	p: ^Parser,
 	arg_sections: ^[dynamic]ast.Call_Stmt_Arg_Section,
 	named_args: ^[dynamic]ast.Call_Stmt_Named_Arg,
+	call_kind := ast.Call_Kind.Method,
 ) {
 	arg_sections^ = make([dynamic]ast.Call_Stmt_Arg_Section, 0, 2, p.allocator)
 	named_args^ = make([dynamic]ast.Call_Stmt_Named_Arg, 0, 4, p.allocator)
 	section := ast.Call_Arg_Section_Kind.Exporting
 	has_section := false
 	for !raw_period_done(p) {
+		if call_kind == .Function && at_keyword_phrase(p, "PARAMETER-TABLE") {
+			parse_invalid_call_function_parameter_table(p)
+			continue
+		}
 		if call_argument_section_starts(p) {
 			kind := call_argument_section_kind(p, current_token(p))
 			tok := bump_token(p)
@@ -4282,6 +4775,27 @@ parse_raw_call_arguments :: proc(
 			bump_token(p)
 		}
 	}
+}
+
+parse_invalid_call_function_parameter_table :: proc(p: ^Parser) {
+	start := current_token(p)
+	end := start.range.end
+	if p.index + 2 < len(p.tokens) {
+		end = p.tokens[p.index + 2].range.end
+	}
+	error(
+		p,
+		tokenizer.text_range(start.range.start, end),
+		"syntax error: PARAMETER-TABLE is not allowed in CALL FUNCTION parameter list",
+	)
+	expect_keyword_phrase(p, "PARAMETER-TABLE")
+	_ = parse_raw_operand_to_period(
+		p,
+		CALL_FUNCTION_TARGET_STOP_KEYWORDS,
+		false,
+		false,
+		false,
+	)
 }
 
 call_stmt_named_arg_starts :: proc(p: ^Parser, index: int) -> bool {
