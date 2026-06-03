@@ -7376,6 +7376,61 @@ ENDFORM.
 }
 
 @(test)
+inline_call_importing_table_type_read_table_skips_unknown_row_field :: proc(t: ^testing.T) {
+	target := analyze.Source_Input {
+		uri = "mem://ZMAIN.abap",
+		source = `CLASS lcl_consumer DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS run.
+ENDCLASS.
+CLASS lcl_consumer IMPLEMENTATION.
+  METHOD run.
+    zcl_rules=>get_object_data( IMPORTING et_evt_rel = DATA(lt_evt_rel) ).
+    READ TABLE lt_evt_rel INTO DATA(ls_evt_re) INDEX 1.
+    DATA(lv_evtid) = ls_evt_re-evtid.
+  ENDMETHOD.
+ENDCLASS.`,
+	}
+	dependencies := [?]analyze.Source_Input {
+		{
+			uri = "abapls-cache:/global-class/zcl_rules.abap",
+			source = `CLASS zcl_rules DEFINITION.
+  PUBLIC SECTION.
+    CLASS-METHODS get_object_data EXPORTING et_evt_rel TYPE zt_evt_rel.
+ENDCLASS.
+CLASS zcl_rules IMPLEMENTATION.
+  METHOD get_object_data.
+  ENDMETHOD.
+ENDCLASS.`,
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table-type/zt_evt_rel.abap",
+			source = "TYPES zt_evt_rel TYPE STANDARD TABLE OF zdm_evt_rel WITH DEFAULT KEY.",
+			mode = .Dependency_Interface,
+		},
+		{
+			uri = "abapls-cache:/ddic-table/zdm_evt_rel.abap",
+			source = `TYPES: BEGIN OF zdm_evt_rel,
+         evtid TYPE string,
+         objid TYPE string,
+       END OF zdm_evt_rel.`,
+			mode = .Dependency_Interface,
+		},
+	}
+	project := analyze_project_dependencies_test(t, target, dependencies[:])
+	root := analyze.project_unit_by_uri(&project, target.uri)
+
+	testing.expect(t, root != nil)
+	if root != nil {
+		ls_evt_re := analyze.find_symbol(root, "ls_evt_re", .Variable)
+		testing.expect(t, ls_evt_re != nil)
+	}
+	testing.expect(t, root != nil && !has_diagnostic(root, .Unknown_Field))
+	testing.expect(t, !project_units_have_diagnostic(&project, .Unresolved_Reference))
+}
+
+@(test)
 classic_data_declaration_is_visible_after_block :: proc(t: ^testing.T) {
 	unit := collect_test_unit(
 		t,

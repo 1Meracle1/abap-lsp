@@ -929,6 +929,9 @@ validate_field_accesses :: proc(
 			if field_access_base_is_external_ddic_shape(project, lookup, unit_index, access) {
 				continue
 			}
+			if field_access_base_is_inline_table_line_target(project, lookup, unit_index, access) {
+				continue
+			}
 			if !field_access_base_resolves(project, lookup, unit_index, access) {
 				continue
 			}
@@ -1012,6 +1015,32 @@ structure_origin_is_external_ddic_dependency :: proc(
 	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/ddic/") ||
 	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/vit/wb/object_type/tabldt/") ||
 	        strings.has_prefix(origin.uri, "abapls-adt:/sap/bc/adt/vit/wb/object_type/viewdv/"))
+}
+
+field_access_base_is_inline_table_line_target :: proc(
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	unit_index: int,
+	access: Field_Access,
+) -> bool {
+	if access.base_namespace != .Value {
+		return false
+	}
+	handle, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
+	if !ok || handle.unit != project.units[unit_index].unit_id {
+		return false
+	}
+	unit := &project.units[unit_index]
+	base := symbol(unit, handle.symbol)
+	if base == nil {
+		return false
+	}
+	for assignment in unit.assignment_sites {
+		if .Assigns_Table_Line in assignment.flags && assignment.lhs_range == base.decl_range {
+			return true
+		}
+	}
+	return false
 }
 
 field_access_base_resolves :: proc(
