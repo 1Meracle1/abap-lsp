@@ -103,6 +103,51 @@ define type /sttp/s_proc_evtt {
 }
 
 @(test)
+structure_dependency_source_strips_ddic_source_not_null :: proc(t: ^testing.T) {
+	source := dependency_source(
+		"SWW_WIHEAD",
+		"ddic-structure",
+		`define type sww_wihead {
+  wi_id  : sww_wiid not null;
+  handle : include swt_handle not null;
+  include swd_protcl not null;
+}`,
+		context.allocator,
+	)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "wi_id type sww_wiid")
+	expect_contains_fold(t, source, "include type swt_handle as handle")
+	expect_contains_fold(t, source, "include type swd_protcl")
+	lower := strings.to_lower(source, context.allocator)
+	defer delete(lower, context.allocator)
+	testing.expect(t, !strings.contains(lower, "not null"))
+}
+
+@(test)
+structure_dependency_source_ignores_ddic_source_include_extensions :: proc(t: ^testing.T) {
+	source := dependency_source(
+		"SWD_SNODES",
+		"ddic-structure",
+		`define type swd_snodes {
+  include swd_rnodes
+    extend evt_otype :
+      remove foreign key;
+  crl_elem : swc_elem;
+}`,
+		context.allocator,
+	)
+	defer delete(source, context.allocator)
+
+	expect_contains_fold(t, source, "types: begin of swd_snodes")
+	expect_contains_fold(t, source, "include type swd_rnodes")
+	expect_contains_fold(t, source, "crl_elem type swc_elem")
+	lower := strings.to_lower(source, context.allocator)
+	defer delete(lower, context.allocator)
+	testing.expect(t, !strings.contains(lower, "extend evt_otype"))
+}
+
+@(test)
 view_dependency_source_uses_observed_element_info_fields :: proc(t: ^testing.T) {
 	xml := `<abapsource:elementInfo adtcore:type="VIEW/DV" adtcore:name="zview" xmlns:abapsource="http://www.sap.com/adt/abapsource" xmlns:adtcore="http://www.sap.com/adt/core">
   <abapsource:elementInfo adtcore:type="TABL/DTF" adtcore:name="text">

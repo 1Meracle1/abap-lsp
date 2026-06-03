@@ -184,7 +184,7 @@ ddic_source_dependency_source :: proc(source: string, allocator: mem.Allocator) 
 		strings.write_string(&out, "         ")
 		if strings.has_prefix(line, "include ") {
 			strings.write_string(&out, "INCLUDE TYPE ")
-			write_canonical_abap_name(&out, strings.trim_space(line[len("include "):]))
+			write_canonical_abap_name(&out, ddic_source_trim_not_null(line[len("include "):]))
 			strings.write_string(&out, ",\n")
 			continue
 		}
@@ -193,10 +193,13 @@ ddic_source_dependency_source :: proc(source: string, allocator: mem.Allocator) 
 			continue
 		}
 		field_name := strings.trim_space(line[:colon])
-		type_name := strings.trim_space(line[colon + 1:])
+		type_name := ddic_source_trim_not_null(line[colon + 1:])
+		if type_name == "" {
+			continue
+		}
 		if strings.has_prefix(type_name, "include ") {
 			strings.write_string(&out, "INCLUDE TYPE ")
-			write_canonical_abap_name(&out, strings.trim_space(type_name[len("include "):]))
+			write_canonical_abap_name(&out, ddic_source_trim_not_null(type_name[len("include "):]))
 			strings.write_string(&out, " AS ")
 			write_canonical_abap_name(&out, field_name)
 			strings.write_string(&out, ",\n")
@@ -214,23 +217,33 @@ ddic_source_dependency_source :: proc(source: string, allocator: mem.Allocator) 
 }
 
 ddic_source_write_type :: proc(out: ^strings.Builder, raw: string) {
-	if strings.has_prefix(raw, "reference to ") {
+	text := ddic_source_trim_not_null(raw)
+	if strings.has_prefix(text, "reference to ") {
 		strings.write_string(out, "REF TO ")
-		write_canonical_abap_name(out, strings.trim_space(raw[len("reference to "):]))
+		write_canonical_abap_name(out, strings.trim_space(text[len("reference to "):]))
 		return
 	}
-	if strings.has_prefix(raw, "abap.") {
+	if strings.has_prefix(text, "abap.") {
 		start := len("abap.")
 		end := start
-		for end < len(raw) && raw[end] != '(' && !ascii_space(raw[end]) {
+		for end < len(text) && text[end] != '(' && !ascii_space(text[end]) {
 			end += 1
 		}
-		if builtin := ddic_builtin_type(raw[start:end]); builtin != "" {
+		if builtin := ddic_builtin_type(text[start:end]); builtin != "" {
 			strings.write_string(out, builtin)
 			return
 		}
 	}
-	write_canonical_abap_name(out, raw)
+	write_canonical_abap_name(out, text)
+}
+
+ddic_source_trim_not_null :: proc(raw: string) -> string {
+	text := strings.trim_space(raw)
+	suffix :: " not null"
+	if len(text) >= len(suffix) && strings.equal_fold(text[len(text) - len(suffix):], suffix) {
+		return strings.trim_space(text[:len(text) - len(suffix)])
+	}
+	return text
 }
 
 ddic_xml_structure_source :: proc(
