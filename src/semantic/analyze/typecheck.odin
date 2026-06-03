@@ -65,6 +65,7 @@ validate_typecheck_diagnostics :: proc(
 	call_index := typecheck_call_index_make(&project.units[unit_index], context.temp_allocator)
 	typecheck_assignments(project, lookup, unit_index, &call_index, out, seen, allocator)
 	typecheck_calls(project, lookup, unit_index, &call_index, out, seen, allocator)
+	typecheck_call_function_exception_messages(project, unit_index, out, seen, allocator)
 	typecheck_open_sql_targets(project, lookup, unit_index, out, seen, allocator)
 }
 
@@ -263,6 +264,39 @@ typecheck_calls :: proc(
 		if required_mapping_ok &&
 		   typecheck_required_signature_is_complete(signature, site.target.kind) {
 			typecheck_required_parameters(project, unit_index, signature.info, site, out, seen, allocator)
+		}
+	}
+}
+
+typecheck_call_function_exception_messages :: proc(
+	project: ^Project_Analysis,
+	unit_index: int,
+	out: ^[dynamic]Diagnostic,
+	seen: ^map[Diagnostic_Key]bool,
+	allocator: mem.Allocator,
+) {
+	unit := &project.units[unit_index]
+	if len(unit.call_function_exception_message_sites) == 0 {
+		return
+	}
+	facts := typecheck_fact_index_make(unit, context.temp_allocator)
+	for site in unit.call_function_exception_message_sites {
+		actual := typecheck_fact_for_range_indexed(&facts, site.range)
+		if !type_fact_known(actual) {
+			actual = site.type_fact
+		}
+		if !typecheck_call_fact_is_trusted(project, actual) {
+			continue
+		}
+		if ok, known := typecheck_call_function_exception_message_compatible(project, actual);
+		   known && !ok {
+			append_diag(
+				out,
+				seen,
+				.Incompatible_Argument_Type,
+				site.range,
+				typecheck_call_function_exception_message_message(unit, site.range, allocator),
+			)
 		}
 	}
 }
@@ -1534,6 +1568,53 @@ typecheck_builtin_clike :: proc "contextless" (name: string) -> bool {
 	return false
 }
 
+typecheck_call_function_exception_message_compatible :: proc(
+	project: ^Project_Analysis,
+	fact: Type_Fact_Data,
+) -> (bool, bool) {
+	if typecheck_fact_is_structure(fact) ||
+	   typecheck_fact_is_table(project, fact) ||
+	   typecheck_fact_is_ref(project, fact) {
+		return false, true
+	}
+	name, ok := typecheck_builtin_name(project, fact)
+	if !ok {
+		return false, false
+	}
+	return typecheck_builtin_call_function_exception_message_name(name)
+}
+
+typecheck_builtin_call_function_exception_message_name :: proc(name: string, depth := 0) -> (bool, bool) {
+	if depth > 8 {
+		return false, false
+	}
+	switch name {
+	case "c", "n", "d", "t":
+		return true, true
+	case "i",
+	     "int1",
+	     "int2",
+	     "int4",
+	     "int8",
+	     "f",
+	     "p",
+	     "decfloat16",
+	     "decfloat34",
+	     "string",
+	     "x",
+	     "xstring",
+	     "%_c_pointer":
+		return false, true
+	}
+	if metadata, ok := builtin_type_metadata(name); ok && !metadata.is_ref {
+		return typecheck_builtin_call_function_exception_message_name(metadata.type_name, depth + 1)
+	}
+	if is_generic_builtin_type_name(name) {
+		return false, false
+	}
+	return false, false
+}
+
 typecheck_fact_is_structure :: proc(fact: Type_Fact_Data) -> bool {
 	return fact.structure != INVALID_STRUCTURE_ID
 }
@@ -1754,6 +1835,19 @@ typecheck_name_message :: proc(prefix, name: string, allocator: mem.Allocator) -
 	strings.write_byte(&out, '\'')
 	strings.write_string(&out, name)
 	strings.write_byte(&out, '\'')
+	return strings.to_string(out)
+}
+
+typecheck_call_function_exception_message_message :: proc(
+	unit: ^Unit_Analysis,
+	range: tokenizer.Range,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	operand := typecheck_range_text(unit, range, context.temp_allocator)
+	strings.write_byte(&out, '\'')
+	strings.write_string(&out, operand)
+	strings.write_string(&out, "' must be a character-like field (data type c, n, d, or t)")
 	return strings.to_string(out)
 }
 

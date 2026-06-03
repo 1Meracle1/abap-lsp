@@ -1864,6 +1864,17 @@ collect_raw_call_args :: proc(
 			}
 			if arg.message != nil {
 				collect_expr_refs(c, arg.message, scope)
+				if target.kind == .Function &&
+				   section == .Exceptions &&
+				   arg.message_range.start < arg.message_range.end {
+					append(
+						&c.unit.call_function_exception_message_sites,
+						Call_Function_Exception_Message_Site_Data {
+							range = arg.message_range,
+							type_fact = type_fact_from_expr(c, arg.message, scope),
+						},
+					)
+				}
 			}
 			append(
 				&args,

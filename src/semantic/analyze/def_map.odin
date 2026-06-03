@@ -823,6 +823,11 @@ Call_Site_Data :: struct {
 	arguments: [dynamic]Call_Argument_Data,
 }
 
+Call_Function_Exception_Message_Site_Data :: struct {
+	range:     tokenizer.Range,
+	type_fact: Type_Fact_Data,
+}
+
 Assignment_Site_Flag :: enum {
 	Has_Lhs_Target_Access,
 	Rhs_Is_Top_Level_Sum,
@@ -925,6 +930,7 @@ Unit_Analysis :: struct {
 	member_aliases:                         [dynamic]Member_Alias_Data,
 	named_arguments:                        [dynamic]Named_Argument_Access,
 	call_sites:                             [dynamic]Call_Site_Data,
+	call_function_exception_message_sites:  [dynamic]Call_Function_Exception_Message_Site_Data,
 	assignment_sites:                       [dynamic]Assignment_Site_Data,
 	concatenate_lines_of_sites:             [dynamic]Concatenate_Lines_Of_Site_Data,
 	expression_facts:                       [dynamic]Expression_Fact_Data,

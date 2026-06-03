@@ -40,6 +40,12 @@ unit_analysis_make :: proc(
 	unit.member_aliases = make([dynamic]Member_Alias_Data, 0, 0, allocator)
 	unit.named_arguments = make([dynamic]Named_Argument_Access, 0, 0, allocator)
 	unit.call_sites = make([dynamic]Call_Site_Data, 0, 0, allocator)
+	unit.call_function_exception_message_sites = make(
+		[dynamic]Call_Function_Exception_Message_Site_Data,
+		0,
+		0,
+		allocator,
+	)
 	unit.assignment_sites = make([dynamic]Assignment_Site_Data, 0, 0, allocator)
 	unit.concatenate_lines_of_sites = make(
 		[dynamic]Concatenate_Lines_Of_Site_Data,

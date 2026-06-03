@@ -5637,6 +5637,29 @@ START-OF-SELECTION.
 }
 
 @(test)
+semantic_typecheck_reports_call_function_exception_message_string :: proc(t: ^testing.T) {
+	source := `REPORT z_tc_func_exception_message.
+START-OF-SELECTION.
+  DATA lv_msg TYPE string.
+  DATA lv_text TYPE c.
+  CALL FUNCTION 'Z_DEMO'
+    EXCEPTIONS
+      system_failure = 1 MESSAGE lv_msg
+      communication_failure = 2 MESSAGE lv_text
+      failed = 3.`
+	unit := collect_test_unit(t, "file:///tc_func_exception_message.abap", source)
+
+	testing.expect_value(t, diagnostic_count(&unit, .Incompatible_Argument_Type), 1)
+	message, ok := diagnostic_message_for_kind(&unit, .Incompatible_Argument_Type)
+	testing.expect(t, ok)
+	testing.expect_value(
+		t,
+		message,
+		"'lv_msg' must be a character-like field (data type c, n, d, or t)",
+	)
+}
+
+@(test)
 semantic_typecheck_skips_missing_required_redefinition_signature :: proc(t: ^testing.T) {
 	source := `REPORT z_tc_missing_redefinition.
 CLASS lcl_parent DEFINITION.
