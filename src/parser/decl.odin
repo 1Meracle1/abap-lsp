@@ -170,7 +170,7 @@ parse_data_inline_decl_stmt :: proc(p: ^Parser, start: Token) -> ^ast.Stmt {
 		tokenizer.text_range(start.range.start, statement_end(p, period)),
 		p.allocator,
 	)
-	stmt.name = tokenizer.token_lexeme(name, p.source)
+	stmt.name = parser_intern_token_name(p, name)
 	stmt.expr = value
 	return stmt
 }
@@ -400,7 +400,7 @@ parse_type_pools_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		if !ok {
 			return nil
 		}
-		append(&stmt.pools, tokenizer.token_lexeme(name, p.source))
+		append(&stmt.pools, parser_intern_token_name(p, name))
 		if !allow_token(p, .Comma) {
 			break
 		}
@@ -434,7 +434,7 @@ parse_function_pool_decl_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	if !ok {
 		return nil
 	}
-	stmt.name = tokenizer.token_lexeme(name, p.source)
+	stmt.name = parser_intern_token_name(p, name)
 	for !decl_clause_boundary(p) {
 		if at_keyword_phrase(p, "MESSAGE-ID") {
 			expect_keyword_phrase(p, "MESSAGE-ID")
@@ -542,7 +542,7 @@ parse_decl_clause_head :: proc(
 				if !ok {
 					return .Normal, false, "", nil, index, false
 				}
-				return .Normal, false, tokenizer.token_lexeme(name, p.source), nil, name_index, true
+				return .Normal, false, parser_intern_token_name(p, name), nil, name_index, true
 			}
 			error_current(p, "syntax error: expected OF after BEGIN")
 			return .Normal, false, "", nil, index, false
@@ -556,7 +556,7 @@ parse_decl_clause_head :: proc(
 		if !ok {
 			return .Normal, false, "", nil, index, false
 		}
-		return .Begin_Group, false, tokenizer.token_lexeme(name, p.source), nil, index, true
+		return .Begin_Group, false, parser_intern_token_name(p, name), nil, index, true
 	}
 	if at_keyword(p, "END") {
 		if !at_keyword_index(p, p.index + 1, "OF") {
@@ -565,7 +565,7 @@ parse_decl_clause_head :: proc(
 				if !ok {
 					return .Normal, false, "", nil, index, false
 				}
-				return .Normal, false, tokenizer.token_lexeme(name, p.source), nil, name_index, true
+				return .Normal, false, parser_intern_token_name(p, name), nil, name_index, true
 			}
 			error_current(p, "syntax error: expected OF after END")
 			return .Normal, false, "", nil, index, false
@@ -579,7 +579,7 @@ parse_decl_clause_head :: proc(
 		if !ok {
 			return .Normal, false, "", nil, index, false
 		}
-		return .End_Group, false, tokenizer.token_lexeme(name, p.source), nil, index, true
+		return .End_Group, false, parser_intern_token_name(p, name), nil, index, true
 	}
 	if allow_keyword(p, "INCLUDE") {
 		kind := ast.Decl_Clause_Kind.Include_Type
@@ -601,7 +601,7 @@ parse_decl_clause_head :: proc(
 	if !ok {
 		return .Normal, false, "", nil, index, false
 	}
-	return .Normal, false, tokenizer.token_lexeme(name, p.source), nil, name_index, true
+	return .Normal, false, parser_intern_token_name(p, name), nil, name_index, true
 }
 
 decl_keyword_name_tail_starts :: proc(p: ^Parser, index: int) -> bool {
@@ -637,7 +637,7 @@ parse_common_part_delimiter_tail :: proc(p: ^Parser) -> (string, bool) {
 	if tok.kind == .Ident || tok.kind == .Number || tok.kind == .Star {
 		name, _, ok := parse_decl_name(p)
 		if ok {
-			return tokenizer.token_lexeme(name, p.source), true
+			return parser_intern_token_name(p, name), true
 		}
 	}
 	return "", true
@@ -750,7 +750,7 @@ parse_field_symbols_clause :: proc(p: ^Parser) -> (ast.Field_Symbols_Clause, boo
 		return ast.Field_Symbols_Clause{}, false
 	}
 	clause := ast.Field_Symbols_Clause {
-		name = tokenizer.token_lexeme(name, p.source),
+		name = parser_intern_token_name(p, name),
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "TYPE") || at_keyword(p, "LIKE") {
@@ -825,7 +825,7 @@ parse_tables_clause :: proc(p: ^Parser) -> (ast.Tables_Clause, bool) {
 		return ast.Tables_Clause{}, false
 	}
 	clause := ast.Tables_Clause {
-		name = tokenizer.token_lexeme(name, p.source),
+		name = parser_intern_token_name(p, name),
 	}
 	for !decl_clause_end(p, name_index) {
 		bump_token(p)
@@ -839,7 +839,7 @@ parse_ranges_clause :: proc(p: ^Parser) -> (ast.Ranges_Clause, bool) {
 		return ast.Ranges_Clause{}, false
 	}
 	clause := ast.Ranges_Clause {
-		name = tokenizer.token_lexeme(name, p.source),
+		name = parser_intern_token_name(p, name),
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
@@ -864,7 +864,7 @@ parse_parameters_clause :: proc(p: ^Parser) -> (ast.Parameters_Clause, bool) {
 		return ast.Parameters_Clause{}, false
 	}
 	clause := ast.Parameters_Clause {
-		name = tokenizer.token_lexeme(name, p.source),
+		name = parser_intern_token_name(p, name),
 	}
 	clause.length_clauses = make([dynamic]ast.Length_Clause, 0, 2, p.allocator)
 	if current_token(p).kind == .LParen {
@@ -910,7 +910,7 @@ parse_select_options_clause :: proc(p: ^Parser) -> (ast.Select_Options_Clause, b
 		return ast.Select_Options_Clause{}, false
 	}
 	clause := ast.Select_Options_Clause {
-		name = tokenizer.token_lexeme(name, p.source),
+		name = parser_intern_token_name(p, name),
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "FOR") {
@@ -945,7 +945,7 @@ parse_controls_clause :: proc(p: ^Parser) -> (ast.Controls_Clause, bool) {
 		return ast.Controls_Clause{}, false
 	}
 	clause := ast.Controls_Clause {
-		name = tokenizer.token_lexeme(name, p.source),
+		name = parser_intern_token_name(p, name),
 	}
 	for !decl_clause_end(p, name_index) {
 		if at_keyword(p, "TYPE") {
@@ -1309,7 +1309,7 @@ parse_type_ref_key_clause :: proc(p: ^Parser) -> ^ast.Type_Ref_Key_Clause {
 		if tok.kind != .Ident && tok.kind != .Number && tok.kind != .Star {
 			break
 		}
-		name := tokenizer.token_lexeme(tok, p.source)
+		name := parser_intern_token_name(p, tok)
 		if !in_components && (clause.sorted || clause.hashed) && clause.name == "" {
 			clause.name = name
 		} else {
@@ -1783,7 +1783,10 @@ parse_required_addition_name :: proc(
 			validate_token_name_length(p, tok, max_length, limit_message)
 		}
 		bump_token(p)
-		return tokenizer.token_lexeme(tok, p.source), true
+		if tok.kind == .String {
+			return parser_clone_token_text(p, tok), true
+		}
+		return parser_intern_token_name(p, tok), true
 	}
 	error_current(p, "syntax error: expected addition value")
 	return "", false

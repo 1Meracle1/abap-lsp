@@ -3,7 +3,6 @@ package abap_frontend_parser
 import "src:ast"
 import "src:tokenizer"
 
-import "core:strings"
 
 Constructor_Body_Kind :: enum {
 	Value,
@@ -388,19 +387,19 @@ parse_primary_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		}
 		bump_token(p)
 		expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-		expr.name = tokenizer.token_lexeme(tok, p.source)
+		expr.name = parser_intern_token_name(p, tok)
 		return expr
 	case .Number, .String, .Star:
 		bump_token(p)
 		expr := ast.new(ast.Literal_Expr, tok.range, p.allocator)
-		expr.value = tokenizer.token_lexeme(tok, p.source)
+		expr.value = parser_clone_token_text(p, tok)
 		return expr
 	case .StringTemplate:
 		return parse_char_string_template_expr(p)
 	case .Hash:
 		bump_token(p)
 		expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-		expr.name = tokenizer.token_lexeme(tok, p.source)
+		expr.name = parser_intern_token_name(p, tok)
 		return expr
 	case .At:
 		bump_token(p)
@@ -488,11 +487,11 @@ parse_selector_expr :: proc(p: ^Parser, base: ^ast.Expr) -> ^ast.Expr {
 	field: ^ast.Expr
 	if field_tok.kind == .Number || field_tok.kind == .Star {
 		lit := ast.new(ast.Literal_Expr, field_tok.range, p.allocator)
-		lit.value = tokenizer.token_lexeme(field_tok, p.source)
+		lit.value = parser_clone_token_text(p, field_tok)
 		field = lit
 	} else {
 		name := ast.new(ast.Ident_Expr, field_tok.range, p.allocator)
-		name.name = tokenizer.token_lexeme(field_tok, p.source)
+		name.name = parser_intern_token_name(p, field_tok)
 		field = name
 	}
 
@@ -652,7 +651,7 @@ parse_call_arg_section_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	name := bump_token(p)
 	section := ast.new(ast.Call_Arg_Section_Expr, name.range, p.allocator)
 	section.kind = call_argument_section_kind(p, name)
-	section.name = tokenizer.token_lexeme(name, p.source)
+	section.name = parser_intern_token_name(p, name)
 	section.args = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 	for current_token(p).kind != .RParen &&
 	    current_token(p).kind != .Period &&
@@ -690,7 +689,7 @@ parse_call_arg_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			tokenizer.text_range(name.range.start, value.range.end),
 			p.allocator,
 		)
-		arg.name = tokenizer.token_lexeme(name, p.source)
+		arg.name = parser_intern_token_name(p, name)
 		arg.value = value
 		return arg
 	}
@@ -792,7 +791,7 @@ parse_substring_length_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if current_token(p).kind == .Star {
 		tok := bump_token(p)
 		expr := ast.new(ast.Literal_Expr, tok.range, p.allocator)
-		expr.value = tokenizer.token_lexeme(tok, p.source)
+		expr.value = parser_clone_token_text(p, tok)
 		return expr
 	}
 	return parse_concat_expr(p)
@@ -1013,6 +1012,7 @@ parse_complete_expr_with :: proc(
 		expr_extra_stop_keywords = p.expr_extra_stop_keywords,
 		open_sql_expr = p.open_sql_expr,
 		errors = make([dynamic]Parse_Error, 0, 1, context.temp_allocator),
+		names = p.names,
 		allocator = p.allocator,
 	}
 	expr := parse_proc(&nested)
@@ -1061,7 +1061,7 @@ parse_constructor_let_binding_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(name.range.start, value.range.end),
 		p.allocator,
 	)
-	expr.name = tokenizer.token_lexeme(name, p.source)
+	expr.name = parser_intern_token_name(p, name)
 	expr.value = value
 	return expr
 }
@@ -1119,7 +1119,7 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 		return nil
 	}
 	expr := ast.new(ast.Constructor_For_Clause_Expr, start.range, p.allocator)
-	expr.variable = tokenizer.token_lexeme(name, p.source)
+	expr.variable = parser_intern_token_name(p, name)
 	expr.body = make([dynamic]^ast.Expr, 0, 2, p.allocator)
 
 	if allow_token(p, .Eq) {
@@ -1144,7 +1144,7 @@ parse_constructor_for_clause_expr :: proc(p: ^Parser, body_kind: Constructor_Bod
 			if group.kind != .Ident {
 				return nil
 			}
-			expr.group_source = tokenizer.token_lexeme(group, p.source)
+			expr.group_source = parser_intern_token_name(p, group)
 			expr.group_source_range = group.range
 		} else {
 			expr.source = parse_expr(p)
@@ -1224,7 +1224,7 @@ parse_constructor_named_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if target == nil {
 		return nil
 	}
-	name := strings.clone(p.source[target.range.start:target.range.end], p.allocator)
+	name := parser_clone_range_text(p, target.range)
 	expect_token(p, .Eq)
 	value := parse_constructor_value_expr(p)
 	if value == nil {
@@ -1306,7 +1306,7 @@ parse_constructor_lines_of_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 			allow_keyword(p, "KEY")
 			key := expect_token(p, .Ident)
 			if key.kind == .Ident {
-				expr.using_key = tokenizer.token_lexeme(key, p.source)
+				expr.using_key = parser_intern_token_name(p, key)
 			}
 		} else {
 			break
@@ -1341,7 +1341,7 @@ parse_constructor_mapping_assignment_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	}
 	expect_token(p, .Eq)
 	expr := ast.new(ast.Constructor_Corresponding_Mapping_Assignment_Expr, name.range, p.allocator)
-	expr.target = tokenizer.token_lexeme(name, p.source)
+	expr.target = parser_intern_token_name(p, name)
 
 	if allow_keyword(p, "DEFAULT") {
 		expr.default_value = parse_expr(p)
@@ -1376,7 +1376,7 @@ parse_constructor_except_clause_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		}
 		bump_token(p)
 		name := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-		name.name = tokenizer.token_lexeme(tok, p.source)
+		name.name = parser_intern_token_name(p, tok)
 		append(&expr.names, name)
 	}
 	expr.range = tokenizer.text_range(start.range.start, previous_token(p).range.end)
@@ -1388,7 +1388,7 @@ parse_constructor_type_ref :: proc(p: ^Parser) -> ^ast.Expr {
 	if tok.kind == .Hash || tok.kind == .Ident {
 		bump_token(p)
 		expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-		expr.name = tokenizer.token_lexeme(tok, p.source)
+		expr.name = parser_intern_token_name(p, tok)
 		return expr
 	}
 	error_current(p, "syntax error: expected expression")
@@ -1620,7 +1620,7 @@ parse_data_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(start.range.start, close.range.end),
 		p.allocator,
 	)
-	expr.name = tokenizer.token_lexeme(name, p.source)
+	expr.name = parser_intern_token_name(p, name)
 	return expr
 }
 
@@ -1642,7 +1642,7 @@ parse_field_symbol_inline_name_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(start.range.start, close.range.end),
 		p.allocator,
 	)
-	expr.name = tokenizer.token_lexeme(name, p.source)
+	expr.name = parser_intern_token_name(p, name)
 	return expr
 }
 
@@ -1661,7 +1661,7 @@ parse_char_string_template_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		case .StringTemplateLit:
 			bump_token(p)
 			lit := ast.new(ast.Template_Literal_Expr, tok.range, p.allocator)
-			lit.literal = tokenizer.token_lexeme(tok, p.source)
+			lit.literal = parser_clone_token_text(p, tok)
 			append(&expr.parts, lit)
 		case .LBrace:
 			interp := parse_template_interpolation_expr(p)
@@ -1742,7 +1742,7 @@ parse_template_format_spec_expr :: proc(p: ^Parser) -> ^ast.Expr {
 		tokenizer.text_range(name.range.start, value.range.end),
 		p.allocator,
 	)
-	spec.name = tokenizer.token_lexeme(name, p.source)
+	spec.name = parser_intern_token_name(p, name)
 	spec.option = template_format_option(p, name)
 	spec.value = value
 	return spec

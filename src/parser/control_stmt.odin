@@ -5,7 +5,6 @@ import "src:tokenizer"
 
 import "base:intrinsics"
 import "core:mem"
-import "core:strings"
 
 control_stmt_starts :: proc(p: ^Parser) -> bool {
 	return(
@@ -76,7 +75,7 @@ parse_oop_load_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	bump_token(p)
-	stmt.name = tokenizer.token_lexeme(name, p.source)
+	stmt.name = parser_intern_token_name(p, name)
 	stmt.name_range = name.range
 
 	if stmt.kind == .Class {
@@ -706,7 +705,7 @@ parse_loop_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	header_end := period.range.end if period.kind == .Period else statement_end(p, period)
 	header_text_end := period.range.start if period.kind == .Period else header_end
 	stmt.header_range = tokenizer.text_range(header_start, header_end)
-	stmt.header_text = strings.clone(p.source[header_start:header_text_end], p.allocator)
+	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(header_start, header_text_end))
 	stmt.body = parse_stmt_list_until(p, []string{"ENDLOOP"})
 	end := expect_keyword_message(p, "ENDLOOP", "syntax error: expected ENDLOOP")
 	if !token_is_keyword(p, end, "ENDLOOP") {
@@ -778,7 +777,7 @@ parse_at_group_field :: proc(p: ^Parser, stmt: ^ast.At_Stmt) -> bool {
 	if name.kind != .Ident {
 		return false
 	}
-	stmt.field_name = tokenizer.token_lexeme(name, p.source)
+	stmt.field_name = parser_intern_token_name(p, name)
 	stmt.field_range = name.range
 	return true
 }
@@ -974,7 +973,7 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	stmt.member_name = member_name
 	stmt.member_range = member_range
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
-	stmt.header_text = strings.clone(p.source[start.range.start:period.range.start], p.allocator)
+	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	stmt.kernel_modules, stmt.is_kernel = method_header_kernel_modules(p, start_index, p.previous_index, name_range)
 	if !stmt.is_kernel && method_header_is_amdp(p, start_index, p.previous_index) {
 		stmt.is_amdp = true
@@ -992,7 +991,7 @@ parse_method_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		if period.range.end < body_end {
-			stmt.amdp_body = strings.clone(p.source[period.range.end:body_end], p.allocator)
+			stmt.amdp_body = parser_clone_range_text(p, tokenizer.text_range(period.range.end, body_end))
 		}
 		stmt.range = tokenizer.text_range(start.range.start, end_period.range.end)
 		return stmt
@@ -1047,7 +1046,7 @@ method_header_kernel_modules :: proc(
 			error(p, tok.range, "syntax error: expected kernel module name")
 			continue
 		}
-		append(&modules, tokenizer.token_lexeme(tok, p.source))
+		append(&modules, parser_intern_token_name(p, tok))
 	}
 	return modules, true
 }
@@ -1079,9 +1078,9 @@ parse_named_block_stmt :: proc(
 		return nil
 	}
 	stmt := ast.new(T, start.range, p.allocator)
-	stmt.name = tokenizer.token_lexeme(name, p.source) if name.kind != .Eof else ""
+	stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
 	stmt.header_range = tokenizer.text_range(start.range.start, period.range.end)
-	stmt.header_text = strings.clone(p.source[start.range.start:period.range.start], p.allocator)
+	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	period_index := p.previous_index
 	bodyless := named_block_header_is_bodyless(p, start_keyword, start_index, period_index)
 	when intrinsics.type_has_field(T, "is_bodyless") {
@@ -1171,7 +1170,7 @@ named_block_header_superclass :: proc(
 		   token_is_keyword(p, p.tokens[i + 1], "FROM") {
 			tok := p.tokens[i + 2]
 			if tok.kind == .Ident || tok.kind == .Number {
-				return tokenizer.token_lexeme(tok, p.source), tok.range
+				return parser_intern_token_name(p, tok), tok.range
 			}
 			return "", tokenizer.text_range(tok.range.start, tok.range.start)
 		}
@@ -1204,7 +1203,7 @@ named_block_header_friends :: proc(
 			append(
 				&friends,
 				ast.Class_Friend_Clause {
-					name = tokenizer.token_lexeme(tok, p.source),
+					name = parser_intern_token_name(p, tok),
 					range = tok.range,
 				},
 			)
@@ -1371,13 +1370,13 @@ parse_header_param_name :: proc(
 		if i < period_index && p.tokens[i].kind == .RParen {
 			i += 1
 		}
-		return strip_header_bang(tokenizer.token_lexeme(tok, p.source)), tok.range, passing, i, true
+		return parser_intern_name(p, strip_header_bang(tokenizer.token_lexeme(tok, p.source))), tok.range, passing, i, true
 	}
 	if i >= period_index || !header_name_token_like(p.tokens[i]) {
 		return "", tokenizer.Range{}, passing, i, false
 	}
 	tok := p.tokens[i]
-	name := strip_header_bang(tokenizer.token_lexeme(tok, p.source))
+	name := parser_intern_name(p, strip_header_bang(tokenizer.token_lexeme(tok, p.source)))
 	return name, tok.range, passing, i + 1, name != ""
 }
 
@@ -1758,7 +1757,7 @@ parse_event_block_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	)
 	stmt.kind = kind
 	stmt.header_range = stmt.range
-	stmt.header_text = strings.clone(p.source[start.range.start:period.range.start], p.allocator)
+	stmt.header_text = parser_clone_range_text(p, tokenizer.text_range(start.range.start, period.range.start))
 	stmt.body = parse_stmt_list_until(
 		p,
 		[]string {

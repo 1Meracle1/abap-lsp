@@ -109,7 +109,7 @@ parse_include_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			return nil
 		}
 		bump_token(p)
-		append(&stmt.names, ast.Include_Name{tokenizer.token_lexeme(name, p.source), name.range})
+		append(&stmt.names, ast.Include_Name{parser_intern_token_name(p, name), name.range})
 		if !chained || !allow_token(p, .Comma) {
 			break
 		}
@@ -200,7 +200,7 @@ parse_table_key_selector :: proc(
 	}
 	if current_token(p).kind == .Ident {
 		key := bump_token(p)
-		selector.name = tokenizer.token_lexeme(key, p.source)
+		selector.name = parser_intern_token_name(p, key)
 		selector.name_range = key.range
 		return selector
 	}
@@ -475,7 +475,7 @@ sql_model_call_expr :: proc(p: ^Parser, expr: ^ast.Expr, call: ^ast.Call_Expr) -
 		return expr
 	}
 	sql_call := ast.new(ast.Sql_Call_Expr, expr.range, p.allocator)
-	sql_call.name = name
+	sql_call.name = parser_intern_name(p, name)
 	sql_call.name_range = name_range
 	sql_call.kind = .Aggregate if sql_aggregate_name(name) else .Function
 	sql_call.args = make([dynamic]^ast.Expr, 0, 4, p.allocator)
@@ -524,9 +524,9 @@ sql_column_expr :: proc(
 	name_range: tokenizer.Range,
 ) -> ^ast.Expr {
 	expr := ast.new(ast.Sql_Column_Expr, range, p.allocator)
-	expr.qualifier = qualifier
+	expr.qualifier = parser_intern_name(p, qualifier)
 	expr.qualifier_range = qualifier_range
-	expr.name = name
+	expr.name = parser_intern_name(p, name)
 	expr.name_range = name_range
 	return expr
 }
@@ -539,7 +539,7 @@ sql_star_expr :: proc(
 	star_range: tokenizer.Range,
 ) -> ^ast.Expr {
 	expr := ast.new(ast.Sql_Star_Expr, range, p.allocator)
-	expr.qualifier = qualifier
+	expr.qualifier = parser_intern_name(p, qualifier)
 	expr.qualifier_range = qualifier_range
 	expr.star_range = star_range
 	return expr
@@ -724,7 +724,7 @@ parse_cte_name :: proc(p: ^Parser) -> string {
 	if p.index == start_index {
 		return ""
 	}
-	return strings.clone(p.source[start.range.start:previous_token(p).range.end], p.allocator)
+	return parser_intern_name(p, p.source[start.range.start:previous_token(p).range.end])
 }
 
 Select_Clause_State :: struct {
@@ -1533,7 +1533,7 @@ parse_select_order_by_clause :: proc(
 				if !descending {
 					append(
 						&query.order_by_fields,
-						tokenizer.token_lexeme(p.tokens[p.index + 2], p.source),
+						parser_intern_token_name(p, p.tokens[p.index + 2]),
 					)
 				}
 				bump_token(p)
@@ -1543,7 +1543,7 @@ parse_select_order_by_clause :: proc(
 				if !descending {
 					append(
 						&query.order_by_fields,
-						tokenizer.token_lexeme(current_token(p), p.source),
+						parser_intern_token_name(p, current_token(p)),
 					)
 				}
 				bump_token(p)
@@ -1714,7 +1714,7 @@ parse_select_source_expr :: proc(
 	}
 	tok := bump_token(p)
 	expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-	expr.name = tokenizer.token_lexeme(tok, p.source)
+	expr.name = parser_intern_token_name(p, tok)
 	return expr
 }
 
@@ -1728,7 +1728,7 @@ parse_select_alias :: proc(p: ^Parser) -> string {
 		return ""
 	}
 	bump_token(p)
-	return tokenizer.token_lexeme(tok, p.source)
+	return parser_intern_token_name(p, tok)
 }
 
 select_join_kind :: proc(p: ^Parser) -> (ast.Select_Join_Kind, bool) {
@@ -2147,7 +2147,7 @@ parse_read_table_key_values :: proc(
 				bump_token(p)
 			}
 			expect_token(p, .Eq)
-			name := p.source[name_start:name_end_byte]
+			name := parser_clone_range_text(p, tokenizer.text_range(name_start, name_end_byte))
 			value := data_expr(
 				p,
 				body_start,
@@ -2185,7 +2185,7 @@ parse_read_table_key_values :: proc(
 					append(
 						&path,
 						ast.Read_Table_Key_Name_Segment {
-							name = tokenizer.token_lexeme(tok, p.source),
+							name = parser_intern_token_name(p, tok),
 							range = tok.range,
 							selector = selector,
 						},
@@ -2202,7 +2202,7 @@ parse_read_table_key_values :: proc(
 				bump_token(p)
 			}
 			expect_token(p, .Eq)
-			name := p.source[name_start:name_end_byte]
+			name := parser_clone_range_text(p, tokenizer.text_range(name_start, name_end_byte))
 			value := data_expr(
 				p,
 				body_start,
@@ -2239,7 +2239,7 @@ parse_read_table_key_values :: proc(
 			continue
 		}
 		if entry.key_name == "" && current_token(p).kind == .Ident {
-			entry.key_name = tokenizer.token_lexeme(bump_token(p), p.source)
+			entry.key_name = parser_intern_token_name(p, bump_token(p))
 			continue
 		}
 		bump_token(p)
@@ -3030,7 +3030,7 @@ parse_modify_transporting_field :: proc(
 		append(
 			&path,
 			ast.Modify_Transporting_Field_Segment {
-				name = tokenizer.token_lexeme(tok, p.source),
+				name = parser_intern_token_name(p, tok),
 				range = tok.range,
 			},
 		)
@@ -3050,7 +3050,7 @@ parse_modify_transporting_field :: proc(
 	}
 	end := path[len(path) - 1].range.end
 	return ast.Modify_Transporting_Field_Clause {
-			name = p.source[start:end],
+			name = parser_clone_range_text(p, tokenizer.text_range(start, end)),
 			range = tokenizer.text_range(start, end),
 			path = path,
 		},
@@ -3132,7 +3132,7 @@ sort_field_clause :: proc(p: ^Parser, expr: ^ast.Expr) -> ast.Sort_Field_Clause 
 		expr = expr,
 	}
 	if sort_field_name_expr(expr) {
-		clause.name = p.source[expr.range.start:expr.range.end]
+		clause.name = parser_clone_range_text(p, expr.range)
 		clause.range = expr.range
 	}
 	return clause
@@ -3627,7 +3627,8 @@ parse_dataset_tail :: proc(p: ^Parser, body_start: int, stmt: ^ast.Dataset_Stmt)
 		if allow_keyword(p, "ENCODING") {
 			tok := current_token(p)
 			if tok.kind == .Ident || tok.kind == .String {
-				stmt.encoding = tokenizer.token_lexeme(bump_token(p), p.source)
+				tok = bump_token(p)
+				stmt.encoding = parser_clone_token_text(p, tok) if tok.kind == .String else parser_intern_token_name(p, tok)
 			}
 			continue
 		}
@@ -3718,7 +3719,7 @@ parse_report_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 			if tok.kind == .Ident || tok.kind == .Number || tok.kind == .String {
 				bump_token(p)
 				stmt.has_message_id = true
-				stmt.message_id = tokenizer.token_lexeme(tok, p.source)
+				stmt.message_id = parser_clone_token_text(p, tok) if tok.kind == .String else parser_intern_token_name(p, tok)
 				stmt.message_id_range = tok.range
 			}
 			continue

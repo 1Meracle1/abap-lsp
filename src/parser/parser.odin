@@ -44,6 +44,7 @@ Parser :: struct {
 	expr_extra_stop_keywords: []string,
 	open_sql_expr: bool,
 	errors:         [dynamic]Parse_Error,
+	names:          map[string]string,
 	allocator:      mem.Allocator,
 	root:           ^ast.File,
 }
@@ -71,6 +72,7 @@ parse_with_diagnostic_policy :: proc(
 		lex_errors     = lexed.errors,
 		previous_index = -1,
 		errors         = make([dynamic]Parse_Error, 0, len(lexed.errors) + 4, allocator),
+		names          = make(map[string]string, 128, allocator),
 		allocator      = allocator,
 	}
 
@@ -105,8 +107,33 @@ init_parser :: proc(source: string, path: string, allocator: mem.Allocator) -> P
 		lex_errors = lexed.errors,
 		previous_index = -1,
 		errors = make([dynamic]Parse_Error, 0, len(lexed.errors) + 4, allocator),
+		names = make(map[string]string, 128, allocator),
 		allocator = allocator,
 	}
+}
+
+parser_clone_token_text :: proc(p: ^Parser, token: Token) -> string {
+	return strings.clone(tokenizer.token_lexeme(token, p.source), p.allocator)
+}
+
+parser_clone_range_text :: proc(p: ^Parser, range: Range) -> string {
+	return strings.clone(p.source[range.start:range.end], p.allocator)
+}
+
+parser_intern_name :: proc(p: ^Parser, name: string) -> string {
+	if name == "" {
+		return ""
+	}
+	if interned, ok := p.names[name]; ok {
+		return interned
+	}
+	interned := strings.clone(name, p.allocator)
+	p.names[interned] = interned
+	return interned
+}
+
+parser_intern_token_name :: proc(p: ^Parser, token: Token) -> string {
+	return parser_intern_name(p, tokenizer.token_lexeme(token, p.source))
 }
 
 parse_top_level :: proc(p: ^Parser) {
@@ -441,19 +468,21 @@ qualified_ident_parts_at :: proc(
 	   p.tokens[index + 2].kind == .Ident {
 		member := p.tokens[index + 2]
 		out := strings.builder_make(p.allocator)
-		strings.write_string(&out, tokenizer.token_lexeme(first, p.source))
+		first_text := parser_intern_token_name(p, first)
+		member_text := parser_intern_token_name(p, member)
+		strings.write_string(&out, first_text)
 		strings.write_byte(&out, '~')
-		strings.write_string(&out, tokenizer.token_lexeme(member, p.source))
-		return strings.to_string(out),
+		strings.write_string(&out, member_text)
+		return parser_intern_name(p, strings.to_string(out)),
 			tokenizer.text_range(first.range.start, member.range.end),
-			tokenizer.token_lexeme(first, p.source),
+			first_text,
 			first.range,
-			tokenizer.token_lexeme(member, p.source),
+			member_text,
 			member.range,
 			index + 3,
 			true
 	}
-	text := tokenizer.token_lexeme(first, p.source)
+	text := parser_intern_token_name(p, first)
 	return text, first.range, "", {}, text, first.range, index + 1, true
 }
 
@@ -483,7 +512,7 @@ first_qualified_name_parts_until_period :: proc(
 			return part_name, part_range, part_qualifier, part_qualifier_range, part_member, part_member_range, part_ok
 		}
 		if tok.kind == .String || tok.kind == .Number {
-			text := tokenizer.token_lexeme(tok, p.source)
+			text := parser_clone_token_text(p, tok) if tok.kind == .String else parser_intern_token_name(p, tok)
 			return text, tok.range, "", {}, text, tok.range, true
 		}
 	}
@@ -595,13 +624,13 @@ attach_stmt_trivia :: proc(p: ^Parser, stmt: ^ast.Stmt, mark: Stmt_Mark) {
 			if cap(stmt.leading_comments) == 0 {
 				stmt.leading_comments = make([dynamic]string, 0, 1, p.allocator)
 			}
-			append(&stmt.leading_comments, strings.clone(p.source[piece.range.start:piece.range.end], p.allocator))
+			append(&stmt.leading_comments, parser_clone_range_text(p, piece.range))
 		}
 	}
 	last := previous_token(p)
 	for piece in p.trivia[last.trailing_trivia.start:last.trailing_trivia.end] {
 		if piece.kind == .Comment || piece.kind == .Pragma {
-			stmt.trailing_comment = strings.clone(p.source[piece.range.start:piece.range.end], p.allocator)
+			stmt.trailing_comment = parser_clone_range_text(p, piece.range)
 			return
 		}
 	}
@@ -1330,13 +1359,13 @@ type_ref_expr_from_tokens :: proc(
 	last := p.tokens[end - 1]
 	expr := ast.new(ast.Type_Ref_Expr, tokenizer.text_range(first.range.start, last.range.end), p.allocator)
 	expr.is_ref = type_ref_starts_with_ref_to(p, start, end)
-	expr.text = strings.clone(p.source[expr.range.start:expr.range.end], p.allocator)
+	expr.text = parser_clone_range_text(p, expr.range)
 	path_end := last.range.end
 	if name_end >= 0 {
 		path_end = name_end
 	}
 	if set_name {
-		expr.name = strings.clone(p.source[first.range.start:path_end], p.allocator)
+		expr.name = parser_clone_range_text(p, tokenizer.text_range(first.range.start, path_end))
 	}
 	if fill_parts {
 		type_ref_fill_base_path(p, expr, start, end, path_end)
@@ -1381,7 +1410,7 @@ type_ref_fill_base_path :: proc(
 				append(
 					&expr.path,
 					ast.Type_Ref_Path_Segment {
-						name = tokenizer.token_lexeme(field, p.source),
+						name = parser_intern_token_name(p, field),
 						range = field.range,
 						selector = selector_op(tok.kind),
 						selector_range = tok.range,
@@ -1409,7 +1438,7 @@ type_ref_fill_base_path :: proc(
 	if path_start < end && p.tokens[path_start].range.start < base_end {
 		first := p.tokens[path_start]
 		expr.base_range = tokenizer.text_range(first.range.start, base_end)
-		expr.base_name = strings.clone(p.source[expr.base_range.start:expr.base_range.end], p.allocator)
+		expr.base_name = parser_intern_name(p, p.source[expr.base_range.start:expr.base_range.end])
 	}
 }
 

@@ -325,13 +325,13 @@ plain_current_expr :: proc(p: ^Parser) -> ^ast.Expr {
 	if tok.kind == .Number || tok.kind == .String {
 		bump_token(p)
 		expr := ast.new(ast.Literal_Expr, tok.range, p.allocator)
-		expr.value = tokenizer.token_lexeme(tok, p.source)
+		expr.value = parser_clone_token_text(p, tok)
 		return expr
 	}
 	if tok.kind == .Ident {
 		bump_token(p)
 		expr := ast.new(ast.Ident_Expr, tok.range, p.allocator)
-		expr.name = tokenizer.token_lexeme(tok, p.source)
+		expr.name = parser_intern_token_name(p, tok)
 		return expr
 	}
 	return nil
@@ -615,7 +615,7 @@ populate_raw_operand_fact_lists :: proc(
 		append(
 			refs,
 			ast.Raw_Operand_Ref {
-				name = text,
+				name = parser_intern_name(p, text),
 				range = tok.range,
 				call_like = i + 1 < end && p.tokens[i + 1].kind == .LParen,
 			},
@@ -641,7 +641,7 @@ raw_operand_inline_decl_at :: proc(
 		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Data,
-				name = tokenizer.token_lexeme(name, p.source),
+				name = parser_intern_token_name(p, name),
 				range = name.range,
 			},
 			index + 4,
@@ -658,7 +658,7 @@ raw_operand_inline_decl_at :: proc(
 		validate_abap_name_length(p, name)
 		return ast.Raw_Operand_Inline_Decl {
 				kind = .Field_Symbol,
-				name = tokenizer.token_lexeme(name, p.source),
+				name = parser_intern_token_name(p, name),
 				range = name.range,
 			},
 			index + 6,
@@ -716,7 +716,7 @@ raw_operand_selector_ref :: proc(
 		append(
 			&path,
 			ast.Raw_Operand_Path_Segment {
-				name = tokenizer.token_lexeme(field, p.source),
+				name = parser_intern_token_name(p, field),
 				range = field.range,
 				selector = selector_op(op.kind),
 			},
@@ -727,7 +727,7 @@ raw_operand_selector_ref :: proc(
 		return {}, start, false
 	}
 	return ast.Raw_Operand_Ref {
-			name = tokenizer.token_lexeme(base, p.source),
+			name = parser_intern_token_name(p, base),
 			range = base.range,
 			type_base = type_base,
 			path = path,
@@ -758,7 +758,7 @@ raw_operand_skip_keyword :: proc(text: string) -> bool {
 }
 
 source_range_text :: proc(p: ^Parser, range: tokenizer.Range) -> string {
-	return strings.clone(p.source[range.start:range.end], p.allocator)
+	return parser_clone_range_text(p, range)
 }
 
 flow_stmt_starts :: proc(p: ^Parser) -> bool {
@@ -1102,11 +1102,11 @@ parse_data_cluster_database_medium :: proc(
 	medium: ^ast.Data_Cluster_Medium_Clause,
 ) {
 	dbtab := expect_token(p, .Ident)
-	medium.dbtab = tokenizer.token_lexeme(dbtab, p.source)
+	medium.dbtab = parser_intern_token_name(p, dbtab)
 	medium.dbtab_range = dbtab.range
 	expect_token(p, .LParen)
 	area := expect_token(p, .Ident)
-	medium.area = tokenizer.token_lexeme(area, p.source)
+	medium.area = parser_intern_token_name(p, area)
 	medium.area_range = area.range
 	expect_token(p, .RParen)
 	for !simple_stmt_done(p, body_start) {
@@ -1136,7 +1136,7 @@ parse_data_cluster_parameter :: proc(
 	if current_token(p).kind == .Ident && next_token_kind(p, 1) == .Eq {
 		name := bump_token(p)
 		expect_token(p, .Eq)
-		parameter.name = tokenizer.token_lexeme(name, p.source)
+		parameter.name = parser_intern_token_name(p, name)
 		parameter.name_range = name.range
 		parameter.value = required_simple_expr(p, body_start, stop)
 		return parameter, true
@@ -1144,7 +1144,7 @@ parse_data_cluster_parameter :: proc(
 	if current_token(p).kind == .Ident && at_keyword_index(p, p.index + 1, parameter_keyword) {
 		name := bump_token(p)
 		expect_keyword(p, parameter_keyword)
-		parameter.name = tokenizer.token_lexeme(name, p.source)
+		parameter.name = parser_intern_token_name(p, name)
 		parameter.name_range = name.range
 		parameter.value = required_simple_expr(p, body_start, stop)
 		return parameter, true
@@ -1918,9 +1918,9 @@ parse_macro_def_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 		return nil
 	}
 	stmt := ast.new(ast.Macro_Def_Stmt, tokenizer.text_range(start.range.start, period.range.end), p.allocator)
-	stmt.name = tokenizer.token_lexeme(name, p.source) if name.kind != .Eof else ""
+	stmt.name = parser_intern_token_name(p, name) if name.kind != .Eof else ""
 	if body_start < body_end {
-		stmt.body = strings.clone(p.source[body_start:body_end], p.allocator)
+		stmt.body = parser_clone_range_text(p, tokenizer.text_range(body_start, body_end))
 	}
 	return stmt
 }
@@ -1938,7 +1938,7 @@ parse_macro_call_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 	start := bump_token(p)
 	body_start := p.index
 	stmt := ast.new(ast.Macro_Call_Stmt, start.range, p.allocator)
-	stmt.name = tokenizer.token_lexeme(start, p.source)
+	stmt.name = parser_intern_token_name(p, start)
 	stmt.args = parse_generic_simple_operands(p, body_start, []string{})
 	stmt.range = simple_stmt_range(p, start)
 	return stmt
@@ -2071,7 +2071,7 @@ selection_screen_read_name :: proc(
 		return false
 	}
 	validate_token_name_length(p, tok, max_length, limit_message)
-	name^ = tokenizer.token_lexeme(tok, p.source)
+	name^ = parser_intern_token_name(p, tok)
 	range^ = tok.range
 	bump_token(p)
 	return true
@@ -2202,7 +2202,7 @@ parse_oop_alias_clause :: proc(p: ^Parser) -> (ast.Oop_Alias_Clause, bool) {
 		return {}, false
 	}
 	return ast.Oop_Alias_Clause {
-			name                   = tokenizer.token_lexeme(name, p.source),
+			name                   = parser_intern_token_name(p, name),
 			range                  = name.range,
 			target                 = target,
 			target_interface_name  = target.base_name,
@@ -2389,7 +2389,7 @@ parse_oop_event_handler_clause :: proc(p: ^Parser) -> (ast.Oop_Event_Handler_Cla
 		return {}, false
 	}
 	return ast.Oop_Event_Handler_Clause {
-			event_name = tokenizer.token_lexeme(event, p.source),
+			event_name = parser_intern_token_name(p, event),
 			event_range = event.range,
 			source_type = source_type,
 		},
@@ -2485,14 +2485,14 @@ parse_oop_parameter_name :: proc(p: ^Parser) -> (
 		}
 		bump_token(p)
 		expect_token(p, .RParen)
-		return tokenizer.token_lexeme(tok, p.source), tok.range, passing, true
+		return parser_intern_token_name(p, tok), tok.range, passing, true
 	}
 	tok := current_token(p)
 	if tok.kind != .Ident {
 		return "", tok.range, .Direct, false
 	}
 	bump_token(p)
-	return tokenizer.token_lexeme(tok, p.source), tok.range, .Direct, true
+	return parser_intern_token_name(p, tok), tok.range, .Direct, true
 }
 
 parse_oop_parameter_type_clause :: proc(p: ^Parser) -> ^ast.Data_Type_Clause {
@@ -4647,12 +4647,12 @@ append_call_transformation_arg :: proc(
 	if call_transformation_named_arg_starts(p, p.index) {
 		tok := bump_token(p)
 		_ = expect_token(p, .Eq)
-		name = tokenizer.token_lexeme(tok, p.source)
+		name = parser_intern_token_name(p, tok)
 		name_range = tok.range
 		has_eq = true
 	} else if (kind == .Source || kind == .Result) && call_transformation_mode_token(p, current_token(p)) {
 		tok := bump_token(p)
-		name = tokenizer.token_lexeme(tok, p.source)
+		name = parser_intern_token_name(p, tok)
 		name_range = tok.range
 	}
 	value_start := p.index
@@ -4898,9 +4898,9 @@ parse_call_stmt_arg_name :: proc(p: ^Parser) -> (Token, string, tokenizer.Range)
 	if tok.kind == .Hash && current_token(p).kind == .Number {
 		number := bump_token(p)
 		name_range := tokenizer.text_range(tok.range.start, number.range.end)
-		return tok, p.source[name_range.start:name_range.end], name_range
+		return tok, parser_clone_range_text(p, name_range), name_range
 	}
-	return tok, tokenizer.token_lexeme(tok, p.source), tok.range
+	return tok, parser_intern_token_name(p, tok), tok.range
 }
 
 call_stmt_arg_value_end :: proc(p: ^Parser, start: int) -> int {
@@ -5057,7 +5057,7 @@ parse_submit_stmt :: proc(p: ^Parser) -> ^ast.Stmt {
 				bump_token(p)
 				option := ast.Submit_Option_Clause {
 					kind = .With_Parameter,
-					name = tokenizer.token_lexeme(name, p.source),
+					name = parser_intern_token_name(p, name),
 				}
 				if current_token(p).kind == .Eq || current_token(p).kind == .Ident {
 					op := bump_token(p)
@@ -5185,7 +5185,7 @@ message_head_compact_class :: proc(p: ^Parser, head: ^ast.Message_Head_Clause, s
 		if p.tokens[i].kind == .LParen &&
 		   name.kind == .Ident &&
 		   p.tokens[i + 2].kind == .RParen {
-			head.compact_class_name = tokenizer.token_lexeme(name, p.source)
+			head.compact_class_name = parser_intern_token_name(p, name)
 			head.compact_class_range = name.range
 			head.has_compact_class = true
 			return
