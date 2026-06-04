@@ -3,7 +3,6 @@ package abap_frontend_workspace
 import adt "src:adt"
 import dep_store "src:dependency_store"
 import execution "src:execution"
-import lints "src:lints"
 import analyze "src:semantic/analyze"
 import remote_deps "src:semantic/remote_dependencies"
 
@@ -168,7 +167,7 @@ analyze_workspace :: proc(
 	} else {
 		result = analyze_workspace_files(workspace, include_paths, pool, options, allocator)
 	}
-	finish_workspace_analysis_result(&result, pool, options, allocator)
+	finish_workspace_analysis_result(&result, options)
 	return result
 }
 
@@ -188,7 +187,7 @@ analyze_path :: proc(
 
 	if !workspace.has_manifest {
 		result := analyze_standalone_path(workspace, target_abs, include_paths, pool, options, allocator)
-		finish_workspace_analysis_result(&result, pool, options, allocator)
+		finish_workspace_analysis_result(&result, options)
 		return result
 	}
 
@@ -205,7 +204,7 @@ analyze_path :: proc(
 			options,
 			allocator,
 		)
-		finish_workspace_analysis_result(&result, pool, options, allocator)
+		finish_workspace_analysis_result(&result, options)
 		return result
 	}
 	if selected, ok := manifest_member_owner_by_key(&workspace.manifest, target_key, allocator);
@@ -219,7 +218,7 @@ analyze_path :: proc(
 			options,
 			allocator,
 		)
-		finish_workspace_analysis_result(&result, pool, options, allocator)
+		finish_workspace_analysis_result(&result, options)
 		return result
 	}
 
@@ -244,26 +243,23 @@ analyze_path :: proc(
 			options,
 			allocator,
 		)
-		finish_workspace_analysis_result(&result, pool, options, allocator)
+		finish_workspace_analysis_result(&result, options)
 		return result
 	}
 
 	result := analyze_standalone_path(workspace, target_abs, include_paths, pool, options, allocator)
-	finish_workspace_analysis_result(&result, pool, options, allocator)
+	finish_workspace_analysis_result(&result, options)
 	return result
 }
 
 @(private)
 finish_workspace_analysis_result :: proc(
 	result: ^Analysis_Result,
-	pool: ^execution.Pool,
 	options: Options,
-	allocator: mem.Allocator,
 ) {
 	if !result.ok {
 		return
 	}
-	lints.run_project_async(&result.project, pool, allocator)
 	if !(.Enable_Dependency_Diagnostics in options.flags) {
 		analyze.filter_dependency_diagnostics(&result.project)
 	}
