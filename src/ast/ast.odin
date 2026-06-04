@@ -4,11 +4,36 @@ import "src:tokenizer"
 
 import "core:mem"
 
+Ast_Trivia_Kind :: enum {
+	Comment,
+	Pragma,
+}
+
+Ast_Trivia :: struct {
+	kind:  Ast_Trivia_Kind,
+	range: tokenizer.Range,
+	text:  string,
+}
+
+Ast_Trivia_Attachment :: enum {
+	File_Leading,
+	File_Trailing,
+	Node_Leading,
+	Node_Trailing,
+	Detached,
+}
+
+Ast_Trivia_Record :: struct {
+	attachment: Ast_Trivia_Attachment,
+	node_range: tokenizer.Range,
+	trivia:     Ast_Trivia,
+}
+
 Node :: struct {
 	range:            tokenizer.Range,
 	derived:          Any_Node,
-	leading_comments: [dynamic]string,
-	trailing_comment: string,
+	leading_trivia:   [dynamic]Ast_Trivia,
+	trailing_trivia:  [dynamic]Ast_Trivia,
 }
 
 Expr :: struct {
@@ -26,9 +51,10 @@ Decl :: struct {
 }
 
 File :: struct {
-	using node: Node,
-	stmts:      [dynamic]^Stmt,
-	allocator:  mem.Allocator,
+	using node:      Node,
+	stmts:           [dynamic]^Stmt,
+	detached_trivia: [dynamic]Ast_Trivia_Record,
+	allocator:       mem.Allocator,
 }
 
 Binary_Op :: enum {

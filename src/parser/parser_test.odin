@@ -128,16 +128,98 @@ Node_Counts :: struct {
 
 @(test)
 comments_attach_to_statement_nodes_for_printing :: proc(t: ^testing.T) {
-	source := `" keep this comment
-DATA lv TYPE i. " inline comment`
+	source := `DATA first TYPE i.
+" keep this comment
+DATA second TYPE i. " inline comment`
 	parsed := parse(source, "comments.abap", context.allocator)
 
 	testing.expect_value(t, len(parsed.errors), 0)
-	stmt := parsed.root.stmts[0]
-	testing.expect_value(t, len(stmt.leading_comments), 1)
-	testing.expect_value(t, stmt.leading_comments[0], `" keep this comment`)
-	testing.expect_value(t, stmt.trailing_comment, `" inline comment`)
+	stmt := parsed.root.stmts[1]
+	testing.expect_value(t, len(stmt.leading_trivia), 1)
+	testing.expect_value(t, stmt.leading_trivia[0].kind, ast.Ast_Trivia_Kind.Comment)
+	testing.expect_value(t, stmt.leading_trivia[0].text, `" keep this comment`)
+	testing.expect_value(t, len(stmt.trailing_trivia), 1)
+	testing.expect_value(t, stmt.trailing_trivia[0].kind, ast.Ast_Trivia_Kind.Comment)
+	testing.expect_value(t, stmt.trailing_trivia[0].text, `" inline comment`)
 	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+file_header_comments_attach_to_file_trivia :: proc(t: ^testing.T) {
+	source := `" file header
+DATA lv TYPE i.`
+	parsed := parse(source, "file_header_comment.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.leading_trivia), 1)
+	testing.expect_value(t, parsed.root.leading_trivia[0].kind, ast.Ast_Trivia_Kind.Comment)
+	testing.expect_value(t, parsed.root.leading_trivia[0].text, `" file header`)
+	testing.expect_value(t, len(parsed.root.stmts[0].leading_trivia), 0)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+statement_pragmas_attach_as_trailing_trivia_and_print_before_period :: proc(t: ^testing.T) {
+	source := `sy-tcode = 'SE41' ##WRITE_OK.`
+	parsed := parse(source, "statement_pragma.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	stmt := parsed.root.stmts[0]
+	testing.expect_value(t, len(stmt.trailing_trivia), 1)
+	testing.expect_value(t, stmt.trailing_trivia[0].kind, ast.Ast_Trivia_Kind.Pragma)
+	testing.expect_value(t, stmt.trailing_trivia[0].text, "##WRITE_OK")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+loop_header_pragmas_attach_as_trailing_trivia :: proc(t: ^testing.T) {
+	source := `LOOP AT lt_rows ASSIGNING <row> WHERE id IS INITIAL ##PRIMKEY[SEC_KEY].
+ENDLOOP.`
+	parsed := parse(source, "loop_header_pragma_trivia.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	loop := parsed.root.stmts[0]
+	testing.expect_value(t, len(loop.trailing_trivia), 1)
+	testing.expect_value(t, loop.trailing_trivia[0].kind, ast.Ast_Trivia_Kind.Pragma)
+	testing.expect_value(t, loop.trailing_trivia[0].text, "##PRIMKEY[SEC_KEY]")
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+final_detached_comments_are_file_trivia :: proc(t: ^testing.T) {
+	source := `DATA lv TYPE i.
+" final comment`
+	parsed := parse(source, "final_comment.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.detached_trivia), 1)
+	testing.expect_value(t, parsed.root.detached_trivia[0].attachment, ast.Ast_Trivia_Attachment.File_Trailing)
+	testing.expect_value(t, parsed.root.detached_trivia[0].trivia.kind, ast.Ast_Trivia_Kind.Comment)
+	testing.expect_value(t, parsed.root.detached_trivia[0].trivia.text, `" final comment`)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+}
+
+@(test)
+blank_line_separated_pragmas_are_detached_file_trivia :: proc(t: ^testing.T) {
+	source := `DATA first TYPE i.
+##DETACHED
+
+DATA second TYPE i.`
+	parsed := parse(source, "detached_pragma.abap", context.allocator)
+
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, len(parsed.root.detached_trivia), 1)
+	testing.expect_value(t, parsed.root.detached_trivia[0].attachment, ast.Ast_Trivia_Attachment.Detached)
+	testing.expect_value(t, parsed.root.detached_trivia[0].trivia.kind, ast.Ast_Trivia_Kind.Pragma)
+	testing.expect_value(t, parsed.root.detached_trivia[0].trivia.text, "##DETACHED")
+	testing.expect_value(t, len(parsed.root.stmts[1].leading_trivia), 0)
+	testing.expect_value(
+		t,
+		ast.print_node(parsed.root, context.allocator),
+		`DATA first TYPE i.
+##DETACHED
+DATA second TYPE i.`,
+	)
 }
 
 count_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
@@ -875,8 +957,8 @@ DATA lv_date LIKE sy-datum.`
 	literal_decl := root.stmts[12].derived_stmt.(^ast.Data_Inline_Decl)
 	type_decl := root.stmts[13].derived_stmt.(^ast.Data_Decl)
 
-	testing.expect_value(t, parameters.leading_comments[0], `" keep this comment`)
-	testing.expect_value(t, parameters.trailing_comment, `" inline comment`)
+	testing.expect_value(t, root.leading_trivia[0].text, `" keep this comment`)
+	testing.expect_value(t, parameters.trailing_trivia[0].text, `" inline comment`)
 	testing.expect_value(t, parameters.text, "PARAMETERS p_text TYPE string.")
 	testing.expect_value(t, parameters.parameters[0].name, "p_text")
 	testing.expect_value(t, selection_screen.text, "SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.")

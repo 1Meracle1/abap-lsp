@@ -51,6 +51,7 @@ clone_node :: proc(node: ^Node, allocator: mem.Allocator) -> ^Node {
 		r := clone_shallow(n, allocator)
 		r.allocator = allocator
 		r.stmts = clone_stmt_list(n.stmts, allocator)
+		r.detached_trivia = clone_ast_trivia_records(n.detached_trivia, allocator)
 		return r
 	case ^Bad_Expr:
 		return clone_shallow(n, allocator)
@@ -864,8 +865,11 @@ clone_shallow :: proc(src: ^$T, allocator: mem.Allocator) -> ^T {
 	dst^ = src^
 	set_derived(dst)
 	clone_string_fields(dst, src, allocator)
-	when intrinsics.type_has_field(T, "leading_comments") {
-		dst.leading_comments = clone_string_list(src.leading_comments, allocator)
+	when intrinsics.type_has_field(T, "leading_trivia") {
+		dst.leading_trivia = clone_ast_trivia_list(src.leading_trivia, allocator)
+	}
+	when intrinsics.type_has_field(T, "trailing_trivia") {
+		dst.trailing_trivia = clone_ast_trivia_list(src.trailing_trivia, allocator)
 	}
 	return dst
 }
@@ -1046,11 +1050,6 @@ clone_string_fields :: proc(dst, src: ^$T, allocator: mem.Allocator) {
 			dst.title_name = strings.clone(src.title_name, allocator)
 		}
 	}
-	when intrinsics.type_has_field(T, "trailing_comment") {
-		when intrinsics.type_is_string(intrinsics.type_field_type(T, "trailing_comment")) {
-			dst.trailing_comment = strings.clone(src.trailing_comment, allocator)
-		}
-	}
 	when intrinsics.type_has_field(T, "using_key") {
 		when intrinsics.type_is_string(intrinsics.type_field_type(T, "using_key")) {
 			dst.using_key = strings.clone(src.using_key, allocator)
@@ -1088,6 +1087,36 @@ clone_string_list :: proc(list: [dynamic]string, allocator: mem.Allocator) -> [d
 	res := make([dynamic]string, 0, len(list), allocator)
 	for x in list {
 		append(&res, strings.clone(x, allocator))
+	}
+	return res
+}
+
+clone_ast_trivia :: proc(trivia: Ast_Trivia, allocator: mem.Allocator) -> Ast_Trivia {
+	res := trivia
+	res.text = strings.clone(trivia.text, allocator)
+	return res
+}
+
+clone_ast_trivia_list :: proc(
+	list: [dynamic]Ast_Trivia,
+	allocator: mem.Allocator,
+) -> [dynamic]Ast_Trivia {
+	res := make([dynamic]Ast_Trivia, 0, len(list), allocator)
+	for trivia in list {
+		append(&res, clone_ast_trivia(trivia, allocator))
+	}
+	return res
+}
+
+clone_ast_trivia_records :: proc(
+	list: [dynamic]Ast_Trivia_Record,
+	allocator: mem.Allocator,
+) -> [dynamic]Ast_Trivia_Record {
+	res := make([dynamic]Ast_Trivia_Record, 0, len(list), allocator)
+	for record in list {
+		next := record
+		next.trivia = clone_ast_trivia(record.trivia, allocator)
+		append(&res, next)
 	}
 	return res
 }

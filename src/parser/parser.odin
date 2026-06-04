@@ -84,6 +84,7 @@ parse_with_diagnostic_policy :: proc(
 	parser.root.allocator = allocator
 	parser.root.stmts = make([dynamic]^ast.Stmt, 0, 8, allocator)
 	parse_top_level(&parser)
+	attach_file_trailing_trivia(&parser)
 	if policy == .Include_Fragment {
 		filtered := make([dynamic]Parse_Error, 0, len(parser.errors), allocator)
 		for e in parser.errors {
@@ -619,21 +620,200 @@ attach_stmt_trivia :: proc(p: ^Parser, stmt: ^ast.Stmt, mark: Stmt_Mark) {
 		return
 	}
 	first := p.tokens[mark.index]
-	for piece in p.trivia[first.leading_trivia.start:first.leading_trivia.end] {
-		if piece.kind == .Comment || piece.kind == .Pragma {
-			if cap(stmt.leading_comments) == 0 {
-				stmt.leading_comments = make([dynamic]string, 0, 1, p.allocator)
+	attach_leading_stmt_trivia(p, stmt, first)
+	attach_header_stmt_trivia(p, stmt, mark)
+	last := previous_token(p)
+	if last.kind == .Period && last.index > 0 {
+		before_period := p.tokens[last.index - 1]
+		attach_trailing_trivia_span(p, stmt, before_period.trailing_trivia, true)
+	}
+	attach_trailing_trivia_span(p, stmt, last.trailing_trivia, false)
+}
+
+attach_leading_stmt_trivia :: proc(p: ^Parser, stmt: ^ast.Stmt, first: Token) {
+	pieces := p.trivia[first.leading_trivia.start:first.leading_trivia.end]
+	node_start := leading_trivia_node_start(pieces)
+	if first.index == first_source_token_index(p) {
+		node_start = len(pieces)
+	}
+
+	for piece, i in pieces {
+		trivia, ok := parser_ast_trivia(p, piece)
+		if !ok {
+			continue
+		}
+		if i < node_start {
+			if first.index == first_source_token_index(p) {
+				append_file_leading_trivia(p, trivia)
+			} else {
+				append_file_detached_trivia(p, .Detached, stmt.range, trivia)
 			}
-			append(&stmt.leading_comments, parser_clone_range_text(p, piece.range))
+			continue
+		}
+		append_node_leading_trivia(p, stmt, trivia)
+	}
+}
+
+leading_trivia_node_start :: proc(pieces: []Trivia_Piece) -> int {
+	node_start := 0
+	newline_open := false
+	for piece, i in pieces {
+		#partial switch piece.kind {
+		case .Newline:
+			if newline_open {
+				node_start = i + 1
+			}
+			newline_open = true
+		case .Whitespace:
+		case:
+			newline_open = false
 		}
 	}
-	last := previous_token(p)
-	for piece in p.trivia[last.trailing_trivia.start:last.trailing_trivia.end] {
-		if piece.kind == .Comment || piece.kind == .Pragma {
-			stmt.trailing_comment = parser_clone_range_text(p, piece.range)
+	return node_start
+}
+
+first_source_token_index :: proc(p: ^Parser) -> int {
+	for token in p.tokens {
+		if token.kind != .Eof {
+			return token.index
+		}
+	}
+	return -1
+}
+
+attach_header_stmt_trivia :: proc(p: ^Parser, stmt: ^ast.Stmt, mark: Stmt_Mark) {
+	header_range, ok := stmt_header_range(stmt)
+	if !ok || header_range.end >= stmt.range.end {
+		return
+	}
+	for i in mark.index ..< len(p.tokens) {
+		token := p.tokens[i]
+		if token.kind == .Eof || token.range.start >= header_range.end {
 			return
 		}
+		if token.range.end > header_range.end {
+			continue
+		}
+		attach_trailing_trivia_span(p, stmt, token.trailing_trivia, true)
 	}
+}
+
+stmt_header_range :: proc(stmt: ^ast.Stmt) -> (Range, bool) {
+	#partial switch n in stmt.derived_stmt {
+	case ^ast.Loop_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Class_Decl:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Interface_Decl:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Method_Decl:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Form_Decl:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Function_Decl:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Module_Decl:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Event_Block_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Enhancement_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Enhancement_Section_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Test_Seam_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
+	case ^ast.Test_Injection_Stmt:
+		return n.header_range, n.header_range.end > n.header_range.start
+	}
+	return {}, false
+}
+
+attach_trailing_trivia_span :: proc(
+	p: ^Parser,
+	stmt: ^ast.Stmt,
+	span: tokenizer.Trivia_Span,
+	pragmas_only: bool,
+) {
+	for piece in p.trivia[span.start:span.end] {
+		if pragmas_only && piece.kind != .Pragma {
+			continue
+		}
+		trivia, ok := parser_ast_trivia(p, piece)
+		if !ok {
+			continue
+		}
+		append_node_trailing_trivia(p, stmt, trivia)
+	}
+}
+
+attach_file_trailing_trivia :: proc(p: ^Parser) {
+	if len(p.tokens) == 0 {
+		return
+	}
+	eof := p.tokens[len(p.tokens) - 1]
+	if eof.kind != .Eof {
+		return
+	}
+	for piece in p.trivia[eof.leading_trivia.start:eof.leading_trivia.end] {
+		trivia, ok := parser_ast_trivia(p, piece)
+		if !ok {
+			continue
+		}
+		append_file_detached_trivia(p, .File_Trailing, p.root.range, trivia)
+	}
+}
+
+parser_ast_trivia :: proc(p: ^Parser, piece: Trivia_Piece) -> (ast.Ast_Trivia, bool) {
+	kind: ast.Ast_Trivia_Kind
+	#partial switch piece.kind {
+	case .Comment:
+		kind = .Comment
+	case .Pragma:
+		kind = .Pragma
+	case:
+		return {}, false
+	}
+	return ast.Ast_Trivia {
+		kind  = kind,
+		range = piece.range,
+		text  = parser_clone_range_text(p, piece.range),
+	}, true
+}
+
+append_file_leading_trivia :: proc(p: ^Parser, trivia: ast.Ast_Trivia) {
+	if cap(p.root.leading_trivia) == 0 {
+		p.root.leading_trivia = make([dynamic]ast.Ast_Trivia, 0, 1, p.allocator)
+	}
+	append(&p.root.leading_trivia, trivia)
+}
+
+append_node_leading_trivia :: proc(p: ^Parser, node: ^ast.Stmt, trivia: ast.Ast_Trivia) {
+	if cap(node.leading_trivia) == 0 {
+		node.leading_trivia = make([dynamic]ast.Ast_Trivia, 0, 1, p.allocator)
+	}
+	append(&node.leading_trivia, trivia)
+}
+
+append_node_trailing_trivia :: proc(p: ^Parser, node: ^ast.Stmt, trivia: ast.Ast_Trivia) {
+	if cap(node.trailing_trivia) == 0 {
+		node.trailing_trivia = make([dynamic]ast.Ast_Trivia, 0, 1, p.allocator)
+	}
+	append(&node.trailing_trivia, trivia)
+}
+
+append_file_detached_trivia :: proc(
+	p: ^Parser,
+	attachment: ast.Ast_Trivia_Attachment,
+	node_range: Range,
+	trivia: ast.Ast_Trivia,
+) {
+	if cap(p.root.detached_trivia) == 0 {
+		p.root.detached_trivia = make([dynamic]ast.Ast_Trivia_Record, 0, 1, p.allocator)
+	}
+	append(
+		&p.root.detached_trivia,
+		ast.Ast_Trivia_Record{attachment = attachment, node_range = node_range, trivia = trivia},
+	)
 }
 
 build_invalid_statement :: proc(p: ^Parser, mark: Stmt_Mark) -> ^ast.Stmt {

@@ -1,5 +1,7 @@
 package abap_frontend_ast
 
+import "src:tokenizer"
+
 import "core:mem"
 import "core:strings"
 
@@ -45,9 +47,9 @@ emit_newline :: proc(p: ^Printer) {
 	}
 }
 
-emit_leading_comments :: proc(p: ^Printer, node: ^Node) {
-	for comment in node.leading_comments {
-		emit(p, comment)
+emit_leading_trivia :: proc(p: ^Printer, node: ^Node) {
+	for trivia in node.leading_trivia {
+		emit(p, trivia.text)
 		emit_newline(p)
 	}
 }
@@ -56,7 +58,7 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	if node == nil {
 		return
 	}
-	emit_leading_comments(p, node)
+	emit_leading_trivia(p, node)
 	switch n in node.derived {
 	case ^File:
 		emit_file(p, n)
@@ -726,19 +728,126 @@ emit_node :: proc(p: ^Printer, node: ^Node) {
 	case ^Invalid_Stmt:
 		emit(p, "?")
 	}
-	if node.trailing_comment != "" {
-		emit_space(p)
-		emit(p, node.trailing_comment)
-	}
+	emit_trailing_trivia(p, node)
 }
 
 emit_file :: proc(p: ^Printer, file: ^File) {
-	for stmt, i in file.stmts {
-		if i > 0 {
+	detached_index := 0
+	wrote_any := false
+	for stmt in file.stmts {
+		for detached_index < len(file.detached_trivia) &&
+		    file.detached_trivia[detached_index].trivia.range.start < stmt.range.start {
+			if wrote_any {
+				emit_newline(p)
+			}
+			emit(p, file.detached_trivia[detached_index].trivia.text)
+			wrote_any = true
+			detached_index += 1
+		}
+		if wrote_any {
 			emit_newline(p)
 		}
 		emit_node(p, stmt)
+		wrote_any = true
 	}
+	for detached_index < len(file.detached_trivia) {
+		if wrote_any {
+			emit_newline(p)
+		}
+		emit(p, file.detached_trivia[detached_index].trivia.text)
+		wrote_any = true
+		detached_index += 1
+	}
+}
+
+emit_trailing_trivia :: proc(p: ^Printer, node: ^Node) {
+	if len(node.trailing_trivia) == 0 {
+		return
+	}
+	period_removed := false
+	for trivia in node.trailing_trivia {
+		if trivia_is_in_printed_source_fragment(node, trivia) {
+			continue
+		}
+		if trivia.kind != .Pragma || !trivia_prints_before_final_period(node, trivia) {
+			continue
+		}
+		if !period_removed {
+			period_removed = remove_final_period(p)
+		}
+		emit_space(p)
+		emit(p, trivia.text)
+	}
+	if period_removed {
+		emit(p, ".")
+	}
+	for trivia in node.trailing_trivia {
+		if trivia_is_in_printed_source_fragment(node, trivia) {
+			continue
+		}
+		if trivia.kind == .Pragma && trivia_prints_before_final_period(node, trivia) {
+			continue
+		}
+		if trivia.kind == .Pragma && trivia.range.end <= node.range.end {
+			continue
+		}
+		emit_space(p)
+		emit(p, trivia.text)
+	}
+}
+
+trivia_prints_before_final_period :: proc(node: ^Node, trivia: Ast_Trivia) -> bool {
+	return trivia.range.end <= node.range.end && node.range.end - trivia.range.end <= 1
+}
+
+trivia_is_in_printed_source_fragment :: proc(node: ^Node, trivia: Ast_Trivia) -> bool {
+	#partial switch n in node.derived {
+	case ^Parameters_Decl:
+		return n.text != "" && range_contains(n.range, trivia.range)
+	case ^Selection_Screen_Stmt:
+		return n.text != "" && range_contains(n.range, trivia.range)
+	case ^Oop_Simple_Stmt:
+		return n.text != "" && range_contains(n.range, trivia.range)
+	case ^Oop_Load_Stmt:
+		return n.text != "" && range_contains(n.range, trivia.range)
+	case ^Loop_Stmt:
+		return range_contains(n.header_range, trivia.range)
+	case ^Class_Decl:
+		return range_contains(n.header_range, trivia.range)
+	case ^Interface_Decl:
+		return range_contains(n.header_range, trivia.range)
+	case ^Method_Decl:
+		return range_contains(n.header_range, trivia.range)
+	case ^Form_Decl:
+		return range_contains(n.header_range, trivia.range)
+	case ^Function_Decl:
+		return range_contains(n.header_range, trivia.range)
+	case ^Module_Decl:
+		return range_contains(n.header_range, trivia.range)
+	case ^Event_Block_Stmt:
+		return range_contains(n.header_range, trivia.range)
+	case ^Enhancement_Stmt:
+		return range_contains(n.header_range, trivia.range)
+	case ^Enhancement_Section_Stmt:
+		return range_contains(n.header_range, trivia.range)
+	case ^Test_Seam_Stmt:
+		return range_contains(n.header_range, trivia.range)
+	case ^Test_Injection_Stmt:
+		return range_contains(n.header_range, trivia.range)
+	}
+	return false
+}
+
+range_contains :: proc(outer, inner: tokenizer.Range) -> bool {
+	return outer.end > outer.start && outer.start <= inner.start && inner.end <= outer.end
+}
+
+remove_final_period :: proc(p: ^Printer) -> bool {
+	if len(p.out.buf) == 0 || p.out.buf[len(p.out.buf) - 1] != '.' {
+		return false
+	}
+	pop(&p.out.buf)
+	return true
 }
 
 emit_expr_list :: proc(p: ^Printer, list: [dynamic]^Expr, separator: string) {
