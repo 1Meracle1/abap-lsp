@@ -116,7 +116,7 @@ infer_unit_semantic_facts :: proc(
 
 	inline_symbols := inline_symbol_index_make(unit, context.temp_allocator)
 
-	for operand in unit.operands {
+	for &operand in unit.operands {
 		if !(.Syntax in operand.flags) {
 			continue
 		}
@@ -129,7 +129,7 @@ infer_unit_semantic_facts :: proc(
 		append(&out.operands, next)
 	}
 
-	for ref in unit.references {
+	for &ref in unit.references {
 		if ref.namespace != .Value {
 			append(&out.operands, reference_operand(project, unit_index, ref))
 			continue
@@ -142,7 +142,7 @@ infer_unit_semantic_facts :: proc(
 		append(&out.operands, reference_operand(project, unit_index, ref))
 	}
 
-	for access in unit.field_accesses {
+	for &access in unit.field_accesses {
 		if access.in_type_position {
 			continue
 		}
@@ -156,7 +156,7 @@ infer_unit_semantic_facts :: proc(
 		}
 	}
 
-	for site in unit.table_exprs {
+	for &site in unit.table_exprs {
 		if fact, ok := table_expr_source_fact(project, lookup, unit_index, site.table_access);
 		   ok {
 			if row, row_ok := typecheck_table_row_fact(project, fact); row_ok {
@@ -166,7 +166,7 @@ infer_unit_semantic_facts :: proc(
 		}
 	}
 
-	for site in unit.call_sites {
+	for &site in unit.call_sites {
 		fact := call_result_type_fact(project, lookup, unit_index, site)
 		push_expression_fact(&out.expression_facts, site.scope, site.range, .Call_Result, fact)
 		if type_fact_is_known(fact) {
@@ -176,7 +176,7 @@ infer_unit_semantic_facts :: proc(
 		if !signature_ok || signature.info == nil {
 			continue
 		}
-		for arg, arg_index in site.arguments {
+		for &arg, arg_index in site.arguments {
 			if !typecheck_argument_requires_writable(site.target.kind, arg.section) {
 				continue
 			}
@@ -202,7 +202,7 @@ infer_unit_semantic_facts :: proc(
 		context.temp_allocator,
 	)
 
-	for target in unit.sql_targets {
+	for &target in unit.sql_targets {
 		if !(.Is_Table in target.flags && .Is_Inline in target.flags) {
 			continue
 		}
@@ -224,7 +224,7 @@ infer_unit_semantic_facts :: proc(
 		}
 	}
 
-	for assignment, i in unit.assignment_sites {
+	for &assignment, i in unit.assignment_sites {
 		lhs := assignment.lhs
 		rhs := assignment.rhs
 		if .Has_Lhs_Target_Access in assignment.flags {
@@ -266,7 +266,7 @@ infer_unit_semantic_facts :: proc(
 		}
 	}
 
-	for site, i in unit.concatenate_lines_of_sites {
+	for &site, i in unit.concatenate_lines_of_sites {
 		if fact, ok := type_fact_for_range_indexed(&range_facts, site.source_range); ok {
 			append(&out.concatenates, Inferred_Concatenate_Update{index = i, source = fact})
 		}
@@ -291,7 +291,7 @@ table_expr_source_fact :: proc(
 
 open_sql_star_table_target :: proc(unit: ^Unit_Analysis, query_id: int) -> bool {
 	count := 0
-	for projection in unit.sql_projections {
+	for &projection in unit.sql_projections {
 		if projection.query_id != query_id {
 			continue
 		}
@@ -314,7 +314,7 @@ field_access_fact_is_high_confidence :: proc(
 		return false
 	}
 	arrow_index := -1
-	for segment, i in access.field_path {
+	for &segment, i in access.field_path {
 		if segment.selector == .Arrow {
 			if arrow_index >= 0 {
 				return false
@@ -328,7 +328,7 @@ field_access_fact_is_high_confidence :: proc(
 	if arrow_index != 0 {
 		return false
 	}
-	for segment, i in access.field_path {
+	for &segment, i in access.field_path {
 		if segment.deref {
 			return false
 		}
@@ -405,7 +405,7 @@ apply_inferred_project_facts :: proc(
 		unit.expression_facts = facts.expression_facts
 		delete(unit.operands)
 		unit.operands = facts.operands
-		for update in facts.symbol_updates {
+		for &update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
@@ -432,12 +432,12 @@ apply_inferred_project_facts :: proc(
 				s.type_id = type_id_from_symbol_data(unit, s)
 			}
 		}
-		for update in facts.assignments {
+		for &update in facts.assignments {
 			assert(update.index >= 0 && update.index < len(unit.assignment_sites))
 			unit.assignment_sites[update.index].lhs = update.lhs
 			unit.assignment_sites[update.index].rhs = update.rhs
 		}
-		for update in facts.concatenates {
+		for &update in facts.concatenates {
 			assert(update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites))
 			unit.concatenate_lines_of_sites[update.index].source = update.source
 		}
@@ -463,7 +463,7 @@ apply_inferred_project_facts_for_indices :: proc(
 		unit.expression_facts = facts.expression_facts
 		delete(unit.operands)
 		unit.operands = facts.operands
-		for update in facts.symbol_updates {
+		for &update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
 			s := &unit.symbols[idx]
@@ -490,12 +490,12 @@ apply_inferred_project_facts_for_indices :: proc(
 				s.type_id = type_id_from_symbol_data(unit, s)
 			}
 		}
-		for update in facts.assignments {
+		for &update in facts.assignments {
 			assert(update.index >= 0 && update.index < len(unit.assignment_sites))
 			unit.assignment_sites[update.index].lhs = update.lhs
 			unit.assignment_sites[update.index].rhs = update.rhs
 		}
-		for update in facts.concatenates {
+		for &update in facts.concatenates {
 			assert(update.index >= 0 && update.index < len(unit.concatenate_lines_of_sites))
 			unit.concatenate_lines_of_sites[update.index].source = update.source
 		}
@@ -590,11 +590,11 @@ open_sql_star_table_target_structure_for_unit :: proc(
 	}
 	name = strings.clone(name, allocator)
 	fields := make([dynamic]Structure_Field_Data, 0, 8, allocator)
-	for projection in unit.sql_projections {
+	for &projection in unit.sql_projections {
 		if projection.query_id != query_id {
 			continue
 		}
-		for source in unit.sql_sources {
+		for &source in unit.sql_sources {
 			if !sql_star_projection_selects_source(projection, source) {
 				continue
 			}
@@ -603,7 +603,7 @@ open_sql_star_table_target_structure_for_unit :: proc(
 			source_unit_index := unit_id_index(fact.structure_unit)
 			source_structure := structure(&project.units[source_unit_index], fact.structure)
 			assert(source_structure != nil)
-			for field in source_structure.fields {
+			for &field in source_structure.fields {
 				append(&fields, field)
 			}
 		}
@@ -623,11 +623,11 @@ open_sql_star_source_count :: proc(
 	unit := &project.units[unit_index]
 	count := 0
 	single := Type_Fact_Data{}
-	for projection in unit.sql_projections {
+	for &projection in unit.sql_projections {
 		if projection.query_id != query_id {
 			continue
 		}
-		for source in unit.sql_sources {
+		for &source in unit.sql_sources {
 			if !sql_star_projection_selects_source(projection, source) {
 				continue
 			}
@@ -740,7 +740,7 @@ range_type_fact_index_make :: proc(
 			allocator,
 		),
 	}
-	for ref in unit.references {
+	for &ref in unit.references {
 		if ref.namespace != .Value || !ref.has_resolution || ref.resolution.kind != .Symbol {
 			continue
 		}
@@ -754,7 +754,7 @@ range_type_fact_index_make :: proc(
 			append(&index.facts, Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = 1})
 		}
 	}
-	for fact in expression_facts {
+	for &fact in expression_facts {
 		if type_fact_known(fact.type_fact) {
 			append(&index.facts, Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = 2})
 		}
@@ -780,7 +780,7 @@ inline_symbol_index_make :: proc(
 	index := Inline_Symbol_Index {
 		symbols = make([dynamic]Inline_Symbol_Range, 0, len(unit.symbols), allocator),
 	}
-	for s in unit.symbols {
+	for &s in unit.symbols {
 		if s.kind == .Variable || s.kind == .Field_Symbol {
 			append(&index.symbols, Inline_Symbol_Range{range = s.decl_range, symbol = s.id})
 		}
@@ -844,7 +844,7 @@ type_fact_for_range_indexed :: proc(
 	for i := range_type_fact_lower_bound(index.facts[:], range.start);
 	    i < len(index.facts) && index.facts[i].range.start <= range.end;
 	    i += 1 {
-		fact := index.facts[i]
+		fact := &index.facts[i]
 		if fact.range.end > range.end || !type_fact_known(fact.type_fact) {
 			continue
 		}
@@ -1008,7 +1008,7 @@ method_signature_result_type_fact :: proc(
 			}
 		}
 	}
-	for param in signature_info.signature_parameters {
+	for &param in signature_info.signature_parameters {
 		if param.section != .Method_Returning && param.section != .Method_Receiving {
 			continue
 		}
@@ -1142,7 +1142,7 @@ method_return_assignment_type_fact :: proc(
 	unit := &project.units[unit_index]
 	out := Type_Fact_Data{}
 	found := false
-	for site in unit.assignment_sites {
+	for &site in unit.assignment_sites {
 		if !(.Has_Lhs_Target_Access in site.flags) ||
 		   len(site.lhs_target_access.field_path) > 0 ||
 		   site.lhs_target_access.base_name != param.name ||
@@ -1206,7 +1206,7 @@ inline_symbol_lower_bound :: proc(symbols: []Inline_Symbol_Range, start: int) ->
 
 field_access_range :: proc(access: Field_Access) -> tokenizer.Range {
 	out := access.base_range
-	for segment in access.field_path {
+	for &segment in access.field_path {
 		if !range_valid(out) {
 			out = segment.range
 		} else {
