@@ -25,6 +25,7 @@ goto parse_args
 if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 
 "%ODIN_EXE%" check "%ROOT%src\tokenizer" -no-entry-point %ODIN_FLAGS% || exit /b
+"%ODIN_EXE%" check "%ROOT%src\string_interner" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\encoding\toml" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\ast" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\parser" -no-entry-point %ODIN_FLAGS% || exit /b
@@ -38,6 +39,7 @@ if not exist "%ROOT%bin" mkdir "%ROOT%bin"
 "%ODIN_EXE%" check "%ROOT%src\persistence\sqlite3" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" check "%ROOT%src\dependency_store" -no-entry-point %ODIN_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\tokenizer" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
+"%ODIN_EXE%" test "%ROOT%src\string_interner" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\encoding\toml" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\ast" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
 "%ODIN_EXE%" test "%ROOT%src\parser" %ODIN_FLAGS% %TEST_FLAGS% || exit /b
