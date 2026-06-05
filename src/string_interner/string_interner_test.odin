@@ -66,7 +66,7 @@ overflow_cells_are_linked_and_searchable :: proc(t: ^testing.T) {
 		"v00", "v01", "v02", "v03", "v04",
 		"v05", "v06", "v07", "v08", "v09",
 	}
-	interned: [len(values)]Interned_String
+	interned: [len(values)]String
 	for value, i in values {
 		interned[i] = insert(interner, value)
 	}

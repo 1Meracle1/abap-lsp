@@ -15,11 +15,11 @@ DEFAULT_CELL_COUNT :: 1 << 17
 DEFAULT_RESERVE_SIZE :: mem.Gigabyte
 DEFAULT_COMMIT_SIZE :: 8 * mem.Megabyte
 
-Interned_String :: distinct u32
+String :: distinct u32
 
 Cell :: struct #align (CACHE_LINE_SIZE) {
 	hashes:  [CELL_WIDTH]u64,
-	offsets: [CELL_WIDTH]Interned_String,
+	offsets: [CELL_WIDTH]String,
 	next:    ^Cell,
 }
 
@@ -43,7 +43,7 @@ Interner :: struct #align (CACHE_LINE_SIZE) {
 	cell_mask:   u64,
 	mutexes:     [MUTEX_STRIPE_COUNT]Padded_Mutex,
 	arena:       virtual.Arena,
-	blank_ident: Interned_String,
+	blank_ident: String,
 	track_count: bool,
 	count:       Padded_U64,
 }
@@ -97,13 +97,13 @@ insert :: proc(
 	value: string,
 	hash_value: u32 = 0,
 	new_hash: ^u32 = nil,
-) -> Interned_String {
+) -> String {
 	assert(interner != nil)
 	if len(value) == 0 {
 		if new_hash != nil {
 			new_hash^ = string_hash(value)
 		}
-		return Interned_String(0)
+		return String(0)
 	}
 
 	hash_value := hash_value
@@ -161,7 +161,7 @@ insert :: proc(
 
 	offset_value := uintptr(data) - uintptr(interner)
 	assert(offset_value <= uintptr(max(u32)))
-	offset := Interned_String(u32(offset_value))
+	offset := String(u32(offset_value))
 
 	for i in 0 ..< CELL_WIDTH {
 		if sync.atomic_load_explicit(&load_cell.hashes[i], .Relaxed) == 0 {
@@ -203,7 +203,7 @@ intern_cstring :: proc(
 	return load_cstring(interner, interned)
 }
 
-load :: proc(interner: ^Interner, interned: Interned_String) -> string {
+load :: proc(interner: ^Interner, interned: String) -> string {
 	assert(interner != nil)
 	if u32(interned) == 0 {
 		return ""
@@ -214,7 +214,7 @@ load :: proc(interner: ^Interner, interned: Interned_String) -> string {
 	return string(text[:str_len])
 }
 
-load_cstring :: proc(interner: ^Interner, interned: Interned_String) -> cstring {
+load_cstring :: proc(interner: ^Interner, interned: String) -> cstring {
 	assert(interner != nil)
 	if u32(interned) == 0 {
 		return cstring("")
@@ -224,16 +224,16 @@ load_cstring :: proc(interner: ^Interner, interned: Interned_String) -> cstring 
 	return cstring(text)
 }
 
-hash_interned :: proc(interner: ^Interner, interned: Interned_String) -> u32 {
+hash_interned :: proc(interner: ^Interner, interned: String) -> u32 {
 	return string_hash(load(interner, interned))
 }
 
-is_blank :: proc(interner: ^Interner, interned: Interned_String) -> bool {
+is_blank :: proc(interner: ^Interner, interned: String) -> bool {
 	assert(interner != nil)
 	return interned == interner.blank_ident
 }
 
-is_valid :: proc(interned: Interned_String) -> bool {
+is_valid :: proc(interned: String) -> bool {
 	return u32(interned) != 0
 }
 
