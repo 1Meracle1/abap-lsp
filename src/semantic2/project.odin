@@ -22,11 +22,9 @@ Project :: struct {
 	files:          xar.Array(Project_File, 4),
 	entities:       xar.Array(Entity, 8),
 	scopes:         xar.Array(Scope, 6),
-	types:          xar.Array(Type, 6),
-	structures:     xar.Array(Structure, 4),
-	decl_infos:     xar.Array(Decl_Info, 6),
-	unknown_type:   ^Type,
 }
+
+project_unknown_type: Type = Type{kind = .Unknown}
 
 project_make :: proc() -> (project: Project) {
 	project.host_allocator = context.allocator
@@ -41,10 +39,6 @@ project_make :: proc() -> (project: Project) {
 	xar.init(&project.files, project.allocator)
 	xar.init(&project.entities, project.allocator)
 	xar.init(&project.scopes, project.allocator)
-	xar.init(&project.types, project.allocator)
-	xar.init(&project.structures, project.allocator)
-	xar.init(&project.decl_infos, project.allocator)
-	project.unknown_type = project_new_type(&project, .Unknown)
 	return
 }
 
@@ -105,13 +99,14 @@ project_new_type :: proc(project: ^Project, kind: Type_Kind = .Unknown) -> ^Type
 		value.routine.results = make([dynamic]^Entity, 0, 1, project.allocator)
 		value.routine.exceptions = make([dynamic]string_interner.String, 0, 1, project.allocator)
 	}
-	typ, err := xar.push_back_elem_and_get_ptr(&project.types, value)
-	assert(err == .None && typ != nil)
+	typ := new(Type, project.allocator)
+	assert(typ != nil)
+	typ^ = value
 	return typ
 }
 
-project_type_unknown :: #force_inline proc(project: ^Project) -> ^Type {
-	return project.unknown_type
+project_type_unknown :: #force_inline proc(_: ^Project = nil) -> ^Type {
+	return &project_unknown_type
 }
 
 project_type_builtin :: proc(project: ^Project, name: string_interner.String, entity: ^Entity = nil) -> ^Type {
@@ -192,8 +187,9 @@ project_new_structure :: proc(
 		scope       = scope,
 		fields      = make([dynamic]^Entity, 0, 4, project.allocator),
 	}
-	structure, err := xar.push_back_elem_and_get_ptr(&project.structures, value)
-	assert(err == .None && structure != nil)
+	structure := new(Structure, project.allocator)
+	assert(structure != nil)
+	structure^ = value
 	structure.origin_structure = structure
 	return structure
 }
@@ -222,8 +218,9 @@ project_new_decl_info :: proc(
 		docs           = docs,
 		comment        = comment,
 	}
-	info, err := xar.push_back_elem_and_get_ptr(&project.decl_infos, value)
-	assert(err == .None && info != nil)
+	info := new(Decl_Info, project.allocator)
+	assert(info != nil)
+	info^ = value
 	if entity != nil {
 		if kind != .Invalid {
 			if entity.kind == .Invalid {

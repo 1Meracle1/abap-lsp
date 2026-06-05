@@ -96,11 +96,10 @@ root_semantic_project_storage_keeps_type_structure_and_decl_pointers_stable :: p
 		_ = project_new_decl_info(&project, nil, nil, string_interner.String(0), .Invalid, {})
 	}
 
-	testing.expect_value(t, xar.len(project.types), 303)
-	testing.expect_value(t, xar.len(project.structures), 301)
-	testing.expect_value(t, xar.len(project.decl_infos), 301)
-	testing.expect(t, project.unknown_type != nil)
-	testing.expect_value(t, project.unknown_type.kind, Type_Kind.Unknown)
+	unknown := project_type_unknown(&project)
+	testing.expect(t, unknown != nil)
+	testing.expect(t, unknown == project_type_unknown())
+	testing.expect_value(t, unknown.kind, Type_Kind.Unknown)
 	testing.expect(t, entity.decl_info == info)
 	testing.expect(t, entity.type.entity == entity)
 	testing.expect(t, entity.type.base == structure_type)
