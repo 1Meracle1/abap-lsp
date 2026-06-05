@@ -37,3 +37,45 @@ Scope_Declaration_Key :: struct {
 	namespace: Namespace,
 	name:      string_interner.String,
 }
+
+scope_insert_declaration :: proc(scope: ^Scope, entity: ^Entity) -> ^Entity {
+	assert(scope != nil && entity != nil)
+
+	namespaces := [?]Namespace{.Value, .Type, .Routine}
+	for namespace in namespaces {
+		if !entity_kind_occupies(entity.kind, namespace) {
+			continue
+		}
+		key := Scope_Declaration_Key{namespace = namespace, name = entity.name}
+		if existing, ok := scope.elements[key]; ok {
+			return existing
+		}
+	}
+
+	if entity.scope == nil {
+		entity.scope = scope
+	}
+	append(&scope.declarations, entity)
+	for namespace in namespaces {
+		if !entity_kind_occupies(entity.kind, namespace) {
+			continue
+		}
+		key := Scope_Declaration_Key{namespace = namespace, name = entity.name}
+		scope.elements[key] = entity
+	}
+	return nil
+}
+
+scope_lookup_declaration :: proc(
+	scope: ^Scope,
+	namespace: Namespace,
+	name: string_interner.String,
+) -> (^Entity, bool) {
+	if scope == nil {
+		return nil, false
+	}
+	if entity, ok := scope.elements[Scope_Declaration_Key{namespace = namespace, name = name}]; ok {
+		return entity, true
+	}
+	return nil, false
+}
