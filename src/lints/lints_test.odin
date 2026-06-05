@@ -33,27 +33,29 @@ project_lints_run_as_async_diagnostic_pass :: proc(t: ^testing.T) {
 	execution.pool_init(&pool, execution.Options{worker_count = 0, task_capacity = 16}, context.allocator)
 	defer execution.pool_destroy(&pool)
 
-	unit := analyze.unit_analysis_make(
-		0,
-		"mem://at.abap",
-		{0, len(`FORM run.
-  AT FIRST.
-  ENDAT.
-ENDFORM.`)},
-		context.allocator,
-	)
-	unit.source = `FORM run.
+	source := `FORM run.
   AT FIRST.
   ENDAT.
 ENDFORM.`
+	unit := analyze.source_file_provider_make(
+		0,
+		.Full_Source,
+		"mem://at.abap",
+		{0, len(source)},
+		context.allocator,
+	)
 	project := analyze.Project_Analysis {
-		units = make([dynamic]analyze.Unit_Analysis, 0, 1, context.allocator),
+		providers = analyze.Project_Provider_Store {
+			source_files = make([dynamic]analyze.Source_File_Provider, 0, 1, context.allocator),
+			summaries = make([]analyze.Summary_Provider_Input, 0, context.allocator),
+		},
 		diagnostics = make([dynamic]analyze.Diagnostic, 0, 1, context.allocator),
 	}
-	append(&project.units, unit)
+	append(&project.providers.source_files, unit)
 
-	run_project_async(&project, &pool, context.allocator)
+	sources := [?]analyze.Source_Input{{uri = unit.uri, source = source}}
+	run_project_async(&project, sources[:], &pool, context.allocator)
 
-	testing.expect_value(t, len(project.units[0].diagnostics), 1)
-	testing.expect_value(t, project.units[0].diagnostics[0].kind, analyze.Diagnostic_Kind.Invalid_Control_Break)
+	testing.expect_value(t, len(project.providers.source_files[0].diagnostics), 1)
+	testing.expect_value(t, project.providers.source_files[0].diagnostics[0].kind, analyze.Diagnostic_Kind.Invalid_Control_Break)
 }

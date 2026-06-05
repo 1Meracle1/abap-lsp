@@ -170,16 +170,16 @@ manifest_member_owner_by_key :: proc(
 
 manifest_dependency_indices :: proc(
 	manifest: ^Workspace_Manifest,
-	unit_index: int,
+	source_file_index: int,
 	allocator: mem.Allocator,
 ) -> [dynamic]int {
-	selected_key := manifest_unit_root_key(manifest, unit_index, allocator)
+	selected_key := manifest_unit_root_key(manifest, source_file_index, allocator)
 	indices := make([dynamic]int, 0, 2, allocator)
 	if selected_key == "" {
 		return indices
 	}
 	for unit, i in manifest.units {
-		if i == unit_index || unit.root_file == "" {
+		if i == source_file_index || unit.root_file == "" {
 			continue
 		}
 		for dependency in unit.dependency_of {

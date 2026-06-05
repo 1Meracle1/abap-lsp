@@ -14,11 +14,13 @@ import "core:strings"
 import "core:time"
 
 Adt_Fetched_Object :: struct {
-	candidate:   deps.Remote_Dependency_Candidate,
-	object_name: string,
-	object_type: string,
-	input:       analyze.Source_Input,
-	shared:      bool,
+	candidate:       deps.Remote_Dependency_Candidate,
+	object_name:     string,
+	object_type:     string,
+	summary_payload: string,
+	input:           analyze.Source_Input,
+	has_input:       bool,
+	shared:          bool,
 }
 
 Adt_Fetch_Task_Result :: struct {
@@ -31,6 +33,7 @@ Adt_Fetch_Task_Payload :: struct {
 	store:            ^dep_store.Dependency_Store,
 	profile:          ^dep_store.Dependency_Profile,
 	connection_key:   string,
+	prefer_summary:   bool,
 	result_allocator: mem.Allocator,
 }
 
@@ -43,6 +46,7 @@ add_adt_matches_with_client :: proc(
 	client: ^adt.Client,
 	pool: ^execution.Pool,
 	target_uri: string,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	adt_candidates := make(
 		[dynamic]deps.Remote_Dependency_Candidate,
@@ -93,6 +97,7 @@ add_adt_matches_with_client :: proc(
 			store            = store,
 			profile          = profile,
 			connection_key   = connection_key,
+			prefer_summary   = dependency_summaries != nil,
 			result_allocator = mem.dynamic_arena_allocator(&result_arenas[i]),
 		}
 		task := execution.submit_value(
@@ -113,6 +118,7 @@ add_adt_matches_with_client :: proc(
 			result,
 			&uri_keys,
 			context.temp_allocator,
+			dependency_summaries,
 		) {
 			added = true
 		}
@@ -152,6 +158,7 @@ adt_fetch_task :: proc(payload: Adt_Fetch_Task_Payload) -> ^Adt_Fetch_Task_Resul
 		payload.candidate,
 		payload.store,
 		payload.profile,
+		payload.prefer_summary,
 		payload.result_allocator,
 		temp_allocator,
 	)
@@ -172,6 +179,7 @@ fetch_adt_candidate :: proc(
 	candidate: deps.Remote_Dependency_Candidate,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
+	prefer_summary: bool,
 	result_allocator: mem.Allocator,
 	temp_allocator: mem.Allocator,
 ) -> ^Adt_Fetch_Task_Result {
@@ -191,6 +199,7 @@ fetch_adt_candidate :: proc(
 			result,
 			store,
 			profile,
+			prefer_summary,
 			result_allocator,
 			temp_allocator,
 			true,
@@ -262,6 +271,7 @@ fetch_adt_candidate :: proc(
 		result,
 		store,
 		profile,
+		prefer_summary,
 		result_allocator,
 		temp_allocator,
 	)
@@ -301,6 +311,7 @@ fetch_adt_objects :: proc(
 	result: ^Adt_Fetch_Task_Result,
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
+	prefer_summary: bool,
 	result_allocator: mem.Allocator,
 	temp_allocator: mem.Allocator,
 	stop_after_first := false,
@@ -364,6 +375,7 @@ fetch_adt_objects :: proc(
 			false,
 			result_allocator,
 			temp_allocator,
+			prefer_summary,
 		)
 		for &shared in fetched.shared_dependencies {
 			append_prepared_adt_input(
@@ -379,6 +391,7 @@ fetch_adt_objects :: proc(
 				true,
 				result_allocator,
 				temp_allocator,
+				prefer_summary,
 			)
 		}
 		fetched_count += 1
@@ -396,20 +409,42 @@ add_adt_fetch_task_result :: proc(
 	result: ^Adt_Fetch_Task_Result,
 	uri_keys: ^map[string]bool,
 	temp_allocator: mem.Allocator,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	if result == nil {
 		return false
 	}
 	added := false
 	for &entry in result.fetched {
-		input_added := add_prepared_adt_dependency_input(
-			candidates,
-			dependencies,
-			entry.candidate,
-			entry.input,
-			entry.object_name,
-			uri_keys,
-		)
+		input_added := false
+		if dependency_summaries != nil && entry.summary_payload != "" {
+			if summary_input, ok := dependency_summary_input_from_payload(
+				   entry.summary_payload,
+				   entry.candidate,
+				   adt_summary_dependency_uri(entry.input.uri, context.temp_allocator),
+				   dependency_summaries.allocator,
+			   );
+			   ok {
+				append(dependency_summaries, summary_input)
+				input_added = true
+			}
+		}
+		if dependency_summaries != nil && !input_added {
+			continue
+		}
+		if !input_added {
+			if !entry.has_input {
+				continue
+			}
+			input_added = add_prepared_adt_dependency_input(
+				candidates,
+				dependencies,
+				entry.candidate,
+				entry.input,
+				entry.object_name,
+				uri_keys,
+			)
+		}
 		when adt.DEPENDENCY_FETCH_TRACE {
 			status := "added" if input_added else "skipped"
 			if entry.shared {
@@ -444,20 +479,34 @@ append_prepared_adt_input :: proc(
 	shared: bool,
 	result_allocator: mem.Allocator,
 	temp_allocator: mem.Allocator,
+	prefer_summary := false,
 ) {
+	summary_payload := dependency_interface_summary_payload_from_artifact(
+		object_kind,
+		object_ref.name,
+		object_ref.uri,
+		object_ref.object_type,
+		file_extension,
+		source,
+		result_allocator,
+	)
+	use_summary := prefer_summary &&
+	               dependency_summary_payload_satisfies_candidate(summary_payload, candidate)
 	input_source: string
-	if dependency_source_is_xml(object_kind, file_extension, source) {
-		if candidate.kind == .Type {
-			formatted_source := ddic_xml.dependency_source(
-				object_ref.name,
-				object_kind,
-				source,
-				temp_allocator,
-			)
-			input_source = formatted_source
+	if !use_summary {
+		if dependency_source_is_xml(object_kind, file_extension, source) {
+			if candidate.kind == .Type {
+				formatted_source := ddic_xml.dependency_source(
+					object_ref.name,
+					object_kind,
+					source,
+					temp_allocator,
+				)
+				input_source = formatted_source
+			}
+		} else {
+			input_source = source
 		}
-	} else {
-		input_source = source
 	}
 	prepared_candidate := candidate
 	prepared_candidate.name = strings.clone(candidate.name, result_allocator)
@@ -467,11 +516,13 @@ append_prepared_adt_input :: proc(
 			candidate = prepared_candidate,
 			object_name = strings.clone(object_ref.name, result_allocator),
 			object_type = strings.clone(object_ref.object_type, result_allocator),
+			summary_payload = summary_payload,
 			input = analyze.Source_Input {
 				uri = adt_dependency_uri(object_ref, file_extension, result_allocator),
 				source = strings.clone(input_source, result_allocator),
-				mode = .Dependency_Interface,
+				role = .Dependency_Interface_Source,
 			},
+			has_input = !use_summary,
 			shared = shared,
 		},
 	)
@@ -558,15 +609,24 @@ dependency_artifact_from_adt :: proc(
 		extension = "xml"
 	}
 	return dep_store.Stored_Artifact_Input {
-		package_name = object_ref.package_name,
-		object_kind = object_kind,
-		object_name = object_ref.name,
-		object_uri = object_ref.uri,
-		object_type = object_ref.object_type,
-		description = object_ref.description,
-		file_extension = extension,
-		source_text = source,
-		fetched_at = fetched_at,
+		package_name     = object_ref.package_name,
+		object_kind      = object_kind,
+		object_name      = object_ref.name,
+		object_uri       = object_ref.uri,
+		object_type      = object_ref.object_type,
+		description      = object_ref.description,
+		file_extension   = extension,
+		source_text      = source,
+		fetched_at       = fetched_at,
+		summary_payload  = dependency_interface_summary_payload_from_artifact(
+			object_kind,
+			object_ref.name,
+			object_ref.uri,
+			object_ref.object_type,
+			extension,
+			source,
+			allocator,
+		),
 	}
 }
 
@@ -631,5 +691,12 @@ adt_dependency_uri :: proc(
 		strings.write_byte(&out, '.')
 		strings.write_string(&out, ext)
 	}
+	return strings.to_string(out)
+}
+
+adt_summary_dependency_uri :: proc(uri: string, allocator: mem.Allocator) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "abapls-summary:/adt/")
+	strings.write_string(&out, uri)
 	return strings.to_string(out)
 }

@@ -129,6 +129,35 @@ stores_artifact_with_empty_text_fields :: proc(t: ^testing.T) {
 }
 
 @(test)
+stores_and_loads_artifact_summary_payload :: proc(t: ^testing.T) {
+	path := workspace_store_path("stores_and_loads_artifact_summary_payload.sqlite3")
+	store, err := dependency_store_from_override_path(path, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	profile := sample_profile()
+	artifact := sample_artifact()
+	artifact.summary_payload = "abapls-summary-v1\nexport\tclass\tcl_abap_typedescr\t\n"
+
+	artifact_id: i64
+	artifact_id, err = put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+
+	payload: string
+	ok: bool
+	payload, ok, err = read_artifact_summary_payload(&store, artifact_id, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect(t, ok)
+	testing.expect_value(t, payload, artifact.summary_payload)
+
+	artifact.summary_payload = ""
+	_, err = put_artifact(&store, &profile, &artifact, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	payload, ok, err = read_artifact_summary_payload(&store, artifact_id, context.allocator)
+	testing.expect_value(t, err, Store_Error.None)
+	testing.expect(t, !ok)
+	testing.expect_value(t, payload, "")
+}
+
+@(test)
 finds_artifact_by_kind_and_name :: proc(t: ^testing.T) {
 	path := workspace_store_path("finds_artifact_by_kind_and_name.sqlite3")
 	store, err := dependency_store_from_override_path(path, context.allocator)

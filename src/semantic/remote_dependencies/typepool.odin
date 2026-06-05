@@ -26,6 +26,7 @@ add_typepool_resolver_matches :: proc(
 	client: ^adt.Client,
 	worker_pool: ^execution.Pool,
 	target_uri: string,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	if client == nil || worker_pool == nil || !adt.typepool_resolver_enabled(client) {
 		return false
@@ -127,6 +128,21 @@ add_typepool_resolver_matches :: proc(
 	added := false
 	remote_pools := make([dynamic]string, 0, len(pools), context.temp_allocator)
 	for pool in pools {
+		if dependency_summaries != nil &&
+		   add_cached_typepool_summary_input(
+				dependency_summaries,
+				owner_candidates[:],
+				store,
+				profile,
+				pool,
+				context.temp_allocator,
+		   ) {
+			added = true
+			when adt.DEPENDENCY_FETCH_TRACE {
+				trace_eprintf("adt_fetch\ttypepool\tadd_summary\tcache\t%s\n", pool)
+			}
+			continue
+		}
 		source, ok := cached_typepool_source(store, profile, pool, context.temp_allocator)
 		if !ok {
 			append(&remote_pools, pool)
@@ -135,10 +151,12 @@ add_typepool_resolver_matches :: proc(
 		if add_typepool_source_input(
 			candidates,
 			dependencies,
+			owner_candidates[:],
 			pool,
 			source,
 			&uri_keys,
 			context.temp_allocator,
+			dependency_summaries,
 		) {
 			added = true
 			when adt.DEPENDENCY_FETCH_TRACE {
@@ -191,10 +209,12 @@ add_typepool_resolver_matches :: proc(
 		if add_typepool_source_input(
 			candidates,
 			dependencies,
+			owner_candidates[:],
 			result.pool,
 			result.source,
 			&uri_keys,
 			context.temp_allocator,
+			dependency_summaries,
 		) {
 			added = true
 			when adt.DEPENDENCY_FETCH_TRACE {
@@ -291,6 +311,64 @@ cached_typepool_source :: proc(
 	return record.source_text, true
 }
 
+add_cached_typepool_summary_input :: proc(
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
+	store: ^dep_store.Dependency_Store,
+	profile: ^dep_store.Dependency_Profile,
+	pool: string,
+	allocator: mem.Allocator,
+) -> bool {
+	if store == nil || profile == nil {
+		return false
+	}
+	record, ok, err := dep_store.find_artifact_by_kind_name(
+		store,
+		profile,
+		TYPEPOOL_OBJECT_KIND,
+		pool,
+		allocator,
+	)
+	if err != .None || !ok {
+		return false
+	}
+	summary_payload, summary_ok, summary_err := dep_store.read_artifact_summary_payload(
+		store,
+		record.artifact_id,
+		allocator,
+	)
+	if summary_err != .None {
+		return false
+	}
+	if !summary_ok {
+		if typepool_source_has_pending_expansion(record.source_text, allocator) {
+			return false
+		}
+		summary_payload = dependency_interface_summary_payload_from_artifact(
+			TYPEPOOL_OBJECT_KIND,
+			pool,
+			typepool_object_uri(pool, allocator),
+			TYPEPOOL_OBJECT_TYPE,
+			"abap",
+			record.source_text,
+			allocator,
+		)
+	}
+	for candidate in remote_candidates {
+		if summary_input, summary_input_ok := dependency_summary_input_from_payload(
+			   summary_payload,
+			   candidate,
+			   "",
+			   dependency_summaries.allocator,
+		   );
+		   summary_input_ok {
+			append(dependency_summaries, summary_input)
+			return true
+		}
+	}
+	return false
+}
+
 store_typepool_source :: proc(
 	store: ^dep_store.Dependency_Store,
 	profile: ^dep_store.Dependency_Profile,
@@ -313,6 +391,15 @@ store_typepool_source :: proc(
 		source_text      = source,
 		fetched_at       = fetched_at,
 		typepool_symbols = symbols[:],
+		summary_payload  = dependency_interface_summary_payload_from_artifact(
+			TYPEPOOL_OBJECT_KIND,
+			pool,
+			typepool_object_uri(pool, allocator),
+			TYPEPOOL_OBJECT_TYPE,
+			"abap",
+			source,
+			allocator,
+		),
 	}
 	_, _ = dep_store.put_artifact(store, profile, &artifact, allocator)
 }
@@ -361,18 +448,44 @@ insert_unique_typepool_symbol :: proc(symbols: ^[dynamic]string, name: string, a
 add_typepool_source_input :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
+	remote_candidates: []deps.Remote_Dependency_Candidate,
 	pool, source: string,
 	uri_keys: ^map[string]bool,
 	allocator: mem.Allocator,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	uri := typepool_dependency_uri(pool, allocator)
 	if !project_input_uri_key_add_if_missing(uri_keys, uri) {
 		return false
 	}
+	if dependency_summaries != nil {
+		summary_payload := dependency_interface_summary_payload_from_artifact(
+			TYPEPOOL_OBJECT_KIND,
+			pool,
+			uri,
+			TYPEPOOL_OBJECT_TYPE,
+			"abap",
+			source,
+			allocator,
+		)
+		for candidate in remote_candidates {
+			if summary_input, ok := dependency_summary_input_from_payload(
+				   summary_payload,
+				   candidate,
+				   "",
+				   dependency_summaries.allocator,
+			   );
+			   ok {
+				append(dependency_summaries, summary_input)
+				return true
+			}
+		}
+		return false
+	}
 	input := analyze.Source_Input {
 		uri    = uri,
 		source = source,
-		mode   = .Dependency_Interface,
+		role = .Dependency_Interface_Source,
 	}
 	append_dependency_input(
 		candidates,

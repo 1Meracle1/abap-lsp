@@ -40,6 +40,8 @@ Workspace :: struct {
 	adt_config:         adt.Connection_Config,
 	has_adt:            bool,
 	has_dotenv:         bool,
+	projects:           [dynamic]^Project_Slot,
+	projects_by_object: map[Dependency_Object_Key][dynamic]Project_Id,
 }
 
 open_workspace :: proc(
@@ -146,6 +148,7 @@ open_standalone_workspace :: proc(
 }
 
 workspace_destroy :: proc(workspace: ^Workspace, allocator: mem.Allocator) {
+	workspace_snapshot_state_destroy(workspace, allocator)
 	if workspace.has_adt {
 		adt.client_destroy(&workspace.adt_client, allocator)
 		adt.connection_config_destroy(&workspace.adt_config, allocator)

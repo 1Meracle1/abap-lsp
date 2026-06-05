@@ -11,11 +11,13 @@ import "core:mem"
 import "core:strings"
 
 Dependency_Store_Task_Result :: struct {
-	record:   dep_store.Stored_Artifact_Record,
-	input:    analyze.Source_Input,
-	ok:       bool,
-	negative: bool,
-	err:      dep_store.Store_Error,
+	record:          dep_store.Stored_Artifact_Record,
+	input:           analyze.Source_Input,
+	summary_payload: string,
+	ok:              bool,
+	has_input:       bool,
+	negative:        bool,
+	err:             dep_store.Store_Error,
 }
 
 Dependency_Store_Batch_Payload :: struct {
@@ -24,6 +26,7 @@ Dependency_Store_Batch_Payload :: struct {
 	candidates:     []deps.Remote_Dependency_Candidate,
 	any_profile:    bool,
 	connection_key: string,
+	prefer_summary: bool,
 	result_arenas:  []mem.Dynamic_Arena,
 	results:        []^Dependency_Store_Task_Result,
 	offset:         int,
@@ -41,6 +44,7 @@ add_dependency_cache_matches :: proc(
 	pool: ^execution.Pool,
 	target_uri: string,
 	trace_source: string,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> Cache_Phase_Result {
 	result := Cache_Phase_Result {
 		adt_candidates   = make(
@@ -73,6 +77,7 @@ add_dependency_cache_matches :: proc(
 		seen_artifacts,
 		trace_source,
 		&uri_keys,
+		dependency_summaries,
 	) {
 		result.added = true
 	}
@@ -112,6 +117,7 @@ add_dependency_cache_matches :: proc(
 			candidates     = remote_candidates[start:end],
 			any_profile    = any_profile,
 			connection_key = connection_key,
+			prefer_summary = dependency_summaries != nil,
 			result_arenas  = result_arenas,
 			results        = results,
 			offset         = start,
@@ -137,6 +143,7 @@ add_dependency_cache_matches :: proc(
 			seen_artifacts,
 			trace_source,
 			&uri_keys,
+			dependency_summaries,
 		) {
 			result.added = true
 		} else if task_result == nil || task_result.err != .None {
@@ -164,6 +171,7 @@ add_typepool_cache_matches :: proc(
 	seen_artifacts: ^map[i64]bool,
 	trace_source: string,
 	uri_keys: ^map[string]bool,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	names := make([dynamic]string, 0, len(remote_candidates), context.temp_allocator)
 	for candidate in remote_candidates {
@@ -198,11 +206,53 @@ add_typepool_cache_matches :: proc(
 	}
 	added := false
 	for &record in records {
-		if record.artifact_id in seen_artifacts^ ||
-		   typepool_source_has_pending_expansion(record.source_text, context.temp_allocator) {
+		if record.artifact_id in seen_artifacts^ {
 			continue
 		}
 		candidate := deps.Remote_Dependency_Candidate{name = record.object_name, kind = .Type}
+		if dependency_summaries != nil {
+			if summary_payload, summary_ok, summary_err := dep_store.read_artifact_summary_payload(
+			   store,
+			   record.artifact_id,
+			   context.temp_allocator,
+			   );
+			   summary_err == .None {
+				if !summary_ok {
+					summary_payload = dependency_interface_summary_payload_from_artifact(
+						record.object_kind,
+						record.object_name,
+						record.object_uri,
+						record.object_type,
+						record.file_extension,
+						record.source_text,
+						context.temp_allocator,
+					)
+				}
+				summary_added := false
+				for pending in remote_candidates {
+					if summary_input, ok := dependency_summary_input_from_payload(
+						   summary_payload,
+						   pending,
+						   dependency_record_summary_uri(&record, context.temp_allocator),
+						   dependency_summaries.allocator,
+					   );
+					   ok {
+						append(dependency_summaries, summary_input)
+						seen_artifacts^[record.artifact_id] = true
+						added = true
+						summary_added = true
+						break
+					}
+				}
+				if summary_added {
+					continue
+				}
+			}
+			continue
+		}
+		if typepool_source_has_pending_expansion(record.source_text, context.temp_allocator) {
+			continue
+		}
 		input := source_input_from_dependency_record(&record, candidate, context.temp_allocator)
 		if !project_input_uri_key_add_if_missing(uri_keys, input.uri) {
 			continue
@@ -283,6 +333,7 @@ dependency_store_find_batch_task :: proc(
 			candidate,
 			payload.any_profile,
 			payload.connection_key,
+			payload.prefer_summary,
 			mem.dynamic_arena_allocator(&payload.result_arenas[index]),
 		)
 	}
@@ -295,6 +346,7 @@ dependency_store_find :: proc(
 	candidate: deps.Remote_Dependency_Candidate,
 	any_profile: bool,
 	connection_key: string,
+	prefer_summary: bool,
 	result_allocator: mem.Allocator,
 ) -> ^Dependency_Store_Task_Result {
 	result := new(Dependency_Store_Task_Result, result_allocator)
@@ -311,12 +363,7 @@ dependency_store_find :: proc(
 			if cached_dependency_record_is_stale(&record, candidate) {
 				result.ok = false
 			} else {
-				result.record = clone_dependency_record(&record, result_allocator)
-				result.input = source_input_from_dependency_record(
-					&result.record,
-					candidate,
-					result_allocator,
-				)
+				dependency_store_prepare_record_result(result, &record, candidate, prefer_summary, reader, result_allocator)
 			}
 		}
 	} else if profile != nil {
@@ -345,17 +392,63 @@ dependency_store_find :: proc(
 				if cached_dependency_record_is_stale(&record, candidate) {
 					result.ok = false
 				} else {
-					result.record = clone_dependency_record(&record, result_allocator)
-					result.input = source_input_from_dependency_record(
-						&result.record,
-						candidate,
-						result_allocator,
-					)
+					dependency_store_prepare_record_result(result, &record, candidate, prefer_summary, reader, result_allocator)
 				}
 			}
 		}
 	}
 	return result
+}
+
+dependency_store_prepare_record_result :: proc(
+	result: ^Dependency_Store_Task_Result,
+	record: ^dep_store.Stored_Artifact_Record,
+	candidate: deps.Remote_Dependency_Candidate,
+	prefer_summary: bool,
+	reader: ^dep_store.Dependency_Store_Reader,
+	result_allocator: mem.Allocator,
+) {
+	summary_payload, summary_ok, _ := dep_store.reader_read_artifact_summary_payload(
+		reader,
+		record.artifact_id,
+		result_allocator,
+	)
+	if prefer_summary {
+		if !summary_ok {
+			summary_payload = dependency_interface_summary_payload_from_artifact(
+				record.object_kind,
+				record.object_name,
+				record.object_uri,
+				record.object_type,
+				record.file_extension,
+				record.source_text,
+				result_allocator,
+			)
+		}
+		if dependency_summary_payload_satisfies_candidate(summary_payload, candidate) {
+			result.record = clone_dependency_record_metadata(record, result_allocator)
+			result.summary_payload = summary_payload
+			return
+		}
+		result.record = clone_dependency_record(record, result_allocator)
+		result.summary_payload = summary_payload
+		result.input = source_input_from_dependency_record(
+			&result.record,
+			candidate,
+			result_allocator,
+		)
+		result.has_input = true
+		return
+	}
+
+	result.record = clone_dependency_record(record, result_allocator)
+	result.summary_payload = summary_payload
+	result.input = source_input_from_dependency_record(
+		&result.record,
+		candidate,
+		result_allocator,
+	)
+	result.has_input = true
 }
 
 cached_dependency_record_is_stale :: proc(
@@ -372,6 +465,15 @@ clone_dependency_record :: proc(
 	record: ^dep_store.Stored_Artifact_Record,
 	allocator: mem.Allocator,
 ) -> dep_store.Stored_Artifact_Record {
+	out := clone_dependency_record_metadata(record, allocator)
+	out.source_text = strings.clone(record.source_text, allocator)
+	return out
+}
+
+clone_dependency_record_metadata :: proc(
+	record: ^dep_store.Stored_Artifact_Record,
+	allocator: mem.Allocator,
+) -> dep_store.Stored_Artifact_Record {
 	return dep_store.Stored_Artifact_Record {
 		artifact_id = record.artifact_id,
 		package_name = strings.clone(record.package_name, allocator),
@@ -382,7 +484,6 @@ clone_dependency_record :: proc(
 		object_type = strings.clone(record.object_type, allocator),
 		description = strings.clone(record.description, allocator),
 		file_extension = strings.clone(record.file_extension, allocator),
-		source_text = strings.clone(record.source_text, allocator),
 	}
 }
 
@@ -394,6 +495,7 @@ add_dependency_store_task_result :: proc(
 	seen_artifacts: ^map[i64]bool,
 	trace_source: string,
 	uri_keys: ^map[string]bool,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	if result == nil ||
 	   result.err != .None ||
@@ -401,10 +503,36 @@ add_dependency_store_task_result :: proc(
 	   result.record.artifact_id in seen_artifacts^ {
 		return false
 	}
-	seen_artifacts^[result.record.artifact_id] = true
+	if dependency_summaries != nil && result.summary_payload != "" {
+		if summary_input, ok := dependency_summary_input_from_payload(
+			   result.summary_payload,
+			   candidate,
+			   dependency_record_summary_uri(&result.record, context.temp_allocator),
+			   dependency_summaries.allocator,
+		   );
+		   ok {
+			append(dependency_summaries, summary_input)
+			seen_artifacts^[result.record.artifact_id] = true
+			when adt.DEPENDENCY_FETCH_TRACE {
+				trace_eprintf(
+					"adt_fetch\t%s\tadd_summary\t%s\t%s\t%s\t%s\n",
+					trace_source,
+					remote_candidate_kind_text(candidate.kind),
+					candidate.name,
+					result.record.object_kind,
+					result.record.object_name,
+				)
+			}
+			return true
+		}
+	}
+	if !result.has_input {
+		return false
+	}
 	if !project_input_uri_key_add_if_missing(uri_keys, result.input.uri) {
 		return false
 	}
+	seen_artifacts^[result.record.artifact_id] = true
 	input_candidate := candidate
 	if strings.equal_fold(result.record.object_kind, "include") {
 		input_candidate.name = result.record.object_name
@@ -447,6 +575,22 @@ dependency_record_uri :: proc(
 	return strings.to_string(out)
 }
 
+dependency_record_summary_uri :: proc(
+	record: ^dep_store.Stored_Artifact_Record,
+	allocator: mem.Allocator,
+) -> string {
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, "abapls-summary:/")
+	if strings.equal_fold(record.object_kind, TYPEPOOL_OBJECT_KIND) {
+		strings.write_string(&out, "type-pool")
+	} else {
+		strings.write_string(&out, strings.to_lower(record.object_kind, allocator))
+	}
+	strings.write_byte(&out, '/')
+	strings.write_string(&out, strings.to_lower(record.object_name, allocator))
+	return strings.to_string(out)
+}
+
 source_input_from_dependency_record :: proc(
 	record: ^dep_store.Stored_Artifact_Record,
 	candidate: deps.Remote_Dependency_Candidate,
@@ -464,7 +608,7 @@ source_input_from_dependency_record :: proc(
 	input := analyze.Source_Input {
 		uri    = uri,
 		source = source,
-		mode   = .Dependency_Interface,
+		role = .Dependency_Interface_Source,
 	}
 	return input
 }

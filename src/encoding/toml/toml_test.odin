@@ -126,9 +126,9 @@ source = "local-only"
 	{
 		dependencies, ok := table_get_table(result.root, "dependencies")
 		testing.expect(t, ok)
-		source_mode, source_ok := table_get_string(dependencies, "source")
+		role, source_ok := table_get_string(dependencies, "source")
 		testing.expect(t, source_ok)
-		testing.expect_value(t, source_mode, "local-only")
+		testing.expect_value(t, role, "local-only")
 	}
 }
 

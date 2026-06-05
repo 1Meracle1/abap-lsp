@@ -49,11 +49,14 @@ Inline_Symbol_Index :: struct {
 }
 
 Inferred_Unit_Facts :: struct {
-	expression_facts: [dynamic]Expression_Fact_Data,
-	operands:         [dynamic]Operand_Data,
-	symbol_updates:   [dynamic]Inferred_Symbol_Type_Update,
-	assignments:      [dynamic]Inferred_Assignment_Update,
-	concatenates:     [dynamic]Inferred_Concatenate_Update,
+	symbol_updates: [dynamic]Inferred_Symbol_Type_Update,
+	assignments:    [dynamic]Inferred_Assignment_Update,
+	concatenates:   [dynamic]Inferred_Concatenate_Update,
+}
+
+Range_Type_Fact_Ast_Walker :: struct {
+	unit:  ^Source_File_Provider,
+	facts: ^[dynamic]Range_Type_Fact,
 }
 
 inferred_unit_facts_destroy_updates :: proc(facts: ^Inferred_Unit_Facts) {
@@ -62,26 +65,8 @@ inferred_unit_facts_destroy_updates :: proc(facts: ^Inferred_Unit_Facts) {
 	delete(facts.concatenates)
 }
 
-inferred_unit_facts_make :: proc(
-	unit: ^Unit_Analysis,
-	allocator: mem.Allocator,
-	update_allocator: mem.Allocator,
-) -> Inferred_Unit_Facts {
+inferred_unit_facts_make :: proc(unit: ^Source_File_Provider, update_allocator: mem.Allocator) -> Inferred_Unit_Facts {
 	return Inferred_Unit_Facts {
-		expression_facts = make(
-			[dynamic]Expression_Fact_Data,
-			0,
-			len(unit.references) + len(unit.field_accesses) + len(unit.table_exprs) + len(unit.call_sites),
-			allocator,
-		),
-		operands = make(
-			[dynamic]Operand_Data,
-			0,
-			len(unit.operands) + len(unit.references) + len(unit.field_accesses) + len(unit.table_exprs) +
-				len(unit.call_sites) +
-				len(unit.assignment_sites) * 2,
-			allocator,
-		),
 		symbol_updates = make(
 			[dynamic]Inferred_Symbol_Type_Update,
 			0,
@@ -106,73 +91,70 @@ inferred_unit_facts_make :: proc(
 infer_unit_semantic_facts :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	allocator: mem.Allocator,
 ) -> Inferred_Unit_Facts {
-	unit := &project.units[unit_index]
-	out := inferred_unit_facts_make(unit, allocator, base_runtime.heap_allocator())
+	_ = allocator
+	unit := &project.providers.source_files[source_file_index]
+	out := inferred_unit_facts_make(unit, base_runtime.heap_allocator())
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
+	extra_range_facts := make(
+		[dynamic]Range_Type_Fact,
+		0,
+		len(unit.references) + len(unit.field_accesses) + len(unit.table_exprs) + len(unit.call_sites),
+		context.temp_allocator,
+	)
 	inline_symbols := inline_symbol_index_make(unit, context.temp_allocator)
-
-	for &operand in unit.operands {
-		if !(.Syntax in operand.flags) {
-			continue
-		}
-		next := operand
-		if next.has_symbol && next.symbol.unit == unit.unit_id {
-			if symbol(unit, next.symbol.symbol) != nil {
-				next.type_fact = type_fact_from_symbol_handle(project, unit_index, next.symbol)
-			}
-		}
-		append(&out.operands, next)
-	}
 
 	for &ref in unit.references {
 		if ref.namespace != .Value {
-			append(&out.operands, reference_operand(project, unit_index, ref))
+			_ = reference_operand(project, source_file_index, ref)
 			continue
 		}
 		fact := unknown_type_fact()
 		if ref.has_resolution && ref.resolution.kind == .Symbol {
-			fact = type_fact_from_symbol_handle(project, unit_index, ref.resolution.symbol)
+			fact = type_fact_from_symbol_handle(project, source_file_index, ref.resolution.symbol)
 		}
-		push_expression_fact(&out.expression_facts, ref.scope, ref.range, .Reference, fact)
-		append(&out.operands, reference_operand(project, unit_index, ref))
+		append_extra_range_type_fact(&extra_range_facts, ref.range, fact)
+		_ = reference_operand(project, source_file_index, ref)
 	}
 
 	for &access in unit.field_accesses {
 		if access.in_type_position {
 			continue
 		}
-		if fact, ok := resolve_field_access_tail(project, lookup, unit_index, access); ok {
-			if !field_access_fact_is_high_confidence(project, lookup, unit_index, access, fact) {
+		if fact, ok := resolve_field_access_tail(project, lookup, source_file_index, access); ok {
+			if !field_access_fact_is_high_confidence(project, lookup, source_file_index, access, fact) {
 				fact = type_fact_with_confidence(fact, .Low)
 			}
-			range := field_access_range(access)
-			push_expression_fact(&out.expression_facts, access.scope, range, .Selector, fact)
-			push_operand(&out.operands, access.scope, range, .Field, fact, assignable = true)
+			if access.node != nil {
+				add_type_and_value(unit, access.node, access.scope, .Field, fact, assignable = true)
+			}
+			append_extra_range_type_fact(&extra_range_facts, field_access_range(access), fact)
 		}
 	}
 
 	for &site in unit.table_exprs {
-		if fact, ok := table_expr_source_fact(project, lookup, unit_index, site.table_access);
+		if fact, ok := table_expr_source_fact(project, lookup, source_file_index, site.table_access);
 		   ok {
 			if row, row_ok := typecheck_table_row_fact(project, fact); row_ok {
-				push_expression_fact(&out.expression_facts, site.scope, site.range, .Selector, row)
-				push_operand(&out.operands, site.scope, site.range, .Value, row)
+				if site.node != nil {
+					add_type_and_value(unit, site.node, site.scope, .Value, row)
+				}
+				append_extra_range_type_fact(&extra_range_facts, site.range, row)
 			}
 		}
 	}
 
 	for &site in unit.call_sites {
-		fact := call_result_type_fact(project, lookup, unit_index, site)
-		push_expression_fact(&out.expression_facts, site.scope, site.range, .Call_Result, fact)
-		if type_fact_is_known(fact) {
-			push_operand(&out.operands, site.scope, site.range, .Value, fact)
+		fact := call_result_type_fact(project, lookup, source_file_index, site)
+		if site.node != nil {
+			add_type_and_value(unit, site.node, site.scope, .Value, fact)
 		}
-		signature, signature_ok := typecheck_call_signature(project, lookup, unit_index, site)
+		append_extra_range_type_fact(&extra_range_facts, site.range, fact)
+		signature, signature_ok := typecheck_call_signature(project, lookup, source_file_index, site)
 		if !signature_ok || signature.info == nil {
 			continue
 		}
@@ -188,7 +170,7 @@ infer_unit_semantic_facts :: proc(
 			if !param_ok {
 				continue
 			}
-			param_fact := typecheck_parameter_fact(project, lookup, signature.unit_index, signature.info, param^)
+			param_fact := typecheck_parameter_fact(project, lookup, signature.source_file_index, signature.info, param^)
 			if type_fact_known(param_fact) {
 				append(&out.symbol_updates, Inferred_Symbol_Type_Update{symbol = symbol_id, type_fact = param_fact})
 			}
@@ -197,8 +179,8 @@ infer_unit_semantic_facts :: proc(
 
 	range_facts := range_type_fact_index_make(
 		project,
-		unit_index,
-		out.expression_facts[:],
+		source_file_index,
+		extra_range_facts[:],
 		context.temp_allocator,
 	)
 
@@ -228,7 +210,7 @@ infer_unit_semantic_facts :: proc(
 		lhs := assignment.lhs
 		rhs := assignment.rhs
 		if .Has_Lhs_Target_Access in assignment.flags {
-			if fact, ok := type_fact_for_access(project, lookup, unit_index, assignment.lhs_target_access);
+			if fact, ok := type_fact_for_access(project, lookup, source_file_index, assignment.lhs_target_access);
 			   ok {
 				lhs = fact
 			}
@@ -245,12 +227,6 @@ infer_unit_semantic_facts :: proc(
 			} else {
 				rhs = unknown_type_fact()
 			}
-		}
-		if assignment.lhs_range.end > assignment.lhs_range.start {
-			push_operand(&out.operands, assignment.scope, assignment.lhs_range, .Variable, lhs, assignable = true)
-		}
-		if assignment.rhs_range.end > assignment.rhs_range.start {
-			push_operand(&out.operands, assignment.scope, assignment.rhs_range, .Value, rhs)
 		}
 		append(&out.assignments, Inferred_Assignment_Update{index = i, lhs = lhs, rhs = rhs})
 		if symbol_id, ok := inline_symbol_at_range_indexed(&inline_symbols, assignment.lhs_range);
@@ -278,18 +254,18 @@ infer_unit_semantic_facts :: proc(
 table_expr_source_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	access: Field_Access,
 ) -> (Type_Fact_Data, bool) {
 	if len(access.field_path) == 0 {
-		if base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name); ok {
-			return type_fact_from_symbol_handle(project, unit_index, base), true
+		if base, ok := value_handle_for_name(project, lookup, source_file_index, access.scope, access.base_name); ok {
+			return type_fact_from_symbol_handle(project, source_file_index, base), true
 		}
 	}
-	return type_fact_for_access(project, lookup, unit_index, access)
+	return type_fact_for_access(project, lookup, source_file_index, access)
 }
 
-open_sql_star_table_target :: proc(unit: ^Unit_Analysis, query_id: int) -> bool {
+open_sql_star_table_target :: proc(unit: ^Source_File_Provider, query_id: int) -> bool {
 	count := 0
 	for &projection in unit.sql_projections {
 		if projection.query_id != query_id {
@@ -306,7 +282,7 @@ open_sql_star_table_target :: proc(unit: ^Unit_Analysis, query_id: int) -> bool 
 field_access_fact_is_high_confidence :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	access: Field_Access,
 	fact: Type_Fact_Data,
 ) -> bool {
@@ -340,7 +316,7 @@ field_access_fact_is_high_confidence :: proc(
 			return false
 		}
 	}
-	class_handle, ok := class_handle_for_field_access_base(project, lookup, unit_index, access)
+	class_handle, ok := class_handle_for_field_access_base(project, lookup, source_file_index, access)
 	if !ok {
 		return false
 	}
@@ -349,62 +325,58 @@ field_access_fact_is_high_confidence :: proc(
 		lookup,
 		class_handle,
 		access.field_path[0],
-		unit_index,
+		source_file_index,
 		access.scope,
 	)
 	if !member_ok {
 		return false
 	}
-	member_unit_index := unit_id_index(member.unit)
-	if member_unit_index < 0 || member_unit_index >= len(project.units) {
+	member_source_file_index := source_file_id_index(member.unit)
+	if member_source_file_index < 0 || member_source_file_index >= len(project.providers.source_files) {
 		return false
 	}
-	info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+	info := entity_decl_info(&project.providers.source_files[member_source_file_index], member.symbol)
 	return info != nil && info.member_kind == .Attribute
 }
 
 class_handle_for_field_access_base :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	access: Field_Access,
-) -> (Symbol_Handle, bool) {
+) -> (Symbol_Link, bool) {
 	if access.base_namespace == .Type {
-		return resolve_type_name_in_project_lookup(project, lookup, unit_index, access.base_name)
+		return resolve_type_name_in_project_lookup(project, lookup, source_file_index, access.base_name)
 	}
 	if access.base_name == "super" {
-		class_symbol, ok := enclosing_instance_method_class_owner_unit(&project.units[unit_index], access.scope)
+		class_symbol, ok := enclosing_instance_method_class_owner_unit(&project.providers.source_files[source_file_index], access.scope)
 		if !ok {
 			return {}, false
 		}
 		return direct_superclass_handle_lookup(
 			project,
 			lookup,
-			Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol},
+			Symbol_Link{unit = project.providers.source_files[source_file_index].source_file_id, symbol = class_symbol},
 		)
 	}
-	base, ok := value_handle_for_name(project, lookup, unit_index, access.scope, access.base_name)
+	base, ok := value_handle_for_name(project, lookup, source_file_index, access.scope, access.base_name)
 	if !ok {
 		return {}, false
 	}
-	return class_handle_from_symbol(project, lookup, unit_index, base)
+	return class_handle_from_symbol(project, lookup, source_file_index, base)
 }
 
 apply_inferred_project_facts :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
 	inferred: []Inferred_Unit_Facts,
-	unit_allocators: []mem.Allocator,
+	source_file_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) -> bool {
 	rerun := false
-	for &facts, unit_index in inferred {
-		unit := &project.units[unit_index]
-		unit_alloc := unit_allocator(unit_allocators, unit_index, allocator)
-		delete(unit.expression_facts)
-		unit.expression_facts = facts.expression_facts
-		delete(unit.operands)
-		unit.operands = facts.operands
+	for &facts, source_file_index in inferred {
+		unit := &project.providers.source_files[source_file_index]
+		unit_alloc := unit_allocator(source_file_allocators, source_file_index, allocator)
 		for &update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
@@ -413,23 +385,14 @@ apply_inferred_project_facts :: proc(
 				update_structure := symbol_update_structure_for_unit(
 					project,
 					lookup,
-					unit_index,
+					source_file_index,
 					unit,
 					update,
 					unit_alloc,
 				)
-				rerun = rerun || s.structure != update_structure ||
-				        s.has_declared_type != update.type_fact.has_declared_type ||
-				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
-				if update_structure != INVALID_STRUCTURE_ID {
-					s.structure = update_structure
-				}
-				if update.type_fact.has_declared_type {
-					s.declared_type = update.type_fact.declared_type
-					s.has_declared_type = true
-					s.type_clause_display = update.type_fact.type_clause_display
-				}
-				s.type_id = type_id_from_symbol_data(unit, s)
+				rerun = rerun || symbol_type_shape_differs(s, update_structure, update.type_fact)
+				symbol_apply_inferred_type_fact(unit, s, update_structure, update.type_fact)
+				update_symbol_node_type_and_value(project, source_file_index, s)
 			}
 		}
 		for &update in facts.assignments {
@@ -451,18 +414,14 @@ apply_inferred_project_facts_for_indices :: proc(
 	lookup: ^Project_Index,
 	inferred: []Inferred_Unit_Facts,
 	indices: []int,
-	unit_allocators: []mem.Allocator,
+	source_file_allocators: []mem.Allocator,
 	allocator: mem.Allocator,
 ) -> bool {
 	rerun := false
-	for unit_index, i in indices {
+	for source_file_index, i in indices {
 		facts := &inferred[i]
-		unit := &project.units[unit_index]
-		unit_alloc := unit_allocator(unit_allocators, unit_index, allocator)
-		delete(unit.expression_facts)
-		unit.expression_facts = facts.expression_facts
-		delete(unit.operands)
-		unit.operands = facts.operands
+		unit := &project.providers.source_files[source_file_index]
+		unit_alloc := unit_allocator(source_file_allocators, source_file_index, allocator)
 		for &update in facts.symbol_updates {
 			idx := symbol_id_index(update.symbol)
 			assert(idx >= 0 && idx < len(unit.symbols))
@@ -471,23 +430,14 @@ apply_inferred_project_facts_for_indices :: proc(
 				update_structure := symbol_update_structure_for_unit(
 					project,
 					lookup,
-					unit_index,
+					source_file_index,
 					unit,
 					update,
 					unit_alloc,
 				)
-				rerun = rerun || s.structure != update_structure ||
-				        s.has_declared_type != update.type_fact.has_declared_type ||
-				        !field_type_refs_equal(s.declared_type, update.type_fact.declared_type)
-				if update_structure != INVALID_STRUCTURE_ID {
-					s.structure = update_structure
-				}
-				if update.type_fact.has_declared_type {
-					s.declared_type = update.type_fact.declared_type
-					s.has_declared_type = true
-					s.type_clause_display = update.type_fact.type_clause_display
-				}
-				s.type_id = type_id_from_symbol_data(unit, s)
+				rerun = rerun || symbol_type_shape_differs(s, update_structure, update.type_fact)
+				symbol_apply_inferred_type_fact(unit, s, update_structure, update.type_fact)
+				update_symbol_node_type_and_value(project, source_file_index, s)
 			}
 		}
 		for &update in facts.assignments {
@@ -504,29 +454,19 @@ apply_inferred_project_facts_for_indices :: proc(
 	return rerun
 }
 
-field_type_refs_equal :: proc(a, b: Field_Type_Ref_Data) -> bool {
-	if a.namespace != b.namespace ||
-	   a.is_ref != b.is_ref ||
-	   a.base_name != b.base_name ||
-	   len(a.field_path) != len(b.field_path) {
-		return false
+update_symbol_node_type_and_value :: proc(
+	project: ^Project_Analysis,
+	source_file_index: int,
+	s: ^Symbol_Data,
+) {
+	if s == nil || s.node == nil {
+		return
 	}
-	for i in 0 ..< len(a.field_path) {
-		if a.field_path[i] != b.field_path[i] {
-			return false
-		}
-		a_deref := i < len(a.field_derefs) && a.field_derefs[i]
-		b_deref := i < len(b.field_derefs) && b.field_derefs[i]
-		if a_deref != b_deref {
-			return false
-		}
-		a_selector := a.field_selectors[i] if i < len(a.field_selectors) else ast.Selector_Op.Dash
-		b_selector := b.field_selectors[i] if i < len(b.field_selectors) else ast.Selector_Op.Dash
-		if a_selector != b_selector {
-			return false
-		}
-	}
-	return true
+	unit := &project.providers.source_files[source_file_index]
+	handle := Symbol_Link{unit = unit.source_file_id, symbol = s.id}
+	mode, assignable := operand_mode_from_symbol(project, handle)
+	fact := type_fact_from_symbol_handle(project, source_file_index, handle)
+	add_type_and_value(unit, s.node, s.scope, mode, fact, assignable = assignable)
 }
 
 type_fact_known :: proc(fact: Type_Fact_Data) -> bool {
@@ -536,11 +476,11 @@ type_fact_known :: proc(fact: Type_Fact_Data) -> bool {
 	       fact.table_line != nil
 }
 
-type_fact_local_structure :: proc(fact: Type_Fact_Data, unit_id: Unit_Id) -> Structure_Id {
+type_fact_local_structure :: proc(fact: Type_Fact_Data, source_file_id: Source_File_Id) -> Structure_Id {
 	if fact.structure == INVALID_STRUCTURE_ID {
 		return INVALID_STRUCTURE_ID
 	}
-	if fact.structure_unit == INVALID_UNIT_ID || fact.structure_unit == unit_id {
+	if fact.structure_unit == INVALID_SOURCE_FILE_ID || fact.structure_unit == source_file_id {
 		return fact.structure
 	}
 	return INVALID_STRUCTURE_ID
@@ -549,8 +489,8 @@ type_fact_local_structure :: proc(fact: Type_Fact_Data, unit_id: Unit_Id) -> Str
 symbol_update_structure_for_unit :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
-	unit: ^Unit_Analysis,
+	source_file_index: int,
+	unit: ^Source_File_Provider,
 	update: Inferred_Symbol_Type_Update,
 	allocator: mem.Allocator,
 ) -> Structure_Id {
@@ -558,7 +498,7 @@ symbol_update_structure_for_unit :: proc(
 		return open_sql_star_table_target_structure_for_unit(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			unit,
 			update.sql_star_query_id,
 			update.sql_star_name,
@@ -571,13 +511,13 @@ symbol_update_structure_for_unit :: proc(
 open_sql_star_table_target_structure_for_unit :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
-	unit: ^Unit_Analysis,
+	source_file_index: int,
+	unit: ^Source_File_Provider,
 	query_id: int,
 	target_name: string,
 	allocator: mem.Allocator,
 ) -> Structure_Id {
-	source_count, single, ok := open_sql_star_source_count(project, lookup, unit_index, query_id)
+	source_count, single, ok := open_sql_star_source_count(project, lookup, source_file_index, query_id)
 	if !ok {
 		return INVALID_STRUCTURE_ID
 	}
@@ -598,10 +538,10 @@ open_sql_star_table_target_structure_for_unit :: proc(
 			if !sql_star_projection_selects_source(projection, source) {
 				continue
 			}
-			fact, fact_ok := sql_source_structure_fact(project, lookup, unit_index, source)
+			fact, fact_ok := sql_source_structure_fact(project, lookup, source_file_index, source)
 			assert(fact_ok)
-			source_unit_index := unit_id_index(fact.structure_unit)
-			source_structure := structure(&project.units[source_unit_index], fact.structure)
+			source_source_file_index := source_file_id_index(fact.structure_unit)
+			source_structure := structure(&project.providers.source_files[source_source_file_index], fact.structure)
 			assert(source_structure != nil)
 			for &field in source_structure.fields {
 				append(&fields, field)
@@ -617,10 +557,10 @@ open_sql_star_table_target_structure_for_unit :: proc(
 open_sql_star_source_count :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	query_id: int,
 ) -> (int, Type_Fact_Data, bool) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	count := 0
 	single := Type_Fact_Data{}
 	for &projection in unit.sql_projections {
@@ -631,7 +571,7 @@ open_sql_star_source_count :: proc(
 			if !sql_star_projection_selects_source(projection, source) {
 				continue
 			}
-			fact, ok := sql_source_structure_fact(project, lookup, unit_index, source)
+			fact, ok := sql_source_structure_fact(project, lookup, source_file_index, source)
 			if !ok {
 				return 0, {}, false
 			}
@@ -656,28 +596,28 @@ sql_star_projection_selects_source :: proc(projection: Sql_Projection_Data, sour
 sql_source_structure_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	source: Sql_Source_Data,
 ) -> (Type_Fact_Data, bool) {
 	if source.resolution != .External {
 		return {}, false
 	}
-	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, source.name)
+	handle, ok := resolve_type_name_in_project_lookup(project, lookup, source_file_index, source.name)
 	if !ok {
 		return {}, false
 	}
-	source_unit_index := unit_id_index(handle.unit)
-	if source_unit_index < 0 || source_unit_index >= len(project.units) {
+	source_source_file_index := source_file_id_index(handle.unit)
+	if source_source_file_index < 0 || source_source_file_index >= len(project.providers.source_files) {
 		return {}, false
 	}
-	source_symbol := symbol(&project.units[source_unit_index], handle.symbol)
+	source_symbol := symbol(&project.providers.source_files[source_source_file_index], handle.symbol)
 	if source_symbol == nil || source_symbol.structure == INVALID_STRUCTURE_ID {
 		return {}, false
 	}
 	return Type_Fact_Data {
 		structure = source_symbol.structure,
 		structure_unit = handle.unit,
-		confidence = .High if project.units[source_unit_index].source_mode == .Full else .Low,
+		confidence = .High if project.providers.source_files[source_source_file_index].role == .Full_Source else .Low,
 	}, true
 }
 
@@ -691,19 +631,19 @@ open_sql_star_structure_name :: proc(target_name: string, allocator: mem.Allocat
 
 type_fact_structure_for_unit :: proc(
 	project: ^Project_Analysis,
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	fact: Type_Fact_Data,
 	allocator: mem.Allocator,
 ) -> Structure_Id {
-	local := type_fact_local_structure(fact, unit.unit_id)
-	if local != INVALID_STRUCTURE_ID || fact.structure_unit == INVALID_UNIT_ID {
+	local := type_fact_local_structure(fact, unit.source_file_id)
+	if local != INVALID_STRUCTURE_ID || fact.structure_unit == INVALID_SOURCE_FILE_ID {
 		return local
 	}
-	source_index := unit_id_index(fact.structure_unit)
-	if source_index < 0 || source_index >= len(project.units) {
+	source_index := source_file_id_index(fact.structure_unit)
+	if source_index < 0 || source_index >= len(project.providers.source_files) {
 		return INVALID_STRUCTURE_ID
 	}
-	source := &project.units[source_index]
+	source := &project.providers.source_files[source_index]
 	source_structure := structure(source, fact.structure)
 	if source_structure == nil {
 		return INVALID_STRUCTURE_ID
@@ -727,16 +667,16 @@ type_fact_structure_for_unit :: proc(
 
 range_type_fact_index_make :: proc(
 	project: ^Project_Analysis,
-	unit_index: int,
-	expression_facts: []Expression_Fact_Data,
+	source_file_index: int,
+	extra_range_facts: []Range_Type_Fact,
 	allocator: mem.Allocator,
 ) -> Range_Type_Fact_Index {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	index := Range_Type_Fact_Index {
 		facts = make(
 			[dynamic]Range_Type_Fact,
 			0,
-			len(unit.references) + len(unit.expression_facts) + len(expression_facts),
+			len(unit.references) + len(extra_range_facts),
 			allocator,
 		),
 	}
@@ -744,23 +684,58 @@ range_type_fact_index_make :: proc(
 		if ref.namespace != .Value || !ref.has_resolution || ref.resolution.kind != .Symbol {
 			continue
 		}
-		fact := type_fact_from_symbol_handle(project, unit_index, ref.resolution.symbol)
+		fact := type_fact_from_symbol_handle(project, source_file_index, ref.resolution.symbol)
 		if type_fact_known(fact) {
 			append(&index.facts, Range_Type_Fact{range = ref.range, type_fact = fact})
 		}
 	}
-	for fact in unit.expression_facts {
+	range_type_fact_index_append_ast(unit, &index.facts)
+	for fact in extra_range_facts {
 		if type_fact_known(fact.type_fact) {
-			append(&index.facts, Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = 1})
-		}
-	}
-	for &fact in expression_facts {
-		if type_fact_known(fact.type_fact) {
-			append(&index.facts, Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = 2})
+			append(&index.facts, fact)
 		}
 	}
 	slice.sort_by(index.facts[:], range_type_fact_less)
 	return index
+}
+
+range_type_fact_index_append_ast :: proc(
+	unit: ^Source_File_Provider,
+	facts: ^[dynamic]Range_Type_Fact,
+) {
+	if unit == nil || unit.root == nil {
+		return
+	}
+	collector := Range_Type_Fact_Ast_Walker{unit = unit, facts = facts}
+	visitor := ast.Visitor{visit = range_type_fact_ast_visit, data = &collector}
+	ast.walk(&visitor, unit.root)
+}
+
+range_type_fact_ast_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil || !(.Has_Type_And_Value in node.sem.flags) {
+		return v
+	}
+	collector := cast(^Range_Type_Fact_Ast_Walker)v.data
+	fact := type_fact_from_type_and_value(node.sem.tav)
+	if !type_fact_known(fact) {
+		return v
+	}
+	rank := 1
+	if node.sem.tav.mode == .Field || node.sem.tav.mode == .Method {
+		rank = 3
+	} else if node.sem.tav.mode != .No_Value && node.sem.tav.mode != .Invalid {
+		rank = 2
+	}
+	append(collector.facts, Range_Type_Fact{range = node.range, type_fact = fact, rank = rank})
+	return v
+}
+
+append_extra_range_type_fact :: proc(
+	facts: ^[dynamic]Range_Type_Fact,
+	range: tokenizer.Range,
+	fact: Type_Fact_Data,
+) {
+	append(facts, Range_Type_Fact{range = range, type_fact = fact, rank = 2})
 }
 
 range_type_fact_less :: proc(a, b: Range_Type_Fact) -> bool {
@@ -774,7 +749,7 @@ range_type_fact_less :: proc(a, b: Range_Type_Fact) -> bool {
 }
 
 inline_symbol_index_make :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	allocator: mem.Allocator,
 ) -> Inline_Symbol_Index {
 	index := Inline_Symbol_Index {
@@ -798,37 +773,37 @@ inline_symbol_range_less :: proc(a, b: Inline_Symbol_Range) -> bool {
 
 type_fact_from_symbol_handle :: proc(
 	project: ^Project_Analysis,
-	site_unit_index: int,
-	handle: Symbol_Handle,
+	site_source_file_index: int,
+	handle: Symbol_Link,
 ) -> Type_Fact_Data {
-	_ = site_unit_index
-	unit_index := unit_id_index(handle.unit)
-	if unit_index < 0 || unit_index >= len(project.units) {
+	_ = site_source_file_index
+	source_file_index := source_file_id_index(handle.unit)
+	if source_file_index < 0 || source_file_index >= len(project.providers.source_files) {
 		return unknown_type_fact()
 	}
-	s := symbol(&project.units[unit_index], handle.symbol)
+	s := symbol(&project.providers.source_files[source_file_index], handle.symbol)
 	if s == nil {
 		return unknown_type_fact()
 	}
 	return Type_Fact_Data {
 		type_id = s.type_id,
-		type_unit = handle.unit if type_id_is_known(s.type_id) else INVALID_UNIT_ID,
+		type_unit = handle.unit if type_id_is_known(s.type_id) else INVALID_SOURCE_FILE_ID,
 		structure = s.structure,
-		structure_unit = handle.unit if s.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
+		structure_unit = handle.unit if s.structure != INVALID_STRUCTURE_ID else INVALID_SOURCE_FILE_ID,
 		declared_type = s.declared_type,
 		has_declared_type = s.has_declared_type,
 		type_clause_display = s.type_clause_display,
-		confidence = .High if project.units[unit_index].source_mode == .Full else .Low,
+		confidence = .High if project.providers.source_files[source_file_index].role == .Full_Source else .Low,
 	}
 }
 
 type_fact_for_access :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	access: Field_Access,
 ) -> (Type_Fact_Data, bool) {
-	return resolve_field_access_tail(project, lookup, unit_index, access)
+	return resolve_field_access_tail(project, lookup, source_file_index, access)
 }
 
 type_fact_for_range_indexed :: proc(
@@ -877,27 +852,27 @@ range_type_fact_lower_bound :: proc(facts: []Range_Type_Fact, start: int) -> int
 call_result_type_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	site: Call_Site_Data,
 ) -> Type_Fact_Data {
 	method_name := site.target.method_name
-	class_handle: Symbol_Handle
+	class_handle: Symbol_Link
 	ok := false
 	#partial switch site.target.kind {
 	case .Routine:
-		return builtin_routine_result_type_fact(&project.units[unit_index], site.target.routine_name)
+		return builtin_routine_result_type_fact(&project.providers.source_files[source_file_index], site.target.routine_name)
 	case .Method:
 		if method_name == "" {
 			return unknown_type_fact()
 		}
-		class_handle, ok = class_handle_for_call_target(project, lookup, unit_index, site)
+		class_handle, ok = class_handle_for_call_target(project, lookup, source_file_index, site)
 	case .Implicit_Method:
 		if method_name == "" {
 			return unknown_type_fact()
 		}
-		class_symbol, class_ok := enclosing_class_owner_unit(&project.units[unit_index], site.scope)
+		class_symbol, class_ok := enclosing_class_owner_unit(&project.providers.source_files[source_file_index], site.scope)
 		if class_ok {
-			class_handle = Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol}
+			class_handle = Symbol_Link{unit = project.providers.source_files[source_file_index].source_file_id, symbol = class_symbol}
 			ok = true
 		}
 	case:
@@ -906,20 +881,20 @@ call_result_type_fact :: proc(
 	if !ok {
 		return unknown_type_fact()
 	}
-	if fact, trusted := direct_call_result_type_fact(project, lookup, unit_index, site, class_handle, method_name);
+	if fact, trusted := direct_call_result_type_fact(project, lookup, source_file_index, site, class_handle, method_name);
 	   trusted {
 		return fact
 	}
-	member, member_unit_index, member_ok := class_member_in_hierarchy_with_unit(
+	member, member_source_file_index, member_ok := class_member_in_hierarchy_with_unit(
 		project,
 		lookup,
 		class_handle,
 		site.target.method_name,
 		false,
-		unit_index,
+		source_file_index,
 		site.scope,
 	)
-	member_info := entity_decl_info(&project.units[member_unit_index], member.symbol) if member_ok else nil
+	member_info := entity_decl_info(&project.providers.source_files[member_source_file_index], member.symbol) if member_ok else nil
 	if !member_ok || member_info == nil || member_info.member_kind != .Method {
 		return unknown_type_fact()
 	}
@@ -927,25 +902,25 @@ call_result_type_fact :: proc(
 		project,
 		lookup,
 		member,
-		member_unit_index,
+		member_source_file_index,
 		member_info,
 		.Low,
 	); fact_ok {
 		return fact
 	}
-	return type_fact_with_confidence(class_member_type_fact(project, member, member_unit_index), .Low)
+	return type_fact_with_confidence(class_member_type_fact(project, member, member_source_file_index), .Low)
 }
 
-builtin_routine_result_type_fact :: proc(unit: ^Unit_Analysis, name: string) -> Type_Fact_Data {
+builtin_routine_result_type_fact :: proc(unit: ^Source_File_Provider, name: string) -> Type_Fact_Data {
 	spec := builtin_routine_spec(name)
 	if spec == nil || spec.return_type == "" {
 		return unknown_type_fact()
 	}
 	return Type_Fact_Data {
 		type_id = type_builtin(unit, spec.return_type),
-		type_unit = unit.unit_id,
+		type_unit = unit.source_file_id,
 		structure = INVALID_STRUCTURE_ID,
-		structure_unit = INVALID_UNIT_ID,
+		structure_unit = INVALID_SOURCE_FILE_ID,
 		declared_type = builtin_type_ref(spec.return_type),
 		has_declared_type = true,
 		confidence = .High,
@@ -955,9 +930,9 @@ builtin_routine_result_type_fact :: proc(unit: ^Unit_Analysis, name: string) -> 
 direct_call_result_type_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	site: Call_Site_Data,
-	class_handle: Symbol_Handle,
+	class_handle: Symbol_Link,
 	method_name: string,
 ) -> (Type_Fact_Data, bool) {
 	if site.target.kind == .Method &&
@@ -972,38 +947,38 @@ direct_call_result_type_fact :: proc(
 	if !member_ok {
 		return unknown_type_fact(), false
 	}
-	member_unit_index := unit_id_index(member.unit)
-	if member_unit_index < 0 ||
-	   member_unit_index >= len(project.units) ||
-	   project.units[member_unit_index].source_mode != .Full {
+	member_source_file_index := source_file_id_index(member.unit)
+	if member_source_file_index < 0 ||
+	   member_source_file_index >= len(project.providers.source_files) ||
+	   project.providers.source_files[member_source_file_index].role != .Full_Source {
 		return unknown_type_fact(), false
 	}
-	info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+	info := entity_decl_info(&project.providers.source_files[member_source_file_index], member.symbol)
 	if info == nil || info.member_kind != .Method || .Is_Redefinition in info.flags {
 		return unknown_type_fact(), false
 	}
-	return method_signature_result_type_fact(project, lookup, member, member_unit_index, info, .High)
+	return method_signature_result_type_fact(project, lookup, member, member_source_file_index, info, .High)
 }
 
 method_signature_result_type_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	member: Symbol_Handle,
-	member_unit_index: int,
+	member: Symbol_Link,
+	member_source_file_index: int,
 	info: ^Decl_Info_Data,
 	confidence: Type_Fact_Confidence,
 ) -> (Type_Fact_Data, bool) {
 	signature := member
-	signature_unit_index := member_unit_index
+	signature_source_file_index := member_source_file_index
 	signature_info := info
-	if info.effective_signature.unit != INVALID_UNIT_ID &&
+	if info.effective_signature.unit != INVALID_SOURCE_FILE_ID &&
 	   info.effective_signature.symbol != INVALID_SYMBOL_ID {
-		unit_index := unit_id_index(info.effective_signature.unit)
-		if unit_index >= 0 && unit_index < len(project.units) {
-			if effective := entity_decl_info(&project.units[unit_index], info.effective_signature.symbol);
+		source_file_index := source_file_id_index(info.effective_signature.unit)
+		if source_file_index >= 0 && source_file_index < len(project.providers.source_files) {
+			if effective := entity_decl_info(&project.providers.source_files[source_file_index], info.effective_signature.symbol);
 			   effective != nil {
 				signature = info.effective_signature
-				signature_unit_index = unit_index
+				signature_source_file_index = source_file_index
 				signature_info = effective
 			}
 		}
@@ -1012,16 +987,16 @@ method_signature_result_type_fact :: proc(
 		if param.section != .Method_Returning && param.section != .Method_Receiving {
 			continue
 		}
-		fact := typecheck_parameter_fact(project, lookup, signature_unit_index, signature_info, param)
-		impl_scope, impl_unit_index, has_impl := method_implementation_scope(
+		fact := typecheck_parameter_fact(project, lookup, signature_source_file_index, signature_info, param)
+		impl_scope, impl_source_file_index, has_impl := method_implementation_scope(
 			project,
 			signature,
-			signature_unit_index,
+			signature_source_file_index,
 			signature_info,
 		)
 		if inferred, inferred_ok := method_return_assignment_type_fact(
 			project,
-			impl_unit_index if has_impl else signature_unit_index,
+			impl_source_file_index if has_impl else signature_source_file_index,
 			impl_scope if has_impl else signature_info.body_scope,
 			param,
 		); inferred_ok &&
@@ -1036,45 +1011,45 @@ method_signature_result_type_fact :: proc(
 
 method_implementation_scope :: proc(
 	project: ^Project_Analysis,
-	signature: Symbol_Handle,
-	signature_unit_index: int,
+	signature: Symbol_Link,
+	signature_source_file_index: int,
 	signature_info: ^Decl_Info_Data,
 ) -> (Scope_Id, int, bool) {
 	if signature_info.body_scope != INVALID_SCOPE_ID {
-		return signature_info.body_scope, signature_unit_index, true
+		return signature_info.body_scope, signature_source_file_index, true
 	}
-	if signature_info.implementation_unit != INVALID_UNIT_ID {
-		unit_index := unit_id_index(signature_info.implementation_unit)
+	if signature_info.implementation_unit != INVALID_SOURCE_FILE_ID {
+		source_file_index := source_file_id_index(signature_info.implementation_unit)
 		if scope, ok := method_implementation_scope_in_unit(
 			project,
-			unit_index,
+			source_file_index,
 			signature,
 			signature_info.implementation_range,
 		); ok {
-			return scope, unit_index, true
+			return scope, source_file_index, true
 		}
 	}
 	if scope, ok := method_implementation_scope_in_unit(
 		project,
-		signature_unit_index,
+		signature_source_file_index,
 		signature,
 		signature_info.implementation_range,
 	); ok {
-		return scope, signature_unit_index, true
+		return scope, signature_source_file_index, true
 	}
 	return INVALID_SCOPE_ID, -1, false
 }
 
 method_implementation_scope_in_unit :: proc(
 	project: ^Project_Analysis,
-	unit_index: int,
-	signature: Symbol_Handle,
+	source_file_index: int,
+	signature: Symbol_Link,
 	implementation_range: tokenizer.Range,
 ) -> (Scope_Id, bool) {
-	if unit_index < 0 || unit_index >= len(project.units) {
+	if source_file_index < 0 || source_file_index >= len(project.providers.source_files) {
 		return INVALID_SCOPE_ID, false
 	}
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	for &info in unit.decl_infos {
 		if info.body_scope != INVALID_SCOPE_ID &&
 		   info.kind == .Method &&
@@ -1116,11 +1091,11 @@ type_fact_structure_field_count :: proc(project: ^Project_Analysis, fact: Type_F
 			structure_id = row.structure
 		}
 	}
-	unit_index := unit_id_index(structure_unit)
-	if structure_id == INVALID_STRUCTURE_ID || unit_index < 0 || unit_index >= len(project.units) {
+	source_file_index := source_file_id_index(structure_unit)
+	if structure_id == INVALID_STRUCTURE_ID || source_file_index < 0 || source_file_index >= len(project.providers.source_files) {
 		return 0, false
 	}
-	st := structure(&project.units[unit_index], structure_id)
+	st := structure(&project.providers.source_files[source_file_index], structure_id)
 	if st == nil {
 		return 0, false
 	}
@@ -1129,17 +1104,17 @@ type_fact_structure_field_count :: proc(project: ^Project_Analysis, fact: Type_F
 
 method_return_assignment_type_fact :: proc(
 	project: ^Project_Analysis,
-	unit_index: int,
+	source_file_index: int,
 	body_scope: Scope_Id,
 	param: Decl_Signature_Parameter_Data,
 ) -> (Type_Fact_Data, bool) {
 	if param.name == "" ||
 	   body_scope == INVALID_SCOPE_ID ||
-	   unit_index < 0 ||
-	   unit_index >= len(project.units) {
+	   source_file_index < 0 ||
+	   source_file_index >= len(project.providers.source_files) {
 		return {}, false
 	}
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	out := Type_Fact_Data{}
 	found := false
 	for &site in unit.assignment_sites {
@@ -1163,7 +1138,7 @@ method_return_assignment_type_fact :: proc(
 	return out, found
 }
 
-scope_is_or_child :: proc(unit: ^Unit_Analysis, scope_id, parent: Scope_Id) -> bool {
+scope_is_or_child :: proc(unit: ^Source_File_Provider, scope_id, parent: Scope_Id) -> bool {
 	for current := scope_id; current != INVALID_SCOPE_ID; {
 		if current == parent {
 			return true
@@ -1215,45 +1190,4 @@ field_access_range :: proc(access: Field_Access) -> tokenizer.Range {
 		}
 	}
 	return out
-}
-
-push_expression_fact :: proc(
-	facts: ^[dynamic]Expression_Fact_Data,
-	scope_id: Scope_Id,
-	range: tokenizer.Range,
-	kind: Expression_Fact_Kind,
-	type_fact: Type_Fact_Data,
-) {
-	append(
-		facts,
-		Expression_Fact_Data{scope = scope_id, range = range, kind = kind, type_fact = type_fact},
-	)
-}
-
-push_operand :: proc(
-	operands: ^[dynamic]Operand_Data,
-	scope: Scope_Id,
-	range: tokenizer.Range,
-	mode: Operand_Mode,
-	type_fact: Type_Fact_Data,
-	symbol := Symbol_Handle{},
-	has_symbol := false,
-	assignable := false,
-) {
-	flags := Operand_Flags{}
-	if assignable {
-		flags += {.Assignable}
-	}
-	append(
-		operands,
-		Operand_Data {
-			scope = scope,
-			range = range,
-			mode = mode,
-			type_fact = type_fact,
-			symbol = symbol,
-			has_symbol = has_symbol,
-			flags = flags,
-		},
-	)
 }

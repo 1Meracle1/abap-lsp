@@ -7,15 +7,33 @@ import "src:tokenizer"
 import "core:mem"
 import "core:strings"
 
-Collector :: struct {
+Fact_Model_Builder_Mode :: enum {
+	Declarations,
+	Body_Model,
+}
+
+Declaration_Collector :: struct {
 	root:                                   ^ast.File,
+	source:                                 string,
 	allocator:                              mem.Allocator,
-	unit:                                   ^Unit_Analysis,
+	unit:                                   ^Source_File_Provider,
 	forward_type_symbols:                   map[Symbol_Id]bool,
 	current_scope:                          Scope_Id,
+	structured_groups:                      [dynamic]Structured_Group_Frame,
+}
+
+Fact_Model_Builder :: struct {
+	using declarations:                     Declaration_Collector,
+	mode:                                   Fact_Model_Builder_Mode,
+	facts:                                  ^Source_File_Fact_Model,
+	scope_replay_child_offsets:             map[Scope_Id]int,
 	loop_source_stack:                      [dynamic]Field_Access,
 	loop_group_source_stack:                [dynamic]Loop_Group_Source_Frame,
-	structured_groups:                      [dynamic]Structured_Group_Frame,
+}
+
+Declaration_Collect_Result :: struct {
+	parse_diagnostics: [dynamic]Diagnostic,
+	provided_names:    [dynamic]string,
 }
 
 Loop_Group_Source_Frame :: struct {
@@ -49,64 +67,172 @@ Decl_Info :: struct {
 	checkbox_type:   bool,
 }
 
-collect_unit :: proc(
-	unit_id: Unit_Id,
+collect_source_file :: proc(
+	source_file_id: Source_File_Id,
 	uri, source: string,
 	parsed: parser.Parsed_File,
 	allocator: mem.Allocator,
-	mode := Source_Mode.Full,
-) -> Unit_Analysis {
+	role := Source_File_Role.Full_Source,
+) -> Source_File_Provider {
 	root_range := tokenizer.text_range(0, len(source))
 	if parsed.root != nil {
 		root_range = parsed.root.range
 	}
 
-	unit := unit_analysis_make(unit_id, uri, root_range, allocator)
-	unit.source = source
-	unit.source_mode = mode
-	unit.root = parsed.root
-	if mode == .Full {
-		for e in parsed.errors {
-			append(
-				&unit.diagnostics,
-				Diagnostic {
-					kind = .Syntax_Error,
-					range = e.range,
-					message = strings.clone(e.message, allocator),
-				},
-			)
-		}
+	unit := source_file_provider_make(source_file_id, role, uri, root_range, allocator)
+	_ = collect_file_declarations(&unit, source, parsed, allocator)
+	if role == .Dependency_Interface_Source {
+		source_file_refresh_fact_model(&unit, allocator)
+	} else {
+		collect_source_file_uses(&unit, allocator)
 	}
-	c := Collector {
-		root                                   = parsed.root,
-		allocator                              = allocator,
-		unit                                   = &unit,
-		forward_type_symbols                   = make(map[Symbol_Id]bool, 16, allocator),
-		current_scope                          = unit.root_scope,
+	return unit
+}
+
+collect_file_declarations :: proc(
+	unit: ^Source_File_Provider,
+	source: string,
+	parsed: parser.Parsed_File,
+	allocator: mem.Allocator,
+) -> Declaration_Collect_Result {
+	result := Declaration_Collect_Result {
+		parse_diagnostics = make([dynamic]Diagnostic, 0, len(parsed.errors), allocator),
+		provided_names = make([dynamic]string, 0, 4, allocator),
+	}
+	if unit == nil {
+		return result
+	}
+	unit.root = parsed.root
+	collect_parse_diagnostics(unit, parsed, allocator)
+	c := Fact_Model_Builder {
+		declarations                           = Declaration_Collector {
+			root                                   = parsed.root,
+			source                                 = source,
+			allocator                              = allocator,
+			unit                                   = unit,
+			forward_type_symbols                   = make(map[Symbol_Id]bool, 16, allocator),
+			current_scope                          = unit.root_scope,
+			structured_groups                      = make([dynamic]Structured_Group_Frame, 0, 2, allocator),
+		},
+		mode                                   = .Declarations,
 		loop_source_stack                      = make([dynamic]Field_Access, 0, 4, allocator),
 		loop_group_source_stack                = make([dynamic]Loop_Group_Source_Frame, 0, 2, allocator),
-		structured_groups                      = make([dynamic]Structured_Group_Frame, 0, 2, allocator),
 	}
 
 	if c.root != nil {
 		for stmt in c.root.stmts {
-			if c.unit.source_mode == .Dependency_Interface {
+			if c.unit.role == .Dependency_Interface_Source {
 				walk_dependency_interface_stmt(&c, stmt, c.unit.root_scope)
 			} else {
-				walk_stmt(&c, stmt, c.unit.root_scope)
+				walk_declaration_stmt(&c, stmt, c.unit.root_scope)
 			}
 		}
 	}
 	collect_provided_names(&c)
-	return unit
+	for diagnostic in unit.diagnostics {
+		if diagnostic.kind == .Syntax_Error {
+			append(&result.parse_diagnostics, diagnostic)
+		}
+	}
+	for name in unit.provided_names {
+		append(&result.provided_names, name)
+	}
+	return result
+}
+
+collect_parse_diagnostics :: proc(
+	unit: ^Source_File_Provider,
+	parsed: parser.Parsed_File,
+	allocator: mem.Allocator,
+) {
+	if unit == nil || !source_file_analysis_reports_parse_diagnostics(unit.role) {
+		return
+	}
+	for e in parsed.errors {
+		diagnostic := Diagnostic {
+			kind = .Syntax_Error,
+			range = e.range,
+			message = strings.clone(e.message, allocator),
+		}
+		append(&unit.diagnostics, diagnostic)
+	}
+}
+
+source_file_fact_model_build :: proc(
+	unit: ^Source_File_Provider,
+	allocator: mem.Allocator,
+) -> Source_File_Fact_Model {
+	model := source_file_fact_model_make(allocator)
+	if unit == nil || unit.root == nil {
+		return model
+	}
+	c := Fact_Model_Builder {
+		declarations                           = Declaration_Collector {
+			root                                   = unit.root,
+			source                                 = "",
+			allocator                              = allocator,
+			unit                                   = unit,
+			forward_type_symbols                   = make(map[Symbol_Id]bool, 16, allocator),
+			current_scope                          = unit.root_scope,
+			structured_groups                      = make([dynamic]Structured_Group_Frame, 0, 2, allocator),
+		},
+		mode                                   = .Body_Model,
+		facts                                  = &model,
+		scope_replay_child_offsets             = make(map[Scope_Id]int, len(unit.scopes), allocator),
+		loop_source_stack                      = make([dynamic]Field_Access, 0, 4, allocator),
+		loop_group_source_stack                = make([dynamic]Loop_Group_Source_Frame, 0, 2, allocator),
+	}
+	for stmt in c.root.stmts {
+		if c.unit.role == .Dependency_Interface_Source {
+			walk_dependency_interface_stmt(&c, stmt, c.unit.root_scope)
+		} else {
+			walk_stmt(&c, stmt, c.unit.root_scope)
+		}
+	}
+	return model
+}
+
+source_file_analysis_reports_parse_diagnostics :: proc "contextless" (role: Source_File_Role) -> bool {
+	return role != .Dependency_Interface_Source
+}
+
+source_file_provider_has_high_confidence :: proc "contextless" (unit: ^Source_File_Provider) -> bool {
+	return unit != nil && unit.role != .Dependency_Interface_Source
+}
+
+fact_builder_is_declaration_pass :: #force_inline proc "contextless" (c: ^Fact_Model_Builder) -> bool {
+	return c != nil && c.mode == .Declarations
+}
+
+fact_builder_is_model_pass :: #force_inline proc "contextless" (c: ^Fact_Model_Builder) -> bool {
+	return c != nil && c.mode == .Body_Model
 }
 
 push_scope :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	kind: Scope_Kind,
 	range: tokenizer.Range,
 	owner := INVALID_SYMBOL_ID,
 ) -> Scope_Id {
+	if fact_builder_is_model_pass(c) {
+		parent := c.current_scope
+		if parent != INVALID_SCOPE_ID {
+			offset := 0
+			if existing, ok := c.scope_replay_child_offsets[parent]; ok {
+				offset = existing
+			}
+			parent_index := scope_id_index(parent)
+			if parent_index >= 0 && parent_index < len(c.unit.scopes) {
+				children := c.unit.scopes[parent_index].children
+				if offset < len(children) {
+					id := children[offset]
+					c.scope_replay_child_offsets[parent] = offset + 1
+					c.current_scope = id
+					return id
+				}
+			}
+		}
+	}
 	id := Scope_Id(u32(len(c.unit.scopes)))
 	scope := Scope_Data {
 		id           = id,
@@ -126,7 +252,7 @@ push_scope :: proc(
 	return id
 }
 
-pop_scope :: proc(c: ^Collector) {
+pop_scope :: proc(c: ^Fact_Model_Builder) {
 	if c.current_scope == c.unit.root_scope {
 		return
 	}
@@ -137,7 +263,7 @@ pop_scope :: proc(c: ^Collector) {
 }
 
 declare_collected_symbol :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
@@ -155,71 +281,78 @@ declare_collected_symbol :: proc(
 	has_source_decl := false,
 	type_id := UNKNOWN_TYPE_ID,
 	owner := INVALID_SYMBOL_ID,
+	node: ^ast.Node = nil,
 ) -> Symbol_Id {
 	canonical := canonical_name(name, c.allocator)
+	if fact_builder_is_model_pass(c) {
+		if existing, ok := find_same_kind_symbol_in_scope(c, scope, canonical, kind); ok {
+			if s := symbol(c.unit, existing); s != nil {
+				symbol_merge_collected_shape(
+					s,
+					structure,
+					declared_type,
+					has_declared_type,
+					type_clause_display,
+					value_clause_display,
+					type_clause_form,
+					has_type_clause_form,
+					type_clause_table_has_of,
+					type_id,
+					c.allocator,
+				)
+				add_declaration_semantics(c.unit, node, scope, existing, s.decl_info)
+			}
+			return existing
+		}
+	}
 	if !skip_duplicate_check {
 		check_duplicate_or_shadow(c, scope, canonical, kind, decl_range)
 	}
 
-	id := Symbol_Id(u32(len(c.unit.symbols)))
-	decl_info := INVALID_DECL_INFO_ID
-	if !symbol_kind_is_builtin(kind) {
-		clause_kind := ast.Decl_Clause_Kind.Normal
-		clause_flags := ast.Decl_Clause_Flags{}
-		type_clause: ^ast.Data_Type_Clause
-		value_clause: ^ast.Value_Clause
-		default_clause: ^ast.Default_Clause
-		if has_source_decl {
-			clause_kind = source_decl.kind
-			clause_flags = source_decl.flags
-			type_clause = source_decl.type_clause
-			value_clause = source_decl.value_clause
-			default_clause = source_decl.default_clause
-		}
-		decl_info = push_decl_info(
-			&c.unit.decl_infos,
-			id,
-			scope,
-			canonical,
-			kind,
-			decl_range,
-			clause_kind,
-			clause_flags,
-			type_clause,
-			value_clause,
-			default_clause,
-		)
-		if owner != INVALID_SYMBOL_ID {
-			c.unit.decl_infos[decl_info_id_index(decl_info)].owner = owner
-		}
+	clause_kind := ast.Decl_Clause_Kind.Normal
+	clause_flags := ast.Decl_Clause_Flags{}
+	type_clause: ^ast.Data_Type_Clause
+	value_clause: ^ast.Value_Clause
+	default_clause: ^ast.Default_Clause
+	if has_source_decl {
+		clause_kind = source_decl.kind
+		clause_flags = source_decl.flags
+		type_clause = source_decl.type_clause
+		value_clause = source_decl.value_clause
+		default_clause = source_decl.default_clause
 	}
-	append(
-		&c.unit.symbols,
-		Symbol_Data {
-			id = id,
-			name = canonical,
-			kind = kind,
-			owner = owner,
-			scope = scope,
-			decl_info = decl_info,
-			type_id = type_id,
-			decl_range = decl_range,
-			structure = structure,
-			declared_type = declared_type,
-			has_declared_type = has_declared_type,
-			type_clause_display = strings.clone(type_clause_display, c.allocator) if type_clause_display != "" else "",
-			value_clause_display = strings.clone(value_clause_display, c.allocator) if value_clause_display != "" else "",
-			type_clause_form = type_clause_form,
-			has_type_clause_form = has_type_clause_form,
-			type_clause_table_has_of = type_clause_table_has_of,
-		},
+	id := declare_symbol(
+		c.unit,
+		scope,
+		canonical,
+		kind,
+		decl_range,
+		structure = structure,
+		declared_type = declared_type,
+		has_declared_type = has_declared_type,
+		type_clause_display = strings.clone(type_clause_display, c.allocator) if type_clause_display != "" else "",
+		value_clause_display = strings.clone(value_clause_display, c.allocator) if value_clause_display != "" else "",
+		type_clause_form = type_clause_form,
+		has_type_clause_form = has_type_clause_form,
+		type_clause_table_has_of = type_clause_table_has_of,
+		type_id = type_id,
+		owner = owner,
+		node = node,
+		decl_clause_kind = clause_kind,
+		decl_clause_flags = clause_flags,
+		decl_type_clause = type_clause,
+		decl_value_clause = value_clause,
+		decl_default_clause = default_clause,
+		resolve_type_id = false,
 	)
-	scope_record_declaration(c.unit, scope, id)
+	s := symbol(c.unit, id)
+	assert(s != nil)
+	add_declaration_semantics(c.unit, node, scope, id, s.decl_info)
 	return id
 }
 
 add_reference :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	namespace: Namespace,
@@ -230,7 +363,15 @@ add_reference :: proc(
 	type_first_selector := ast.Selector_Op.Dash,
 	type_clause_form := ast.Data_Type_Form{},
 	has_type_clause_form := false,
+	node: ^ast.Node = nil,
 ) {
+	if node != nil {
+		node.sem.scope = semantic_scope_handle(c.unit.source_file_id, scope)
+		node.sem.flags += {.Has_Scope}
+	}
+	if fact_builder_is_declaration_pass(c) {
+		return
+	}
 	id := Reference_Id(u32(len(c.unit.references)))
 	append(
 		&c.unit.references,
@@ -241,6 +382,7 @@ add_reference :: proc(
 			kind = kind,
 			scope = scope,
 			range = range,
+			node = node,
 			type_is_ref = type_is_ref,
 			type_has_path = type_has_path,
 			type_first_selector = type_first_selector,
@@ -251,7 +393,7 @@ add_reference :: proc(
 }
 
 check_duplicate_or_shadow :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
@@ -274,7 +416,7 @@ check_duplicate_or_shadow :: proc(
 	}
 }
 
-scope_has_symbol :: proc(c: ^Collector, scope: Scope_Id, name: string, kind: Symbol_Kind) -> bool {
+scope_has_symbol :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, name: string, kind: Symbol_Kind) -> bool {
 	namespaces := [?]Namespace{.Value, .Type, .Routine}
 	for namespace in namespaces {
 		if symbol_kind_occupies(kind, namespace) {
@@ -287,7 +429,7 @@ scope_has_symbol :: proc(c: ^Collector, scope: Scope_Id, name: string, kind: Sym
 }
 
 find_symbol_in_scope :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
@@ -309,7 +451,7 @@ find_symbol_in_scope :: proc(
 }
 
 find_same_kind_symbol_in_scope :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
@@ -324,7 +466,7 @@ find_same_kind_symbol_in_scope :: proc(
 	return id, true
 }
 
-symbol_is_forward_type :: proc(c: ^Collector, id: Symbol_Id) -> bool {
+symbol_is_forward_type :: proc(c: ^Fact_Model_Builder, id: Symbol_Id) -> bool {
 	if is_forward, ok := c.forward_type_symbols[id]; ok {
 		return is_forward
 	}
@@ -332,7 +474,7 @@ symbol_is_forward_type :: proc(c: ^Collector, id: Symbol_Id) -> bool {
 }
 
 add_diagnostic :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	kind: Diagnostic_Kind,
 	range: tokenizer.Range,
 	message: string,
@@ -343,7 +485,7 @@ add_diagnostic :: proc(
 	)
 }
 
-walk_dependency_interface_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
+walk_dependency_interface_stmt :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Stmt, scope: Scope_Id) {
 	if stmt == nil {
 		return
 	}
@@ -372,7 +514,40 @@ walk_dependency_interface_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Sc
 	}
 }
 
-walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
+Inline_Declaration_Visit_Data :: struct {
+	c:     ^Fact_Model_Builder,
+	scope: Scope_Id,
+}
+
+collect_inline_declarations_from_node :: proc(c: ^Fact_Model_Builder, node: ^ast.Node, scope: Scope_Id) {
+	if node == nil {
+		return
+	}
+	data := Inline_Declaration_Visit_Data{c = c, scope = scope}
+	visitor := ast.Visitor{visit = inline_declaration_visit, data = &data}
+	ast.walk(&visitor, node)
+}
+
+inline_declaration_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return v
+	}
+	data := cast(^Inline_Declaration_Visit_Data)v.data
+	c := data.c
+	scope := data.scope
+	#partial switch n in node.derived {
+	case ^ast.Data_Inline_Name_Expr:
+		_ = declare_inline_symbol(c, scope, n.name, .Variable, n.range, node = semantic_node_from_expr(&n.node))
+	case ^ast.Field_Symbol_Inline_Name_Expr:
+		_ = declare_inline_symbol(c, scope, n.name, .Field_Symbol, n.range, node = semantic_node_from_expr(&n.node))
+	case ^ast.Constructor_Let_Binding_Expr:
+		name_range := tokenizer.text_range(n.range.start, n.range.start + len(n.name))
+		_ = declare_name_if_present(c, scope, n.name, .Variable, name_range)
+	}
+	return v
+}
+
+walk_declaration_stmt :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Stmt, scope: Scope_Id) {
 	if stmt == nil {
 		return
 	}
@@ -388,19 +563,315 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 		}
 		collect_decl_infos(c, local_decl_scope(c, scope), infos[:], .Variable)
 	case ^ast.Data_Inline_Decl:
-		if symbol_id := declare_inline_symbol(c, scope, n.name, .Variable, n.range);
-		   symbol_id != INVALID_SYMBOL_ID {
-			add_syntax_operand(
-				c.unit,
-				scope,
-				n.range,
-				.Variable,
-				unknown_type_fact(),
-				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
-				has_symbol = true,
-				assignable = true,
-			)
+		_ = declare_inline_symbol(
+			c,
+			scope,
+			n.name,
+			.Variable,
+			n.range,
+			node = semantic_node_from_decl(&n.node),
+		)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.expr), scope)
+	case ^ast.Types_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.types), c.allocator)
+		for clause in n.types {
+			append(&infos, types_clause_info(clause, n.range))
 		}
+		collect_decl_infos(c, scope, infos[:], .Type_Def)
+	case ^ast.Constants_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.constants), c.allocator)
+		for clause in n.constants {
+			append(&infos, constants_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Constant)
+	case ^ast.Field_Symbols_Decl:
+		for clause in n.field_symbols {
+			declare_typed_symbol(c, scope, clause.name, .Field_Symbol, n.range, clause.type_clause)
+		}
+	case ^ast.Statics_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.statics), c.allocator)
+		for clause in n.statics {
+			append(&infos, statics_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Variable)
+	case ^ast.Tables_Decl:
+		for clause in n.tables {
+			declare_tables_clause(c, scope, clause, n.range)
+		}
+	case ^ast.Ranges_Decl:
+		for clause in n.ranges {
+			declare_range_like_clause(c, scope, clause.name, clause.for_clause, n.range)
+		}
+	case ^ast.Parameters_Decl:
+		for clause in n.parameters {
+			declare_parameter_clause(c, scope, clause, n.range)
+		}
+	case ^ast.Select_Options_Decl:
+		for clause in n.options {
+			declare_select_option_clause(c, scope, clause, n.range)
+		}
+	case ^ast.Controls_Decl:
+		for clause in n.controls {
+			declare_typed_symbol(c, scope, clause.name, .Control, n.range, clause.type_clause)
+		}
+	case ^ast.Class_Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, class_data_clause_info(clause, n.range))
+		}
+		collect_decl_infos(c, scope, infos[:], .Variable)
+	case ^ast.Type_Pools_Decl:
+	case ^ast.Function_Pool_Decl:
+		if n.name != "" {
+			_ = declare_collected_symbol(c, scope, n.name, .Report, n.range)
+		}
+	case ^ast.Include_Stmt:
+		for include_name in n.names {
+			_ = declare_collected_symbol(c, scope, include_name.name, .Include, include_name.range)
+		}
+	case ^ast.Report_Stmt:
+		walk_report_stmt(c, n, scope)
+	case ^ast.Class_Decl:
+		walk_class_decl(c, n, scope)
+	case ^ast.Interface_Decl:
+		walk_interface_decl(c, n, scope)
+	case ^ast.Method_Decl:
+		walk_method_decl(c, n, scope)
+	case ^ast.Form_Decl:
+		walk_form_decl(c, n, scope)
+	case ^ast.Function_Decl:
+		walk_function_decl(c, n, scope)
+	case ^ast.Module_Decl:
+		walk_named_block(c, n.name, .Module, .Module, n.range, n.body, scope)
+	case ^ast.Event_Block_Stmt:
+		walk_body_in_scope(c, .Event_Block, n.range, n.body)
+	case ^ast.Oop_Simple_Stmt:
+		walk_oop_simple_stmt(c, n, scope)
+	case ^ast.Selection_Screen_Stmt:
+		declare_name_if_present(c, scope, n.title_name, .Variable, n.title_range)
+		declare_name_if_present(c, scope, n.comment_name, .Variable, n.comment_range)
+	case ^ast.If_Stmt:
+		then_scope := walk_body_in_scope(c, .If_Branch, n.range, n.body)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.condition), then_scope)
+		for clause in n.elseif_clauses {
+			branch_scope := walk_body_in_scope(c, .Elseif_Branch, clause.range, clause.body)
+			collect_inline_declarations_from_node(c, semantic_node_from_expr(clause.condition), branch_scope)
+		}
+		if n.else_clause != nil {
+			_ = walk_body_in_scope(c, .Else_Branch, n.else_clause.range, n.else_clause.body)
+		}
+	case ^ast.Case_Stmt:
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.expr), scope)
+		for clause in n.whens {
+			when_scope := walk_body_in_scope(c, .When_Branch, clause.range, clause.body)
+			for operand in clause.operands {
+				collect_inline_declarations_from_node(c, semantic_node_from_expr(operand), when_scope)
+			}
+		}
+		walk_stmt_list(c, n.recovery, scope)
+	case ^ast.While_Stmt:
+		loop_scope := walk_body_in_scope(c, .While_Block, n.range, n.body)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.condition), loop_scope)
+	case ^ast.Do_Stmt:
+		loop_scope := walk_body_in_scope(c, .Do_Block, n.range, n.body)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.count), loop_scope)
+	case ^ast.Loop_Stmt:
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.source), scope)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.target), scope)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.group_target), scope)
+		loop_scope := walk_body_in_scope(c, .Loop_Block, n.range, n.body)
+		collect_inline_declarations_from_node(c, semantic_node_from_expr(n.where_cond), loop_scope)
+	case ^ast.At_Stmt:
+		_ = walk_body_in_scope(c, .At_Block, n.range, n.body)
+	case ^ast.Try_Stmt:
+		body_scope := walk_body_in_scope(c, .Try_Block, n.range, n.body)
+		previous := c.current_scope
+		c.current_scope = body_scope
+		for clause in n.catches {
+			catch_scope := walk_body_in_scope(c, .Catch_Clause, clause.range, clause.body)
+			collect_inline_declarations_from_node(c, semantic_node_from_expr(clause.into), catch_scope)
+		}
+		c.current_scope = previous
+		if n.cleanup != nil {
+			_ = walk_body_in_scope(c, .Cleanup_Clause, n.cleanup.range, n.cleanup.body)
+		}
+	case ^ast.Select_Stmt:
+		query_scope := scope
+		if len(n.body) > 0 {
+			query_scope = walk_body_in_scope(c, .Select_Block, n.range, n.body)
+		}
+		collect_inline_declarations_from_node(c, semantic_node_from_stmt(stmt), query_scope)
+	case:
+		collect_inline_declarations_from_node(c, semantic_node_from_stmt(stmt), scope)
+	}
+}
+
+collect_decl_info_body_model_refs :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, info: Decl_Info) {
+	if type_ref, has_type := type_ref_from_clause(c, info.type_clause); has_type {
+		type_form, has_type_form := type_clause_form_from_ast(info.type_clause)
+		apply_occurs_table_form(info, &type_form, &has_type_form)
+		add_type_reference(c, scope, type_ref, info.range, type_form, has_type_form)
+	}
+	if info.include_ref != nil {
+		if type_ref, ok := type_ref_from_expr(c, info.include_ref, .Type if info.kind == .Include_Type else .Value);
+		   ok {
+			add_type_reference(c, scope, type_ref, info.range, .Structure, info.kind == .Include_Structure)
+		}
+	}
+	collect_decl_info_facts(c, scope, info)
+}
+
+collect_decl_infos_body_model_refs :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, infos: []Decl_Info) {
+	for info in infos {
+		collect_decl_info_body_model_refs(c, scope, info)
+	}
+}
+
+walk_declaration_stmt_body_model :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Stmt, scope: Scope_Id) -> bool {
+	if stmt == nil {
+		return true
+	}
+	#partial switch n in stmt.derived_stmt {
+	case ^ast.Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, 1, c.allocator)
+		append(&infos, data_decl_info(n))
+		collect_decl_infos_body_model_refs(c, local_decl_scope(c, scope), infos[:])
+	case ^ast.Data_Chained_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, data_branch_info(clause, n.range))
+		}
+		collect_decl_infos_body_model_refs(c, local_decl_scope(c, scope), infos[:])
+	case ^ast.Types_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.types), c.allocator)
+		for clause in n.types {
+			append(&infos, types_clause_info(clause, n.range))
+		}
+		collect_decl_infos_body_model_refs(c, scope, infos[:])
+	case ^ast.Constants_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.constants), c.allocator)
+		for clause in n.constants {
+			append(&infos, constants_clause_info(clause, n.range))
+		}
+		collect_decl_infos_body_model_refs(c, scope, infos[:])
+	case ^ast.Field_Symbols_Decl:
+		for clause in n.field_symbols {
+			collect_type_clause_ref(c, clause.type_clause, scope)
+		}
+	case ^ast.Statics_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.statics), c.allocator)
+		for clause in n.statics {
+			append(&infos, statics_clause_info(clause, n.range))
+		}
+		collect_decl_infos_body_model_refs(c, scope, infos[:])
+	case ^ast.Tables_Decl:
+		for clause in n.tables {
+			if clause.name == "" {
+				continue
+			}
+			name := canonical_name(clause.name, c.allocator)
+			add_reference(c, scope, name, .Type, .Type_Ref, n.range)
+			if c.facts != nil {
+				append(&c.facts.table_work_areas, Table_Work_Area_Data{name = name, scope = scope, range = n.range})
+			}
+		}
+	case ^ast.Ranges_Decl:
+		for clause in n.ranges {
+			if low_high, ok := for_clause_type_ref(c, clause.for_clause); ok {
+				add_type_reference(c, scope, low_high, n.range)
+			}
+		}
+	case ^ast.Parameters_Decl:
+		for clause in n.parameters {
+			info := Decl_Info {
+				kind           = .Normal,
+				name           = clause.name,
+				range          = n.range,
+				paren_length   = clause.paren_length,
+				length_clauses = clause.length_clauses[:],
+				type_clause    = clause.type_clause,
+				default_clause = clause.default_clause,
+				checkbox_type  = .As_Checkbox in clause.flags,
+			}
+			collect_decl_info_body_model_refs(c, scope, info)
+			if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
+			if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
+			if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+		}
+	case ^ast.Select_Options_Decl:
+		for clause in n.options {
+			if low_high, ok := for_clause_type_ref(c, clause.for_clause); ok {
+				add_type_reference(c, scope, low_high, n.range)
+			}
+			if clause.default_clause != nil {collect_expr_refs(c, clause.default_clause.expr, scope)}
+			if clause.to_clause != nil {collect_expr_refs(c, clause.to_clause.expr, scope)}
+			if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
+			if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
+			if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+		}
+	case ^ast.Controls_Decl:
+		for clause in n.controls {
+			collect_type_clause_ref(c, clause.type_clause, scope)
+		}
+	case ^ast.Class_Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, class_data_clause_info(clause, n.range))
+		}
+		collect_decl_infos_body_model_refs(c, scope, infos[:])
+	case ^ast.Type_Pools_Decl:
+	case ^ast.Function_Pool_Decl:
+		if n.message_id != "" {
+			set_message_default_class(c, n.message_id, n.range, scope)
+		}
+	case ^ast.Include_Stmt:
+		for include_name in n.names {
+			name := canonical_name(include_name.name, c.allocator)
+			append(
+				&c.unit.include_edges,
+				Include_Edge{name = name, range = include_name.range, target = INVALID_SOURCE_FILE_ID, if_found = n.if_found},
+			)
+			add_reference(c, scope, name, .Value, .Include, include_name.range)
+		}
+	case ^ast.Report_Stmt:
+		collect_report_stmt_refs(c, n, scope)
+	case:
+		return false
+	}
+	return true
+}
+
+walk_stmt :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Stmt, scope: Scope_Id) {
+	if stmt == nil {
+		return
+	}
+	if fact_builder_is_declaration_pass(c) {
+		walk_declaration_stmt(c, stmt, scope)
+		return
+	}
+	if fact_builder_is_model_pass(c) && walk_declaration_stmt_body_model(c, stmt, scope) {
+		return
+	}
+	#partial switch n in stmt.derived_stmt {
+	case ^ast.Data_Decl:
+		infos := make([dynamic]Decl_Info, 0, 1, c.allocator)
+		append(&infos, data_decl_info(n))
+		collect_decl_infos(c, local_decl_scope(c, scope), infos[:], .Variable)
+	case ^ast.Data_Chained_Decl:
+		infos := make([dynamic]Decl_Info, 0, len(n.decls), c.allocator)
+		for clause in n.decls {
+			append(&infos, data_branch_info(clause, n.range))
+		}
+		collect_decl_infos(c, local_decl_scope(c, scope), infos[:], .Variable)
+	case ^ast.Data_Inline_Decl:
+		_ = declare_inline_symbol(
+			c,
+			scope,
+			n.name,
+			.Variable,
+			n.range,
+			node = semantic_node_from_decl(&n.node),
+		)
 		collect_inline_data_stmt_facts(c, n, scope)
 	case ^ast.Types_Decl:
 		infos := make([dynamic]Decl_Info, 0, len(n.types), c.allocator)
@@ -663,7 +1134,7 @@ walk_stmt :: proc(c: ^Collector, stmt: ^ast.Stmt, scope: Scope_Id) {
 }
 
 collect_selection_screen_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Selection_Screen_Stmt,
 	scope: Scope_Id,
 ) {
@@ -675,30 +1146,32 @@ collect_selection_screen_stmt_facts :: proc(
 }
 
 declare_name_if_present :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
 	range: tokenizer.Range,
 	owner := INVALID_SYMBOL_ID,
+	node: ^ast.Node = nil,
 ) -> Symbol_Id {
 	if name == "" {
 		return INVALID_SYMBOL_ID
 	}
-	return declare_collected_symbol(c, scope, name, kind, range, owner = owner)
+	return declare_collected_symbol(c, scope, name, kind, range, owner = owner, node = node)
 }
 
 declare_inline_symbol :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
 	range: tokenizer.Range,
+	node: ^ast.Node = nil,
 ) -> Symbol_Id {
-	return declare_name_if_present(c, local_decl_scope(c, scope), name, kind, range)
+	return declare_name_if_present(c, local_decl_scope(c, scope), name, kind, range, node = node)
 }
 
-local_decl_scope :: proc(c: ^Collector, start: Scope_Id) -> Scope_Id {
+local_decl_scope :: proc(c: ^Fact_Model_Builder, start: Scope_Id) -> Scope_Id {
 	current := start
 	for current != INVALID_SCOPE_ID {
 		i := scope_id_index(current)
@@ -716,67 +1189,8 @@ local_decl_scope :: proc(c: ^Collector, start: Scope_Id) -> Scope_Id {
 	return start
 }
 
-set_entity_owner :: proc(c: ^Collector, id: Entity_Id, owner: Entity_Id) {
-	if s := symbol(c.unit, id); s != nil {
-		s.owner = owner
-	}
-	if info := entity_decl_info(c.unit, id); info != nil {
-		info.owner = owner
-	}
-}
-
-set_entity_signature :: proc(c: ^Collector, id: Entity_Id, signature: string) {
-	if info := entity_decl_info(c.unit, id); info != nil && signature != "" {
-		info.signature = strings.clone(signature, c.allocator)
-	}
-}
-
-set_entity_signature_scope :: proc(c: ^Collector, id: Entity_Id, scope: Scope_Id) {
-	if info := entity_decl_info(c.unit, id); info != nil {
-		info.signature_scope = scope
-	}
-}
-
-set_entity_body_scope :: proc(c: ^Collector, id: Entity_Id, scope: Scope_Id) {
-	if info := entity_decl_info(c.unit, id); info != nil {
-		info.body_scope = scope
-	}
-}
-
-set_member_decl_info :: proc(
-	c: ^Collector,
-	id: Entity_Id,
-	class_symbol: Entity_Id,
-	visibility: Visibility,
-	kind: Class_Member_Kind,
-	flags: Decl_Info_Flags,
-) {
-	set_entity_owner(c, id, class_symbol)
-	if info := entity_decl_info(c.unit, id); info != nil {
-		info.visibility = visibility
-		info.member_kind = kind
-		info.flags += flags
-	}
-}
-
-set_parameter_decl_info :: proc(
-	c: ^Collector,
-	id: Entity_Id,
-	owner: Entity_Id,
-	section: Decl_Parameter_Section,
-	passing: Decl_Parameter_Passing,
-	flags := Decl_Info_Flags{},
-) {
-	set_entity_owner(c, id, owner)
-	if info := entity_decl_info(c.unit, id); info != nil {
-		info.parameter_section = section
-		info.parameter_passing = passing
-		info.flags += flags
-	}
-}
-
 append_signature_parameter :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	owner: Entity_Id,
 	symbol: Entity_Id,
 	name: string,
@@ -792,6 +1206,9 @@ append_signature_parameter :: proc(
 	type_clause_table_has_of: bool,
 	flags := Decl_Info_Flags{},
 ) {
+	if fact_builder_is_model_pass(c) {
+		return
+	}
 	if info := entity_decl_info(c.unit, owner); info != nil {
 		param_flags := flags
 		if has_declared_type {
@@ -818,11 +1235,14 @@ append_signature_parameter :: proc(
 }
 
 append_signature_exception :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	owner: Entity_Id,
 	name: string,
 	range: tokenizer.Range,
 ) {
+	if fact_builder_is_model_pass(c) {
+		return
+	}
 	if info := entity_decl_info(c.unit, owner); info != nil {
 		append(
 			&info.signature_exceptions,
@@ -831,20 +1251,6 @@ append_signature_exception :: proc(
 				range = range,
 			},
 		)
-	}
-}
-
-set_entity_event_signature :: proc(
-	c: ^Collector,
-	id: Entity_Id,
-	name: string,
-	range: tokenizer.Range,
-	source_type: Field_Type_Ref_Data,
-) {
-	if info := entity_decl_info(c.unit, id); info != nil {
-		info.event_name = strings.clone(name, c.allocator)
-		info.event_range = range
-		info.event_source_type = source_type
 	}
 }
 
@@ -957,7 +1363,7 @@ class_data_clause_info :: proc(n: ast.Class_Data_Clause, range: tokenizer.Range)
 	}
 }
 
-collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, kind: Symbol_Kind) {
+collect_decl_infos :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, infos: []Decl_Info, kind: Symbol_Kind) {
 	for i in 0 ..< len(infos) {
 		info := infos[i]
 		if collect_open_structured_group_info(c, scope, info) {
@@ -1003,7 +1409,9 @@ collect_decl_infos :: proc(c: ^Collector, scope: Scope_Id, infos: []Decl_Info, k
 			}
 		case .End_Group:
 		}
-		collect_decl_info_facts(c, scope, info)
+		if !fact_builder_is_declaration_pass(c) {
+			collect_decl_info_facts(c, scope, info)
+		}
 	}
 }
 
@@ -1018,7 +1426,7 @@ structured_group_has_matching_end :: proc(infos: []Decl_Info, start: int) -> boo
 }
 
 start_open_structured_group :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	info: Decl_Info,
 	kind: Symbol_Kind,
@@ -1056,7 +1464,7 @@ start_open_structured_group :: proc(
 }
 
 collect_open_structured_group_info :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	info: Decl_Info,
 ) -> bool {
@@ -1079,7 +1487,7 @@ collect_open_structured_group_info :: proc(
 	return true
 }
 
-active_structured_group_index :: proc(c: ^Collector, scope: Scope_Id) -> int {
+active_structured_group_index :: proc(c: ^Fact_Model_Builder, scope: Scope_Id) -> int {
 	if len(c.structured_groups) == 0 {
 		return -1
 	}
@@ -1087,18 +1495,17 @@ active_structured_group_index :: proc(c: ^Collector, scope: Scope_Id) -> int {
 	return index if c.structured_groups[index].scope == scope else -1
 }
 
-finish_open_structured_group :: proc(c: ^Collector, index: int) {
+finish_open_structured_group :: proc(c: ^Fact_Model_Builder, index: int) {
 	frame := c.structured_groups[index]
 	structure_id := push_collected_structure(c, frame.name, frame.fields, frame.scope)
 	if frame.symbol != INVALID_SYMBOL_ID {
-		s := &c.unit.symbols[symbol_id_index(frame.symbol)]
-		s.structure = structure_id
+		symbol_set_structure(symbol(c.unit, frame.symbol), structure_id)
 	}
 	resize(&c.structured_groups, index)
 }
 
 declare_info_symbol :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	info: Decl_Info,
 	kind: Symbol_Kind,
@@ -1143,7 +1550,7 @@ declare_info_symbol :: proc(
 }
 
 declare_typed_symbol :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	kind: Symbol_Kind,
@@ -1226,7 +1633,7 @@ type_form_is_table_category :: proc "contextless" (form: ast.Data_Type_Form) -> 
 }
 
 declare_tables_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	clause: ast.Tables_Clause,
 	range: tokenizer.Range,
@@ -1251,11 +1658,15 @@ declare_tables_clause :: proc(
 		true,
 		name,
 	)
-	append(&c.unit.table_work_areas, Table_Work_Area_Data{name = name, scope = scope, range = range})
+	if !fact_builder_is_declaration_pass(c) {
+	if c.facts != nil {
+		append(&c.facts.table_work_areas, Table_Work_Area_Data{name = name, scope = scope, range = range})
+	}
+	}
 }
 
 declare_range_like_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	for_clause: ^ast.For_Clause,
@@ -1291,7 +1702,7 @@ declare_range_like_clause :: proc(
 }
 
 declare_parameter_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	clause: ast.Parameters_Clause,
 	range: tokenizer.Range,
@@ -1309,30 +1720,34 @@ declare_parameter_clause :: proc(
 	value_display := default_clause_display(c, clause.default_clause)
 	symbol_id := declare_info_symbol(c, scope, info, .Variable)
 	if symbol_id != INVALID_SYMBOL_ID && value_display != "" {
-		c.unit.symbols[symbol_id_index(symbol_id)].value_clause_display = value_display
+		symbol_set_value_clause_display(symbol(c.unit, symbol_id), value_display)
 	}
-	collect_decl_info_facts(c, scope, info)
-	if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
-	if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
-	if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+	if !fact_builder_is_declaration_pass(c) {
+		collect_decl_info_facts(c, scope, info)
+		if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
+		if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
+		if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+	}
 }
 
 declare_select_option_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	clause: ast.Select_Options_Clause,
 	range: tokenizer.Range,
 ) {
 	declare_range_like_clause(c, scope, clause.name, clause.for_clause, range)
-	if clause.default_clause != nil {collect_expr_refs(c, clause.default_clause.expr, scope)}
-	if clause.to_clause != nil {collect_expr_refs(c, clause.to_clause.expr, scope)}
-	if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
-	if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
-	if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+	if !fact_builder_is_declaration_pass(c) {
+		if clause.default_clause != nil {collect_expr_refs(c, clause.default_clause.expr, scope)}
+		if clause.to_clause != nil {collect_expr_refs(c, clause.to_clause.expr, scope)}
+		if clause.memory_id != nil {collect_expr_refs(c, clause.memory_id.id, scope)}
+		if clause.matchcode_object != nil {collect_expr_refs(c, clause.matchcode_object.object, scope)}
+		if clause.visible_length != nil {collect_expr_refs(c, clause.visible_length.length, scope)}
+	}
 }
 
 structure_from_group :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	infos: []Decl_Info,
 	start: int,
@@ -1362,7 +1777,7 @@ structure_from_group :: proc(
 				Structure_Field_Data {
 					name = canonical_name(info.name, c.allocator),
 					decl_range = info.range,
-					decl_unit = c.unit.unit_id,
+					decl_unit = c.unit.source_file_id,
 					type_id = type_structure(c.unit, nested),
 					structure = nested,
 					flags = flags,
@@ -1378,7 +1793,7 @@ structure_from_group :: proc(
 }
 
 structure_field_from_info :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	info: Decl_Info,
 ) -> (
@@ -1403,7 +1818,7 @@ structure_field_from_info :: proc(
 	return Structure_Field_Data {
 			name = canonical_name(info.name, c.allocator),
 			decl_range = info.range,
-			decl_unit = c.unit.unit_id,
+			decl_unit = c.unit.source_file_id,
 			type_id = type_id,
 			structure = structure_id,
 			type_ref = type_ref,
@@ -1416,7 +1831,7 @@ structure_field_from_info :: proc(
 }
 
 extend_structure_from_include :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	fields: ^[dynamic]Structure_Field_Data,
 	info: Decl_Info,
@@ -1440,7 +1855,7 @@ extend_structure_from_include :: proc(
 			fields,
 			Structure_Field_Data {
 				name = canonical_name(info.as_name, c.allocator),
-				decl_unit = c.unit.unit_id,
+				decl_unit = c.unit.source_file_id,
 				structure = INVALID_STRUCTURE_ID,
 				type_ref = type_ref,
 				type_clause_form = .Structure,
@@ -1454,7 +1869,7 @@ extend_structure_from_include :: proc(
 		fields,
 		Structure_Field_Data {
 			decl_range = info.range,
-			decl_unit = c.unit.unit_id,
+			decl_unit = c.unit.source_file_id,
 			structure = INVALID_STRUCTURE_ID,
 			type_ref = type_ref,
 			type_clause_form = .Structure,
@@ -1466,7 +1881,7 @@ extend_structure_from_include :: proc(
 }
 
 include_type_component_field :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	info: Decl_Info,
 	type_ref: Field_Type_Ref_Data,
@@ -1484,6 +1899,11 @@ include_type_component_field :: proc(
 			symbol_id, ok = lookup_symbol_in_scope_chain(c, scope, type_ref.base_name, .Value)
 		}
 		is_field = ok && c.unit.symbols[symbol_id_index(symbol_id)].structure == INVALID_STRUCTURE_ID
+		if !ok && type_ref.namespace == .Type {
+			_, builtin_ok := builtin_symbol_id(.Type, type_ref.base_name)
+			_, builtin_structure_ok := builtin_root_structure_name(.Type, type_ref.base_name)
+			is_field = builtin_ok && !builtin_structure_ok
+		}
 	}
 	if !is_field {
 		return {}, false
@@ -1492,7 +1912,7 @@ include_type_component_field :: proc(
 	return Structure_Field_Data {
 		name = "include",
 		decl_range = info.range,
-		decl_unit = c.unit.unit_id,
+		decl_unit = c.unit.source_file_id,
 		structure = INVALID_STRUCTURE_ID,
 		type_ref = type_ref,
 		type_clause_form = .Structure,
@@ -1503,7 +1923,7 @@ include_type_component_field :: proc(
 }
 
 push_collected_structure :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	name: string,
 	fields: [dynamic]Structure_Field_Data,
 	scope := INVALID_SCOPE_ID,
@@ -1513,7 +1933,7 @@ push_collected_structure :: proc(
 		&c.unit.structures,
 		Structure_Data {
 			id = id,
-			origin_unit = c.unit.unit_id,
+			origin_unit = c.unit.source_file_id,
 			origin_structure = id,
 			name = canonical_name(name, c.allocator),
 			scope = scope,
@@ -1525,7 +1945,7 @@ push_collected_structure :: proc(
 }
 
 push_range_structure :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	low_high: Field_Type_Ref_Data,
@@ -1546,14 +1966,14 @@ push_range_structure :: proc(
 }
 
 range_field :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	type_ref: Field_Type_Ref_Data,
 ) -> Structure_Field_Data {
 	return Structure_Field_Data {
 		name = strings.clone(name, c.allocator),
-		decl_unit = c.unit.unit_id,
+		decl_unit = c.unit.source_file_id,
 		structure = INVALID_STRUCTURE_ID,
 		type_ref = type_ref,
 		flags = {.Has_Type_Ref},
@@ -1561,7 +1981,7 @@ range_field :: proc(
 }
 
 type_ref_from_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	clause: ^ast.Data_Type_Clause,
 ) -> (
 	Field_Type_Ref_Data,
@@ -1601,7 +2021,7 @@ type_ref_expr_is_ref :: proc(expr: ^ast.Expr) -> bool {
 }
 
 for_clause_type_ref :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	clause: ^ast.For_Clause,
 ) -> (
 	Field_Type_Ref_Data,
@@ -1614,7 +2034,7 @@ for_clause_type_ref :: proc(
 }
 
 type_ref_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	namespace: Namespace,
 	is_ref := false,
@@ -1633,7 +2053,7 @@ type_ref_from_expr :: proc(
 	if text == "" || text == "#" {
 		return {}, false
 	}
-	// Legacy non-selector fallback only; declaration-addition boundaries belong to parser AST.
+	// Non-selector fallback only; declaration-addition boundaries belong to parser AST.
 	return Field_Type_Ref_Data {
 			namespace = namespace,
 			is_ref = is_ref,
@@ -1644,7 +2064,7 @@ type_ref_from_expr :: proc(
 }
 
 type_ref_from_ast_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	namespace: Namespace,
 	is_ref: bool,
@@ -1694,7 +2114,7 @@ type_ref_from_ast_expr :: proc(
 }
 
 type_ref_from_type_ref_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Type_Ref_Expr,
 	namespace: Namespace,
 	is_ref: bool,
@@ -1739,7 +2159,7 @@ type_ref_from_type_ref_expr :: proc(
 		true
 }
 
-type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> string {
+type_clause_display :: proc(c: ^Fact_Model_Builder, clause: ^ast.Data_Type_Clause) -> string {
 	if clause == nil {
 		return ""
 	}
@@ -1773,7 +2193,7 @@ type_clause_display :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause) -> str
 	return display
 }
 
-type_ref_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
+type_ref_display :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr) -> string {
 	if expr == nil {
 		return ""
 	}
@@ -1793,7 +2213,7 @@ type_ref_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
 	return expr_display(c, expr)
 }
 
-value_clause_display :: proc(c: ^Collector, clause: ^ast.Value_Clause) -> string {
+value_clause_display :: proc(c: ^Fact_Model_Builder, clause: ^ast.Value_Clause) -> string {
 	if clause == nil {
 		return ""
 	}
@@ -1803,21 +2223,21 @@ value_clause_display :: proc(c: ^Collector, clause: ^ast.Value_Clause) -> string
 	return expr_display(c, clause.expr)
 }
 
-default_clause_display :: proc(c: ^Collector, clause: ^ast.Default_Clause) -> string {
+default_clause_display :: proc(c: ^Fact_Model_Builder, clause: ^ast.Default_Clause) -> string {
 	if clause == nil {
 		return ""
 	}
 	return expr_display(c, clause.expr)
 }
 
-expr_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
+expr_display :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr) -> string {
 	if expr == nil {
 		return ""
 	}
 	if expr.range.start >= 0 &&
-	   expr.range.end <= len(c.unit.source) &&
+	   expr.range.end <= len(c.source) &&
 	   expr.range.start < expr.range.end {
-		return strings.clone(c.unit.source[expr.range.start:expr.range.end], c.allocator)
+		return strings.clone(c.source[expr.range.start:expr.range.end], c.allocator)
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Type_Ref_Expr:
@@ -1834,7 +2254,7 @@ expr_display :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
 }
 
 add_type_reference :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
 	range: tokenizer.Range,
@@ -1842,6 +2262,9 @@ add_type_reference :: proc(
 	has_type_clause_form := false,
 ) {
 	if type_ref.base_name == "" {
+		return
+	}
+	if fact_builder_is_declaration_pass(c) {
 		return
 	}
 	base_range := type_ref.base_range
@@ -1878,17 +2301,19 @@ add_type_reference :: proc(
 				},
 			)
 		}
-		append(
-			&c.unit.field_accesses,
-			Field_Access {
-				scope = scope,
-				base_namespace = type_ref.namespace,
-				base_name = type_ref.base_name,
-				base_range = base_range,
-				field_path = segments,
-				in_type_position = true,
-			},
-		)
+		if c.facts != nil {
+			append(
+				&c.facts.field_accesses,
+				Field_Access {
+					scope = scope,
+					base_namespace = type_ref.namespace,
+					base_name = type_ref.base_name,
+					base_range = base_range,
+					field_path = segments,
+					in_type_position = true,
+				},
+			)
+		}
 	}
 }
 
@@ -1900,7 +2325,7 @@ type_ref_path_selector :: #force_inline proc(
 }
 
 lookup_symbol_in_scope_chain :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	name: string,
 	namespace: Namespace,
@@ -1922,14 +2347,14 @@ lookup_symbol_in_scope_chain :: proc(
 	return INVALID_SYMBOL_ID, false
 }
 
-concat2 :: proc(c: ^Collector, a, b: string) -> string {
+concat2 :: proc(c: ^Fact_Model_Builder, a, b: string) -> string {
 	out := strings.builder_make(c.allocator)
 	strings.write_string(&out, a)
 	strings.write_string(&out, b)
 	return strings.to_string(out)
 }
 
-concat3 :: proc(c: ^Collector, a, b, d: string) -> string {
+concat3 :: proc(c: ^Fact_Model_Builder, a, b, d: string) -> string {
 	out := strings.builder_make(c.allocator)
 	strings.write_string(&out, a)
 	strings.write_string(&out, b)
@@ -1937,19 +2362,22 @@ concat3 :: proc(c: ^Collector, a, b, d: string) -> string {
 	return strings.to_string(out)
 }
 
-walk_include_stmt :: proc(c: ^Collector, stmt: ^ast.Include_Stmt, scope: Scope_Id) {
+walk_include_stmt :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Include_Stmt, scope: Scope_Id) {
 	for include_name in stmt.names {
 		name := canonical_name(include_name.name, c.allocator)
 		_ = declare_collected_symbol(c, scope, name, .Include, include_name.range)
+		if fact_builder_is_declaration_pass(c) {
+			continue
+		}
 		append(
 			&c.unit.include_edges,
-			Include_Edge{name = name, range = include_name.range, target = INVALID_UNIT_ID, if_found = stmt.if_found},
+			Include_Edge{name = name, range = include_name.range, target = INVALID_SOURCE_FILE_ID, if_found = stmt.if_found},
 		)
 		add_reference(c, scope, name, .Value, .Include, include_name.range)
 	}
 }
 
-walk_report_stmt :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: Scope_Id) {
+walk_report_stmt :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Report_Stmt, scope: Scope_Id) {
 	if stmt.kind != .Report && stmt.kind != .Program {
 		return
 	}
@@ -1960,7 +2388,7 @@ walk_report_stmt :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: Scope_Id)
 }
 
 walk_named_block :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	name: string,
 	symbol_kind: Symbol_Kind,
 	scope_kind: Scope_Kind,
@@ -1975,8 +2403,8 @@ walk_named_block :: proc(
 	walk_body_in_scope(c, scope_kind, range, body, owner)
 }
 
-walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
-	if c.unit.source_mode == .Dependency_Interface && .Implementation in stmt.flags {
+walk_class_decl :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Class_Decl, scope: Scope_Id) {
+	if c.unit.role == .Dependency_Interface_Source && .Implementation in stmt.flags {
 		return
 	}
 	owner := INVALID_SYMBOL_ID
@@ -2007,24 +2435,28 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 	if !(.Implementation in stmt.flags) && !(.Bodyless in stmt.flags) && owner != INVALID_SYMBOL_ID {
 		c.forward_type_symbols[owner] = false
 		add_class_definition(c, owner, .Abstract in stmt.flags)
-		for friend in stmt.friends {
-			if friend.name != "" {
-				append(
-					&c.unit.class_friends,
-					Class_Friend_Data {
-						class_symbol = owner,
-						friend_name = canonical_name(friend.name, c.allocator),
-						range = friend.range,
-					},
-				)
+		if fact_builder_is_declaration_pass(c) {
+			for friend in stmt.friends {
+				if friend.name != "" {
+					append(
+						&c.unit.class_friends,
+						Class_Friend_Data {
+							class_symbol = owner,
+							friend_name = canonical_name(friend.name, c.allocator),
+							range = friend.range,
+						},
+					)
+				}
 			}
 		}
 		if stmt.superclass_name != "" {
 			superclass := canonical_name(stmt.superclass_name, c.allocator)
-			append(
-				&c.unit.class_inheritance,
-				Class_Inheritance_Data{class_symbol = owner, superclass_name = superclass},
-			)
+			if fact_builder_is_declaration_pass(c) {
+				append(
+					&c.unit.class_inheritance,
+					Class_Inheritance_Data{class_symbol = owner, superclass_name = superclass},
+				)
+			}
 			add_reference(c, scope, superclass, .Type, .Type_Ref, stmt.superclass_range)
 		}
 	}
@@ -2032,7 +2464,7 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 	c.current_scope = scope
 	class_scope := push_scope(c, .Class, stmt.range, owner)
 	if !(.Implementation in stmt.flags) && !(.Bodyless in stmt.flags) {
-		set_entity_body_scope(c, owner, class_scope)
+		entity_set_body_scope(c.unit, owner, class_scope)
 		walk_class_body(c, stmt.body, class_scope, owner, .Private)
 	} else {
 		walk_stmt_list(c, stmt.body, class_scope)
@@ -2042,7 +2474,7 @@ walk_class_decl :: proc(c: ^Collector, stmt: ^ast.Class_Decl, scope: Scope_Id) {
 	c.current_scope = previous
 }
 
-walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Scope_Id) {
+walk_interface_decl :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Interface_Decl, scope: Scope_Id) {
 	owner := INVALID_SYMBOL_ID
 	owner_is_forward := false
 	declared_owner := false
@@ -2072,7 +2504,7 @@ walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Sco
 	c.current_scope = scope
 	interface_scope := push_scope(c, .Interface, stmt.range, owner)
 	if !stmt.is_bodyless {
-		set_entity_body_scope(c, owner, interface_scope)
+		entity_set_body_scope(c.unit, owner, interface_scope)
 		walk_class_body(c, stmt.body, interface_scope, owner, .Public)
 	} else {
 		walk_stmt_list(c, stmt.body, interface_scope)
@@ -2083,7 +2515,7 @@ walk_interface_decl :: proc(c: ^Collector, stmt: ^ast.Interface_Decl, scope: Sco
 }
 
 walk_class_body :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	body: [dynamic]^ast.Stmt,
 	scope: Scope_Id,
 	owner: Symbol_Id,
@@ -2108,14 +2540,14 @@ walk_class_body :: proc(
 				case .Unspecified:
 				}
 			} else {
-				if c.unit.source_mode == .Dependency_Interface && visibility == .Private {
+				if c.unit.role == .Dependency_Interface_Source && visibility == .Private {
 					continue
 				}
 				collect_class_oop_stmt(c, oop, scope, owner, visibility)
 			}
 			continue
 		}
-		if c.unit.source_mode == .Dependency_Interface && visibility == .Private {
+		if c.unit.role == .Dependency_Interface_Source && visibility == .Private {
 			continue
 		}
 		walk_stmt(c, child, scope)
@@ -2124,7 +2556,7 @@ walk_class_body :: proc(
 	c.current_scope = previous
 }
 
-walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id) {
+walk_method_decl :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Method_Decl, scope: Scope_Id) {
 	class_owner, has_class_owner := enclosing_owner(c, scope, .Class)
 	owner_entity := class_owner if has_class_owner else INVALID_SYMBOL_ID
 	owner := declare_name_if_present(c, scope, stmt.name, .Method, stmt.header_range, owner_entity)
@@ -2132,8 +2564,8 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 	previous := c.current_scope
 	c.current_scope = scope
 	method_scope := push_scope(c, .Method, stmt.range, owner)
-	set_entity_signature(c, owner, stmt.header_text)
-	set_entity_body_scope(c, owner, method_scope)
+	entity_set_signature(c.unit, owner, stmt.header_text, c.allocator)
+	entity_set_body_scope(c.unit, owner, method_scope)
 	if has_class_owner {
 		method_name := stmt.name
 		if method_name == "" {
@@ -2162,7 +2594,7 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 			)
 		}
 	}
-	if c.unit.source_mode != .Dependency_Interface {
+	if c.unit.role != .Dependency_Interface_Source {
 		collect_amdp_using_refs(c, stmt, method_scope)
 		walk_stmt_list(c, stmt.body, method_scope)
 	}
@@ -2171,16 +2603,16 @@ walk_method_decl :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id)
 	c.current_scope = previous
 }
 
-walk_form_decl :: proc(c: ^Collector, stmt: ^ast.Form_Decl, scope: Scope_Id) {
+walk_form_decl :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Form_Decl, scope: Scope_Id) {
 	owner := declare_name_if_present(c, scope, stmt.name, .Form, stmt.header_range)
 	previous := c.current_scope
 	c.current_scope = scope
 	form_scope := push_scope(c, .Form, stmt.range, owner)
-	set_entity_signature(c, owner, stmt.header_text)
-	set_entity_signature_scope(c, owner, form_scope)
-	set_entity_body_scope(c, owner, form_scope)
+	entity_set_signature(c.unit, owner, stmt.header_text, c.allocator)
+	entity_set_signature_scope(c.unit, owner, form_scope)
+	entity_set_body_scope(c.unit, owner, form_scope)
 	form_parameters_from_ast(c, stmt.form_parameters[:], form_scope, owner)
-	if c.unit.source_mode != .Dependency_Interface {
+	if c.unit.role != .Dependency_Interface_Source {
 		walk_stmt_list(c, stmt.body, form_scope)
 	}
 	c.current_scope = form_scope
@@ -2188,16 +2620,16 @@ walk_form_decl :: proc(c: ^Collector, stmt: ^ast.Form_Decl, scope: Scope_Id) {
 	c.current_scope = previous
 }
 
-walk_function_decl :: proc(c: ^Collector, stmt: ^ast.Function_Decl, scope: Scope_Id) {
+walk_function_decl :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Function_Decl, scope: Scope_Id) {
 	owner := declare_name_if_present(c, scope, stmt.name, .Module, stmt.header_range)
 	previous := c.current_scope
 	c.current_scope = scope
 	function_scope := push_scope(c, .Module, stmt.range, owner)
-	set_entity_signature(c, owner, stmt.header_text)
-	set_entity_signature_scope(c, owner, function_scope)
-	set_entity_body_scope(c, owner, function_scope)
+	entity_set_signature(c.unit, owner, stmt.header_text, c.allocator)
+	entity_set_signature_scope(c.unit, owner, function_scope)
+	entity_set_body_scope(c.unit, owner, function_scope)
 	function_parameters_from_ast(c, stmt, function_scope, owner)
-	if c.unit.source_mode != .Dependency_Interface {
+	if c.unit.role != .Dependency_Interface_Source {
 		walk_stmt_list(c, stmt.body, function_scope)
 	}
 	c.current_scope = function_scope
@@ -2206,7 +2638,7 @@ walk_function_decl :: proc(c: ^Collector, stmt: ^ast.Function_Decl, scope: Scope
 }
 
 walk_body_in_scope :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	kind: Scope_Kind,
 	range: tokenizer.Range,
 	body: [dynamic]^ast.Stmt,
@@ -2219,7 +2651,7 @@ walk_body_in_scope :: proc(
 	return child_scope
 }
 
-walk_stmt_list :: proc(c: ^Collector, body: [dynamic]^ast.Stmt, scope: Scope_Id) {
+walk_stmt_list :: proc(c: ^Fact_Model_Builder, body: [dynamic]^ast.Stmt, scope: Scope_Id) {
 	previous := c.current_scope
 	c.current_scope = scope
 	for child in body {
@@ -2228,7 +2660,7 @@ walk_stmt_list :: proc(c: ^Collector, body: [dynamic]^ast.Stmt, scope: Scope_Id)
 	c.current_scope = previous
 }
 
-walk_oop_simple_stmt :: proc(c: ^Collector, stmt: ^ast.Oop_Simple_Stmt, scope: Scope_Id) {
+walk_oop_simple_stmt :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Oop_Simple_Stmt, scope: Scope_Id) {
 	kind := Symbol_Kind.Method
 	#partial switch stmt.kind {
 	case .Methods, .Class_Methods:
@@ -2247,7 +2679,7 @@ walk_oop_simple_stmt :: proc(c: ^Collector, stmt: ^ast.Oop_Simple_Stmt, scope: S
 	}
 }
 
-add_class_definition :: proc(c: ^Collector, owner: Symbol_Id, is_abstract: bool) {
+add_class_definition :: proc(c: ^Fact_Model_Builder, owner: Symbol_Id, is_abstract: bool) {
 	if owner == INVALID_SYMBOL_ID {
 		return
 	}
@@ -2271,7 +2703,7 @@ add_class_definition :: proc(c: ^Collector, owner: Symbol_Id, is_abstract: bool)
 }
 
 collect_class_attribute_stmt :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Stmt,
 	scope: Scope_Id,
 	class_symbol: Symbol_Id,
@@ -2313,7 +2745,7 @@ collect_class_attribute_stmt :: proc(
 }
 
 collect_class_attribute_infos :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	class_symbol: Symbol_Id,
 	visibility: Visibility,
@@ -2353,17 +2785,17 @@ collect_class_attribute_infos :: proc(
 		if is_static {
 			decl_flags += {.Is_Static}
 		}
-		set_member_decl_info(c, member_symbol, class_symbol, visibility, .Attribute, decl_flags)
-		set_entity_signature(c, member_symbol, source_text(c, signature_range))
+		entity_set_member_decl_info(c.unit, member_symbol, class_symbol, visibility, .Attribute, decl_flags)
+		entity_set_signature(c.unit, member_symbol, source_text(c, signature_range), c.allocator)
 		if s := symbol(c.unit, member_symbol); s != nil {
-			s.structure = structure_id
-			s.type_id = type_id
+			symbol_set_structure(s, structure_id)
+			symbol_set_type_id(s, type_id)
 		}
 	}
 }
 
 collect_class_oop_stmt :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Oop_Simple_Stmt,
 	scope: Scope_Id,
 	class_symbol: Symbol_Id,
@@ -2403,13 +2835,20 @@ collect_class_oop_stmt :: proc(
 					add_type_reference(c, scope, type_ref, member.event_handler.source_type.range)
 				}
 			}
-			set_member_decl_info(c, member_symbol, class_symbol, visibility, .Method, decl_flags)
+			entity_set_member_decl_info(c.unit, member_symbol, class_symbol, visibility, .Method, decl_flags)
 			if event_name != "" {
-				set_entity_event_signature(c, member_symbol, event_name, event_range, event_source_type)
+				entity_set_event_signature(
+					c.unit,
+					member_symbol,
+					event_name,
+					event_range,
+					event_source_type,
+					c.allocator,
+				)
 			}
-			set_entity_signature(c, member_symbol, stmt.text)
+			entity_set_signature(c.unit, member_symbol, stmt.text, c.allocator)
 			sig_scope := declare_signature_scope_params(c, scope, stmt.range, member_symbol, parameters[:])
-			set_entity_signature_scope(c, member_symbol, sig_scope)
+			entity_set_signature_scope(c.unit, member_symbol, sig_scope)
 			for exception in exceptions {
 				append_signature_exception(c, member_symbol, exception.name, exception.range)
 			}
@@ -2428,22 +2867,24 @@ collect_class_oop_stmt :: proc(
 			if is_static {
 				decl_flags += {.Is_Static}
 			}
-			set_member_decl_info(c, member_symbol, class_symbol, visibility, .Event, decl_flags)
-			set_entity_signature(c, member_symbol, stmt.text)
+			entity_set_member_decl_info(c.unit, member_symbol, class_symbol, visibility, .Event, decl_flags)
+			entity_set_signature(c.unit, member_symbol, stmt.text, c.allocator)
 			sig_scope := declare_signature_scope_params(c, scope, stmt.range, member_symbol, parameters[:])
-			set_entity_signature_scope(c, member_symbol, sig_scope)
+			entity_set_signature_scope(c.unit, member_symbol, sig_scope)
 		}
 	case .Interfaces:
 		for member in stmt.members {
 			name := canonical_name(member.name, c.allocator)
-			append(
-				&c.unit.implemented_interfaces,
-				Implemented_Interface_Data {
-					owner_symbol = class_symbol,
-					interface_name = name,
-					range = stmt.range,
-				},
-			)
+			if fact_builder_is_declaration_pass(c) {
+				append(
+					&c.unit.implemented_interfaces,
+					Implemented_Interface_Data {
+						owner_symbol = class_symbol,
+						interface_name = name,
+						range = stmt.range,
+					},
+				)
+			}
 			add_reference(c, scope, name, .Type, .Interface_Use, member.range)
 		}
 	case .Aliases:
@@ -2466,7 +2907,7 @@ collect_class_oop_stmt :: proc(
 }
 
 collect_member_alias :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	name: string,
 	target: ^ast.Expr,
 	range: tokenizer.Range,
@@ -2492,27 +2933,29 @@ collect_member_alias :: proc(
 		skip_duplicate_check = true,
 		owner = class_symbol,
 	)
-	set_entity_signature(c, alias_symbol, source_text(c, range))
+	entity_set_signature(c.unit, alias_symbol, source_text(c, range), c.allocator)
 	if info := entity_decl_info(c.unit, alias_symbol); info != nil {
 		info.visibility = visibility
 		info.alias_target_interface_name = target_ref.base_name
 		info.alias_target_member_name = target_member
 	}
-	append(
-		&c.unit.member_aliases,
-		Member_Alias_Data {
-			symbol = alias_symbol,
-			owner_symbol = class_symbol,
-			alias_name = canonical_name(name, c.allocator),
-			target_interface_name = target_ref.base_name,
-			target_member_name = target_member,
-			range = range,
-		},
-	)
+	if fact_builder_is_declaration_pass(c) {
+		append(
+			&c.unit.member_aliases,
+			Member_Alias_Data {
+				symbol = alias_symbol,
+				owner_symbol = class_symbol,
+				alias_name = canonical_name(name, c.allocator),
+				target_interface_name = target_ref.base_name,
+				target_member_name = target_member,
+				range = range,
+			},
+		)
+	}
 }
 
 declare_signature_scope_params :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	parent_scope: Scope_Id,
 	range: tokenizer.Range,
 	owner: Entity_Id,
@@ -2553,8 +2996,8 @@ declare_signature_scope_params :: proc(
 		if .Has_Default_Value in param.flags {
 			flags += {.Has_Default_Value}
 		}
-		set_parameter_decl_info(
-			c,
+		entity_set_parameter_decl_info(
+			c.unit,
 			parameters[i].symbol,
 			owner,
 			decl_method_section(param.section),
@@ -2586,7 +3029,7 @@ declare_signature_scope_params :: proc(
 }
 
 method_parameters_from_signatures :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	signatures: []ast.Oop_Signature_Clause,
 ) -> [dynamic]Class_Member_Parameter_Data {
@@ -2604,7 +3047,7 @@ method_parameters_from_signatures :: proc(
 }
 
 method_exceptions_from_signatures :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	signatures: []ast.Oop_Signature_Clause,
 ) -> [dynamic]Function_Module_Exception_Data {
 	exceptions := make([dynamic]Function_Module_Exception_Data, 0, 1, c.allocator)
@@ -2637,7 +3080,7 @@ method_exceptions_from_signatures :: proc(
 }
 
 event_parameters_from_signatures :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	signatures: []ast.Oop_Signature_Clause,
 ) -> [dynamic]Class_Member_Parameter_Data {
@@ -2670,7 +3113,7 @@ method_section_from_oop :: proc(kind: ast.Oop_Signature_Kind) -> (Method_Paramet
 }
 
 class_member_parameter_from_oop :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	clause: ast.Oop_Parameter_Clause,
 	section: Method_Parameter_Section,
@@ -2709,7 +3152,7 @@ Header_Token :: struct {
 	kind:  tokenizer.Token_Kind,
 }
 
-header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header_Token {
+header_tokens :: proc(c: ^Fact_Model_Builder, text: string, base: int) -> [dynamic]Header_Token {
 	result := tokenizer.tokenize(text, c.allocator)
 	tokens := make([dynamic]Header_Token, 0, len(result.tokens), c.allocator)
 	for tok in result.tokens {
@@ -2729,7 +3172,7 @@ header_tokens :: proc(c: ^Collector, text: string, base: int) -> [dynamic]Header
 }
 
 form_parameters_from_ast :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	clauses: []ast.Form_Parameter_Clause,
 	scope: Scope_Id,
 	owner: Entity_Id,
@@ -2766,7 +3209,7 @@ form_parameters_from_ast :: proc(
 		section := decl_form_section_from_ast(clause.section)
 		passing := decl_passing_from_ast(clause.passing)
 		decl_flags := Decl_Info_Flags{.Has_Declared_Type} if has_type else Decl_Info_Flags{}
-		set_parameter_decl_info(c, symbol_id, owner, section, passing, decl_flags)
+		entity_set_parameter_decl_info(c.unit, symbol_id, owner, section, passing, decl_flags)
 		append_signature_parameter(
 			c,
 			owner,
@@ -2788,7 +3231,7 @@ form_parameters_from_ast :: proc(
 }
 
 function_parameters_from_ast :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Function_Decl,
 	scope: Scope_Id,
 	owner: Entity_Id,
@@ -2848,8 +3291,8 @@ function_parameters_from_ast :: proc(
 			if .Has_Default_Value in clause.flags {
 				decl_flags += {.Has_Default_Value}
 			}
-			set_parameter_decl_info(
-				c,
+			entity_set_parameter_decl_info(
+				c.unit,
 				symbol_id,
 				owner,
 				decl_function_section(section),
@@ -3045,14 +3488,14 @@ token_ident_like :: proc(token: Header_Token) -> bool {
 	return token.kind == .Ident || token.kind == .Number
 }
 
-source_text :: proc(c: ^Collector, range: tokenizer.Range) -> string {
-	if range.start < 0 || range.end > len(c.unit.source) || range.start >= range.end {
+source_text :: proc(c: ^Fact_Model_Builder, range: tokenizer.Range) -> string {
+	if range.start < 0 || range.end > len(c.source) || range.start >= range.end {
 		return ""
 	}
-	return strings.clone(c.unit.source[range.start:range.end], c.allocator)
+	return strings.clone(c.source[range.start:range.end], c.allocator)
 }
 
-enclosing_owner :: proc(c: ^Collector, scope: Scope_Id, kind: Scope_Kind) -> (Symbol_Id, bool) {
+enclosing_owner :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, kind: Scope_Kind) -> (Symbol_Id, bool) {
 	current := scope
 	for current != INVALID_SCOPE_ID {
 		s := c.unit.scopes[scope_id_index(current)]
@@ -3091,7 +3534,7 @@ qualified_method_parts :: proc(name: string) -> (string, string, bool) {
 }
 
 add_method_interface_qualifier_reference :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	interface_name: string,
 	scope: Scope_Id,
 	range: tokenizer.Range,
@@ -3102,7 +3545,7 @@ add_method_interface_qualifier_reference :: proc(
 }
 
 note_method_implementation :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	member_symbol: Symbol_Id,
 	range: tokenizer.Range,
 ) {
@@ -3110,14 +3553,14 @@ note_method_implementation :: proc(
 		return
 	}
 	if info := entity_decl_info(c.unit, member_symbol); info != nil {
-		info.implementation_unit = c.unit.unit_id
+		info.implementation_unit = c.unit.source_file_id
 		info.implementation_range = range
 		info.flags += {.Has_Implementation}
 	}
 }
 
 declare_method_scope_params :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	info: ^Decl_Info_Data,
 	method_scope: Scope_Id,
 	owner: Entity_Id,
@@ -3143,8 +3586,8 @@ declare_method_scope_params :: proc(
 			type_id = param.type_id,
 			owner = owner,
 		)
-		set_parameter_decl_info(
-			c,
+		entity_set_parameter_decl_info(
+			c.unit,
 			symbol_id,
 			owner,
 			param.section,
@@ -3157,7 +3600,7 @@ declare_method_scope_params :: proc(
 	}
 }
 
-collect_amdp_using_refs :: proc(c: ^Collector, stmt: ^ast.Method_Decl, scope: Scope_Id) {
+collect_amdp_using_refs :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Method_Decl, scope: Scope_Id) {
 	if !stmt.is_amdp {
 		return
 	}
@@ -3194,7 +3637,7 @@ expr_name :: proc(expr: ^ast.Expr) -> (string, tokenizer.Range, bool) {
 	return "", tokenizer.Range{}, false
 }
 
-collect_provided_names :: proc(c: ^Collector) {
+collect_provided_names :: proc(c: ^Fact_Model_Builder) {
 	for s in c.unit.symbols {
 		if s.scope == c.unit.root_scope &&
 		   !symbol_kind_is_builtin(s.kind) &&
@@ -3208,7 +3651,7 @@ collect_provided_names :: proc(c: ^Collector) {
 	}
 }
 
-add_provided_name :: proc(c: ^Collector, name: string) {
+add_provided_name :: proc(c: ^Fact_Model_Builder, name: string) {
 	canonical := canonical_name(name, c.allocator)
 	for existing in c.unit.provided_names {
 		if existing == canonical {

@@ -29,11 +29,119 @@ Ast_Trivia_Record :: struct {
 	trivia:     Ast_Trivia,
 }
 
+Provider_Kind :: enum {
+	Invalid,
+	Builtin,
+	File,
+	Summary_Provider,
+}
+
+Provider_Id :: distinct u32
+File_Id :: distinct u32
+Entity_Id :: distinct u32
+Scope_Id :: distinct u32
+Decl_Id :: distinct u32
+Type_Id :: distinct u32
+Use_Id :: distinct u32
+Exact_Value_Id :: distinct u32
+
+INVALID_PROVIDER_ID :: Provider_Id(0xffffffff)
+INVALID_FILE_ID :: File_Id(0xffffffff)
+INVALID_ENTITY_ID :: Entity_Id(0xffffffff)
+INVALID_SCOPE_ID :: Scope_Id(0xffffffff)
+INVALID_DECL_ID :: Decl_Id(0xffffffff)
+INVALID_TYPE_ID :: Type_Id(0xffffffff)
+INVALID_USE_ID :: Use_Id(0xffffffff)
+INVALID_EXACT_VALUE_ID :: Exact_Value_Id(0xffffffff)
+UNKNOWN_TYPE_ID :: Type_Id(0)
+
+Provider_Handle :: struct {
+	kind:     Provider_Kind,
+	id:       Provider_Id,
+	revision: u64,
+}
+
+Entity_Handle :: struct {
+	provider: Provider_Handle,
+	id:       Entity_Id,
+}
+
+Scope_Handle :: struct {
+	provider: Provider_Handle,
+	id:       Scope_Id,
+}
+
+Decl_Handle :: struct {
+	provider: Provider_Handle,
+	id:       Decl_Id,
+}
+
+Type_Handle :: struct {
+	provider: Provider_Handle,
+	id:       Type_Id,
+}
+
+Use_Handle :: struct {
+	file:     File_Id,
+	id:       Use_Id,
+	revision: u64,
+}
+
+Addressing_Mode :: enum {
+	Invalid,
+	No_Value,
+	Value,
+	Variable,
+	Constant,
+	Type,
+	Routine,
+	Method,
+	Field,
+	Table_Line,
+	Optional_Ok,
+}
+
+Type_And_Value_Flag :: enum {
+	Is_LHS,
+	Assignable,
+	High_Confidence,
+	Untyped,
+}
+Type_And_Value_Flags :: bit_set[Type_And_Value_Flag]
+
+Type_And_Value :: struct {
+	type:  Type_Handle,
+	mode:  Addressing_Mode,
+	value: Exact_Value_Id,
+	flags: Type_And_Value_Flags,
+}
+
+Node_Semantic_Flag :: enum {
+	Has_Scope,
+	Has_Entity,
+	Has_Decl,
+	Has_Use,
+	Has_Type_And_Value,
+	Is_LHS,
+	Assignable,
+}
+Node_Semantic_Flags :: bit_set[Node_Semantic_Flag]
+
+Node_Semantic :: struct {
+	scope:  Scope_Handle,
+	entity: Entity_Handle,
+	decl:   Decl_Handle,
+	use:    Use_Handle,
+	tav:    Type_And_Value,
+	flags:  Node_Semantic_Flags,
+}
+
 Node :: struct {
 	range:            tokenizer.Range,
 	derived:          Any_Node,
 	leading_trivia:   [dynamic]Ast_Trivia,
 	trailing_trivia:  [dynamic]Ast_Trivia,
+	sem:              Node_Semantic,
 }
 
 Expr :: struct {

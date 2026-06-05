@@ -227,28 +227,30 @@ Unit_Lints :: struct {
 
 Lint_Task_State :: struct {
 	project:     ^analyze.Project_Analysis,
+	sources:     []analyze.Source_Input,
 	results:     []Unit_Lints,
 	allocators:  []mem.Allocator,
 }
 
 Lint_Task_Payload :: struct {
 	state:      ^Lint_Task_State,
-	unit_index: int,
+	source_file_index: int,
 }
 
 run_project_async :: proc(
 	project: ^analyze.Project_Analysis,
+	sources: []analyze.Source_Input,
 	pool: ^execution.Pool,
 	allocator: mem.Allocator,
 ) {
 	_ = allocator
 	assert(pool != nil)
-	if len(project.units) == 0 {
+	if len(project.providers.source_files) == 0 {
 		return
 	}
-	arenas := make([]virtual.Arena, len(project.units), context.temp_allocator)
-	allocators := make([]mem.Allocator, len(project.units), context.temp_allocator)
-	for i in 0 ..< len(project.units) {
+	arenas := make([]virtual.Arena, len(project.providers.source_files), context.temp_allocator)
+	allocators := make([]mem.Allocator, len(project.providers.source_files), context.temp_allocator)
+	for i in 0 ..< len(project.providers.source_files) {
 		_ = virtual.arena_init_growing(&arenas[i])
 		allocators[i] = virtual.arena_allocator(&arenas[i])
 	}
@@ -258,18 +260,23 @@ run_project_async :: proc(
 		}
 	}
 
-	results := make([]Unit_Lints, len(project.units), context.temp_allocator)
-	state := Lint_Task_State{project = project, results = results, allocators = allocators}
+	results := make([]Unit_Lints, len(project.providers.source_files), context.temp_allocator)
+	state := Lint_Task_State {
+		project = project,
+		sources = sources,
+		results = results,
+		allocators = allocators,
+	}
 	graph: execution.Graph
 	execution.graph_init(&graph, pool, context.temp_allocator)
 	defer execution.graph_destroy(&graph)
 
-	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(project.units), context.temp_allocator)
-	for unit_index in 0 ..< len(project.units) {
+	tasks := make([dynamic]execution.Task(execution.No_Result), 0, len(project.providers.source_files), context.temp_allocator)
+	for source_file_index in 0 ..< len(project.providers.source_files) {
 		task := execution.submit_value(
 			&graph,
 			execution.worker_executor(pool),
-			Lint_Task_Payload{state = &state, unit_index = unit_index},
+			Lint_Task_Payload{state = &state, source_file_index = source_file_index},
 			lint_task,
 		)
 		append(&tasks, task)
@@ -282,20 +289,37 @@ run_project_async :: proc(
 
 	for lints, i in results {
 		for diagnostic in lints.diagnostics {
-			append(&project.units[i].diagnostics, diagnostic)
+			append(&project.providers.source_files[i].diagnostics, diagnostic)
 		}
 	}
 	rebuild_project_diagnostics(project)
 }
 
 lint_task :: proc(payload: Lint_Task_Payload) -> execution.No_Result {
-	unit := &payload.state.project.units[payload.unit_index]
-	payload.state.results[payload.unit_index] = collect_source(
+	unit := &payload.state.project.providers.source_files[payload.source_file_index]
+	source := lint_source_for_uri(payload.state.sources, unit.uri)
+	payload.state.results[payload.source_file_index] = unit_lints_make(
 		unit.uri,
-		unit.source,
-		payload.state.allocators[payload.unit_index],
+		source,
+		payload.state.allocators[payload.source_file_index],
 	)
+	if source != "" {
+		payload.state.results[payload.source_file_index] = collect_source(
+			unit.uri,
+			source,
+			payload.state.allocators[payload.source_file_index],
+		)
+	}
 	return execution.No_Result{}
+}
+
+lint_source_for_uri :: proc(sources: []analyze.Source_Input, uri: string) -> string {
+	for source in sources {
+		if source.uri == uri {
+			return source.source
+		}
+	}
+	return ""
 }
 
 collect_source :: proc(uri, source: string, allocator: mem.Allocator) -> Unit_Lints {
@@ -1068,7 +1092,7 @@ strip_quotes :: proc(value: string) -> string {
 
 rebuild_project_diagnostics :: proc(project: ^analyze.Project_Analysis) {
 	clear(&project.diagnostics)
-	for unit in project.units {
+	for unit in project.providers.source_files {
 		for diagnostic in unit.diagnostics {
 			if !project_diagnostic_present(project.diagnostics[:], diagnostic) {
 				append(&project.diagnostics, diagnostic)

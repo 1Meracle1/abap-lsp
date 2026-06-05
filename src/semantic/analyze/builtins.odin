@@ -1,9 +1,12 @@
 package abap_frontend_semantic_analyze
 
+import base_runtime "base:runtime"
+
 import "src:tokenizer"
 
 import "core:mem"
 import "core:strings"
+import "core:sync"
 
 Builtin_Type_Kind :: enum {
 	Type,
@@ -861,9 +864,24 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 	{name = "abap_trans_resbind", kind = .Type, structure_name = "abap_trans_resbind"},
 	{name = "abap_trans_resbind_tab_sorted", kind = .Type, structure_name = "abap_trans_resbind"},
 	{name = "%_charsize", kind = .Constant, type_name = "i", value_clause_display = "%_CHARSIZE"},
-	{name = "%_endian", kind = .Constant, type_name = "abap_endian", value_clause_display = "%_ENDIAN"},
-	{name = "%_minchar", kind = .Constant, type_name = "abap_char1", value_clause_display = "%_MINCHAR"},
-	{name = "%_maxchar", kind = .Constant, type_name = "abap_char1", value_clause_display = "%_MAXCHAR"},
+	{
+		name = "%_endian",
+		kind = .Constant,
+		type_name = "abap_endian",
+		value_clause_display = "%_ENDIAN",
+	},
+	{
+		name = "%_minchar",
+		kind = .Constant,
+		type_name = "abap_char1",
+		value_clause_display = "%_MINCHAR",
+	},
+	{
+		name = "%_maxchar",
+		kind = .Constant,
+		type_name = "abap_char1",
+		value_clause_display = "%_MAXCHAR",
+	},
 	{
 		name = "%_horizontal_tab",
 		kind = .Constant,
@@ -876,10 +894,30 @@ BUILTIN_SYMBOLS :: []Builtin_Symbol_Spec {
 		type_name = "abap_char1",
 		value_clause_display = "%_VERTICAL_TAB",
 	},
-	{name = "%_newline", kind = .Constant, type_name = "abap_char1", value_clause_display = "%_NEWLINE"},
-	{name = "%_cr_lf", kind = .Constant, type_name = "abap_cr_lf", value_clause_display = "%_CR_LF"},
-	{name = "%_formfeed", kind = .Constant, type_name = "abap_char1", value_clause_display = "%_FORMFEED"},
-	{name = "%_backspace", kind = .Constant, type_name = "abap_char1", value_clause_display = "%_BACKSPACE"},
+	{
+		name = "%_newline",
+		kind = .Constant,
+		type_name = "abap_char1",
+		value_clause_display = "%_NEWLINE",
+	},
+	{
+		name = "%_cr_lf",
+		kind = .Constant,
+		type_name = "abap_cr_lf",
+		value_clause_display = "%_CR_LF",
+	},
+	{
+		name = "%_formfeed",
+		kind = .Constant,
+		type_name = "abap_char1",
+		value_clause_display = "%_FORMFEED",
+	},
+	{
+		name = "%_backspace",
+		kind = .Constant,
+		type_name = "abap_char1",
+		value_clause_display = "%_BACKSPACE",
+	},
 	{name = "abap_true", kind = .Constant, type_name = "abap_bool", value_clause_display = "'X'"},
 	{name = "abap_false", kind = .Constant, type_name = "abap_bool", value_clause_display = "' '"},
 	{
@@ -1126,7 +1164,11 @@ builtin_type_metadata :: proc(name: string) -> (Builtin_Type_Metadata, bool) {
 	case "abap_intfname":
 		return {type_name = "c", type_clause_display = "c LENGTH abap_max_intf_name_ln"}, true
 	case "textpool_table":
-		return {type_name = "textpool", type_clause_display = "STANDARD TABLE OF textpool WITH DEFAULT KEY"}, true
+		return {
+				type_name = "textpool",
+				type_clause_display = "STANDARD TABLE OF textpool WITH DEFAULT KEY",
+			},
+			true
 	case "abap_compdescr_tab":
 		return {
 				type_name = "abap_compdescr",
@@ -1714,10 +1756,169 @@ BUILTIN_ROUTINES :: []Builtin_Routine_Spec {
 	},
 }
 
-install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: mem.Allocator) {
-	for spec in BUILTIN_STRUCTURES {
+builtin_entity_handle :: proc(namespace: Namespace, name: string) -> (Entity_Handle, bool) {
+	if symbol_id, ok := builtin_symbol_id(namespace, name); ok {
+		return Entity_Handle{provider = builtin_provider_handle(), id = Entity_Id(symbol_id)}, true
+	}
+	return {}, false
+}
+
+builtin_root_structure_name :: proc(namespace: Namespace, name: string) -> (string, bool) {
+	for spec in BUILTIN_SYMBOLS {
+		kind := builtin_symbol_kind_from_spec(spec.kind)
+		if spec.structure_name != "" && builtin_symbol_matches(namespace, name, spec.name, kind) {
+			return spec.structure_name, true
+		}
+	}
+	return "", false
+}
+
+builtin_symbol_id :: proc(namespace: Namespace, name: string) -> (Symbol_Id, bool) {
+	index := 0
+	for builtin in BUILTIN_PRIMITIVE_TYPES {
+		if builtin_symbol_matches(namespace, name, builtin, .Builtin_Type) {
+			return builtin_symbol_id_from_index(index), true
+		}
+		index += 1
+	}
+	for builtin in BUILTIN_GENERIC_PRIMITIVE_TYPES {
+		if builtin_symbol_matches(namespace, name, builtin, .Builtin_Type) {
+			return builtin_symbol_id_from_index(index), true
+		}
+		index += 1
+	}
+	for spec in BUILTIN_SYMBOLS {
+		kind := builtin_symbol_kind_from_spec(spec.kind)
+		if builtin_symbol_matches(namespace, name, spec.name, kind) {
+			return builtin_symbol_id_from_index(index), true
+		}
+		index += 1
+	}
+	for routine in BUILTIN_ROUTINES {
+		if builtin_symbol_matches(namespace, name, routine.name, .Builtin_Routine) {
+			return builtin_symbol_id_from_index(index), true
+		}
+		index += 1
+	}
+	return INVALID_SYMBOL_ID, false
+}
+
+BUILTIN_SYMBOL_ID_BASE :: u32(0x80000000)
+BUILTIN_STRUCTURE_ID_BASE :: u32(0x80000000)
+
+builtin_symbol_id_from_index :: proc "contextless" (index: int) -> Symbol_Id {
+	return Symbol_Id(BUILTIN_SYMBOL_ID_BASE + u32(index))
+}
+
+builtin_symbol_index :: proc "contextless" (id: Symbol_Id) -> (int, bool) {
+	raw := u32(id)
+	if raw < BUILTIN_SYMBOL_ID_BASE {
+		return -1, false
+	}
+	return int(raw - BUILTIN_SYMBOL_ID_BASE), true
+}
+
+builtin_structure_id :: proc "contextless" (index: int) -> Structure_Id {
+	return Structure_Id(BUILTIN_STRUCTURE_ID_BASE + u32(index))
+}
+
+builtin_structure_index :: proc "contextless" (id: Structure_Id) -> (int, bool) {
+	raw := u32(id)
+	if raw < BUILTIN_STRUCTURE_ID_BASE {
+		return -1, false
+	}
+	return int(raw - BUILTIN_STRUCTURE_ID_BASE), true
+}
+
+shared_builtin_provider_storage: Source_File_Provider
+shared_builtin_provider_ready: bool
+shared_builtin_provider_lock: sync.Mutex
+
+shared_builtin_provider :: proc() -> ^Source_File_Provider {
+	if sync.atomic_load_explicit(&shared_builtin_provider_ready, .Acquire) {
+		return &shared_builtin_provider_storage
+	}
+	sync.mutex_lock(&shared_builtin_provider_lock)
+	defer sync.mutex_unlock(&shared_builtin_provider_lock)
+	if sync.atomic_load_explicit(&shared_builtin_provider_ready, .Acquire) {
+		return &shared_builtin_provider_storage
+	}
+	allocator := base_runtime.heap_allocator()
+	shared_builtin_provider_storage = source_file_provider_make(
+		INVALID_SOURCE_FILE_ID,
+		.Full_Source,
+		"builtin://abap",
+		tokenizer.Range{},
+		allocator,
+	)
+	install_builtins(
+		&shared_builtin_provider_storage,
+		shared_builtin_provider_storage.root_scope,
+		allocator,
+	)
+	for &st, i in shared_builtin_provider_storage.structures {
+		st.id = builtin_structure_id(i)
+		st.origin_unit = INVALID_SOURCE_FILE_ID
+		st.origin_structure = st.id
+		for &field in st.fields {
+			field.decl_unit = INVALID_SOURCE_FILE_ID
+			if field.structure != INVALID_STRUCTURE_ID {
+				field.structure = builtin_structure_id(structure_id_index(field.structure))
+			}
+		}
+	}
+	for &s in shared_builtin_provider_storage.symbols {
+		s.id = builtin_symbol_id_from_index(symbol_id_index(s.id))
+		if s.structure != INVALID_STRUCTURE_ID {
+			s.structure = builtin_structure_id(structure_id_index(s.structure))
+		}
+	}
+	for &t in shared_builtin_provider_storage.types {
+		if t.symbol != INVALID_SYMBOL_ID {
+			t.symbol = builtin_symbol_id_from_index(symbol_id_index(t.symbol))
+		}
+		if t.structure != INVALID_STRUCTURE_ID {
+			t.structure = builtin_structure_id(structure_id_index(t.structure))
+		}
+	}
+	sync.atomic_store_explicit(&shared_builtin_provider_ready, true, .Release)
+	return &shared_builtin_provider_storage
+}
+
+builtin_provider_is_shared :: proc "contextless" (unit: ^Source_File_Provider) -> bool {
+	return unit == &shared_builtin_provider_storage
+}
+
+@(private)
+builtin_symbol_matches :: proc(
+	namespace: Namespace,
+	query_name, builtin_name: string,
+	kind: Symbol_Kind,
+) -> bool {
+	return symbol_kind_occupies(kind, namespace) && strings.equal_fold(query_name, builtin_name)
+}
+
+@(private)
+builtin_symbol_kind_from_spec :: proc(kind: Builtin_Type_Kind) -> Symbol_Kind {
+	switch kind {
+	case .Type:
+		return .Builtin_Type
+	case .Constant:
+		return .Builtin_Constant
+	case .Variable:
+		return .Builtin_Variable
+	}
+	return .Builtin_Type
+}
+
+install_builtins :: proc(
+	unit: ^Source_File_Provider,
+	root_scope: Scope_Id,
+	allocator: mem.Allocator,
+) {
+	for &spec in BUILTIN_STRUCTURES {
 		fields := make([dynamic]Structure_Field_Data, 0, len(spec.fields), allocator)
-		for field in spec.fields {
+		for &field in spec.fields {
 			nested := INVALID_STRUCTURE_ID
 			if field.structure_name != "" {
 				if s := find_structure(unit, field.structure_name); s != nil {
@@ -1730,7 +1931,8 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 			}
 			type_ref := builtin_type_ref(field.type_name)
 			type_ref.is_ref = field.is_ref
-			type_id := type_id_from_declared_type(unit, root_scope, type_ref) if field.type_name != "" else UNKNOWN_TYPE_ID
+			type_id :=
+				type_id_from_declared_type(unit, root_scope, type_ref) if field.type_name != "" else UNKNOWN_TYPE_ID
 			if !type_id_is_known(type_id) && nested != INVALID_STRUCTURE_ID {
 				type_id = type_structure(unit, nested)
 			}
@@ -1738,7 +1940,7 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 				&fields,
 				Structure_Field_Data {
 					name = field.name,
-					decl_unit = unit.unit_id,
+					decl_unit = unit.source_file_id,
 					type_id = type_id,
 					structure = nested,
 					type_ref = type_ref,
@@ -1757,7 +1959,7 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 	for name in BUILTIN_GENERIC_PRIMITIVE_TYPES {
 		_ = declare_symbol(unit, root_scope, name, .Builtin_Type, zero)
 	}
-	for spec in BUILTIN_SYMBOLS {
+	for &spec in BUILTIN_SYMBOLS {
 		kind := Symbol_Kind.Builtin_Type
 		switch spec.kind {
 		case .Type:
@@ -1812,7 +2014,7 @@ install_builtins :: proc(unit: ^Unit_Analysis, root_scope: Scope_Id, allocator: 
 			spec.value_clause_display,
 		)
 	}
-	for routine in BUILTIN_ROUTINES {
+	for &routine in BUILTIN_ROUTINES {
 		return_type := builtin_type_ref(routine.return_type)
 		_ = declare_symbol(
 			unit,
@@ -1837,11 +2039,11 @@ builtin_routine_spec :: proc(name: string) -> ^Builtin_Routine_Spec {
 }
 
 builtin_structure_field_description :: proc(structure_name, field_name: string) -> string {
-	for structure in BUILTIN_STRUCTURES {
+	for &structure in BUILTIN_STRUCTURES {
 		if !strings.equal_fold(structure.name, structure_name) {
 			continue
 		}
-		for field in structure.fields {
+		for &field in structure.fields {
 			if strings.equal_fold(field.name, field_name) {
 				return field.description
 			}
@@ -1856,12 +2058,12 @@ builtin_class_attribute_type_fact :: proc(
 	Type_Fact_Data,
 	bool,
 ) {
-	for attribute in BUILTIN_CLASS_ATTRIBUTES {
+	for &attribute in BUILTIN_CLASS_ATTRIBUTES {
 		if strings.equal_fold(attribute.class_name, class_name) &&
 		   strings.equal_fold(attribute.name, attribute_name) {
 			return Type_Fact_Data {
 					structure = INVALID_STRUCTURE_ID,
-					structure_unit = INVALID_UNIT_ID,
+					structure_unit = INVALID_SOURCE_FILE_ID,
 					declared_type = builtin_type_ref(attribute.type_name),
 					has_declared_type = true,
 					type_clause_display = attribute.type_name,

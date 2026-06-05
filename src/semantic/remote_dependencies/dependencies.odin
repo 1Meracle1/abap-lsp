@@ -75,6 +75,7 @@ Cache_Phase_Result :: struct {
 resolve_dependency_candidates :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input,
 	remote_candidates: []deps.Remote_Dependency_Candidate,
 	config: ^Dependency_Config,
 	state: ^Dependency_State,
@@ -86,6 +87,7 @@ resolve_dependency_candidates :: proc(
 	}
 	old_candidate_count := len(candidates^)
 	old_dependency_count := len(dependencies^)
+	old_summary_count := len(dependency_summaries^)
 	has_cache := config.cache != nil
 	has_profile := config.profile != nil
 	cache_result := Cache_Phase_Result {
@@ -117,9 +119,10 @@ resolve_dependency_candidates :: proc(
 			pool,
 			target_uri,
 			"session_cache_any" if config.cache_any_profile || !has_profile else "session_cache",
+			dependency_summaries,
 		)
 		if cache_result.added {
-			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+			return dependency_input_count_since(candidates, dependencies, dependency_summaries, old_candidate_count, old_dependency_count, old_summary_count)
 		}
 	} else {
 		for candidate in remote_candidates {
@@ -144,8 +147,9 @@ resolve_dependency_candidates :: proc(
 				config.adt_client,
 				pool,
 				target_uri,
+				dependency_summaries,
 			) {
-			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+			return dependency_input_count_since(candidates, dependencies, dependency_summaries, old_candidate_count, old_dependency_count, old_summary_count)
 		}
 	}
 
@@ -165,8 +169,9 @@ resolve_dependency_candidates :: proc(
 				config.adt_client,
 				pool,
 				target_uri,
+				dependency_summaries,
 			) {
-			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+			return dependency_input_count_since(candidates, dependencies, dependency_summaries, old_candidate_count, old_dependency_count, old_summary_count)
 		}
 	}
 
@@ -186,25 +191,30 @@ resolve_dependency_candidates :: proc(
 				config.local_export_roots,
 				target_uri,
 				candidates.allocator,
+				dependency_summaries,
 			) {
-			return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+			return dependency_input_count_since(candidates, dependencies, dependency_summaries, old_candidate_count, old_dependency_count, old_summary_count)
 		}
 	}
-	return dependency_input_count_since(candidates, dependencies, old_candidate_count, old_dependency_count)
+	return dependency_input_count_since(candidates, dependencies, dependency_summaries, old_candidate_count, old_dependency_count, old_summary_count)
 }
 
 @(private)
 dependency_input_count_since :: proc(
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	dependencies: ^[dynamic]analyze.Source_Input,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input,
 	old_candidate_count: int,
 	old_dependency_count: int,
+	old_summary_count: int,
 ) -> int {
-	return len(candidates^) - old_candidate_count + len(dependencies^) - old_dependency_count
+	return len(candidates^) - old_candidate_count +
+	       len(dependencies^) - old_dependency_count +
+	       len(dependency_summaries^) - old_summary_count
 }
 
 analyze_inputs_with_state :: proc(
-	state: ^analyze.Project_State,
+	state: ^analyze.Project_Snapshot_State,
 	targets: []analyze.Source_Input,
 	candidates: []analyze.Project_Candidate_Input,
 	dependencies: []analyze.Source_Input,
@@ -212,14 +222,37 @@ analyze_inputs_with_state :: proc(
 	options: analyze.Analyze_Options,
 	allocator: mem.Allocator,
 ) -> analyze.Project_Analysis {
-	if len(targets) == 0 {
-		return analyze.project_state_analysis(state)
-	}
-	return analyze.project_state_analyze_targets_with_candidate_inputs(
+	return analyze_inputs_with_state_and_summaries(
 		state,
 		targets,
 		candidates,
 		dependencies,
+		{},
+		pool,
+		options,
+		allocator,
+	)
+}
+
+analyze_inputs_with_state_and_summaries :: proc(
+	state: ^analyze.Project_Snapshot_State,
+	targets: []analyze.Source_Input,
+	candidates: []analyze.Project_Candidate_Input,
+	dependencies: []analyze.Source_Input,
+	dependency_summaries: []analyze.Summary_Provider_Input,
+	pool: ^execution.Pool,
+	options: analyze.Analyze_Options,
+	allocator: mem.Allocator,
+) -> analyze.Project_Analysis {
+	if len(targets) == 0 {
+		return analyze.project_state_analysis(state)
+	}
+	return analyze.project_state_analyze_targets_with_candidate_inputs_and_summaries(
+		state,
+		targets,
+		candidates,
+		dependencies,
+		dependency_summaries,
 		pool,
 		options,
 		allocator,
@@ -294,7 +327,7 @@ source_input_clone :: proc(
 	return analyze.Source_Input {
 		uri = strings.clone(input.uri, allocator),
 		source = strings.clone(input.source, allocator),
-		mode = input.mode,
+		role = input.role,
 	}
 }
 
@@ -320,7 +353,7 @@ add_dependency_source_input :: proc(
 	input := analyze.Source_Input {
 		uri    = uri,
 		source = input_source,
-		mode   = .Dependency_Interface,
+		role = .Dependency_Interface_Source,
 	}
 	append_dependency_input(candidates, dependencies, input, candidate, object_name)
 	return true

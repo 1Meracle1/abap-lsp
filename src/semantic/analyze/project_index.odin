@@ -10,27 +10,28 @@ Root_Name_Key :: struct {
 
 Project_Index :: struct {
 	root_lookup:            Project_Root_Lookup,
-	global_root_candidates: map[Root_Name_Key][dynamic]Symbol_Handle,
+	global_root_candidates: map[Root_Name_Key][dynamic]Symbol_Link,
 	provided_name_counts:   map[string]int,
 	class_scope_entries:    map[Project_Class_Member_Key]Project_Class_Member_Entry,
 	class_scope_candidates: map[Project_Class_Member_Key][dynamic]Project_Class_Scope_Index_Entry,
 	names:                  map[string]string,
-	unit_entries:           [dynamic]Project_Index_Unit,
-	visible:                [][dynamic]Unit_Id,
-	predecessors:           [][dynamic]Unit_Id,
+	source_file_entries:    [dynamic]Project_Index_Source_File,
+	visible:                [][dynamic]Source_File_Id,
+	predecessors:           [][dynamic]Source_File_Id,
 	allocator:              mem.Allocator,
 }
 
-Project_Index_Unit :: struct {
+Project_Index_Source_File :: struct {
 	roots:               [dynamic]Root_Symbol_Entry,
 	provided_names:      [dynamic]string,
 	exports:             [dynamic]string,
 	class_scope_entries: [dynamic]Project_Class_Scope_Index_Entry,
-	include_targets:     [dynamic]Unit_Id,
+	include_targets:     [dynamic]Source_File_Id,
+	role:                Source_File_Role,
 }
 
 Project_Class_Scope_Index_Entry :: struct {
-	unit:  Unit_Id,
+	unit:  Source_File_Id,
 	key:   Project_Class_Member_Key,
 	entry: Project_Class_Member_Entry,
 }
@@ -38,10 +39,11 @@ Project_Class_Scope_Index_Entry :: struct {
 project_index_make :: proc(allocator: mem.Allocator) -> Project_Index {
 	return Project_Index {
 		root_lookup = Project_Root_Lookup {
-			global = make(map[Root_Name_Key]Symbol_Handle, 16, allocator),
+			global = make(map[Root_Name_Key]Symbol_Link, 16, allocator),
+			summary_global = make(map[Root_Name_Key]Entity_Handle, 16, allocator),
 			provided_names = make(map[string]bool, 16, allocator),
 		},
-		global_root_candidates = make(map[Root_Name_Key][dynamic]Symbol_Handle, 16, allocator),
+		global_root_candidates = make(map[Root_Name_Key][dynamic]Symbol_Link, 16, allocator),
 		provided_name_counts = make(map[string]int, 16, allocator),
 		class_scope_entries = make(
 			map[Project_Class_Member_Key]Project_Class_Member_Entry,
@@ -54,7 +56,7 @@ project_index_make :: proc(allocator: mem.Allocator) -> Project_Index {
 			allocator,
 		),
 		names = make(map[string]string, 128, allocator),
-		unit_entries = make([dynamic]Project_Index_Unit, 0, 8, allocator),
+		source_file_entries = make([dynamic]Project_Index_Source_File, 0, 8, allocator),
 		allocator = allocator,
 	}
 }
@@ -72,24 +74,131 @@ project_index_name :: proc(index: ^Project_Index, name: string) -> string {
 }
 
 project_index_from_units :: proc(
-	units: []Unit_Analysis,
+	units: []Source_File_Provider,
 	allocator: mem.Allocator,
 ) -> Project_Index {
 	index := project_index_make(allocator)
-	unit_ids := make([dynamic]Unit_Id, 0, len(units), context.temp_allocator)
+	source_file_ids := make([dynamic]Source_File_Id, 0, len(units), context.temp_allocator)
 	for unit in units {
-		append(&unit_ids, unit.unit_id)
+		append(&source_file_ids, unit.source_file_id)
 	}
-	project_index_update_units(&index, units, unit_ids[:])
-	project_index_update_include_graph(&index, units, unit_ids[:])
+	project_index_update_units(&index, units, source_file_ids[:])
+	project_index_update_include_graph(&index, units, source_file_ids[:])
 	return index
 }
 
-project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) {
-	for len(index.unit_entries) < unit_count {
+project_index_from_project :: proc(
+	project: ^Project_Analysis,
+	allocator: mem.Allocator,
+) -> Project_Index {
+	if project == nil {
+		return project_index_make(allocator)
+	}
+	index := project_index_from_units(project.providers.source_files[:], allocator)
+	project_index_update_summaries(&index, project.providers.summaries)
+	return index
+}
+
+project_index_update_summaries :: proc(
+	index: ^Project_Index,
+	summaries: []Summary_Provider_Input,
+) {
+	if index.root_lookup.summary_global == nil {
+		index.root_lookup.summary_global = make(
+			map[Root_Name_Key]Entity_Handle,
+			16,
+			index.allocator,
+		)
+	}
+	clear(&index.root_lookup.summary_global)
+	for &summary, summary_index in summaries {
+		provider := provider_handle_for_dependency_summary(Provider_Id(u32(summary_index)))
+		for export, export_index in summary.exports {
+			namespaces := [?]Namespace{.Value, .Type, .Routine}
+			for namespace in namespaces {
+				if summary_provider_export_occupies(export.kind, namespace) {
+					project_index_add_summary_root(
+						index,
+						namespace,
+						export.name,
+						Entity_Handle {
+							provider = provider,
+							id = Entity_Id(Symbol_Id(u32(export_index))),
+						},
+					)
+				}
+			}
+		}
+		for class, class_index in summary.classes {
+			project_index_add_summary_root(
+				index,
+				.Type,
+				class.name,
+				Entity_Handle{provider = provider, id = Entity_Id(Symbol_Id(u32(class_index)))},
+			)
+		}
+		for function, function_index in summary.functions {
+			project_index_add_summary_root(
+				index,
+				.Routine,
+				function.name,
+				Entity_Handle{provider = provider, id = Entity_Id(Symbol_Id(u32(function_index)))},
+			)
+		}
+		for typ, type_index in summary.types {
+			project_index_add_summary_root(
+				index,
+				.Type,
+				typ.name,
+				Entity_Handle{provider = provider, id = Entity_Id(Symbol_Id(u32(type_index)))},
+			)
+		}
+		for symbol_name, symbol_index in summary.type_pool_symbols {
+			kind := dependency_summary_typepool_symbol_kind(summary, symbol_name)
+			namespaces := [?]Namespace{.Value, .Type, .Routine}
+			for namespace in namespaces {
+				if symbol_kind_occupies(kind, namespace) {
+					project_index_add_summary_root(
+						index,
+						namespace,
+						symbol_name,
+						Entity_Handle {
+							provider = provider,
+							id = Entity_Id(Symbol_Id(u32(symbol_index))),
+						},
+					)
+				}
+			}
+		}
+		for provided in summary.provided_names {
+			if entity, ok := summary_provider_entity_lookup(&summary, .Type, provided); ok {
+				project_index_add_summary_root(
+					index,
+					.Type,
+					provided,
+					Entity_Handle{provider = provider, id = entity},
+				)
+			}
+		}
+		if summary.object_name != "" {
+			if entity, ok := summary_provider_entity_lookup(&summary, .Type, summary.object_name);
+			   ok {
+				project_index_add_summary_root(
+					index,
+					.Type,
+					summary.object_name,
+					Entity_Handle{provider = provider, id = entity},
+				)
+			}
+		}
+	}
+}
+
+project_index_ensure_source_file_count :: proc(index: ^Project_Index, source_file_count: int) {
+	for len(index.source_file_entries) < source_file_count {
 		append(
-			&index.unit_entries,
-			Project_Index_Unit {
+			&index.source_file_entries,
+			Project_Index_Source_File {
 				roots = make([dynamic]Root_Symbol_Entry, 0, 8, index.allocator),
 				provided_names = make([dynamic]string, 0, 4, index.allocator),
 				exports = make([dynamic]string, 0, 8, index.allocator),
@@ -99,7 +208,7 @@ project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) 
 					8,
 					index.allocator,
 				),
-				include_targets = make([dynamic]Unit_Id, 0, 2, index.allocator),
+				include_targets = make([dynamic]Source_File_Id, 0, 2, index.allocator),
 			},
 		)
 	}
@@ -107,28 +216,28 @@ project_index_ensure_unit_count :: proc(index: ^Project_Index, unit_count: int) 
 
 project_index_update_units :: proc(
 	index: ^Project_Index,
-	units: []Unit_Analysis,
-	unit_ids: []Unit_Id,
+	units: []Source_File_Provider,
+	source_file_ids: []Source_File_Id,
 ) {
-	project_index_ensure_unit_count(index, len(units))
-	for unit_id in unit_ids {
-		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(units) {
+	project_index_ensure_source_file_count(index, len(units))
+	for source_file_id in source_file_ids {
+		source_file_index := source_file_id_index(source_file_id)
+		if source_file_index < 0 || source_file_index >= len(units) {
 			continue
 		}
-		project_index_remove_unit(index, unit_id)
-		project_index_collect_unit(index, &units[unit_index], unit_index)
+		project_index_remove_unit(index, source_file_id)
+		project_index_collect_source_file(index, &units[source_file_index], source_file_index)
 	}
 }
 
-project_index_remove_unit :: proc(index: ^Project_Index, unit_id: Unit_Id) {
-	unit_index := unit_id_index(unit_id)
-	data := &index.unit_entries[unit_index]
+project_index_remove_unit :: proc(index: ^Project_Index, source_file_id: Source_File_Id) {
+	source_file_index := source_file_id_index(source_file_id)
+	data := &index.source_file_entries[source_file_index]
 	for entry in data.roots {
 		project_index_remove_global_root_candidate(
 			index,
 			Root_Name_Key{namespace = entry.namespace, name = entry.name},
-			unit_id,
+			source_file_id,
 		)
 	}
 	for name in data.provided_names {
@@ -144,8 +253,13 @@ project_index_remove_unit :: proc(index: ^Project_Index, unit_id: Unit_Id) {
 	clear(&data.class_scope_entries)
 }
 
-project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, unit_index: int) {
-	data := &index.unit_entries[unit_index]
+project_index_collect_source_file :: proc(
+	index: ^Project_Index,
+	unit: ^Source_File_Provider,
+	source_file_index: int,
+) {
+	data := &index.source_file_entries[source_file_index]
+	data.role = unit.role
 	unit_stem := uri_file_stem(unit.uri)
 	for name in unit.provided_names {
 		index_name := project_index_name(index, name)
@@ -191,7 +305,7 @@ project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, 
 			}
 			index_name := project_index_name(index, symbol.name)
 			entry := Root_Symbol_Entry {
-				unit               = unit.unit_id,
+				unit               = unit.source_file_id,
 				symbol             = symbol.id,
 				namespace          = namespace,
 				name               = index_name,
@@ -207,17 +321,14 @@ project_index_collect_unit :: proc(index: ^Project_Index, unit: ^Unit_Analysis, 
 			project_index_add_global_root_candidate(
 				index,
 				Root_Name_Key{namespace = entry.namespace, name = entry.name},
-				Symbol_Handle{unit = entry.unit, symbol = entry.symbol},
+				Symbol_Link{unit = entry.unit, symbol = entry.symbol},
 			)
 		}
 	}
 }
 
 @(private)
-project_index_add_remote_export :: proc(
-	data: ^Project_Index_Unit,
-	name: string,
-) {
+project_index_add_remote_export :: proc(data: ^Project_Index_Source_File, name: string) {
 	if name == "" {
 		return
 	}
@@ -229,18 +340,43 @@ project_index_add_remote_export :: proc(
 	append(&data.exports, name)
 }
 
+project_index_add_summary_root :: proc(
+	index: ^Project_Index,
+	namespace: Namespace,
+	name: string,
+	entity: Entity_Handle,
+) {
+	if name == "" || !provider_handle_is_valid(entity.provider) {
+		return
+	}
+	index_name := project_index_name(index, name)
+	key := Root_Name_Key {
+		namespace = namespace,
+		name      = index_name,
+	}
+	if _, exists := index.root_lookup.global[key]; exists {
+		return
+	}
+	index.root_lookup.summary_global[key] = entity
+	project_index_increment_name_count(
+		&index.provided_name_counts,
+		&index.root_lookup.provided_names,
+		index_name,
+	)
+}
+
 project_index_update_include_graph :: proc(
 	index: ^Project_Index,
-	units: []Unit_Analysis,
-	unit_ids: []Unit_Id,
+	units: []Source_File_Provider,
+	source_file_ids: []Source_File_Id,
 ) {
-	project_index_ensure_unit_count(index, len(units))
+	project_index_ensure_source_file_count(index, len(units))
 	rebuild := len(index.visible) != len(units) || len(index.predecessors) != len(units)
-	for unit_id in unit_ids {
-		unit_index := unit_id_index(unit_id)
+	for source_file_id in source_file_ids {
+		source_file_index := source_file_id_index(source_file_id)
 		if project_index_include_targets_changed(
-			&index.unit_entries[unit_index],
-			&units[unit_index],
+			&index.source_file_entries[source_file_index],
+			&units[source_file_index],
 		) {
 			rebuild = true
 		}
@@ -248,15 +384,18 @@ project_index_update_include_graph :: proc(
 	if rebuild {
 		project_index_rebuild_include_graph(index, units)
 	}
-	if rebuild || project_index_class_scope_dirty(units, unit_ids) {
+	if rebuild || project_index_class_scope_dirty(units, source_file_ids) {
 		project_index_rebuild_class_scope_index(index, units)
 	}
 }
 
-project_index_class_scope_dirty :: proc(units: []Unit_Analysis, unit_ids: []Unit_Id) -> bool {
-	for unit_id in unit_ids {
-		unit_index := unit_id_index(unit_id)
-		unit := &units[unit_index]
+project_index_class_scope_dirty :: proc(
+	units: []Source_File_Provider,
+	source_file_ids: []Source_File_Id,
+) -> bool {
+	for source_file_id in source_file_ids {
+		source_file_index := source_file_id_index(source_file_id)
+		unit := &units[source_file_index]
 		if len(unit.class_definitions) > 0 ||
 		   len(unit.class_inheritance) > 0 ||
 		   len(unit.implemented_interfaces) > 0 ||
@@ -273,13 +412,13 @@ project_index_class_scope_dirty :: proc(units: []Unit_Analysis, unit_ids: []Unit
 }
 
 project_index_include_targets_changed :: proc(
-	data: ^Project_Index_Unit,
-	unit: ^Unit_Analysis,
+	data: ^Project_Index_Source_File,
+	unit: ^Source_File_Provider,
 ) -> bool {
 	changed := len(data.include_targets) != len(unit.include_edges)
 	if !changed {
 		for edge, i in unit.include_edges {
-			target := edge.target if edge.has_target else INVALID_UNIT_ID
+			target := edge.target if edge.has_target else INVALID_SOURCE_FILE_ID
 			if data.include_targets[i] != target {
 				changed = true
 				break
@@ -289,16 +428,19 @@ project_index_include_targets_changed :: proc(
 	if changed {
 		clear(&data.include_targets)
 		for edge in unit.include_edges {
-			append(&data.include_targets, edge.target if edge.has_target else INVALID_UNIT_ID)
+			append(
+				&data.include_targets,
+				edge.target if edge.has_target else INVALID_SOURCE_FILE_ID,
+			)
 		}
 	}
 	return changed
 }
 
-project_index_rebuild_include_graph :: proc(index: ^Project_Index, units: []Unit_Analysis) {
+project_index_rebuild_include_graph :: proc(index: ^Project_Index, units: []Source_File_Provider) {
 	project_index_destroy_include_graph(index)
-	index.visible = include_visible_units_for_units(units, index.allocator)
-	index.predecessors = include_predecessor_units_for_units(units, index.allocator)
+	index.visible = include_visible_source_files_for_source_files(units, index.allocator)
+	index.predecessors = include_predecessor_source_files_for_source_files(units, index.allocator)
 }
 
 project_index_destroy_include_graph :: proc(index: ^Project_Index) {
@@ -318,7 +460,10 @@ project_index_destroy_include_graph :: proc(index: ^Project_Index) {
 	index.predecessors = nil
 }
 
-project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []Unit_Analysis) {
+project_index_rebuild_class_scope_index :: proc(
+	index: ^Project_Index,
+	units: []Source_File_Provider,
+) {
 	delete(index.class_scope_entries)
 	delete(index.class_scope_candidates)
 	index.class_scope_entries = make(
@@ -332,7 +477,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 		index.allocator,
 	)
 	for i in 0 ..< len(units) {
-		clear(&index.unit_entries[i].class_scope_entries)
+		clear(&index.source_file_entries[i].class_scope_entries)
 	}
 	for &unit in units {
 		for owner in unit.symbols {
@@ -351,14 +496,17 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 					if symbol_kind_occupies(symbol.kind, namespace) {
 						project_index_record_class_scope_entry(
 							index,
-							unit.unit_id,
+							unit.source_file_id,
 							Project_Class_Member_Key {
-								class_unit = unit.unit_id,
+								class_unit = unit.source_file_id,
 								class_symbol = owner.id,
 								namespace = namespace,
 								name = project_index_name(index, symbol.name),
 							},
-							Project_Class_Member_Entry{unit = unit.unit_id, symbol = symbol.id},
+							Project_Class_Member_Entry {
+								unit = unit.source_file_id,
+								symbol = symbol.id,
+							},
 						)
 					}
 				}
@@ -368,8 +516,8 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 	changed := true
 	for changed {
 		changed = false
-		for unit, unit_index in units {
-			if unit_index >= len(index.visible) {
+		for unit, source_file_index in units {
+			if source_file_index >= len(index.visible) {
 				continue
 			}
 			for alias in unit.member_aliases {
@@ -378,10 +526,10 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 				}
 				target, ok := resolve_type_name_in_project(
 					units,
-					unit_index,
+					source_file_index,
 					alias.target_interface_name,
 					&index.root_lookup,
-					index.visible[unit_index],
+					index.visible[source_file_index],
 				)
 				if !ok {
 					continue
@@ -399,7 +547,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 						name         = target_name,
 					}
 					alias_key := Project_Class_Member_Key {
-						class_unit   = unit.unit_id,
+						class_unit   = unit.source_file_id,
 						class_symbol = alias.owner_symbol,
 						namespace    = namespace,
 						name         = alias.alias_name,
@@ -412,7 +560,7 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 						alias_key.name = project_index_name(index, alias.alias_name)
 						project_index_record_class_scope_entry(
 							index,
-							unit.unit_id,
+							unit.source_file_id,
 							alias_key,
 							target_entry,
 						)
@@ -426,12 +574,12 @@ project_index_rebuild_class_scope_index :: proc(index: ^Project_Index, units: []
 
 project_index_record_class_scope_entry :: proc(
 	index: ^Project_Index,
-	owner_unit: Unit_Id,
+	owner_unit: Source_File_Id,
 	key: Project_Class_Member_Key,
 	entry: Project_Class_Member_Entry,
 ) {
-	unit_index := unit_id_index(owner_unit)
-	data := &index.unit_entries[unit_index]
+	source_file_index := source_file_id_index(owner_unit)
+	data := &index.source_file_entries[source_file_index]
 	append(
 		&data.class_scope_entries,
 		Project_Class_Scope_Index_Entry{unit = owner_unit, key = key, entry = entry},
@@ -445,12 +593,12 @@ project_index_record_class_scope_entry :: proc(
 project_index_add_global_root_candidate :: proc(
 	index: ^Project_Index,
 	key: Root_Name_Key,
-	handle: Symbol_Handle,
+	handle: Symbol_Link,
 ) {
 	if candidates, ok := index.global_root_candidates[key]; ok {
 		insert := len(candidates)
 		for candidate, i in candidates {
-			if unit_id_index(handle.unit) < unit_id_index(candidate.unit) {
+			if project_index_unit_precedes(index, handle.unit, candidate.unit) {
 				insert = i
 				break
 			}
@@ -462,7 +610,7 @@ project_index_add_global_root_candidate :: proc(
 		candidates[insert] = handle
 		index.global_root_candidates[key] = candidates
 	} else {
-		next := make([dynamic]Symbol_Handle, 0, 2, index.allocator)
+		next := make([dynamic]Symbol_Link, 0, 2, index.allocator)
 		append(&next, handle)
 		index.global_root_candidates[key] = next
 	}
@@ -472,7 +620,7 @@ project_index_add_global_root_candidate :: proc(
 project_index_remove_global_root_candidate :: proc(
 	index: ^Project_Index,
 	key: Root_Name_Key,
-	unit_id: Unit_Id,
+	source_file_id: Source_File_Id,
 ) {
 	candidates, ok := index.global_root_candidates[key]
 	if !ok {
@@ -480,7 +628,7 @@ project_index_remove_global_root_candidate :: proc(
 	}
 	write := 0
 	for candidate in candidates {
-		if candidate.unit == unit_id {
+		if candidate.unit == source_file_id {
 			continue
 		}
 		candidates[write] = candidate
@@ -504,7 +652,7 @@ project_index_add_class_scope_candidate :: proc(
 	if candidates, ok := index.class_scope_candidates[entry.key]; ok {
 		insert := len(candidates)
 		for candidate, i in candidates {
-			if unit_id_index(entry.unit) < unit_id_index(candidate.unit) {
+			if project_index_unit_precedes(index, entry.unit, candidate.unit) {
 				insert = i
 				break
 			}
@@ -521,6 +669,29 @@ project_index_add_class_scope_candidate :: proc(
 		index.class_scope_candidates[entry.key] = next
 	}
 	index.class_scope_entries[entry.key] = index.class_scope_candidates[entry.key][0].entry
+}
+
+project_index_unit_precedes :: proc(index: ^Project_Index, left, right: Source_File_Id) -> bool {
+	left_precedence := project_index_unit_precedence(index, left)
+	right_precedence := project_index_unit_precedence(index, right)
+	if left_precedence != right_precedence {
+		return left_precedence < right_precedence
+	}
+	return source_file_id_index(left) < source_file_id_index(right)
+}
+
+project_index_unit_precedence :: proc(
+	index: ^Project_Index,
+	source_file_id: Source_File_Id,
+) -> int {
+	source_file_index := source_file_id_index(source_file_id)
+	if source_file_index < 0 || source_file_index >= len(index.source_file_entries) {
+		return 100
+	}
+	if index.source_file_entries[source_file_index].role != .Dependency_Interface_Source {
+		return 0
+	}
+	return 1
 }
 
 project_index_increment_name_count :: proc(

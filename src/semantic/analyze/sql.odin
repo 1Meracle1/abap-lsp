@@ -6,7 +6,7 @@ import "src:tokenizer"
 
 import "core:strings"
 
-collect_select_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Select_Stmt, scope: Scope_Id) {
+collect_select_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Select_Stmt, scope: Scope_Id) {
 	cte_names := make([dynamic]string, 0, 2, c.allocator)
 	if stmt.with != nil {
 		for entry in stmt.with.entries {
@@ -57,7 +57,7 @@ collect_select_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Select_Stmt, scope: 
 }
 
 collect_open_cursor_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Open_Cursor_Stmt,
 	scope: Scope_Id,
 ) {
@@ -65,17 +65,17 @@ collect_open_cursor_stmt_facts :: proc(
 	collect_select_query_facts(c, &stmt.query, stmt.range, scope, false, nil)
 }
 
-collect_fetch_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Fetch_Stmt, scope: Scope_Id) {
+collect_fetch_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Fetch_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.handle, scope)
 	if stmt.result != nil {
-		query_id := len(c.unit.sql_queries)
+		query_id := len(c.facts.sql_queries)
 		collect_select_result_clause(c, query_id, stmt.result, scope)
 	}
 	collect_expr_refs(c, stmt.package_size, scope)
 }
 
 collect_db_table_sql_source :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	range: tokenizer.Range,
 	target: ^ast.Expr,
 	scope: Scope_Id,
@@ -89,7 +89,7 @@ collect_db_table_sql_source :: proc(
 	if target == nil {
 		return -1, false
 	}
-	query_id := len(c.unit.sql_queries)
+	query_id := len(c.facts.sql_queries)
 	flags := Sql_Query_Flags{.Has_From_Clause}
 	if where_cond != nil {
 		flags += {.Has_Where_Clause}
@@ -108,7 +108,7 @@ collect_db_table_sql_source :: proc(
 	if sql_expr_is_dynamic_operand(target) {
 		collect_sql_dynamic_operand_refs(c, target, scope)
 		append(
-			&c.unit.sql_dynamic_fragments,
+			&c.facts.sql_dynamic_fragments,
 			Sql_Dynamic_Fragment_Data {
 				query_id = query_id,
 				scope = scope,
@@ -116,7 +116,7 @@ collect_db_table_sql_source :: proc(
 				kind = .Source,
 			},
 		)
-		append(&c.unit.sql_queries, query)
+		append(&c.facts.sql_queries, query)
 		return query_id, true
 	}
 	name, name_range, ok := sql_simple_name(target)
@@ -140,7 +140,7 @@ collect_db_table_sql_source :: proc(
 }
 
 collect_db_table_sql_source_name :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	range: tokenizer.Range,
 	name: string,
 	name_range: tokenizer.Range,
@@ -159,7 +159,7 @@ collect_db_table_sql_source_name :: proc(
 	if _, local_value := lookup_symbol_in_scope_chain(c, scope, canonical, .Value); local_value {
 		return -1, false
 	}
-	query_id := len(c.unit.sql_queries)
+	query_id := len(c.facts.sql_queries)
 	flags := Sql_Query_Flags{.Has_From_Clause}
 	if where_cond != nil {
 		flags += {.Has_Where_Clause}
@@ -168,7 +168,7 @@ collect_db_table_sql_source_name :: proc(
 		flags += {.Has_Dynamic_Where}
 	}
 	append(
-		&c.unit.sql_sources,
+		&c.facts.sql_sources,
 		Sql_Source_Data {
 			query_id = query_id,
 			range = name_range,
@@ -188,7 +188,7 @@ collect_db_table_sql_source_name :: proc(
 		)
 	}
 	append(
-		&c.unit.sql_queries,
+		&c.facts.sql_queries,
 		Sql_Query_Data {
 			id = query_id,
 			scope = scope,
@@ -202,14 +202,14 @@ collect_db_table_sql_source_name :: proc(
 }
 
 collect_select_query_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query: ^ast.Select_Query_Clause,
 	fallback: tokenizer.Range,
 	scope: Scope_Id,
 	has_endselect: bool,
 	cte_names: []string,
 ) {
-	query_id := len(c.unit.sql_queries)
+	query_id := len(c.facts.sql_queries)
 	query_range := select_query_range(query, fallback)
 	collect_select_query_parts(c, query_id, query, scope, cte_names)
 	order_by_fields := select_order_by_fields(c, query)
@@ -245,7 +245,7 @@ collect_select_query_facts :: proc(
 	if query.dynamic_where {flags += {.Has_Dynamic_Where}}
 
 	append(
-		&c.unit.sql_queries,
+		&c.facts.sql_queries,
 		Sql_Query_Data {
 			id = query_id,
 			scope = scope,
@@ -272,7 +272,7 @@ collect_select_query_facts :: proc(
 }
 
 collect_select_query_parts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	query: ^ast.Select_Query_Clause,
 	scope: Scope_Id,
@@ -295,7 +295,7 @@ collect_select_query_parts :: proc(
 	}
 	if query.for_all_entries != nil {
 		append(
-			&c.unit.sql_predicates,
+			&c.facts.sql_predicates,
 			Sql_Predicate_Data {
 				query_id = query_id,
 				range = query.for_all_entries.range,
@@ -311,7 +311,7 @@ collect_select_query_parts :: proc(
 }
 
 collect_sql_projection :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	projection: ast.Select_Projection_Clause,
 	scope: Scope_Id,
@@ -323,7 +323,7 @@ collect_sql_projection :: proc(
 	if projection.is_dynamic || sql_expr_is_dynamic_operand(projection.value) {
 		collect_sql_dynamic_operand_refs(c, projection.value, scope)
 		append(
-			&c.unit.sql_dynamic_fragments,
+			&c.facts.sql_dynamic_fragments,
 			Sql_Dynamic_Fragment_Data {
 				query_id = query_id,
 				scope = scope,
@@ -332,7 +332,7 @@ collect_sql_projection :: proc(
 			},
 		)
 		append(
-			&c.unit.sql_projections,
+			&c.facts.sql_projections,
 			Sql_Projection_Data {
 				query_id = query_id,
 				range = projection.value.range,
@@ -438,7 +438,7 @@ collect_sql_projection :: proc(
 	}
 	collect_sql_host_refs_from_expr(c, projection.value, scope)
 	append(
-		&c.unit.sql_projections,
+		&c.facts.sql_projections,
 		Sql_Projection_Data {
 			query_id = query_id,
 			range = projection.value.range,
@@ -451,7 +451,7 @@ collect_sql_projection :: proc(
 }
 
 collect_select_source_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	clause: ^ast.Select_Source_Clause,
 	scope: Scope_Id,
@@ -487,7 +487,7 @@ collect_select_source_clause :: proc(
 }
 
 collect_sql_source :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	expr: ^ast.Expr,
 	alias, join_kind: string,
@@ -503,7 +503,7 @@ collect_sql_source :: proc(
 	if force_dynamic || sql_expr_is_dynamic_operand(expr) {
 		collect_sql_dynamic_operand_refs(c, expr, scope)
 		append(
-			&c.unit.sql_dynamic_fragments,
+			&c.facts.sql_dynamic_fragments,
 			Sql_Dynamic_Fragment_Data {
 				query_id = query_id,
 				scope = scope,
@@ -559,7 +559,7 @@ collect_sql_source :: proc(
 		return
 	}
 	append(
-		&c.unit.sql_sources,
+		&c.facts.sql_sources,
 		Sql_Source_Data {
 			query_id = query_id,
 			range = expr.range,
@@ -579,7 +579,7 @@ collect_sql_source :: proc(
 }
 
 collect_select_result_clause :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	result: ^ast.Select_Result_Clause,
 	scope: Scope_Id,
@@ -659,7 +659,7 @@ collect_select_result_clause :: proc(
 		)
 	}
 	append(
-		&c.unit.sql_targets,
+		&c.facts.sql_targets,
 		Sql_Target_Data {
 			query_id = query_id,
 			scope = scope,
@@ -673,7 +673,7 @@ collect_select_result_clause :: proc(
 }
 
 collect_sql_predicate_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
@@ -683,12 +683,12 @@ collect_sql_predicate_expr :: proc(
 		return
 	}
 	append(
-		&c.unit.sql_predicates,
+		&c.facts.sql_predicates,
 		Sql_Predicate_Data{query_id = query_id, range = expr.range, kind = kind},
 	)
 	if kind == .Dynamic_Where {
 		append(
-			&c.unit.sql_dynamic_fragments,
+			&c.facts.sql_dynamic_fragments,
 			Sql_Dynamic_Fragment_Data {
 				query_id = query_id,
 				scope = scope,
@@ -704,7 +704,7 @@ collect_sql_predicate_expr :: proc(
 }
 
 collect_sql_name_refs_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
@@ -846,7 +846,7 @@ collect_sql_name_refs_from_expr :: proc(
 	}
 }
 
-collect_sql_host_refs_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
+collect_sql_host_refs_from_expr :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr, scope: Scope_Id) {
 	if expr == nil {
 		return
 	}
@@ -896,7 +896,7 @@ collect_sql_host_refs_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: S
 	}
 }
 
-collect_sql_dynamic_operand_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
+collect_sql_dynamic_operand_refs :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr, scope: Scope_Id) {
 	if paren, ok := expr.derived_expr.(^ast.Paren_Expr); ok {
 		collect_expr_refs(c, paren.expr, scope)
 		return
@@ -905,14 +905,14 @@ collect_sql_dynamic_operand_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: 
 }
 
 push_sql_predicate_name :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	scope: Scope_Id,
 	range: tokenizer.Range,
 	name: string,
 ) {
 	append(
-		&c.unit.sql_predicate_names,
+		&c.facts.sql_predicate_names,
 		Sql_Predicate_Name_Data {
 			query_id = query_id,
 			scope = scope,
@@ -923,7 +923,7 @@ push_sql_predicate_name :: proc(
 }
 
 push_sql_name_ref :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	scope: Scope_Id,
 	range: tokenizer.Range,
@@ -932,7 +932,7 @@ push_sql_name_ref :: proc(
 	resolution: Sql_Resolution,
 ) {
 	append(
-		&c.unit.sql_name_refs,
+		&c.facts.sql_name_refs,
 		Sql_Name_Ref_Data {
 			query_id = query_id,
 			scope = scope,
@@ -1054,7 +1054,7 @@ sql_unwrap_host :: proc(expr: ^ast.Expr) -> ^ast.Expr {
 	return expr
 }
 
-sql_target_name_from_expr :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
+sql_target_name_from_expr :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr) -> string {
 	unwrapped := sql_unwrap_host(expr)
 	if unwrapped == nil {
 		return ""
@@ -1072,14 +1072,14 @@ sql_target_name_from_expr :: proc(c: ^Collector, expr: ^ast.Expr) -> string {
 }
 
 inline_select_target_structure :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	query_id: int,
 	target_name: string,
 	scope: Scope_Id,
 	min_fields: int,
 ) -> (Structure_Id, int) {
 	fields := make([dynamic]Structure_Field_Data, 0, 4, c.allocator)
-	for projection in c.unit.sql_projections {
+	for projection in c.facts.sql_projections {
 		if projection.query_id != query_id {
 			continue
 		}
@@ -1101,7 +1101,7 @@ inline_select_target_structure :: proc(
 			Structure_Field_Data {
 				name = field_name,
 				decl_range = projection.range,
-				decl_unit = c.unit.unit_id,
+				decl_unit = c.unit.source_file_id,
 				structure = INVALID_STRUCTURE_ID,
 				type_ref = type_ref,
 				flags = flags,
@@ -1114,10 +1114,10 @@ inline_select_target_structure :: proc(
 	return push_collected_structure(c, concat3(c, "<open_sql_inline:", target_name, ">"), fields, scope), len(fields)
 }
 
-inline_select_target_type :: proc(c: ^Collector, query_id: int) -> (Field_Type_Ref_Data, bool) {
+inline_select_target_type :: proc(c: ^Fact_Model_Builder, query_id: int) -> (Field_Type_Ref_Data, bool) {
 	count := 0
 	out := Field_Type_Ref_Data{}
-	for projection in c.unit.sql_projections {
+	for projection in c.facts.sql_projections {
 		if projection.query_id != query_id {
 			continue
 		}
@@ -1129,7 +1129,7 @@ inline_select_target_type :: proc(c: ^Collector, query_id: int) -> (Field_Type_R
 	return out, count == 1 && out.base_name != ""
 }
 
-select_order_by_fields :: proc(c: ^Collector, query: ^ast.Select_Query_Clause) -> [dynamic]string {
+select_order_by_fields :: proc(c: ^Fact_Model_Builder, query: ^ast.Select_Query_Clause) -> [dynamic]string {
 	fields := make([dynamic]string, 0, len(query.order_by_fields), c.allocator)
 	for field in query.order_by_fields {
 		append(&fields, canonical_name(field, c.allocator))
@@ -1242,12 +1242,12 @@ sql_name_in_list :: proc(name: string, names: []string) -> bool {
 	return false
 }
 
-sql_local_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: string) -> bool {
+sql_local_value_exists :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, name: string) -> bool {
 	_, ok := lookup_symbol_in_scope_chain(c, scope, name, .Value)
 	return ok
 }
 
-table_order_name_from_access :: proc(c: ^Collector, access: Field_Access) -> string {
+table_order_name_from_access :: proc(c: ^Fact_Model_Builder, access: Field_Access) -> string {
 	if len(access.field_path) == 0 {
 		return access.base_name
 	}

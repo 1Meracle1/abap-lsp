@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS dependency_typepool_symbols (
     FOREIGN KEY(artifact_id) REFERENCES dependency_artifacts(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS dependency_artifact_summaries (
+    artifact_id INTEGER PRIMARY KEY,
+    summary_payload TEXT NOT NULL,
+    FOREIGN KEY(artifact_id) REFERENCES dependency_artifacts(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_dependency_typepool_symbol_lookup
     ON dependency_typepool_symbols(symbol_name, pool_name, artifact_id);
 
@@ -155,6 +161,7 @@ Stored_Artifact_Input :: struct {
 	fetched_at:     string,
 	symbols:          []Stored_Symbol_Input,
 	typepool_symbols: []string,
+	summary_payload:  string,
 }
 
 Stored_Artifact_Record :: struct {
@@ -322,6 +329,19 @@ read_artifact_source :: proc(
 	}
 	defer reader_destroy(&r)
 	return reader_read_artifact_source(&r, artifact_id, allocator)
+}
+
+read_artifact_summary_payload :: proc(
+	store: ^Dependency_Store,
+	artifact_id: i64,
+	allocator: mem.Allocator,
+) -> (string, bool, Store_Error) {
+	r, err := reader(store, allocator)
+	if err != .None {
+		return "", false, err
+	}
+	defer reader_destroy(&r)
+	return reader_read_artifact_summary_payload(&r, artifact_id, allocator)
 }
 
 find_artifact_by_kind_name :: proc(
@@ -831,6 +851,35 @@ WHERE id = ?1
 	defer sqlite3.finalize(stmt)
 	bind_i64(stmt, 1, artifact_id)
 	return step_artifact_record(stmt, allocator)
+}
+
+reader_read_artifact_summary_payload :: proc(
+	r: ^Dependency_Store_Reader,
+	artifact_id: i64,
+	allocator: mem.Allocator,
+) -> (string, bool, Store_Error) {
+	stmt, err := prepare(
+		r.connection,
+		`
+SELECT summary_payload
+FROM dependency_artifact_summaries
+WHERE artifact_id = ?1
+`,
+		allocator,
+	)
+	if err != .None {
+		return "", false, err
+	}
+	defer sqlite3.finalize(stmt)
+	bind_i64(stmt, 1, artifact_id)
+	code := sqlite3.step(stmt)
+	if code == sqlite3.DONE {
+		return "", false, .None
+	}
+	if code != sqlite3.ROW {
+		return "", false, .Sqlite
+	}
+	return column_string(stmt, 0, allocator), true, .None
 }
 
 reader_find_artifact_by_kind_name :: proc(
@@ -1605,7 +1654,63 @@ INSERT INTO dependency_symbol_index (
 		return 0, err
 	}
 
+	err = put_artifact_summary_in_tx(db, artifact_id, artifact.summary_payload, allocator)
+	if err != .None {
+		return 0, err
+	}
+
 	return artifact_id, .None
+}
+
+put_artifact_summary_in_tx :: proc(
+	db: ^sqlite3.Connection,
+	artifact_id: i64,
+	summary_payload: string,
+	allocator: mem.Allocator,
+) -> Store_Error {
+	stmt: ^sqlite3.Statement
+	err: Store_Error
+	if summary_payload == "" {
+		stmt, err = prepare(
+			db,
+			"DELETE FROM dependency_artifact_summaries WHERE artifact_id = ?1",
+			allocator,
+		)
+		if err != .None {
+			return err
+		}
+		bind_i64(stmt, 1, artifact_id)
+		if step_done(stmt) != .None {
+			sqlite3.finalize(stmt)
+			return .Sqlite
+		}
+		sqlite3.finalize(stmt)
+		return .None
+	}
+
+	stmt, err = prepare(
+		db,
+		`
+INSERT INTO dependency_artifact_summaries (
+    artifact_id,
+    summary_payload
+) VALUES (?1, ?2)
+ON CONFLICT(artifact_id)
+DO UPDATE SET summary_payload = excluded.summary_payload
+`,
+		allocator,
+	)
+	if err != .None {
+		return err
+	}
+	bind_i64(stmt, 1, artifact_id)
+	bind_text(stmt, 2, summary_payload)
+	if step_done(stmt) != .None {
+		sqlite3.finalize(stmt)
+		return .Sqlite
+	}
+	sqlite3.finalize(stmt)
+	return .None
 }
 
 clear_typepool_symbols_in_tx :: proc(

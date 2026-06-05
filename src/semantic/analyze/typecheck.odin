@@ -10,7 +10,7 @@ import "core:strings"
 
 Typecheck_Call_Signature :: struct {
 	info:       ^Decl_Info_Data,
-	unit_index: int,
+	source_file_index: int,
 	direct:     bool,
 }
 
@@ -25,7 +25,7 @@ Typecheck_Ref_Target_Kind :: enum {
 Typecheck_Ref_Target :: struct {
 	kind:   Typecheck_Ref_Target_Kind,
 	name:   string,
-	handle: Symbol_Handle,
+	handle: Symbol_Link,
 }
 
 Typecheck_Scalar_Group :: enum {
@@ -42,6 +42,10 @@ Typecheck_Writable_Index :: struct {
 	ranges: [dynamic]tokenizer.Range,
 }
 
+Typecheck_Writable_Ast_Walker :: struct {
+	ranges: ^[dynamic]tokenizer.Range,
+}
+
 Typecheck_Call_Range :: struct {
 	range: tokenizer.Range,
 	index: int,
@@ -54,31 +58,31 @@ Typecheck_Call_Index :: struct {
 validate_typecheck_diagnostics :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	if project.units[unit_index].source_mode != .Full {
+	if project.providers.source_files[source_file_index].role != .Full_Source {
 		return
 	}
-	call_index := typecheck_call_index_make(&project.units[unit_index], context.temp_allocator)
-	typecheck_assignments(project, lookup, unit_index, &call_index, out, seen, allocator)
-	typecheck_calls(project, lookup, unit_index, &call_index, out, seen, allocator)
-	typecheck_call_function_exception_messages(project, unit_index, out, seen, allocator)
-	typecheck_open_sql_targets(project, lookup, unit_index, out, seen, allocator)
+	call_index := typecheck_call_index_make(&project.providers.source_files[source_file_index], context.temp_allocator)
+	typecheck_assignments(project, lookup, source_file_index, &call_index, out, seen, allocator)
+	typecheck_calls(project, lookup, source_file_index, &call_index, out, seen, allocator)
+	typecheck_call_function_exception_messages(project, lookup, source_file_index, out, seen, allocator)
+	typecheck_open_sql_targets(project, lookup, source_file_index, out, seen, allocator)
 }
 
 typecheck_assignments :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	call_index: ^Typecheck_Call_Index,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	for &site in unit.assignment_sites {
 		if !typecheck_assignment_has_high_confidence(site) {
 			continue
@@ -87,7 +91,7 @@ typecheck_assignments :: proc(
 		if call_fact, ok, is_call := typecheck_assignment_exact_call_result_fact(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			call_index,
 			site,
 		); is_call {
@@ -99,7 +103,7 @@ typecheck_assignments :: proc(
 		if ok, known := typecheck_assignment_compatible(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			rhs,
 			site.lhs,
 			.Is_Downcast in site.flags,
@@ -132,20 +136,20 @@ typecheck_assignments :: proc(
 typecheck_calls :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	call_index: ^Typecheck_Call_Index,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	if len(unit.call_sites) == 0 {
 		return
 	}
-	facts := typecheck_fact_index_make(unit, context.temp_allocator)
+	facts := typecheck_fact_index_make(project, lookup, source_file_index, context.temp_allocator)
 	writable := typecheck_writable_index_make(unit, context.temp_allocator)
 	for &site in unit.call_sites {
-		signature, ok := typecheck_call_signature(project, lookup, unit_index, site)
+		signature, ok := typecheck_call_signature(project, lookup, source_file_index, site)
 		if !ok || signature.info == nil {
 			continue
 		}
@@ -221,7 +225,7 @@ typecheck_calls :: proc(
 			if call_fact, call_ok, is_call := typecheck_argument_call_result_fact(
 				project,
 				lookup,
-				unit_index,
+				source_file_index,
 				call_index,
 				arg,
 			); is_call {
@@ -230,7 +234,7 @@ typecheck_calls :: proc(
 				}
 				actual = call_fact
 			}
-			formal := typecheck_parameter_fact(project, lookup, signature.unit_index, signature.info, param^)
+			formal := typecheck_parameter_fact(project, lookup, signature.source_file_index, signature.info, param^)
 			if !arg_mapping_ok ||
 			   !typecheck_call_fact_is_trusted(project, actual) ||
 			   !typecheck_call_fact_is_trusted(project, formal) {
@@ -239,7 +243,7 @@ typecheck_calls :: proc(
 			if !typecheck_formal_requires_typecheck(project, formal) {
 				continue
 			}
-			if compatible, known := typecheck_call_compatible(project, lookup, unit_index, actual, formal);
+			if compatible, known := typecheck_call_compatible(project, lookup, source_file_index, actual, formal);
 			   known && !compatible {
 				append_diag(
 					out,
@@ -263,23 +267,24 @@ typecheck_calls :: proc(
 		}
 		if required_mapping_ok &&
 		   typecheck_required_signature_is_complete(signature, site.target.kind) {
-			typecheck_required_parameters(project, unit_index, signature.info, site, out, seen, allocator)
+			typecheck_required_parameters(project, source_file_index, signature.info, site, out, seen, allocator)
 		}
 	}
 }
 
 typecheck_call_function_exception_messages :: proc(
 	project: ^Project_Analysis,
-	unit_index: int,
+	lookup: ^Project_Index,
+	source_file_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	if len(unit.call_function_exception_message_sites) == 0 {
 		return
 	}
-	facts := typecheck_fact_index_make(unit, context.temp_allocator)
+	facts := typecheck_fact_index_make(project, lookup, source_file_index, context.temp_allocator)
 	for site in unit.call_function_exception_message_sites {
 		actual := typecheck_fact_for_range_indexed(&facts, site.range)
 		if !type_fact_known(actual) {
@@ -304,24 +309,24 @@ typecheck_call_function_exception_messages :: proc(
 typecheck_open_sql_targets :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	out: ^[dynamic]Diagnostic,
 	seen: ^map[Diagnostic_Key]bool,
 	allocator: mem.Allocator,
 ) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	for &target in unit.sql_targets {
 		if .Is_Table in target.flags || .Is_Corresponding in target.flags || target.target_name == "" {
 			continue
 		}
-		source, source_ok := typecheck_single_sql_projection_fact(project, lookup, unit_index, target)
+		source, source_ok := typecheck_single_sql_projection_fact(project, lookup, source_file_index, target)
 		if !source_ok {
 			continue
 		}
 		handle, handle_ok := value_handle_for_site(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			target.scope,
 			target.target_range,
 			target.target_name,
@@ -329,7 +334,7 @@ typecheck_open_sql_targets :: proc(
 		if !handle_ok {
 			continue
 		}
-		target_fact := type_fact_from_symbol_handle(project, unit_index, handle)
+		target_fact := type_fact_from_symbol_handle(project, source_file_index, handle)
 		if !type_fact_is_high_confidence(source) || !type_fact_is_high_confidence(target_fact) {
 			continue
 		}
@@ -377,13 +382,13 @@ typecheck_sql_target_compatible :: proc(
 typecheck_assignment_exact_call_result_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	call_index: ^Typecheck_Call_Index,
 	site: Assignment_Site_Data,
 ) -> (Type_Fact_Data, bool, bool) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	if call, ok := typecheck_exact_call_for_range(unit, call_index, site.rhs_range); ok {
-		fact := call_result_type_fact(project, lookup, unit_index, call)
+		fact := call_result_type_fact(project, lookup, source_file_index, call)
 		return fact, type_fact_is_high_confidence(fact), true
 	}
 	return unknown_type_fact(), false, false
@@ -392,16 +397,16 @@ typecheck_assignment_exact_call_result_fact :: proc(
 typecheck_argument_call_result_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	call_index: ^Typecheck_Call_Index,
 	arg: Call_Argument_Data,
 ) -> (Type_Fact_Data, bool, bool) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	if call, ok := typecheck_first_contained_call_for_range(unit, call_index, arg.value_range); ok {
 		if !typecheck_range_equal(call.range, arg.value_range) {
 			return unknown_type_fact(), false, true
 		}
-		fact := call_result_type_fact(project, lookup, unit_index, call)
+		fact := call_result_type_fact(project, lookup, source_file_index, call)
 		return fact, type_fact_is_high_confidence(fact), true
 	}
 	return unknown_type_fact(), false, false
@@ -413,12 +418,12 @@ typecheck_signature_trusted_for_diagnostics :: proc(
 	signature: Typecheck_Call_Signature,
 	target_kind: Named_Argument_Target_Kind,
 ) -> bool {
-	if signature.unit_index < 0 ||
-	   signature.unit_index >= len(project.units) ||
+	if signature.source_file_index < 0 ||
+	   signature.source_file_index >= len(project.providers.source_files) ||
 	   signature.info == nil {
 		return false
 	}
-	if project.units[signature.unit_index].source_mode == .Full {
+	if project.providers.source_files[signature.source_file_index].role == .Full_Source {
 		return true
 	}
 	return typecheck_external_signature_complete(project, lookup, signature, target_kind)
@@ -431,7 +436,7 @@ typecheck_external_signature_complete :: proc(
 	target_kind: Named_Argument_Target_Kind,
 ) -> bool {
 	info := signature.info
-	if project.units[signature.unit_index].source_mode != .Dependency_Interface {
+	if project.providers.source_files[signature.source_file_index].role != .Dependency_Interface_Source {
 		return false
 	}
 	if target_kind == .Function {
@@ -451,7 +456,7 @@ typecheck_external_signature_complete :: proc(
 		   !typecheck_parameter_passing_complete(param.passing) ||
 		   !(.Has_Declared_Type in param.flags) ||
 		   param.declared_type.base_name == "" ||
-		   !type_fact_is_high_confidence(typecheck_parameter_fact(project, lookup, signature.unit_index, info, param)) {
+		   !type_fact_is_high_confidence(typecheck_parameter_fact(project, lookup, signature.source_file_index, info, param)) {
 			return false
 		}
 	}
@@ -542,7 +547,7 @@ typecheck_argument_mapping_has_high_confidence :: proc(
 typecheck_call_signature :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	site: Call_Site_Data,
 ) -> (Typecheck_Call_Signature, bool) {
 	#partial switch site.target.kind {
@@ -550,109 +555,112 @@ typecheck_call_signature :: proc(
 		if site.target.method_name == "" {
 			return {}, false
 		}
-		class_handle, ok := class_handle_for_call_target(project, lookup, unit_index, site)
+		class_handle, ok := class_handle_for_call_target(project, lookup, source_file_index, site)
 		if !ok {
 			return {}, false
 		}
-		member, member_unit_index, member_ok := class_member_in_hierarchy_with_unit(
+		member, member_source_file_index, member_ok := class_member_in_hierarchy_with_unit(
 			project,
 			lookup,
 			class_handle,
 			site.target.method_name,
 			false,
-			unit_index,
+			source_file_index,
 			site.scope,
 		)
 		if !member_ok {
 			return {}, false
 		}
 		direct, direct_ok := class_member_handle_lookup(project, lookup, class_handle, site.target.method_name)
-		member_unit_index = unit_id_index(member.unit)
-		if member_unit_index < 0 || member_unit_index >= len(project.units) {
+		member_source_file_index = source_file_id_index(member.unit)
+		if member_source_file_index < 0 || member_source_file_index >= len(project.providers.source_files) {
 			return {}, false
 		}
-		info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+		info := entity_decl_info(&project.providers.source_files[member_source_file_index], member.symbol)
 		return Typecheck_Call_Signature {
 			info = info,
-			unit_index = member_unit_index,
+			source_file_index = member_source_file_index,
 			direct = direct_ok && direct.unit == member.unit && direct.symbol == member.symbol,
 		}, info != nil
 	case .Implicit_Method:
 		if site.target.method_name == "" {
 			return {}, false
 		}
-		if unit_index >= 0 &&
-		   unit_index < len(lookup.visible) &&
-		   unit_index < len(lookup.predecessors) {
-			member, member_unit_index := method_signature_member_for_scope(
-				project.units[:],
-				unit_index,
+		if source_file_index >= 0 &&
+		   source_file_index < len(lookup.visible) &&
+		   source_file_index < len(lookup.predecessors) {
+			member, member_source_file_index := method_signature_member_for_scope(
+				project.providers.source_files[:],
+				source_file_index,
 				site.scope,
 				site.target.method_name,
 				&lookup.root_lookup,
 				lookup.class_scope_entries,
-				lookup.visible[unit_index],
-				lookup.predecessors[unit_index],
+				lookup.visible[source_file_index],
+				lookup.predecessors[source_file_index],
 			)
 			if member.symbol != INVALID_SYMBOL_ID &&
-			   member_unit_index >= 0 &&
-			   member_unit_index < len(project.units) {
-				info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+			   member_source_file_index >= 0 &&
+			   member_source_file_index < len(project.providers.source_files) {
+				info := entity_decl_info(&project.providers.source_files[member_source_file_index], member.symbol)
 				return Typecheck_Call_Signature {
 					info = info,
-					unit_index = member_unit_index,
+					source_file_index = member_source_file_index,
 					direct = typecheck_implicit_method_signature_is_direct(
 						project,
-						unit_index,
+						source_file_index,
 						site.scope,
 						member,
-						member_unit_index,
+						member_source_file_index,
 					),
 				}, info != nil
 			}
 		}
-		class_symbol, ok := enclosing_class_owner_unit(&project.units[unit_index], site.scope)
+		class_symbol, ok := enclosing_class_owner_unit(&project.providers.source_files[source_file_index], site.scope)
 		if !ok {
 			return {}, false
 		}
-		class_handle := Symbol_Handle{unit = project.units[unit_index].unit_id, symbol = class_symbol}
-		member, member_unit_index, member_ok := class_member_in_hierarchy_with_unit(
+		class_handle := Symbol_Link{unit = project.providers.source_files[source_file_index].source_file_id, symbol = class_symbol}
+		member, member_source_file_index, member_ok := class_member_in_hierarchy_with_unit(
 			project,
 			lookup,
 			class_handle,
 			site.target.method_name,
 			false,
-			unit_index,
+			source_file_index,
 			site.scope,
 		)
 		if !member_ok {
 			return {}, false
 		}
 		direct, direct_ok := class_member_handle_lookup(project, lookup, class_handle, site.target.method_name)
-		member_unit_index = unit_id_index(member.unit)
-		if member_unit_index < 0 || member_unit_index >= len(project.units) {
+		member_source_file_index = source_file_id_index(member.unit)
+		if member_source_file_index < 0 || member_source_file_index >= len(project.providers.source_files) {
 			return {}, false
 		}
-		info := entity_decl_info(&project.units[member_unit_index], member.symbol)
+		info := entity_decl_info(&project.providers.source_files[member_source_file_index], member.symbol)
 		return Typecheck_Call_Signature {
 			info = info,
-			unit_index = member_unit_index,
+			source_file_index = member_source_file_index,
 			direct = direct_ok && direct.unit == member.unit && direct.symbol == member.symbol,
 		}, info != nil
 	case .Function:
 		member, ok := resolve_function_module_in_project_lookup(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			site.target.function_name,
 		)
 		if !ok {
 			return {}, false
 		}
-		info := entity_decl_info(&project.units[unit_id_index(member.unit)], member.symbol)
+		if member.unit == INVALID_SOURCE_FILE_ID {
+			return {}, false
+		}
+		info := entity_decl_info(&project.providers.source_files[source_file_id_index(member.unit)], member.symbol)
 		return Typecheck_Call_Signature {
 			info = info,
-			unit_index = unit_id_index(member.unit),
+			source_file_index = source_file_id_index(member.unit),
 			direct = true,
 		}, info != nil
 	case:
@@ -662,29 +670,29 @@ typecheck_call_signature :: proc(
 
 typecheck_implicit_method_signature_is_direct :: proc(
 	project: ^Project_Analysis,
-	unit_index: int,
+	source_file_index: int,
 	scope_id: Scope_Id,
-	member: Symbol_Handle,
-	member_unit_index: int,
+	member: Symbol_Link,
+	member_source_file_index: int,
 ) -> bool {
-	if unit_index < 0 || unit_index >= len(project.units) ||
-	   member_unit_index < 0 || member_unit_index >= len(project.units) {
+	if source_file_index < 0 || source_file_index >= len(project.providers.source_files) ||
+	   member_source_file_index < 0 || member_source_file_index >= len(project.providers.source_files) {
 		return false
 	}
-	current_class_symbol, current_ok := enclosing_class_owner_unit(&project.units[unit_index], scope_id)
-	member_symbol := symbol(&project.units[member_unit_index], member.symbol)
+	current_class_symbol, current_ok := enclosing_class_owner_unit(&project.providers.source_files[source_file_index], scope_id)
+	member_symbol := symbol(&project.providers.source_files[member_source_file_index], member.symbol)
 	if !current_ok || member_symbol == nil {
 		return false
 	}
 	member_class_symbol, member_ok := enclosing_class_owner_unit(
-		&project.units[member_unit_index],
+		&project.providers.source_files[member_source_file_index],
 		member_symbol.scope,
 	)
 	if !member_ok {
 		return false
 	}
-	current_class := symbol(&project.units[unit_index], current_class_symbol)
-	member_class := symbol(&project.units[member_unit_index], member_class_symbol)
+	current_class := symbol(&project.providers.source_files[source_file_index], current_class_symbol)
+	member_class := symbol(&project.providers.source_files[member_source_file_index], member_class_symbol)
 	return current_class != nil && member_class != nil && current_class.name == member_class.name
 }
 
@@ -820,7 +828,7 @@ typecheck_argument_is_writable :: proc(index: ^Typecheck_Writable_Index, arg: Ca
 
 typecheck_required_parameters :: proc(
 	project: ^Project_Analysis,
-	unit_index: int,
+	source_file_index: int,
 	info: ^Decl_Info_Data,
 	site: Call_Site_Data,
 	out: ^[dynamic]Diagnostic,
@@ -828,7 +836,7 @@ typecheck_required_parameters :: proc(
 	allocator: mem.Allocator,
 ) {
 	_ = project
-	_ = unit_index
+	_ = source_file_index
 	for &param in info.signature_parameters {
 		if !typecheck_parameter_is_required(site.target.kind, param) {
 			continue
@@ -924,20 +932,20 @@ typecheck_simple_parameter_name :: proc(name: string) -> bool {
 typecheck_parameter_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	info: ^Decl_Info_Data,
 	param: Decl_Signature_Parameter_Data,
 ) -> Type_Fact_Data {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	fact := Type_Fact_Data {
 		type_id = param.type_id,
-		type_unit = unit.unit_id if type_id_is_known(param.type_id) else INVALID_UNIT_ID,
+		type_unit = unit.source_file_id if type_id_is_known(param.type_id) else INVALID_SOURCE_FILE_ID,
 		structure = INVALID_STRUCTURE_ID,
-		structure_unit = INVALID_UNIT_ID,
+		structure_unit = INVALID_SOURCE_FILE_ID,
 		declared_type = param.declared_type,
 		has_declared_type = .Has_Declared_Type in param.flags,
 		type_clause_display = param.type_clause_display,
-		confidence = .High if unit.source_mode == .Full else .Low,
+		confidence = .High if unit.role == .Full_Source else .Low,
 	}
 	if type_fact_known(fact) {
 		if !(.Has_Declared_Type in param.flags) {
@@ -949,7 +957,7 @@ typecheck_parameter_fact :: proc(
 		if resolved, ok := typecheck_declared_field_fact(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			scope_id,
 			param.declared_type,
 			param.type_clause_form,
@@ -960,7 +968,7 @@ typecheck_parameter_fact :: proc(
 		if resolved, _, ok := type_fact_from_declared_type(
 			project,
 			lookup,
-			unit_index,
+			source_file_index,
 			scope_id,
 			param.declared_type,
 			param.type_clause_form,
@@ -976,7 +984,7 @@ typecheck_parameter_fact :: proc(
 typecheck_declared_field_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	scope_id: Scope_Id,
 	type_ref: Field_Type_Ref_Data,
 	type_form: ast.Data_Type_Form,
@@ -994,7 +1002,7 @@ typecheck_declared_field_fact :: proc(
 	base, _, ok := type_fact_from_declared_type(
 		project,
 		lookup,
-		unit_index,
+		source_file_index,
 		scope_id,
 		base_ref,
 		type_form,
@@ -1004,9 +1012,9 @@ typecheck_declared_field_fact :: proc(
 	if !ok || base.structure == INVALID_STRUCTURE_ID {
 		return unknown_type_fact(), false
 	}
-	base_unit_index := unit_id_index(base.structure_unit)
-	if base_unit_index < 0 || base_unit_index >= len(project.units) {
-		base_unit_index = unit_index
+	base_source_file_index := source_file_id_index(base.structure_unit)
+	if base_source_file_index < 0 || base_source_file_index >= len(project.providers.source_files) {
+		base_source_file_index = source_file_index
 	}
 	path := make([dynamic]Field_Access_Segment, 0, len(type_ref.field_path), context.temp_allocator)
 	for name, i in type_ref.field_path {
@@ -1023,8 +1031,8 @@ typecheck_declared_field_fact :: proc(
 	return type_fact_from_structure_path(
 		project,
 		lookup,
-		unit_index,
-		&project.units[base_unit_index],
+		source_file_index,
+		&project.providers.source_files[base_source_file_index],
 		base.structure,
 		path[:],
 		base,
@@ -1032,32 +1040,37 @@ typecheck_declared_field_fact :: proc(
 }
 
 typecheck_fact_index_make :: proc(
-	unit: ^Unit_Analysis,
+	project: ^Project_Analysis,
+	lookup: ^Project_Index,
+	source_file_index: int,
 	allocator: mem.Allocator,
 ) -> Range_Type_Fact_Index {
-	index := Range_Type_Fact_Index {
-		facts = make(
-			[dynamic]Range_Type_Fact,
-			0,
-			len(unit.operands) + len(unit.expression_facts),
-			allocator,
-		),
-	}
-	for &operand in unit.operands {
-		if type_fact_known(operand.type_fact) {
+	index := range_type_fact_index_make(project, source_file_index, {}, allocator)
+	unit := &project.providers.source_files[source_file_index]
+	for access in unit.field_accesses {
+		if access.in_type_position {
+			continue
+		}
+		if fact, ok := resolve_field_access_tail(project, lookup, source_file_index, access); ok &&
+		   type_fact_known(fact) {
 			append(
 				&index.facts,
-				Range_Type_Fact{range = operand.range, type_fact = operand.type_fact, rank = 3},
+				Range_Type_Fact{range = field_access_range(access), type_fact = fact, rank = 4},
 			)
 		}
 	}
-	for &fact in unit.expression_facts {
-		if type_fact_known(fact.type_fact) {
-			rank := 2 if fact.kind == .Selector else 1
-			append(
-				&index.facts,
-				Range_Type_Fact{range = fact.range, type_fact = fact.type_fact, rank = rank},
-			)
+	for site in unit.table_exprs {
+		if fact, ok := table_expr_source_fact(project, lookup, source_file_index, site.table_access);
+		   ok {
+			if row, row_ok := typecheck_table_row_fact(project, fact); row_ok && type_fact_known(row) {
+				append(&index.facts, Range_Type_Fact{range = site.range, type_fact = row, rank = 3})
+			}
+		}
+	}
+	for site in unit.call_sites {
+		fact := call_result_type_fact(project, lookup, source_file_index, site)
+		if type_fact_known(fact) {
+			append(&index.facts, Range_Type_Fact{range = site.range, type_fact = fact, rank = 3})
 		}
 	}
 	slice.sort_by(index.facts[:], range_type_fact_less)
@@ -1065,23 +1078,32 @@ typecheck_fact_index_make :: proc(
 }
 
 typecheck_writable_index_make :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	allocator: mem.Allocator,
 ) -> Typecheck_Writable_Index {
 	index := Typecheck_Writable_Index {
-		ranges = make([dynamic]tokenizer.Range, 0, len(unit.operands), allocator),
+		ranges = make([dynamic]tokenizer.Range, 0, len(unit.references) + len(unit.field_accesses), allocator),
 	}
-	for &operand in unit.operands {
-		if .Assignable in operand.flags {
-			append(&index.ranges, operand.range)
-		}
+	if unit.root != nil {
+		collector := Typecheck_Writable_Ast_Walker{ranges = &index.ranges}
+		visitor := ast.Visitor{visit = typecheck_writable_ast_visit, data = &collector}
+		ast.walk(&visitor, unit.root)
 	}
 	slice.sort_by(index.ranges[:], typecheck_range_less)
 	return index
 }
 
+typecheck_writable_ast_visit :: proc(v: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil || !(.Assignable in node.sem.flags) {
+		return v
+	}
+	collector := cast(^Typecheck_Writable_Ast_Walker)v.data
+	append(collector.ranges, node.range)
+	return v
+}
+
 typecheck_call_index_make :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	allocator: mem.Allocator,
 ) -> Typecheck_Call_Index {
 	index := Typecheck_Call_Index {
@@ -1095,7 +1117,7 @@ typecheck_call_index_make :: proc(
 }
 
 typecheck_exact_call_for_range :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	index: ^Typecheck_Call_Index,
 	range: tokenizer.Range,
 ) -> (Call_Site_Data, bool) {
@@ -1110,7 +1132,7 @@ typecheck_exact_call_for_range :: proc(
 }
 
 typecheck_first_contained_call_for_range :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	index: ^Typecheck_Call_Index,
 	range: tokenizer.Range,
 ) -> (Call_Site_Data, bool) {
@@ -1216,7 +1238,7 @@ typecheck_range_equal :: proc "contextless" (a, b: tokenizer.Range) -> bool {
 typecheck_assignment_compatible :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	src, dst: Type_Fact_Data,
 	downcast := false,
 ) -> (bool, bool) {
@@ -1224,10 +1246,10 @@ typecheck_assignment_compatible :: proc(
 	   src.has_declared_type && dst.has_declared_type {
 		return true, true
 	}
-	if ok, known := typecheck_ref_compatible(project, lookup, unit_index, src, dst, downcast); known {
+	if ok, known := typecheck_ref_compatible(project, lookup, source_file_index, src, dst, downcast); known {
 		return ok, true
 	}
-	if typecheck_exact_or_generic(project, lookup, unit_index, src, dst, false) {
+	if typecheck_exact_or_generic(project, lookup, source_file_index, src, dst, false) {
 		return true, true
 	}
 	src_name, src_ok := typecheck_builtin_name(project, src)
@@ -1255,10 +1277,10 @@ typecheck_assignment_compatible :: proc(
 typecheck_call_compatible :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	src, dst: Type_Fact_Data,
 ) -> (bool, bool) {
-	if ok, known := typecheck_ref_compatible(project, lookup, unit_index, src, dst); known {
+	if ok, known := typecheck_ref_compatible(project, lookup, source_file_index, src, dst); known {
 		return ok, true
 	}
 	src_name, src_ok := typecheck_builtin_name(project, src)
@@ -1270,7 +1292,7 @@ typecheck_call_compatible :: proc(
 		return typecheck_generic_accepts(project, src, dst),
 		       typecheck_generic_actual_family_known(project, src, src_name, src_ok)
 	}
-	if typecheck_exact_or_generic(project, lookup, unit_index, src, dst, true) {
+	if typecheck_exact_or_generic(project, lookup, source_file_index, src, dst, true) {
 		return true, true
 	}
 	if src_ok && dst_ok {
@@ -1296,7 +1318,7 @@ typecheck_call_compatible :: proc(
 typecheck_exact_or_generic :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	src, dst: Type_Fact_Data,
 	strict: bool,
 ) -> bool {
@@ -1317,14 +1339,14 @@ typecheck_exact_or_generic :: proc(
 		return known && ok
 	}
 	_ = lookup
-	_ = unit_index
+	_ = source_file_index
 	return false
 }
 
 typecheck_ref_compatible :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	src, dst: Type_Fact_Data,
 	downcast := false,
 ) -> (bool, bool) {
@@ -1344,8 +1366,8 @@ typecheck_ref_compatible :: proc(
 	if src_name == dst_name {
 		return true, true
 	}
-	src_target, src_known := typecheck_ref_target(project, lookup, unit_index, src_name)
-	dst_target, dst_known := typecheck_ref_target(project, lookup, unit_index, dst_name)
+	src_target, src_known := typecheck_ref_target(project, lookup, source_file_index, src_name)
+	dst_target, dst_known := typecheck_ref_target(project, lookup, source_file_index, dst_name)
 	if !src_known || !dst_known {
 		return false, false
 	}
@@ -1409,7 +1431,7 @@ typecheck_ref_compatible :: proc(
 typecheck_ref_target :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	name: string,
 ) -> (Typecheck_Ref_Target, bool) {
 	if name == "data" {
@@ -1421,7 +1443,7 @@ typecheck_ref_target :: proc(
 	if is_builtin_type_name(name) {
 		return Typecheck_Ref_Target{kind = .Data, name = name}, true
 	}
-	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, name)
+	handle, ok := resolve_type_name_in_project_lookup(project, lookup, source_file_index, name)
 	if !ok {
 		return {}, false
 	}
@@ -1650,7 +1672,7 @@ typecheck_table_row_fact :: proc(project: ^Project_Analysis, fact: Type_Fact_Dat
 		type_id = t.base,
 		type_unit = fact.type_unit,
 		structure = INVALID_STRUCTURE_ID,
-		structure_unit = INVALID_UNIT_ID,
+		structure_unit = INVALID_SOURCE_FILE_ID,
 		confidence = fact.confidence,
 	}
 	if raw != nil && raw.kind == .Table && fact.has_declared_type {
@@ -1660,7 +1682,7 @@ typecheck_table_row_fact :: proc(project: ^Project_Analysis, fact: Type_Fact_Dat
 	}
 	if row_type := typecheck_type_data(project, row); row_type != nil && row_type.kind == .Structure {
 		row.structure = row_type.structure
-		row.structure_unit = fact.type_unit if row_type.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID
+		row.structure_unit = fact.type_unit if row_type.structure != INVALID_STRUCTURE_ID else INVALID_SOURCE_FILE_ID
 	}
 	return row, true
 }
@@ -1683,11 +1705,11 @@ typecheck_ref_target_name :: proc(project: ^Project_Analysis, fact: Type_Fact_Da
 	if t == nil || t.kind != .Ref {
 		return "", false
 	}
-	unit_index := unit_id_index(fact.type_unit)
-	if unit_index < 0 || unit_index >= len(project.units) {
+	source_file_index := source_file_id_index(fact.type_unit)
+	if source_file_index < 0 || source_file_index >= len(project.providers.source_files) {
 		return "", false
 	}
-	target := type_data(&project.units[unit_index], t.base)
+	target := type_data(&project.providers.source_files[source_file_index], t.base)
 	if target == nil {
 		return "", false
 	}
@@ -1710,21 +1732,21 @@ typecheck_builtin_name :: proc(project: ^Project_Analysis, fact: Type_Fact_Data)
 }
 
 typecheck_raw_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> ^Type_Data {
-	if !type_id_is_known(fact.type_id) || fact.type_unit == INVALID_UNIT_ID {
+	if !type_id_is_known(fact.type_id) || fact.type_unit == INVALID_SOURCE_FILE_ID {
 		return nil
 	}
-	unit_index := unit_id_index(fact.type_unit)
-	if unit_index < 0 || unit_index >= len(project.units) {
+	source_file_index := source_file_id_index(fact.type_unit)
+	if source_file_index < 0 || source_file_index >= len(project.providers.source_files) {
 		return nil
 	}
-	return type_data(&project.units[unit_index], fact.type_id)
+	return type_data(&project.providers.source_files[source_file_index], fact.type_id)
 }
 
 typecheck_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) -> ^Type_Data {
 	t := typecheck_raw_type_data(project, fact)
-	unit_index := unit_id_index(fact.type_unit)
+	source_file_index := source_file_id_index(fact.type_unit)
 	for depth := 0; t != nil && t.kind == .Named && type_id_is_known(t.base) && depth < 16; depth += 1 {
-		t = type_data(&project.units[unit_index], t.base)
+		t = type_data(&project.providers.source_files[source_file_index], t.base)
 	}
 	return t
 }
@@ -1732,10 +1754,10 @@ typecheck_type_data :: proc(project: ^Project_Analysis, fact: Type_Fact_Data) ->
 typecheck_single_sql_projection_fact :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	target: Sql_Target_Data,
 ) -> (Type_Fact_Data, bool) {
-	unit := &project.units[unit_index]
+	unit := &project.providers.source_files[source_file_index]
 	projection := cast(^Sql_Projection_Data)nil
 	for &candidate in unit.sql_projections {
 		if candidate.query_id != target.query_id || candidate.kind != .Column || candidate.name == "" {
@@ -1766,16 +1788,16 @@ typecheck_single_sql_projection_fact :: proc(
 	if source == nil {
 		return unknown_type_fact(), false
 	}
-	handle, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, source.name)
+	handle, ok := resolve_type_name_in_project_lookup(project, lookup, source_file_index, source.name)
 	if !ok {
 		return unknown_type_fact(), false
 	}
-	source_unit_index := unit_id_index(handle.unit)
-	source_symbol := symbol(&project.units[source_unit_index], handle.symbol)
+	source_source_file_index := source_file_id_index(handle.unit)
+	source_symbol := symbol(&project.providers.source_files[source_source_file_index], handle.symbol)
 	if source_symbol == nil || source_symbol.structure == INVALID_STRUCTURE_ID {
 		return unknown_type_fact(), false
 	}
-	field, field_unit_index, field_ok := project_structure_field_lookup(
+	field, field_source_file_index, field_ok := project_structure_field_lookup(
 		project,
 		handle.unit,
 		source_symbol.structure,
@@ -1786,15 +1808,15 @@ typecheck_single_sql_projection_fact :: proc(
 	}
 	fact := Type_Fact_Data {
 		type_id = field.type_id,
-		type_unit = project.units[field_unit_index].unit_id if type_id_is_known(field.type_id) else INVALID_UNIT_ID,
+		type_unit = project.providers.source_files[field_source_file_index].source_file_id if type_id_is_known(field.type_id) else INVALID_SOURCE_FILE_ID,
 		structure = field.structure,
-		structure_unit = project.units[field_unit_index].unit_id if field.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
+		structure_unit = project.providers.source_files[field_source_file_index].source_file_id if field.structure != INVALID_STRUCTURE_ID else INVALID_SOURCE_FILE_ID,
 		declared_type = field.type_ref,
 		has_declared_type = .Has_Type_Ref in field.flags,
 		type_clause_display = field.type_ref.base_name,
 		confidence = .Low,
 	}
-	if project.units[field_unit_index].source_mode == .Full ||
+	if project.providers.source_files[field_source_file_index].role == .Full_Source ||
 	   typecheck_sql_scalar_fact_is_complete(project, fact) {
 		fact.confidence = .High
 	}
@@ -1822,11 +1844,74 @@ typecheck_arg_key :: proc(arg: Call_Argument_Data, allocator: mem.Allocator) -> 
 	return strings.to_string(out)
 }
 
-typecheck_range_text :: proc(unit: ^Unit_Analysis, range: tokenizer.Range, allocator: mem.Allocator) -> string {
-	if !range_valid(range) || range.start < 0 || range.end > len(unit.source) {
-		return "operand"
+typecheck_range_text :: proc(unit: ^Source_File_Provider, range: tokenizer.Range, allocator: mem.Allocator) -> string {
+	if unit != nil && range_valid(range) {
+		for access in unit.field_accesses {
+			if typecheck_field_access_range(access) == range {
+				if text, ok := typecheck_field_access_text(access, allocator); ok {
+					return text
+				}
+			}
+		}
+		for ref in unit.references {
+			if ref.range == range && ref.name != "" {
+				return ref.name
+			}
+		}
+		for symbol_data in unit.symbols {
+			if symbol_data.decl_range == range && symbol_data.name != "" {
+				return symbol_data.name
+			}
+		}
 	}
-	return strings.trim_space(strings.clone(unit.source[range.start:range.end], allocator))
+	return "operand"
+}
+
+typecheck_field_access_range :: proc(access: Field_Access) -> tokenizer.Range {
+	out := access.base_range
+	for segment in access.field_path {
+		if !range_valid(out) {
+			out = segment.range
+		} else {
+			if segment.range.start < out.start {out.start = segment.range.start}
+			if segment.range.end > out.end {out.end = segment.range.end}
+		}
+	}
+	return out
+}
+
+typecheck_field_access_text :: proc(access: Field_Access, allocator: mem.Allocator) -> (string, bool) {
+	if access.base_name == "" {
+		return "", false
+	}
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, access.base_name)
+	for segment in access.field_path {
+		if segment.name == "" {
+			return "", false
+		}
+		strings.write_string(&out, typecheck_selector_op_text(segment.selector))
+		if segment.interface_qualified && segment.interface_name != "" {
+			strings.write_string(&out, segment.interface_name)
+			strings.write_byte(&out, '~')
+		}
+		strings.write_string(&out, segment.name)
+	}
+	return strings.to_string(out), true
+}
+
+typecheck_selector_op_text :: proc "contextless" (op: ast.Selector_Op) -> string {
+	#partial switch op {
+	case .Dash:
+		return "-"
+	case .Arrow:
+		return "->"
+	case .Fat_Arrow:
+		return "=>"
+	case .Tilde:
+		return "~"
+	}
+	return "-"
 }
 
 typecheck_name_message :: proc(prefix, name: string, allocator: mem.Allocator) -> string {
@@ -1839,7 +1924,7 @@ typecheck_name_message :: proc(prefix, name: string, allocator: mem.Allocator) -
 }
 
 typecheck_call_function_exception_message_message :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	range: tokenizer.Range,
 	allocator: mem.Allocator,
 ) -> string {
@@ -1864,7 +1949,7 @@ typecheck_two_name_message :: proc(left, middle, right: string, allocator: mem.A
 }
 
 typecheck_two_operand_message :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	prefix: string,
 	left: tokenizer.Range,
 	middle: string,
@@ -1925,9 +2010,9 @@ typecheck_diagnostic_type_name :: proc(
 		return "", false
 	}
 	if fact.structure != INVALID_STRUCTURE_ID {
-		unit_index := unit_id_index(fact.structure_unit)
-		if unit_index >= 0 && unit_index < len(project.units) {
-			if s := structure(&project.units[unit_index], fact.structure); s != nil && s.name != "" {
+		source_file_index := source_file_id_index(fact.structure_unit)
+		if source_file_index >= 0 && source_file_index < len(project.providers.source_files) {
+			if s := structure(&project.providers.source_files[source_file_index], fact.structure); s != nil && s.name != "" {
 				return s.name, true
 			}
 		}
@@ -1941,7 +2026,7 @@ typecheck_diagnostic_type_name :: proc(
 				type_id = t.base,
 				type_unit = fact.type_unit,
 				structure = INVALID_STRUCTURE_ID,
-				structure_unit = INVALID_UNIT_ID,
+				structure_unit = INVALID_SOURCE_FILE_ID,
 			}
 			if name, ok := typecheck_diagnostic_type_name(project, row, allocator); ok {
 				return typecheck_prefixed_type_name("TABLE OF ", name, allocator), true

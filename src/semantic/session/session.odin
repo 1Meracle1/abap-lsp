@@ -31,7 +31,7 @@ Input_Record :: struct {
 	input:        analyze.Source_Input,
 	object_name:  string,
 	content_hash: u64,
-	unit:         analyze.Unit_Id,
+	unit:         analyze.Source_File_Id,
 	flags:        Input_Flags,
 }
 
@@ -53,7 +53,7 @@ Session_Memory :: struct {
 	update_arena:    virtual.Arena,
 	dep_arena:       virtual.Arena,
 	unit_arenas:     [dynamic]virtual.Arena,
-	unit_allocators: [dynamic]mem.Allocator,
+	source_file_allocators: [dynamic]mem.Allocator,
 
 	allocator:      mem.Allocator,
 	temp_allocator: mem.Allocator,
@@ -61,7 +61,7 @@ Session_Memory :: struct {
 }
 
 Analysis_Session :: struct {
-	project_state: analyze.Project_State,
+	project_state: analyze.Project_Snapshot_State,
 	memory:        Session_Memory,
 
 	inputs:       [dynamic]Input_Record,
@@ -70,6 +70,7 @@ Analysis_Session :: struct {
 	targets:      [dynamic]analyze.Source_Input,
 	candidates:   [dynamic]analyze.Project_Candidate_Input,
 	dependencies: [dynamic]analyze.Source_Input,
+	dependency_summaries: [dynamic]analyze.Summary_Provider_Input,
 
 	dependency_state: remote_deps.Dependency_State,
 	config:           remote_deps.Dependency_Config,
@@ -104,6 +105,23 @@ analysis_session_destroy :: proc(session: ^Analysis_Session) {
 	session^ = {}
 }
 
+analysis_session_seed_dependency_summaries :: proc(
+	session: ^Analysis_Session,
+	summaries: []analyze.Summary_Provider_Input,
+) {
+	if session == nil || len(summaries) == 0 {
+		return
+	}
+	analysis_session_ensure_initialized(session)
+	for summary in summaries {
+		append(
+			&session.dependency_summaries,
+			analyze.dependency_summary_input_clone(summary, session.memory.allocator),
+		)
+	}
+	_ = analysis_session_dedupe_dependency_summaries(session)
+}
+
 analysis_session_apply_changes :: proc(
 	session: ^Analysis_Session,
 	changes: []Input_Change,
@@ -114,12 +132,12 @@ analysis_session_apply_changes :: proc(
 	context.temp_allocator = session.memory.temp_allocator
 	defer context.temp_allocator = previous_temp_allocator
 
-	dirty := make([dynamic]analyze.Unit_Id, 0, len(changes), context.temp_allocator)
-	include_roots := make([dynamic]analyze.Unit_Id, 0, len(changes), context.temp_allocator)
+	dirty := make([dynamic]analyze.Source_File_Id, 0, len(changes), context.temp_allocator)
+	include_roots := make([dynamic]analyze.Source_File_Id, 0, len(changes), context.temp_allocator)
 	analysis_session_reconcile_inputs(session, changes, &dirty, &include_roots)
 
 	project := analysis_session_update_project(session, dirty[:], include_roots[:])
-	local_include_roots := make([dynamic]analyze.Unit_Id, 0, 8, context.temp_allocator)
+	local_include_roots := make([dynamic]analyze.Source_File_Id, 0, 8, context.temp_allocator)
 	if analysis_session_add_local_include_aliases(session, &local_include_roots) {
 		project = analysis_session_update_project(session, {}, local_include_roots[:])
 	}
@@ -219,21 +237,21 @@ session_memory_begin_update :: proc(memory: ^Session_Memory) {
 	memory.temp_allocator = virtual.arena_allocator(&memory.update_arena)
 }
 
-session_memory_ensure_unit :: proc(memory: ^Session_Memory, unit_index: int) {
+session_memory_ensure_unit :: proc(memory: ^Session_Memory, source_file_index: int) {
 	session_memory_bind(memory)
-	for len(memory.unit_arenas) <= unit_index {
+	for len(memory.unit_arenas) <= source_file_index {
 		append(&memory.unit_arenas, virtual.Arena{})
 		_ = virtual.arena_init_growing(&memory.unit_arenas[len(memory.unit_arenas) - 1])
-		append(&memory.unit_allocators, mem.Allocator{})
+		append(&memory.source_file_allocators, mem.Allocator{})
 	}
-	session_memory_refresh_unit_allocators(memory)
+	session_memory_refresh_source_file_allocators(memory)
 }
 
-session_memory_reset_unit :: proc(memory: ^Session_Memory, unit_index: int) -> mem.Allocator {
-	session_memory_ensure_unit(memory, unit_index)
-	virtual.arena_free_all(&memory.unit_arenas[unit_index])
-	memory.unit_allocators[unit_index] = virtual.arena_allocator(&memory.unit_arenas[unit_index])
-	return memory.unit_allocators[unit_index]
+session_memory_reset_unit :: proc(memory: ^Session_Memory, source_file_index: int) -> mem.Allocator {
+	session_memory_ensure_unit(memory, source_file_index)
+	virtual.arena_free_all(&memory.unit_arenas[source_file_index])
+	memory.source_file_allocators[source_file_index] = virtual.arena_allocator(&memory.unit_arenas[source_file_index])
+	return memory.source_file_allocators[source_file_index]
 }
 
 @(private)
@@ -244,20 +262,21 @@ analysis_session_ensure_initialized :: proc(session: ^Analysis_Session) {
 	}
 	allocator := session.memory.allocator
 	dep_allocator := session.memory.dep_allocator
-	session.project_state = analyze.project_state_make(session.memory.unit_allocators[:], allocator)
+	session.project_state = analyze.project_state_make(session.memory.source_file_allocators[:], allocator)
 	session.inputs = make([dynamic]Input_Record, 0, 16, allocator)
 	session.uri_to_input = make(map[string]Input_Id, 32, allocator)
 	session.targets = make([dynamic]analyze.Source_Input, 0, 4, allocator)
 	session.candidates = make([dynamic]analyze.Project_Candidate_Input, 0, 16, allocator)
 	session.dependencies = make([dynamic]analyze.Source_Input, 0, 16, allocator)
+	session.dependency_summaries = make([dynamic]analyze.Summary_Provider_Input, 0, 16, allocator)
 	session.dependency_state = remote_deps.dependency_state_make(dep_allocator)
 }
 
 analysis_session_reconcile_inputs :: proc(
 	session: ^Analysis_Session,
 	changes: []Input_Change,
-	dirty: ^[dynamic]analyze.Unit_Id,
-	include_roots: ^[dynamic]analyze.Unit_Id,
+	dirty: ^[dynamic]analyze.Source_File_Id,
+	include_roots: ^[dynamic]analyze.Source_File_Id,
 ) {
 	analysis_session_ensure_initialized(session)
 	for change in changes {
@@ -268,17 +287,17 @@ analysis_session_reconcile_inputs :: proc(
 				if .Immutable in record.flags && !change.immutable {
 					continue
 				}
-				if record.unit != analyze.INVALID_UNIT_ID {
+				if record.unit != analyze.INVALID_SOURCE_FILE_ID {
 					tombstone := record.input
 					tombstone.source = ""
-					unit_id, _ := analyze.project_state_upsert_input(
+					source_file_id, _ := analyze.project_state_upsert_input(
 						&session.project_state,
 						tombstone,
 						-1,
 						session.memory.allocator,
 					)
-					session_push_unique_unit(dirty, unit_id)
-					session_push_unique_unit(include_roots, unit_id)
+					session_push_unique_unit(dirty, source_file_id)
+					session_push_unique_unit(include_roots, source_file_id)
 				}
 				record.flags -= {.Active}
 				delete_key(&session.uri_to_input, key)
@@ -312,7 +331,7 @@ analysis_session_reconcile_inputs :: proc(
 			if change.immutable {
 				record.flags += {.Immutable}
 			}
-			if record.unit != analyze.INVALID_UNIT_ID {
+			if record.unit != analyze.INVALID_SOURCE_FILE_ID {
 				session_push_unique_unit(dirty, record.unit)
 				session_push_unique_unit(include_roots, record.unit)
 			}
@@ -333,25 +352,27 @@ analysis_session_reconcile_inputs :: proc(
 
 analysis_session_update_project :: proc(
 	session: ^Analysis_Session,
-	dirty: []analyze.Unit_Id,
-	include_roots: []analyze.Unit_Id,
+	dirty: []analyze.Source_File_Id,
+	include_roots: []analyze.Source_File_Id,
 ) -> analyze.Project_Analysis {
 	analysis_session_ensure_initialized(session)
 	required_units :=
-		len(session.project_state.units) +
+		len(session.project_state.source_files) +
 		len(session.targets) +
 		len(session.dependencies) +
-		len(session.candidates)
+		len(session.candidates) +
+		len(session.dependency_summaries)
 	if required_units > 0 {
 		session_memory_ensure_unit(&session.memory, required_units - 1)
 	}
-	session.project_state.unit_allocators = session.memory.unit_allocators[:]
+	session.project_state.source_file_allocators = session.memory.source_file_allocators[:]
 	candidates := analysis_session_project_candidates(session)
-	project := analyze.project_state_apply_dirty_inputs(
+	project := analyze.project_state_apply_dirty_inputs_with_summaries(
 		&session.project_state,
 		session.targets[:],
 		candidates[:],
 		session.dependencies[:],
+		session.dependency_summaries[:],
 		dirty,
 		include_roots,
 		session.pool,
@@ -365,11 +386,11 @@ analysis_session_update_project :: proc(
 @(private)
 analysis_session_add_local_include_aliases :: proc(
 	session: ^Analysis_Session,
-	include_roots: ^[dynamic]analyze.Unit_Id,
+	include_roots: ^[dynamic]analyze.Source_File_Id,
 ) -> bool {
 	changed := false
 	for &record in session.inputs {
-		if !(.Active in record.flags) || record.unit == analyze.INVALID_UNIT_ID {
+		if !(.Active in record.flags) || record.unit == analyze.INVALID_SOURCE_FILE_ID {
 			continue
 		}
 		root := analysis_session_unit(session, record.unit)
@@ -391,7 +412,7 @@ analysis_session_add_local_include_aliases :: proc(
 		for member, i in session.inputs {
 			if !(.Active in member.flags) ||
 			   !(member.role == .Target || member.role == .Candidate) ||
-			   member.unit == analyze.INVALID_UNIT_ID ||
+			   member.unit == analyze.INVALID_SOURCE_FILE_ID ||
 			   member.unit == record.unit ||
 			   member.object_name != "" ||
 			   analysis_session_uri_parent_dir_key(member.input.uri, context.temp_allocator) != dir {
@@ -497,7 +518,7 @@ analysis_session_member_depends_on :: proc(
 }
 
 @(private)
-analysis_session_unit_is_report_root :: proc(unit: ^analyze.Unit_Analysis) -> bool {
+analysis_session_unit_is_report_root :: proc(unit: ^analyze.Source_File_Provider) -> bool {
 	for symbol in unit.symbols {
 		if symbol.scope == unit.root_scope && symbol.kind == .Report {
 			return true
@@ -509,13 +530,13 @@ analysis_session_unit_is_report_root :: proc(unit: ^analyze.Unit_Analysis) -> bo
 @(private)
 analysis_session_unit :: proc(
 	session: ^Analysis_Session,
-	unit_id: analyze.Unit_Id,
-) -> ^analyze.Unit_Analysis {
-	unit_index := analyze.unit_id_index(unit_id)
-	if unit_index < 0 || unit_index >= len(session.project_state.units) {
+	source_file_id: analyze.Source_File_Id,
+) -> ^analyze.Source_File_Provider {
+	source_file_index := analyze.source_file_id_index(source_file_id)
+	if source_file_index < 0 || source_file_index >= len(session.project_state.source_files) {
 		return nil
 	}
-	return &session.project_state.units[unit_index]
+	return &session.project_state.source_files[source_file_index]
 }
 
 @(private)
@@ -574,24 +595,69 @@ analysis_session_resolve_new_dependencies :: proc(
 	_ = project
 	remote_candidates := analyze.collect_project_state_remote_dependency_candidates(
 		&session.project_state,
-		true,
+		false,
 		context.temp_allocator,
 	)
 	old_candidate_count := len(session.candidates)
 	old_dependency_count := len(session.dependencies)
+	old_summary_count := len(session.dependency_summaries)
 	added := remote_deps.resolve_dependency_candidates(
 		&session.candidates,
 		&session.dependencies,
+		&session.dependency_summaries,
 		remote_candidates[:],
 		&session.config,
 		&session.dependency_state,
 		session.pool,
 		session.targets[0].uri if len(session.targets) > 0 else "",
 	)
+	summary_count := analysis_session_dedupe_dependency_summaries(session)
 	if added == 0 {
 		return 0
 	}
-	return analysis_session_record_appended_inputs(session, old_candidate_count, old_dependency_count)
+	summary_added := summary_count - old_summary_count
+	if summary_added < 0 {
+		summary_added = 0
+	}
+	return analysis_session_record_appended_inputs(session, old_candidate_count, old_dependency_count) +
+	       summary_added
+}
+
+@(private)
+analysis_session_dedupe_dependency_summaries :: proc(session: ^Analysis_Session) -> int {
+	if len(session.dependency_summaries) <= 1 {
+		return len(session.dependency_summaries)
+	}
+	seen := make(map[string]bool, len(session.dependency_summaries), context.temp_allocator)
+	write := 0
+	for summary in session.dependency_summaries {
+		key := analysis_session_dependency_summary_key(summary, context.temp_allocator)
+		if key != "" && key in seen {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		session.dependency_summaries[write] = summary
+		write += 1
+	}
+	resize(&session.dependency_summaries, write)
+	return write
+}
+
+@(private)
+analysis_session_dependency_summary_key :: proc(
+	summary: analyze.Summary_Provider_Input,
+	allocator: mem.Allocator,
+) -> string {
+	if summary.uri != "" {
+		return strings.clone(summary.uri, allocator)
+	}
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, summary.object_kind)
+	strings.write_byte(&out, ':')
+	strings.write_string(&out, summary.object_name)
+	return strings.to_string(out)
 }
 
 analysis_session_insert_dependency_input :: proc(
@@ -625,9 +691,9 @@ analysis_session_insert_dependency_input :: proc(
 }
 
 @(private)
-session_memory_refresh_unit_allocators :: proc(memory: ^Session_Memory) {
+session_memory_refresh_source_file_allocators :: proc(memory: ^Session_Memory) {
 	for i in 0 ..< len(memory.unit_arenas) {
-		memory.unit_allocators[i] = virtual.arena_allocator(&memory.unit_arenas[i])
+		memory.source_file_allocators[i] = virtual.arena_allocator(&memory.unit_arenas[i])
 	}
 }
 
@@ -638,10 +704,10 @@ session_memory_bind :: proc(memory: ^Session_Memory) {
 	memory.dep_allocator = virtual.arena_allocator(&memory.dep_arena)
 	if memory.unit_arenas.allocator.procedure == nil {
 		memory.unit_arenas = make([dynamic]virtual.Arena, 0, 16, memory.allocator)
-		memory.unit_allocators = make([dynamic]mem.Allocator, 0, 16, memory.allocator)
+		memory.source_file_allocators = make([dynamic]mem.Allocator, 0, 16, memory.allocator)
 		return
 	}
-	session_memory_refresh_unit_allocators(memory)
+	session_memory_refresh_source_file_allocators(memory)
 }
 
 @(private)
@@ -718,7 +784,7 @@ analysis_session_record_owned_input :: proc(
 			input = input,
 			object_name = strings.clone(object_name, session.memory.allocator),
 			content_hash = hash,
-			unit = analyze.INVALID_UNIT_ID,
+			unit = analyze.INVALID_SOURCE_FILE_ID,
 			flags = flags,
 		},
 	)
@@ -758,8 +824,8 @@ analysis_session_refresh_input_units :: proc(session: ^Analysis_Session) {
 			continue
 		}
 		key := uri_key.normalized_uri_path_key(record.input.uri, context.temp_allocator)
-		if unit_id, ok := session.project_state.uri_to_unit[key]; ok {
-			record.unit = unit_id
+		if source_file_id, ok := session.project_state.uri_to_source_file[key]; ok {
+			record.unit = source_file_id
 		}
 	}
 }
@@ -772,26 +838,26 @@ session_source_input_clone :: proc(
 	return analyze.Source_Input {
 		uri = strings.clone(input.uri, allocator),
 		source = strings.clone(input.source, allocator),
-		mode = input.mode,
+		role = input.role,
 	}
 }
 
 @(private)
-session_push_unique_unit :: proc(units: ^[dynamic]analyze.Unit_Id, unit_id: analyze.Unit_Id) {
-	if unit_id == analyze.INVALID_UNIT_ID {
+session_push_unique_unit :: proc(units: ^[dynamic]analyze.Source_File_Id, source_file_id: analyze.Source_File_Id) {
+	if source_file_id == analyze.INVALID_SOURCE_FILE_ID {
 		return
 	}
 	for existing in units^ {
-		if existing == unit_id {
+		if existing == source_file_id {
 			return
 		}
 	}
-	append(units, unit_id)
+	append(units, source_file_id)
 }
 
 @(private)
 session_source_hash :: proc(input: analyze.Source_Input) -> u64 {
 	out := hash.fnv64a(transmute([]byte)input.source)
-	mode := [?]byte{byte(input.mode)}
+	mode := [?]byte{byte(input.role)}
 	return hash.fnv64a(mode[:], out)
 }

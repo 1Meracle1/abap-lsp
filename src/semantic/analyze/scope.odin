@@ -88,7 +88,7 @@ scope_index_destroy :: proc(index: ^Scope_Index) {
 }
 
 add_scope :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	kind: Scope_Kind,
 	range: tokenizer.Range,
 	parent := INVALID_SCOPE_ID,
@@ -113,7 +113,14 @@ add_scope :: proc(
 	return id
 }
 
-scope_record_declaration :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, symbol_id: Symbol_Id) {
+scope :: proc(unit: ^Source_File_Provider, id: Scope_Id) -> ^Scope_Data {
+	if id == INVALID_SCOPE_ID || scope_id_index(id) >= len(unit.scopes) {
+		return nil
+	}
+	return &unit.scopes[scope_id_index(id)]
+}
+
+scope_record_declaration :: proc(unit: ^Source_File_Provider, scope_id: Scope_Id, symbol_id: Symbol_Id) {
 	s := scope(unit, scope_id)
 	item := symbol(unit, symbol_id)
 	assert(s != nil && item != nil)
@@ -131,7 +138,7 @@ scope_record_declaration :: proc(unit: ^Unit_Analysis, scope_id: Scope_Id, symbo
 }
 
 scope_lookup_declaration :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	scope_id: Scope_Id,
 	namespace: Namespace,
 	name: string,
@@ -148,7 +155,7 @@ scope_lookup_declaration :: proc(
 }
 
 scope_has_declared_declaration :: proc(
-	unit: ^Unit_Analysis,
+	unit: ^Source_File_Provider,
 	scope_id: Scope_Id,
 	namespace: Namespace,
 	name: string,

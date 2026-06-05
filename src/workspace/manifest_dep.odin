@@ -85,10 +85,10 @@ decode_manifest_dependency :: proc(
 
 manifest_unit_root_key :: proc(
 	manifest: ^Workspace_Manifest,
-	unit_index: int,
+	source_file_index: int,
 	allocator: mem.Allocator,
 ) -> string {
-	path, ok := manifest_absolute_path(manifest.root_path, manifest.units[unit_index].root_file, allocator)
+	path, ok := manifest_absolute_path(manifest.root_path, manifest.units[source_file_index].root_file, allocator)
 	return normalized_uri_path_key(path, allocator) if ok else ""
 }
 

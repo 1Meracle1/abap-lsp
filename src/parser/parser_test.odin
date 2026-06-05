@@ -1000,6 +1000,22 @@ DATA lv_date LIKE sy-datum.`
 }
 
 @(test)
+parsed_nodes_start_with_empty_semantic_fields :: proc(t: ^testing.T) {
+	source := "DATA(lv_value) = 1."
+	parsed := parse(source, "test.prog.abap", context.allocator)
+	testing.expect_value(t, len(parsed.errors), 0)
+	testing.expect_value(t, ast.print_node(parsed.root, context.allocator), source)
+
+	stmt := parsed.root.stmts[0].derived_stmt.(^ast.Data_Inline_Decl)
+	literal := stmt.expr.derived_expr.(^ast.Literal_Expr)
+
+	testing.expect(t, !(.Has_Scope in parsed.root.sem.flags))
+	testing.expect(t, !(.Has_Type_And_Value in stmt.sem.flags))
+	testing.expect(t, !(.Has_Type_And_Value in literal.sem.flags))
+	testing.expect_value(t, literal.sem.tav.mode, ast.Addressing_Mode.Invalid)
+}
+
+@(test)
 expect_token_mismatch_does_not_advance :: proc(t: ^testing.T) {
 	p := test_parser("DATA lv.")
 

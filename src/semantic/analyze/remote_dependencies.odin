@@ -13,9 +13,9 @@ collect_project_remote_dependency_candidates :: proc(
 ) -> [dynamic]deps.Remote_Dependency_Candidate {
 	out := make([dynamic]deps.Remote_Dependency_Candidate, 0, 8, allocator)
 	index := make(map[string]int, 64, context.temp_allocator)
-	project_index := project_index_from_units(project.units[:], context.temp_allocator)
+	project_index := project_index_from_project(project, context.temp_allocator)
 	lookup := &project_index
-	for &unit, unit_index in project.units {
+	for &unit, source_file_index in project.providers.source_files {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
 				insert_remote_candidate(&out, &index, edge.name, .Include, allocator)
@@ -65,12 +65,12 @@ collect_project_remote_dependency_candidates :: proc(
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
+			if sql_source_needs_remote_dependency(project, lookup, source_file_index, sql_source) {
 				insert_remote_candidate(&out, &index, sql_source.name, .Type, allocator)
 			}
 		}
 		for &call_site in unit.call_sites {
-			if !call_site_needs_remote_dependency(project, lookup, unit_index, call_site) {
+			if !call_site_needs_remote_dependency(project, lookup, source_file_index, call_site) {
 				continue
 			}
 			#partial switch call_site.target.kind {
@@ -93,11 +93,12 @@ collect_project_remote_dependency_candidates :: proc(
 			}
 		}
 	}
+	collect_summary_remote_dependency_candidates(project.providers.summaries, lookup, &out, &index, allocator)
 	return out
 }
 
 collect_project_state_remote_dependency_candidates :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	include_dependency_interfaces: bool,
 	allocator: mem.Allocator,
 ) -> [dynamic]deps.Remote_Dependency_Candidate {
@@ -110,19 +111,97 @@ collect_project_state_remote_dependency_candidates :: proc(
 		}
 		insert_remote_candidate(&out, &index, key.name, key.kind, allocator, key.hint)
 	}
+	collect_summary_remote_dependency_candidates(state.dependency_summaries[:], &state.index, &out, &index, allocator)
 	return out
 }
 
 @(private)
+collect_summary_remote_dependency_candidates :: proc(
+	summaries: []Summary_Provider_Input,
+	lookup: ^Project_Index,
+	out: ^[dynamic]deps.Remote_Dependency_Candidate,
+	index: ^map[string]int,
+	allocator: mem.Allocator,
+) {
+	for summary in summaries {
+		for class in summary.classes {
+			insert_summary_type_name_candidate(lookup, out, index, class.superclass_name, allocator, .Object_Type)
+			for interface_name in class.implemented_interfaces {
+				insert_summary_type_name_candidate(lookup, out, index, interface_name, allocator, .Interface_Type)
+			}
+			for friend in class.friends {
+				insert_summary_type_name_candidate(lookup, out, index, friend, allocator, .Object_Type)
+			}
+		}
+		for member in summary.members {
+			insert_summary_type_ref_candidate(lookup, out, index, member.type_ref, allocator)
+			insert_summary_type_ref_candidate(lookup, out, index, member.event_source, allocator)
+			insert_summary_type_name_candidate(lookup, out, index, member.alias_interface, allocator, .Interface_Type)
+			for param in member.parameters {
+				insert_summary_type_ref_candidate(lookup, out, index, param.type_ref, allocator)
+			}
+		}
+		for function in summary.functions {
+			for param in function.parameters {
+				insert_summary_type_ref_candidate(lookup, out, index, param.type_ref, allocator)
+			}
+		}
+		for typ in summary.types {
+			insert_summary_type_ref_candidate(lookup, out, index, typ.type_ref, allocator)
+			for field in typ.fields {
+				insert_summary_type_ref_candidate(lookup, out, index, field.type_ref, allocator)
+			}
+		}
+	}
+}
+
+@(private)
+insert_summary_type_ref_candidate :: proc(
+	lookup: ^Project_Index,
+	out: ^[dynamic]deps.Remote_Dependency_Candidate,
+	index: ^map[string]int,
+	ref: Summary_Provider_Type_Ref_Input,
+	allocator: mem.Allocator,
+) {
+	hint := deps.Remote_Dependency_Hint.Object_Type if ref.is_ref else deps.Remote_Dependency_Hint.None
+	insert_summary_type_name_candidate(lookup, out, index, ref.base_name, allocator, hint)
+}
+
+@(private)
+insert_summary_type_name_candidate :: proc(
+	lookup: ^Project_Index,
+	out: ^[dynamic]deps.Remote_Dependency_Candidate,
+	index: ^map[string]int,
+	name: string,
+	allocator: mem.Allocator,
+	hint := deps.Remote_Dependency_Hint.None,
+) {
+	canonical := canonical_name(name, context.temp_allocator)
+	if canonical == "" {
+		return
+	}
+	if _, builtin_ok := builtin_symbol_id(.Type, canonical); builtin_ok {
+		return
+	}
+	if _, ok := global_visible_root_symbol_lookup(lookup, .Type, canonical); ok {
+		return
+	}
+	if _, ok := global_visible_summary_entity_lookup(lookup, .Type, canonical); ok {
+		return
+	}
+	insert_remote_candidate(out, index, canonical, .Type, allocator, hint)
+}
+
+@(private)
 remote_candidate_has_full_source_waiter :: proc(
-	state: ^Project_State,
-	units: []Unit_Id,
+	state: ^Project_Snapshot_State,
+	units: []Source_File_Id,
 ) -> bool {
-	for unit_id in units {
-		unit_index := unit_id_index(unit_id)
-		if unit_index >= 0 &&
-		   unit_index < len(state.units) &&
-		   state.units[unit_index].source_mode != .Dependency_Interface {
+	for source_file_id in units {
+		source_file_index := source_file_id_index(source_file_id)
+		if source_file_index >= 0 &&
+		   source_file_index < len(state.source_files) &&
+		   state.source_files[source_file_index].role != .Dependency_Interface_Source {
 			return true
 		}
 	}
@@ -131,22 +210,22 @@ remote_candidate_has_full_source_waiter :: proc(
 
 @(private)
 record_project_unresolved_candidates :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	project: ^Project_Analysis,
 ) {
 	project_state_unresolved_candidates_destroy(state)
 	candidate_allocator := base_runtime.heap_allocator()
-	state.unresolved_candidates = make(map[deps.Remote_Dependency_Key][dynamic]Unit_Id, 64, candidate_allocator)
-	state.remote_waiters_by_name = make(map[string][dynamic]Unit_Id, 64, candidate_allocator)
+	state.unresolved_candidates = make(map[deps.Remote_Dependency_Key][dynamic]Source_File_Id, 64, candidate_allocator)
+	state.remote_waiters_by_name = make(map[string][dynamic]Source_File_Id, 64, candidate_allocator)
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	recorded := make(map[deps.Remote_Dependency_Key]Unit_Id, 64, context.temp_allocator)
+	recorded := make(map[deps.Remote_Dependency_Key]Source_File_Id, 64, context.temp_allocator)
 	lookup := &state.index
-	for unit, unit_index in project.units {
+	for unit, source_file_index in project.providers.source_files {
 		for &edge in unit.include_edges {
 			if !edge.has_target {
-				record_remote_candidate_unit(state, &recorded, edge.name, .Include, unit.unit_id)
+				record_remote_candidate_unit(state, &recorded, edge.name, .Include, unit.source_file_id)
 			}
 		}
 		for &ref in unit.references {
@@ -154,7 +233,7 @@ record_project_unresolved_candidates :: proc(
 				continue
 			}
 			if candidate, ok := remote_dependency_candidate_for_reference(&ref); ok {
-				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.unit_id, candidate.hint)
+				record_remote_candidate_unit(state, &recorded, candidate.name, candidate.kind, unit.source_file_id, candidate.hint)
 			}
 		}
 		for &symbol in unit.symbols {
@@ -167,7 +246,7 @@ record_project_unresolved_candidates :: proc(
 					&recorded,
 					symbol.declared_type.base_name,
 					.Type,
-					unit.unit_id,
+					unit.source_file_id,
 					remote_dependency_hint_for_type_ref(symbol.declared_type),
 				)
 			}
@@ -178,7 +257,7 @@ record_project_unresolved_candidates :: proc(
 				&recorded,
 				unit.message_default_class.name,
 				.Message_Class,
-				unit.unit_id,
+				unit.source_file_id,
 			)
 		}
 		for &message in unit.message_uses {
@@ -188,17 +267,17 @@ record_project_unresolved_candidates :: proc(
 					&recorded,
 					message.class_name,
 					.Message_Class,
-					unit.unit_id,
+					unit.source_file_id,
 				)
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
-				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.unit_id)
+			if sql_source_needs_remote_dependency(project, lookup, source_file_index, sql_source) {
+				record_remote_candidate_unit(state, &recorded, sql_source.name, .Type, unit.source_file_id)
 			}
 		}
 		for &call_site in unit.call_sites {
-			if !call_site_needs_remote_dependency(project, lookup, unit_index, call_site) {
+			if !call_site_needs_remote_dependency(project, lookup, source_file_index, call_site) {
 				continue
 			}
 			#partial switch call_site.target.kind {
@@ -208,7 +287,7 @@ record_project_unresolved_candidates :: proc(
 					&recorded,
 					call_site.target.function_name,
 					.Function,
-					unit.unit_id,
+					unit.source_file_id,
 				)
 			case .Report:
 				record_remote_candidate_unit(
@@ -216,7 +295,7 @@ record_project_unresolved_candidates :: proc(
 					&recorded,
 					call_site.target.report_name,
 					.Report,
-					unit.unit_id,
+					unit.source_file_id,
 				)
 			}
 		}
@@ -225,30 +304,30 @@ record_project_unresolved_candidates :: proc(
 
 @(private)
 record_project_unresolved_candidates_for_units :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	project: ^Project_Analysis,
-	unit_ids: []Unit_Id,
+	source_file_ids: []Source_File_Id,
 ) {
-	assert(len(state.unit_unresolved_candidates) >= len(project.units))
+	assert(len(state.source_file_unresolved_candidates) >= len(project.providers.source_files))
 	lookup := &state.index
 	temp_arena := temp_arena_begin()
 	defer temp_arena_end(temp_arena)
 
-	for unit_id in unit_ids {
-		unit_index := unit_id_index(unit_id)
-		if unit_index < 0 || unit_index >= len(project.units) {
+	for source_file_id in source_file_ids {
+		source_file_index := source_file_id_index(source_file_id)
+		if source_file_index < 0 || source_file_index >= len(project.providers.source_files) {
 			continue
 		}
-		unit_candidates := &state.unit_unresolved_candidates[unit_index]
+		unit_candidates := &state.source_file_unresolved_candidates[source_file_index]
 		for key in unit_candidates^ {
-			remove_remote_candidate_unit(state, key, unit_id)
+			remove_remote_candidate_unit(state, key, source_file_id)
 		}
 		clear(unit_candidates)
 		recorded := make(map[deps.Remote_Dependency_Key]bool, 8, context.temp_allocator)
-		unit := &project.units[unit_index]
+		unit := &project.providers.source_files[source_file_index]
 		for &edge in unit.include_edges {
 			if !edge.has_target {
-				record_remote_candidate_unit_incremental(state, unit_candidates, &recorded, edge.name, .Include, unit.unit_id)
+				record_remote_candidate_unit_incremental(state, unit_candidates, &recorded, edge.name, .Include, unit.source_file_id)
 			}
 		}
 		for &ref in unit.references {
@@ -262,7 +341,7 @@ record_project_unresolved_candidates_for_units :: proc(
 					&recorded,
 					candidate.name,
 					candidate.kind,
-					unit.unit_id,
+					unit.source_file_id,
 					candidate.hint,
 				)
 			}
@@ -278,7 +357,7 @@ record_project_unresolved_candidates_for_units :: proc(
 					&recorded,
 					symbol.declared_type.base_name,
 					.Type,
-					unit.unit_id,
+					unit.source_file_id,
 					remote_dependency_hint_for_type_ref(symbol.declared_type),
 				)
 			}
@@ -290,7 +369,7 @@ record_project_unresolved_candidates_for_units :: proc(
 				&recorded,
 				unit.message_default_class.name,
 				.Message_Class,
-				unit.unit_id,
+				unit.source_file_id,
 			)
 		}
 		for &message in unit.message_uses {
@@ -301,17 +380,17 @@ record_project_unresolved_candidates_for_units :: proc(
 					&recorded,
 					message.class_name,
 					.Message_Class,
-					unit.unit_id,
+					unit.source_file_id,
 				)
 			}
 		}
 		for &sql_source in unit.sql_sources {
-			if sql_source_needs_remote_dependency(project, lookup, unit_index, sql_source) {
-				record_remote_candidate_unit_incremental(state, unit_candidates, &recorded, sql_source.name, .Type, unit.unit_id)
+			if sql_source_needs_remote_dependency(project, lookup, source_file_index, sql_source) {
+				record_remote_candidate_unit_incremental(state, unit_candidates, &recorded, sql_source.name, .Type, unit.source_file_id)
 			}
 		}
 		for &call_site in unit.call_sites {
-			if !call_site_needs_remote_dependency(project, lookup, unit_index, call_site) {
+			if !call_site_needs_remote_dependency(project, lookup, source_file_index, call_site) {
 				continue
 			}
 			#partial switch call_site.target.kind {
@@ -322,7 +401,7 @@ record_project_unresolved_candidates_for_units :: proc(
 					&recorded,
 					call_site.target.function_name,
 					.Function,
-					unit.unit_id,
+					unit.source_file_id,
 				)
 			case .Report:
 				record_remote_candidate_unit_incremental(
@@ -331,7 +410,7 @@ record_project_unresolved_candidates_for_units :: proc(
 					&recorded,
 					call_site.target.report_name,
 					.Report,
-					unit.unit_id,
+					unit.source_file_id,
 				)
 			}
 		}
@@ -342,29 +421,33 @@ record_project_unresolved_candidates_for_units :: proc(
 sql_source_needs_remote_dependency :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	sql_source: Sql_Source_Data,
 ) -> bool {
 	if sql_source.resolution != .External {
 		return false
 	}
-	_, ok := resolve_type_name_in_project_lookup(project, lookup, unit_index, sql_source.name)
-	return !ok
+	_, ok := resolve_type_name_in_project_lookup(project, lookup, source_file_index, sql_source.name)
+	if ok {
+		return false
+	}
+	_, summary_ok := global_visible_summary_entity_lookup(lookup, .Type, sql_source.name)
+	return !summary_ok
 }
 
 @(private)
 call_site_needs_remote_dependency :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	call_site: Call_Site_Data,
 ) -> bool {
 	#partial switch call_site.target.kind {
 	case .Function:
-		_, ok := resolve_function_module_in_project_lookup(project, lookup, unit_index, call_site.target.function_name)
+		_, ok := resolve_function_module_in_project_lookup(project, lookup, source_file_index, call_site.target.function_name)
 		return !ok
 	case .Report:
-		_, ok := resolve_root_name_in_project_lookup(project, lookup, unit_index, .Value, call_site.target.report_name)
+		_, ok := resolve_root_name_in_project_lookup(project, lookup, source_file_index, .Value, call_site.target.report_name)
 		return !ok
 	}
 	return false
@@ -374,22 +457,28 @@ call_site_needs_remote_dependency :: proc(
 resolve_root_name_in_project_lookup :: proc(
 	project: ^Project_Analysis,
 	lookup: ^Project_Index,
-	unit_index: int,
+	source_file_index: int,
 	namespace: Namespace,
 	name: string,
-) -> (Symbol_Handle, bool) {
-	unit_id := project.units[unit_index].unit_id
-	if handle, ok := root_symbol_in_unit_lookup(project, unit_id, namespace, name); ok {
+) -> (Symbol_Link, bool) {
+	source_file_id := project.providers.source_files[source_file_index].source_file_id
+	if handle, ok := root_symbol_in_source_file_lookup(project, source_file_id, namespace, name); ok {
 		return handle, true
 	}
-	if handle, ok := root_symbol_in_visible_units_lookup(project, namespace, name, lookup.visible[unit_index]); ok {
+	if handle, ok := root_symbol_in_visible_units_lookup(project, namespace, name, lookup.visible[source_file_index]); ok {
 		return handle, true
 	}
-	return global_visible_root_symbol_lookup(lookup, namespace, name)
+	if handle, ok := global_visible_root_symbol_lookup(lookup, namespace, name); ok {
+		return handle, true
+	}
+	if _, ok := global_visible_summary_entity_lookup(lookup, namespace, name); ok {
+		return Symbol_Link{unit = INVALID_SOURCE_FILE_ID, symbol = INVALID_SYMBOL_ID}, true
+	}
+	return {}, false
 }
 
 @(private)
-project_state_unresolved_candidates_destroy :: proc(state: ^Project_State) {
+project_state_unresolved_candidates_destroy :: proc(state: ^Project_Snapshot_State) {
 	for _, units in state.unresolved_candidates {
 		delete(units)
 	}
@@ -402,14 +491,14 @@ project_state_unresolved_candidates_destroy :: proc(state: ^Project_State) {
 
 @(private)
 remove_remote_candidate_unit :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	key: deps.Remote_Dependency_Key,
-	unit_id: Unit_Id,
+	source_file_id: Source_File_Id,
 ) {
 	if units, ok := state.unresolved_candidates[key]; ok {
 		write := 0
 		for waiting in units {
-			if waiting == unit_id {
+			if waiting == source_file_id {
 				continue
 			}
 			units[write] = waiting
@@ -423,19 +512,19 @@ remove_remote_candidate_unit :: proc(
 			state.unresolved_candidates[key] = units
 		}
 	}
-	remove_remote_export_waiter(state, key, unit_id)
+	remove_remote_export_waiter(state, key, source_file_id)
 }
 
 @(private)
 remove_remote_export_waiter :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	key: deps.Remote_Dependency_Key,
-	unit_id: Unit_Id,
+	source_file_id: Source_File_Id,
 ) {
 	if units, ok := state.remote_waiters_by_name[key.name]; ok {
 		write := 0
 		for waiting in units {
-			if waiting == unit_id {
+			if waiting == source_file_id {
 				continue
 			}
 			units[write] = waiting
@@ -453,12 +542,12 @@ remove_remote_export_waiter :: proc(
 
 @(private)
 record_remote_candidate_unit_incremental :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	unit_candidates: ^[dynamic]deps.Remote_Dependency_Key,
 	recorded: ^map[deps.Remote_Dependency_Key]bool,
 	name: string,
 	kind: deps.Remote_Dependency_Kind,
-	unit_id: Unit_Id,
+	source_file_id: Source_File_Id,
 	hint := deps.Remote_Dependency_Hint.None,
 ) {
 	if name == "" {
@@ -476,62 +565,62 @@ record_remote_candidate_unit_incremental :: proc(
 	}
 	append(unit_candidates, key)
 	if units, ok := state.unresolved_candidates[lookup_key]; ok {
-		append(&units, unit_id)
+		append(&units, source_file_id)
 		state.unresolved_candidates[lookup_key] = units
 	} else {
-		waiting_units := make([dynamic]Unit_Id, 0, 2, base_runtime.heap_allocator())
-		append(&waiting_units, unit_id)
+		waiting_units := make([dynamic]Source_File_Id, 0, 2, base_runtime.heap_allocator())
+		append(&waiting_units, source_file_id)
 		state.unresolved_candidates[key] = waiting_units
 	}
-	record_remote_export_waiter(state, key.name, unit_id)
+	record_remote_export_waiter(state, key.name, source_file_id)
 }
 
 @(private)
 record_remote_candidate_unit :: proc(
-	state: ^Project_State,
-	recorded: ^map[deps.Remote_Dependency_Key]Unit_Id,
+	state: ^Project_Snapshot_State,
+	recorded: ^map[deps.Remote_Dependency_Key]Source_File_Id,
 	name: string,
 	kind: deps.Remote_Dependency_Kind,
-	unit_id: Unit_Id,
+	source_file_id: Source_File_Id,
 	hint := deps.Remote_Dependency_Hint.None,
 ) {
 	if name == "" {
 		return
 	}
 	lookup_key := deps.Remote_Dependency_Key{name = name, kind = kind, hint = hint}
-	if previous, ok := recorded^[lookup_key]; ok && previous == unit_id {
+	if previous, ok := recorded^[lookup_key]; ok && previous == source_file_id {
 		return
 	}
-	recorded^[lookup_key] = unit_id
+	recorded^[lookup_key] = source_file_id
 	key := deps.Remote_Dependency_Key {
 		name = strings.clone(name, state.allocator),
 		kind = kind,
 		hint = hint,
 	}
 	if units, ok := state.unresolved_candidates[lookup_key]; ok {
-		append(&units, unit_id)
+		append(&units, source_file_id)
 		state.unresolved_candidates[lookup_key] = units
 	} else {
-		waiting_units := make([dynamic]Unit_Id, 0, 2, base_runtime.heap_allocator())
-		append(&waiting_units, unit_id)
+		waiting_units := make([dynamic]Source_File_Id, 0, 2, base_runtime.heap_allocator())
+		append(&waiting_units, source_file_id)
 		state.unresolved_candidates[key] = waiting_units
 	}
-	record_remote_export_waiter(state, key.name, unit_id)
+	record_remote_export_waiter(state, key.name, source_file_id)
 }
 
 @(private)
 record_remote_export_waiter :: proc(
-	state: ^Project_State,
+	state: ^Project_Snapshot_State,
 	name: string,
-	unit_id: Unit_Id,
+	source_file_id: Source_File_Id,
 ) {
 	if units, ok := state.remote_waiters_by_name[name]; ok {
-		push_unique_unit(&units, unit_id)
+		push_unique_unit(&units, source_file_id)
 		state.remote_waiters_by_name[name] = units
 		return
 	}
-	units := make([dynamic]Unit_Id, 0, 2, state.allocator)
-	append(&units, unit_id)
+	units := make([dynamic]Source_File_Id, 0, 2, state.allocator)
+	append(&units, source_file_id)
 	state.remote_waiters_by_name[name] = units
 }
 

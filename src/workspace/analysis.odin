@@ -132,7 +132,7 @@ analyze_standalone_path :: proc(
 
 analyze_manifest_unit :: proc(
 	workspace: ^Workspace,
-	unit_index: int,
+	source_file_index: int,
 	root_keys: []string,
 	include_paths: []string,
 	pool: ^execution.Pool,
@@ -143,7 +143,7 @@ analyze_manifest_unit :: proc(
 	collect_workspace_abap_files(workspace.root_path, &workspace_files, allocator)
 	return analyze_manifest_unit_with_workspace_files(
 		workspace,
-		unit_index,
+		source_file_index,
 		root_keys,
 		workspace_files[:],
 		include_paths,
@@ -155,7 +155,7 @@ analyze_manifest_unit :: proc(
 
 analyze_manifest_unit_with_workspace_files :: proc(
 	workspace: ^Workspace,
-	unit_index: int,
+	source_file_index: int,
 	root_keys: []string,
 	workspace_files: []string,
 	include_paths: []string,
@@ -165,14 +165,14 @@ analyze_manifest_unit_with_workspace_files :: proc(
 ) -> Analysis_Result {
 	target, target_ok := source_input_from_manifest_path(
 		&workspace.manifest,
-		workspace.manifest.units[unit_index].root_file,
+		workspace.manifest.units[source_file_index].root_file,
 		allocator,
 	)
 	if !target_ok {
 		return analysis_error("failed to read manifest root file")
 	}
 
-	dependency_indices := manifest_dependency_indices(&workspace.manifest, unit_index, allocator)
+	dependency_indices := manifest_dependency_indices(&workspace.manifest, source_file_index, allocator)
 	dependencies := make([dynamic]analyze.Source_Input, 0, len(dependency_indices), allocator)
 	for dependency_index in dependency_indices {
 		dependency, dependency_ok := source_input_from_manifest_path(
@@ -188,7 +188,7 @@ analyze_manifest_unit_with_workspace_files :: proc(
 
 	candidates := manifest_candidate_inputs(
 		&workspace.manifest,
-		unit_index,
+		source_file_index,
 		dependency_indices[:],
 		workspace_files,
 		root_keys,
@@ -210,7 +210,7 @@ analyze_manifest_unit_with_workspace_files :: proc(
 
 manifest_candidate_inputs :: proc(
 	manifest: ^Workspace_Manifest,
-	unit_index: int,
+	source_file_index: int,
 	dependency_indices: []int,
 	workspace_files: []string,
 	root_keys: []string,
@@ -228,7 +228,7 @@ manifest_candidate_inputs :: proc(
 	for path in workspace_files {
 		add_manifest_candidate_path(&candidates, &keys, path, "", root_keys, allocator)
 	}
-	add_manifest_member_candidates(manifest, unit_index, &candidates, &keys, root_keys, allocator)
+	add_manifest_member_candidates(manifest, source_file_index, &candidates, &keys, root_keys, allocator)
 	for dependency_index in dependency_indices {
 		add_manifest_member_candidates(
 			manifest,
@@ -266,10 +266,10 @@ manifest_workspace_candidate_inputs :: proc(
 	for path in workspace_files {
 		add_manifest_candidate_path(&candidates, &keys, path, "", root_keys, allocator)
 	}
-	for unit_index in 0 ..< len(manifest.units) {
+	for source_file_index in 0 ..< len(manifest.units) {
 		add_manifest_member_candidates(
 			manifest,
-			unit_index,
+			source_file_index,
 			&candidates,
 			&keys,
 			root_keys,
@@ -287,13 +287,13 @@ manifest_workspace_candidate_inputs :: proc(
 
 add_manifest_member_candidates :: proc(
 	manifest: ^Workspace_Manifest,
-	unit_index: int,
+	source_file_index: int,
 	candidates: ^[dynamic]analyze.Project_Candidate_Input,
 	keys: ^[dynamic]string,
 	root_keys: []string,
 	allocator: mem.Allocator,
 ) {
-	for member in manifest.units[unit_index].members {
+	for member in manifest.units[source_file_index].members {
 		path, ok := manifest_absolute_path(manifest.root_path, member.file, allocator)
 		if ok {
 			add_manifest_candidate_path(
@@ -377,7 +377,7 @@ manifest_reachable_owner_by_key :: proc(
 			analyze_options_from_workspace_options(options),
 			allocator,
 		)
-		for analyzed_unit in project.units {
+		for analyzed_unit in project.providers.source_files {
 			if normalized_uri_path_key(analyzed_unit.uri, allocator) == target_key {
 				return i, true
 			}

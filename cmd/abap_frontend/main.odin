@@ -320,7 +320,7 @@ allocation_location_total_less :: proc(a, b: Allocation_Location_Total) -> bool 
 
 print_analyze_counts :: proc(project: ^semantic_analyze.Project_Analysis) {
 	symbols, scopes, references, structures, diagnostics, include_edges, unresolved_refs: int
-	for unit in project.units {
+	for unit in project.providers.source_files {
 		symbols += len(unit.symbols)
 		scopes += len(unit.scopes)
 		references += len(unit.references)
@@ -335,7 +335,7 @@ print_analyze_counts :: proc(project: ^semantic_analyze.Project_Analysis) {
 	}
 	fmt.printf(
 		"counts\tunits\t%d\tsymbols\t%d\tscopes\t%d\treferences\t%d\tstructures\t%d\tdiagnostics\t%d\tinclude_edges\t%d\tunresolved_refs\t%d\n",
-		len(project.units),
+		len(project.providers.source_files),
 		symbols,
 		scopes,
 		references,
@@ -440,12 +440,13 @@ print_analyze_diagnostics :: proc(
 ) -> bool {
 	had_error := false
 	use_color := terminal.color_enabled && terminal.is_terminal(os.stdout)
-	for unit in project.units {
+	for unit in project.providers.source_files {
 		assert(context.temp_allocator.procedure == virtual.arena_allocator_proc && context.temp_allocator.data != nil)
 		temp_arena := virtual.arena_temp_begin(cast(^virtual.Arena)context.temp_allocator.data)
 		defer virtual.arena_temp_end(temp_arena)
 
-		line_starts := build_line_starts(unit.source, context.temp_allocator)
+		source := ""
+		line_starts := build_line_starts(source, context.temp_allocator)
 		uri := display_uri(unit.uri, context.temp_allocator)
 		for diagnostic in unit.diagnostics {
 			warning := semantic_analyze.diagnostic_is_warning(diagnostic.kind) && !warnings_as_errors
@@ -459,9 +460,9 @@ print_analyze_diagnostics :: proc(
 			if use_color {
 				color = SGR_YELLOW if warning else SGR_RED
 			}
-			start := source_position(unit.source, line_starts[:], diagnostic.range.start)
-			end := source_position(unit.source, line_starts[:], diagnostic.range.end)
-			line_text := source_line_text(unit.source, line_starts[:], start.line)
+			start := source_position(source, line_starts[:], diagnostic.range.start)
+			end := source_position(source, line_starts[:], diagnostic.range.end)
+			line_text := source_line_text(source, line_starts[:], start.line)
 			width := end.column - start.column
 			if end.line != start.line {
 				width = len(line_text) - start.column + 2

@@ -23,6 +23,7 @@ add_local_export_matches :: proc(
 	roots: []string,
 	target_uri: string,
 	allocator: mem.Allocator,
+	dependency_summaries: ^[dynamic]analyze.Summary_Provider_Input = nil,
 ) -> bool {
 	uri_key_arena: virtual.Arena
 	_ = virtual.arena_init_growing(&uri_key_arena)
@@ -81,6 +82,12 @@ add_local_export_matches :: proc(
 			if !project_input_uri_key_add_if_missing(&uri_keys, path) {
 				continue
 			}
+			object_kind, object_type := local_export_object_kind_type(
+				candidate,
+				file_extension,
+				source,
+				temp_allocator,
+			)
 			store_local_export_dependency(
 				store,
 				profile,
@@ -91,10 +98,33 @@ add_local_export_matches :: proc(
 				file_extension,
 				allocator,
 			)
+			if dependency_summaries != nil {
+				summary_payload := dependency_interface_summary_payload_from_artifact(
+					object_kind,
+					candidate.name,
+					path,
+					object_type,
+					file_extension,
+					source,
+					temp_allocator,
+				)
+				if summary_input, summary_ok := dependency_summary_input_from_payload(
+					   summary_payload,
+					   candidate,
+					   "",
+					   dependency_summaries.allocator,
+				   );
+				   summary_ok {
+					append(dependency_summaries, summary_input)
+					added = true
+					continue
+				}
+				continue
+			}
 			input := analyze.Source_Input {
 				uri    = path,
 				source = input_source,
-				mode   = .Dependency_Interface,
+				role = .Dependency_Interface_Source,
 			}
 			append_dependency_input(candidates, dependencies, input, candidate, candidate.name)
 			added = true
@@ -139,15 +169,24 @@ store_local_export_dependency :: proc(
 	}
 	fetched_at, _ := time.time_to_rfc3339(time.now(), allocator = store_allocator)
 	artifact := dep_store.Stored_Artifact_Input {
-		package_name   = package_name,
-		object_kind    = object_kind,
-		object_name    = candidate.name,
-		object_uri     = path,
-		object_type    = object_type,
-		description    = "Local export dependency",
-		file_extension = extension,
-		source_text    = source_text,
-		fetched_at     = fetched_at,
+		package_name    = package_name,
+		object_kind     = object_kind,
+		object_name     = candidate.name,
+		object_uri      = path,
+		object_type     = object_type,
+		description     = "Local export dependency",
+		file_extension  = extension,
+		source_text     = source_text,
+		fetched_at      = fetched_at,
+		summary_payload = dependency_interface_summary_payload_from_artifact(
+			object_kind,
+			candidate.name,
+			path,
+			object_type,
+			extension,
+			source_text,
+			store_allocator,
+		),
 	}
 	_, _ = dep_store.put_artifact(store, profile, &artifact, store_allocator)
 }

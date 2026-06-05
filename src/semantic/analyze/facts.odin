@@ -7,7 +7,7 @@ import "src:tokenizer"
 import "core:mem"
 import "core:strings"
 
-collect_decl_info_facts :: proc(c: ^Collector, scope: Scope_Id, info: Decl_Info) {
+collect_decl_info_facts :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, info: Decl_Info) {
 	for clause in info.length_clauses {
 		collect_expr_refs(c, clause.expr, scope)
 	}
@@ -29,24 +29,25 @@ collect_decl_info_facts :: proc(c: ^Collector, scope: Scope_Id, info: Decl_Info)
 	}
 }
 
-collect_expr_list_refs :: proc(c: ^Collector, values: []^ast.Expr, scope: Scope_Id) {
+collect_expr_list_refs :: proc(c: ^Fact_Model_Builder, values: []^ast.Expr, scope: Scope_Id) {
 	for value in values {
 		collect_expr_refs(c, value, scope)
 	}
 }
 
-collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
+collect_expr_refs :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr, scope: Scope_Id) {
 	if expr == nil {
 		return
 	}
 	#partial switch n in expr.derived_expr {
 	case ^ast.Literal_Expr:
 		fact := type_fact_from_expr(c, expr, scope)
-		add_syntax_operand(c.unit, scope, n.range, .Constant, fact)
+		add_type_and_value(c.unit, semantic_node_from_expr(expr), scope, .Constant, fact)
 	case ^ast.Ident_Expr:
 		if n.name != "#" {
-			add_reference(c, scope, n.name, .Value, .Identifier, n.range)
-			add_expression_fact(c, scope, n.range, .Reference, type_fact_from_expr(c, expr, scope))
+			node := semantic_node_from_expr(expr)
+			add_reference(c, scope, n.name, .Value, .Identifier, n.range, node = node)
+			add_expression_type_fact(c, scope, type_fact_from_expr(c, expr, scope), node = node)
 		}
 	case ^ast.Type_Ref_Expr:
 		if n.raw_operand {
@@ -72,7 +73,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Call_Expr:
 		collect_call_expr_refs(c, n, scope)
 	case ^ast.Call_Arg_List_Expr:
-		collect_call_arg_list_refs(c, n, scope, Named_Argument_Target{}, expr.range)
+		collect_call_arg_list_refs(c, n, scope, Named_Argument_Target{}, expr.range, semantic_node_from_expr(expr))
 	case ^ast.Call_Arg_Section_Expr:
 		section, has_section := named_argument_section_from_ast(n.kind)
 		for arg in n.args {
@@ -158,38 +159,48 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 	case ^ast.Constructor_Corresponding_Except_Clause_Expr:
 		collect_expr_list_refs(c, n.names[:], scope)
 	case ^ast.Data_Inline_Name_Expr:
-		if symbol_id := declare_inline_symbol(c, scope, n.name, .Variable, n.range);
-		   symbol_id != INVALID_SYMBOL_ID {
-			add_syntax_operand(
-				c.unit,
+		if symbol_id := declare_inline_symbol(
+				c,
 				scope,
+				n.name,
+				.Variable,
 				n.range,
+				node = semantic_node_from_expr(expr),
+			);
+		   symbol_id != INVALID_SYMBOL_ID {
+			add_type_and_value(
+				c.unit,
+				semantic_node_from_expr(expr),
+				scope,
 				.Variable,
 				unknown_type_fact(),
-				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
-				has_symbol = true,
 				assignable = true,
 			)
 		}
 	case ^ast.Field_Symbol_Inline_Name_Expr:
-		if symbol_id := declare_inline_symbol(c, scope, n.name, .Field_Symbol, n.range);
-		   symbol_id != INVALID_SYMBOL_ID {
-			add_syntax_operand(
-				c.unit,
+		if symbol_id := declare_inline_symbol(
+				c,
 				scope,
+				n.name,
+				.Field_Symbol,
 				n.range,
+				node = semantic_node_from_expr(expr),
+			);
+		   symbol_id != INVALID_SYMBOL_ID {
+			add_type_and_value(
+				c.unit,
+				semantic_node_from_expr(expr),
+				scope,
 				.Variable,
 				unknown_type_fact(),
-				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
-				has_symbol = true,
 				assignable = true,
 			)
 		}
 	case ^ast.Char_String_Template_Expr:
 		collect_expr_list_refs(c, n.parts[:], scope)
 		fact := type_fact_from_expr(c, expr, scope)
-		add_expression_fact(c, scope, expr.range, .Reference, fact)
-		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+		node := semantic_node_from_expr(expr)
+		add_expression_type_fact(c, scope, fact, node = node)
 	case ^ast.Template_Interpolation_Expr:
 		collect_expr_refs(c, n.expr, scope)
 		collect_expr_list_refs(c, n.format_specs[:], scope)
@@ -204,7 +215,7 @@ collect_expr_refs :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 }
 
 collect_constructor_let_binding_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Constructor_Let_Binding_Expr,
 	scope: Scope_Id,
 ) {
@@ -245,7 +256,7 @@ constructor_assignment_inferred_value :: proc(expr: ^ast.Expr) -> (^ast.Expr, bo
 }
 
 collect_type_expr_ref :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
 	namespace: Namespace,
@@ -259,7 +270,7 @@ collect_type_expr_ref :: proc(
 			if access, access_ok := selector_access_from_expr(c, expr, scope, true);
 			   access_ok && len(access.field_path) > 0 {
 				access.base_namespace = namespace
-				append(&c.unit.field_accesses, access)
+				append(&c.facts.field_accesses, access)
 			}
 		}
 		return
@@ -267,7 +278,7 @@ collect_type_expr_ref :: proc(
 	collect_expr_refs(c, expr, scope)
 }
 
-collect_type_clause_ref :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause, scope: Scope_Id) {
+collect_type_clause_ref :: proc(c: ^Fact_Model_Builder, clause: ^ast.Data_Type_Clause, scope: Scope_Id) {
 	if clause == nil {
 		return
 	}
@@ -279,7 +290,7 @@ collect_type_clause_ref :: proc(c: ^Collector, clause: ^ast.Data_Type_Clause, sc
 }
 
 collect_constructor_expr_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Constructor_Expr,
 	scope: Scope_Id,
 ) {
@@ -287,26 +298,26 @@ collect_constructor_expr_refs :: proc(
 	if expr.kind == .Reduce {
 		collect_reduce_constructor_args(c, expr, scope)
 		fact := type_fact_from_expr(c, expr, scope)
-		add_expression_fact(c, scope, expr.range, .Call_Result, fact)
-		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+		node := semantic_node_from_expr(&expr.node)
+		add_expression_type_fact(c, scope, fact, node = node)
 		return
 	}
 	if expr.kind == .Filter {
 		collect_filter_constructor_args(c, expr, scope)
 		fact := type_fact_from_expr(c, expr, scope)
-		add_expression_fact(c, scope, expr.range, .Call_Result, fact)
-		add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+		node := semantic_node_from_expr(&expr.node)
+		add_expression_type_fact(c, scope, fact, node = node)
 		return
 	}
 	for arg in expr.args {
 		collect_expr_refs(c, arg, scope)
 	}
 	fact := type_fact_from_expr(c, expr, scope)
-	add_expression_fact(c, scope, expr.range, .Call_Result, fact)
-	add_syntax_operand(c.unit, scope, expr.range, .Value, fact)
+	node := semantic_node_from_expr(&expr.node)
+	add_expression_type_fact(c, scope, fact, node = node)
 }
 
-collect_filter_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Expr, scope: Scope_Id) {
+collect_filter_constructor_args :: proc(c: ^Fact_Model_Builder, expr: ^ast.Constructor_Expr, scope: Scope_Id) {
 	source: ^ast.Expr
 	filter: ^ast.Expr
 	for arg in expr.args {
@@ -324,7 +335,7 @@ collect_filter_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Ex
 }
 
 collect_filter_where_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	source, filter, expr: ^ast.Expr,
 	scope: Scope_Id,
 ) {
@@ -348,7 +359,7 @@ collect_filter_where_refs :: proc(
 	collect_internal_table_where_refs(c, source, expr, scope)
 }
 
-collect_reduce_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Expr, scope: Scope_Id) {
+collect_reduce_constructor_args :: proc(c: ^Fact_Model_Builder, expr: ^ast.Constructor_Expr, scope: Scope_Id) {
 	previous := c.current_scope
 	c.current_scope = scope
 	reduce_scope := push_scope(c, .Constructor_For, expr.range)
@@ -364,7 +375,7 @@ collect_reduce_constructor_args :: proc(c: ^Collector, expr: ^ast.Constructor_Ex
 }
 
 declare_reduce_init_assignments :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	assignments: []^ast.Expr,
 ) {
@@ -376,7 +387,7 @@ declare_reduce_init_assignments :: proc(
 }
 
 collect_constructor_for_clause_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Constructor_For_Clause_Expr,
 	scope: Scope_Id,
 ) {
@@ -406,7 +417,7 @@ collect_constructor_for_clause_refs :: proc(
 			data.source_access = source_access
 			data.has_source_access = true
 		}
-		append(&c.unit.constructor_for_bindings, data)
+		append(&c.facts.constructor_for_bindings, data)
 	}
 	collect_expr_refs(c, expr.then_expr, for_scope)
 	collect_expr_refs(c, expr.condition, for_scope)
@@ -423,7 +434,7 @@ collect_constructor_for_clause_refs :: proc(
 	c.current_scope = previous
 }
 
-constructor_for_group_source_access :: proc(c: ^Collector, name: string) -> (Field_Access, bool) {
+constructor_for_group_source_access :: proc(c: ^Fact_Model_Builder, name: string) -> (Field_Access, bool) {
 	canonical := canonical_name(name, c.allocator)
 	for i := len(c.loop_group_source_stack) - 1; i >= 0; i -= 1 {
 		frame := c.loop_group_source_stack[i]
@@ -434,16 +445,18 @@ constructor_for_group_source_access :: proc(c: ^Collector, name: string) -> (Fie
 	return {}, false
 }
 
-declare_constructor_for_iterator_type :: proc(c: ^Collector, symbol_id: Symbol_Id, source: Field_Access) {
+declare_constructor_for_iterator_type :: proc(c: ^Fact_Model_Builder, symbol_id: Symbol_Id, source: Field_Access) {
 	s := &c.unit.symbols[symbol_id_index(symbol_id)]
-	s.declared_type = type_ref_from_access(c, source)
-	s.has_declared_type = true
-	s.type_clause_form = .Like_Line_Of
-	s.has_type_clause_form = true
-	s.type_clause_display = concat2(c, "LINE OF ", source.base_name)
+	symbol_set_declared_type(
+		s,
+		type_ref_from_access(c, source),
+		concat2(c, "LINE OF ", source.base_name),
+		.Like_Line_Of,
+		true,
+	)
 }
 
-type_ref_from_access :: proc(c: ^Collector, access: Field_Access) -> Field_Type_Ref_Data {
+type_ref_from_access :: proc(c: ^Fact_Model_Builder, access: Field_Access) -> Field_Type_Ref_Data {
 	ref := Field_Type_Ref_Data {
 		namespace = access.base_namespace,
 		base_name = access.base_name,
@@ -464,9 +477,17 @@ type_ref_from_access :: proc(c: ^Collector, access: Field_Access) -> Field_Type_
 	return ref
 }
 
-collect_table_expr_refs :: proc(c: ^Collector, expr: ^ast.Table_Expr, scope: Scope_Id) {
+collect_table_expr_refs :: proc(c: ^Fact_Model_Builder, expr: ^ast.Table_Expr, scope: Scope_Id) {
 	if table_access, ok := value_access_from_expr(c, expr.table, scope); ok {
-		append(&c.unit.table_exprs, Table_Expr_Data{scope = scope, range = expr.range, table_access = table_access})
+		append(
+			&c.facts.table_exprs,
+			Table_Expr_Data {
+				scope = scope,
+				range = expr.range,
+				node = semantic_node_from_expr(&expr.node),
+				table_access = table_access,
+			},
+		)
 	}
 	collect_expr_refs(c, expr.table, scope)
 	for selector in expr.selectors {
@@ -478,7 +499,7 @@ collect_table_expr_refs :: proc(c: ^Collector, expr: ^ast.Table_Expr, scope: Sco
 }
 
 collect_table_expr_key_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	table, selector: ^ast.Expr,
 	scope: Scope_Id,
 ) -> bool {
@@ -500,7 +521,7 @@ collect_table_expr_key_refs :: proc(
 }
 
 collect_selector_expr_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Selector_Expr,
 	scope: Scope_Id,
 	in_type_position: bool,
@@ -517,13 +538,18 @@ collect_selector_expr_refs :: proc(
 	add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
 	add_interface_qualified_segment_references(c, scope, access.field_path[:])
 	if len(access.field_path) > 0 {
-		append(&c.unit.field_accesses, access)
-		add_expression_fact(c, scope, expr.range, .Selector, type_fact_from_expr(c, expr, scope))
+		append(&c.facts.field_accesses, access)
+		add_expression_type_fact(
+			c,
+			scope,
+			type_fact_from_expr(c, expr, scope),
+			node = semantic_node_from_expr(&expr.node),
+		)
 	}
 }
 
 collect_interface_qualified_selector_expr_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Interface_Qualified_Selector_Expr,
 	scope: Scope_Id,
 	in_type_position: bool,
@@ -540,13 +566,18 @@ collect_interface_qualified_selector_expr_refs :: proc(
 	add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
 	add_interface_qualified_segment_references(c, scope, access.field_path[:])
 	if len(access.field_path) > 0 {
-		append(&c.unit.field_accesses, access)
-		add_expression_fact(c, scope, expr.range, .Selector, type_fact_from_expr(c, expr, scope))
+		append(&c.facts.field_accesses, access)
+		add_expression_type_fact(
+			c,
+			scope,
+			type_fact_from_expr(c, expr, scope),
+			node = semantic_node_from_expr(&expr.node),
+		)
 	}
 }
 
 add_interface_qualified_segment_references :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	path: []Field_Access_Segment,
 ) {
@@ -558,7 +589,7 @@ add_interface_qualified_segment_references :: proc(
 }
 
 selector_access_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
 	in_type_position: bool,
@@ -609,11 +640,12 @@ selector_access_from_expr :: proc(
 			deref = sel.op == .Arrow && name == "*",
 		},
 	)
+	access.node = semantic_node_from_expr(expr)
 	return access, true
 }
 
 interface_qualified_selector_access_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Interface_Qualified_Selector_Expr,
 	scope: Scope_Id,
 	in_type_position: bool,
@@ -644,11 +676,12 @@ interface_qualified_selector_access_from_expr :: proc(
 			interface_qualified = true,
 		},
 	)
+	access.node = semantic_node_from_expr(&expr.node)
 	return access, true
 }
 
 value_access_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
 ) -> (
@@ -662,13 +695,18 @@ value_access_from_expr :: proc(
 	return {}, false
 }
 
-collect_call_expr_refs :: proc(c: ^Collector, expr: ^ast.Call_Expr, scope: Scope_Id) {
+collect_call_expr_refs :: proc(c: ^Fact_Model_Builder, expr: ^ast.Call_Expr, scope: Scope_Id) {
 	if _, ok := expr.callee.derived_expr.(^ast.Literal_Expr); ok {
 		collect_expr_refs(c, expr.callee, scope)
 		if args, args_ok := expr.args.derived_expr.(^ast.Call_Arg_List_Expr); args_ok {
-			collect_call_arg_list_refs(c, args, scope, {}, expr.range)
+			collect_call_arg_list_refs(c, args, scope, {}, expr.range, semantic_node_from_expr(&expr.node))
 		}
-		add_expression_fact(c, scope, expr.range, .Call_Result, unknown_type_fact())
+		add_expression_type_fact(
+			c,
+			scope,
+			unknown_type_fact(),
+			node = semantic_node_from_expr(&expr.node),
+		)
 		return
 	}
 	target := call_target_from_callee(c, expr.callee, scope)
@@ -684,12 +722,17 @@ collect_call_expr_refs :: proc(c: ^Collector, expr: ^ast.Call_Expr, scope: Scope
 		collect_call_method_target_refs(c, expr.callee, scope)
 	}
 	if args, ok := expr.args.derived_expr.(^ast.Call_Arg_List_Expr); ok {
-		collect_call_arg_list_refs(c, args, scope, target, expr.range)
+		collect_call_arg_list_refs(c, args, scope, target, expr.range, semantic_node_from_expr(&expr.node))
 	}
-	add_expression_fact(c, scope, expr.range, .Call_Result, unknown_type_fact())
+	add_expression_type_fact(
+		c,
+		scope,
+		unknown_type_fact(),
+		node = semantic_node_from_expr(&expr.node),
+	)
 }
 
-collect_call_method_target_refs :: proc(c: ^Collector, target: ^ast.Expr, scope: Scope_Id) {
+collect_call_method_target_refs :: proc(c: ^Fact_Model_Builder, target: ^ast.Expr, scope: Scope_Id) {
 	if target == nil {
 		return
 	}
@@ -735,7 +778,7 @@ collect_call_method_target_refs :: proc(c: ^Collector, target: ^ast.Expr, scope:
 }
 
 collect_call_method_selector_target_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	target: ^ast.Expr,
 	scope: Scope_Id,
 ) -> bool {
@@ -770,7 +813,7 @@ collect_call_method_selector_target_refs :: proc(
 }
 
 collect_ole_call_method_target_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	target: ^ast.Ole_Call_Method_Target_Expr,
 	scope: Scope_Id,
 ) {
@@ -780,7 +823,7 @@ collect_ole_call_method_target_refs :: proc(
 }
 
 call_target_from_callee :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	callee: ^ast.Expr,
 	scope: Scope_Id,
 ) -> Named_Argument_Target {
@@ -819,7 +862,7 @@ call_target_from_callee :: proc(
 }
 
 interface_qualified_method_target_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
 ) -> (Named_Argument_Target, bool) {
@@ -881,7 +924,7 @@ interface_qualified_method_parts :: proc(
 }
 
 method_receiver_path :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	access: Field_Access,
 ) -> [dynamic]Field_Access_Segment {
 	assert(len(access.field_path) > 0)
@@ -894,11 +937,12 @@ method_receiver_path :: proc(
 }
 
 collect_call_arg_list_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	args: ^ast.Call_Arg_List_Expr,
 	scope: Scope_Id,
 	target: Named_Argument_Target,
 	call_range: tokenizer.Range,
+	node: ^ast.Node = nil,
 ) {
 	if args == nil {
 		return
@@ -937,13 +981,13 @@ collect_call_arg_list_refs :: proc(
 		ordinal += 1
 	}
 	append(
-		&c.unit.call_sites,
-		Call_Site_Data{scope = scope, range = call_range, target = target, arguments = items},
+		&c.facts.call_sites,
+		Call_Site_Data{scope = scope, range = call_range, node = node, target = target, arguments = items},
 	)
 }
 
 collect_call_arg_expr_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	arg: ^ast.Expr,
 	scope: Scope_Id,
 	target: Named_Argument_Target,
@@ -952,7 +996,7 @@ collect_call_arg_expr_refs :: proc(
 ) {
 	if named, ok := arg.derived_expr.(^ast.Call_Named_Arg_Expr); ok {
 		append(
-			&c.unit.named_arguments,
+			&c.facts.named_arguments,
 			Named_Argument_Access {
 				scope = scope,
 				name = canonical_name(named.name, c.allocator),
@@ -973,7 +1017,7 @@ collect_call_arg_expr_refs :: proc(
 }
 
 append_call_argument :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	items: ^[dynamic]Call_Argument_Data,
 	arg: ^ast.Expr,
 	scope: Scope_Id,
@@ -1026,12 +1070,12 @@ named_argument_section_from_ast :: proc(
 	return .Exporting, false
 }
 
-collect_raw_operand_refs :: proc(c: ^Collector, expr: ^ast.Type_Ref_Expr, scope: Scope_Id) {
+collect_raw_operand_refs :: proc(c: ^Fact_Model_Builder, expr: ^ast.Type_Ref_Expr, scope: Scope_Id) {
 	collect_raw_operand_fact_refs(c, expr.raw_decls[:], expr.raw_refs[:], scope)
 }
 
 collect_create_object_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Create_Object_Stmt,
 	scope: Scope_Id,
 ) {
@@ -1041,7 +1085,7 @@ collect_create_object_stmt_facts :: proc(
 }
 
 collect_create_data_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Create_Data_Stmt,
 	scope: Scope_Id,
 ) {
@@ -1053,7 +1097,7 @@ collect_create_data_stmt_facts :: proc(
 		handle_name, handle_range, handle_ok := raw_operand_simple_ref(stmt.type_handle, c.allocator)
 		if handle_ok {
 			append(
-				&c.unit.create_data_type_handles,
+				&c.facts.create_data_type_handles,
 				Create_Data_Type_Handle_Site_Data {
 					scope = scope,
 					target_name = target_name,
@@ -1080,7 +1124,7 @@ raw_operand_simple_ref :: proc(expr: ^ast.Expr, allocator: mem.Allocator) -> (st
 }
 
 collect_create_type_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	type_ref: ^ast.Expr,
 	type_clause: ^ast.Data_Type_Clause,
@@ -1097,7 +1141,7 @@ collect_create_type_refs :: proc(
 }
 
 collect_dynamic_call_method_target_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Dynamic_Call_Method_Target_Expr,
 	scope: Scope_Id,
 ) {
@@ -1113,7 +1157,7 @@ collect_dynamic_call_method_target_refs :: proc(
 			add_reference(c, scope, access.base_name, access.base_namespace, kind, access.base_range)
 			add_interface_qualified_segment_references(c, scope, access.field_path[:])
 			if len(access.field_path) > 0 {
-				append(&c.unit.field_accesses, access)
+				append(&c.facts.field_accesses, access)
 			}
 		} else if name, range, ok := expr_name(expr.base); ok {
 			namespace := Namespace.Value
@@ -1133,7 +1177,7 @@ collect_dynamic_call_method_target_refs :: proc(
 }
 
 call_method_receiver_access_from_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	expr: ^ast.Expr,
 	scope: Scope_Id,
 	selector: ast.Selector_Op,
@@ -1149,7 +1193,7 @@ call_method_receiver_access_from_expr :: proc(
 }
 
 collect_raw_operand_fact_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	decls: []ast.Raw_Operand_Inline_Decl,
 	refs: []ast.Raw_Operand_Ref,
 	scope: Scope_Id,
@@ -1159,19 +1203,7 @@ collect_raw_operand_fact_refs :: proc(
 		if decl.kind == .Field_Symbol {
 			kind = .Field_Symbol
 		}
-		if symbol_id := declare_inline_symbol(c, scope, decl.name, kind, decl.range);
-		   symbol_id != INVALID_SYMBOL_ID {
-			add_syntax_operand(
-				c.unit,
-				scope,
-				decl.range,
-				.Variable,
-				unknown_type_fact(),
-				symbol = Symbol_Handle{unit = c.unit.unit_id, symbol = symbol_id},
-				has_symbol = true,
-				assignable = true,
-			)
-		}
+		_ = declare_inline_symbol(c, scope, decl.name, kind, decl.range)
 	}
 	for ref in refs {
 		if ref.name == "" {
@@ -1206,7 +1238,7 @@ collect_raw_operand_fact_refs :: proc(
 				)
 			}
 			append(
-				&c.unit.field_accesses,
+				&c.facts.field_accesses,
 				Field_Access {
 					scope = scope,
 					base_namespace = namespace,
@@ -1219,16 +1251,16 @@ collect_raw_operand_fact_refs :: proc(
 	}
 }
 
-type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> Type_Fact_Data {
+type_fact_from_expr :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr, scope: Scope_Id) -> Type_Fact_Data {
 	if expr == nil {
 		return unknown_type_fact()
 	}
 	if _, ok := expr.derived_expr.(^ast.Char_String_Template_Expr); ok {
 		return Type_Fact_Data {
 			type_id = type_builtin(c.unit, "string"),
-			type_unit = c.unit.unit_id,
+			type_unit = c.unit.source_file_id,
 			structure = INVALID_STRUCTURE_ID,
-			structure_unit = INVALID_UNIT_ID,
+			structure_unit = INVALID_SOURCE_FILE_ID,
 			declared_type = builtin_type_ref("string"),
 			has_declared_type = true,
 			confidence = .High,
@@ -1238,9 +1270,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 		if len(lit.value) > 0 && lit.value[0] >= '0' && lit.value[0] <= '9' {
 			return Type_Fact_Data {
 				type_id = type_builtin(c.unit, "i"),
-				type_unit = c.unit.unit_id,
+				type_unit = c.unit.source_file_id,
 				structure = INVALID_STRUCTURE_ID,
-				structure_unit = INVALID_UNIT_ID,
+				structure_unit = INVALID_SOURCE_FILE_ID,
 				declared_type = builtin_type_ref("i"),
 				has_declared_type = true,
 				confidence = .High,
@@ -1248,9 +1280,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 		}
 		return Type_Fact_Data {
 			type_id = type_builtin(c.unit, "string"),
-			type_unit = c.unit.unit_id,
+			type_unit = c.unit.source_file_id,
 			structure = INVALID_STRUCTURE_ID,
-			structure_unit = INVALID_UNIT_ID,
+			structure_unit = INVALID_SOURCE_FILE_ID,
 			declared_type = builtin_type_ref("string"),
 			has_declared_type = true,
 			confidence = .High,
@@ -1261,9 +1293,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			s := c.unit.symbols[symbol_id_index(id)]
 			return Type_Fact_Data {
 				type_id = s.type_id,
-				type_unit = c.unit.unit_id,
+				type_unit = c.unit.source_file_id,
 				structure = s.structure,
-				structure_unit = c.unit.unit_id if s.structure != INVALID_STRUCTURE_ID else INVALID_UNIT_ID,
+				structure_unit = c.unit.source_file_id if s.structure != INVALID_STRUCTURE_ID else INVALID_SOURCE_FILE_ID,
 				declared_type = s.declared_type,
 				has_declared_type = s.has_declared_type,
 				type_clause_display = s.type_clause_display,
@@ -1284,9 +1316,9 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 			}
 			return Type_Fact_Data {
 				type_id = type_id,
-				type_unit = c.unit.unit_id if type_id_is_known(type_id) else INVALID_UNIT_ID,
+				type_unit = c.unit.source_file_id if type_id_is_known(type_id) else INVALID_SOURCE_FILE_ID,
 				structure = INVALID_STRUCTURE_ID,
-				structure_unit = INVALID_UNIT_ID,
+				structure_unit = INVALID_SOURCE_FILE_ID,
 				declared_type = type_ref,
 				has_declared_type = true,
 				type_clause_display = expr_display(c, con.type_ref),
@@ -1296,21 +1328,19 @@ type_fact_from_expr :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) -> 
 	return unknown_type_fact()
 }
 
-add_expression_fact :: proc(
-	c: ^Collector,
+add_expression_type_fact :: proc(
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
-	range: tokenizer.Range,
-	kind: Expression_Fact_Kind,
 	fact: Type_Fact_Data,
+	node: ^ast.Node = nil,
 ) {
-	append(
-		&c.unit.expression_facts,
-		Expression_Fact_Data{scope = scope, range = range, kind = kind, type_fact = fact},
-	)
+	if node != nil {
+		add_type_and_value(c.unit, node, scope, .Value, fact)
+	}
 }
 
 collect_inline_data_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Data_Inline_Decl,
 	scope: Scope_Id,
 ) {
@@ -1332,7 +1362,7 @@ collect_inline_data_stmt_facts :: proc(
 }
 
 collect_assignment_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	range: tokenizer.Range,
 	lhs, rhs: ^ast.Expr,
 	scope: Scope_Id,
@@ -1350,7 +1380,7 @@ collect_assignment_stmt_facts :: proc(
 		flags += {.Is_Corresponding}
 	}
 	append(
-		&c.unit.assignment_sites,
+		&c.facts.assignment_sites,
 		Assignment_Site_Data {
 			scope = scope,
 			range = range,
@@ -1365,7 +1395,7 @@ collect_assignment_stmt_facts :: proc(
 }
 
 add_assignment_site :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	range, lhs_range, rhs_range: tokenizer.Range,
 	lhs_access: Field_Access,
@@ -1378,7 +1408,7 @@ add_assignment_site :: proc(
 		flags += {.Has_Lhs_Target_Access}
 	}
 	append(
-		&c.unit.assignment_sites,
+		&c.facts.assignment_sites,
 		Assignment_Site_Data {
 			scope = scope,
 			range = range,
@@ -1393,7 +1423,7 @@ add_assignment_site :: proc(
 }
 
 collect_write_target_expr :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	stmt_range: tokenizer.Range,
 	target: ^ast.Expr,
@@ -1417,7 +1447,7 @@ collect_write_target_expr :: proc(
 	)
 }
 
-collect_clear_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Clear_Stmt, scope: Scope_Id) {
+collect_clear_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Clear_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
 		collect_expr_refs(c, op.value, scope)
@@ -1437,33 +1467,33 @@ collect_clear_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Clear_Stmt, scope: Sc
 	}
 }
 
-collect_refresh_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Refresh_Stmt, scope: Scope_Id) {
+collect_refresh_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Refresh_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
 	}
 }
 
-collect_free_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Free_Stmt, scope: Scope_Id) {
+collect_free_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Free_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
 	}
 	collect_expr_refs(c, stmt.memory_id, scope)
 }
 
-collect_unassign_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Unassign_Stmt, scope: Scope_Id) {
+collect_unassign_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Unassign_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.target, scope)
 	}
 }
 
-collect_move_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Move_Stmt, scope: Scope_Id) {
+collect_move_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Move_Stmt, scope: Scope_Id) {
 	for entry in stmt.entries {
 		collect_assignment_stmt_facts(c, stmt.range, entry.target, entry.source, scope, false)
 	}
 }
 
 collect_move_corresponding_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Move_Corresponding_Stmt,
 	scope: Scope_Id,
 ) {
@@ -1472,7 +1502,7 @@ collect_move_corresponding_stmt_facts :: proc(
 	}
 }
 
-collect_add_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Add_Stmt, scope: Scope_Id) {
+collect_add_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Add_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.target, scope)
@@ -1484,7 +1514,7 @@ collect_add_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Add_Stmt, scope: Scope_
 	}
 }
 
-collect_subtract_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Subtract_Stmt, scope: Scope_Id) {
+collect_subtract_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Subtract_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.target, scope)
@@ -1496,7 +1526,7 @@ collect_subtract_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Subtract_Stmt, sco
 	}
 }
 
-collect_multiply_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Multiply_Stmt, scope: Scope_Id) {
+collect_multiply_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Multiply_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.target, scope)
@@ -1508,7 +1538,7 @@ collect_multiply_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Multiply_Stmt, sco
 	}
 }
 
-collect_divide_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Divide_Stmt, scope: Scope_Id) {
+collect_divide_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Divide_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.target, scope)
@@ -1520,14 +1550,14 @@ collect_divide_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Divide_Stmt, scope: 
 	}
 }
 
-collect_compute_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Compute_Stmt, scope: Scope_Id) {
+collect_compute_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Compute_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_assignment_stmt_facts(c, stmt.range, e.target, e.source, scope, false)
 	}
 }
 
 collect_concatenate_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Concatenate_Stmt,
 	scope: Scope_Id,
 ) {
@@ -1537,7 +1567,7 @@ collect_concatenate_stmt_facts :: proc(
 		collect_write_target_expr(c, scope, stmt.range, e.target, stmt.range)
 		if e.lines_of && len(e.sources) > 0 {
 			append(
-				&c.unit.concatenate_lines_of_sites,
+				&c.facts.concatenate_lines_of_sites,
 				Concatenate_Lines_Of_Site_Data {
 					scope = scope,
 					range = stmt.range,
@@ -1550,7 +1580,7 @@ collect_concatenate_stmt_facts :: proc(
 	}
 }
 
-collect_split_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Split_Stmt, scope: Scope_Id) {
+collect_split_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Split_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.separator, scope)
@@ -1560,7 +1590,7 @@ collect_split_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Split_Stmt, scope: Sc
 	}
 }
 
-collect_replace_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Replace_Stmt, scope: Scope_Id) {
+collect_replace_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Replace_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.replacement, scope)
@@ -1568,18 +1598,18 @@ collect_replace_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Replace_Stmt, scope
 	collect_expr_refs(c, stmt.section_length, scope)
 }
 
-collect_translate_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Translate_Stmt, scope: Scope_Id) {
+collect_translate_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Translate_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.operand, scope)
 }
 
-collect_shift_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Shift_Stmt, scope: Scope_Id) {
+collect_shift_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Shift_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.places, scope)
 	collect_expr_refs(c, stmt.delete_pattern, scope)
 }
 
-collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scope_Id) {
+collect_find_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Find_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.section_offset, scope)
@@ -1592,14 +1622,14 @@ collect_find_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Find_Stmt, scope: Scop
 	collect_expr_list_refs(c, stmt.submatches[:], scope)
 }
 
-collect_search_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Search_Stmt, scope: Scope_Id) {
+collect_search_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Search_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.pattern, scope)
 	collect_expr_refs(c, stmt.starting_at, scope)
 	collect_expr_refs(c, stmt.ending_at, scope)
 }
 
-collect_perform_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Perform_Stmt, scope: Scope_Id) {
+collect_perform_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Perform_Stmt, scope: Scope_Id) {
 	routine_name := ""
 	external_program := perform_has_external_program(stmt)
 	if name, range, ok := expr_name(stmt.form); ok && stmt.form_kind == .Static {
@@ -1625,7 +1655,7 @@ collect_perform_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Perform_Stmt, scope
 	collect_expr_list_refs(c, stmt.changing[:], scope)
 	if program_static {
 		append(
-			&c.unit.call_sites,
+			&c.facts.call_sites,
 			Call_Site_Data {
 				scope = scope,
 				range = stmt.range,
@@ -1643,7 +1673,7 @@ perform_has_external_program :: proc(stmt: ^ast.Perform_Stmt) -> bool {
 }
 
 static_perform_program_name :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Perform_Stmt,
 ) -> (string, tokenizer.Range, bool) {
 	if stmt.program == nil {
@@ -1667,7 +1697,7 @@ static_perform_program_name :: proc(
 	return "", tokenizer.Range{}, false
 }
 
-collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scope_Id) {
+collect_call_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Call_Stmt, scope: Scope_Id) {
 	#partial switch stmt.kind {
 	case .Direct:
 		collect_expr_refs(c, stmt.call, scope)
@@ -1694,11 +1724,11 @@ collect_call_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Call_Stmt, scope: Scop
 	}
 }
 
-call_stmt_function_name :: proc(c: ^Collector, stmt: ^ast.Call_Stmt) -> string {
+call_stmt_function_name :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Call_Stmt) -> string {
 	return function_target_name(c, stmt.target)
 }
 
-function_target_name :: proc(c: ^Collector, target: ^ast.Expr) -> string {
+function_target_name :: proc(c: ^Fact_Model_Builder, target: ^ast.Expr) -> string {
 	if target == nil {
 		return ""
 	}
@@ -1712,7 +1742,7 @@ function_target_name :: proc(c: ^Collector, target: ^ast.Expr) -> string {
 }
 
 call_stmt_method_target :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Call_Stmt,
 	scope: Scope_Id,
 ) -> Named_Argument_Target {
@@ -1822,7 +1852,7 @@ call_stmt_method_target :: proc(
 // Raw CALL fallback: CALL FUNCTION/CALL METHOD values keep only parser-populated
 // value facts; semantic does not tokenize their source text.
 collect_raw_call_stmt_args :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Call_Stmt,
 	scope: Scope_Id,
 	target: Named_Argument_Target,
@@ -1831,7 +1861,7 @@ collect_raw_call_stmt_args :: proc(
 }
 
 collect_raw_call_args :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	named_args: []ast.Call_Stmt_Named_Arg,
 	call_range: tokenizer.Range,
 	scope: Scope_Id,
@@ -1844,7 +1874,7 @@ collect_raw_call_args :: proc(
 		has_section := arg.has_section && valid_section
 		name := canonical_name(arg.name, c.allocator)
 		append(
-			&c.unit.named_arguments,
+			&c.facts.named_arguments,
 			Named_Argument_Access {
 				scope = scope,
 				name = name,
@@ -1868,7 +1898,7 @@ collect_raw_call_args :: proc(
 				   section == .Exceptions &&
 				   arg.message_range.start < arg.message_range.end {
 					append(
-						&c.unit.call_function_exception_message_sites,
+						&c.facts.call_function_exception_message_sites,
 						Call_Function_Exception_Message_Site_Data {
 							range = arg.message_range,
 							type_fact = type_fact_from_expr(c, arg.message, scope),
@@ -1892,17 +1922,17 @@ collect_raw_call_args :: proc(
 		}
 	}
 	append(
-		&c.unit.call_sites,
+		&c.facts.call_sites,
 		Call_Site_Data{scope = scope, range = call_range, target = target, arguments = args},
 	)
 }
 
-collect_submit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Submit_Stmt, scope: Scope_Id) {
+collect_submit_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Submit_Stmt, scope: Scope_Id) {
 	has_report_target := false
 	if report_name, ok := submit_report_name(c, stmt); ok {
 		has_report_target = true
 		append(
-			&c.unit.call_sites,
+			&c.facts.call_sites,
 			Call_Site_Data {
 				scope = scope,
 				range = stmt.range,
@@ -1923,7 +1953,7 @@ collect_submit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Submit_Stmt, scope: 
 }
 
 submit_report_name :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Submit_Stmt,
 ) -> (string, bool) {
 	if stmt.target == nil {
@@ -1945,7 +1975,7 @@ submit_report_name :: proc(
 	return "", false
 }
 
-submit_literal_report_name :: proc(c: ^Collector, value: string) -> (string, bool) {
+submit_literal_report_name :: proc(c: ^Fact_Model_Builder, value: string) -> (string, bool) {
 	if len(value) < 2 {
 		return "", false
 	}
@@ -1956,7 +1986,7 @@ submit_literal_report_name :: proc(c: ^Collector, value: string) -> (string, boo
 	return canonical_name(value[1:len(value) - 1], c.allocator), true
 }
 
-collect_message_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Message_Stmt, scope: Scope_Id) {
+collect_message_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Message_Stmt, scope: Scope_Id) {
 	use := Message_Use_Data {
 		range           = stmt.range,
 		with_arg_ranges = make([dynamic]tokenizer.Range, 0, len(stmt.with_args), c.allocator),
@@ -1973,11 +2003,11 @@ collect_message_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Message_Stmt, scope
 	collect_expr_refs(c, stmt.into, scope)
 	collect_expr_refs(c, stmt.display_like, scope)
 	collect_expr_refs(c, stmt.raising, scope)
-	append(&c.unit.message_uses, use)
+	append(&c.facts.message_uses, use)
 }
 
 collect_message_head :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	head: ^ast.Message_Head_Clause,
 	scope: Scope_Id,
 	use: ^Message_Use_Data,
@@ -2004,9 +2034,9 @@ collect_message_head :: proc(
 			use.class_range = head.compact_class_range
 			use.flags += {.Has_Class_Range}
 			add_reference(c, scope, class_name, .Value, .Message_Class, head.compact_class_range)
-		} else if c.unit.has_message_default_class {
-			use.class_name = c.unit.message_default_class.name
-			use.class_range = c.unit.message_default_class.range
+		} else if c.facts.has_message_default_class {
+			use.class_name = c.facts.message_default_class.name
+			use.class_range = c.facts.message_default_class.range
 		}
 	}
 	collect_expr_refs(c, head.msg_type, scope)
@@ -2021,7 +2051,7 @@ strip_quotes :: proc(text: string) -> string {
 	return text
 }
 
-collect_write_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Write_Stmt, scope: Scope_Id) {
+collect_write_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Write_Stmt, scope: Scope_Id) {
 	for op in stmt.operands {
 		collect_expr_refs(c, op.value, scope)
 		collect_expr_refs(c, op.position, scope)
@@ -2029,20 +2059,20 @@ collect_write_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Write_Stmt, scope: Sc
 	}
 }
 
-collect_write_to_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Write_To_Stmt, scope: Scope_Id) {
+collect_write_to_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Write_To_Stmt, scope: Scope_Id) {
 	for entry in stmt.entries {
 		collect_expr_refs(c, entry.source, scope)
 		collect_write_target_expr(c, scope, stmt.range, entry.target, expr_range(entry.source))
 	}
 }
 
-collect_flow_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Flow_Stmt, scope: Scope_Id) {
+collect_flow_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Flow_Stmt, scope: Scope_Id) {
 	_ = c
 	_ = stmt
 	_ = scope
 }
 
-collect_describe_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Describe_Stmt, scope: Scope_Id) {
+collect_describe_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Describe_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.source, scope)
 		collect_expr_refs(c, e.target, scope)
@@ -2062,7 +2092,7 @@ collect_describe_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Describe_Stmt, sco
 	}
 }
 
-collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope: Scope_Id) {
+collect_runtime_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Runtime_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.id, scope)
 	collect_expr_refs(c, stmt.field, scope)
 	collect_expr_refs(c, stmt.target, scope)
@@ -2073,7 +2103,7 @@ collect_runtime_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Runtime_Stmt, scope
 	collect_expr_list_refs(c, stmt.operands[:], scope)
 }
 
-collect_set_handler_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Set_Handler_Stmt, scope: Scope_Id) {
+collect_set_handler_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Set_Handler_Stmt, scope: Scope_Id) {
 	for handler in stmt.handlers {
 		collect_handler_ref(c, handler, scope)
 	}
@@ -2081,7 +2111,7 @@ collect_set_handler_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Set_Handler_Stm
 	collect_expr_refs(c, stmt.activation, scope)
 }
 
-collect_handler_ref :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
+collect_handler_ref :: proc(c: ^Fact_Model_Builder, expr: ^ast.Expr, scope: Scope_Id) {
 	if expr == nil {
 		return
 	}
@@ -2093,7 +2123,7 @@ collect_handler_ref :: proc(c: ^Collector, expr: ^ast.Expr, scope: Scope_Id) {
 }
 
 collect_import_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Import_Stmt,
 	scope: Scope_Id,
 ) {
@@ -2104,7 +2134,7 @@ collect_import_stmt_facts :: proc(
 }
 
 collect_export_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Export_Stmt,
 	scope: Scope_Id,
 ) {
@@ -2115,7 +2145,7 @@ collect_export_stmt_facts :: proc(
 }
 
 collect_data_cluster_medium_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	medium: ast.Data_Cluster_Medium_Clause,
 	scope: Scope_Id,
 	stmt_range: tokenizer.Range,
@@ -2141,7 +2171,7 @@ collect_data_cluster_medium_refs :: proc(
 	}
 }
 
-collect_bit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Bit_Stmt, scope: Scope_Id) {
+collect_bit_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Bit_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.position, scope)
 	if stmt.kind == .Get {
 		collect_expr_refs(c, stmt.source, scope)
@@ -2152,14 +2182,14 @@ collect_bit_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Bit_Stmt, scope: Scope_
 	}
 }
 
-collect_locale_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Locale_Stmt, scope: Scope_Id) {
+collect_locale_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Locale_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.language, scope)
 	collect_expr_refs(c, stmt.country, scope)
 	collect_expr_refs(c, stmt.modifier, scope)
 }
 
 collect_convert_time_stamp_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Convert_Time_Stamp_Stmt,
 	scope: Scope_Id,
 ) {
@@ -2176,7 +2206,7 @@ collect_convert_time_stamp_stmt_facts :: proc(
 }
 
 collect_receive_results_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Receive_Results_Stmt,
 	scope: Scope_Id,
 ) {
@@ -2193,7 +2223,7 @@ collect_receive_results_stmt_facts :: proc(
 	)
 }
 
-collect_raise_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Raise_Stmt, scope: Scope_Id) {
+collect_raise_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Raise_Stmt, scope: Scope_Id) {
 	if stmt.target_type {
 		collect_type_expr_ref(c, stmt.target, scope, .Type)
 	} else {
@@ -2203,7 +2233,7 @@ collect_raise_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Raise_Stmt, scope: Sc
 }
 
 collect_authority_check_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Authority_Check_Stmt,
 	scope: Scope_Id,
 ) {
@@ -2216,7 +2246,7 @@ collect_authority_check_stmt_facts :: proc(
 }
 
 collect_assign_field_stmt_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	stmt: ^ast.Assign_Field_Stmt,
 	scope: Scope_Id,
 ) {
@@ -2234,7 +2264,7 @@ collect_assign_field_stmt_facts :: proc(
 	collect_expr_refs(c, stmt.casting_decimals, scope)
 }
 
-collect_line_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Line_Stmt, scope: Scope_Id) {
+collect_line_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Line_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.line, scope)
 	collect_expr_refs(c, stmt.index, scope)
 	collect_expr_refs(c, stmt.into, scope)
@@ -2244,7 +2274,7 @@ collect_line_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Line_Stmt, scope: Scop
 	}
 }
 
-collect_loop_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Loop_Stmt, scope: Scope_Id) {
+collect_loop_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Loop_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.from, scope)
 	collect_expr_refs(c, stmt.to, scope)
@@ -2311,7 +2341,7 @@ loop_group_target_name :: proc(expr: ^ast.Expr) -> (string, bool) {
 	return name, ok
 }
 
-pop_loop_source :: proc(c: ^Collector) -> bool {
+pop_loop_source :: proc(c: ^Fact_Model_Builder) -> bool {
 	if len(c.loop_source_stack) == 0 {
 		return false
 	}
@@ -2323,7 +2353,7 @@ pop_loop_source :: proc(c: ^Collector) -> bool {
 	return true
 }
 
-collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id) {
+collect_at_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.At_Stmt, scope: Scope_Id) {
 	previous := c.current_scope
 	c.current_scope = scope
 	at_scope := push_scope(c, .At_Block, stmt.range)
@@ -2342,7 +2372,7 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 		}
 		append(&path, field)
 		append(
-			&c.unit.field_accesses,
+			&c.facts.field_accesses,
 			Field_Access {
 				scope = at_scope,
 				base_namespace = source.base_namespace,
@@ -2352,7 +2382,7 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 			},
 		)
 		append(
-			&c.unit.loop_at_field_contexts,
+			&c.facts.loop_at_field_contexts,
 			Loop_At_Field_Context {
 				scope = at_scope,
 				range = stmt.field_range,
@@ -2367,7 +2397,7 @@ collect_at_stmt_facts :: proc(c: ^Collector, stmt: ^ast.At_Stmt, scope: Scope_Id
 }
 
 walk_catch_clause_facts :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	clause: ^ast.Catch_Clause,
 	parent_scope: Scope_Id,
 ) -> Scope_Id {
@@ -2406,7 +2436,7 @@ walk_catch_clause_facts :: proc(
 	return catch_scope
 }
 
-walk_function_pool_decl :: proc(c: ^Collector, stmt: ^ast.Function_Pool_Decl, scope: Scope_Id) {
+walk_function_pool_decl :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Function_Pool_Decl, scope: Scope_Id) {
 	if stmt.name != "" {
 		_ = declare_collected_symbol(c, scope, stmt.name, .Report, stmt.range)
 	}
@@ -2415,7 +2445,7 @@ walk_function_pool_decl :: proc(c: ^Collector, stmt: ^ast.Function_Pool_Decl, sc
 	}
 }
 
-collect_report_stmt_refs :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: Scope_Id) {
+collect_report_stmt_refs :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Report_Stmt, scope: Scope_Id) {
 	if stmt.has_message_id {
 		set_message_default_class(c, stmt.message_id, stmt.message_id_range, scope)
 		return
@@ -2441,21 +2471,21 @@ collect_report_stmt_refs :: proc(c: ^Collector, stmt: ^ast.Report_Stmt, scope: S
 }
 
 set_message_default_class :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	name: string,
 	range: tokenizer.Range,
 	scope: Scope_Id,
 ) {
 	class_name := canonical_name(strip_quotes(name), c.allocator)
-	c.unit.message_default_class = Message_Class_Use_Data {
+	c.facts.message_default_class = Message_Class_Use_Data {
 		name  = class_name,
 		range = range,
 	}
-	c.unit.has_message_default_class = true
+	c.facts.has_message_default_class = true
 	add_reference(c, scope, class_name, .Value, .Message_Class, range)
 }
 
-collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt, scope: Scope_Id) {
+collect_read_table_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Read_Table_Stmt, scope: Scope_Id) {
 	for e in stmt.entries {
 		collect_expr_refs(c, e.table, scope)
 		collect_expr_refs(c, e.into, scope)
@@ -2500,7 +2530,7 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 						)
 					}
 					append(
-						&c.unit.field_accesses,
+						&c.facts.field_accesses,
 						Field_Access {
 							scope = scope,
 							base_namespace = access.base_namespace,
@@ -2545,7 +2575,7 @@ collect_read_table_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Read_Table_Stmt,
 	}
 }
 
-collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: Scope_Id) {
+collect_insert_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Insert_Stmt, scope: Scope_Id) {
 	query_id := -1
 	is_sql := false
 	if stmt.form == .Db_Table {
@@ -2603,14 +2633,14 @@ collect_insert_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Insert_Stmt, scope: 
 	}
 }
 
-collect_append_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Append_Stmt, scope: Scope_Id) {
+collect_append_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Append_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.source, scope)
 	collect_expr_refs(c, stmt.target, scope)
 	collect_expr_refs(c, stmt.assigning, scope)
 	collect_expr_refs(c, stmt.reference_into, scope)
 }
 
-collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
+collect_modify_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
 	is_sql := false
 	has_internal_table_clause := stmt.table_keyword || stmt.index != nil || len(stmt.transporting) > 0
 	if !has_internal_table_clause {
@@ -2634,7 +2664,7 @@ collect_modify_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: 
 	collect_modify_transporting_refs(c, stmt, scope)
 }
 
-collect_modify_transporting_refs :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
+collect_modify_transporting_refs :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
 	base, ok := value_access_from_expr(c, stmt.target, scope)
 	if !ok {
 		base, ok = value_access_from_expr(c, stmt.source, scope)
@@ -2665,7 +2695,7 @@ collect_modify_transporting_refs :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, 
 			)
 		}
 		append(
-			&c.unit.field_accesses,
+			&c.facts.field_accesses,
 			Field_Access {
 				scope = scope,
 				base_namespace = base.base_namespace,
@@ -2677,7 +2707,7 @@ collect_modify_transporting_refs :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, 
 	}
 }
 
-collect_modify_where_context :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
+collect_modify_where_context :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Modify_Stmt, scope: Scope_Id) {
 	if stmt.where_cond == nil {
 		return
 	}
@@ -2690,7 +2720,7 @@ collect_modify_where_context :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scop
 	}
 	target, has_target := value_access_from_expr(c, stmt.source, scope)
 	append(
-		&c.unit.loop_where_field_contexts,
+		&c.facts.loop_where_field_contexts,
 		Loop_Where_Field_Context {
 			scope = scope,
 			range = stmt.where_clause if range_valid(stmt.where_clause) else stmt.where_cond.range,
@@ -2701,7 +2731,7 @@ collect_modify_where_context :: proc(c: ^Collector, stmt: ^ast.Modify_Stmt, scop
 	)
 }
 
-collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scope_Id) {
+collect_sort_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Sort_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.target, scope)
 	for field in stmt.fields {
 		if field.name == "" {
@@ -2710,7 +2740,7 @@ collect_sort_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Sort_Stmt, scope: Scop
 	}
 }
 
-collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: Scope_Id) {
+collect_update_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Update_Stmt, scope: Scope_Id) {
 	query_id, is_sql := collect_db_table_sql_source(
 		c,
 		stmt.range,
@@ -2746,7 +2776,7 @@ collect_update_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Update_Stmt, scope: 
 	}
 }
 
-collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
+collect_delete_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
 	is_sql := false
 	if stmt.form == .Db_Table {
 		_, is_sql = collect_db_table_sql_source(
@@ -2770,7 +2800,7 @@ collect_delete_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: 
 }
 
 append_internal_table_field_access :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	target, field: Field_Access,
 ) {
@@ -2784,7 +2814,7 @@ append_internal_table_field_access :: proc(
 	append(&path, Field_Access_Segment{name = field.base_name, range = field.base_range})
 	for segment in field.field_path {append(&path, segment)}
 	append(
-		&c.unit.field_accesses,
+		&c.facts.field_accesses,
 		Field_Access {
 			scope = scope,
 			base_namespace = target.base_namespace,
@@ -2798,7 +2828,7 @@ append_internal_table_field_access :: proc(
 }
 
 collect_internal_table_where_refs :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	target, expr: ^ast.Expr,
 	scope: Scope_Id,
 ) {
@@ -2839,7 +2869,7 @@ collect_internal_table_where_refs :: proc(
 }
 
 internal_table_where_target_access :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	target: ^ast.Expr,
 	scope: Scope_Id,
 ) -> (Field_Access, bool) {
@@ -2852,8 +2882,11 @@ internal_table_where_target_access :: proc(
 	return value_access_from_expr(c, target, scope)
 }
 
-internal_table_where_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: string) -> bool {
+internal_table_where_value_exists :: proc(c: ^Fact_Model_Builder, scope: Scope_Id, name: string) -> bool {
 	if sql_local_value_exists(c, scope, name) {
+		return true
+	}
+	if _, ok := builtin_entity_handle(.Value, name); ok {
 		return true
 	}
 	class_symbol, ok := enclosing_owner(c, scope, .Class)
@@ -2861,7 +2894,7 @@ internal_table_where_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: 
 		if class_scope_value_exists(c, class_symbol, name) {
 			return true
 		}
-		super_name, has_super := collector_superclass_name(c, class_symbol)
+		super_name, has_super := fact_builder_superclass_name(c, class_symbol)
 		if !has_super {
 			break
 		}
@@ -2871,7 +2904,7 @@ internal_table_where_value_exists :: proc(c: ^Collector, scope: Scope_Id, name: 
 }
 
 internal_table_where_target_has_shape :: proc(
-	c: ^Collector,
+	c: ^Fact_Model_Builder,
 	scope: Scope_Id,
 	target: Field_Access,
 ) -> bool {
@@ -2886,7 +2919,7 @@ internal_table_where_target_has_shape :: proc(
 	return s.structure != INVALID_STRUCTURE_ID || s.has_declared_type || s.kind == .Field_Symbol
 }
 
-class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: string) -> bool {
+class_scope_value_exists :: proc(c: ^Fact_Model_Builder, class_symbol: Symbol_Id, name: string) -> bool {
 	for s in c.unit.scopes {
 		if !(s.kind == .Class || s.kind == .Interface) || s.owner != class_symbol {
 			continue
@@ -2898,7 +2931,7 @@ class_scope_value_exists :: proc(c: ^Collector, class_symbol: Symbol_Id, name: s
 	return false
 }
 
-collector_superclass_name :: proc(c: ^Collector, class_symbol: Symbol_Id) -> (string, bool) {
+fact_builder_superclass_name :: proc(c: ^Fact_Model_Builder, class_symbol: Symbol_Id) -> (string, bool) {
 	for inheritance in c.unit.class_inheritance {
 		if inheritance.class_symbol == class_symbol {
 			return inheritance.superclass_name, true
@@ -2907,7 +2940,7 @@ collector_superclass_name :: proc(c: ^Collector, class_symbol: Symbol_Id) -> (st
 	return "", false
 }
 
-collect_delete_comparing_refs :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
+collect_delete_comparing_refs :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Delete_Stmt, scope: Scope_Id) {
 	target, has_target := value_access_from_expr(c, stmt.target, scope)
 	for clause in stmt.comparing {
 		if clause.all_fields {
@@ -2929,7 +2962,7 @@ collect_delete_comparing_refs :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, sco
 					append(&path, segment)
 				}
 				append(
-					&c.unit.field_accesses,
+					&c.facts.field_accesses,
 					Field_Access {
 						scope = scope,
 						base_namespace = target.base_namespace,
@@ -2945,7 +2978,7 @@ collect_delete_comparing_refs :: proc(c: ^Collector, stmt: ^ast.Delete_Stmt, sco
 	}
 }
 
-collect_dataset_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Dataset_Stmt, scope: Scope_Id) {
+collect_dataset_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Dataset_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.dataset, scope)
 	collect_expr_refs(c, stmt.source, scope)
 	if stmt.kind == .Read {
@@ -2970,7 +3003,7 @@ collect_dataset_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Dataset_Stmt, scope
 	collect_expr_refs(c, stmt.length, scope)
 }
 
-collect_textpool_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Textpool_Stmt, scope: Scope_Id) {
+collect_textpool_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Textpool_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.program, scope)
 	if stmt.kind == .Read {
 		collect_write_target_expr(c, scope, stmt.range, stmt.table)
@@ -2980,7 +3013,7 @@ collect_textpool_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Textpool_Stmt, sco
 	collect_expr_refs(c, stmt.language, scope)
 }
 
-collect_generate_stmt_facts :: proc(c: ^Collector, stmt: ^ast.Generate_Stmt, scope: Scope_Id) {
+collect_generate_stmt_facts :: proc(c: ^Fact_Model_Builder, stmt: ^ast.Generate_Stmt, scope: Scope_Id) {
 	collect_expr_refs(c, stmt.source, scope)
 	collect_write_target_expr(c, scope, stmt.range, stmt.name, expr_range(stmt.source))
 	collect_expr_refs(c, stmt.program, scope)
