@@ -289,7 +289,7 @@ checker_record_expr_info :: proc(
 		value  = value,
 	}
 	if node != nil {
-		append(&ctx.info.expr_infos, Checker_Expr_Record{node = node, info = info})
+		append(&ctx.info.expr_infos, Checker_Expr_Record{node = node, file = ctx.file, info = info})
 	}
 	return info
 }

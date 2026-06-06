@@ -53,6 +53,7 @@ Checker_Expr_Info :: struct {
 
 Checker_Expr_Record :: struct {
 	node: ^ast.Node,
+	file: ^Project_File,
 	info: Checker_Expr_Info,
 }
 
@@ -63,6 +64,7 @@ Checker_Dependency :: struct {
 
 Checker_Entity_Use :: struct {
 	node:   ^ast.Node,
+	file:   ^Project_File,
 	scope:  ^Scope,
 	decl:   ^Decl_Info,
 	entity: ^Entity,
@@ -590,6 +592,7 @@ checker_add_entity_use :: proc(
 		&ctx.info.uses,
 		Checker_Entity_Use {
 			node   = node,
+			file   = ctx.file,
 			scope  = ctx.scope,
 			decl   = ctx.decl,
 			entity = entity,

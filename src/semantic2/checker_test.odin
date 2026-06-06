@@ -99,6 +99,31 @@ checker_test_expr_info_for_node :: proc(
 	return {}, false
 }
 
+checker_test_find_text :: proc(source, needle: string) -> int {
+	if needle == "" || len(needle) > len(source) {
+		return -1
+	}
+	for i in 0 ..= len(source) - len(needle) {
+		if source[i:i + len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
+
+checker_test_find_text_last :: proc(source, needle: string) -> int {
+	if needle == "" || len(needle) > len(source) {
+		return -1
+	}
+	found := -1
+	for i in 0 ..= len(source) - len(needle) {
+		if source[i:i + len(needle)] == needle {
+			found = i
+		}
+	}
+	return found
+}
+
 @(test)
 root_semantic_checker_creates_builtin_and_file_scopes :: proc(t: ^testing.T) {
 	project := project_make()
@@ -1840,4 +1865,217 @@ DELETE zdelete_tab FROM TABLE lt_delete.`
 	testing.expect(t, lv_status != nil && .Used in lv_status.flags)
 	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
 	testing.expect(t, lt_delete != nil && .Used in lt_delete.flags)
+}
+
+@(test)
+root_semantic_query_finds_declarations_references_and_expr_info :: proc(t: ^testing.T) {
+	source := `DATA lv_value TYPE i.
+DATA lv_copy TYPE i.
+lv_copy = lv_value + 1.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_core.abap")
+	query := semantic_query(&project, &checker, file)
+	decl_query := semantic_query_decls(query)
+	ref_query := semantic_query_refs(query)
+	fact_query := semantic_query_facts(query)
+
+	decl_offset := checker_test_find_text(source, "lv_value")
+	use_offset := checker_test_find_text_last(source, "lv_value")
+	literal_offset := checker_test_find_text(source, "1")
+	testing.expect(t, decl_offset >= 0 && use_offset > decl_offset && literal_offset >= 0)
+
+	decl := semantic_decl_entity_at_offset(decl_query, decl_offset)
+	testing.expect(t, decl != nil)
+	if decl == nil {
+		return
+	}
+	testing.expect_value(t, decl.kind, Entity_Kind.Variable)
+	testing.expect_value(t, string_interner.load(project.interner, decl.name), "lv_value")
+
+	by_range := semantic_decl_entity_with_kind_and_decl_range(decl_query, .Variable, decl.name_range)
+	testing.expect(t, by_range == decl)
+
+	use := semantic_ref_use_at_offset(ref_query, use_offset)
+	testing.expect(t, use != nil)
+	if use == nil {
+		return
+	}
+	testing.expect(t, use.entity == decl)
+	testing.expect(t, use.scope == file.root_scope)
+
+	exact_use := semantic_ref_use_at_range(ref_query, use.node.range)
+	testing.expect(t, exact_use == use)
+
+	uses := semantic_ref_resolving_to_entity(ref_query, decl, context.allocator)
+	testing.expect_value(t, len(uses), 1)
+	if len(uses) > 0 {
+		testing.expect(t, uses[0] == use)
+	}
+
+	info, info_ok := semantic_fact_expression_info_at_offset(fact_query, use_offset)
+	testing.expect(t, info_ok)
+	if info_ok {
+		testing.expect_value(t, info.kind, Semantic_Expression_Info_Kind.Reference)
+		testing.expect_value(t, info.info.mode, ast.Addressing_Mode.Variable)
+		testing.expect(t, checker_type_same(info.info.type, decl.type))
+		testing.expect(t, info.scope == file.root_scope)
+	}
+
+	literal, literal_ok := semantic_fact_operand_info_at_offset(fact_query, literal_offset)
+	testing.expect(t, literal_ok)
+	if literal_ok {
+		testing.expect_value(t, literal.mode, ast.Addressing_Mode.Constant)
+		testing.expect_value(t, checker_test_type_name(&project, literal.type), "i")
+	}
+}
+
+@(test)
+root_semantic_query_returns_project_owned_decl_and_builtin_use_pointers :: proc(t: ^testing.T) {
+	source := `DATA gv_value TYPE i.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_provider_replacement.abap")
+	query := semantic_query(&project, &checker, file)
+
+	decl_offset := checker_test_find_text(source, "gv_value")
+	type_offset := checker_test_find_text(source, "i")
+	testing.expect(t, decl_offset >= 0 && type_offset >= 0)
+
+	decl := semantic_decl_entity_at_offset(semantic_query_decls(query), decl_offset)
+	testing.expect(t, decl != nil)
+	if decl != nil {
+		testing.expect_value(t, decl.kind, Entity_Kind.Variable)
+		testing.expect(t, decl.source_file == file)
+	}
+
+	type_use := semantic_ref_use_at_offset(semantic_query_refs(query), type_offset)
+	testing.expect(t, type_use != nil)
+	if type_use != nil {
+		testing.expect_value(t, type_use.entity.kind, Entity_Kind.Type_Def)
+		testing.expect(t, .Builtin in type_use.entity.flags)
+		testing.expect(t, type_use.entity.source_file == nil)
+	}
+
+	type_info, type_info_ok := semantic_fact_operand_info_at_offset(semantic_query_facts(query), type_offset)
+	testing.expect(t, type_info_ok)
+	if type_info_ok {
+		testing.expect_value(t, type_info.mode, ast.Addressing_Mode.Type)
+		testing.expect_value(t, checker_test_type_name(&project, type_info.type), "i")
+	}
+}
+
+@(test)
+root_semantic_query_finds_class_members_and_structure_fields :: proc(t: ^testing.T) {
+	source := `CLASS lcl_demo DEFINITION.
+  PUBLIC SECTION.
+    METHODS run.
+ENDCLASS.
+
+TYPES: BEGIN OF ty_demo,
+         comp TYPE i,
+       END OF ty_demo.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_decls.abap")
+	query := semantic_query(&project, &checker, file)
+	decl_query := semantic_query_decls(query)
+
+	method_offset := checker_test_find_text(source, "run")
+	member := semantic_decl_class_member_at_offset(decl_query, method_offset)
+	testing.expect(t, member != nil)
+	if member != nil {
+		testing.expect_value(t, member.kind, Entity_Kind.Method)
+		testing.expect_value(t, string_interner.load(project.interner, member.name), "run")
+	}
+
+	class := checker_test_lookup(t, &project, file.root_scope, .Type, "lcl_demo", .Class)
+	testing.expect(t, class != nil)
+	member_by_name := semantic_decl_class_member(decl_query, class, "RUN")
+	testing.expect(t, member_by_name == member)
+
+	field_offset := checker_test_find_text(source, "comp")
+	field := semantic_decl_structure_field_at_offset(decl_query, field_offset)
+	testing.expect(t, field != nil)
+	if field == nil {
+		return
+	}
+	testing.expect_value(t, field.kind, Entity_Kind.Field)
+	testing.expect_value(t, string_interner.load(project.interner, field.name), "comp")
+
+	ty_demo := checker_test_lookup(t, &project, file.root_scope, .Type, "ty_demo", .Type_Def)
+	testing.expect(t, ty_demo != nil)
+	if ty_demo != nil {
+		structure := checker_type_structure(ty_demo.type)
+		direct := semantic_decl_structure_field(decl_query, structure, "COMP")
+		testing.expect(t, direct == field)
+	}
+}
+
+@(test)
+root_semantic_query_copies_diagnostics_from_checker_snapshot :: proc(t: ^testing.T) {
+	source := `DATA lv_dup TYPE i.
+DATA lv_dup TYPE i.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_diagnostics.abap")
+	query := semantic_query(&project, &checker, file)
+
+	diagnostics := semantic_diagnostic_copies(semantic_query_diagnostics(query), context.allocator)
+	testing.expect_value(t, len(diagnostics), len(checker.info.diagnostics))
+	testing.expect_value(t, len(diagnostics), 1)
+	if len(diagnostics) > 0 {
+		testing.expect_value(t, diagnostics[0].kind, Checker_Diagnostic_Kind.Duplicate_Declaration)
+		testing.expect_value(t, diagnostics[0].range, checker.info.diagnostics[0].range)
+	}
+}
+
+@(test)
+root_semantic_query_completion_reads_lexical_scope_chain :: proc(t: ^testing.T) {
+	source := `DATA gv_global TYPE string.
+FORM run.
+  DATA lv_local TYPE i.
+  lv_local = 1.
+ENDFORM.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://query_completion.abap")
+	query := semantic_query(&project, &checker, file)
+	offset := checker_test_find_text_last(source, "lv_local")
+	testing.expect(t, offset >= 0)
+
+	items := semantic_completion_items_at_offset(
+		semantic_query_completion(query),
+		offset,
+		"",
+		context.allocator,
+	)
+	local_found := false
+	global_found := false
+	builtin_found := false
+	for item in items {
+		name := string_interner.load(project.interner, item.name)
+		if name == "lv_local" && item.namespace == .Value && item.source == .Lexical_Scope {
+			local_found = true
+		}
+		if name == "gv_global" && item.namespace == .Value && item.source == .Lexical_Scope {
+			global_found = true
+		}
+		if name == "strlen" && item.namespace == .Routine && item.source == .Builtin_Scope {
+			builtin_found = true
+		}
+	}
+	testing.expect(t, local_found)
+	testing.expect(t, global_found)
+	testing.expect(t, builtin_found)
 }
