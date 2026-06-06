@@ -94,6 +94,7 @@ checker_make :: proc(project: ^Project) -> (checker: Checker) {
 }
 
 checker_init :: proc(checker: ^Checker, project: ^Project) {
+	assert(project != nil)
 	checker^ = {}
 	checker.project = project
 	checker.info = checker_info_make(checker, project)
@@ -118,6 +119,7 @@ checker_info_make :: proc(checker: ^Checker, project: ^Project) -> Checker_Info 
 }
 
 checker_context_make :: proc(checker: ^Checker, file: ^Project_File = nil) -> Checker_Context {
+	assert(checker != nil && checker.project != nil && checker.info.builtin_scope != nil)
 	ctx := Checker_Context {
 		checker   = checker,
 		info      = &checker.info,
@@ -132,6 +134,7 @@ checker_context_make :: proc(checker: ^Checker, file: ^Project_File = nil) -> Ch
 }
 
 checker_context_reset :: proc(ctx: ^Checker_Context, file: ^Project_File = nil) {
+	assert(ctx != nil && ctx.checker != nil)
 	checker := ctx.checker
 
 	type_path := ctx.type_path
@@ -148,14 +151,17 @@ checker_context_reset :: proc(ctx: ^Checker_Context, file: ^Project_File = nil) 
 	}
 }
 
-checker_context_set_file :: proc(ctx: ^Checker_Context, file: ^Project_File) -> bool {
+checker_context_set_file :: proc(ctx: ^Checker_Context, file: ^Project_File) {
+	assert(ctx != nil && file != nil)
+	checker_register_file(ctx.checker, file)
+	assert(file.root_scope != nil)
 	ctx.file = file
-	ctx.scope = file.root_scope if file.root_scope != nil else ctx.info.builtin_scope
+	ctx.scope = file.root_scope
 	ctx.decl = nil
-	return true
 }
 
 checker_ensure_builtin_scope :: proc(checker: ^Checker) -> ^Scope {
+	assert(checker != nil)
 	if checker.info.builtin_scope != nil {
 		return checker.info.builtin_scope
 	}
@@ -169,28 +175,36 @@ checker_add_file :: proc(
 	path: string = "",
 	root: ^ast.File = nil,
 ) -> ^Project_File {
+	assert(checker != nil)
 	file := project_add_file(checker.project, path, root)
 	checker_register_file(checker, file)
 	return file
 }
 
 checker_register_file :: proc(checker: ^Checker, file: ^Project_File) -> bool {
+	assert(checker != nil && file != nil)
+	_ = checker_ensure_file_scope(checker, file)
 	for registered in checker.info.files {
 		if registered == file {
-			if file.root_scope == nil {
-				file.root_scope = checker_create_file_scope(checker, file)
-			}
 			return true
 		}
-	}
-	if file.root_scope == nil {
-		file.root_scope = checker_create_file_scope(checker, file)
 	}
 	append(&checker.info.files, file)
 	return true
 }
 
+checker_ensure_file_scope :: proc(checker: ^Checker, file: ^Project_File) -> ^Scope {
+	assert(checker != nil && file != nil)
+	if file.root_scope == nil {
+		file.root_scope = checker_create_file_scope(checker, file)
+	}
+	assert(file.root_scope != nil)
+	assert(file.root_scope.parent == checker.info.builtin_scope)
+	return file.root_scope
+}
+
 checker_create_file_scope :: proc(checker: ^Checker, file: ^Project_File) -> ^Scope {
+	assert(checker != nil && file != nil)
 	range := Range{}
 	if file.root != nil {
 		range = file.root.range
@@ -206,6 +220,8 @@ checker_create_scope :: proc(
 	owner: ^Entity = nil,
 	decl_info: ^Decl_Info = nil,
 ) -> ^Scope {
+	assert(checker != nil && checker.project != nil)
+	assert(kind == .Builtin || parent != nil)
 	scope := project_new_scope(checker.project)
 	scope.kind = kind
 	scope.parent = parent
@@ -227,15 +243,15 @@ checker_open_scope :: proc(
 	owner: ^Entity = nil,
 	decl_info: ^Decl_Info = nil,
 ) -> ^Scope {
+	assert(ctx != nil && ctx.scope != nil)
 	scope := checker_create_scope(ctx.checker, ctx.scope, kind, range, owner, decl_info)
 	ctx.scope = scope
 	return scope
 }
 
 checker_close_scope :: proc(ctx: ^Checker_Context) {
-	if ctx.scope.parent != nil {
-		ctx.scope = ctx.scope.parent
-	}
+	assert(ctx != nil && ctx.scope != nil && ctx.scope.parent != nil)
+	ctx.scope = ctx.scope.parent
 }
 
 checker_lookup_declaration :: proc(
@@ -247,6 +263,7 @@ checker_lookup_declaration :: proc(
 	^Entity,
 	bool,
 ) {
+	assert(ctx != nil && ctx.scope != nil)
 	return checker_lookup_declaration_from_scope(ctx.scope, namespace, name)
 }
 
@@ -278,17 +295,22 @@ checker_add_entity_and_decl_info :: proc(
 	decl: ^Decl_Info,
 	insert_in_scope := true,
 ) -> bool {
-	scope := decl.scope if decl.scope != nil else ctx.scope
+	assert(ctx != nil && entity != nil && decl != nil)
+	assert(ctx.scope != nil && decl.scope != nil)
+	scope := decl.scope
 
 	decl.scope = scope
 	decl.entity = entity
 	entity.decl_info = decl
 	if entity.scope == nil {
 		entity.scope = scope
+	} else {
+		assert(entity.scope == scope)
 	}
 	if entity.source_file == nil {
 		entity.source_file = ctx.file
 	}
+	assert(entity_kind_is_builtin(entity.kind) || entity.source_file != nil)
 
 	if insert_in_scope {
 		if previous := scope_insert_declaration(scope, entity); previous != nil && previous != entity {
@@ -327,9 +349,7 @@ checker_add_entity_use :: proc(
 	node: ^ast.Node,
 	entity: ^Entity,
 ) {
-	if entity == nil {
-		return
-	}
+	assert(entity != nil)
 	entity.flags += {.Used}
 	checker_add_dependency(ctx, entity)
 	append(
@@ -344,7 +364,8 @@ checker_add_entity_use :: proc(
 }
 
 checker_add_dependency :: proc(ctx: ^Checker_Context, entity: ^Entity) {
-	if ctx.decl == nil || entity == nil {
+	assert(ctx != nil && entity != nil)
+	if ctx.decl == nil {
 		return
 	}
 	for dep in ctx.info.dependencies {
@@ -561,10 +582,9 @@ checker_collect_routine_decl :: proc(
 }
 
 checker_collect_routine_parameters :: proc(ctx: ^Checker_Context, owner: ^Entity, node: ^ast.Node) {
+	assert(owner != nil)
 	payload, ok := owner.payload.(^Entity_Routine_Payload)
-	if !ok || payload == nil || payload.signature_scope == nil || node == nil {
-		return
-	}
+	assert(ok && payload != nil && payload.signature_scope != nil && node != nil)
 	#partial switch n in node.derived {
 	case ^ast.Form_Decl:
 		for param in n.form_parameters {
@@ -648,14 +668,11 @@ checker_check_entity_decl :: proc(
 	if current_decl == nil {
 		current_decl = entity.decl_info
 	}
-	if current_decl == nil {
-		entity.state = .Failed
-		checker_add_diagnostic(ctx, .Missing_Declaration_Info, entity.name_range, "missing declaration info", entity)
-		return
-	}
+	assert(current_decl != nil)
+	assert(current_decl.scope != nil)
 
 	local := ctx^
-	local.scope = current_decl.scope if current_decl.scope != nil else entity.scope
+	local.scope = current_decl.scope
 	local.decl = current_decl
 	local.current_decl = current_decl
 	entity.state = .Resolving
@@ -749,32 +766,20 @@ checker_check_type_decl :: proc(
 
 checker_check_routine_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
 	payload, ok := entity.payload.(^Entity_Routine_Payload)
-	if ok && payload != nil {
-		if payload.signature_scope == nil {
-			payload.signature_scope = checker_create_scope(
-				ctx.checker,
-				entity.scope,
-				checker_scope_kind_for_routine(entity.kind),
-				owner = entity,
-			)
-		}
-		if entity.type == nil || entity.type.kind != .Routine {
-			entity.type = project_type_routine(ctx.project, payload.signature_scope)
-		}
-		entity.type.routine.parameters = payload.parameters
-		entity.type.routine.exceptions = payload.exceptions
-		body := checker_routine_body_from_decl(decl)
-		if len(body) > 0 {
-			body_ctx := ctx^
-			body_ctx.scope = payload.body_scope if payload.body_scope != nil else payload.signature_scope
-			body_ctx.current_routine = entity
-			body_ctx.current_signature = entity.type
-			checker_check_stmt_list(&body_ctx, body)
-		}
-		return
+	assert(ok && payload != nil)
+	assert(payload.signature_scope != nil && payload.body_scope != nil)
+	if entity.type == nil || entity.type.kind != .Routine {
+		entity.type = project_type_routine(ctx.project, payload.signature_scope)
 	}
-	if entity.type == nil {
-		entity.type = project_type_routine(ctx.project)
+	entity.type.routine.parameters = payload.parameters
+	entity.type.routine.exceptions = payload.exceptions
+	body := checker_routine_body_from_decl(decl)
+	if len(body) > 0 {
+		body_ctx := ctx^
+		body_ctx.scope = payload.body_scope
+		body_ctx.current_routine = entity
+		body_ctx.current_signature = entity.type
+		checker_check_stmt_list(&body_ctx, body)
 	}
 }
 
@@ -797,7 +802,8 @@ checker_scope_kind_for_routine :: proc(kind: Entity_Kind) -> Scope_Kind {
 checker_check_object_decl :: proc(ctx: ^Checker_Context, entity: ^Entity, decl: ^Decl_Info) {
 	_ = decl
 	payload, ok := entity.payload.(^Entity_Object_Payload)
-	if ok && payload != nil && payload.definition_scope == nil {
+	assert(ok && payload != nil)
+	if payload.definition_scope == nil {
 		scope_kind := Scope_Kind.Class if entity.kind == .Class else Scope_Kind.Interface
 		payload.definition_scope = checker_create_scope(ctx.checker, entity.scope, scope_kind, owner = entity)
 	}

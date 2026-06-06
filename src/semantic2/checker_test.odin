@@ -26,6 +26,44 @@ root_semantic_checker_creates_builtin_and_file_scopes :: proc(t: ^testing.T) {
 }
 
 @(test)
+root_semantic_entity_kind_namespace_occupancy :: proc(t: ^testing.T) {
+	testing.expect(t, entity_kind_occupies(.Builtin_Type, .Type))
+	testing.expect(t, !entity_kind_occupies(.Builtin_Type, .Value))
+	testing.expect(t, entity_kind_occupies(.Builtin_Routine, .Routine))
+	testing.expect(t, !entity_kind_occupies(.Builtin_Routine, .Type))
+	testing.expect(t, entity_kind_occupies(.Variable, .Value))
+	testing.expect(t, entity_kind_occupies(.Report, .Value))
+	testing.expect(t, entity_kind_occupies(.Method, .Routine))
+}
+
+@(test)
+root_semantic_checker_context_registers_project_file_and_scoped_blocks :: proc(t: ^testing.T) {
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker := checker_make(&project)
+	file := project_add_file(&project, "ZRAW.abap")
+	testing.expect(t, file.root_scope == nil)
+
+	ctx := checker_context_make(&checker, file)
+	testing.expect(t, file.root_scope != nil)
+	testing.expect(t, ctx.file == file)
+	testing.expect(t, ctx.scope == file.root_scope)
+	testing.expect_value(t, len(checker.info.files), 1)
+
+	again := checker_context_make(&checker, file)
+	testing.expect(t, again.scope == file.root_scope)
+	testing.expect_value(t, len(checker.info.files), 1)
+
+	child := checker_open_scope(&ctx, .Form)
+	testing.expect(t, child.parent == file.root_scope)
+	testing.expect(t, file.root_scope.head_child == child)
+	testing.expect_value(t, len(file.root_scope.children), 1)
+	checker_close_scope(&ctx)
+	testing.expect(t, ctx.scope == file.root_scope)
+}
+
+@(test)
 root_semantic_checker_registers_checks_and_records_entity_uses :: proc(t: ^testing.T) {
 	project := project_make()
 	defer project_destroy(&project)

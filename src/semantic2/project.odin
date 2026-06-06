@@ -15,6 +15,8 @@ Project_File :: struct {
 }
 
 Project :: struct {
+	// Project snapshots own semantic objects through this arena; consumers use
+	// pointer identity only within the owning snapshot.
 	arena:          ^virtual.Arena,
 	host_allocator: mem.Allocator,
 	allocator:      mem.Allocator,

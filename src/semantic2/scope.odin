@@ -73,9 +73,7 @@ scope_lookup_declaration :: proc(
 	namespace: Namespace,
 	name: string_interner.String,
 ) -> (^Entity, bool) {
-	if scope == nil {
-		return nil, false
-	}
+	assert(scope != nil)
 	if entity, ok := scope.elements[Scope_Declaration_Key{namespace = namespace, name = name}]; ok {
 		return entity, true
 	}
