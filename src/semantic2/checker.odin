@@ -20,6 +20,9 @@ Checker_Diagnostic_Kind :: enum {
 	Missing_Required_Parameter,
 	Duplicate_Named_Parameter,
 	Inaccessible_Member,
+	Unresolved_Open_Sql_Source,
+	Unknown_Field,
+	Invalid_Open_Sql_Into_Target,
 }
 
 Checker_Diagnostic :: struct {

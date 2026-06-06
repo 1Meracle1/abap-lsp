@@ -357,10 +357,17 @@ checker_check_stmt :: proc(
 		checker_check_select_stmt(ctx, n)
 	case ^ast.Open_Cursor_Stmt:
 		checker_check_expr(ctx, n.handle, .Value, true)
-		checker_check_select_query(ctx, n.query)
+		checker_check_sql_select_query(ctx, n.query)
 	case ^ast.Fetch_Stmt:
 		checker_check_expr(ctx, n.handle)
-		checker_check_select_result(ctx, n.result)
+		checker_check_sql_select_result(
+			ctx,
+			n.result,
+			Sql_Query_Shape {
+				row_type    = project_type_unknown(ctx.project),
+				scalar_type = project_type_unknown(ctx.project),
+			},
+		)
 		checker_check_expr(ctx, n.package_size)
 	case ^ast.Close_Cursor_Stmt:
 		checker_check_expr(ctx, n.handle)
@@ -544,6 +551,10 @@ checker_check_append_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Append_Stmt)
 }
 
 checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt) {
+	if stmt.form == .Db_Table {
+		checker_check_sql_insert_stmt(ctx, stmt)
+		return
+	}
 	target := checker_check_expr(ctx, stmt.target, .Value, stmt.form == .Internal_Table)
 	row_type := checker_type_row(ctx, target.type)
 	if stmt.source != nil {
@@ -561,6 +572,10 @@ checker_check_insert_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Insert_Stmt)
 }
 
 checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) {
+	if checker_modify_stmt_uses_db_source(ctx, stmt) {
+		checker_check_sql_modify_stmt(ctx, stmt)
+		return
+	}
 	target := checker_check_expr(ctx, stmt.target, .Value, true)
 	if stmt.source != nil {
 		source := checker_check_expr(ctx, stmt.source)
@@ -572,17 +587,30 @@ checker_check_modify_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt)
 	checker_check_expr(ctx, stmt.where_cond)
 }
 
-checker_check_update_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Update_Stmt) {
-	checker_check_expr(ctx, stmt.target, .Value, true)
-	checker_check_expr(ctx, stmt.source)
-	for assignment in stmt.assignments {
-		checker_check_expr(ctx, assignment.name)
-		checker_check_expr(ctx, assignment.value)
+checker_modify_stmt_uses_db_source :: proc(ctx: ^Checker_Context, stmt: ^ast.Modify_Stmt) -> bool {
+	if stmt == nil || stmt.target == nil || stmt.table_keyword {
+		return false
 	}
-	checker_check_expr(ctx, stmt.where_cond)
+	if stmt.dynamic_source {
+		return true
+	}
+	name := checker_sql_simple_expr_name(ctx, stmt.target)
+	if !string_interner.is_valid(name) {
+		return false
+	}
+	_, _, value_ok := checker_lookup_reference(ctx, .Value, name)
+	return !value_ok
+}
+
+checker_check_update_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Update_Stmt) {
+	checker_check_sql_update_stmt(ctx, stmt)
 }
 
 checker_check_delete_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Delete_Stmt) {
+	if stmt.form == .Db_Table {
+		checker_check_sql_delete_stmt(ctx, stmt)
+		return
+	}
 	checker_check_expr(ctx, stmt.target, .Value, true)
 	checker_check_expr(ctx, stmt.source)
 	checker_check_expr(ctx, stmt.index)
@@ -1264,47 +1292,11 @@ checker_check_dataset_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Dataset_Stm
 checker_check_select_stmt :: proc(ctx: ^Checker_Context, stmt: ^ast.Select_Stmt) {
 	if stmt.with != nil {
 		for cte in stmt.with.entries {
-			checker_check_select_query(ctx, cte.query)
+			checker_check_sql_select_query(ctx, cte.query)
 		}
 	}
-	checker_check_select_query(ctx, stmt.query)
+	checker_check_sql_select_query(ctx, stmt.query)
 	checker_check_stmt_list(ctx, stmt.body)
-}
-
-checker_check_select_query :: proc(ctx: ^Checker_Context, query: ast.Select_Query_Clause) {
-	for projection in query.projections {
-		checker_check_expr(ctx, projection)
-	}
-	for projection in query.projection_clauses {
-		checker_check_expr(ctx, projection.value)
-	}
-	checker_check_expr(ctx, query.source, .Type)
-	if query.source_clause != nil {
-		checker_check_select_source(ctx, query.source_clause^)
-	}
-	checker_check_select_result(ctx, query.result)
-	checker_check_expr(ctx, query.where_cond)
-	checker_check_expr(ctx, query.for_all_entries)
-	checker_check_expr(ctx, query.package_size)
-	checker_check_expr(ctx, query.up_to_rows)
-	for set in query.set_ops {
-		checker_check_select_query(ctx, set.query)
-	}
-}
-
-checker_check_select_source :: proc(ctx: ^Checker_Context, source: ast.Select_Source_Clause) {
-	checker_check_expr(ctx, source.source, .Type)
-	for join in source.joins {
-		checker_check_expr(ctx, join.source, .Type)
-		checker_check_expr(ctx, join.on)
-	}
-}
-
-checker_check_select_result :: proc(ctx: ^Checker_Context, result: ^ast.Select_Result_Clause) {
-	if result == nil {
-		return
-	}
-	checker_check_expr(ctx, result.target, .Value, true)
 }
 
 checker_type_assignment_compatible :: proc(

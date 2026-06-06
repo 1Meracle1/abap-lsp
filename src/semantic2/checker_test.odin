@@ -1616,3 +1616,228 @@ WRITE lv_count TO lv_target.`
 	testing.expect(t, lv_count != nil && .Used in lv_count.flags)
 	testing.expect(t, lv_target != nil && .Used in lv_target.flags)
 }
+
+@(test)
+root_semantic_sql_checker_reports_local_source_and_field_diagnostics :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zflight,
+         carrid TYPE string,
+       END OF zflight.
+DATA lv_text TYPE string.
+
+SELECT connid FROM zflight INTO @lv_text.
+SELECT carrid FROM zmissing INTO @DATA(lt_missing).`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_local_diagnostics.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Open_Sql_Source), 1)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Generic_Table_Type), 0)
+}
+
+@(test)
+root_semantic_sql_checker_infers_inline_table_row_fields :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF scarr,
+         carrid TYPE string,
+         carrname TYPE string,
+       END OF scarr.
+DATA lv_carrid TYPE string.
+
+SELECT carrid, carrname
+  FROM scarr
+  INTO TABLE @DATA(lt_scarr).
+READ TABLE lt_scarr INTO DATA(ls_scarr) INDEX 1.
+lv_carrid = ls_scarr-carrid.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_inline_table.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	lt_scarr := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_scarr", .Variable)
+	testing.expect(t, lt_scarr != nil && lt_scarr.type != nil)
+	if lt_scarr == nil || lt_scarr.type == nil {
+		return
+	}
+	testing.expect_value(t, lt_scarr.type.kind, Type_Kind.Table)
+	row_structure := checker_type_structure(checker_type_row(&checker.builtin_context, lt_scarr.type))
+	testing.expect(t, row_structure != nil)
+	if row_structure == nil {
+		return
+	}
+	carrid := checker_test_structure_field(t, &project, row_structure, "carrid")
+	carrname := checker_test_structure_field(t, &project, row_structure, "carrname")
+	testing.expect(t, carrid != nil && carrname != nil)
+	testing.expect_value(t, checker_test_type_name(&project, carrid.type), "string")
+	testing.expect_value(t, checker_test_type_name(&project, carrname.type), "string")
+}
+
+@(test)
+root_semantic_sql_checker_reports_scalar_target_conversion_failure :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF e070,
+         as4date TYPE d,
+       END OF e070.
+DATA lv_time TYPE t.
+
+SELECT SINGLE as4date FROM e070 INTO @lv_time.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, _ := checker_test_check_source(t, &project, source, "mem://sql_scalar_target.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Invalid_Open_Sql_Into_Target), 1)
+}
+
+@(test)
+root_semantic_sql_checker_infers_aggregate_alias_inline_structure :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zrel,
+         evtid TYPE string,
+         objid TYPE string,
+       END OF zrel.
+TYPES: BEGIN OF zevt,
+         evtid TYPE string,
+       END OF zevt.
+DATA ls_obj_ids TYPE zrel.
+
+SELECT COUNT( DISTINCT rel~evtid ) AS total_events,
+       COUNT( DISTINCT evt~evtid ) AS active_events
+  FROM zrel AS rel
+  LEFT OUTER JOIN zevt AS evt ON rel~evtid = evt~evtid
+  WHERE rel~objid = @ls_obj_ids-objid
+  INTO @DATA(ls_event_summary).
+DATA lv_total TYPE i.
+lv_total = ls_event_summary-total_events.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_aggregate_inline.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	ls_event_summary := checker_test_lookup(t, &project, file.root_scope, .Value, "ls_event_summary", .Variable)
+	testing.expect(t, ls_event_summary != nil && ls_event_summary.type != nil)
+	if ls_event_summary == nil || ls_event_summary.type == nil {
+		return
+	}
+	structure := checker_type_structure(ls_event_summary.type)
+	testing.expect(t, structure != nil)
+	if structure == nil {
+		return
+	}
+	total := checker_test_structure_field(t, &project, structure, "total_events")
+	active := checker_test_structure_field(t, &project, structure, "active_events")
+	testing.expect_value(t, checker_test_type_name(&project, total.type), "i")
+	testing.expect_value(t, checker_test_type_name(&project, active.type), "i")
+}
+
+@(test)
+root_semantic_sql_checker_combines_join_star_inline_rows :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zhead,
+         id TYPE i,
+         text TYPE string,
+       END OF zhead.
+TYPES: BEGIN OF zitem,
+         head_id TYPE i,
+         qty TYPE i,
+       END OF zitem.
+
+SELECT *
+  FROM zhead AS h
+  INNER JOIN zitem AS i ON i~head_id = h~id
+  INTO TABLE @DATA(lt_rows).
+READ TABLE lt_rows INTO DATA(ls_row) INDEX 1.
+DATA lv_text TYPE string.
+DATA lv_qty TYPE i.
+lv_text = ls_row-text.
+lv_qty = ls_row-qty.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_join_star.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	lt_rows := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_rows", .Variable)
+	testing.expect(t, lt_rows != nil && lt_rows.type != nil)
+	if lt_rows == nil || lt_rows.type == nil {
+		return
+	}
+	row_structure := checker_type_structure(checker_type_row(&checker.builtin_context, lt_rows.type))
+	testing.expect(t, row_structure != nil)
+	if row_structure == nil {
+		return
+	}
+	fields := [?]string{"id", "text", "head_id", "qty"}
+	for name in fields {
+		testing.expect(t, checker_test_structure_field(t, &project, row_structure, name) != nil)
+	}
+}
+
+@(test)
+root_semantic_sql_checker_keeps_classic_hosts_out_of_sql_scope :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF tcdobs,
+         object TYPE string,
+       END OF tcdobs.
+DATA mv_object TYPE string.
+
+DELETE FROM tcdobs WHERE object = mv_object.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_classic_host.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	mv_object := checker_test_lookup(t, &project, file.root_scope, .Value, "mv_object", .Variable)
+	testing.expect(t, mv_object != nil && .Used in mv_object.flags)
+}
+
+@(test)
+root_semantic_sql_checker_checks_db_dml_sources_and_hosts :: proc(t: ^testing.T) {
+	source := `TYPES: BEGIN OF zinsert_tab,
+         id TYPE string,
+         status TYPE string,
+       END OF zinsert_tab.
+TYPES: BEGIN OF zmodify_tab,
+         id TYPE string,
+         status TYPE string,
+       END OF zmodify_tab.
+TYPES: BEGIN OF zupdate_tab,
+         id TYPE string,
+         status TYPE string,
+       END OF zupdate_tab.
+TYPES: BEGIN OF zdelete_tab,
+         id TYPE string,
+       END OF zdelete_tab.
+DATA lt_insert TYPE STANDARD TABLE OF zinsert_tab WITH EMPTY KEY.
+DATA ls_modify TYPE zmodify_tab.
+DATA lt_delete TYPE STANDARD TABLE OF zdelete_tab WITH EMPTY KEY.
+DATA lv_status TYPE string.
+DATA lv_id TYPE string.
+
+INSERT zinsert_tab FROM TABLE lt_insert.
+MODIFY zmodify_tab FROM ls_modify WHERE id = lv_id.
+UPDATE zupdate_tab SET status = lv_status WHERE id = lv_id.
+DELETE FROM zdelete_tab WHERE id = lv_id.
+DELETE zdelete_tab FROM TABLE lt_delete.`
+
+	project := project_make()
+	defer project_destroy(&project)
+
+	checker, file := checker_test_check_source(t, &project, source, "mem://sql_db_dml.abap")
+
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unknown_Field), 0)
+	testing.expect_value(t, checker_test_diagnostic_count(&checker, .Unresolved_Open_Sql_Source), 0)
+	zupdate_tab := checker_test_lookup(t, &project, file.root_scope, .Type, "zupdate_tab", .Type_Def)
+	lv_status := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_status", .Variable)
+	lv_id := checker_test_lookup(t, &project, file.root_scope, .Value, "lv_id", .Variable)
+	lt_delete := checker_test_lookup(t, &project, file.root_scope, .Value, "lt_delete", .Variable)
+	testing.expect(t, zupdate_tab != nil && .Used in zupdate_tab.flags)
+	testing.expect(t, lv_status != nil && .Used in lv_status.flags)
+	testing.expect(t, lv_id != nil && .Used in lv_id.flags)
+	testing.expect(t, lt_delete != nil && .Used in lt_delete.flags)
+}
